@@ -1,3 +1,4 @@
+import { rollbackKeepingError } from "./rollback.js";
 import {
   TelegramIntegrationError,
   type ActivateTelegramPairingInput,
@@ -147,16 +148,17 @@ export class PostgresTelegramPersistence implements TelegramPersistence, Telegra
 
   private async withTransaction<T>(callback: (client: PgClientLike) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
+    let rollbackFailed = false;
     try {
       await client.query("BEGIN");
       const result = await callback(client);
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK");
+      rollbackFailed = await rollbackKeepingError(client);
       throw error;
     } finally {
-      client.release?.();
+      client.release?.(rollbackFailed || undefined);
     }
   }
 

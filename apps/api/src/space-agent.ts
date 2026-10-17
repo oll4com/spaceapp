@@ -883,6 +883,8 @@ export function createSpaceAgentAdapter(options: {
    */
   dotTurnContext?: (session: SpaceAgentSessionRecord, workspace: string | null) => Promise<{ toolGateway: boolean; developerContext: string;
     conversationContext?: string | null; onAccepted?: () => Promise<void> } | null>;
+  /** Who a Dot is and how it speaks, for a Dot turn on another runtime (cli:claude, cli:gemini, ...), which gets no Codex context. */
+  dotIdentity?: (session: SpaceAgentSessionRecord) => Promise<string | null>;
   /** Stage 8: the model and permissions set for a Dot in SpaceApp Settings; null fields keep the session's own. */
   dotRuntime?: (session: SpaceAgentSessionRecord) => Promise<{ modelConfigId: string | null; permissionMode: PermissionMode | null } | null>;
   /** Stage 8: the Dot a pane's first session opens with (Settings → Dots); null keeps the first Dot. */
@@ -1635,6 +1637,7 @@ export function createSpaceAgentAdapter(options: {
     const nativeCodex = !session.selectedProviderId || session.selectedProviderId === codexChatProviderId;
     const dotTurn = session.dotId && input.operatorUserId && nativeCodex && options.dotTurnContext
       ? await options.dotTurnContext(session, targetDir).catch(() => null) : null;
+    const dotIdentity = session.dotId && !nativeCodex && options.dotIdentity ? await options.dotIdentity(session).catch(() => null) : null;
     // Proactive work is read-only, which only the native gateway enforces: refuse it anywhere else.
     const proactive = Boolean(session.dotId) && isDotProactiveRequest(input.clientRequestId);
     // Stage 8: only the user's own messages (typed, voice, Slack/Teams) get the Dot's other conversations and its
@@ -1655,6 +1658,7 @@ export function createSpaceAgentAdapter(options: {
       paneId: input.pane.id,
       prompt: promptWithAgentContexts(input.content, dotTurn?.toolGateway ? [userTurn ? dotTurn.conversationContext ?? null : null,
         artifactContext(attachedArtifacts, readLines, Boolean(input.content.trim()))] : [
+        dotIdentity,
         workspaceContext(targetDir),
         clipboardToolContext(effectiveTools),
         taskToolContext(effectiveTools),

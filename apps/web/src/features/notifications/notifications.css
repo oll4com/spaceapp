@@ -1,5 +1,5 @@
-/* Notification toasts (bottom-right, above the docks) and the Notification Center dock. */
-.notification-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
+/* Notification toasts (bottom-right, beside the right rail so its buttons stay reachable) and the Notification Center dock. */
+.notification-toasts { position: fixed; right: 72px; bottom: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 88px)); }
 [data-suppress-notifications="true"] .notification-toasts { display: none !important; }
 .notification-toast { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; border: 1px solid var(--room-border, rgba(255, 255, 255, 0.12)); border-radius: 12px;
   background: color-mix(in srgb, var(--room-surface, #121619) 92%, #ffffff 8%); color: var(--room-text, #e8e6e0); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); overflow: hidden; }
@@ -8,7 +8,7 @@
 .notification-toast-main { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 10px 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .notification-toast-main svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; color: var(--room-accent, #6db7aa); }
 .notification-toast-copy { display: grid; gap: 2px; min-width: 0; }
-.notification-toast-copy strong { font-size: 13px; font-weight: 650; }
+.notification-toast-copy strong { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
 .notification-toast-copy small { color: var(--room-muted, #9aa3a0); font-size: 12px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .notification-toast-close { padding: 8px; border: 0; background: transparent; color: var(--room-muted, #9aa3a0); cursor: pointer; }
 .notification-toast-close svg { width: 14px; height: 14px; }
@@ -20,7 +20,7 @@
 .notification-item.status-open { background: color-mix(in srgb, var(--room-accent, #6db7aa) 7%, transparent); }
 .notification-item.severity-urgent .notification-item-source { color: #f08a8a; }
 .notification-item-main { display: grid; gap: 2px; width: 100%; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.notification-item-source { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--room-accent, #6db7aa); }
+.notification-item-source, .notification-toast-source { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--room-accent, #6db7aa); }
 .notification-item.status-open .notification-item-title { font-weight: 700; }
 .notification-item-title { font-size: 13px; }
 .notification-item-body { color: var(--room-muted, #9aa3a0); font-size: 12px; white-space: pre-wrap; word-break: break-word; }

@@ -36,6 +36,7 @@ export {
   PostgresSystemAnalyticsRepository,
   type SystemAnalyticsModelEventRecord,
   type SystemAnalyticsModelEventStatus,
+  type SystemAnalyticsRoute,
   type SystemAnalyticsRepository,
   type SystemAnalyticsResourceBucket,
   type SystemAnalyticsResourceEntityType,
@@ -92,6 +93,7 @@ export * from "./space-notifications-repository.js";
 export * from "./council-repository.js";
 export * from "./mail-copilot-repository.js";
 export * from "./marketing-copilot-repository.js";
+export * from "./freelance-copilot-repository.js";
 export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";
 export * from "./session-revocation-repository.js";

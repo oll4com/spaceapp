@@ -1,5 +1,5 @@
 import { liveWatchedTask, liveWatchSubmission } from "./live-watch-identity.js";
-import { terminalRenderAuditEvidenceSchema, terminalRenderBatchSchema, terminalRenderFreshnessMs, type TerminalRenderObservation } from "@space/contracts";
+import { terminalRenderAuditEvidenceSchema, terminalRenderBatchSchema, terminalRenderFreshnessMs, type TerminalRenderObservation, type controlScreenshotViewports } from "@space/contracts";
 import { createHash } from "node:crypto";
 import { appendFileSync, promises as fsPromises } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -76,7 +76,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   integration?(actor:ControlActor,roomId:string,action:ControlAction):Promise<unknown>;
   inspectExtra?(actor:ControlActor,input:ControlInspect):Promise<unknown>;
   inspectPaneState?(pane:Pane):Promise<Record<string,unknown>|null>;
-  captureScreenshot?(actor:ControlActor,roomId:string,options?:{format?:string;quality?:number;maxWidth?:number;maxHeight?:number;query?:string}):Promise<Record<string,unknown>>;
+  captureScreenshot?(actor:ControlActor,roomId:string,options?:{format?:string;quality?:number;maxWidth?:number;maxHeight?:number;viewport?:string;query?:string}):Promise<Record<string,unknown>>;
   describePaneTypes?(roomId?:string):Promise<{types:Array<{typeId:string;label:string;kind:string;countsKey:string;available:boolean;reason?:string}>;roomCap:number|null}>;
   decisionsService?: DecisionsService;
   pluginsService?: any;
@@ -724,7 +724,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    // Only an explicitly configured, authenticated capture adapter may provide
    // APP evidence. A client DOM drawing or anonymous login page is not a shot.
    if(!options.captureScreenshot)throw new SpaceConflictError("Authenticated room screenshot capture is unavailable. Use the Live Screen button to share a real image.");
-   const evidence=await options.captureScreenshot(actor,roomId,{format:spec.format,quality:spec.quality,maxWidth:spec.maxWidth,maxHeight:spec.maxHeight});
+   const evidence=await options.captureScreenshot(actor,roomId,{format:spec.format,quality:spec.quality,maxWidth:spec.maxWidth,maxHeight:spec.maxHeight,viewport:spec.viewport});
    if(evidence.roomId!==roomId||evidence.authenticated!==true||evidence.captureSource!=="AUTHENTICATED_APP"||typeof evidence.artifactId!=="string"||!evidence.artifactId){
      throw new SpaceConflictError("Capture did not provide authenticated evidence for the requested room.");
    }
@@ -1538,8 +1538,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(idle&&idle.signal===workSignal&&Date.now()-idle.since<idleRecheckMs)return;
   await tick();
  }
-  async function screenshot(actor:ControlActor,roomId:string,params:{format?:"jpeg"|"png"|"webp";quality?:number;maxWidth?:number;maxHeight?:number;query?:string}){
-   const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:params.format??"jpeg",quality:params.quality??80,maxWidth:params.maxWidth,maxHeight:params.maxHeight};
+  async function screenshot(actor:ControlActor,roomId:string,params:{format?:"jpeg"|"png"|"webp";quality?:number;maxWidth?:number;maxHeight?:number;viewport?:(typeof controlScreenshotViewports)[number];query?:string}){
+   const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:params.format??"jpeg",quality:params.quality??80,maxWidth:params.maxWidth,maxHeight:params.maxHeight,viewport:params.viewport};
    const op=await execute(actor,{roomId,requestId:makeSpaceId("control_shot"),actions:[spec]},true);
    const result=op.results[0];
    if(!result||result.status==="FAILED")throw new SpaceConflictError(result?.detail||"Screenshot capture failed.");

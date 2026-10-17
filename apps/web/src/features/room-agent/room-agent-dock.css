@@ -371,8 +371,12 @@
   white-space: pre-line;
 }
 
+/* The operator answers from this text, so a question is shown whole and scrolls instead of clamping. */
 .room-agent-dock .room-agent-system-row[data-event-kind="WAITING"] .room-agent-system-detail {
-  -webkit-line-clamp: 6;
+  display: block;
+  max-height: 16rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
   padding: 0.3rem 0.45rem;
   border-radius: 6px;
   background: color-mix(in srgb, var(--dock-text) 6%, transparent);

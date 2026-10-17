@@ -1,6 +1,6 @@
 import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import type { PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
@@ -31,6 +31,8 @@ export interface ClaudeNativeTurns {
   title: string | null;
   /** The title came from /rename rather than Claude's automatic AI title. */
   titleManual: boolean;
+  /** The latest answer broke on a transient server or connection error ("API Error: Connection lost"). */
+  apiError: boolean;
   tasks: NativeTaskExecution[];
 }
 
@@ -63,6 +65,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   let reasoningEffort: string | null = null;
   let aiTitle: string | null = null;
   let customTitle: string | null = null;
+  let apiError = false;
   const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number) => {
     if (!open) return;
     open.status = status;
@@ -89,6 +92,8 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
     }
     if (entry.type === "assistant") {
       if (at) lastActivityAt = at;
+      // Only server errors are worth a retry; rate, session, sign-in and billing limits are not.
+      apiError = entry.isApiErrorMessage === true && entry.error === "server_error";
       const model = text(record(entry.message).model);
       if (!model || model === "<synthetic>") continue;
       const effort = text(entry.effort);
@@ -117,6 +122,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
     // A prompt arriving while a turn is still open means that turn ended without
     // a turn_duration record (killed or crashed CLI).
     close("INTERRUPTED", lastActivityAt ?? at);
+    apiError = false;
     open = {
       taskId: text(entry.promptId) ?? text(entry.uuid) ?? `claude-turn-${tasks.length + 1}`,
       title: (trimmed.startsWith("<task-notification>") ? "Background task notification" : prompt).slice(0, 2000),
@@ -129,7 +135,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   }
   if (open && !busy) close("INTERRUPTED", lastActivityAt);
   for (const task of tasks) task.timing.observedAt = observedAt;
-  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null };
+  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError };
 }
 
 async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {

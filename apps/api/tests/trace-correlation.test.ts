@@ -118,6 +118,45 @@ describe("trace lookup projection", () => {
     expect(projected.auditEvents[0]?.parentTraceId).toBe("req:parenttrace1");
     expect(JSON.stringify(projected)).not.toMatch(/sk-live|PRIVATE PROMPT|private|user:operator/);
   });
+
+  it("names a failed agent run's code as the cause when no event carries one", async () => {
+    // Workflow-level faults that never became an event used to be absent from the lookup (observability.md).
+    const { projectTraceRecords } = await import("../src/trace-routes.js");
+    const projected = projectTraceRecords("req:agentrun0001", {
+      events: [{ id: "event:agentrun1", roomId: "room:agentrun", paneId: null, turnId: null, workflowId: "workflow:agentrun",
+        traceId: "req:agentrun0001", type: "TURN_QUEUED", message: "queued", createdAt: "2026-10-16T09:00:00.000Z", payload: {} }],
+      auditEvents: [],
+      workflows: [],
+      agentRuns: [
+        { runId: "agent_run:ok", workflowId: "workflow:agentrun", status: "COMPLETED", errorCode: null, createdAt: "2026-10-16T09:00:01.000Z", completedAt: "2026-10-16T09:00:02.000Z" },
+        { runId: "agent_run:failed", workflowId: "workflow:agentrun", status: "FAILED", errorCode: "OPENCODE_TURN_TIMEOUT", createdAt: "2026-10-16T09:00:03.000Z", completedAt: "2026-10-16T09:00:09.000Z" }
+      ]
+    } as Parameters<typeof projectTraceRecords>[1]);
+    expect(projected.agentRuns.map((run) => run.runId)).toEqual(["agent_run:ok", "agent_run:failed"]);
+    expect(projected.causalError).toMatchObject({ code: "OPENCODE_TURN_TIMEOUT", category: "TIMEOUT", source: "agent-run",
+      eventId: "agent_run:failed", workflowId: "workflow:agentrun", at: "2026-10-16T09:00:09.000Z" });
+  });
+
+  it("returns the trace's Room Agent missions, task runs and continuations, and a failed mission's code as the cause", async () => {
+    const { projectTraceRecords } = await import("../src/trace-routes.js");
+    const projected = projectTraceRecords("req:mission00001", {
+      events: [], auditEvents: [], workflows: [],
+      agentRuns: [
+        { runId: "agent_run:first", workflowId: "workflow:first", status: "COMPLETED", errorCode: null, createdAt: "2026-10-16T09:00:01.000Z", completedAt: null },
+        { runId: "agent_run:bg-next", workflowId: "workflow:bg-next", status: "COMPLETED", errorCode: null, createdAt: "2026-10-16T09:01:00.000Z",
+          completedAt: null, continuationOf: "agent_run:first" }
+      ],
+      roomAgentMissions: [{ missionId: "room_agent_mission:one", roomId: "room:mission01", status: "FAILED", errorCode: "ROOM_AGENT_TOKEN_LIMIT",
+        queuedAt: "2026-10-16T09:00:00.000Z", completedAt: "2026-10-16T09:05:00.000Z" }],
+      roomAgentTaskRuns: [{ runId: "room_agent_task_run:one", missionId: "room_agent_mission:one", roomId: "room:mission01", status: "COMPLETED",
+        errorCode: "not a safe code", queuedAt: "2026-10-16T09:00:00.000Z", completedAt: null }]
+    } as Parameters<typeof projectTraceRecords>[1]);
+    expect(projected.agentRuns.map((run) => run.continuationOf)).toEqual([null, "agent_run:first"]);
+    expect(projected.roomAgentMissions).toEqual([expect.objectContaining({ missionId: "room_agent_mission:one", errorCode: "ROOM_AGENT_TOKEN_LIMIT" })]);
+    expect(projected.roomAgentTaskRuns[0]?.errorCode).toBeNull();
+    expect(projected.causalError).toMatchObject({ code: "ROOM_AGENT_TOKEN_LIMIT", source: "room-agent-mission",
+      eventId: "room_agent_mission:one", workflowId: null, at: "2026-10-16T09:05:00.000Z" });
+  });
 });
 
 function metricValue(pattern: RegExp): number {

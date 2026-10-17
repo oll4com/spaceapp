@@ -1,6 +1,6 @@
 import type { StreamingBotReviewedMemory } from "@space/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Brain, Check, Pencil, Plus, RefreshCw, Save, Trash2 } from "../ui-theme/app-icons.js";
+import { Brain, Check, Pencil, Plus, RefreshCw, Save, Trash2, Undo2 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import {
   DockButton,
@@ -24,8 +24,10 @@ export function StreamingMemoryTab() {
   const { confirm, confirmDialog } = useDockConfirm();
   const [status, setStatus] = useState<MemoryStatus>("APPROVED");
   const [query, setQuery] = useState("");
-  const [entries, setEntries] = useState<StreamingBotReviewedMemory[]>([]);
+  const [lists, setLists] = useState<Record<MemoryStatus, StreamingBotReviewedMemory[]>>({ APPROVED: [], PENDING: [] });
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const formRef = useRef<HTMLElement | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [editing, setEditing] = useState<StreamingBotReviewedMemory | null>(null);
@@ -33,17 +35,23 @@ export function StreamingMemoryTab() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Both lists load together so each chip shows its count and switching chips needs no request.
   const refresh = useCallback(async () => {
+    setRefreshing(true);
     try {
-      const result = await api.streamingBotMemory(status, query.trim());
-      setEntries(result.entries);
+      const [approved, pending] = await Promise.all([
+        api.streamingBotMemory("APPROVED", query.trim()),
+        api.streamingBotMemory("PENDING", query.trim())
+      ]);
+      setLists({ APPROVED: approved.entries, PENDING: pending.entries });
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Memory could not be loaded.");
     } finally {
       setHasLoaded(true);
+      setRefreshing(false);
     }
-  }, [status, query]);
+  }, [query]);
 
   // Load at once, then wait for typing to pause before searching again.
   const firstLoadRef = useRef(true);
@@ -80,6 +88,7 @@ export function StreamingMemoryTab() {
     setTitle(entry.title);
     setBody(entry.body);
     setError(null);
+    formRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }
 
   function cancelEdit() {
@@ -99,10 +108,12 @@ export function StreamingMemoryTab() {
   }
 
   const isFiltered = Boolean(query.trim());
+  const entries = lists[status];
+  const chipOptions = statusOptions.map((option) => ({ ...option, count: lists[option.id].length }));
 
   return (
     <div className="streaming-bot-tab streaming-memory-tab">
-      <section className="streaming-section" aria-labelledby="streaming-memory-heading">
+      <section className="streaming-section" aria-labelledby="streaming-memory-heading" ref={formRef}>
         <div className="streaming-section-heading"><h3 id="streaming-memory-heading" className="dock-kit-section-title">{editing ? "Edit memory" : "Add memory"}</h3></div>
         <p className="streaming-hint">Only approved entries can inform public replies. Viewer suggestions stay pending until you approve them.</p>
         {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
@@ -123,13 +134,13 @@ export function StreamingMemoryTab() {
       </section>
       <section className="streaming-section" aria-label="Memory entries">
         <div className="streaming-memory-controls">
-          <DockChips label="Memory status" options={statusOptions} value={status} onChange={setStatus} />
+          <DockChips label="Memory status" options={chipOptions} value={status} onChange={setStatus} />
           <div className="streaming-memory-search">
             <DockSearch label="Search streaming memory" placeholder="Search memory…" value={query} onChange={setQuery} />
-            <DockIconButton label="Refresh memory" icon={RefreshCw} disabled={busy} onClick={() => void refresh()} />
+            <DockIconButton label="Refresh memory" icon={RefreshCw} busy={refreshing} disabled={busy || refreshing} onClick={() => void refresh()} />
           </div>
         </div>
-        {!hasLoaded ? <DockState kind="loading" title="Loading memory…" /> : entries.length === 0 ? (
+        {!hasLoaded ? <DockState kind="loading" title="Loading memory…" /> : error && entries.length === 0 ? null : entries.length === 0 ? (
           <DockState
             kind="empty"
             icon={Brain}
@@ -150,7 +161,11 @@ export function StreamingMemoryTab() {
                   <DockButton icon={Pencil} disabled={busy} onClick={() => beginEdit(entry)}>Edit</DockButton>
                   {entry.status === "PENDING" ? <DockButton icon={Check} tone="primary" disabled={busy} onClick={() => void act(
                     () => api.updateStreamingBotMemory(entry.id, { expectedVersion: entry.version, status: "APPROVED" }), "Suggestion approved."
-                  )}>Approve</DockButton> : null}
+                  )}>Approve</DockButton> : (
+                    <DockButton icon={Undo2} disabled={busy} title="The bot stops using it until you approve it again" onClick={() => void act(
+                      () => api.updateStreamingBotMemory(entry.id, { expectedVersion: entry.version, status: "PENDING" }), "Moved back to review."
+                    )}>Move to review</DockButton>
+                  )}
                   <DockIconButton label={`Delete ${entry.title}`} icon={Trash2} tone="danger" disabled={busy} onClick={() => void deleteEntry(entry)} />
                 </div>
               </li>

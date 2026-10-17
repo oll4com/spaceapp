@@ -10,7 +10,8 @@ export default defineConfig({
     alias: {
       "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
       "@space/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),
-      "@space/runtime": resolve(__dirname, "../../packages/runtime/src/index.ts")
+      "@space/runtime": resolve(__dirname, "../../packages/runtime/src/index.ts"),
+      "@space/streaming": resolve(__dirname, "../../packages/streaming/src/index.ts")
     }
   },
   test: {

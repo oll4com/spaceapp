@@ -5,6 +5,8 @@ export async function buildLiveRoomContext(input: {
   room: Room;
   panes: Pane[];
   objective?: string | null;
+  /** Agents Dashboard status per pane id; it sees work the task list misses (Claude Code's own busy state, sub-agents). */
+  dashboard?: Record<string, string>;
   inspect: (pane: Pane) => Promise<{
     state?: string; nativeTaskRef?: string | null; modelId?: string | null;
     configuredModelId?: string | null; effectiveModelId?: string | null; modelVerificationStatus?: string;
@@ -19,8 +21,12 @@ export async function buildLiveRoomContext(input: {
     ]).finally(() => clearTimeout(timer));
     const task = observed?.tasks?.at(-1);
     const isAgent = pane.mode === "TERMINAL" || pane.mode === "CHAT";
+    const board = input.dashboard?.[pane.id];
     const activity = !isAgent ? "NOT_APPLICABLE" as const
       : observed?.state === "EXITED" ? "STOPPED" as const
+      : board === "working" ? "RUNNING" as const
+      : board === "waiting" ? "WAITING_FOR_INPUT" as const
+      : board === "done" || board === "idle" ? "IDLE" as const
       : observed?.state === "WAITING_FOR_INPUT" ? "WAITING_FOR_INPUT" as const
       : observed?.state === "RUNNING" && task?.status === "RUNNING" && task.timing?.source === "NATIVE" ? "RUNNING" as const
       : (observed?.state === "IDLE" || (observed?.state === "RUNNING" && task?.status === "COMPLETED")) && task?.status !== "RUNNING" ? "IDLE" as const

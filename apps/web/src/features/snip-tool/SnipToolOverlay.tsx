@@ -6,7 +6,7 @@ import { captureDomFrame, prepareDomCapture, SnipDomUnsupportedError } from "./s
 import { clamp, cropFrame, exportSnip, fitRect, frameFromBlob, selection, type Point, type Rect, type SnipFrame } from "./snip-image.js";
 import { SnipEditor, type SnipBusy, type SnipDestinationOption, type SnipEdit } from "./SnipEditor.js";
 import {
-  Check, ChevronDown, CircleAlert, Clipboard, Crop, GripVertical, ImagePlus, Loader2, Lock, Monitor, Pencil, Unlock, X
+  Check, ChevronDown, CircleAlert, Clipboard, Crop, GripVertical, ImagePlus, Loader2, Lock, Monitor, Pencil, Timer, Unlock, X
 } from "../ui-theme/app-icons.js";
 import { SPACE_CLIPBOARD_NOTICE_EVENT } from "../clipboard-dock/clipboard-events.js";
 import {
@@ -39,6 +39,7 @@ const SCREEN_SHARE_STORAGE_KEY = "space.snip-tool.screen-share.v1";
 const CLIPBOARD_VALUE = "__clipboard__";
 const EDGE = 8;
 const MIN_SELECTION = 15;
+const DELAY_SECONDS = 3;
 
 function readFlag(key: string): boolean {
   try { return localStorage.getItem(key) === "true"; } catch { return false; }
@@ -182,6 +183,8 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   const [editFirst, setEditFirst] = useState(() => readFlag(EDIT_FIRST_STORAGE_KEY));
   const [useScreenShare, setUseScreenShare] = useState(() => readFlag(SCREEN_SHARE_STORAGE_KEY));
   const [menuOpen, setMenuOpen] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [pos, setPos] = useState<Point>(() => loadSavedFloat() ?? defaultFloat({ width: 300, height: 44 }));
   const [pulse, setPulse] = useState(1);
   const [captureRoomId, setCaptureRoomId] = useState(roomId);
@@ -479,6 +482,24 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     setToast(null);
     setPhase("selecting");
   };
+  const stopCountdown = () => {
+    if (countdownTimer.current) clearInterval(countdownTimer.current);
+    countdownTimer.current = null;
+    setCountdown(null);
+  };
+  /** Full-screen capture after a short delay, so menus and hover states can be opened first. A second click cancels. */
+  const toggleDelayedCapture = () => {
+    if (countdownTimer.current) { stopCountdown(); return; }
+    let left = DELAY_SECONDS;
+    setCountdown(left);
+    countdownTimer.current = setInterval(() => {
+      left -= 1;
+      if (left > 0) { setCountdown(left); return; }
+      stopCountdown();
+      // Through handlers so the capture uses the destination chosen during the countdown.
+      handlers.current.fullScreen();
+    }, 1000);
+  };
   const cancelSelecting = () => {
     operation.current?.abort();
     goIdle();
@@ -560,6 +581,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       window.removeEventListener("keydown", keyboard, true);
       window.removeEventListener("space:snip-tool:trigger", trigger);
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      stopCountdown();
       lastShot.current?.frame.close?.(); lastShot.current = null;
       editorFrame.current?.close?.(); editorFrame.current = null;
     };
@@ -785,6 +807,12 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
         aria-label={copyToClipboard ? "Capture full screen to clipboard" : `Capture full screen for ${targetDisplay}`}
         title={copyToClipboard ? "Capture the full screen to the clipboard" : `Capture the full screen for ${targetDisplay}`}>
         <Monitor aria-hidden="true" />
+      </button>
+      <button type="button" className={`snip-icon-btn${countdown ? " is-active" : ""}`} onClick={toggleDelayedCapture}
+        disabled={busyAny || (!copyToClipboard && missingTarget)} aria-pressed={countdown !== null}
+        aria-label={countdown ? `Cancel delayed capture (${countdown})` : `Capture in ${DELAY_SECONDS} seconds`}
+        title={countdown ? "Click to cancel the delayed capture" : `Capture the full screen in ${DELAY_SECONDS} seconds`}>
+        {countdown ? <span className="snip-countdown" aria-hidden="true">{countdown}</span> : <Timer aria-hidden="true" />}
       </button>
       <button type="button" className={`snip-icon-btn${editFirst ? " is-active" : ""}`} onClick={toggleEditFirst} disabled={busyAny}
         aria-label="Edit before send" aria-pressed={editFirst}

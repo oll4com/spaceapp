@@ -4,7 +4,7 @@ import type { AgentPaneSession, PaneCliModelSettings, Pane } from "@space/contra
 import { AgentPane } from "../src/features/agent-pane/AgentPane.js";
 import { OnScreenKeyboard } from "../src/features/osk-keyboard/OnScreenKeyboard.js";
 import { dispatchAgentPaneActionEvent } from "../src/features/agent-pane/events.js";
-import { CLEAN_WORKTREE_PROMPT } from "../src/features/osk-keyboard/cli-shortcuts.js";
+import { CLEAN_WORKTREE_PROMPT, PROMOTE_PROMPT } from "../src/features/osk-keyboard/cli-shortcuts.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 const apiMock = vi.hoisted(() => ({ agentSession: vi.fn(), updateAgentSettings: vi.fn(), sendAgentMessage: vi.fn() }));
@@ -241,6 +241,7 @@ describe("Chat mode controls", () => {
   it.each([
     ["plan_progress", "Plan completion percentage", "Plan completion percentage"],
     ["deploy", "Deploy", "Deploy the project to Gitea and GitHub."],
+    ["promote", "Promote", PROMOTE_PROMPT],
     ["clean_worktree", "Clean worktree", CLEAN_WORKTREE_PROMPT]
   ] as const)("sends %s from the routed keyboard action, each time as a new request", async (action, _label, text) => {
     // Stage 8: the Dot composer has no shortcuts button; the on-screen keyboard and pane menu still route these actions.

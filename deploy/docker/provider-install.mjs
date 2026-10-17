@@ -1,4 +1,4 @@
-import { mkdir, access, rm, writeFile } from 'node:fs/promises';
+import { mkdir, access, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ export const providers=Object.freeze({
   deepseek:{package:'run-deepseek-cli@0.1.1',bin:'deepseek-cli'},
   claude:{package:'@anthropic-ai/claude-code@2.1.206',bin:'claude'}
 });
+const LOCK_STALE_MS=30*60*1000;
 function execute(command,args){return new Promise((resolve,reject)=>{const child=spawn(command,args,{stdio:'inherit'});child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(`Provider installation exited ${code}`)));});}
 export async function installProvider(name,root='/var/lib/spaceapp-cli/vendor') {
   const entry=providers[name];
@@ -23,7 +24,13 @@ export async function installProvider(name,root='/var/lib/spaceapp-cli/vendor') 
   try {await access(bin);return bin;}catch{}
   await mkdir(directory,{recursive:true});
   const lock=join(directory,'.install-lock');
-  try{await mkdir(lock);}catch{throw new Error(`${name} installation is already running. Retry after it completes.`);}
+  // A lock older than any install was left by a killed install (OOM, SIGKILL); it used to block the provider for good.
+  const age=await stat(lock).then(info=>Date.now()-info.mtimeMs,()=>0);
+  if(age>LOCK_STALE_MS)await rm(lock,{recursive:true,force:true});
+  try{await mkdir(lock);}catch(error){
+    if(error.code!=='EEXIST')throw error;
+    throw new Error(`${name} installation is already running. Retry after it completes.`);
+  }
   try{
     process.stderr.write(`Installing optional provider ${name}. This happens only on first use.\n`);
     if(entry.archive) {

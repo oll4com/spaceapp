@@ -1,8 +1,9 @@
 import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { StreamingBotMcpExecuteResponse } from "@space/contracts";
-import { buildBotSystemPrompt, buildRecentExchange, type BotPromptContext } from "./prompts.js";
+import { buildBotSystemPrompt, type BotPromptContext } from "./prompts.js";
 import { asksForOperatorPrivateData, containsSensitiveDisclosure, PRIVATE_DATA_REFUSAL } from "./privacy.js";
+import type { StreamingBotRoute } from "./model-selection.js";
 
 export interface StreamingBotLlmConfig {
   enabled: boolean;
@@ -41,6 +42,8 @@ export interface RunBotTurnOptions {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   modelId?: string;
+  /** Where and how to call the model; without it, OpenAI chat/completions at SPACE_STREAMING_BOT_BASE_URL. */
+  route?: StreamingBotRoute | null;
 }
 
 function boundedInt(raw: string | undefined, fallback: number, maximum: number): number {
@@ -179,11 +182,24 @@ function parseToolCalls(message: Record<string, unknown>): ToolCall[] {
   return calls.filter((call) => allowed.has(call.name)).slice(0, 3);
 }
 
-function contentOf(payload: Record<string, unknown>): string | null {
-  const choices = asArray(payload.choices);
-  const message = asRecord(asRecord(choices[0] ?? {}).message ?? {});
-  const content = message.content;
-  return typeof content === "string" && content.trim() ? content.trim() : null;
+/** The same tools in Anthropic's shape. */
+function anthropicToolDefinitions(): Array<Record<string, unknown>> {
+  return toolDefinitions().map((tool) => {
+    const fn = asRecord(tool.function);
+    return { name: fn.name, description: fn.description, input_schema: fn.parameters };
+  });
+}
+
+function parseAnthropicToolCalls(payload: Record<string, unknown>): ToolCall[] {
+  const allowed = new Set(["space_send_reply", "space_bot_memory_save", "space_bot_memory_search"]);
+  return asArray(payload.content).flatMap((value) => {
+    const block = asRecord(value);
+    const id = stringValue(block.id);
+    const name = stringValue(block.name);
+    if (block.type !== "tool_use" || !id || !name || !allowed.has(name)) return [];
+    const input = typeof block.input === "object" && block.input !== null && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
+    return [{ id, name, arguments: input }];
+  }).slice(0, 3);
 }
 
 function skippedResult(model: string | null): BotTurnResult {
@@ -223,18 +239,21 @@ export async function runBotTurn(
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
-  const authorization = `Bearer ${credential}`;
+  const route = options.route ?? { protocol: "openai" as const, url: endpoint(config.baseUrl, "chat/completions") };
+  const anthropic = route.protocol === "anthropic";
+  const headers: Record<string, string> = anthropic
+    ? { "x-api-key": credential, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }
+    : { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" };
   const systemPrompt = buildBotSystemPrompt(input.context);
-  const exchange = buildRecentExchange(input.messages.map((message) => ({ author: message.author, message: message.message })));
-  const conversation: Array<Record<string, unknown>> = [
-    { role: "system", content: systemPrompt },
-    {
-      role: "user",
-      content: exchange
-        ? `The following are the latest viewer messages in live chat. Answer questions about the stream.\n\n${exchange}`
-        : "There are no new viewer messages this cycle."
-    }
-  ];
+  // space_send_reply must name the platform and the message id it answers, so the model has to see both.
+  const exchange = input.messages.map((message) => `[id=${message.id} platform=${message.platform}] ${message.author}: ${message.message}`).join("\n");
+  const userText = exchange
+    ? `The following are the latest viewer messages in live chat. Answer questions about the stream.\n\n${exchange}`
+    : "There are no new viewer messages this cycle.";
+  // Anthropic takes the system prompt beside the messages; OpenAI takes it as the first message.
+  const conversation: Array<Record<string, unknown>> = anthropic
+    ? [{ role: "user", content: userText }]
+    : [{ role: "system", content: systemPrompt }, { role: "user", content: userText }];
 
   let replies: BotTurnResult["replies"] = [];
   const memorySaves: BotTurnResult["memorySaves"] = [];
@@ -243,16 +262,12 @@ export async function runBotTurn(
 
   try {
     for (; rounds < config.maxRounds; rounds++) {
-      const response = await boundedFetch(fetchImpl, endpoint(config.baseUrl, "chat/completions"), {
+      const response = await boundedFetch(fetchImpl, route.url, {
         method: "POST",
-        headers: { Authorization: authorization, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: config.model,
-          messages: conversation,
-          tools: toolDefinitions(),
-          tool_choice: "auto",
-          max_tokens: 800
-        })
+        headers,
+        body: JSON.stringify(anthropic
+          ? { model: config.model, system: systemPrompt, messages: conversation, tools: anthropicToolDefinitions(), max_tokens: 800 }
+          : { model: config.model, messages: conversation, tools: toolDefinitions(), tool_choice: "auto", max_completion_tokens: 2000 })
       }, config.timeoutMs);
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
@@ -264,25 +279,25 @@ export async function runBotTurn(
       } catch {
         return { ...skippedResult(config.model), errorCode: "LLM_RESPONSE_INVALID" };
       }
-      const choices = asArray(payload.choices);
-      const message = asRecord(asRecord(choices[0] ?? {}).message ?? {});
-      const toolCalls = parseToolCalls(message);
-      if (!toolCalls.length) {
-        const content = contentOf(payload);
-        if (content && !replies.length) {
-          // Assistant answered in plain text without a tool call: do not auto-send.
-        }
-        break;
-      }
-      conversation.push({ role: "assistant", content: null, tool_calls: toolCalls.map((call) => ({
-        id: call.id,
-        type: "function",
-        function: { name: call.name, arguments: JSON.stringify(call.arguments) }
-      })) });
+      const toolCalls = anthropic
+        ? parseAnthropicToolCalls(payload)
+        : parseToolCalls(asRecord(asRecord(asArray(payload.choices)[0] ?? {}).message ?? {}));
+      // A plain-text answer without a tool call is never sent to chat.
+      if (!toolCalls.length) break;
+      conversation.push(anthropic
+        ? { role: "assistant", content: asArray(payload.content) }
+        : { role: "assistant", content: null, tool_calls: toolCalls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(call.arguments) }
+        })) });
+      const toolResults: Array<Record<string, unknown>> = [];
       for (const call of toolCalls) {
         const result = await executeTool(call, input.tools, replies, memorySaves, input.messages);
-        conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+        if (anthropic) toolResults.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+        else conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
+      if (anthropic) conversation.push({ role: "user", content: toolResults });
       if (toolCalls.some((call) => call.name === "space_send_reply")) break;
     }
   } catch {

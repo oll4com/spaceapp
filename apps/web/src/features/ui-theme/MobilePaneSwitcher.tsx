@@ -1,26 +1,28 @@
+import { useEffect, useRef } from "react";
 import type { Pane } from "@space/contracts";
-import { ChevronLeft, ChevronRight } from "./app-icons.js";
+import { modeIcons } from "../pane-card/pane-mode-icons.js";
+import { displayPaneTitle } from "../pane-card/PaneCard.js";
 
+/** Phone bottom bar: one chip per room pane; a tap shows that pane (the title swipe does the same). */
 export function MobilePaneSwitcher({ panes, activePaneId, onSelect }: {
   panes: readonly Pane[];
   activePaneId: string | undefined;
   onSelect: (paneId: string) => void;
 }) {
+  const activeRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activePaneId]);
   if (panes.length < 2) return null;
-  const index = Math.max(0, panes.findIndex(pane => pane.id === activePaneId));
-  const active = panes[index]!;
-  return <div className="mobile-pane-navigation" role="group" aria-label="Room panes">
-    <button type="button" aria-label="Previous pane" onClick={() => onSelect(panes[(index + panes.length - 1) % panes.length]!.id)}>
-      <ChevronLeft aria-hidden="true" />
-    </button>
-    <label>
-      <span aria-hidden="true">{index + 1} / {panes.length}</span>
-      <select aria-label="Choose pane" title={active.paneName ? `${active.paneName} · ${active.title}` : active.title} value={active.id} onChange={event => onSelect(event.target.value)}>
-        {panes.map((pane, position) => <option key={pane.id} value={pane.id}>{position + 1}. {pane.paneName ? `${pane.paneName} · ` : ""}{pane.title}</option>)}
-      </select>
-    </label>
-    <button type="button" aria-label="Next pane" onClick={() => onSelect(panes[(index + 1) % panes.length]!.id)}>
-      <ChevronRight aria-hidden="true" />
-    </button>
-  </div>;
+  return <nav className="mobile-pane-bar" aria-label="Room panes">
+    {panes.map((pane) => {
+      const Icon = modeIcons[pane.mode];
+      const title = displayPaneTitle(pane);
+      const active = pane.id === activePaneId;
+      return <button key={pane.id} ref={active ? activeRef : undefined} type="button" aria-current={active ? "true" : undefined} title={title} onClick={() => onSelect(pane.id)}>
+        <Icon aria-hidden="true" />
+        <span>{title}</span>
+      </button>;
+    })}
+  </nav>;
 }

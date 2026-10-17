@@ -21,6 +21,16 @@ function json(value: unknown): Response {
 }
 
 describe("streaming provider adapters", () => {
+  it("turns an expired or revoked sign-in into a reconnect code instead of a bare HTTP 400", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }), { status: 400 }));
+    const adapters = createStreamingProviderAdapters(fetcher as unknown as typeof fetch);
+    await expect(adapters.YOUTUBE.refreshToken({ client, token })).rejects.toMatchObject({
+      code: "YOUTUBE_REAUTH_REQUIRED", transient: false, message: "YouTube sign-in expired or was revoked. Reconnect it in Overview."
+    });
+    const other = vi.fn(async () => new Response("{}", { status: 400 }));
+    await expect(createStreamingProviderAdapters(other as unknown as typeof fetch).YOUTUBE.refreshToken({ client, token })).rejects.toMatchObject({ code: "YOUTUBE_HTTP_400" });
+  });
+
   it("uses read-only YouTube and Analytics scopes without broadcast creation scopes", () => {
     const adapters = createStreamingProviderAdapters(vi.fn() as unknown as typeof fetch);
     const url = new URL(adapters.YOUTUBE.authorizationUrl({ client, state: "state", codeChallenge: "challenge" }));

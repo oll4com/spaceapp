@@ -12,7 +12,15 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
+// api.rooms() is a single flight (single-flight-request.ts): a request a test leaves unanswered would be shared by the
+// next test's reads, which then never reach fetch. Each test's unanswered requests fail when it ends.
+const unanswered: Array<(reason: Error) => void> = [];
+function neverAnswered() {
+  return new Promise<Response>((_resolve, reject) => { unanswered.push(reject); });
+}
+
 afterEach(() => {
+  for (const reject of unanswered.splice(0)) reject(new Error("test ended"));
   vi.unstubAllGlobals();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -42,7 +50,7 @@ describe("first-owner setup", { timeout: 60_000 }, () => {
       }
       if (url.startsWith("/api/rooms")) {
         roomsRequested = true;
-        return new Promise<Response>(() => undefined);
+        return neverAnswered();
       }
       throw new Error(`Unexpected request: ${url}`);
     }));
@@ -110,7 +118,7 @@ describe("first-owner setup", { timeout: 60_000 }, () => {
           });
         }
         if (url.startsWith("/api/rooms")) {
-          return new Promise<Response>(() => undefined);
+          return neverAnswered();
         }
         throw new Error(`Unexpected request: ${url}`);
       })
@@ -312,7 +320,7 @@ describe("first-owner setup", { timeout: 60_000 }, () => {
           });
         }
         if (url === "/api/rooms") {
-          return new Promise<Response>(() => undefined);
+          return neverAnswered();
         }
         throw new Error(`Unexpected request: ${url}`);
       })

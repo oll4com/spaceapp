@@ -6,7 +6,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
-import { mayCreatePaneDirectory, resolveProjectEnsureTarget } from "../src/project-paths.js";
+import { mayCreateCliSessionDirectory, mayCreatePaneDirectory, resolveProjectEnsureTarget } from "../src/project-paths.js";
 
 const exists = (path: string) => stat(path).then(() => true, () => false);
 
@@ -61,6 +61,23 @@ describe("project ensure path policy", () => {
     await expect(decide("USER", join(base, "elsewhere", "dir"))).resolves.toBe(false);
     await expect(decide("ADMIN", join(base, "elsewhere", "dir"))).resolves.toBe(true);
     for (const cwd of ["/etc/space-pane", "/usr/lib/space-pane", join(install, "apps", "new"), worktrees, "relative/dir"]) {
+      await expect(decide("ADMIN", cwd), cwd).resolves.toBe(false);
+    }
+  });
+
+  it("lets a CLI session create a missing folder only in the workspace root or where a pane may (SEC-009)", async () => {
+    // 1.1.5 internal review: the session start and terminal attach ran mkdir -p on any requested cwd.
+    const worktrees = join(install, "var", "worktrees");
+    const workspaces = join(base, "workspaces");
+    await mkdir(worktrees, { recursive: true });
+    const decide = (role: string | null, cwd: string) => mayCreateCliSessionDirectory({
+      cwd, role, projectsRoot: projects, installRoot: install, worktreesRoot: worktrees, workspaceRoot: workspaces
+    });
+    await expect(decide(null, join(workspaces, "room-abc"))).resolves.toBe(true);
+    await expect(decide(null, join(projects, "new-app"))).resolves.toBe(true);
+    await expect(decide(null, join(base, "elsewhere", "dir"))).resolves.toBe(false);
+    await expect(decide(null, join(workspaces, "..", "outside"))).resolves.toBe(false);
+    for (const cwd of ["/etc/space-session", join(install, "apps", "new"), "relative/dir"]) {
       await expect(decide("ADMIN", cwd), cwd).resolves.toBe(false);
     }
   });

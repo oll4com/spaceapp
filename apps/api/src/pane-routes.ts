@@ -246,7 +246,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
     // keeps it, not the pane row (the Browser Host parses pane rows with the contracts it started with).
     for (const [index, item] of input.panes.entries()) {
       const runtimeId = paneInputs[index]?.terminalRuntimeId;
-      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
+      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT" && item.mode !== "FREELANCE_COPILOT") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
       if (!await store.getCliAccountProfile(runtimeId, item.accountProfileId)) {
         throw new SpaceConflictError(`CLI account profile ${runtimeId}/${item.accountProfileId} was not found.`);
       }
@@ -372,6 +372,8 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
   app.post("/api/panes/:id/move", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(movePaneInputSchema, request.body);
+    // The source room is checked by the central pane-route hook; the target room needs its own check.
+    await assertRoomAccess(input.targetRoomId, request.user);
     const move = await store.movePane(params.id, input, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "pane.move",

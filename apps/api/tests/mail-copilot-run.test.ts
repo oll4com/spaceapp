@@ -181,6 +181,9 @@ describe("mail copilot run loop", () => {
       const asked = await app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question: "Should I answer Anna in English?", options: ["Yes", "No"], accountEmail: "me@gmail.com", threadId: "t1" } });
       const questionId = asked.json().questionId as string;
       expect(questionId).toMatch(/^mailq:/);
+      // The agent asking the same open question again (a retry) gets the same card, not a second one.
+      const again = await app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question: "Should I answer Anna in English?", options: ["Yes", "No"], accountEmail: "me@gmail.com", threadId: "t1" } });
+      expect(again.json().questionId).toBe(questionId);
       expect((await app.inject({ method: "GET", url: `${paneUrl}/run`, headers })).json().pending).toEqual([expect.objectContaining({ kind: "QUESTION", id: questionId, threadId: "t1" })]);
       const answered = await app.inject({ method: "POST", url: `${paneUrl}/answer`, headers, payload: { questionId, answer: "Yes, always English" } });
       expect(answered.json().memory).toMatchObject({ kind: "FACT", source: "USER", text: "Yes, always English" });
@@ -212,6 +215,62 @@ describe("mail copilot run loop", () => {
       // Stop ends the run; the view goes back to idle and the agent's next poll finds no run.
       expect((await app.inject({ method: "POST", url: `${paneUrl}/run/stop`, headers })).json()).toMatchObject({ status: "IDLE", run: null });
       expect((await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ done: true, reason: "NO_RUN" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("Send to AI hands a mail to the copilot to check and fix: logged, a work item, the run starts, a fixed report notifies, and three hand-offs make a FIX rule", async () => {
+    const pve = (n: number) => ({ id: `p${n}`, threadId: `pt${n}`, from: "PVE <root@pve.example>", subject: "vzdump backup status (pve): backup failed: multiple problems", minutesAgo: 5 + n, labelIds: ["INBOX"], plain: "can't acquire lock" });
+    const { app, pane, headers, agent, kickoffs, repository, store } = await fixture([pve(1), pve(2), pve(3)]);
+    const owner = (await store.getRoom(pane.roomId)).ownerUserId!;
+    const fix = (threadId: string, note?: string) => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/mail-copilot/fix`, headers, payload: { account: "me@gmail.com", threadId, ...(note ? { note } : {}) } });
+    const openTitles = async () => ((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ title: string; body: string }>);
+    try {
+      const sent = await fix("pt1", "Check why the backup failed and fix it");
+      expect(sent.statusCode).toBe(200);
+      expect(sent.json()).toMatchObject({ runStarted: true, event: { type: "FIX_REQUESTED", status: "PENDING", threadId: "pt1", payload: { by: "operator", note: "Check why the backup failed and fix it", subject: "vzdump backup status (pve): backup failed: multiple problems" } } });
+      expect(kickoffs).toHaveLength(1);
+      // The operator's own click raises no notice.
+      expect((await openTitles()).some((entry) => entry.title.includes("took a mail to fix"))).toBe(false);
+      const [row] = await repository.listActions(owner, { actions: ["FIX"], limit: 5 });
+      expect(row).toMatchObject({ action: "FIX", actor: "OPERATOR", source: "PANE", fromAddress: "root@pve.example", subjectKey: "vzdump backup status (pve): backup failed: multiple problems" });
+
+      const next = await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } });
+      expect(next.json().item).toMatchObject({ type: "FIX_REQUESTED", threadId: "pt1", payload: { note: "Check why the backup failed and fix it" } });
+      expect(next.json().context.thread.messages[0].text).toBe("can't acquire lock");
+      // The copilot asks before changing anything; the operator decides in the rail.
+      const asked = (await app.inject({ method: "POST", url: `${cli}/question`, headers: agent, payload: { question: "Disable the duplicate backup job?", options: ["Yes", "No"], accountEmail: "me@gmail.com", threadId: "pt1" } })).json();
+      await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/mail-copilot/answer`, headers, payload: { questionId: asked.questionId, answer: "Yes, disable the job" } });
+      const done = await app.inject({ method: "POST", url: `${cli}/report`, headers: agent, payload: { eventId: next.json().item.id, outcome: "fixed", summary: "A stuck vzdump held the lock; cleared it and the backup ran again." } });
+      expect(done.json().event).toMatchObject({ type: "FIXED", message: "A stuck vzdump held the lock; cleared it and the backup ran again." });
+      // Activity → Sent to AI shows the request, the exchange and the result together.
+      const [shown] = (await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(pane.id)}/mail-copilot/fix-requests`, headers })).json().requests;
+      expect(shown).toMatchObject({ subject: "vzdump backup status (pve): backup failed: multiple problems", from: "root@pve.example", note: "Check why the backup failed and fix it", by: "operator", status: "DONE",
+        exchanges: [{ question: "Disable the duplicate backup job?", answer: "Yes, disable the job" }], outcome: { type: "FIXED", summary: "A stuck vzdump held the lock; cleared it and the backup ran again." } });
+      // The fix is remembered for the next mail of this kind: the request, the operator's decision and what fixed it.
+      const lesson = (await repository.listMemory(owner, { kinds: ["LESSON"], limit: 10 })).find((memory) => memory.tags.includes("fix"));
+      expect(lesson).toMatchObject({ id: shown.memoryId, key: "fix: vzdump backup status (pve): backup failed: multiple problems", contactEmail: "root@pve.example", accountEmail: "me@gmail.com", source: "LEARNED" });
+      expect(lesson!.text).toContain('the operator answered "Yes, disable the job"');
+      expect(lesson!.text).toContain("What fixed it: A stuck vzdump held the lock");
+      expect((await openTitles()).find((entry) => entry.title.startsWith("Mail Copilot fixed a mail"))).toMatchObject({ body: "A stuck vzdump held the lock; cleared it and the backup ran again." });
+
+      // Three hand-offs of the same kind of mail make an approved FIX rule.
+      await fix("pt2");
+      expect((await repository.listRules(owner)).filter((rule) => rule.action.type === "FIX")).toEqual([]);
+      // The next mail of that kind comes with the lesson.
+      const second = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json();
+      expect(second.item).toMatchObject({ type: "FIX_REQUESTED", threadId: "pt2" });
+      expect(second.context.memories.map((memory: { id: string }) => memory.id)).toContain(lesson!.id);
+      await fix("pt3");
+      const [rule] = (await repository.listRules(owner)).filter((entry) => entry.action.type === "FIX");
+      expect(rule).toMatchObject({ status: "APPROVED", proposedBy: "LEARNED", condition: { fromAddress: "root@pve.example" }, name: "Send to the copilot to fix mail from root@pve.example" });
+
+      // The log reads back through the API with who, what, where.
+      const log = (await app.inject({ method: "GET", url: `/api/mail-copilot/actions?paneId=${encodeURIComponent(pane.id)}&limit=10`, headers })).json().actions as Array<{ action: string; threadId: string; labelNames: string[] }>;
+      expect(log.map((entry) => [entry.action, entry.threadId])).toEqual([["FIX", "pt3"], ["FIX", "pt2"], ["FIX", "pt1"]]);
+      expect(log[0]!.labelNames).toEqual([]);
+      expect((await app.inject({ method: "GET", url: "/api/mail-copilot/actions?source=GMAIL", headers })).json().actions).toEqual([]);
     } finally {
       await app.close();
     }

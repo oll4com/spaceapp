@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
+import { otlpSpanExporterFromEnv } from "@space/runtime";
 import * as activities from "./memory-maintenance-activities.js";
 import {
   MEMORY_MAINTENANCE_TASK_QUEUE,
@@ -7,7 +8,7 @@ import {
   memoryMaintenanceWorkerOptions
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
-import { workerOtlp } from "./worker-otlp.js";
+import { createActivityObservabilityInterceptors } from "./activity-observability.js";
 
 const service = "space-memory-maintenance-worker";
 
@@ -17,19 +18,18 @@ if (!memoryMaintenanceEnabled(process.env)) {
   const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const workflowsPath = fileURLToPath(new URL("./memory-maintenance-workflows.js", import.meta.url));
-  const otlp = workerOtlp(service);
 
   try {
     const connection = await NativeConnection.connect({ address });
+    const spans = otlpSpanExporterFromEnv(process.env, service);
     const worker = await Worker.create({
       connection,
       namespace,
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       workflowsPath,
       activities,
-      sinks: otlp.workerOptions.sinks,
-      interceptors: otlp.workerOptions.interceptors,
-      ...memoryMaintenanceWorkerOptions
+      ...memoryMaintenanceWorkerOptions,
+      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
     });
     console.log(JSON.stringify({
       service,
@@ -40,6 +40,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       activityConcurrency: memoryMaintenanceWorkerOptions.maxConcurrentActivityTaskExecutions
     }));
     await worker.run();
+    await spans?.close();
   } catch (error) {
     console.error(JSON.stringify({
       service,
@@ -47,7 +48,5 @@ if (!memoryMaintenanceEnabled(process.env)) {
       error: error instanceof Error ? error.message : "Unknown maintenance worker failure."
     }));
     process.exitCode = 1;
-  } finally {
-    await otlp.spanExporter?.close();
   }
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm,utimes,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {parseCatalog,preferDefault,toolCycleSucceeded,selectWorkingFreeModel,withBootstrap,scratchDirectory,externalDirectoryDefault,configureFirstRun} from '../../deploy/docker/opencode-first-run.mjs';
@@ -141,4 +141,18 @@ test('Big Pickle is tried first, then the newest free models',async()=>{
  }});
  assert.deepEqual(tried,['opencode/big-pickle','opencode/new-free']);
  assert.equal(selected.id,'opencode/new-free');
+});
+
+test('a lock left by a killed first run is broken instead of making every start wait',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'spaceapp-first-run-'));
+ try{
+  const config=join(root,'config');await mkdir(join(config,'opencode','.spaceapp-first-run.lock'),{recursive:true});
+  const old=new Date(Date.now()-10*60*1000);
+  await utimes(join(config,'opencode','.spaceapp-first-run.lock'),old,old);
+  await writeFile(join(config,'opencode','opencode.json'),JSON.stringify({model:'owner/model'}));
+  const started=Date.now();
+  await configureFirstRun({XDG_CONFIG_HOME:config,TMPDIR:PROVIDER_TMP});
+  assert.ok(Date.now()-started<5000);
+  assert.equal(JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8')).model,'owner/model');
+ }finally{await rm(root,{recursive:true,force:true});}
 });

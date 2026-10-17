@@ -93,7 +93,7 @@ export const dotAdminResources: ReadonlySet<string> = new Set<ResourceOperation>
 export const dotDestructiveResources: ReadonlySet<string> = new Set<ResourceOperation>(["links.delete", "tasks.delete", "files.delete", "media.delete", "settings.rollback"]);
 export const dotReadResources: ReadonlySet<string> = new Set<ResourceOperation>(["browser.content", "links.list", "skills.list", "skills.read", "tasks.list", "tasks.get",
   "files.preview", "models.list"]);
-const resourceHints: Partial<Record<ResourceOperation, string>> = {
+export const controlResourceHints: Partial<Record<ResourceOperation, string>> = {
   "panes.open": "Open panes in a room. input: { counts: { <paneTypeKey>: number } } using keys from space.pane_types.",
   "panes.move": "Move a pane to another room. id: paneId, input: { roomId }.",
   "panes.split": "Split a pane. id: paneId, input: { direction }.",
@@ -266,12 +266,11 @@ export function buildDotToolCatalog(context: DotToolCatalogContext): DotToolEntr
       inputSchema: jsonSchema(controlToolSchemas[tool], tool === "space_execute" ? ["userExplicitlyAuthorized"] : []) });
   }
   add({ id: "space.screenshot", title: "Space screenshot", description: controlToolDescriptions.space_screenshot, source: "SPACE_CONTROL",
-    risk: "READ", availability: "UNAVAILABLE", statusReason: "Server-side screenshots are not available in this installation.",
-    inputSchema: jsonSchema(controlToolSchemas.space_screenshot) });
+    risk: "READ", inputSchema: jsonSchema(controlToolSchemas.space_screenshot) });
   for (const operation of controlResourceOperations) {
     const forbidden = (dotForbiddenResourceOperations as readonly string[]).includes(operation);
     add({ id: `resource.${operation}`, title: `Resource ${operation}`,
-      description: resourceHints[operation] ?? `Space Control resource operation ${operation}.`,
+      description: controlResourceHints[operation] ?? `Space Control resource operation ${operation}.`,
       source: "SPACE_RESOURCE",
       risk: dotDestructiveResources.has(operation) ? "DESTRUCTIVE" : dotReadResources.has(operation) ? "READ" : "WRITE",
       requiredRole: dotAdminResources.has(operation) ? "ADMIN" : "USER",

@@ -127,6 +127,7 @@ import type {
   MailCopilotMemoryQuery,
   MailCopilotMemoryUpdate,
   MailCopilotPaneMetadata,
+  MarketingBookmark,
   MarketingCopilotPaneMetadata,
   MarketingCampaign,
   MarketingEvent,
@@ -135,10 +136,25 @@ import type {
   MarketingPost,
   MarketingRule,
   MarketingRunView,
+  FreelanceAccount,
+  FreelanceAccountUpdate,
+  FreelanceCopilotPaneMetadata,
+  FreelanceEvent,
+  FreelanceFunnel,
+  FreelanceLead,
+  FreelanceLeadDecision,
+  FreelanceMemory,
+  FreelanceMessage,
+  FreelanceMessageReviewDecision,
+  FreelanceRule,
+  FreelanceRunView,
   MailCopilotReviewDecision,
   MailCopilotRunView,
   MailRule,
   MailHabitSender,
+  MailActionLogEntry,
+  MailCopilotFixRequest,
+  MailFixRequestView,
   MailRuleDecision,
   MailRuleProposal,
   MailCopilotView,
@@ -230,6 +246,7 @@ import type {
   SystemAnalyticsOverviewResponse,
   SystemAnalyticsProcessesResponse,
   SystemAnalyticsRange,
+  SystemAnalyticsTokenRoute,
   SystemAnalyticsResourcesResponse,
   OpencodeBenchResponse,
   CodexHistoryPurgeExecuteRequest,
@@ -982,7 +999,9 @@ let cliRuntimeRegistryCache: { value: AgentRuntimeRegistry; expiresAt: number; s
   initialStoredCliRegistry
     ? {
         value: initialStoredCliRegistry,
-        expiresAt: Date.now() + cliRuntimeRegistryCacheTtlMs,
+        // Already expired: the first read still answers from storage but refreshes it, so a login or key added
+        // since the last visit shows up (a fresh window here kept the stored state on every reload).
+        expiresAt: 0,
         staleUntil: Date.now() + cliRuntimeRegistryStaleTtlMs
       }
     : null;
@@ -1217,12 +1236,50 @@ function createDeduplicatedFlight<T>(fetcher: () => Promise<T>, ttlMs = 15_000) 
 
 let installActivityReported = false;
 
+function createKeyedDeduplicatedFlight<T>(fetcher: (key: string) => Promise<T>, ttlMs = 15_000) {
+  const caches = new Map<string, { value: T; expiresAt: number }>();
+  const flights = new Map<string, Promise<T>>();
+
+  return {
+    load(key: string, force = false): Promise<T> {
+      if (!force) {
+        const cached = caches.get(key);
+        if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached.value);
+      }
+      const active = flights.get(key);
+      if (active) return active;
+      const flight = fetcher(key)
+        .then((value) => {
+          caches.set(key, { value, expiresAt: Date.now() + ttlMs });
+          return value;
+        })
+        .finally(() => {
+          if (flights.get(key) === flight) flights.delete(key);
+        });
+      flights.set(key, flight);
+      return flight;
+    },
+    invalidate(key?: string): void {
+      if (key === undefined) caches.clear();
+      else caches.delete(key);
+    }
+  };
+}
+
 const fetchCodexEnvironment = createDeduplicatedFlight(() => request<CodexEnvironment>("/api/codex/environment"), 15_000);
 const fetchToolbarUsageAccounts = createDeduplicatedFlight(() => request<CodexUsageAccountList>("/api/admin/codex-usage-accounts"), 15_000);
 const fetchToolbarAntigravityUsageAccounts = createDeduplicatedFlight(() => request<AntigravityUsageAccountList>("/api/admin/antigravity-usage-accounts"), 15_000);
 const fetchToolbarClaudeUsageAccounts = createDeduplicatedFlight(() => request<ClaudeUsageAccountList>("/api/admin/claude-usage-accounts"), 15_000);
 const fetchToolbarApiProviderAccounts = createDeduplicatedFlight(() => request<ApiProviderAccountList>("/api/admin/api-provider-accounts"), 15_000);
 const fetchToolbarCliSessions = createDeduplicatedFlight(() => request<CliSessionStats>("/api/admin/cli-sessions"), 10_000);
+const fetchCliAccountProfiles = createKeyedDeduplicatedFlight(
+  (runtimeId) => request<ListCliAccountProfilesResponse>(`/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles`),
+  15_000
+);
+
+if (typeof window !== "undefined") {
+  window.addEventListener("space:cli-account-profiles-change", () => fetchCliAccountProfiles.invalidate());
+}
 
 export const api = {
   healthPing: () => request<{ ok: boolean }>("/healthz", { cache: "no-store" }),
@@ -1412,7 +1469,7 @@ export const api = {
   councilRun: (id: string) => request<{ run: CouncilRun }>(`/api/council/runs/${encodeURIComponent(id)}`),
   createCouncilRun: (input: CreateCouncilRunInput) =>
     request<{ run: CouncilRun }>("/api/council/runs", { method: "POST", body: JSON.stringify(input) }),
-  councilRunAction: (id: string, action: "answers" | "changes" | "approve" | "stop" | "cancel" | "resume" | "another-round", body?: unknown) =>
+  councilRunAction: (id: string, action: "answers" | "changes" | "approve" | "stop" | "cancel" | "resume" | "another-round" | "clipboard-plan", body?: unknown) =>
     request<{ run: CouncilRun }>(`/api/council/runs/${encodeURIComponent(id)}/${action}`, {
       method: "POST",
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
@@ -1484,7 +1541,9 @@ export const api = {
     if (query.all !== undefined) params.set("all", String(query.all));
     if (query.ownerUserId !== undefined) params.set("ownerUserId", query.ownerUserId);
     const suffix = params.toString();
-    return request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`);
+    return singleFlightRequest(`rooms:${suffix}`, () =>
+      request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`)
+    );
   },
   dashboardAgents: (roomId: string) => requestWithTimeout<{
     data: Pane[];
@@ -1578,7 +1637,7 @@ export const api = {
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/events/${encodeURIComponent(eventId)}/answer`, {
       method: "POST", body: JSON.stringify(input)
     }),
-  roomAgentPending: () => request<{ rooms: Record<string, number>; latest: RoomAgentEvent[] }>("/api/room-agent/pending"),
+  roomAgentPending: () => request<{ rooms: Record<string, number>; latest: RoomAgentEvent[]; roomNames?: Record<string, string> }>("/api/room-agent/pending"),
   // Space notifications: what waits for the user, the newest records, read / acknowledge, and a test.
   notificationsPending: () => request<import("@space/contracts").NotificationsPending>("/api/notifications/pending", { cache: "no-store" }),
   notifications: (query: { status?: "OPEN" | "ALL"; source?: string; limit?: number; before?: string } = {}) =>
@@ -1696,8 +1755,8 @@ export const api = {
     ),
   systemAnalyticsOverview: (range: SystemAnalyticsRange) =>
     request<SystemAnalyticsOverviewResponse>(`/api/admin/system-analytics/overview?range=${encodeURIComponent(range)}`),
-  systemAnalyticsModels: (range: SystemAnalyticsRange) =>
-    request<SystemAnalyticsModelsResponse>(`/api/admin/system-analytics/models?range=${encodeURIComponent(range)}`),
+  systemAnalyticsModels: (range: SystemAnalyticsRange, route: SystemAnalyticsTokenRoute = "all") =>
+    request<SystemAnalyticsModelsResponse>(`/api/admin/system-analytics/models?range=${encodeURIComponent(range)}${route === "all" ? "" : `&route=${route}`}`),
   systemAnalyticsResources: (range: SystemAnalyticsRange) =>
     request<SystemAnalyticsResourcesResponse>(`/api/admin/system-analytics/resources?range=${encodeURIComponent(range)}`),
   systemAnalyticsProcesses: (input: {
@@ -1920,6 +1979,8 @@ export const api = {
     { action: "PAUSE" } | { action: "TIMEOUT"; activityId: string; durationSeconds: 300 | 1800 } |
     { action: "UNDO"; moderationActionId: string }) =>
     request<{ ok: boolean; result: unknown }>("/api/admin/streaming/live-action", { method: "POST", body: JSON.stringify(input) }),
+  timeoutStreamingModerationReview: (id: string, durationSeconds: 300 | 1800) =>
+    request<StreamingModerationAction>(`/api/admin/streaming/bot/moderation/${encodeURIComponent(id)}/timeout`, { method: "POST", body: JSON.stringify({ durationSeconds }) }),
   undoStreamingModerationAction: (id: string) =>
     request<StreamingModerationAction>(`/api/admin/streaming/bot/moderation/${encodeURIComponent(id)}/undo`, { method: "POST", body: "{}" }),
   listCliMaintenanceRuns: () =>
@@ -1990,8 +2051,11 @@ export const api = {
       { method: "DELETE" }
     ),
   panes: (roomId: string, options: { includeClosed?: boolean } = {}) =>
-    request<Paginated<Pane>>(
-      `/api/panes?roomId=${encodeURIComponent(roomId)}${options.includeClosed ? "&includeClosed=true" : ""}`
+    singleFlightRequest(
+      `panes:${roomId}:${options.includeClosed ? "closed" : "open"}`,
+      () => request<Paginated<Pane>>(
+        `/api/panes?roomId=${encodeURIComponent(roomId)}${options.includeClosed ? "&includeClosed=true" : ""}`
+      )
     ),
   createPane: (
     roomId: string,
@@ -2246,8 +2310,8 @@ export const api = {
     invalidateCliRuntimeSettings();
     return result;
   },
-  listCliAccountProfiles: (runtimeId: string) =>
-    request<ListCliAccountProfilesResponse>(`/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles`),
+  listCliAccountProfiles: (runtimeId: string, options: { forceRefresh?: boolean } = {}) =>
+    fetchCliAccountProfiles.load(runtimeId, options.forceRefresh),
   createCliAccountProfile: async (input: CreateCliAccountProfileInput) => {
     const result = await request<CreateCliAccountProfileResponse>(
       `/api/cli/runtimes/${encodeURIComponent(input.runtimeId)}/account-profiles`,
@@ -2257,6 +2321,7 @@ export const api = {
       }
     );
     invalidateCliRuntimeSettings();
+    fetchCliAccountProfiles.invalidate(input.runtimeId);
     return result;
   },
   updateCliAccountProfile: async (runtimeId: string, profileId: string, input: UpdateCliAccountProfileInput) => {
@@ -2265,6 +2330,7 @@ export const api = {
       { method: "PATCH", body: JSON.stringify(input) }
     );
     invalidateCliRuntimeSettings();
+    fetchCliAccountProfiles.invalidate(runtimeId);
     return result;
   },
   cliAccountIdentities: (refresh = false) =>
@@ -2281,6 +2347,7 @@ export const api = {
       { method: "DELETE" }
     );
     invalidateCliRuntimeSettings();
+    fetchCliAccountProfiles.invalidate(runtimeId);
     return result;
   },
   modelCapabilities: () => request<{ profiles: import("@space/contracts").ModelCapabilityProfileV1[]; state: import("@space/contracts").ToolRoutingStateV1 }>("/api/model-capabilities"),
@@ -2792,6 +2859,11 @@ export const api = {
     request<BrowserPageListPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages/${encodeURIComponent(pageId)}/close`, {
       method: "POST"
     }),
+  setBrowserPageAccount: (paneId: string, pageId: string, profileId: string | null, options: { signIn?: boolean } = {}) =>
+    request<BrowserPageListPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/pages/${encodeURIComponent(pageId)}/account`, {
+      method: "POST",
+      body: JSON.stringify(options.signIn ? { profileId, signIn: true } : { profileId })
+    }),
   acquireBrowserControl: (paneId: string, input: AcquireBrowserControlInput) =>
     request<BrowserControlPayload>(`/api/panes/${encodeURIComponent(paneId)}/browser/control/acquire`, {
       method: "POST",
@@ -2843,7 +2915,9 @@ export const api = {
     const params = new URLSearchParams();
     if (query?.roomId) params.set("roomId", query.roomId);
     const suffix = params.toString();
-    return request<Paginated<Turn>>(`/api/turns${suffix ? `?${suffix}` : ""}`);
+    return singleFlightRequest(`turns:${suffix}`, () =>
+      request<Paginated<Turn>>(`/api/turns${suffix ? `?${suffix}` : ""}`)
+    );
   },
   events: (query?: { roomId?: string; page?: number; pageSize?: number; sortOrder?: "asc" | "desc" }) => {
     const params = new URLSearchParams();
@@ -2852,7 +2926,9 @@ export const api = {
     if (query?.pageSize) params.set("pageSize", String(query.pageSize));
     if (query?.sortOrder) params.set("sortOrder", query.sortOrder);
     const suffix = params.toString();
-    return request<Paginated<Event>>(`/api/events${suffix ? `?${suffix}` : ""}`);
+    return singleFlightRequest(`events:${suffix}`, () =>
+      request<Paginated<Event>>(`/api/events${suffix ? `?${suffix}` : ""}`)
+    );
   },
   audit: (query?: { page?: number; pageSize?: number }) => {
     const params = new URLSearchParams();
@@ -3735,6 +3811,50 @@ export const api = {
     request<{ memory: MarketingMemory }>(`/api/marketing-copilot/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   marketingAnalytics: () => request<{ metrics: MarketingMetric[]; topPosts: MarketingPost[]; published: number }>("/api/marketing-copilot/analytics", { cache: "no-store" }),
   forgetMarketingMemory: (id: string) => request<{ forgotten: boolean }>(`/api/marketing-copilot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  marketingBookmarks: () => request<{ bookmarks: MarketingBookmark[] }>("/api/marketing-copilot/bookmarks", { cache: "no-store" }),
+  createMarketingBookmark: (input: { url: string; title?: string; profileId: string | null; accountLabel: string | null }) =>
+    request<{ bookmark: MarketingBookmark }>("/api/marketing-copilot/bookmarks", { method: "POST", body: JSON.stringify(input) }),
+  deleteMarketingBookmark: (id: string) => request<{ deleted: boolean }>(`/api/marketing-copilot/bookmarks/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  openMarketingBookmark: (paneId: string, id: string) =>
+    request<{ bookmark: MarketingBookmark }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/bookmarks/${encodeURIComponent(id)}/open`, { method: "POST", body: "{}" }),
+  freelanceCopilotSettings: (paneId: string) =>
+    request<{ metadata: FreelanceCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/freelance-copilot/settings`, { cache: "no-store" }),
+  updateFreelanceCopilotSettings: (paneId: string, metadata: FreelanceCopilotPaneMetadata) =>
+    request<{ metadata: FreelanceCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/freelance-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  freelanceCopilotRun: (paneId: string) => request<FreelanceRunView>(`/api/panes/${encodeURIComponent(paneId)}/freelance-copilot/run`, { cache: "no-store" }),
+  freelanceCopilotRunAction: (paneId: string, action: "start" | "pause" | "stop") =>
+    request<FreelanceRunView & { kickoffSent?: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/freelance-copilot/run/${action}`, { method: "POST", body: "{}" }),
+  createFreelanceBrief: (paneId: string, input: { text: string; leadId?: string | null }) =>
+    request<{ brief: FreelanceEvent }>(`/api/panes/${encodeURIComponent(paneId)}/freelance-copilot/briefs`, { method: "POST", body: JSON.stringify(input) }),
+  freelanceEvents: (paneId: string, limit = 150) =>
+    request<{ events: FreelanceEvent[] }>(`/api/freelance-copilot/events?paneId=${encodeURIComponent(paneId)}&limit=${limit}`, { cache: "no-store" }),
+  answerFreelanceQuestion: (paneId: string, input: { questionId: string; answer: string }) =>
+    request<{ memory: FreelanceMemory }>(`/api/panes/${encodeURIComponent(paneId)}/freelance-copilot/answer`, { method: "POST", body: JSON.stringify(input) }),
+  freelanceLeads: () => request<{ leads: FreelanceLead[] }>("/api/freelance-copilot/leads?limit=300", { cache: "no-store" }),
+  freelanceLead: (leadId: string) => request<{ lead: FreelanceLead; messages: FreelanceMessage[] }>(`/api/freelance-copilot/leads/${encodeURIComponent(leadId)}`, { cache: "no-store" }),
+  decideFreelanceLead: (paneId: string, leadId: string, input: FreelanceLeadDecision) =>
+    request<{ lead: FreelanceLead }>(`/api/freelance-copilot/leads/${encodeURIComponent(leadId)}/decide?paneId=${encodeURIComponent(paneId)}`, { method: "POST", body: JSON.stringify(input) }),
+  decideFreelanceMessage: (paneId: string, messageId: string, input: FreelanceMessageReviewDecision) =>
+    request<{ message: FreelanceMessage }>(`/api/freelance-copilot/messages/${encodeURIComponent(messageId)}/review?paneId=${encodeURIComponent(paneId)}`, { method: "POST", body: JSON.stringify(input) }),
+  retryFreelanceMessage: (paneId: string, messageId: string) =>
+    request<{ message: FreelanceMessage }>(`/api/freelance-copilot/messages/${encodeURIComponent(messageId)}/retry?paneId=${encodeURIComponent(paneId)}`, { method: "POST", body: "{}" }),
+  freelanceAccounts: () => request<{ accounts: FreelanceAccount[] }>("/api/freelance-copilot/accounts", { cache: "no-store" }),
+  updateFreelanceAccount: (paneId: string, input: FreelanceAccountUpdate) =>
+    request<{ account: FreelanceAccount }>(`/api/freelance-copilot/accounts?paneId=${encodeURIComponent(paneId)}`, { method: "POST", body: JSON.stringify(input) }),
+  freelanceMailbox: () => request<{ connected: boolean; config: { host: string; port: number; secure: boolean; user: string } | null; lastUid: number | null; updatedAt: string | null }>("/api/freelance-copilot/mailbox", { cache: "no-store" }),
+  connectFreelanceMailbox: (input: { host: string; port: number; secure: boolean; user: string; password: string }) =>
+    request<{ connected: boolean }>("/api/freelance-copilot/mailbox", { method: "PUT", body: JSON.stringify(input) }),
+  disconnectFreelanceMailbox: () => request<{ removed: boolean }>("/api/freelance-copilot/mailbox", { method: "DELETE" }),
+  freelanceFunnel: () => request<FreelanceFunnel>("/api/freelance-copilot/funnel", { cache: "no-store" }),
+  decideFreelanceRule: (paneId: string, ruleId: string, decision: "approve" | "reject" | "retire") =>
+    request<{ rule: FreelanceRule }>(`/api/freelance-copilot/rules/${encodeURIComponent(ruleId)}/decide?paneId=${encodeURIComponent(paneId)}`, { method: "POST", body: JSON.stringify({ decision }) }),
+  freelanceMemory: (query: { query?: string; limit?: number } = {}) =>
+    request<{ memories: FreelanceMemory[] }>(`/api/freelance-copilot/memory?limit=${query.limit ?? 100}${query.query ? `&query=${encodeURIComponent(query.query)}` : ""}`, { cache: "no-store" }),
+  rememberFreelanceMemory: (input: { kind: FreelanceMemory["kind"]; text: string; key?: string | null; channel?: FreelanceMemory["channel"]; pinned?: boolean }) =>
+    request<{ memory: FreelanceMemory }>("/api/freelance-copilot/memory", { method: "POST", body: JSON.stringify(input) }),
+  updateFreelanceMemory: (id: string, patch: { text?: string; pinned?: boolean }) =>
+    request<{ memory: FreelanceMemory }>(`/api/freelance-copilot/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  forgetFreelanceMemory: (id: string) => request<{ forgotten: boolean }>(`/api/freelance-copilot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
   updateMailCopilotView: (paneId: string, view: MailCopilotViewInput) =>
     request<{ view: MailCopilotView | null }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/view`, { method: "PUT", body: JSON.stringify(view) }),
   // The mailbox of the pane's Google accounts (owner-scoped; paneId narrows to the pane's chosen accounts).
@@ -3758,6 +3878,11 @@ export const api = {
   startMailCopilotRun: (paneId: string) => request<MailCopilotRunView & { kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run/start`, { method: "POST", body: "{}" }),
   pauseMailCopilotRun: (paneId: string) => request<MailCopilotRunView>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run/pause`, { method: "POST", body: "{}" }),
   stopMailCopilotRun: (paneId: string) => request<MailCopilotRunView>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run/stop`, { method: "POST", body: "{}" }),
+  requestMailFix: (paneId: string, input: MailCopilotFixRequest) =>
+    request<{ event: { id: string }; runStarted: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/fix`, { method: "POST", body: JSON.stringify(input) }),
+  mailFixRequests: (paneId: string) => request<{ requests: MailFixRequestView[] }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/fix-requests`, { cache: "no-store" }),
+  mailActions: (paneId: string, query: { account?: string; source?: MailActionLogEntry["source"]; limit?: number } = {}) =>
+    request<{ actions: MailActionLogEntry[] }>(`/api/mail-copilot/actions?${new URLSearchParams({ paneId, ...(query.account ? { account: query.account } : {}), ...(query.source ? { source: query.source } : {}), ...(query.limit ? { limit: String(query.limit) } : {}) })}`, { cache: "no-store" }),
   syncMailCopilot: (paneId: string) => request<{ accounts: number; created: number }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/sync`, { method: "POST", body: "{}" }),
   mailCopilotEvents: (query: { paneId?: string; threadId?: string; since?: string; limit?: number } = {}) =>
     request<{ events: MailCopilotEvent[] }>(`/api/mail-copilot/events?${new URLSearchParams(Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])))}`, { cache: "no-store" }),

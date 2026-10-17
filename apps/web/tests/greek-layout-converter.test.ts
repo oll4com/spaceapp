@@ -5,6 +5,7 @@ import {
   convertTextRange,
   createGreekInputState,
   detectKeyboardLayoutMismatch,
+  enterAddsLine,
   handleEnglishKeyInput,
   handleGreekKeyInput,
   isRecognizedGreekLayout,
@@ -554,4 +555,20 @@ it("keeps routine layout detection out of console and debug history, including a
   } finally {
     spies.forEach(spy => spy.mockRestore());
   }
+});
+
+describe("enterAddsLine", () => {
+  it("adds a line only for a typed Enter on a touch-only device", () => {
+    const matchMedia = vi.fn((query: string) => ({ matches: query === "(hover: none) and (pointer: coarse)" }));
+    vi.stubGlobal("matchMedia", matchMedia);
+    try {
+      expect(enterAddsLine({ isTrusted: true })).toBe(true);
+      // The on-screen keyboard's synthetic Enter still sends.
+      expect(enterAddsLine({ isTrusted: false })).toBe(false);
+      matchMedia.mockImplementation(() => ({ matches: false }));
+      expect(enterAddsLine({ isTrusted: true })).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

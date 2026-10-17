@@ -77,6 +77,37 @@ describe("Chat Completions over Responses", () => {
     expect(chunks[5]).toMatchObject({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } });
   });
 
+  it("keeps parallel tool calls apart, by output index or by their done events", () => {
+    const toolDeltas = (stream: string) => {
+      const translator = new ChatStreamTranslator("gpt-5.5", 1, false);
+      const out = decode(translator.push(encode(stream))) + decode(translator.finish());
+      const calls: Record<number, string> = {};
+      for (const event of out.split("\n\n").filter((line) => line && !line.endsWith("[DONE]"))) {
+        for (const call of (JSON.parse(event.replace(/^data: /, "")) as { choices: { delta: { tool_calls?: { index: number; function?: { arguments?: string } }[] } }[] }).choices[0]?.delta.tool_calls ?? []) {
+          calls[call.index] = (calls[call.index] ?? "") + (call.function?.arguments ?? "");
+        }
+      }
+      return calls;
+    };
+    const added = (n: number, extra: Record<string, unknown> = {}) => sse("response.output_item.added", { output_index: n, item: { type: "function_call", call_id: `call_${n}`, name: "read_pane", ...extra } });
+    // Both calls open before their arguments stream, and the items carry no id.
+    expect(toolDeltas(added(0) + added(1)
+      + sse("response.function_call_arguments.delta", { item_id: "fc_a", output_index: 0, delta: "{\"pane\":\"Andy\"}" })
+      + sse("response.function_call_arguments.delta", { item_id: "fc_b", output_index: 1, delta: "{\"pane\":\"Bob\"}" })
+      + sse("response.completed", { response: {} }))).toEqual({ 0: "{\"pane\":\"Andy\"}", 1: "{\"pane\":\"Bob\"}" });
+    // Arguments only in the done events, once each.
+    expect(toolDeltas(added(0, { id: "fc_a" }) + added(1, { id: "fc_b" })
+      + sse("response.function_call_arguments.done", { item_id: "fc_a", output_index: 0, arguments: "{\"pane\":\"Andy\"}" })
+      + sse("response.output_item.done", { output_index: 0, item: { type: "function_call", id: "fc_a", call_id: "call_0", arguments: "{\"pane\":\"Andy\"}" } })
+      + sse("response.output_item.done", { output_index: 1, item: { type: "function_call", id: "fc_b", call_id: "call_1", arguments: "{\"pane\":\"Bob\"}" } })
+      + sse("response.completed", { response: {} }))).toEqual({ 0: "{\"pane\":\"Andy\"}", 1: "{\"pane\":\"Bob\"}" });
+    // Streamed arguments are never repeated by the done events.
+    expect(toolDeltas(added(0, { id: "fc_a" })
+      + sse("response.function_call_arguments.delta", { item_id: "fc_a", delta: "{}" })
+      + sse("response.function_call_arguments.done", { item_id: "fc_a", arguments: "{}" })
+      + sse("response.completed", { response: {} }))).toEqual({ 0: "{}" });
+  });
+
   it("reports a failed stream as an error event", () => {
     const translator = new ChatStreamTranslator("m", 1, false);
     const out = decode(translator.push(encode(sse("response.failed", { response: { error: { code: "server_error", message: "boom" } } }))));

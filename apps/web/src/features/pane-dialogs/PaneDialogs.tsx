@@ -181,7 +181,7 @@ export function MovePaneDialog({
             Move pane
           </span>
           <strong>{paneTitle}</strong>
-          <small>This v1 moves only inactive panes without live CLI, browser, or agent bindings.</small>
+          <small>A running CLI task keeps running in the new room. You can also drag the pane onto a room in the Rooms list.</small>
         </div>
         <label className="provider-form-row">
           <span>Target room</span>

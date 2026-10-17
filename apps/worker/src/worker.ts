@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { assertDevInstanceIsolated, instanceBackgroundJobEnabled } from "@space/contracts";
 import { PostgresSpaceStore, PostgresStreamingBotRepository, PostgresStreamingRepository } from "@space/db";
 import { StreamingCredentialStore } from "@space/streaming";
-import { TelegramDeliveryWorker, TelegramSecretStore } from "@space/runtime";
+import { TelegramDeliveryWorker, TelegramSecretStore, otlpSpanExporterFromEnv } from "@space/runtime";
 import { NativeConnection, Runtime, Worker } from "@temporalio/worker";
 import * as activities from "./activities.js";
 import { workerOtlp } from "./worker-otlp.js";
@@ -36,14 +36,19 @@ if (temporalCoreMetricsBind) {
 
 const otlp = workerOtlp("space-worker");
 const connection = await NativeConnection.connect({ address });
+const spans = otlpSpanExporterFromEnv(process.env, "space-worker");
 const worker = await Worker.create({
   connection,
   namespace,
   taskQueue,
   workflowsPath,
-  activities,
   sinks: otlp.workerOptions.sinks,
-  interceptors: otlp.workerOptions.interceptors
+  interceptors: {
+    workflowModules: otlp.workerOptions.interceptors?.workflowModules ?? [],
+    // Structured, correlated activity records and worker metrics.
+    activity: [createActivityObservabilityInterceptors({ spans })]
+  }
+  // interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.
@@ -172,5 +177,6 @@ try {
   telegramNotificationLoop?.stop();
   streamingBotLoop?.stop();
   chessMoveServer?.close();
+  await spans?.close();
   await otlp.spanExporter?.close();
 }

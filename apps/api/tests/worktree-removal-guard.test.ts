@@ -56,7 +56,10 @@ describe("worktree removal guard", () => {
   }
 
   it("accepts only linked worktree roots or managed leftovers", async () => {
-    const worktree = await service.createWorktree({ repoPath: repo, roomId: "room:guard", branchName: "feat/guard", baseBranch: "main", linkModules: false });
+    const worktree = await service.createWorktree({ repoPath: repo, roomId: "room:guard", paneId: "pane:guard", branchName: "feat/guard", baseBranch: "main", linkModules: false });
+    // The registry keeps the creating pane, also after later status writes, so the Room Agent knows where it works.
+    await service.recordWorktree({ worktreePath: worktree.worktreePath, status: "ACTIVE" });
+    expect(await service.getRecordedWorktree(worktree.worktreePath)).toMatchObject({ roomId: "room:guard", paneId: "pane:guard" });
     await expect(assertRemovableWorktreePath(worktree.worktreePath, storage)).resolves.toMatchObject({ kind: "LINKED_WORKTREE" });
     await expect(assertRemovableWorktreePath(repo, storage)).rejects.toMatchObject({ code: "NOT_A_WORKTREE", statusCode: 409 });
     await expect(assertRemovableWorktreePath(join(repo, "src"), storage)).rejects.toMatchObject({ code: "NOT_A_WORKTREE" });
@@ -121,7 +124,7 @@ describe("worktree removal guard", () => {
     expect(await exists(join(repo, "src", "index.ts"))).toBe(true);
   });
 
-  it("requires ADMIN or OPERATOR for merge, removal and cleanup", async () => {
+  it("requires ADMIN or OPERATOR for listing, creation, merge, removal and cleanup", async () => {
     const worktree = await service.createWorktree({ repoPath: repo, roomId: "room:guard-role", branchName: "feat/guard-role", baseBranch: "main", linkModules: false });
     for (const role of [undefined, "USER"] as const) {
       const server = await app(role);
@@ -132,6 +135,10 @@ describe("worktree removal guard", () => {
         expect(merge.statusCode).toBe(403);
         const clean = await server.inject({ method: "POST", url: "/api/worktrees/clean", payload: { repoPath: repo, dryRun: true } });
         expect(clean.statusCode).toBe(403);
+        const list = await server.inject({ method: "GET", url: `/api/worktrees?repoPath=${encodeURIComponent(repo)}` });
+        expect(list.statusCode).toBe(403);
+        const create = await server.inject({ method: "POST", url: "/api/worktrees", payload: { repoPath: repo, branchName: "feat/guard-user", baseBranch: "main" } });
+        expect(create.statusCode).toBe(403);
       } finally {
         await server.close();
       }

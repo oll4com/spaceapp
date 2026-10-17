@@ -1,11 +1,11 @@
 import type {} from "./request-context.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import type { BrowserHostActorContext } from "@space/browser-host";
+import type { BrowserHostActorContext, BrowserHostPageList } from "@space/browser-host";
 import {
-  acquireBrowserControlInputSchema, browserBookmarkImportResponseSchema, browserBookmarkListResponseSchema,
+  acquireBrowserControlInputSchema, browserBookmarkImportResponseSchema, browserBookmarkListResponseSchema, type BrowserControlLease,
   browserCaptureJobResponseSchema, browserCaptureSegmentListResponseSchema, browserCaptureTimelineResponseSchema,
   browserControlLeaseActionInputSchema, browserControlLeaseResponseSchema, browserDiagnosticsResponseSchema,
   browserHandoffRequestResponseSchema, browserNavigateInputSchema, type BrowserRecordingFrameSummary,
@@ -31,6 +31,7 @@ import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
 import type { PaneBrowserAccount } from "./pane-browser-account.js";
 import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
+import { BROWSER_CONTROL_IDLE_RELEASE_MS, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 import {
   googleAccountSignInUrl, privatePaneProfileId, selectYouTubeAccountSchema, youtubeAccountSignInUrl,
@@ -60,7 +61,7 @@ const browserCaptureTimelineManifestSchema = z.object({
 });
 
 /** Panes whose browser has the Google account menu; YouTube panes have their own routes. */
-const googleAccountPaneModes = new Set<Pane["mode"]>(["BROWSER", "JOB_APPLY", "MARKETING_COPILOT"]);
+const googleAccountPaneModes = new Set<Pane["mode"]>(["BROWSER", "JOB_APPLY", "MARKETING_COPILOT", "FREELANCE_COPILOT"]);
 const browserBookmarkImportMaxBytes = 2 * 1024 * 1024;
 
 const browserBookmarkImportMimeTypes = new Set(["application/json", "text/plain", "application/octet-stream", ""]);
@@ -126,6 +127,10 @@ export interface PaneBrowserAccountControl {
   list(userId: string, pane: Pane): Promise<{ selectedProfileId: string | null; effectiveProfileId: string | null; profiles: Array<{ profileId: string; displayName: string }> }>;
   /** `email` is the chosen account's address when known (null for the private pane profile). */
   select(userId: string, pane: Pane, profileId: string | null, signIn: boolean | undefined, traceId: string, actor: BrowserHostActorContext): Promise<{ selectedProfileId: string | null; targetUrl: string; email: string | null }>;
+  /** Moves one tab of the running browser into another Google account (null: back to the pane's account). */
+  switchTab(userId: string, pane: Pane, pageId: string, profileId: string | null, signIn: boolean | undefined, traceId: string, actor: BrowserHostActorContext, url?: string): Promise<BrowserHostPageList>;
+  /** Opens a URL in a new, active tab of the running browser in one Google account (null: the pane's own). */
+  openTab(userId: string, pane: Pane, url: string, profileId: string | null, traceId: string, actor: BrowserHostActorContext): Promise<BrowserHostPageList>;
   start(userId: string, pane: Pane, input: z.infer<typeof createPaneBrowserSessionRequestSchema>, traceId: string, actor: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
 }
 
@@ -144,7 +149,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   youtubeAccountOwner: (userId: string, pane: Pane) => Promise<string>;
   selectedGoogleBrowserAccount: (userId: string, pane: Pane, profileId: string | null) => Promise<GoogleAccount | undefined>;
   paneGoogleAccountSelection: (userId: string, pane: Pane) => Promise<string | null>;
-  resolvePaneBrowserAccount: (userId: string, pane: Pane) => Promise<PaneBrowserAccount>;
+  resolvePaneBrowserAccount: (userId: string, pane: Pane, choice?: string | null) => Promise<PaneBrowserAccount>;
   adoptPaneSignIn: (userId: string, pane: Pane, resolved: PaneBrowserAccount, actor: BrowserHostActorContext) => Promise<PaneBrowserAccount>;
   effectivePaneProfileId: (userId: string, pane: Pane) => Promise<string | null>;
   browserAccountChoices: (userId: string, pane: Pane) => Promise<{ profileId: string; displayName: string; }[]>;
@@ -154,12 +159,32 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   previousCopilotPane?: (pane: Pane) => Promise<Pane | null>;
   /** Drops CLI automation sockets of a pane when an operator takes control. */
   cliBrowserCdpProxy?: { closeForPane(paneId: string, refusal: "BROWSER_CONTROL_HELD", reason: string): number };
+  /** Operator input per control lease, shared with the stream socket and the CLI bridge (idle release, agent reclaim). */
+  controlActivity?: BrowserControlActivity;
 }) {
+  const controlActivity = options.controlActivity ?? createBrowserControlActivity();
+  // An idle operator lease goes back to the agent even when no heartbeat or agent call comes (operator 2026-10-15).
+  const stopIdleRelease = startBrowserControlIdleRelease({ store: options.store, browserSessionManager: options.browserSessionManager, activity: controlActivity });
+  app.addHook("onClose", async () => stopIdleRelease());
   const { config, readGeminiAccountProfileDetails, store, browserSessionManager,
     routeOptions: defaultRouteRateLimitOptions, youtubePlaybackStore, youtubeAccountStore, browserAccountStore,
     youtubeSessionStarts, youtubeAccountOperations, withYouTubeAccountLock, youtubeAccountOwner,
     selectedGoogleBrowserAccount, paneGoogleAccountSelection, resolvePaneBrowserAccount, adoptPaneSignIn,
     effectivePaneProfileId, browserAccountChoices } = options;
+  // An agent may ask for a handoff while the operator already holds the browser. Taking control again or the
+  // lease heartbeat (every 15 s) then accepts it; before, the copilot's card stayed until the lease ran out.
+  async function acceptHandoffForOperatorLease(user: FastifyRequest["user"], lease: BrowserControlLease): Promise<void> {
+    if (!user || lease.holderType !== "OPERATOR" || lease.status !== "ACTIVE") return;
+    const handoff = await store.getActiveBrowserHandoffRequest(lease.sessionId);
+    if (handoff?.status !== "REQUESTED") return;
+    await store.updateBrowserHandoffRequest(handoff.handoffRequestId, {
+      status: "ACCEPTED",
+      operatorUserId: user.id,
+      operatorEmail: user.email,
+      operatorRole: user.role === "USER" ? undefined : user.role,
+      controlLeaseId: lease.leaseId
+    });
+  }
   const accountControl: PaneBrowserAccountControl = {
     async list(userId, pane) {
       return { selectedProfileId: await paneGoogleAccountSelection(userId, pane), effectiveProfileId: await effectivePaneProfileId(userId, pane),
@@ -180,11 +205,44 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         return { selectedProfileId: profileId, targetUrl: openSignIn ? googleAccountSignInUrl(details?.email ?? null) : config.browserSessionsDefaultUrl, email: details?.email ?? null };
       });
     },
+    async switchTab(userId, pane, pageId, profileId, signIn, traceId, actor, url) {
+      // Freelance Copilot tabs leave through the platform's egress route, which another account's Chrome does not use.
+      if (pane.mode === "FREELANCE_COPILOT") throw new SpaceConflictError("Freelance Copilot tabs keep the pane's Google account.");
+      if (!browserSessionManager.listPages) throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
+      // A Browser Host from before per-tab accounts would switch the whole pane instead of the tab.
+      if ((await browserSessionManager.listPages(pane)).pages.some((page) => page.account === undefined)) {
+        throw new SpaceConflictError("BROWSER_HOST_RESTART_REQUIRED: Tabs in another Google account need the Browser Host restart that ships them.");
+      }
+      const resolved = profileId === null ? null : await resolvePaneBrowserAccount(userId, pane, profileId);
+      const email = resolved?.account?.email ?? (profileId === null || profileId === privatePaneProfileId || resolved?.account ? null
+        : (await readGeminiAccountProfileDetails(profileId).catch(() => null))?.email ?? null);
+      await withYouTubeAccountLock(pane.id, () => browserSessionManager.startOrRestore({
+        pane,
+        ...(resolved?.account ? { googleAccount: { ownerUserId: userId, accountId: resolved.account.id } }
+          : resolved?.sharedProfileKey ? { sharedProfileKey: resolved.sharedProfileKey } : resolved ? { profileKey: resolved.profileKey } : {}),
+        accountTab: { pageId, profileId, label: email, ...(signIn && profileId !== null ? { url: googleAccountSignInUrl(email) } : url ? { url } : {}) },
+        traceId
+      }, actor));
+      return browserSessionManager.listPages(pane);
+    },
+    async openTab(userId, pane, url, profileId, traceId, actor) {
+      if (!browserSessionManager.createPage) throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
+      if (profileId === null || profileId === await effectivePaneProfileId(userId, pane)) return browserSessionManager.createPage(pane, url, true, traceId, actor);
+      // The host opens the URL straight in the other account's Chrome and closes the blank tab, so it never loads in the pane's account.
+      const blank = (await browserSessionManager.createPage(pane, undefined, true, traceId, actor)).activePageId;
+      if (!blank) throw new SpaceConflictError("The browser did not open a new tab.");
+      try {
+        return await accountControl.switchTab(userId, pane, blank, profileId, false, traceId, actor, url);
+      } catch (error) {
+        await browserSessionManager.closePage?.(pane, blank, traceId, actor).catch(() => undefined);
+        throw error;
+      }
+    },
     /** Starts the pane's browser in the Google account chosen for it. */
     start(userId, pane, input, traceId, actor) {
       const startSession = async () => {
         const priorYouTube = pane.mode === "YOUTUBE" ? await store.getLatestPaneBrowserSession(pane.id) : null;
-        // A new Job or Marketing Copilot pane opens where the previous one left off: its view and its tabs (only before its own first session).
+        // A new Job, Marketing or Freelance Copilot pane opens where the previous one left off: its view and its tabs (only before its own first session).
         const previous = await options.previousCopilotPane?.(pane) ?? null;
         const previousPane = previous && !await store.getLatestPaneBrowserSession(pane.id) ? previous : null;
         const inherited = previousPane ? await store.getLatestPaneBrowserSession(previousPane.id) : null;
@@ -260,6 +318,14 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     // A Job Copilot pane's account is also the copilot's Google account for mail and calendar.
     if (pane.mode === "JOB_APPLY" && email) await options.onJobCopilotAccountSelected?.(request.user.id, email);
     return selected;
+  });
+  app.post("/api/panes/:id/browser/pages/:pageId/account", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
+    const { id, pageId } = parseQuery(browserPageParamSchema, request.params);
+    const { profileId, signIn } = parseBody(selectYouTubeAccountSchema, request.body);
+    const pane = await getPaneById(store, id);
+    if (!googleAccountPaneModes.has(pane.mode)) throw new SpaceConflictError("Google account selection requires a Browser or Job Copilot pane.");
+    return accountControl.switchTab(request.user.id, pane, pageId, profileId, signIn, request.requestIdForSpace, operatorBrowserActor(request));
   });
   app.get("/api/panes/:id/youtube/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
@@ -367,7 +433,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     assertBrowserPaneCompatible(pane);
     // A stopped browser (including closing its last tab) stays empty across
     // reloads and viewers. Starting Chrome requires an explicit +/navigation.
-    if (pane.mode === "BROWSER" || pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT") {
+    if (pane.mode === "BROWSER" || pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT") {
       const prior = await store.getLatestPaneBrowserSession(pane.id);
       if (prior?.status === "CLOSED" && !prior.isActive) {
         return { session: { ...prior, pages: [], activePageId: null }, frame: null, websocket: null };
@@ -514,16 +580,9 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     );
     // Agent automation attached over CDP must not fight the operator for the page.
     if (lease.holderType === "OPERATOR") options.cliBrowserCdpProxy?.closeForPane(pane.id, "BROWSER_CONTROL_HELD", "An operator took browser control.");
-    const handoff = await store.getActiveBrowserHandoffRequest(lease.sessionId);
-    if (handoff?.status === "REQUESTED" && lease.holderType === "OPERATOR" && request.user) {
-      await store.updateBrowserHandoffRequest(handoff.handoffRequestId, {
-        status: "ACCEPTED",
-        operatorUserId: request.user.id,
-        operatorEmail: request.user.email,
-        operatorRole: request.user.role === "USER" ? undefined : request.user.role,
-        controlLeaseId: lease.leaseId
-      });
-    }
+    controlActivity.noteInput(lease.leaseId);
+    controlActivity.watch(lease);
+    await acceptHandoffForOperatorLease(request.user, lease);
     await recordAudit(store, request, {
       action: "pane.browser.control.acquire",
       targetType: "pane",
@@ -540,9 +599,18 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!browserSessionManager.heartbeatControl) {
       throw new SpaceFeatureDisabledError("BROWSER_CONTROL_UNAVAILABLE", "Browser control handoff is unavailable on this runtime.");
     }
-    return browserControlLeaseResponseSchema.parse({
-      lease: await browserSessionManager.heartbeatControl(pane, input, request.requestIdForSpace, operatorBrowserActor(request))
-    });
+    const current = await store.getBrowserControlLease(input.leaseId);
+    // A heartbeat alone (an open tab, an old web bundle) does not keep an operator lease nobody has touched.
+    if (current?.status === "ACTIVE" && current.holderType === "OPERATOR" && current.paneId === pane.id
+      && controlActivity.idleMs(current) >= BROWSER_CONTROL_IDLE_RELEASE_MS) {
+      const released = await releaseBrowserControlLease({ store, browserSessionManager, activity: controlActivity },
+        { pane, lease: current, request, auditAction: "pane.browser.control.idle_release", auditMetadata: { idleSeconds: Math.floor(controlActivity.idleMs(current) / 1000) } });
+      return browserControlLeaseResponseSchema.parse({ lease: released });
+    }
+    const lease = await browserSessionManager.heartbeatControl(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
+    controlActivity.watch(lease);
+    await acceptHandoffForOperatorLease(request.user, lease);
+    return browserControlLeaseResponseSchema.parse({ lease });
   });
   app.post("/api/panes/:id/browser/control/release", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -558,6 +626,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
       request.requestIdForSpace,
       operatorBrowserActor(request)
     );
+    controlActivity.forget(lease.leaseId);
     const handoff = await store.getActiveBrowserHandoffRequest(lease.sessionId);
     if (handoff?.status === "ACCEPTED" && handoff.controlLeaseId === lease.leaseId) {
       await store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
@@ -578,6 +647,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!browserSessionManager.input) {
       throw new SpaceFeatureDisabledError("BROWSER_INPUT_UNAVAILABLE", "High fidelity browser input is unavailable on this runtime.");
     }
+    if ("leaseId" in input && typeof input.leaseId === "string" && countsAsOperatorInput(input)) controlActivity.noteInput(input.leaseId);
     return browserSessionManager.input(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
   });
   app.post("/api/panes/:id/browser/captures", defaultRouteRateLimitOptions, async (request, reply) => {

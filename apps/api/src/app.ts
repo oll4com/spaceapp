@@ -3,7 +3,7 @@ import { registerPlanExecutionRoutes } from "./plan-execution-routes.js";
 import { registerDotsRoutes, validateSessionDotOwner } from "./dots-routes.js";
 import { dotConversationContext, dotRuntimeFor, registerDotHomeRoutes } from "./dot-home.js";
 import { createDotProactiveService, createProactiveDecider } from "./dot-proactive.js";
-import { dotDeveloperContext, registerDotToolGatewayRoutes } from "./dot-tools-gateway.js";
+import { dotDeveloperContext, findRoomOwnerDot, registerDotToolGatewayRoutes, sessionDotIdentity } from "./dot-tools-gateway.js";
 import { createDotGoalService, createDotGoalWorkflowCoordinator, registerDotGoalRoutes } from "./dot-goals.js";
 import { sweepStrandedChatRuns as sweepStrandedChatRunsOnce } from "./stranded-chat-runs.js";
 import { createDotScheduleService, registerDotScheduleRoutes } from "./dot-schedules.js";
@@ -17,6 +17,7 @@ import { InMemorySpaceNotificationsRepository, PostgresSpaceNotificationsReposit
 import { createNotificationService } from "./notifications/service.js";
 import { registerNotificationRoutes } from "./notifications/routes.js";
 import { mailCopilotEventNotifies, notifyMailCopilotEvent } from "./mail-copilot/notify.js";
+import { createMailCopilotKickoff } from "./mail-copilot/kickoff.js";
 import { registerCouncil } from "./council/wiring.js";
 import { createRoomAgentMonitor } from "./room-agent-monitor.js";
 import { createDotDeliverablesService, registerDotDeliverableRoutes } from "./dot-deliverables.js";
@@ -40,11 +41,13 @@ import { registerClientErrorRoutes } from "./client-error-routes.js";
 import { createInstallTelemetry } from "./install-telemetry.js";
 import { registerInstallTelemetryRoutes } from "./install-telemetry-routes.js";
 import { registerAdminUserRoutes } from "./admin-user-routes.js";
-import { createGatewayCodexResetCreditsService, createGatewayCodexUsageProvider } from "./gateway/gateway-codex-services.js";
+import { createSessionAccess } from "./session-access.js";
+import { createGatewayCodexResetCreditsService, createGatewayCodexUsageProvider, registerCodexQuotaResetWatch } from "./gateway/gateway-codex-services.js";
 import { emailsOutOfRotation } from "./gateway/account-rotation.js";
 import { createCliBrowserCdpProxy } from "./cli-browser-cdp.js";
 import { InMemoryJobApplyRepository } from "./job-apply/memory-repository.js";
 import { createImapMailboxFactory, type MailboxFactory } from "./job-apply/mailbox.js";
+import { scheduleJobApplyMailTriage } from "./job-apply/mail-triage-timer.js";
 import { createJobApplyService, type JobApplyGoogleAccess, type JobApplyService } from "./job-apply/service.js";
 import { registerJobApplyRoutes } from "./job-apply/routes.js";
 import { registerMailCopilotRoutes } from "./mail-copilot/routes.js";
@@ -53,6 +56,7 @@ import { isCliBridgeRoutePath } from "./cli-bridge-paths.js";
 import { createMailCopilotSync } from "./mail-copilot/sync.js";
 import { InMemoryMailCopilotRepository, PostgresMailCopilotRepository, type MailCopilotRepository } from "@space/db";
 import { registerMarketingCopilot, type MarketingCopilotWiring } from "./marketing-copilot/wiring.js";
+import { registerFreelanceCopilot, type FreelanceCopilotWiring } from "./freelance-copilot/wiring.js";
 import { selectRoomCliMenuRow } from "./room-cli-menu.js";
 import { createGatewayCliAccounts } from "./gateway/gateway-cli-accounts.js";
 import { createGatewayAdminService, type GatewayAdminService } from "./gateway/gateway-service.js";
@@ -84,6 +88,7 @@ import { PANE_CATALOG_VERSION, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady
 import { controlSkills, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
 import { captureControlSettingsSnapshot, restoreControlSettingsSnapshot, executeControlPluginAction } from "./space-control-settings.js";
 import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
+import { createControlScreenshotCapture } from "./space-control-capture.js";
 import { registerSpaceControlRoutes } from "./space-control-routes.js";
 import { pluginsService } from "./plugins-service.js";
 import { InMemorySourceControlRepository, PostgresSourceControlRepository } from "@space/db";
@@ -116,7 +121,7 @@ import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn } from "./safe-child-process.js";
 import { createNativeCliModelCatalog, findNativeCliModel, nativeCliCatalogBufferBytes, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning } from "./cli-native-model-picker.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
@@ -278,7 +283,7 @@ import { createDotChannelService, registerDotChannelRoutes } from "./dot-channel
 import { createDotLiveService, registerDotLiveRoutes } from "./dot-live.js";
 import { createSlackClient, parseSlackEnvelope, verifySlackSignature } from "./channel-slack.js";
 import { createBotFrameworkVerifier, createTeamsClient, parseTeamsActivity } from "./channel-teams.js";
-import { readDeployQueue } from "./deploy-queue.js";
+import { createRoomCoordination } from "./room-coordination.js";
 import { projectRoutingState } from "./tool-routing.js";
 import { registerAgentToolRoutingRoutes } from "./agent-tool-routing-routes.js";
 import {
@@ -465,10 +470,7 @@ import {
   createToolbarModelStatsCollector,
   type ToolbarModelStatsCollector
 } from "./toolbar-model-stats.js";
-import {
-  SystemAnalyticsService,
-  type SystemAnalyticsLiveSession
-} from "./system-analytics-service.js";
+import { SystemAnalyticsService, tokenUsageSourcesFor, type SystemAnalyticsLiveSession } from "./system-analytics-service.js";
 import { OpencodeModelBenchService } from "./opencode-model-bench.js";
 import { StreamingCredentialStore } from "./streaming-credential-store.js";
 import { formatStreamingBotLiveMetrics } from "@space/streaming";
@@ -708,7 +710,7 @@ export interface CreateAppOptions {
   mailCopilotGoogle?: MailCopilotGoogleAccess;
   mailCopilotGmailFetch?: typeof fetch;
   mailCopilotRepository?: MailCopilotRepository;
-  marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean;
+  marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
   /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
   mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
   /** false: no Gmail history polling (tests call the sync themselves). */
@@ -780,6 +782,7 @@ const publicPaths = new Set([
   "/logout",
   "/api/setup/status",
   "/api/setup/claim",
+  "/api/auth/invites/accept",
   "/api/public/waitlist",
   "/api/demo-projects/preview/:runId/:token",
   "/api/demo-projects/preview/:runId/:token/*",
@@ -1691,11 +1694,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const dotMemoryRepository = dotsRepository && config.databaseUrl ? PostgresDotMemoryRepository.fromConnectionString(config.databaseUrl) : null;
   // Stage 8: the user's Dot settings and each Dot's feed across rooms.
   const dotHomeRepository = dotsRepository && config.databaseUrl ? PostgresDotHomeRepository.fromConnectionString(config.databaseUrl) : null;
-  const roomOwnerDot = async (roomId: string, dotId: string) => {
-    const owner = (await store.getRoom(roomId)).ownerUserId;
-    const dot = owner && dotsRepository ? await dotsRepository.get(owner, dotId) : null;
-    return owner && dot ? { owner, dot } : null;
-  };
+  const roomOwnerDot = (roomId: string, dotId: string) => findRoomOwnerDot(store, dotsRepository ?? null, roomId, dotId);
   const dotMemoryService = dotsRepository && dotMemoryRepository ? createDotMemoryService({
     store, dots: dotsRepository, memories: dotMemoryRepository,
     // Embeddings only when semantic memory is verified; text search works without them.
@@ -1738,6 +1737,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           conversationContext: feed ? dotConversationContext(dot.name, feed) : null,
           onAccepted: async () => { if (feed?.notices.length) await dotHomeRepository!.markNoticesDelivered(dot.dotId, feed.notices.map((notice) => notice.entryId)); } };
       },
+      dotIdentity: (session) => sessionDotIdentity(store, dotsRepository ?? null, session),
       dotRuntime: async (session) => {
         if (!dotHomeRepository || !session.dotId) return null;
         // Agent Proof and recovery rooms, and evaluation runs, keep the model and permissions their pane chose.
@@ -2309,8 +2309,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     profileExists: async (runtimeId, profileId) => isCliAccountProfileRuntimeId(runtimeId)
       && Boolean(await store.getCliAccountProfile(runtimeId, profileId))
   });
-  const toolbarUsageProvider =
-    options.toolbarUsageProvider ?? createGatewayCodexUsageProvider({ repository: gatewayRepositoryFor() });
+  const toolbarUsageProvider = options.toolbarUsageProvider ?? createGatewayCodexUsageProvider({ repository: gatewayRepositoryFor() });
   const taskTitleRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresTaskTitleRepository.fromConnectionString(config.databaseUrl)
     : new InMemoryTaskTitleRepository();
@@ -2403,6 +2402,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     store,
     stateRoot: options.opencodeStateRoot,
     codexHome: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex",
+    tokenUsage: tokenUsageSourcesFor(gatewayRepositoryFor, config.instanceJobs["token-usage-claude"]),
     liveSessions: async () => {
       const health = await Promise.all([
         cliTerminalManager.hostHealth("cli:codex").catch(() => null),
@@ -4237,6 +4237,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   };
   const roomAgentSnapshots = createRoomAgentSnapshotProvider({ listPanes: async roomId => store.listPanes(roomId), readActivity: readDashboardAgents });
   const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,pluginsService,queueDisconnected:true,
+    captureScreenshot: process.env.VITEST === "true" ? undefined : createControlScreenshotCapture({ instance: config.instance, cookieName, sessionSecret: auth.sessionSecret, artifactRoot: config.browserEvidenceArtifactRoot, resolveUser: controlUser, createArtifact: async (input) => store.createArtifact(input) }),
     publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
     publishEvent: (event) => eventBus.publish(event),
     resolveActor: controlUser,
@@ -4509,8 +4510,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             throw new SpaceConflictError(`Nothing to open: all requested pane types are currently unavailable.`);
           }
 
-          let selectedGeminiAccount: { id: string; email: string | null; remainingPercent: number | null } | null = null;
-          if (counts.gemini && counts.gemini > 0) {
+          const geminiGateway = counts.gemini ? await gatewayCliAccounts.openProfileId("cli:gemini", (action.input as any)?.accountProfileId) : null;
+          let selectedGeminiAccount: { id: string; email: string | null; remainingPercent: number | null } | null = geminiGateway ? { id: geminiGateway, email: null, remainingPercent: null } : null;
+          if (!geminiGateway && counts.gemini && counts.gemini > 0) {
             const usageList = await antigravityUsageProvider().catch(() => ({ data: [] }));
             const availableAccounts = usageList.data.filter((acc) => {
               const isConnected = acc.status === "CONNECTED";
@@ -4518,7 +4520,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               const remWeekly = acc.gemini?.weeklyRemainingPercent ?? 0;
               return isConnected && rem5h > 0 && remWeekly > 0;
             });
-
             const requestedProfileId = typeof (action.input as any)?.accountProfileId === "string" ? (action.input as any).accountProfileId : null;
             if (requestedProfileId) {
               const match = availableAccounts.find((a) => a.id === requestedProfileId);
@@ -4960,10 +4961,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     publish: publishLatestRoomEvent
   });
   const roomAgentModelSelection = createCachedModelSelection({ codexLbBaseUrl: config.codexLbBaseUrl, codexLbKeyFile: config.codexLbKeyFile });
+  const roomCoordination = createRoomCoordination({ store, controlRepository, deployQueueRoot: options.deployQueueRoot,
+    devQueueRoot: options.releasesOptions?.devQueueRoot, describeRoom: (roomId) => roomAgentService.describeRoom(roomId) });
   // The Room Agent's tools act as the operator through the same Space Control, pane controller and room commands as Live.
   const roomAgentTools = createRoomAgentTools({
     listPanes: async (roomId) => store.listPanes(roomId, true),
-    describeRoom: (roomId) => roomAgentService.describeRoom(roomId),
+    describeRoom: roomCoordination.describeRoom, releaseTrain: roomCoordination.releaseTrain,
     inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }),
     interruptPane: (pane, traceId) => roomPaneController.interrupt(pane, traceId),
     answerCli: (pane, input, traceId) => commandRoomCli(pane, input.key
@@ -4990,7 +4993,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     store,
     publish: (event) => eventBus.publish(event),
     tools: roomAgentTools,
-    describeRoom: (roomId) => roomAgentService.describeRoom(roomId),
+    describeRoom: roomCoordination.describeRoom,
     snapshot: (roomId) => roomAgentService.snapshot(roomId),
     paneTypes: async () => (await roomPaneCommands.catalog()).filter((entry) => entry.available).map((entry) => entry.definition.typeId),
     modelSelection: roomAgentModelSelection,
@@ -5088,7 +5091,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.expectedSessionId,
       answer: input.answer, submit: input.submit, expectedPromptFingerprint: input.expectedPromptFingerprint, when: "NOW" }, makeSpaceId("trace")),
     complete: async (systemPrompt, content) => completeRoomAgentPrompt({ systemPrompt, content, codexLbBaseUrl: config.codexLbBaseUrl,
-      codexLbKeyFile: config.codexLbKeyFile, modelSelection: await roomAgentModelSelection(), timeoutMs: 20_000 }),
+      codexLbKeyFile: config.codexLbKeyFile, modelSelection: await roomAgentModelSelection(), timeoutMs: 45_000 }),
+    coordinate: (event) => roomCoordination.coordinate(event, { owner: roomOwner, chat: roomAgentChat, send: roomAgentService.send }),
     onEvent: (event) => roomAgentMonitorOnEvent(event),
     log: { warn: (details, message) => app.log.warn(details, message) }
   });
@@ -5097,6 +5101,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     listRooms: async () => store.listRooms(),
     readActivity: readDashboardAgents,
     onEvent: (event) => roomAgentMonitorOnEvent(event),
+    readOverlaps: roomCoordination.readOverlaps,
     onAttention: (event) => { void roomAgentAutopilot.handle(event); },
     onAttentionSweep: (roomIds) => roomAgentAutopilot.sweep(roomIds),
     onActivity: (roomId) => eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId, paneId: null, turnId: null, workflowId: null,
@@ -5386,8 +5391,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     (_request, body, done) => done(null, body)
   );
 
-  const userRoleCache = new Map<string, { role: "ADMIN" | "USER" | "OPERATOR"; cachedAt: number }>();
-  const USER_ROLE_CACHE_TTL_MS = 60_000;
+  const sessionAccess = createSessionAccess({ store });
+  const userRoleCache = sessionAccess.roleCache;
 
   app.addHook("onRequest", async (request, reply) => {
     observability.onRequest(request);
@@ -5400,29 +5405,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (sessionUser.id === "user:operator-proof") {
         sessionUser.id = "user:operator";
       }
-      const now = Date.now();
-      const cached = userRoleCache.get(sessionUser.id);
-      if (cached && now - cached.cachedAt < USER_ROLE_CACHE_TTL_MS) {
-        sessionUser.role = cached.role;
-      } else if (store.getControlActor) {
-        try {
-          const dbActor = await store.getControlActor(sessionUser.id);
-          if (dbActor) {
-            userRoleCache.set(sessionUser.id, { role: dbActor.role, cachedAt: now });
-            sessionUser.role = dbActor.role;
-          }
-        } catch (error) {
-          // Never trust the role embedded in a long-lived token when the store
-          // cannot confirm it: reuse the last confirmed role, otherwise USER.
-          const stale = userRoleCache.get(sessionUser.id);
-          sessionUser.role = stale?.role ?? "USER";
-          request.log.warn(
-            { err: error, userId: sessionUser.id, appliedRole: sessionUser.role },
-            "User role lookup failed; applying least-privilege role."
-          );
-        }
-      }
-      request.user = sessionUser;
+      const resolved = await sessionAccess.resolve(sessionUser, request.log);
+      if (resolved) request.user = resolved;
     }
   });
 
@@ -6036,7 +6020,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   registerAdminUserRoutes(app, {
     store, userRoleCache, routeOptions: defaultRouteRateLimitOptions,
-    recordAudit: (request, input) => recordAudit(store, request, input)
+    recordAudit: (request, input) => recordAudit(store, request, input),
+    multiUserEnabled: config.multiUserEnabled === true,
+    revokeUserSessions: (userId) => persistRevocation(defaultSessionRevocationStore.revokeUser(userId)).then(() => sessionAccess.forget(userId))
   });
 
   app.addHook("onClose", async () => { await sharedGatewayRepository?.dispose(); });
@@ -6063,10 +6049,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     websocketRouteOptions: defaultWebsocketRateLimitOptions
   });
 
-  registerTaskItemRoutes(app, {
-    store, routeOptions: defaultRouteRateLimitOptions,
-    recordAudit: (request, input) => recordAudit(store, request, input)
-  });
+  registerTaskItemRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, recordAudit: (request, input) => recordAudit(store, request, input),
+    schedules: config.instanceJobs["task-schedules"] ? { inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }),
+      answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, makeSpaceId("trace")) } : null });
 
   registerLinkInspectRoutes(app, { routeOptions: defaultRouteRateLimitOptions });
 
@@ -6366,13 +6351,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
-  app.get("/api/admin/deploy-queue", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "The deploy queue requires ADMIN.");
-    return readDeployQueue(options.deployQueueRoot, Date.now(), {
-      paneTitle: async (paneId) => { const pane = await store.getPane(paneId); return pane.paneName || pane.title; },
-      roomName: async (roomId) => (await store.getRoom(roomId)).name
-    });
-  });
+  roomCoordination.registerRoutes(app, defaultRouteRateLimitOptions);
   registerInstanceReleaseRoutes(app, {
     store, releases: options.releasesOptions, managedHere: config.instance === "stable", routeOptions: defaultRouteRateLimitOptions
   });
@@ -6646,7 +6625,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     routeOptions: defaultRouteRateLimitOptions
   });
 
-  registerPaneStreamRoutes(app, {
+  const browserControlActivity = registerPaneStreamRoutes(app, {
     config, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     websocketRouteOptions: defaultWebsocketRateLimitOptions
   });
@@ -6707,7 +6686,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (!owner) return;
         const needsYou = mailNeedsYou || event.type === "HANDOFF_REQUESTED" || event.type === "QUESTION" || event.type === "REVIEW_REQUESTED";
         await notificationService.raise({ ownerUserId: owner, roomId, paneId: event.paneId, source: "JOB_COPILOT", kind: event.type, severity: needsYou ? "ATTENTION" : "INFO",
-          title: needsYou ? `Job Copilot needs you (${pane.title})` : `Job Copilot: ${event.type === "RUN_FINISHED" ? "run finished" : "run stopped"} (${pane.title})`,
+          title: needsYou ? `${pane.title} needs you` : `${pane.title}: ${event.type === "RUN_FINISHED" ? "run finished" : "run stopped"}`,
           body: event.message.slice(0, 2000), link: { roomId, paneId: event.paneId, target: `job-apply-event:${event.id}` },
           dedupeKey: needsYou ? `job-apply:${event.type}:${event.id}` : null, payload: { eventId: event.id }, telegram: false });
         if (!notifications.telegram) return;
@@ -6717,31 +6696,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       })().catch((error: unknown) => app.log.warn({ err: error }, "Job Copilot event listener failed"));
     }
   });
-  // Job Copilot mail triage: every 15 minutes, application emails of each owner's Google accounts that allowed
-  // organizing mail are filed under the Job Applications labels (stable only; a dev copy would act on real Gmail).
-  let jobApplyMailTriageTimer: NodeJS.Timeout | null = null;
-  let jobApplyMailTriageFirst: NodeJS.Timeout | null = null;
-  let jobApplyMailTriageRunning = false;
-  const runJobApplyMailTriage = async () => {
-    if (jobApplyMailTriageRunning) return;
-    jobApplyMailTriageRunning = true;
-    try {
-      await jobApplyService.triageMailForAllOwners((owner, error) => app.log.warn({ err: error, owner }, "Job Copilot mail triage failed for an owner"));
-    } finally {
-      jobApplyMailTriageRunning = false;
-    }
-  };
-  app.addHook("onReady", async () => {
-    if (!config.instanceJobs["job-apply-mail-triage"] || options.jobApplyMailTriage === false || !config.optionalModules.has("job-copilot")) return;
-    jobApplyMailTriageFirst = setTimeout(() => void runJobApplyMailTriage().catch((error) => app.log.warn({ err: error }, "Job Copilot mail triage failed")), 2 * 60_000);
-    jobApplyMailTriageFirst.unref();
-    jobApplyMailTriageTimer = setInterval(() => void runJobApplyMailTriage().catch((error) => app.log.warn({ err: error }, "Job Copilot mail triage failed")), 15 * 60_000);
-    jobApplyMailTriageTimer.unref();
-  });
-  app.addHook("onClose", async () => {
-    if (jobApplyMailTriageFirst) clearTimeout(jobApplyMailTriageFirst);
-    if (jobApplyMailTriageTimer) clearInterval(jobApplyMailTriageTimer);
-  });
+  // Job Copilot mail triage every 15 minutes (stable only; a dev copy would act on real Gmail).
+  scheduleJobApplyMailTriage(app, { enabled: config.instanceJobs["job-apply-mail-triage"] && options.jobApplyMailTriage !== false && config.optionalModules.has("job-copilot"), triage: (onError) => jobApplyService.triageMailForAllOwners(onError) });
   if (config.optionalModules.has("job-copilot")) registerJobApplyRoutes(app, jobApplyService, {
     store,
     routeOptions: defaultRouteRateLimitOptions,
@@ -6751,7 +6707,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (!session || session.purpose !== "NORMAL" || !session.isActive || session.status === "EXITED" || session.status === "ERROR") {
         throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
       }
-      const prompt = `Job Copilot run ${run.id} started in this pane. Read the space-job-applications skill (SKILL.md), then loop: call space_jobapply space_job_next until it returns done=true; for each application follow the skill's steps (space_job_memory_recall before asking, space_job_fields_record on every step, evidence before VERIFIED) and close it with space_job_report.`;
+      const prompt = `Job Copilot run ${run.id} started in this pane. Read the space-job-applications skill (SKILL.md), then loop: call space_jobapply space_job_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); for each application follow the skill's steps (space_job_memory_recall before asking, space_job_fields_record on every step, evidence before VERIFIED) and close it with space_job_report.`;
       const traceId = `job-apply:${run.id}`;
       await cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
         await cliTerminalManager.sendInput(session.sessionId, prompt, traceId, null, `${traceId}:kickoff`);
@@ -6776,7 +6732,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const mailCopilotRepository = options.mailCopilotRepository ?? (config.databaseUrl ? PostgresMailCopilotRepository.fromConnectionString(config.databaseUrl) : new InMemoryMailCopilotRepository());
   app.addHook("onClose", () => mailCopilotRepository.dispose());
   const mailCopilotPaneRooms = new Map<string, string>();
+  const mailCopilotKickoff = createMailCopilotKickoff({ store, terminal: cliTerminalManager, send: options.mailCopilotKickoff });
   const mailCopilotService = createMailCopilotService({
+    kickoff: mailCopilotKickoff,
     google: () => options.mailCopilotGoogle ?? connectorServiceRef.current,
     gmailFetch: options.mailCopilotGmailFetch,
     repository: mailCopilotRepository,
@@ -6819,23 +6777,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (config.instanceJobs["mail-copilot-sync"] && options.mailCopilotSync !== false && config.optionalModules.has("mail-copilot")) mailCopilotSync.start();
   });
   app.addHook("onClose", async () => mailCopilotSync.stop());
+  registerCodexQuotaResetWatch(app, { enabled: config.instanceJobs["codex-quota-reset-notify"], usage: toolbarUsageProvider, store, notifications: notificationService });
   if (config.optionalModules.has("mail-copilot")) registerMailCopilotRoutes(app, mailCopilotService, {
     store,
     routeOptions: defaultRouteRateLimitOptions,
-    // The run's kickoff goes through the pane CLI input path Room Agent uses (typed line + Enter).
-    kickoff: options.mailCopilotKickoff ?? (async (pane, run) => {
-      const session = await store.getActivePaneCliSession(pane.id);
-      if (!session || session.purpose !== "NORMAL" || !session.isActive || session.status === "EXITED" || session.status === "ERROR") {
-        throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
-      }
-      const prompt = `Mail Copilot run ${run.id} started in this pane. Read the space-mail-copilot skill (SKILL.md), then loop: call space_mailcopilot space_mail_next until it returns done=true; for each item read context.habits (how the operator handled this sender and this kind of mail on this account) and recall memory (space_mail_memory_recall), decide within the pane's autonomy (Assist: draft and space_mail_review_request, never send on your own), learn what the operator teaches you, and close the item with space_mail_report.`;
-      const traceId = `mail-copilot:${run.id}`;
-      await cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
-        await cliTerminalManager.sendInput(session.sessionId, prompt, traceId, null, `${traceId}:kickoff`);
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:kickoff-submit`);
-      });
-    }),
+    kickoff: mailCopilotKickoff.send,
     authenticatedOwner: async (request) => {
       if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
         throw new GitControlError("UNAUTHENTICATED", "Sign in to use Mail Copilot.", 401);
@@ -6847,14 +6793,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     parseQuery,
     audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "mail_copilot", targetId, metadata })
   });
-  const marketingCopilotService = !config.optionalModules.has("marketing-copilot") ? undefined : registerMarketingCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.marketingCopilotRepository, kickoff: options.marketingCopilotKickoff, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["marketing-copilot-scheduler"] && options.marketingCopilotScheduler !== false, metrics: config.instanceJobs["marketing-copilot-metrics"] && options.marketingCopilotMetrics !== false,
+  const paneBrowserAccounts: { current: PaneBrowserAccountControl | null } = { current: null };
+  const marketingCopilotService = !config.optionalModules.has("marketing-copilot") ? undefined : registerMarketingCopilot(app, { store, eventBus, paneBrowserAccounts, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.marketingCopilotRepository, kickoff: options.marketingCopilotKickoff, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["marketing-copilot-scheduler"] && options.marketingCopilotScheduler !== false, metrics: config.instanceJobs["marketing-copilot-metrics"] && options.marketingCopilotMetrics !== false,
     assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "marketing_copilot", targetId, metadata }),
     authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use Marketing Copilot.", 401); return (await store.upsertUser(request.user)).id; } });
+  const freelanceCopilotService = !config.optionalModules.has("freelance-copilot") ? undefined : registerFreelanceCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.freelanceCopilotRepository, kickoff: options.freelanceCopilotKickoff, crypto: createConnectorCrypto(process.env.SPACE_CONNECTOR_SECRET || auth.sessionSecret), mailboxes: options.freelanceCopilotMailboxes ?? createImapMailboxFactory(), routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["freelance-copilot-scheduler"] && options.freelanceCopilotScheduler !== false,
+    assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
+    authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use Freelance Copilot.", 401); return (await store.upsertUser(request.user)).id; } });
 
-  const paneBrowserAccounts: { current: PaneBrowserAccountControl | null } = { current: null };
   registerCliBrowserBridgeRoutes(app, {
-    options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility,
-    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
+    options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity,
+    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
   });
 
   async function withYouTubeAccountLock<T>(paneId: string, operation: () => Promise<T>): Promise<T> {
@@ -6883,25 +6832,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const key = profileId.split(":")[3];
     return key && /^[a-f0-9]{64}$/.test(key) ? key : null;
   }
-  // What a pane opens: its explicit choice, else the user's primary Google account
-  // (one shared profile for every pane), else the pane's own profile.
-  async function resolvePaneBrowserAccount(userId: string, pane: Pane): Promise<PaneBrowserAccount> {
-    const selectedProfileId = await paneGoogleAccountSelection(userId, pane);
+  // What a pane opens: its explicit choice (Freelance: in its own Chrome with its routes, beside the account's shared Chrome),
+  // else the user's primary Google account (one shared profile for every pane), else the pane's own profile. `choice`: one tab's account.
+  async function resolvePaneBrowserAccount(userId: string, pane: Pane, choice?: string | null): Promise<PaneBrowserAccount> {
+    const selectedProfileId = choice !== undefined ? choice : await paneGoogleAccountSelection(userId, pane);
     if (selectedProfileId === privatePaneProfileId) return { selectedProfileId, profileKey: null };
     const account = await selectedGoogleBrowserAccount(userId, pane, selectedProfileId);
-    if (account) return { selectedProfileId, account, profileKey: null };
+    if (account) return pane.mode === "FREELANCE_COPILOT" ? { selectedProfileId, profileKey: createHash("sha256").update(JSON.stringify([userId, account.id])).digest("hex") } : { selectedProfileId, account, profileKey: null };
     if (selectedProfileId !== null) {
       if (!await store.getCliAccountProfile("cli:gemini", selectedProfileId)) {
         throw new SpaceConflictError("The selected Google account is no longer available. Choose another account.");
       }
       const key = youtubeAccountProfileKey(await youtubeAccountOwner(userId, pane), selectedProfileId)!;
-      // A CLI (Gemini) account is one Chrome profile for all of the user's panes; proof rooms stay per pane.
+      // A CLI (Gemini) account is one Chrome profile for all of the user's panes; proof rooms and Freelance stay per pane.
       // The per-pane key stays alongside so an older Browser Host keeps the pane's own legacy profile.
-      return (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF"
+      return pane.mode === "FREELANCE_COPILOT" || (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF"
         ? { selectedProfileId, profileKey: key }
         : { selectedProfileId, profileKey: key, sharedProfileKey: key };
     }
-    if ((await store.getRoom(pane.roomId)).kind !== "AGENT_PROOF") {
+    if (pane.mode !== "FREELANCE_COPILOT" && (await store.getRoom(pane.roomId)).kind !== "AGENT_PROOF") { // Freelance: its own profile and routes
       const primary = (await store.listGoogleAccounts(userId)).find(candidate => candidate.isPrimary);
       if (primary) return { selectedProfileId: null, account: primary, profileKey: null };
     }
@@ -6911,7 +6860,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // user's Google accounts, that sign-in moves once into the account's shared profile
   // so every Browser and YouTube pane reuses it.
   async function adoptPaneSignIn(userId: string, pane: Pane, resolved: PaneBrowserAccount, actor: BrowserHostActorContext): Promise<PaneBrowserAccount> {
-    if (resolved.selectedProfileId === privatePaneProfileId || resolved.sharedProfileKey || (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") return resolved;
+    if (pane.mode === "FREELANCE_COPILOT" || resolved.selectedProfileId === privatePaneProfileId || resolved.sharedProfileKey || (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") return resolved;
     const byDefault = Boolean(resolved.account) && resolved.selectedProfileId === null;
     const active = await store.getActivePaneBrowserSession(pane.id);
     if (active) {
@@ -6975,15 +6924,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return resolved.account?.id ?? resolved.selectedProfileId;
     } catch { return null; }
   }
-  // The newest closed Job/Marketing Copilot pane of the room and kind (pruning keeps it): a new one continues its browser
+  // The newest closed Job/Marketing/Freelance Copilot pane of the room and kind (pruning keeps it): a new one continues its browser
   // account, tabs and view (Job Copilot also its terminal). shortcut: same room only; look across rooms if that becomes common.
   async function previousCopilotPane(pane: Pane): Promise<Pane | null> {
-    if (pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") return null;
+    if (pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") return null;
     const closed = (await store.listPanes(pane.roomId, true)).filter((entry) => entry.mode === pane.mode && entry.isClosed && entry.id !== pane.id);
     return closed.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))[0] ?? null;
   }
   async function initializeNewPaneGoogleAccount(userId: string, pane: Pane): Promise<void> {
-    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") return;
+    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") return; // Freelance Copilot keeps its own profile (its own routes).
     const owner = await youtubeAccountOwner(userId, pane);
     const room = await store.getRoom(pane.roomId);
     const accounts = room.kind === "AGENT_PROOF" ? [] : await store.listGoogleAccounts(userId);
@@ -7065,7 +7014,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   paneBrowserAccounts.current = registerPaneBrowserRoutes(app, {
     config, readGeminiAccountProfileDetails, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions, cliBrowserCdpProxy,
-    youtubePlaybackStore, youtubeAccountStore, browserAccountStore, youtubeSessionStarts, youtubeAccountOperations,
+    controlActivity: browserControlActivity, youtubePlaybackStore, youtubeAccountStore, browserAccountStore, youtubeSessionStarts, youtubeAccountOperations,
     withYouTubeAccountLock, youtubeAccountOwner, selectedGoogleBrowserAccount, paneGoogleAccountSelection,
     resolvePaneBrowserAccount, adoptPaneSignIn, effectivePaneProfileId, browserAccountChoices, previousCopilotPane,
     onJobCopilotAccountSelected: async (userId, email) => { await jobApplyService.setGoogleAccount(userId, email); }
@@ -7719,8 +7668,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     websocketRouteOptions: defaultWebsocketRateLimitOptions, assertRoomAccess
   });
 
-  const { livePersonalMemory } = registerLiveRoutes(app, { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess });
-  registerCouncil(app, { config, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, claudeUsageProvider, jobApplyRepository, jobApplyService, livePersonalMemory, canonicalMemory });
+  const { livePersonalMemory } = registerLiveRoutes(app, { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, readDashboardAgents });
+  registerCouncil(app, { config, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, claudeUsageProvider, jobApplyRepository, jobApplyService, livePersonalMemory, canonicalMemory, notifications: notificationService });
 
   registerVoiceAttachmentRoutes(app, { config, store, routeOptions: defaultRouteRateLimitOptions });
 
@@ -7740,7 +7689,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const health = provider.status === "VERIFIED" ? "HEALTHY" : provider.status === "ERROR" ? "UNAVAILABLE" : "UNKNOWN";
       // Codex runs through Space Gateway; the codex-lb route these providers named is retired.
       const canSwitch = false;
-      const reason = supported ? "Codex runs through Space Gateway." : "Provider does not expose a supported Codex-LB route.";
+      const reason = supported ? "Codex runs through Space Gateway." : "Provider does not expose a supported Space Gateway route.";
       return {
         providerId: provider.id,
         displayName: provider.displayName,
@@ -7935,7 +7884,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     recordAudit: (request, input) => recordAudit(store, request, input)
   });
   registerCliMaintenanceRoutes(app, {
-    store, cliMaintenanceManager, cliUpdateAllRunner,
+    store, cliMaintenanceManager, cliUpdateAllRunner, notifications: notificationService,
     recordAudit: (request, input) => recordAudit(store, request, input)
   });
   const maintenanceAutopilotTesting = process.env.NODE_ENV === "test" || process.env.VITEST === "true";

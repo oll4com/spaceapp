@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideStreamingModeration } from "../src/moderation.js";
+import { decideStreamingModeration, isModerationCandidate } from "../src/moderation.js";
 
 describe("streaming moderation policy", () => {
   it("does not punish criticism, capitals, or an isolated swear", () => {
@@ -23,5 +23,23 @@ describe("streaming moderation policy", () => {
   });
   it("applies a thirty minute timeout to explicit threats without Jev", () => {
     expect(decideStreamingModeration({ message: "I will kill you", previousStrikes: 0, protectedAccount: false })).toMatchObject({ decision: "TIMEOUT_30M", durationSeconds: 1800 });
+  });
+  it("matches accents, final sigma, curly apostrophes and spoken contractions", () => {
+    const decide = (message: string) => decideStreamingModeration({ message, previousStrikes: 0, protectedAccount: false }).decision;
+    expect(decide("ΕΙΣΑΙ ΗΛΙΘΙΟΣ")).toBe("WARN");
+    expect(decide("εισαι αχρηστος")).toBe("WARN");
+    expect(decide("You\u2019re an idiot")).toBe("WARN");
+    expect(decide("I'm gonna kill you")).toBe("TIMEOUT_30M");
+    expect(decide("i am going to hurt the streamer")).toBe("TIMEOUT_30M");
+    expect(decide("Θα σε βρω και θα σε κανονίσω")).toBe("TIMEOUT_30M");
+    expect(decide("θα σου κάνω κακό")).toBe("TIMEOUT_30M");
+  });
+  it("sends every policy phrase through the pre-filter and leaves ordinary chat alone", () => {
+    for (const message of ["Είσαι άχρηστος", "ΗΛΙΘΙΕ", "θα σε βρω", "I\u2019ll kill you", "here is your address", "βρήκα τη διεύθυνσή σου"]) {
+      expect(isModerationCandidate(message), message).toBe(true);
+    }
+    for (const message of ["great stream!", "τι ώρα είναι το επόμενο live;", "what model is this?"]) {
+      expect(isModerationCandidate(message), message).toBe(false);
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { jobApplyMailboxConnected, type Artifact, type ConnectorCapability, type JobApplyCandidate, type JobApplyPaneMetadata, type JobApplyProfile, type JobApplySite, type JobCopilotLaunchSettings, type Pane } from "@space/contracts";
+import { jobApplyMailboxConnected, type Artifact, type ConnectorCapability, type JobApplyCandidate, type JobApplyPaneMetadata, type JobApplyPostalAddress, type JobApplyProfile, type JobApplySite, type JobCopilotLaunchSettings, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { BROWSER_PANE_ACCOUNT_SELECTED_EVENT, dispatchBrowserPaneActionEvent } from "../browser-pane/events.js";
 import { GoogleAccountMenuItems } from "../browser-pane/GoogleAccountMenuItems.js";
@@ -26,6 +26,8 @@ export function jobCopilotGoogleConsentUrl(email: string): string {
 }
 const SITES: JobApplySite[] = ["linkedin", "greenhouse", "ashby", "lever", "workday", "indeed", "other"];
 const SITE_LABEL: Record<JobApplySite, string> = { linkedin: "LinkedIn", greenhouse: "Greenhouse", ashby: "Ashby", lever: "Lever", workday: "Workday", indeed: "Indeed", other: "Other" };
+
+const EMPTY_ADDRESS: JobApplyPostalAddress = { line1: null, line2: null, city: null, region: null, postalCode: null, country: null };
 
 /** Facts the copilot needs before it can answer forms truthfully; the meter counts these. */
 export const PROFILE_COMPLETENESS_FIELDS: Array<keyof JobApplyCandidate> = [
@@ -224,6 +226,18 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, switching
     </label>
   );
 
+  const address: JobApplyPostalAddress = candidate.address ?? EMPTY_ADDRESS;
+  // An address with every field cleared is stored as no address.
+  const addressText = (key: keyof JobApplyPostalAddress, label: string) => (
+    <label className="jc-field">
+      <span>{label}</span>
+      <input value={address[key] ?? ""} onChange={(event) => {
+        const next = { ...address, [key]: event.target.value || null };
+        setCandidate({ ...candidate, address: Object.values(next).some(Boolean) ? next : null });
+      }} />
+    </label>
+  );
+
   const stepDone: Record<SetupStep, boolean> = {
     profile: Boolean(profile.cvArtifactId && profile.candidate.fullName && profile.candidate.email),
     mailbox: jobApplyMailboxConnected(profile),
@@ -286,6 +300,18 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, switching
               <span>Summary</span>
               <textarea rows={3} value={candidate.summary ?? ""} onChange={(event) => setCandidate({ ...candidate, summary: event.target.value || null })} />
             </label>
+          </section>
+          <section className="jc-form-section">
+            <h4>Postal address</h4>
+            <p className="jc-muted">Used only for application forms that require it.</p>
+            <div className="jc-form-grid">
+              {addressText("line1", "Street address")}
+              {addressText("line2", "Address line 2")}
+              {addressText("city", "City")}
+              {addressText("region", "State / province")}
+              {addressText("postalCode", "Postal code")}
+              {addressText("country", "Country")}
+            </div>
           </section>
           <section className="jc-form-section">
             <h4>Eligibility and expectations</h4>

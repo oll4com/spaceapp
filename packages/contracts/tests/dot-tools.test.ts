@@ -35,7 +35,7 @@ describe("Space Dots tool catalog", () => {
     }
     expect(catalog.find((entry) => entry.id === "installed.space_ops")?.availability).toBe("FORBIDDEN");
     expect(catalog.find((entry) => entry.id === "installed.playwright")).toMatchObject({ availability: "AVAILABLE", invocation: "DISPATCHER" });
-    expect(catalog.find((entry) => entry.id === "space.screenshot")?.availability).toBe("UNAVAILABLE");
+    expect(catalog.find((entry) => entry.id === "space.screenshot")).toMatchObject({ availability: "AVAILABLE", risk: "READ" });
   });
 
   it("derives role, risk and availability from the current context", () => {

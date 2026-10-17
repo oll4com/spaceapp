@@ -22,7 +22,7 @@ export interface OtlpSpan {
   spanId: string;
   parentSpanId: string | null;
   name: string;
-  /** OTLP span kind. Defaults to 2 (SPAN_KIND_SERVER), the API request span kind. */
+  /** OTLP span kind. Defaults to 2 (SPAN_KIND_SERVER), the API request span kind. Worker activities use 1 (SPAN_KIND_INTERNAL). */
   kind?: number;
   startTimeUnixNano: bigint;
   endTimeUnixNano: bigint;
@@ -82,18 +82,17 @@ function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
-export function otlpTraceRequest(spans: readonly OtlpSpan[], serviceName: string, scopeName = "space-api") {
+export function otlpTraceRequest(spans: readonly OtlpSpan[], serviceName: string, scopeName?: string) {
   return {
     resourceSpans: [{
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
-        scope: { name: scopeName },
+        scope: { name: scopeName ?? serviceName },
         spans: spans.map(span => ({
           traceId: span.traceId,
           spanId: span.spanId,
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
-          // SPAN_KIND_SERVER (2) by default, or SPAN_KIND_INTERNAL (1)
           kind: span.kind ?? 2,
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
@@ -122,7 +121,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const batchSize = options.batchSize ?? 256;
   const maxQueue = options.maxQueue ?? 4096;
   const timeoutMs = options.timeoutMs ?? 3000;
-  const scopeName = options.scopeName ?? "space-api";
+  const scopeName = options.scopeName;
   const queue: OtlpSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
@@ -178,7 +177,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
 }
 
 /** The exporter configured by SPACE_OTEL_EXPORTER_OTLP_ENDPOINT, or null when export is off. */
-export function otlpSpanExporterFromEnv(env: NodeJS.ProcessEnv, serviceName: string, scopeName = "space-api"): SpanExporter | null {
+export function otlpSpanExporterFromEnv(env: NodeJS.ProcessEnv, serviceName: string, scopeName?: string): SpanExporter | null {
   const endpoint = env.SPACE_OTEL_EXPORTER_OTLP_ENDPOINT;
   return otlpTracesUrl(endpoint) ? createOtlpSpanExporter({ endpoint: endpoint!, serviceName, scopeName }) : null;
 }

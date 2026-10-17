@@ -96,7 +96,7 @@ export function selectTerminalPaneTitleGeneration(
     null;
 
   if (!selectedProvider) {
-    throw new Error("No verified Codex-LB provider is available for CLI title generation.");
+    throw new Error("No verified Space Gateway provider is available for CLI title generation.");
   }
 
   const selectedModel =
@@ -436,12 +436,12 @@ export async function generateTerminalPaneTitle(
 ): Promise<GenerateTerminalPaneTitleResult> {
   const providerBaseUrl = input.provider.baseUrl ?? input.config.codexLbBaseUrl;
   if (!providerBaseUrl || !backedByCodexLb(input.provider)) {
-    throw new Error("CLI title generation requires a verified Codex-LB-backed provider.");
+    throw new Error("CLI title generation requires a verified Space Gateway-backed provider.");
   }
   const keyPath = input.provider.credentialRef?.startsWith("/") ? input.provider.credentialRef : input.config.codexLbKeyFile;
   const keyLabel = input.config.codexLbKeyName ?? (keyPath ? basename(keyPath) : null);
   if (!keyPath || !keyLabel?.startsWith("space-")) {
-    throw new Error("Dedicated Space Codex-LB credentials are required for CLI title generation.");
+    throw new Error("Dedicated Space Gateway credentials are required for CLI title generation.");
   }
   const readFileImpl = options.readFileImpl ?? ((path: string) => import("node:fs/promises").then((module) => module.readFile(path, "utf8")));
   const credential = (await readFileImpl(keyPath)).trim();

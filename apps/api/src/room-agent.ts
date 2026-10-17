@@ -293,7 +293,8 @@ export async function completeRoomAgentPrompt(input: {
       const res = await fetch(`${codexServiceRoot(codexLbBaseUrl)}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-        signal: AbortSignal.timeout(Math.min(timeoutMs, 10_000)),
+        // The whole budget: the model often needs 11-39 s, and a 10 s cap ended as "no model could decide this prompt".
+        signal: AbortSignal.timeout(timeoutMs),
         body: JSON.stringify({ model: bareModel, messages: [{ role: "system", content: systemPrompt }, { role: "user", content }] })
       });
       if (res.ok) {

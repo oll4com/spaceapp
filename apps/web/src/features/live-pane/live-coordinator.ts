@@ -1,6 +1,10 @@
 import type { createLiveHistorySync } from "./live-history-sync.js";
 import type { ControlWatch, LiveRoomContext } from "@space/contracts";
 import type { LiveInputPart, LiveSessionCallbacks, LiveSessionHandle, LiveSessionOptions, LiveTranscriptItem } from "./live-session.js";
+import { updateLiveSessionStats } from "./live-stats.js";
+import { isSilentWatch } from "./live-watch-notices.js";
+
+import { liveDeclinedSince, liveUserTurn, noteLiveUserText, noteLiveUserTurn } from "./live-command-origin.js";
 
 export type LiveStatus = "idle" | "connecting" | "active" | "listening" | "thinking" | "speaking" | "error";
 export interface LiveCoordinatorState {
@@ -23,7 +27,7 @@ export function createLiveCoordinator(deps: {
   onTurn?: (item: LiveTranscriptItem) => void;
   notifications?: { list: () => Promise<ControlWatch[]>; ack: (roomId: string, id: string) => Promise<unknown>; visible: () => boolean };
   /** Further spoken notices (the Room Agent's questions for the operator), delivered after watches, one per round. */
-  announcements?: { list: () => Promise<Array<{ id: string; roomId: string; text: string }>>; ack: (id: string) => void };
+  announcements?: { list: () => Promise<Array<{ id: string; roomId: string; roomName?: string; text: string }>>; ack: (id: string) => void };
 }) {
   let state: LiveCoordinatorState = { ownerId: "", roomId: null, roomName: "", context: null, contextState: "unavailable", status: "idle", enabled: false, muted: false, error: null, transcripts: [], handle: null };
   const listeners = new Set<() => void>();
@@ -48,6 +52,7 @@ export function createLiveCoordinator(deps: {
   let hasConnected = false;
   let inputActive = false;
   let lastInputAt = 0;
+  let connectStartedAt = 0, inputEndedAt = 0;
   let notificationTimer: ReturnType<typeof setTimeout> | null = null;
   let notificationBusy = false;
   let historyRead: Promise<void> = Promise.resolve();
@@ -75,6 +80,7 @@ export function createLiveCoordinator(deps: {
     }
     patch({ transcripts: next.slice(-200) });
     const turn = next[index < 0 ? next.length - 1 : index]!;
+    if (turn.role === "user") noteLiveUserText(turn.text);
     deps.onTurn?.(turn); if (persistTurn) deps.history?.enqueue(turn);
   };
   const scheduleNotifications = () => {
@@ -88,19 +94,22 @@ export function createLiveCoordinator(deps: {
     const version = generation;
     try {
       const watches = await deps.notifications.list();
-      const notices: Array<{ id: string; roomId: string; text: string; ack: () => unknown }> = watches.slice(0, 20).map(watch => ({
+      const notices: Array<{ id: string; roomId: string; roomName?: string; text: string; ack: () => unknown; silent?: boolean }> = watches.slice(0, 20).map(watch => ({
         id: `watch:${watch.id}`, roomId: watch.roomId, ack: () => deps.notifications!.ack(watch.roomId, watch.id),
+        silent: isSilentWatch(watch),
         text: `${watch.paneDetails?.title ?? watch.paneId}: ${watch.status === "VERIFIED" ? "Task completed" : watch.status.toLowerCase()}. ${watch.reason ?? ""} (Room: ${watch.roomId})` }));
       if (deps.announcements) {
         const announcements = await deps.announcements.list().catch(() => []);
-        notices.push(...announcements.slice(0, 10).map(notice => ({ id: `room-agent:${notice.id}`, roomId: notice.roomId, text: notice.text, ack: () => deps.announcements!.ack(notice.id) })));
+        notices.push(...announcements.slice(0, 10).map(notice => ({ id: `room-agent:${notice.id}`, roomId: notice.roomId, roomName: notice.roomName, text: notice.text, ack: () => deps.announcements!.ack(notice.id) })));
       }
       for (const notice of notices) {
         if (disposed || generation !== version || !deps.notifications.visible() || inputActive || Date.now() - lastInputAt < 1500 || !state.handle || !["active", "listening"].includes(state.status)) break;
+        // A cancelled watch (its pane closed) is acknowledged only: neither spoken nor added to the conversation.
+        if (notice.silent) { await notice.ack(); continue; }
         const id = notice.id;
         const alreadyPresented = state.transcripts.some(item => item.id === id);
         if (!alreadyPresented) {
-          const item: LiveTranscriptItem = { id, roomId: notice.roomId, roomName: notice.roomId, role: "system", timestamp: new Date().toISOString(), createdAtMs: Date.now(),
+          const item: LiveTranscriptItem = { id, roomId: notice.roomId, roomName: notice.roomName || notice.roomId, role: "system", timestamp: new Date().toISOString(), createdAtMs: Date.now(),
             text: notice.text };
           if (!await deps.history.persistNotification(item)) continue;
           if (generation !== version || disposed) return;
@@ -152,17 +161,22 @@ export function createLiveCoordinator(deps: {
     const version = resume ? generation : ++generation;
     const old = state.handle;
     patch({ enabled: true, status: "connecting", handle: null, error: null }); persist();
+    connectStartedAt = Date.now(); inputEndedAt = 0;
     if (!resume) old?.close();
-    await Promise.all([refreshContext(), historyRead]);
+    // The room context reaches the open session through updateContext; the microphone never waits for it.
+    void refreshContext();
+    await historyRead;
     if (version !== generation || disposed || !state.enabled) { if (version === generation) starting = false; return; }
     const current = () => version === generation && !disposed && state.enabled;
     const callbacks: LiveSessionCallbacks = {
-      onInputStart: () => { if (current()) { if (!inputActive) { inputRoom = state.roomId; commandEpoch++; } inputActive = true; lastInputAt = Date.now(); } },
-      onInputEnd: () => { if (current()) { inputActive = false; lastInputAt = Date.now(); } },
+      onInputStart: () => { if (current()) { if (!inputActive) inputRoom = state.roomId; inputActive = true; lastInputAt = Date.now(); } },
+      onInputEnd: () => { if (current()) { inputActive = false; lastInputAt = inputEndedAt = Date.now(); } },
       onTranscriptUpdate: item => { if (current()) { if (item.role === "user") { lastInputAt = Date.now(); if (!item.isDelta) inputActive = false; } addTurn(item); } },
       onStatusChange: status => {
         if (!current()) return;
         patch({ status });
+        if ((status === "active" || status === "listening") && connectStartedAt) { updateLiveSessionStats({ connectMs: Date.now() - connectStartedAt }); connectStartedAt = 0; }
+        if (status === "speaking" && inputEndedAt) { updateLiveSessionStats({ lastReplyMs: Date.now() - inputEndedAt }); inputEndedAt = 0; }
         if (status === "idle" || status === "error") scheduleReconnect();
         else if (status === "active" || status === "listening") reconnectAttempts = 0;
       },
@@ -183,10 +197,12 @@ export function createLiveCoordinator(deps: {
       }
       connectionOptions = { ...deps.config(), ...configured, userId: state.ownerId, liveSessionId, muted: state.muted, managedNotifications: true, roomId: state.roomId!, roomContext: state.context ?? undefined,
         transcripts: state.transcripts, suppressGreeting: hasConnected || state.transcripts.length > 0,
-        getCommandRoom: () => state.contextState !== "unavailable" && inputRoom === state.roomId ? state.roomId ?? undefined : undefined,
+        // A command belongs to the room the user spoke in. It ends with navigation, stop or a later refusal, never
+        // because the user kept talking or the room context failed to load (the tools read the room themselves).
+        getCommandRoom: () => (inputRoom ?? state.roomId) === state.roomId ? state.roomId ?? undefined : undefined,
         captureCommandRoom: () => {
-          const epoch = commandEpoch, room = inputRoom;
-          return () => epoch === commandEpoch && state.enabled && state.contextState !== "unavailable" && room === state.roomId
+          const epoch = commandEpoch, room = inputRoom ?? state.roomId, turn = liveUserTurn();
+          return () => epoch === commandEpoch && state.enabled && room === state.roomId && !liveDeclinedSince(turn)
             ? room ?? undefined : undefined;
         }
       };
@@ -259,8 +275,9 @@ export function createLiveCoordinator(deps: {
     setMuted(muted: boolean) { patch({ muted }); state.handle?.setMuted(muted); persist(); },
     send(parts: LiveInputPart[]) {
       if (!state.handle) throw new Error("Live is not connected.");
-      if (state.contextState !== "ready") throw new Error("Room context is still loading. Please try again.");
-      inputRoom = state.roomId; commandEpoch++; lastInputAt = Date.now();
+      if (!state.roomId) throw new Error("Open a room before talking to Live.");
+      inputRoom = state.roomId; lastInputAt = Date.now(); noteLiveUserTurn();
+      noteLiveUserText(parts.map(part => part.type === "text" ? part.text : "").join(" "));
       if (state.handle.sendInput) return state.handle.sendInput(parts);
       if (parts.some(p => p.type !== "text")) throw new Error("Attachments are unavailable for this voice provider.");
       for (const part of parts) if (part.type === "text") state.handle.sendTextMessage(part.text);

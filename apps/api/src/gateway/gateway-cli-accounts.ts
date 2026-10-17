@@ -8,6 +8,8 @@ import type { GatewayAdminService } from "./gateway-service.js";
  */
 export const gatewayCliAccountProfiles: Readonly<Partial<Record<string, { profileId: string; provider: GatewayProvider }>>> = {
   "cli:claude": { profileId: "space-gateway", provider: "CLAUDE" },
+  // Antigravity: the profile runs on the main account's sign-in and the gateway picks a pooled Google account per model call.
+  "cli:gemini": { profileId: "space-gateway", provider: "ANTIGRAVITY" },
   // GitHub Copilot BYOK: the profile's model calls go to the gateway's ChatGPT (Codex) accounts.
   "cli:copilot": { profileId: "space-gateway", provider: "CODEX" }
 };
@@ -19,6 +21,8 @@ export interface GatewayCliAccounts {
   gatewayProfile(runtimeId: string): Promise<{ profileId: string; ready: boolean } | null>;
   /** The profile a new pane of the CLI starts on when it names none: the gateway profile when ready, else null. */
   newPaneProfileId(runtimeId: string): Promise<string | null>;
+  /** Space Control's panes.open: the ready gateway profile when the request names no account or names that profile. */
+  openProfileId(runtimeId: string, requested: unknown): Promise<string | null>;
 }
 
 export function createGatewayCliAccounts(options: {
@@ -47,11 +51,17 @@ export function createGatewayCliAccounts(options: {
     return { profileId: entry.profileId, ready: await serves(entry.provider) };
   }
 
+  async function newPaneProfileId(runtimeId: string) {
+    const profile = await gatewayProfile(runtimeId);
+    return profile?.ready ? profile.profileId : null;
+  }
+
   return {
     gatewayProfile,
-    async newPaneProfileId(runtimeId) {
-      const profile = await gatewayProfile(runtimeId);
-      return profile?.ready ? profile.profileId : null;
+    newPaneProfileId,
+    async openProfileId(runtimeId, requested) {
+      const profileId = await newPaneProfileId(runtimeId);
+      return requested == null || requested === profileId ? profileId : null;
     }
   };
 }

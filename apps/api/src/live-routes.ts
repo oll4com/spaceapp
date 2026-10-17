@@ -31,6 +31,8 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
   roomAgentService: RoomAgentService;
   routeOptions: Pick<RouteShorthandOptions, "config">;
   assertRoomAccess: (roomId: string, user: AuthUser | null | undefined) => Promise<Room>;
+  /** The Agents Dashboard sample, so Live and the Dashboard agree on who is working. */
+  readDashboardAgents?: (roomId: string) => Promise<{ activity: Record<string, string> }>;
 }) {
   const { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions,
     assertRoomAccess } = options;
@@ -184,8 +186,9 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
     const pending = liveContextReads.get(key);
     if (pending) return pending;
     const read = (async () => {
-      const [panes, mission] = await Promise.all([store.listPanes(roomId), roomAgentService.inspectMission(roomId).catch(() => null)]);
-      return buildLiveRoomContext({ room, panes, objective: mission?.snapshot?.objective,
+      const [panes, mission, board] = await Promise.all([store.listPanes(roomId), roomAgentService.inspectMission(roomId).catch(() => null),
+        options.readDashboardAgents?.(roomId).catch(() => null) ?? null]);
+      return buildLiveRoomContext({ room, panes, objective: mission?.snapshot?.objective, dashboard: board?.activity,
         inspect: pane => roomPaneController.inspect(pane, fresh === "true" ? { fresh: true } : undefined) });
     })();
     liveContextReads.set(key, read);

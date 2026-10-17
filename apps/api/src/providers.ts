@@ -45,7 +45,7 @@ function maskCredential(value: string): string {
 function modelsUrl(baseUrl: string): string {
   const base = new URL(baseUrl);
   if (base.protocol !== "http:" && base.protocol !== "https:") {
-    throw new Error("Codex-LB base URL must use http or https.");
+    throw new Error("Space Gateway base URL must use http or https.");
   }
   const normalized = base.href.endsWith("/") ? base.href : `${base.href}/`;
   return new URL("models", normalized).toString();
@@ -209,7 +209,7 @@ export async function validateProviderCredential(
       providerId,
       status: "ERROR",
       code: "SMOKE_FAILED",
-      statusReason: `Provider ${providerId} is not registered for Codex-LB validation.`,
+      statusReason: `Provider ${providerId} is not registered for Space Gateway validation.`,
       maskedKeyPrefix: null,
       credentialLabel: null,
       modelCount: null
@@ -225,7 +225,7 @@ export async function validateProviderCredential(
       providerId,
       status: "DISABLED",
       code: "MISSING_CONFIG",
-      statusReason: "A Codex-LB compatible base URL and key file are required before provider credential smoke.",
+      statusReason: "A Space Gateway compatible base URL and key file are required before provider credential smoke.",
       maskedKeyPrefix: null,
       credentialLabel: label,
       modelCount: null
@@ -237,7 +237,7 @@ export async function validateProviderCredential(
       providerId,
       status: "ERROR",
       code: "KEY_NAME_NOT_DEDICATED",
-      statusReason: "Codex-LB key label must start with space- before Space can validate it.",
+      statusReason: "Space Gateway key label must start with space- before Space can validate it.",
       maskedKeyPrefix: null,
       credentialLabel: label,
       modelCount: null
@@ -253,7 +253,7 @@ export async function validateProviderCredential(
       providerId,
       status: "ERROR",
       code: "KEY_FILE_UNREADABLE",
-      statusReason: "Codex-LB key file could not be read.",
+      statusReason: "Space Gateway key file could not be read.",
       maskedKeyPrefix: null,
       credentialLabel: label,
       modelCount: null
@@ -265,7 +265,7 @@ export async function validateProviderCredential(
       providerId,
       status: "ERROR",
       code: "KEY_FILE_UNREADABLE",
-      statusReason: "Codex-LB key file is empty.",
+      statusReason: "Space Gateway key file is empty.",
       maskedKeyPrefix: null,
       credentialLabel: label,
       modelCount: null
@@ -286,7 +286,7 @@ export async function validateProviderCredential(
         providerId,
         status: "ERROR",
         code: "SMOKE_FAILED",
-        statusReason: `Codex-LB /models smoke failed with HTTP ${response.status}.`,
+        statusReason: `Space Gateway /models smoke failed with HTTP ${response.status}.`,
         maskedKeyPrefix: maskCredential(credential),
         credentialLabel: label,
         modelCount: null
@@ -299,7 +299,7 @@ export async function validateProviderCredential(
         providerId,
         status: "ERROR",
         code: "SMOKE_FAILED",
-        statusReason: "Codex-LB /models smoke returned an unexpected model-list shape.",
+        statusReason: "Space Gateway /models smoke returned an unexpected model-list shape.",
         maskedKeyPrefix: maskCredential(credential),
         credentialLabel: label,
         modelCount: null
@@ -309,7 +309,7 @@ export async function validateProviderCredential(
       providerId,
       status: "VERIFIED",
       code: "VERIFIED",
-      statusReason: "Codex-LB credential passed /models auth smoke. Runtime use still requires provider enablement gate.",
+      statusReason: "Space Gateway credential passed /models auth smoke. Runtime use still requires provider enablement gate.",
       maskedKeyPrefix: maskCredential(credential),
       credentialLabel: label,
       modelCount: models.length,
@@ -321,7 +321,7 @@ export async function validateProviderCredential(
       providerId,
       status: "ERROR",
       code: "SMOKE_FAILED",
-      statusReason: `Codex-LB /models smoke ${reason}.`,
+      statusReason: `Space Gateway /models smoke ${reason}.`,
       maskedKeyPrefix: maskCredential(credential),
       credentialLabel: label,
       modelCount: null

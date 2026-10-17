@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "./safe-child-process.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { copyFile, open, readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -466,7 +466,8 @@ export async function resolveCodexRolloutPaths(threadIds: string[], codexHome: s
 
 export async function resolveRecentCodexRollouts(
   sinceMs: number,
-  codexHome: string
+  codexHome: string,
+  limit = 200
 ): Promise<Array<{ threadId: string; rolloutPath: string }>> {
   const candidates = [join(codexHome, "state_5.sqlite")];
   try {
@@ -481,7 +482,7 @@ export async function resolveRecentCodexRollouts(
   } catch {}
   const sinceSec = Math.floor(sinceMs / 1000);
   const byThread = new Map<string, string>();
-  const sql = `select id, rollout_path from threads where updated_at >= ${sinceSec} order by updated_at desc limit 200;`;
+  const sql = `select id, rollout_path from threads where updated_at >= ${sinceSec} order by updated_at desc limit ${Math.max(1, Math.min(Math.trunc(limit), 5000))};`;
   for (const dbPath of candidates) {
     try {
       const rows = await runSqliteJson<{ id?: unknown; rollout_path?: unknown }>(dbPath, sql);
@@ -506,7 +507,12 @@ export async function readCodexRolloutTail(path: string): Promise<string> {
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, metadata.size - codexRolloutTailMaxBytes);
     const firstNewline = buffer.indexOf("\n", 0);
     const start = firstNewline === -1 ? 0 : firstNewline + 1;
-    return buffer.toString("utf8", start, bytesRead);
+    // The first line is session_meta (the model provider: through Space Gateway or not); the tail cuts it off.
+    const head = Buffer.alloc(256 * 1024);
+    const { bytesRead: headRead } = await handle.read(head, 0, head.length, 0);
+    const headEnd = head.subarray(0, headRead).indexOf("\n");
+    const sessionMeta = headEnd > 0 && head.toString("utf8", 0, headEnd).includes('"session_meta"') ? head.toString("utf8", 0, headEnd + 1) : "";
+    return sessionMeta + buffer.toString("utf8", start, bytesRead);
   } finally {
     await handle.close();
   }

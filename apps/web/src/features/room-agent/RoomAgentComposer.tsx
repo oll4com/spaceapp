@@ -7,6 +7,8 @@ import {
   convertTextRange,
   createGreekInputState,
   detectKeyboardLayoutMismatch,
+  enterAddsLine,
+  isTouchOnlyDevice,
   handleEnglishKeyInput,
   handleGreekKeyInput,
   insertTextAtCursor,
@@ -129,7 +131,7 @@ export function RoomAgentComposer({ composerRef, draft, onDraftChange, onSubmit,
       toggleLayout(composerRef.current);
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || enterAddsLine(event.nativeEvent)) {
       if (typingLayoutMode === "el" && greekInputStateRef.current.enabled && composerRef.current) {
         const textarea = composerRef.current;
         const handled = handleGreekKeyInput(event, greekInputStateRef.current, (char) => {
@@ -234,7 +236,7 @@ export function RoomAgentComposer({ composerRef, draft, onDraftChange, onSubmit,
         autoCorrect="off"
         autoCapitalize="none"
         spellCheck={false}
-        enterKeyHint="send"
+        enterKeyHint={isTouchOnlyDevice() ? "enter" : "send"}
         data-gramm="false"
         data-enable-grammarly="false"
       />
@@ -268,7 +270,7 @@ export function RoomAgentComposer({ composerRef, draft, onDraftChange, onSubmit,
             ) : null}
           </button>
         ) : null}
-        <span className="room-agent-composer-hint">{showStop ? "Answering…" : "Enter to send"}</span>
+        <span className="room-agent-composer-hint">{showStop ? "Answering…" : isTouchOnlyDevice() ? null : "Enter to send"}</span>
         {showStop ? (
           <DockButton icon={CircleStop} className="room-agent-submit room-agent-stop-button" onClick={onStop} disabled={stopping} busy={stopping}
             aria-label="Stop Room Agent">

@@ -11,11 +11,11 @@ export interface AdminUsers {
   adminUsersListWithLiveCounts: AdminUserItem[];
 }
 
-export function useAdminUsers(role: string | undefined, rooms: Room[]): AdminUsers {
+export function useAdminUsers(role: string | undefined, rooms: Room[], startupReady = true): AdminUsers {
   const [adminUsersList, setAdminUsersList] = useState<AdminUserItem[]>([]);
 
   useEffect(() => {
-    if (role === "ADMIN") {
+    if (role === "ADMIN" && startupReady) {
       api.listAdminUsers()
         .then((res) => {
           if (Array.isArray(res?.users)) {
@@ -24,7 +24,7 @@ export function useAdminUsers(role: string | undefined, rooms: Room[]): AdminUse
         })
         .catch(() => {});
     }
-  }, [role]);
+  }, [role, startupReady]);
 
   const userEmailById = useMemo(() => {
     const map = new Map<string, string>();

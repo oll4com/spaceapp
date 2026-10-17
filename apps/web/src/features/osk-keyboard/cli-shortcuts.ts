@@ -22,6 +22,7 @@ export const OSK_CLI_COMMANDS: readonly OskCliCommand[] = [
   { id: "memory", label: "Save to memory", text: "save to memory", enter: true, icon: "Save" },
   { id: "test", label: "test", text: "test", enter: true, icon: "Terminal" },
   { id: "deploy", label: "Deploy", text: "Deploy the project to Gitea and GitHub.", enter: true, icon: "Rocket" },
+  { id: "promote", label: "Promote", text: "Promote the verified dev version to stable (space-queue promote --wait).", enter: true, icon: "ArrowUpCircle" },
   {
     id: "clean_worktree",
     label: "Clean worktree",
@@ -40,6 +41,7 @@ export const OSK_CLI_COMMANDS: readonly OskCliCommand[] = [
 ] as const;
 
 export const CLEAN_WORKTREE_PROMPT = OSK_CLI_COMMANDS.find((c) => c.id === "clean_worktree")!.text;
+export const PROMOTE_PROMPT = OSK_CLI_COMMANDS.find((c) => c.id === "promote")!.text;
 
 export const PINNED_CLI_SHORTCUT_ID = "continue";
 // Runtime-specific transcript key (Codex Ctrl+T, Claude Code Ctrl+O); appended after the fixed list.

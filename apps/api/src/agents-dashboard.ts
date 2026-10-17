@@ -86,7 +86,7 @@ export async function readDashboardActivity(panes: Pane[], store: SpaceStore,
 
 /** Claude Code's own session status is authoritative over screen heuristics. */
 export function claudeDashboardActivity(native: {
-  status?: string | null; busy: boolean; waitingFor?: string | null; statusUpdatedAt?: string | null; modelId?: string | null;
+  status?: string | null; busy: boolean; waitingFor?: string | null; statusUpdatedAt?: string | null; modelId?: string | null; apiError?: boolean;
   tasks: Array<{ status: string; timing: { startedAt: string | null; completedAt: string | null } }>;
 }): DashboardActivityDetail {
   const latest = native.tasks.at(-1);
@@ -97,6 +97,8 @@ export function claudeDashboardActivity(native: {
   if (native.status === "waiting") {
     return { status: "waiting", reason: waitingReason(native.waitingFor), since: iso(native.statusUpdatedAt), modelId, source: "native" };
   }
+  // Claude ends a turn cut off by a server error like a finished one; the Room Agent tells it to continue.
+  if (native.apiError) return { status: "waiting", reason: "API error", since: iso(native.statusUpdatedAt), modelId, source: "native" };
   if (latest?.status === "COMPLETED") {
     return { status: "done", since: iso(latest.timing.completedAt) ?? iso(native.statusUpdatedAt), modelId, source: "native" };
   }

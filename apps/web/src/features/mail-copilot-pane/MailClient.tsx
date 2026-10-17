@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSPrope
 import { MAIL_SYSTEM_LABELS, mailCopilotConsentUrl, type MailAccountSummary, type MailComposeInput, type MailMessage, type MailThreadAction, type MailThreadSummary } from "@space/contracts";
 import { api } from "../../api.js";
 // The icon pack has no reply/forward glyphs: Undo2 reads as reply, ChevronRight as forward, Mail as the inbox.
-import { Archive, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Folder, Mail, Paperclip, Pencil, RefreshCw, Search, Send, Star, Trash2, Undo2, X } from "../ui-theme/app-icons.js";
+import { Archive, ArrowLeft, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Folder, Mail, Paperclip, Pencil, RefreshCw, Search, Send, Star, Trash2, Undo2, X } from "../ui-theme/app-icons.js";
 import type { MailboxState } from "./useMailbox.js";
 
 const SYSTEM_LABEL_ICONS: Partial<Record<string, typeof Mail>> = { INBOX: Mail, STARRED: Star, SENT: Send, DRAFT: Pencil, TRASH: Trash2, ALL: Archive };
@@ -41,10 +41,10 @@ export function senderInitial(participant: { name: string; address: string }): s
   return (participant.name || participant.address).replace(/^["'\s]+/, "").charAt(0).toUpperCase() || "?";
 }
 
-function SenderAvatar({ participant, account, accountTone, size = "md" }: { participant: { name: string; address: string }; account?: string; accountTone?: string; size?: "md" | "sm" }) {
+function SenderAvatar({ participant, account, accountTone, size = "md", checked = false }: { participant: { name: string; address: string }; account?: string; accountTone?: string; size?: "md" | "sm"; checked?: boolean }) {
   return (
-    <span className={`mc-avatar${size === "sm" ? " sm" : ""}`} style={{ "--avatar-hue": senderHue(participant) } as CSSProperties} aria-hidden="true">
-      {senderInitial(participant)}
+    <span className={`mc-avatar${size === "sm" ? " sm" : ""}${checked ? " checked" : ""}`} style={{ "--avatar-hue": senderHue(participant) } as CSSProperties} aria-hidden="true">
+      {checked ? <Check /> : senderInitial(participant)}
       {accountTone ? <span className="mc-avatar-account" style={{ background: accountTone }} title={account} /> : null}
     </span>
   );
@@ -236,12 +236,14 @@ export function clampListWidth(width: number, clientWidth: number): number {
 const SWIPE_COMMIT = 0.32;
 const UNDO_MS = 6_000;
 type RowAction = "archive" | "trash";
-interface Undo { row: MailThreadSummary; action: RowAction; at: number }
+interface Undo { rows: MailThreadSummary[]; action: RowAction; at: number }
+const rowKey = (row: Pick<MailThreadSummary, "account" | "threadId">) => `${row.account}:${row.threadId}`;
 
 /**
  * The mailbox: one header row (search, refresh, account), label chips, the thread list with a floating Compose
  * button, and the open conversation. Narrow panes show one column at a time like the Gmail phone app; there a row
- * swipes sideways to archive it (or move it to trash outside the inbox), and every removal can be undone.
+ * swipes sideways to archive it (or move it to trash outside the inbox), and every removal can be undone. Tapping a
+ * sender avatar selects its conversation; the selection bar then acts on all of them at once.
  */
 export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: string; mailbox: MailboxState; signature: string | null; stacked: boolean }) {
   const { accounts, labels, threads, thread, selection, selectedThreadId } = mailbox;
@@ -321,32 +323,72 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
     return () => window.clearTimeout(timer);
   }, [undo]);
 
-  const act = useCallback(async (row: MailThreadSummary, action: MailThreadAction["action"], labelIds?: string[]) => {
-    if (busyThread) return;
-    setBusyThread(row.threadId);
+  // Conversations picked with their avatar; the search bar turns into their action bar.
+  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set());
+  const checkedRows = threads.filter((row) => checked.has(rowKey(row)));
+  const toggleChecked = (row: MailThreadSummary) => setChecked((current) => {
+    const next = new Set(current);
+    if (!next.delete(rowKey(row))) next.add(rowKey(row));
+    return next;
+  });
+  useEffect(() => setChecked(new Set()), [selection.account, selection.labelId, selection.query]);
+  // The query also changes from outside (Show this mail, Open conversation): the box shows what filters the list.
+  useEffect(() => setSearch(selection.query), [selection.query]);
+
+  const act = useCallback(async (target: MailThreadSummary | MailThreadSummary[], action: MailThreadAction["action"], labelIds?: string[]) => {
+    const rows = Array.isArray(target) ? target : [target];
+    if (busyThread || !rows.length) return;
     setNotice(null);
-    try {
-      await api.modifyMailThread(paneId, row.threadId, { account: row.account, action, ...(labelIds ? { labelIds } : {}) });
-      // A move leaves the inbox; in any other label the conversation stays where it is.
-      const leaves = action === "archive" || action === "trash" || action === "untrash" || action === "unarchive" || (action === "move" && selection.labelId === "INBOX");
-      if (leaves) mailbox.removeThread(row.threadId);
-      else if (action === "star" || action === "unstar") mailbox.patchThread(row.threadId, { starred: action === "star" });
-      else if (action === "read" || action === "unread") mailbox.patchThread(row.threadId, { unread: action === "unread" });
-      if (action === "archive" || action === "trash") setUndo({ row, action, at: Date.now() });
-      if (leaves && action !== "untrash" && action !== "unarchive" && row.threadId === selectedThreadId) void mailbox.openThread(null);
-    } catch (caught) {
-      setNotice(caught instanceof Error ? caught.message : "The action failed.");
-    } finally {
-      setBusyThread(null);
+    // A move leaves the inbox; in any other label the conversation stays where it is.
+    const leaves = action === "archive" || action === "trash" || action === "untrash" || action === "unarchive" || (action === "move" && selection.labelId === "INBOX");
+    const done: MailThreadSummary[] = [];
+    let failure: string | null = null;
+    // shortcut: one request per conversation in turn (keeps under Gmail's per-user rate limit); add a batch route if selections grow past a page.
+    for (const row of rows) {
+      setBusyThread(row.threadId);
+      try {
+        await api.modifyMailThread(paneId, row.threadId, { account: row.account, action, ...(labelIds ? { labelIds } : {}) });
+        done.push(row);
+        if (leaves) mailbox.removeThread(row.threadId);
+        else if (action === "star" || action === "unstar") mailbox.patchThread(row.threadId, { starred: action === "star" });
+        else if (action === "read" || action === "unread") mailbox.patchThread(row.threadId, { unread: action === "unread" });
+      } catch (caught) {
+        failure = caught instanceof Error ? caught.message : "The action failed.";
+      }
     }
+    setBusyThread(null);
+    if (failure) setNotice(rows.length > 1 ? `${rows.length - done.length} of ${rows.length} conversations failed: ${failure}` : failure);
+    if (!done.length) return;
+    if (leaves) setChecked((current) => new Set([...current].filter((key) => !done.some((row) => rowKey(row) === key))));
+    if (action === "archive" || action === "trash") setUndo({ rows: done, action, at: Date.now() });
+    if (leaves && action !== "untrash" && action !== "unarchive" && done.some((row) => row.threadId === selectedThreadId)) void mailbox.openThread(null);
   }, [busyThread, mailbox, paneId, selectedThreadId, selection.labelId]);
+
+  // "Send to AI": the copilot checks and fixes what a mail needs; an optional note says what to look at.
+  const [fixFor, setFixFor] = useState<MailThreadSummary | null>(null);
+  const [fixNote, setFixNote] = useState("");
+  const [fixBusy, setFixBusy] = useState(false);
+  const sendToAi = async () => {
+    if (!fixFor || fixBusy) return;
+    setFixBusy(true);
+    try {
+      const result = await api.requestMailFix(paneId, { account: fixFor.account, threadId: fixFor.threadId, ...(fixNote.trim() ? { note: fixNote.trim() } : {}) });
+      setNotice(result.runStarted ? "Sent to the copilot: it checks and fixes what this mail needs." : "Sent to the copilot. Press Start (with its terminal open) so it can work on it.");
+      setFixFor(null);
+      setFixNote("");
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : "The mail could not be sent to the copilot.");
+    } finally {
+      setFixBusy(false);
+    }
+  };
 
   const undoLast = useCallback(async () => {
     const last = undo;
     if (!last) return;
     setUndo(null);
     try {
-      await api.modifyMailThread(paneId, last.row.threadId, { account: last.row.account, action: last.action === "archive" ? "unarchive" : "untrash" });
+      for (const row of last.rows) await api.modifyMailThread(paneId, row.threadId, { account: row.account, action: last.action === "archive" ? "unarchive" : "untrash" });
       await mailbox.refresh();
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : "The action could not be undone.");
@@ -397,7 +439,37 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
   const showThread = !stacked || (Boolean(thread) || mailbox.loadingThread) && !compose;
   const labelName = labels.find((label) => label.id === selection.labelId)?.name ?? MAIL_SYSTEM_LABELS.find((label) => label.id === selection.labelId)?.name ?? selection.labelId;
   const accountLabel = selection.account === "all" ? "All inboxes" : selection.account;
+  const userLabels = labels.filter((label) => label.type === "user");
+  const activeUserLabel = userLabels.find((label) => label.id === selection.labelId);
   const RemoveIcon = removeAction === "archive" ? Archive : Trash2;
+
+  // The open conversation's bar and the selection bar share these; read and star follow Gmail (any unread marks read).
+  const threadActions = (rows: MailThreadSummary[], scope: "conversation" | "selected") => {
+    const unread = rows.some((row) => row.unread);
+    const starred = rows.every((row) => row.starred);
+    return (
+      <span className="mc-thread-bar-actions">
+        {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label={`Archive ${scope}`} title="Archive" onClick={() => void act(rows, "archive")}><Archive aria-hidden="true" /></button> : null}
+        {selection.labelId === "TRASH"
+          ? <button type="button" className="jc-icon-button" aria-label={`Restore ${scope}`} title="Restore" onClick={() => void act(rows, "untrash")}><Undo2 aria-hidden="true" /></button>
+          : <button type="button" className="jc-icon-button" aria-label={`Trash ${scope}`} title="Move to trash" onClick={() => void act(rows, "trash")}><Trash2 aria-hidden="true" /></button>}
+        {rows.length === 1 ? <button type="button" className="jc-icon-button" aria-label={`Send ${scope} to AI`} title="Send to AI: the copilot checks and fixes what this mail needs" onClick={() => { setFixFor(rows[0]!); setFixNote(""); }}><Bot aria-hidden="true" /></button> : null}
+        {selection.labelId !== "TRASH" && labels.some((label) => label.type === "user") ? (
+          <label className="jc-icon-button mc-move" title="Move to a label">
+            <Folder aria-hidden="true" />
+            <select aria-label={scope === "selected" ? "Move selected to" : "Move to"} value="" onChange={(event) => { if (event.target.value) void act(rows, "move", [event.target.value]); }}>
+              <option value="" disabled>Move to…</option>
+              {labels.filter((label) => label.type === "user" && label.id !== selection.labelId).map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <button type="button" className="jc-icon-button" aria-label={unread ? "Mark as read" : "Mark as unread"} title={unread ? "Mark as read" : "Mark as unread"}
+          onClick={() => void act(rows, unread ? "read" : "unread")}><Mail aria-hidden="true" /></button>
+        <button type="button" className={`jc-icon-button mc-star-button${starred ? " on" : ""}`} aria-label={`${starred ? "Unstar" : "Star"} ${scope}`} aria-pressed={starred}
+          onClick={() => void act(rows, starred ? "unstar" : "star")}><Star aria-hidden="true" /></button>
+      </span>
+    );
+  };
 
   return (
     <div ref={clientRef} className="mc-client" data-stacked={stacked ? "true" : "false"} data-view={compose ? "compose" : thread || mailbox.loadingThread ? "thread" : "list"}
@@ -405,7 +477,15 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
       {showList ? (
         <div className="mc-list-column">
           <div className="mc-topbar">
-            <form className="mc-search" role="search" onSubmit={(event) => { event.preventDefault(); mailbox.setSelection({ query: search.trim() }); }}>
+            {checkedRows.length ? (
+              <div className="mc-bulkbar" role="toolbar" aria-label="Selected conversations">
+                <button type="button" className="jc-icon-button" aria-label="Clear selection" title="Clear selection" onClick={() => setChecked(new Set())}><X aria-hidden="true" /></button>
+                <strong>{checkedRows.length} selected</strong>
+                {checkedRows.length < threads.length ? <button type="button" className="jc-button ghost" onClick={() => setChecked(new Set(threads.map(rowKey)))}>Select all</button> : null}
+                <span className="mc-thread-bar-spacer" />
+                {threadActions(checkedRows, "selected")}
+              </div>
+            ) : <form className="mc-search" role="search" onSubmit={(event) => { event.preventDefault(); mailbox.setSelection({ query: search.trim() }); }}>
               <Search aria-hidden="true" />
               <input type="search" value={search} placeholder={selection.account === "all" ? "Search all inboxes" : `Search ${selection.account}`} aria-label="Search mail"
                 onChange={(event) => setSearch(event.target.value)}
@@ -422,18 +502,30 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
                   {usable.map((account) => <option key={account.email} value={account.email}>{account.email}{account.unread ? ` (${account.unread})` : ""}</option>)}
                 </select>
               </label>
-            </form>
+            </form>}
           </div>
-          <div className="mc-labels" role="tablist" aria-label="Labels">
-            {labels.map((label) => {
-              const Icon = SYSTEM_LABEL_ICONS[label.id] ?? Mail;
-              const active = label.id === selection.labelId;
-              return (
-                <button key={label.id} type="button" role="tab" aria-selected={active} className={`mc-label${active ? " selected" : ""}`} onClick={() => mailbox.setSelection({ labelId: label.id })}>
-                  <Icon aria-hidden="true" /> {label.name}{label.unread ? <span className="mc-label-count">{label.unread}</span> : null}
-                </button>
-              );
-            })}
+          <div className="mc-label-bar">
+            <div className="mc-labels" role="tablist" aria-label="Labels">
+              {labels.filter((label) => label.type === "system").map((label) => {
+                const Icon = SYSTEM_LABEL_ICONS[label.id] ?? Mail;
+                const active = label.id === selection.labelId;
+                return (
+                  <button key={label.id} type="button" role="tab" aria-selected={active} className={`mc-label${active ? " selected" : ""}`} onClick={() => mailbox.setSelection({ labelId: label.id })}>
+                    <Icon aria-hidden="true" /> {label.name}{label.unread ? <span className="mc-label-count">{label.unread}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+            {/* The account's own labels: a picker that stays visible, since the chip row scrolls without a scrollbar. */}
+            {userLabels.length ? (
+              <label className={`mc-label mc-label-picker${activeUserLabel ? " selected" : ""}`} title="Show a label">
+                <Folder aria-hidden="true" /> {activeUserLabel?.name ?? "Labels"}<ChevronDown aria-hidden="true" />
+                <select aria-label="Show label" value={activeUserLabel?.id ?? ""} onChange={(event) => { if (event.target.value) mailbox.setSelection({ labelId: event.target.value }); }}>
+                  <option value="" disabled>Labels…</option>
+                  {userLabels.map((label) => <option key={label.id} value={label.id}>{label.name}{label.unread ? ` (${label.unread})` : ""}</option>)}
+                </select>
+              </label>
+            ) : null}
           </div>
           {notice || mailbox.error ? <p className="jc-message mc-banner" role="status">{notice ?? mailbox.error}</p> : null}
           {mailbox.errors.map((entry) => <p key={entry.account} className="jc-message mc-banner" role="status">{entry.account}: {entry.message}</p>)}
@@ -449,8 +541,9 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
             {threads.map((row) => {
               const dx = swipe?.threadId === row.threadId ? swipe.dx : 0;
               const armed = Math.abs(dx) >= 96;
+              const isChecked = checked.has(rowKey(row));
               return (
-                <div key={`${row.account}:${row.threadId}`} role="listitem" className={`mc-thread${row.unread ? " unread" : ""}${row.threadId === selectedThreadId ? " selected" : ""}${dx ? " swiping" : ""}`}
+                <div key={rowKey(row)} role="listitem" className={`mc-thread${row.unread ? " unread" : ""}${row.threadId === selectedThreadId ? " selected" : ""}${isChecked ? " checked" : ""}${dx ? " swiping" : ""}`}
                   data-account={row.account} aria-busy={busyThread === row.threadId}
                   onPointerDown={(event) => onRowPointerDown(row, event)} onPointerMove={onRowPointerMove}
                   onPointerUp={(event) => onRowPointerEnd(row, event)} onPointerCancel={(event) => onRowPointerEnd(row, event)}>
@@ -461,7 +554,7 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
                   ) : null}
                   <div className="mc-thread-body" style={dx ? { transform: `translateX(${dx}px)` } : undefined}>
                     <button type="button" className="mc-thread-main" onClick={() => void open(row)} aria-label={`${row.unread ? "Unread: " : ""}${participantLabel(row.from)}: ${row.subject || "(no subject)"}`}>
-                      <SenderAvatar participant={row.from} account={row.account} accountTone={usable.length > 1 ? accountColor(row.account, usable) : undefined} />
+                      <SenderAvatar participant={row.from} account={row.account} accountTone={usable.length > 1 ? accountColor(row.account, usable) : undefined} checked={isChecked} />
                       <span className="mc-thread-copy">
                         <span className="mc-thread-line">
                           <strong className="mc-thread-from">{participantLabel(row.from)}{row.messageCount > 1 ? <small> {row.messageCount}</small> : null}</strong>
@@ -471,6 +564,9 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
                         <span className="mc-thread-snippet">{row.snippet}</span>
                       </span>
                     </button>
+                    {/* Sits over the avatar: tapping it picks the conversation instead of opening it, like Gmail. */}
+                    <button type="button" className="mc-select" aria-pressed={isChecked} aria-label={`Select ${participantLabel(row.from)}: ${row.subject || "(no subject)"}`}
+                      title={isChecked ? "Deselect" : "Select"} onClick={() => toggleChecked(row)} />
                     <button type="button" className={`mc-star${row.starred ? " on" : ""}`} aria-label={row.starred ? "Unstar" : "Star"} aria-pressed={row.starred} disabled={busyThread === row.threadId}
                       onClick={() => void act(row, row.starred ? "unstar" : "star")}><Star aria-hidden="true" /></button>
                     <span className="mc-thread-actions">
@@ -480,6 +576,7 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
                         <>
                           {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label="Archive" title="Archive" disabled={busyThread === row.threadId} onClick={() => void act(row, "archive")}><Archive aria-hidden="true" /></button> : null}
                           <button type="button" className="jc-icon-button" aria-label="Trash" title="Move to trash" disabled={busyThread === row.threadId} onClick={() => void act(row, "trash")}><Trash2 aria-hidden="true" /></button>
+                          <button type="button" className="jc-icon-button" aria-label="Send to AI" title="Send to AI: the copilot checks and fixes what this mail needs" onClick={() => { setFixFor(row); setFixNote(""); }}><Bot aria-hidden="true" /></button>
                           <button type="button" className="jc-icon-button" aria-label={row.unread ? "Mark as read" : "Mark as unread"} title={row.unread ? "Mark as read" : "Mark as unread"} disabled={busyThread === row.threadId}
                             onClick={() => void act(row, row.unread ? "read" : "unread")}><Mail aria-hidden="true" /></button>
                         </>
@@ -518,25 +615,7 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
             <div className="mc-thread-bar">
               {stacked ? <button type="button" className="jc-icon-button mc-back" aria-label="Back" title="Back to the list" onClick={() => void mailbox.openThread(null)}><ArrowLeft aria-hidden="true" /></button> : null}
               <span className="mc-thread-bar-spacer" />
-              {selectedRow && thread ? (
-                <span className="mc-thread-bar-actions">
-                  {selection.labelId === "INBOX" ? <button type="button" className="jc-icon-button" aria-label="Archive conversation" title="Archive" onClick={() => void act(selectedRow, "archive")}><Archive aria-hidden="true" /></button> : null}
-                  {selection.labelId !== "TRASH" ? <button type="button" className="jc-icon-button" aria-label="Trash conversation" title="Move to trash" onClick={() => void act(selectedRow, "trash")}><Trash2 aria-hidden="true" /></button> : null}
-                  {selection.labelId !== "TRASH" && labels.some((label) => label.type === "user") ? (
-                    <label className="jc-icon-button mc-move" title="Move to a label">
-                      <Folder aria-hidden="true" />
-                      <select aria-label="Move to" value="" onChange={(event) => { if (event.target.value) void act(selectedRow, "move", [event.target.value]); }}>
-                        <option value="" disabled>Move to…</option>
-                        {labels.filter((label) => label.type === "user" && label.id !== selection.labelId).map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}
-                      </select>
-                    </label>
-                  ) : null}
-                  <button type="button" className="jc-icon-button" aria-label={selectedRow.unread ? "Mark as read" : "Mark as unread"} title={selectedRow.unread ? "Mark as read" : "Mark as unread"}
-                    onClick={() => void act(selectedRow, selectedRow.unread ? "read" : "unread")}><Mail aria-hidden="true" /></button>
-                  <button type="button" className={`jc-icon-button mc-star-button${selectedRow.starred ? " on" : ""}`} aria-label={selectedRow.starred ? "Unstar conversation" : "Star conversation"} aria-pressed={selectedRow.starred}
-                    onClick={() => void act(selectedRow, selectedRow.starred ? "unstar" : "star")}><Star aria-hidden="true" /></button>
-                </span>
-              ) : null}
+              {selectedRow && thread ? threadActions([selectedRow], "conversation") : null}
             </div>
           ) : null}
           {mailbox.loadingThread && !thread ? <div className="mc-skeleton" role="status" aria-label="Loading conversation…"><span className="mc-skeleton-row"><span /><span /></span><span className="mc-skeleton-row"><span /><span /></span></div> : null}
@@ -562,9 +641,22 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
           ) : null}
         </div>
       ) : null}
+      {fixFor ? (
+        <form className="mc-fix-sheet" aria-label="Send to AI" onSubmit={(event) => { event.preventDefault(); void sendToAi(); }}
+          onKeyDown={(event) => { if (event.key === "Escape") setFixFor(null); }}>
+          <strong><Bot aria-hidden="true" /> Send to AI</strong>
+          <span className="jc-muted">{fixFor.subject || "(no subject)"} · {fixFor.account}</span>
+          <textarea rows={2} value={fixNote} autoFocus disabled={fixBusy} placeholder="What should the copilot check or fix? (optional)" aria-label="What should the copilot check or fix?"
+            onChange={(event) => setFixNote(event.target.value)} />
+          <div className="jc-actions">
+            <button type="submit" className="jc-button primary" disabled={fixBusy}>{fixBusy ? "Sending…" : "Send"}</button>
+            <button type="button" className="jc-button ghost" disabled={fixBusy} onClick={() => setFixFor(null)}>Cancel</button>
+          </div>
+        </form>
+      ) : null}
       {undo ? (
         <div className="mc-snackbar" role="status">
-          <span>{undo.action === "archive" ? "Archived" : "Moved to trash"}</span>
+          <span>{undo.action === "archive" ? "Archived" : "Moved to trash"}{undo.rows.length > 1 ? ` · ${undo.rows.length} conversations` : ""}</span>
           <button type="button" onClick={() => void undoLast()}>Undo</button>
         </div>
       ) : null}

@@ -224,6 +224,14 @@ export function LiveStatsWindow({
               </strong>
             </div>
             <div className="live-stats-item">
+              <span className="live-stats-label">Connect Time</span>
+              <strong className="live-stats-value is-latency">{stats.connectMs != null ? `${stats.connectMs} ms` : "—"}</strong>
+            </div>
+            <div className="live-stats-item">
+              <span className="live-stats-label">Reply Latency</span>
+              <strong className="live-stats-value is-latency">{stats.lastReplyMs != null ? `${stats.lastReplyMs} ms` : "—"}</strong>
+            </div>
+            <div className="live-stats-item">
               <span className="live-stats-label">Jitter</span>
               <strong className="live-stats-value">
                 {stats.jitterMs != null ? `${stats.jitterMs.toFixed(1)} ms` : "Measuring..."}

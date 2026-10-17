@@ -95,13 +95,16 @@ export class AccountPool {
 
   /**
    * A rate limit or used-up quota whose time is over: stored as active again, so the views stop showing a limit the
-   * account no longer has even when no request went to it since. True when it changed.
+   * account no longer has even when no request went to it since. With `usageClear` (the provider's usage shows no
+   * used-up limit) a block of more than an hour is lifted early too: the provider reset its limits before the time it
+   * named. Shorter blocks are burst limits that end by themselves. True when it changed.
    */
-  async liftExpiredBlock(account: GatewayAccountRecord): Promise<boolean> {
+  async liftExpiredBlock(account: GatewayAccountRecord, usageClear = false): Promise<boolean> {
     const status = this.state(account.id).status ?? account.status;
     if (status !== "RATE_LIMITED" && status !== "QUOTA_EXCEEDED") return false;
     const until = toSeconds(account.blockedUntil) ?? this.state(account.id).resetAt;
-    if (until === null || until > this.nowMs() / 1000) return false;
+    const now = this.nowMs() / 1000;
+    if (until === null || (until > now && !(usageClear && until - now > 3600))) return false;
     const runtime = this.state(account.id);
     runtime.status = "ACTIVE";
     runtime.resetAt = null;

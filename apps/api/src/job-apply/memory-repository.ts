@@ -255,7 +255,8 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     // Newest first; events of the same millisecond keep the order they were recorded in (ids are random).
     return this.events
       .filter((event) => event.ownerUserId === owner && (!filter.applicationId || event.applicationId === filter.applicationId)
-        && (!filter.runId || event.runId === filter.runId) && (!filter.paneId || event.paneId === filter.paneId) && (!filter.since || event.createdAt > filter.since))
+        && (!filter.runId || event.runId === filter.runId) && (!filter.paneId || event.paneId === filter.paneId) && (!filter.types?.length || filter.types.includes(event.type))
+        && (!filter.since || event.createdAt > filter.since))
       .reverse()
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, filter.limit)

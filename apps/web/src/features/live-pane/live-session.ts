@@ -1,5 +1,5 @@
-import { mergeTranscriptText, getGreetingForThailandTime } from "./live-transcript.js";
-export { mergeTranscriptText, getGreetingForThailandTime } from "./live-transcript.js";
+import { mergeTranscriptText } from "./live-transcript.js";
+export { mergeTranscriptText } from "./live-transcript.js";
 import type { LiveRoomContext } from "@space/contracts";
 import { api } from "../../api.js";
 import type { LivePersonalMemoryItem } from "../../live-api.js";
@@ -15,7 +15,8 @@ import {
   inferProviderFromModel,
   validateLiveAudioConfig,
   LIVE_AUDIO_PROVIDERS,
-  PANE_TYPES
+  PANE_TYPES,
+  controlInspectSections
 } from "@space/contracts";
 import { getSpaceRuntime, DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
 import { noteVoiceRelayClose, voiceRelayCloseExplanation } from "../../voice-relay-close.js";
@@ -26,13 +27,14 @@ import {
   recordMcpDiagnostic,
   recordMcpTestResults
 } from "./live-stats.js";
-import { defaultLiveTimeZone, describeLiveTools } from "./live-bootstrap.js";
+import { defaultLiveTimeZone, describeLiveTools, liveActionNeedsConfirmation, liveForbiddenResourceOperations } from "./live-bootstrap.js";
+import { isSilentWatch } from "./live-watch-notices.js";
 import { liveMissionBootstrap, runLiveMissionAction } from "./live-missions.js";
-import { CLEAN_WORKTREE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
+import { CLEAN_WORKTREE_PROMPT, PROMOTE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
 import { createLiveToolReplay } from "./live-tool-replay.js";
 import { rememberLivePaneGroup, resolveLivePaneTargets, livePromptPaneReceipts } from "./live-pane-targets.js";
 import { resolvePaneByName } from "@space/contracts";
-import { createUnidentifiedLiveCommandOrigin, createIdentifiedLiveCommandOrigins, type LiveCommandRoom } from "./live-command-origin.js";
+import { createUnidentifiedLiveCommandOrigin, createIdentifiedLiveCommandOrigins, liveAnswerDeclines, liveUserTextSince, liveUserTurn, noteLiveUserTurn, type LiveCommandRoom } from "./live-command-origin.js";
 import { isDashboardAgent } from "../agents-dashboard/dashboard-model.js";
 
 export interface LiveSessionOptions {
@@ -296,37 +298,41 @@ function sanitizeGoogleLiveSchema(schema: Record<string, unknown>): Record<strin
   return clean;
 }
 
+export { isSilentWatch };
+
 export function formatWatchCompletionNotification(w: any): string {
   const details = w.paneDetails;
   const paneTitle = details?.title || w.paneId;
   const runtime = details?.runtimeId || "CLI";
-  const model = details?.modelId ? ` (Μοντέλο: ${details.modelId})` : "";
+  const model = details?.modelId ? ` (model: ${details.modelId})` : "";
   const durationSec = details?.durationMs ? Math.round(details.durationMs / 1000) : null;
-  const durationText = durationSec !== null ? `${durationSec}s (${details.durationMs}ms)` : "άμεσα";
+  const durationText = durationSec !== null ? `${durationSec}s (${details.durationMs}ms)` : "immediate";
 
-  let statusText = "Ολοκληρώθηκε";
+  let statusText = w.status ? String(w.status).toLowerCase() : "updated";
   if (w.status === "VERIFIED" || details?.status === "COMPLETED") {
-    statusText = "Ολοκληρώθηκε επιτυχώς";
+    statusText = "completed successfully";
   } else if (w.taskState === "WAITING_FOR_INPUT" || details?.state === "WAITING_FOR_INPUT") {
-    statusText = "Περιμένει επιβεβαίωση / είσοδο χρήστη";
+    statusText = "waiting for the user's input or confirmation";
   } else if (w.status === "FAILED" || details?.status === "FAILED") {
-    statusText = `Απέτυχε (${w.reason || details?.statusReason || "σφάλμα εκτέλεσης"})`;
+    statusText = `failed (${w.reason || details?.statusReason || "execution error"})`;
   } else if (w.status === "BLOCKED") {
-    statusText = `Μπλοκαρίστηκε (${w.reason || "απαιτείται ενέργεια"})`;
+    statusText = `blocked (${w.reason || "action needed"})`;
+  } else if (w.status === "CANCELLED") {
+    statusText = `cancelled (${w.reason || "the pane was closed"})`;
   }
 
   const rawOut = (details?.summary || details?.lastOutput || "").trim();
-  const outputSection = rawOut ? `\n• Έξοδος / Αποτέλεσμα:\n${rawOut.slice(-600)}` : "";
-  const commandsSection = details?.commands && details.commands.length > 0 ? `\n• Εντολές: ${details.commands.join(", ")}` : "";
+  const outputSection = rawOut ? `\n• Output / result:\n${rawOut.slice(-600)}` : "";
+  const commandsSection = details?.commands && details.commands.length > 0 ? `\n• Commands: ${details.commands.join(", ")}` : "";
 
-  return `[Αυτόματη Ενημέρωση Live Audio: Ολοκλήρωση Εργασίας Παραθύρου]
-• Παράθυρο: "${paneTitle}" (ID: ${w.paneId})
-• Τύπος/Runtime: ${runtime}${model}
-• Κατάσταση: ${statusText}
-• Διάρκεια: ${durationText}
-• Task Ref: ${w.targetTaskRef || details?.nativeTaskRef || "primary"}${commandsSection}${outputSection}
+  return `[Automatic Live update: pane task finished]
+• Pane: "${paneTitle}" (ID: ${w.paneId})
+• Type/runtime: ${runtime}${model}
+• Status: ${statusText}
+• Duration: ${durationText}
+• Task ref: ${w.targetTaskRef || details?.nativeTaskRef || "primary"}${commandsSection}${outputSection}
 
-Οδηγία: Ενημέρωσε αμέσως και φυσικά με φωνή τον χρήστη στα ελληνικά ότι η εργασία στο παράθυρο "${paneTitle}" (${runtime}) τελείωσε με κατάσταση "${statusText}". Ανέφερε τα βασικά στοιχεία (διάρκεια, έξοδος/αποτέλεσμα) και ρώτησε αν θέλει κάτι άλλο.`;
+Instruction: tell the user right away, naturally and by voice, in the language they are currently speaking, that the task in pane "${paneTitle}" (${runtime}) ended with status "${statusText}". Mention the key facts (duration, output/result) and ask whether they want anything else.`;
 }
 
 export async function openGoogleGeminiConversationSession(
@@ -554,7 +560,7 @@ export async function openGoogleGeminiConversationSession(
       return;
     }
     googleSpeechInputActive = true;
-    callbacks.onInputStart?.();
+    noteLiveUserTurn(); callbacks.onInputStart?.();
     googleResponsePending = true;
     if (googleNotificationPending) {
       deferredAudioOrigin = captureGoogleCommandRoom();
@@ -569,7 +575,6 @@ export async function openGoogleGeminiConversationSession(
     googleSpeechInputActive = false;
     callbacks.onInputEnd?.();
   };
-  let googleToolQueue = Promise.resolve();
   let pendingGoogleTools = 0;
   const enqueueGoogleTool = (fc: { id?: unknown; name?: unknown; args?: unknown }) => {
     if (closed || !setupComplete) return;
@@ -595,14 +600,12 @@ export async function openGoogleGeminiConversationSession(
     pendingGoogleTools++;
     const origin = googleCommandOrigin.capture();
     const callOptions = { ...options, getCommandRoom: () => cancelledGoogleTools.has(callId) ? undefined : origin() };
-    const previousQueue = googleToolQueue;
+    // executeLiveFunction orders changes; reads run at once and each response is sent when ready.
     const result = googleToolResults.run(callId, name, argsStr, async () => {
-      await previousQueue;
       if (closed) return JSON.stringify({ ok: false, code: "LIVE_SESSION_CLOSED" });
       return executeLiveFunction(name, argsStr, { ...callOptions, callbacks, callId: `${toolSessionId}:${callId}`, provider: "google", streamingMode: callOptions.streamingMode });
     });
-    googleToolQueue = previousQueue.then(async () => {
-      const out = await result;
+    void result.then(out => {
       if (!closed && socket.readyState === WebSocket.OPEN) {
         googleResponsePending = true;
         socket.send(JSON.stringify({
@@ -651,11 +654,8 @@ export async function openGoogleGeminiConversationSession(
           if (lang === "el") {
             return { languageCodes: ["el-GR", "el"] };
           }
-          if (lang === "en") {
-            return { languageCodes: ["en-US", "en"] };
-          }
-          // For "auto", prioritize Greek and English to prevent Spanish/Portuguese misdetection
-          return { languageCodes: ["el-GR", "el", "en-US", "en"] };
+          // English and Greek only, so Greek speech is not misdetected as Spanish or Portuguese.
+          return { languageCodes: ["en-US", "en", "el-GR", "el"] };
         })(),
         outputAudioTranscription: {}
       }
@@ -696,6 +696,7 @@ export async function openGoogleGeminiConversationSession(
         const pending = await api.getPendingWatches(targetRoomId).catch(() => []);
         if (!pending || pending.length === 0) return;
         for (const w of pending) {
+          if (isSilentWatch(w)) { await api.ackWatch(targetRoomId, w.id).catch(() => {}); continue; }
           if (!setupComplete || userSpeaking || assistantSpeaking || googleResponsePending || pendingGoogleTools) break;
           const notification = formatWatchCompletionNotification(w);
           googleResponsePending = true;
@@ -1194,7 +1195,7 @@ export async function openGoogleGeminiConversationSession(
     if (textContent) {
       clientParts.push({ text: textContent });
     } else if (imageParts.length > 0 || fileParts.length > 0) {
-      clientParts.push({ text: "Εδώ είναι το στιγμιότυπο / αρχείο που κοινοποίησα. Περίγραψε τι βλέπεις και απάντησε στα ελληνικά." });
+      clientParts.push({ text: "Here is the screenshot or file I shared. Describe what you see, in the language I am speaking." });
     }
 
     if (clientParts.length === 0) return;
@@ -1451,7 +1452,7 @@ export async function openAmazonNovaConversationSession(
       if (avg > 0.04) {
         if (!userSpeaking) {
           userSpeaking = true;
-              callbacks.onInputStart?.();
+              noteLiveUserTurn(); callbacks.onInputStart?.();
           callbacks.onStatusChange?.("listening");
         }
         if (silenceTimer) {
@@ -1675,8 +1676,10 @@ export async function openGatewayRealtimeConversationSession(
       outputModalities: ["audio"],
       inputAudioFormat: { type: "audio/pcm", rate: 24000 },
       outputAudioFormat: { type: "audio/pcm", rate: 24000 },
-      turnDetection: { type: "server-vad" },
-      inputAudioTranscription: options.language && options.language !== "auto" ? { language: options.language } : {},
+      // Semantic VAD waits for an unfinished sentence; it exists only for OpenAI models.
+      turnDetection: { type: String(model).startsWith("openai/") ? "semantic-vad" : "server-vad" },
+      // Only "Greek only" pins the transcription language; Auto and English hear both languages.
+      inputAudioTranscription: options.language === "el" ? { language: "el" } : {},
       outputAudioTranscription: {},
       tools: ctx.tools.map((tool) => ({
         type: "function",
@@ -1702,7 +1705,7 @@ export async function openGatewayRealtimeConversationSession(
       callbacks.onStatusChange?.("listening");
     },
     onError: (message) => { cleanup(); callbacks.onError?.(message); callbacks.onStatusChange?.("error"); },
-    onInterrupt: () => { callbacks.onInputStart?.(); stopAudio(); callbacks.onStatusChange?.("listening"); },
+    onInterrupt: () => { noteLiveUserTurn(); callbacks.onInputStart?.(); stopAudio(); callbacks.onStatusChange?.("listening"); },
     onTranscript: (id, role, text, isDelta) => callbacks.onTranscriptUpdate?.({ id: `gateway-${id}`, role, text, isDelta, timestamp: new Date().toISOString() }),
     onAudio: (delta) => {
       if (!playbackContext || closed) return;
@@ -1839,7 +1842,7 @@ export async function openVercelLiveConversationSession(
   });
   const beginLegacyInput = () => {
     legacyInputActive = true;
-    callbacks.onInputStart?.();
+    noteLiveUserTurn(); callbacks.onInputStart?.();
     commandOrigin.beginInput();
   };
   let nextPlayTime = 0;
@@ -2164,6 +2167,7 @@ export async function openVercelLiveConversationSession(
         const pending = await api.getPendingWatches(targetRoomId).catch(() => []);
         if (!pending || pending.length === 0) return;
         for (const w of pending) {
+          if (isSilentWatch(w)) { await api.ackWatch(targetRoomId, w.id).catch(() => {}); continue; }
           const notification = formatWatchCompletionNotification(w);
           commandOrigin.beginNotification();
           socket.send(JSON.stringify({
@@ -2739,14 +2743,18 @@ export const SPACE_INSPECT_DASHBOARD_TOOL = {
 export const SPACE_INSPECT_ROOM_TOOL = {
   type: "function",
   name: "space_inspect_room",
-  description: "Inspect room state, open panes, models, and pane content/conversation. STATE counts open panes, not working agents; use space_inspect_activity for current task activity. Call with section='CONTENT' to read the actual conversation, stories, prompt responses, and text outputs of open panes in the room.",
+  description: "Inspect room state, open panes, models, and pane content/conversation, or any other Space area: tasks, clipboard, files, media, skills, links, settings, rooms, CLI runtimes, quota, VPN, system health, plugins, voice, audit. STATE counts open panes, not working agents; use space_inspect_activity for current task activity. Call with section='CONTENT' to read the actual conversation, stories, prompt responses, and text outputs of open panes in the room.",
   parameters: {
     type: "object",
     properties: {
       section: {
         type: "string",
-        enum: ["STATE", "CONTENT", "MODELS"],
-        description: "Inspection domain. Use 'CONTENT' to read the text content, conversations, answers, stories, and outputs of open panes. Use 'STATE' for list of open panes, types, and counts. Use 'MODELS' for available models on panes."
+        enum: [...controlInspectSections],
+        description: "Inspection domain. Use 'CONTENT' to read the text content, conversations, answers, stories, and outputs of open panes. Use 'STATE' for list of open panes, types, and counts. Use 'MODELS' for available models on panes. Every other section reads that Space area (TASKS, CLIPBOARD, FILES, SKILLS, LINKS, SETTINGS, ROOMS, ...)."
+      },
+      query: {
+        type: "string",
+        description: "Optional filter for sections other than STATE, CONTENT and MODELS, e.g. a task title or file name."
       },
       paneId: {
         type: "string",
@@ -3189,7 +3197,8 @@ export const SPACE_EXECUTE_MCP_TOOL = {
         type: "array",
         items: { type: "object" },
         description: ""
-      }
+      },
+      confirmed: { type: "boolean" }
     },
     required: ["actions"]
   }
@@ -3487,6 +3496,7 @@ export const SPACE_RUN_CLI_SHORTCUT_TOOL = {
           "build",
           "plan_progress",
           "deploy",
+          "promote",
           "permissions",
           "model",
           "resume",
@@ -3501,7 +3511,7 @@ export const SPACE_RUN_CLI_SHORTCUT_TOOL = {
           "esc",
           "enter"
         ],
-        description: "The CLI shortcut action to run: 'continue' (resume turn), 'memory' (save to memory), 'plan' (Plan mode), 'build' (Build mode), 'plan_progress' (Plan completion percentage), 'deploy' (Deploy project to Gitea/GitHub), 'clean_worktree' (Clean worktree prompt), 'scroll_top' (scroll to top), 'scroll_bottom' (scroll to bottom), 'permissions' (toggle permissions), 'model' (model selection), 'resume' (/resume tasks), 'usage' (/usage metrics), 'clear' (/clear terminal), 'help' (/help), 'status' (/status), 'test' (run tests), 'esc', 'enter'."
+        description: "The CLI shortcut action to run: 'continue' (resume turn), 'memory' (save to memory), 'plan' (Plan mode), 'build' (Build mode), 'plan_progress' (Plan completion percentage), 'deploy' (Deploy project to Gitea/GitHub), 'promote' (Promote the verified dev version to stable), 'clean_worktree' (Clean worktree prompt), 'scroll_top' (scroll to top), 'scroll_bottom' (scroll to bottom), 'permissions' (toggle permissions), 'model' (model selection), 'resume' (/resume tasks), 'usage' (/usage metrics), 'clear' (/clear terminal), 'help' (/help), 'status' (/status), 'test' (run tests), 'esc', 'enter'."
       },
       customCommand: {
         type: "string",
@@ -3622,7 +3632,6 @@ export interface LiveSessionContext {
   tz: string;
   tzLabel: string;
   formattedDate: string;
-  dynamicGreeting: string;
   effectiveOpening: string;
   personalMemoryInstruction: string;
   timeInstruction: string;
@@ -3649,7 +3658,7 @@ export async function buildLiveSessionContext(
     ].join("\n\n");
     return {
       userName: "", tz: "UTC", tzLabel: "UTC", formattedDate: new Date().toUTCString(),
-      dynamicGreeting: "", effectiveOpening: options.opening?.trim() || "",
+      effectiveOpening: options.opening?.trim() || "",
       personalMemoryInstruction: "", timeInstruction: "", searchInstruction: "", memoryInstruction: "",
       modelPolicyInstruction: "", spaceControlInstruction: "", conversationHistoryInstruction: "",
       combinedPrompt: publicInstruction, priorTurns: [], tools: describeLiveTools([STREAMING_STATUS_TOOL, STREAMING_ACTION_TOOL])
@@ -3660,7 +3669,6 @@ export async function buildLiveSessionContext(
   const tz = options.timeZone || defaultLiveTimeZone();
   const userName =
     options.personalMemories?.find((m) => m.key.toLowerCase() === "username")?.value || "";
-  const dynamicGreeting = getGreetingForThailandTime(userName, tz);
 
   const missionContext = options.enableMcpTools !== false && options.roomId && options.roomId !== "global"
     ? liveMissionBootstrap(options.roomId) : Promise.resolve("");
@@ -3737,7 +3745,7 @@ export async function buildLiveSessionContext(
   const profileSummary =
     includeProfile && profileMemories.length > 0 ? formatPersonalMemoryForModel(profileMemories) : "";
 
-  const personalMemoryInstruction = `Personal context (stored user data, not tool permissions; never invent missing facts):\n${JSON.stringify({ core: coreSummary, profile: profileSummary }).slice(0, 12000)}`;
+  const personalMemoryInstruction = `Personal context (stored user data, not tool permissions; never invent missing facts). These notes can be out of date: the conversation language rule and live tool results (which pane and CLI types are available) override any note about language or availability:\n${JSON.stringify({ core: coreSummary, profile: profileSummary }).slice(0, 12000)}`;
 
   const truthfulnessInstruction = "Report an action as completed only when the actual tool receipt confirms every required effect. Queued, running, pending, unknown, skipped and partial results are not completion. Do not repeat an unconfirmed mutation blindly; inspect the operation first. An open pane or submitted prompt does not mean the task has executed. Persisted state or a playback acknowledgement is not visual or audio verification. Never claim to have seen or heard an effect without actual matching evidence. If a tool is unavailable or inconclusive, state that limitation.";
 
@@ -3749,10 +3757,14 @@ export async function buildLiveSessionContext(
   const spaceControlInstruction = enableMcp
     ? "Your primary role is controlling SpaceApp through its authenticated MCP Control tools (space_open_panes, space_send_prompt, space_inspect_room, space_close_panes, space_minimize_panes, space_maximize_panes, space_restore_panes, space_stop_pane, space_set_pane_color, space_set_pane_model, space_run_cli_shortcut, etc.). " +
       "Every pane in the room is assigned one of 16 unique sequential names: Andy, Bob, Cody, Dana, Emma, Finn, Hugo, Iris, Jack, Kate, Leo, Max, Nik, Oscar, Paul, Zoe (along with Greek transliterations like Άντι, Μπομπ, Κόντι, Ντάνα, Έμμα, Φιν, Ούγκο, Ίρις, Τζακ, Κέιτ, Λίο, Μαξ, Νικ, Όσκαρ, Πολ, Ζόι). " +
+      "CLI types spoken in Greek or misheard: κλόουντ, κλάουντ, κλοντ, cloud, clown = claude; κόντεξ, κόουντεξ, κώδικας = codex; τζέμινι, τζεμίνι = gemini; όπεν κόουντ, όπενκοντ = opencode; έρμης, χέρμες = hermes. " +
+      "Which pane and CLI types can open now comes only from space_describe_pane_types or space_inspect_cli_runtimes, never from memory. " +
+      "If you did not understand a request (a name, a pane type, a number), say so at once in one short sentence and ask; never stay silent and never say you are doing something you have not started. " +
+      "Acknowledge every action request in a few words as you start it, and always report its result, including failures, rejections and anything not done. " +
       "When the user mentions panes by name in voice commands (e.g. 'στείλε στον Andy', 'κλείσε τον Bob', 'τι κάνει ο Cody;', 'μεγιστοποίησε την Emma', 'ελαχιστοποίησε τον Nik', 'κλείσε Jack και Kate', 'στείλε prompt στον Άντι'): " +
       "IMMEDIATELY map the name to the `paneName` parameter (or `paneNames` for multiple panes) in the corresponding tool call. " +
-      "NATURAL SPEECH CONFIRMATION RULE: Always confirm actions in natural speech by explicitly naming the affected pane(s) (e.g. 'Έστειλα την εργασία στον Bob', 'Το παράθυρο Andy έκλεισε', 'Ελαχιστοποιήθηκε ο Nik', 'Μεγιστοποίησα την Emma') instead of impersonal IDs or numbers. " +
-      "When opening panes requested by the user, carefully include ALL mentioned pane types in `counts` (e.g. if user asks for 'κόντεξ/codex, gemini, opencode', include codex: 1, gemini: 1, opencode: 1). When the user asks to send prompts, ALWAYS call `space_send_prompt`. Give a short Greek answer stating the verified outcome. Do not narrate internal reasoning or tool bookkeeping. Submission is not task completion. For references to the panes you just opened, use targetGroup:lastOpened for sending and closing; never broaden to all panes. Inspect current capabilities and exact target IDs before acting; obey all authorization gates. For multi-step work keep the complete objective and ordered checklist, verify each step, and resume from the first unverified step. Never claim browser-local state is durable server execution."
+      "NATURAL SPEECH CONFIRMATION RULE: Always confirm actions in natural speech by explicitly naming the affected pane(s) in the user's current language (e.g. 'I sent the task to Bob', 'Andy is closed', 'Nik is minimized', 'I maximized Emma') instead of impersonal IDs or numbers. " +
+      "When opening panes requested by the user, carefully include ALL mentioned pane types in `counts` (e.g. if user asks for 'κόντεξ/codex, gemini, opencode', include codex: 1, gemini: 1, opencode: 1). When the user asks to send prompts, ALWAYS call `space_send_prompt`. Give a short answer, in the user's current language, stating the verified outcome. Do not narrate internal reasoning or tool bookkeeping. Submission is not task completion. For references to the panes you just opened, use targetGroup:lastOpened for sending and closing; never broaden to all panes. Inspect current capabilities and exact target IDs before acting; obey all authorization gates. For multi-step work keep the complete objective and ordered checklist, verify each step, and resume from the first unverified step. Never claim browser-local state is durable server execution."
     : "Space Control tools are disabled for this session. Do not claim to control the application.";
 
   const currentActivityInstruction = enableMcp
@@ -3763,18 +3775,19 @@ export async function buildLiveSessionContext(
     ? "Sending Prompts & Tasks to CLI Panes:\n" +
       "- When the user asks you to send a prompt, task, instructions, question, or story to open panes or CLI windows (e.g. 'στείλε prompt', 'γράψτε μια ιστορία 30 λέξεων', 'πες τους να κάνουν...', 'στείλε και στα τρία παράθυρα', 'στείλε στο gemini', 'γράψτο', 'στείλε το', 'στείλε στον Andy', 'πες στον Bob να...', 'στείλε στον Άντι'): You MUST IMMEDIATELY CALL `space_send_prompt`.\n" +
       "- Parameters for `space_send_prompt`: Pass `prompt` (the exact text to send). If targeting by name (e.g. 'στον Andy', 'στον Bob', 'στον Nik', 'στον Άντι', 'στον Μπομπ'), pass `paneName: 'Andy'` or `paneNames: ['Andy', 'Bob']`. The 16 canonical pane names are Andy, Bob, Cody, Dana, Emma, Finn, Hugo, Iris, Jack, Kate, Leo, Max, Nik, Oscar, Paul, Zoe (plus Greek transliterations). For references to the group you just opened (e.g. 'σε αυτά τα τέσσερα'), pass targetGroup: 'lastOpened'; never all:true for that group. If the user explicitly asks to send to all panes or multiple open CLI windows (e.g. 'και στα τρία', 'σε όλα τα παράθυρα', 'σε όλα τα CLI'), pass `all: true`. If targeting a specific CLI type (e.g. 'στο gemini', 'στο codex', 'στο opencode'), pass `cliType`. If targeting a specific pane id, pass `paneId` or `paneIds`.\n" +
-      "- Confirmation: Always confirm by naming the pane in natural speech (e.g. 'Έστειλα την εργασία στον Bob').\n" +
+      "- Confirmation: Always confirm by naming the pane in natural speech (e.g. 'I sent the task to Bob').\n" +
       "- STRICT RULES FOR PROMPT DISPATCH:\n" +
-      "  1. NEVER stall, NEVER ask redundant questions ('ανησυχείτε για παιχνίδι λέξεων;', 'μήπως θέλετε άλλη διατύπωση;'), and NEVER delay execution. Execute `space_send_prompt` immediately!\n" +
-      "  2. NEVER claim or tell the user 'Το στέλνω τώρα' or 'Στάλθηκε' WITHOUT actually executing the `space_send_prompt` tool call in the same turn.\n" +
-      "  3. DO NOT call `space_search_conversation_history` when the user gives you a command to send a prompt or write a story, even if they say phrases like 'όπως σου είπα' or 'γράψτο'."
+      "  1. NEVER stall, NEVER ask redundant questions ('are you worried about the wording?', 'do you want a different phrasing?'), and NEVER delay execution. Execute `space_send_prompt` immediately!\n" +
+      "  2. NEVER claim or tell the user 'Sending it now' or 'Sent', in any language, WITHOUT actually executing the `space_send_prompt` tool call in the same turn.\n" +
+      "  3. DO NOT call `space_search_conversation_history` when the user gives you a command to send a prompt or write a story, even if they say phrases like 'όπως σου είπα' or 'γράψτο'.\n" +
+      "  4. A failed `space_send_prompt` names what was wrong with the call, not with the user's words: fix the arguments and call it again at once with the same prompt; never ask the user to repeat or reword it. Speech arrives in fragments ('write a story, 30' + 'words'): join them into one prompt."
     : "";
 
   const calledDot = options.calledDot?.name.trim().slice(0, 80);
   // The slot keeps the call with its Dot even after a rename; the name is how the user says it.
   const calledDotRef = options.calledDot?.slot ? String(options.calledDot.slot) : calledDot;
   const dotsInstruction = enableMcp
-    ? "Dots: the user's six named agents (for example Orbit and Nova) work in their own Chat conversations. When the user asks a Dot to do something, answers a Dot's question, or asks how a Dot is doing, call space_ask_dot or space_dot_status (not space_send_prompt), then say plainly what the receipt reports. Approvals are decided in Space, never by voice." +
+    ? "Dots: the user's six named agents (for example Orbit and Nova) work in their own Chat conversations. When the user asks a Dot to do something, answers a Dot's question, or asks how a Dot is doing, call space_ask_dot or space_dot_status (not space_send_prompt), then say plainly what the receipt reports. Approvals are decided in Space, never by voice. Mail, calendar, Slack or Teams messages, clicking or typing in web pages and installed MCP tools are Dot work: hand them to a Dot with space_ask_dot." +
       (calledDot ? `\nThis is a call with the Dot ${calledDot}: you are its voice. Unless the user names another Dot, send every request, answer and question to ${calledDot} with space_ask_dot (dot: "${calledDotRef}") and ask space_dot_status (dot: "${calledDotRef}") how it is doing.` : "")
     : "";
 
@@ -3782,15 +3795,16 @@ export async function buildLiveSessionContext(
     ? "Reading pane content: use space_inspect_room with section CONTENT and the requested paneId when the user asks to read, compare or summarize pane output. Answer from the returned content only. If access fails, output is missing, or only part of the transcript is available, say so precisely. Content inspection is not visual verification. Use space_search_conversation_history for past Live conversations; historical entries are not evidence of current execution."
     : "";
 
-  const languageInstruction = options.language === "en"
-    ? "Conversation language: STRICT LANGUAGE MIRRORING. You MUST detect and mirror the language the user actually spoke in each turn. If the user speaks English → reply ONLY in English. If the user switches to Greek → reply in Greek. If the user switches to Spanish or another language → reply in that language. NEVER reply in Greek when the user spoke English. NEVER reply in a language the user did not use. Short noise-like inputs (e.g. 'oral', 'aurat', 'ore', random syllables under 3 characters) that carry no semantic meaning should be acknowledged briefly in the same language as the previous clear user turn, or ignored. This rule overrides all other language defaults."
-    : options.language === "auto"
-    ? "Conversation language: The primary language of this workspace is Greek (Ελληνικά). The user speaks Greek. The speech-to-text system frequently hallucinates or mistranscribes Greek words as Spanish, Portuguese, Italian, or phonetic approximations (e.g. 'Te quiero hacer un pispis', 'Me acuso', 'pezón', 'tiene poco', 'die Pomeni', 'chupapi'). YOU MUST ALWAYS TREAT ALL AUDIO AND PHONETIC INPUT AS GREEK, interpret the phonetic Greek intent, and ALWAYS respond in natural, fluent Greek (Ελληνικά). NEVER speak Spanish, Portuguese, or Italian. Only speak English if the user unambiguously speaks full English sentences."
-    : "Conversation language: Greek (Ελληνικά). You MUST always speak and respond exclusively in natural Greek (Ελληνικά). The user speaks Greek. The speech recognition model frequently hallucinates Spanish, Portuguese or foreign words from Greek audio (e.g. 'Te quiero hacer un pispis', 'Me acuso', 'pezón', 'tiene poco'). You MUST IGNORE any foreign language hallucination, interpret the Greek phonetic meaning, and ALWAYS answer in natural, fluent Greek (Ελληνικά). NEVER speak Spanish or any other language.";
+  // Operator decision 2026-10-14: start in English, then answer in the language the user speaks; "el" is Greek only.
+  const languageInstruction = options.language === "el"
+    ? "Conversation language: Greek (Ελληνικά). Always speak and reply in natural, fluent Greek, including the first words. Speech recognition sometimes mistranscribes Greek speech as Spanish, Portuguese, Italian or phonetic fragments (e.g. 'Te quiero hacer un pispis', 'Me acuso', 'tiene poco'); interpret their Greek meaning and never speak another language."
+    : "Conversation language: English and Greek (Ελληνικά). This rule is the user's latest choice and overrides any language preference in personal memory. Start the conversation, and any greeting, in English, with one short sentence that does not describe the room unless asked. From then on, reply in the language the user spoke in their latest turn: Greek when they speak Greek, English when they speak English, and switch back the moment they switch. Never reply in any other language. " +
+      "Speech recognition sometimes mistranscribes Greek speech as Spanish, Portuguese, Italian or phonetic fragments (e.g. 'Te quiero hacer un pispis', 'Me acuso', 'tiene poco'); treat such input as Greek, interpret its Greek meaning and reply in Greek. " +
+      "Short noise-like fragments with no meaning: ignore them, or answer briefly in the language of the previous clear user turn. Tool results and app notices are written in English; they never change the language you reply in.";
 
   const layoutInstruction = "Pane Layout controls: SpaceApp has standard layout presets from the Pane layout menu: 'automatic' (default grid, e.g. 3x2, columns: null), 'fullscreen' (1 pane at a time, 1x1, columns: 0), '1 column' (1x4, columns: 1), '2 columns' (2x2, columns: 2), '3 columns' (columns: 3), '4 columns' (4x1, columns: 4), and height presets (1-4). When the user asks for 'full screen', 'fullscreen', 'πλήρης οθόνη' or 'ολόκληρη οθόνη', call space_set_pane_layout with preset: 'fullscreen' and columns: 0. When the user asks for 'pane layout', 'page layout', 'paint layout', 'pane laoyt', 'διάταξη', or 'επόμενη επιλογή/διάταξη', call space_set_pane_layout with preset: 'next' (or the specific requested preset). NEVER apply a christmas tree (TREE) layout unless the user explicitly asks for 'δέντρο' or 'christmas tree'.";
 
-  const cliControlInstruction = "CLI Controls (Model Selection, Reasoning & CLI Shortcuts):\n- Model Selection & Reasoning: When the user asks to change the AI model or reasoning effort on a CLI terminal pane (e.g. 'άλλαξε μοντέλο σε 3.7', 'βάλε Claude', 'βάλε Gemini 3.7', 'set reasoning high', 'ποια μοντέλα έχει;'): ALWAYS call `space_set_pane_model` with `cliType` (e.g. 'gemini', 'codex', 'opencode', 'claude'), `model` (e.g. 'gemini-3.7-flash', 'gemini-3.8-flash', 'claude-sonnet-4-6', or partial name like '3.7'), and/or `reasoningEffort` ('minimal', 'low', 'medium', 'high', 'xhigh'). Target Pane: When the user refers to a newly opened or most recent pane (e.g. 'στο νέο παράθυρο', 'στο καινούργιο', 'στο παράθυρο που άνοιξες', 'στο τελευταίο') or right after opening a pane, ALWAYS pass `targetPosition: 'latest'` or the exact `paneId` returned by `space_open_panes`. If the user refers to an index ('στο πρώτο', 'στο 2ο'), pass `targetIndex`. Never target a busy pane running a turn.\n- Model Inspection & Verification: When the user asks what model is set, which model is running on a pane, or whether a model change was applied (e.g. 'ποιο μοντέλο έβαλες;', 'σε ποιο μοντέλο είναι τώρα;', 'το άλλαξες;', 'ποιο μοντέλο τρέχει;', 'βλέπεις σε ποιο μοντέλο έγινε η αλλαγή;'): ALWAYS inspect with `space_inspect_room` passing `section: 'MODELS'` (or `space_set_pane_model` with `listAvailable: true`). Use the returned live `model` field to report the actual active model. NEVER guess or assume based on previous failed attempts.\n- CLI Shortcuts: When the user asks for CLI shortcut actions matching the CLI shortcuts menu (e.g. 'continue', 'πάτα continue', 'save to memory', 'plan mode', 'build mode', 'plan completion percentage', 'deploy', 'clean worktree', 'clean_worktree', 'permissions', 'clear', 'status', 'help', 'test', 'usage', 'restore tasks'): ALWAYS call `space_run_cli_shortcut` with `shortcut` (e.g. 'continue', 'memory', 'plan', 'build', 'plan_progress', 'deploy', 'clean_worktree', 'permissions', 'clear', 'status', 'help', 'test', 'usage', etc.). Target Pane: When the user asks to run a shortcut on a new or most recent pane (e.g. 'άνοιξε νέο Gemini και στείλε shortcut usage', 'στο νέο παράθυρο', 'στο τελευταίο'), ALWAYS pass `targetPosition: 'latest'` or the exact `paneId` of the newly opened pane.";
+  const cliControlInstruction = "CLI Controls (Model Selection, Reasoning & CLI Shortcuts):\n- Model Selection & Reasoning: When the user asks to change the AI model or reasoning effort on a CLI terminal pane (e.g. 'άλλαξε μοντέλο σε 3.7', 'βάλε Claude', 'βάλε Gemini 3.7', 'set reasoning high', 'ποια μοντέλα έχει;'): ALWAYS call `space_set_pane_model` with `cliType` (e.g. 'gemini', 'codex', 'opencode', 'claude'), `model` (e.g. 'gemini-3.7-flash', 'gemini-3.8-flash', 'claude-sonnet-4-6', or partial name like '3.7'), and/or `reasoningEffort` ('minimal', 'low', 'medium', 'high', 'xhigh'). Target Pane: When the user refers to a newly opened or most recent pane (e.g. 'στο νέο παράθυρο', 'στο καινούργιο', 'στο παράθυρο που άνοιξες', 'στο τελευταίο') or right after opening a pane, ALWAYS pass `targetPosition: 'latest'` or the exact `paneId` returned by `space_open_panes`. If the user refers to an index ('στο πρώτο', 'στο 2ο'), pass `targetIndex`. Never target a busy pane running a turn.\n- Model Inspection & Verification: When the user asks what model is set, which model is running on a pane, or whether a model change was applied (e.g. 'ποιο μοντέλο έβαλες;', 'σε ποιο μοντέλο είναι τώρα;', 'το άλλαξες;', 'ποιο μοντέλο τρέχει;', 'βλέπεις σε ποιο μοντέλο έγινε η αλλαγή;'): ALWAYS inspect with `space_inspect_room` passing `section: 'MODELS'` (or `space_set_pane_model` with `listAvailable: true`). Use the returned live `model` field to report the actual active model. NEVER guess or assume based on previous failed attempts.\n- CLI Shortcuts: When the user asks for CLI shortcut actions matching the CLI shortcuts menu (e.g. 'continue', 'πάτα continue', 'save to memory', 'plan mode', 'build mode', 'plan completion percentage', 'deploy', 'promote', 'κάνε promote', 'clean worktree', 'clean_worktree', 'permissions', 'clear', 'status', 'help', 'test', 'usage', 'restore tasks'): ALWAYS call `space_run_cli_shortcut` with `shortcut` (e.g. 'continue', 'memory', 'plan', 'build', 'plan_progress', 'deploy', 'promote', 'clean_worktree', 'permissions', 'clear', 'status', 'help', 'test', 'usage', etc.). Target Pane: When the user asks to run a shortcut on a new or most recent pane (e.g. 'άνοιξε νέο Gemini και στείλε shortcut usage', 'στο νέο παράθυρο', 'στο τελευταίο'), ALWAYS pass `targetPosition: 'latest'` or the exact `paneId` of the newly opened pane.";
 
   priorTurns = priorTurns.slice(-30).map(turn => ({ ...turn, text: turn.text.slice(0, 1500) }));
   const conversationHistoryInstruction = priorTurns.length
@@ -3842,7 +3856,6 @@ export async function buildLiveSessionContext(
       SPACE_EXECUTE_MCP_TOOL,
       SPACE_WATCHES_TOOL,
       SPACE_STOP_PANE_TOOL,
-      SPACE_CAPTURE_SCREEN_TOOL,
       SPACE_PLAY_YOUTUBE_TOOL,
       SPACE_SET_PANE_COLOR_TOOL,
       SPACE_INSPECT_CLI_RUNTIMES_TOOL,
@@ -3860,7 +3873,6 @@ export async function buildLiveSessionContext(
     tz,
     tzLabel,
     formattedDate,
-    dynamicGreeting,
     effectiveOpening,
     personalMemoryInstruction,
     timeInstruction,
@@ -3913,6 +3925,16 @@ export async function awaitOperationIfNeeded(roomId: string, res: any, timeoutMs
     }
   }
   return data;
+}
+
+/** True when a Space Control receipt (raw response or awaited operation) reports a failure. */
+export function controlReceiptFailed(res: any, data: any): boolean {
+  return Boolean(
+    res?.error ||
+    res?.result?.isError ||
+    data?.status === "FAILED" ||
+    (Array.isArray(data?.results) && data.results.some((item: any) => item?.status === "FAILED" || item?.ok === false))
+  );
 }
 
 export interface LiveRoomCacheEntry {
@@ -4006,7 +4028,30 @@ export function resolveTargetCliPane(
   return matching.length === 1 ? matching[0] : null;
 }
 
-export async function executeLiveFunction(
+// Tools that only read start at once; every other tool waits for the change issued before it in the same
+// Live session, so "open panes, then send to them" runs in that order on every provider.
+const LIVE_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "space_search_personal_memory", "space_search_conversation_history", "space_get_current_time", "space_search_web",
+  "space_fetch_web_page", "space_recall_memory", "space_inspect_room", "space_inspect_activity", "space_inspect_dashboard",
+  "space_inspect_cli_runtimes", "space_describe_pane_types", "space_dot_status", "space_list_mcp_tools", "space_streaming_status"
+]);
+const liveChangeTails = new Map<string, Promise<unknown>>();
+// A deletion or settings change Live asked the user about, with the user turn count at the time of asking.
+const liveConfirmationRequests = new Map<string, number>();
+
+export function executeLiveFunction(name: string, argsStr: string, context: Parameters<typeof runLiveFunction>[2]): Promise<string> {
+  const session = context.callId?.split(":")[0];
+  if (!session) return runLiveFunction(name, argsStr, context);
+  const run = (liveChangeTails.get(session) ?? Promise.resolve()).then(() => runLiveFunction(name, argsStr, context));
+  if (!LIVE_READ_ONLY_TOOLS.has(name)) {
+    const tail = run.catch(() => undefined);
+    liveChangeTails.set(session, tail);
+    void tail.then(() => { if (liveChangeTails.get(session) === tail) liveChangeTails.delete(session); });
+  }
+  return run;
+}
+
+async function runLiveFunction(
   name: string,
   argsStr: string,
   context: {
@@ -4032,7 +4077,7 @@ export async function executeLiveFunction(
     if (context.roomId && typeof api.reportLiveVoiceLog === "function") void api.reportLiveVoiceLog({
       roomId: context.roomId, event: "tool_call_rejected", role: "tool", detail: rejection
     }).catch(() => {});
-    return JSON.stringify({ ok: false, code: "LIVE_ROOM_CONTEXT_UNSET", message: "This command is stale or its originating room is unavailable. Ask the user to repeat it in the intended room before acting." });
+    return JSON.stringify({ ok: false, code: "LIVE_ROOM_CONTEXT_UNSET", executed: false, message: "NOT DONE: nothing was executed, because the user changed room, stopped Live or said no/wait after asking. Tell the user right away, in one short sentence, that it was not done, and ask whether to do it now in the current room." });
   }
   const executionId = context.callId || crypto.randomUUID();
   let actionIndex = 0;
@@ -4697,7 +4742,7 @@ export async function executeLiveFunction(
             const formatList = (agents: AgentEntry[]) =>
               agents.map(a => `${a.paneName || a.title} [${a.runtime}]`).join(", ") || "none";
 
-            const greekStatusDesc = `Agents Dashboard (${roomScope === "all" ? "Όλα τα δωμάτια" : "Τρέχον δωμάτιο"}): ${summary.total} agents (${summary.working} working, ${summary.done} done, ${summary.idle} idle, ${summary.waiting} waiting for you).`;
+            const greekStatusDesc = `Agents Dashboard (${roomScope === "all" ? "All rooms" : "Current room"}): ${summary.total} agents (${summary.working} working, ${summary.done} done, ${summary.idle} idle, ${summary.waiting} waiting for you).`;
 
             outputText = JSON.stringify({
               status: "SUCCESS",
@@ -4788,6 +4833,14 @@ export async function executeLiveFunction(
               idleAgents: idlePanes,
               panes: panesList
             });
+          } else if (name === "space_inspect_room" && !["STATE", "CONTENT", "MODELS"].includes(String(parsedArgs.section || "STATE").toUpperCase())) {
+            const section = String(parsedArgs.section).toUpperCase();
+            const paneArg = typeof parsedArgs.paneId === "string" && parsedArgs.paneId.trim() ? { paneId: parsedArgs.paneId.trim() } : {};
+            const queryArg = typeof parsedArgs.query === "string" && parsedArgs.query.trim() ? { query: parsedArgs.query.trim() } : {};
+            const res = await api.callControlMcpTool("space_inspect", { roomId: effectiveRoomId, section, ...paneArg, ...queryArg });
+            if (controlReceiptFailed(res, null)) throw new Error(`Inspecting ${section} failed: ${JSON.stringify(res?.error ?? res?.result ?? res).slice(0, 800)}`);
+            const text = JSON.stringify({ status: "SUCCESS", roomId: effectiveRoomId, section, data: res?.result?.structuredContent ?? res?.result ?? res });
+            outputText = text.length > 12_000 ? `${text.slice(0, 12_000)} …(truncated; narrow it with query)` : text;
           } else if (name === "space_inspect_room") {
             const section = (parsedArgs.section || "STATE").toUpperCase();
             let paneId =
@@ -4870,13 +4923,6 @@ export async function executeLiveFunction(
                       ? (item.text.length > maxCharsPerPane ? item.text.slice(-maxCharsPerPane) : item.text)
                       : undefined
                   }))
-                });
-              } else if (section === "CLIPBOARD") {
-                outputText = JSON.stringify({
-                  status: "SUCCESS",
-                  roomId: effectiveRoomId,
-                  section: "CLIPBOARD",
-                  items: sc.items || sc.data || sc
                 });
               } else {
                 const rawPanes = Array.isArray(sc.panes) ? sc.panes : Array.isArray(sc.data) ? sc.data : [];
@@ -5001,7 +5047,7 @@ export async function executeLiveFunction(
             }
           } else if (name === "space_open_panes") {
             let cleanCounts: Record<string, number> = {};
-            // Single-type lock: explicit counts with exactly one type (e.g. "μόνο codex")
+            // Single-type lock: explicit counts with exactly one type (e.g. "only codex")
             // must NEVER be expanded or mixed — fill flags are ignored in that case.
             const explicitKeys = Object.keys(parsedArgs.counts || {});
             let isFillRoom = Boolean(parsedArgs.fillRoom || parsedArgs.distinctOnly || parsedArgs.untilFull);
@@ -5070,7 +5116,7 @@ export async function executeLiveFunction(
               const availableSlots = Math.max(0, effectivePaneCap - openPanes.length);
 
               if (availableSlots <= 0) {
-                outputText = `Το δωμάτιο είναι ήδη πλήρες (${openPanes.length}/${effectivePaneCap} παράθυρα). Δεν υπάρχουν διαθέσιμες κενές θέσεις.`;
+                outputText = `The room is already full (${openPanes.length}/${effectivePaneCap} panes). There are no free slots.`;
               } else {
                 const existingTypes = new Set(
                   openPanes.map((p: any) => {
@@ -5095,10 +5141,14 @@ export async function executeLiveFunction(
             } else {
               const rawCounts = parsedArgs.counts || {};
               for (const [k, v] of Object.entries(rawCounts)) {
+                // Models list every type with 0 next to the one they want; the server accepts only counts of 1 or more.
+                const count = typeof v === "number" ? Math.floor(v) : 1;
+                if (count < 1) continue;
                 const cleanKey = normalizePaneType(String(k));
-                cleanCounts[cleanKey] = (cleanCounts[cleanKey] || 0) + (typeof v === "number" ? v : 1);
+                cleanCounts[cleanKey] = (cleanCounts[cleanKey] || 0) + count;
               }
             }
+            if (!Object.keys(cleanCounts).length) throw new Error("No pane type had a count of 1 or more, so nothing was opened. Ask the user which panes and how many.");
             const isDebug = Boolean(parsedArgs.debug);
             const res = await executeControl(effectiveRoomId, [
               {
@@ -5127,16 +5177,16 @@ export async function executeLiveFunction(
               if (isDebug || debugDiagnosis) {
                 const diagnosisLines = [
                   `[DEBUG DIAGNOSIS - Incident ID: ${debugIncidentId || "pending"}]`,
-                  `Αποτυχία ανοίγματος παραθύρων (${JSON.stringify(cleanCounts)}).`,
-                  `Αιτία σφάλματος (Reason): ${reason}`,
-                  debugDiagnosis?.probableCause ? `Πιθανή αιτία: ${debugDiagnosis.probableCause}` : null,
-                  debugDiagnosis?.recommendedFix ? `Προτεινόμενη ενέργεια: ${debugDiagnosis.recommendedFix}` : null,
+                  `Failed to open panes (${JSON.stringify(cleanCounts)}).`,
+                  `Reason: ${reason}`,
+                  debugDiagnosis?.probableCause ? `Probable cause: ${debugDiagnosis.probableCause}` : null,
+                  debugDiagnosis?.recommendedFix ? `Recommended fix: ${debugDiagnosis.recommendedFix}` : null,
                   agentHandoffPrompt ? `\n--- AGENT HANDOFF PROMPT ---\n${agentHandoffPrompt}\n----------------------------` : null
                 ].filter(Boolean);
 
                 outputText = diagnosisLines.join("\n");
               } else {
-                outputText = `Verification FAILED: Αποτυχία ανοίγματος παραθύρων (${JSON.stringify(cleanCounts)}): ${reason}.`;
+                outputText = `Verification FAILED: failed to open panes (${JSON.stringify(cleanCounts)}): ${reason}.`;
               }
 
               void api.reportLiveVoiceLog({
@@ -5159,30 +5209,28 @@ export async function executeLiveFunction(
                 if (!skippedTypes.includes(String(k).toLowerCase())) effectiveCounts[k] = v as number;
               }
               if (Object.keys(effectiveCounts).length === 0) {
-                outputText = `Δεν άνοιξε κανένα παράθυρο — όλοι οι ζητούμενοι τύποι είναι ανενεργοί αυτή τη στιγμή.`;
+                outputText = `No pane was opened: every requested type is disabled right now.`;
               } else {
               window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
               const totalRequested = Object.values(effectiveCounts).reduce((s: number, c: any) => s + (typeof c === "number" ? c : 0), 0);
               const totalCreated = Array.isArray(openEvidence?.data) ? openEvidence.data.length : 0;
-              // Settle for bulk PTY spawns, then STATE verify with two retries.
-              await new Promise((r) => setTimeout(r, totalRequested > 4 ? 1200 : 800));
-
+              // Read STATE at once, then every 300 ms within the same ~6 s the old fixed settle and retries took.
+              const verifyDeadline = Date.now() + 6000;
               const matchPanes = (panes: any[], types: string[]) => types.filter(
                 (t) => !panes.some((p: any) => String(p.mode || p.terminalRuntimeId || "").toLowerCase().includes(t.toLowerCase()))
               );
               let postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
               let sc = postInspect?.result?.structuredContent || {};
               if (sc.room?.id && sc.room.id !== effectiveRoomId) {
-                outputText = `Αναντιστοιχία δωματίου: η επαλήθευση διάβασε άλλο δωμάτιο (${sc.room.id}). Ξαναπές μου σε ποιο δωμάτιο είσαι για να το ελέγξω σωστά.`;
+                outputText = `Room mismatch: verification read another room (${sc.room.id}). Ask the user which room they are in, then check again.`;
               } else {
               let postPanes = (sc.panes || []).filter((p: any) => !p.isClosed);
               const requestedTypes = Object.keys(effectiveCounts);
               let missingInState = matchPanes(postPanes, requestedTypes);
               const effectivePaneCap = Number(sc.paneCap || sc.maxPanesAllowed || 16);
               let isRoomAtCapacity = postPanes.length >= effectivePaneCap;
-              for (const wait of [2000, 3000]) {
-                if (missingInState.length === 0 || isRoomAtCapacity) break;
-                await new Promise((r) => setTimeout(r, wait));
+              while (missingInState.length > 0 && !isRoomAtCapacity && Date.now() < verifyDeadline) {
+                await new Promise((r) => setTimeout(r, 300));
                 postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
                 sc = postInspect?.result?.structuredContent || {};
                 postPanes = (sc.panes || []).filter((p: any) => !p.isClosed);
@@ -5209,18 +5257,18 @@ export async function executeLiveFunction(
               }
 
               if (missingInState.length > 0 && totalCreated < totalRequested && !isRoomAtCapacity) {
-                outputText = `State verification failed: Τα ζητούμενα παράθυρα (${missingInState.join(", ")}) δεν εμφανίστηκαν στην οθόνη.`;
+                outputText = `State verification failed: the requested panes (${missingInState.join(", ")}) did not appear on screen.`;
               } else if (isRoomAtCapacity && totalCreated > 0) {
-                outputText = `✓ State verified: Το δωμάτιο γέμισε στο μέγιστο όριο (${postPanes.length} παράθυρα). Ανοίχτηκαν επιτυχώς ${totalCreated} νέα παράθυρα (${requestedTypes.join(", ")}).`;
+                outputText = `✓ State verified: the room reached its pane limit (${postPanes.length} panes). Opened ${totalCreated} new panes (${requestedTypes.join(", ")}).`;
               } else if (missingInState.length > 0) {
                 const paneLabels = newlyOpenedPanes.map((p) => `${p.title || p.terminalRuntimeId || p.mode} (paneId: ${p.id})`).join(", ");
-                outputText = `Ανοίχτηκαν ${totalCreated} παράθυρα (${paneLabels || requestedTypes.join(", ")}), ο συγχρονισμός οθόνης εκκρεμεί.`;
+                outputText = `Opened ${totalCreated} panes (${paneLabels || requestedTypes.join(", ")}); the screen has not caught up yet.`;
               } else {
                 const verifiedList = postPanes.filter((p: any) => newlyOpenedPanes.some(created => created.id === p.id));
                 if (totalRequested > 4) {
-                  outputText = `✓ State verified: Ανοίχτηκαν επιτυχώς ${verifiedList.length} παράθυρα (${requestedTypes.join(", ")}) και εμφανίζονται στην οθόνη: ${verifiedList.map((p: any) => `${p.title || p.id} [${p.id}]`).join(", ")}`;
+                  outputText = `✓ State verified: opened ${verifiedList.length} panes (${requestedTypes.join(", ")}), now on screen: ${verifiedList.map((p: any) => `${p.title || p.id} [${p.id}]`).join(", ")}`;
                 } else {
-                  outputText = `✓ State verified: Ανοίχτηκε επιτυχώς στην οθόνη: ${verifiedList.map((p: any) => `${p.title || p.id} (paneId: ${p.id}, mode: ${p.mode})`).join(", ")}`;
+                  outputText = `✓ State verified: opened and on screen: ${verifiedList.map((p: any) => `${p.title || p.id} (paneId: ${p.id}, mode: ${p.mode})`).join(", ")}`;
                 }
               }
               }
@@ -5276,12 +5324,12 @@ export async function executeLiveFunction(
             if (targetPaneIds.length === 0) {
               const nonLiveOpen = openPanes.filter((p: any) => p.id !== livePaneId && p.mode !== "LIVE" && p.runtimeId !== "LIVE");
               outputText = reqCliType
-                ? `Δεν βρέθηκαν ανοιχτά παράθυρα τύπου ${reqCliType.toUpperCase()} προς κλείσιμο.`
+                ? `No open ${reqCliType.toUpperCase()} panes to close.`
                 : parsedArgs.filter === "unused" || parsedArgs.unusedOnly === true
-                ? "Δεν βρέθηκαν κενά ή αχρησιμοποίητα παράθυρα προς κλείσιμο."
+                ? "No empty or unused panes to close."
                 : nonLiveOpen.length === 0
-                ? "Δεν υπάρχουν άλλα ανοιχτά παράθυρα στο δωμάτιο προς κλείσιμο (μόνο το τρέχον παράθυρο Live είναι ενεργό)."
-                : "Δεν βρέθηκαν παράθυρα προς κλείσιμο.";
+                ? "No other open panes to close in this room (only this Live pane is open)."
+                : "No panes found to close.";
             } else {
               const res = await executeControl(effectiveRoomId, [
                 {
@@ -5295,7 +5343,7 @@ export async function executeLiveFunction(
               const isErr = res?.error || res?.result?.isError || data?.status === "FAILED";
 
               if (isErr) {
-                outputText = `Verification FAILED: Απέτυχε το κλείσιμο των παραθύρων: ${data?.detail || res?.error?.message || "Σφάλμα"}`;
+                outputText = `Verification FAILED: closing the panes failed: ${data?.detail || res?.error?.message || "error"}`;
               } else {
                 if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
                 const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
@@ -5303,13 +5351,13 @@ export async function executeLiveFunction(
                   (p: any) => !p.isClosed && targetPaneIds.includes(p.id)
                 );
                 if (remainingOpen.length > 0) {
-                  outputText = `State verification failed: Τα παράθυρα (${remainingOpen.map((p: any) => p.paneName || p.id).join(", ")}) παραμένουν ανοιχτά στην οθόνη.`;
+                  outputText = `State verification failed: panes ${remainingOpen.map((p: any) => p.paneName || p.id).join(", ")} are still open on screen.`;
                 } else {
                   const closedNames = targetPaneIds.map(id => openPanes.find((p: any) => p.id === id)?.paneName || id).filter(Boolean);
                   if (closedNames.length === 1) {
-                    outputText = `✓ State verified: Το παράθυρο ${closedNames[0]} έκλεισε επιτυχώς και απομακρύνθηκε από την οθόνη.`;
+                    outputText = `✓ State verified: ${closedNames[0]} is closed and gone from the screen.`;
                   } else {
-                    outputText = `✓ State verified: Έκλεισαν επιτυχώς τα παράθυρα ${closedNames.join(", ")} (${targetPaneIds.length}) και απομακρύνθηκαν από την οθόνη.`;
+                    outputText = `✓ State verified: closed ${closedNames.join(", ")} (${targetPaneIds.length}); they are gone from the screen.`;
                   }
                 }
               }
@@ -5332,7 +5380,7 @@ export async function executeLiveFunction(
               if (resolved.length > 0) {
                 targetPaneIds = resolved;
               } else {
-                outputText = `Άγνωστα pane names (${names.join(", ")}).`;
+                outputText = `Unknown pane names (${names.join(", ")}).`;
               }
             } else if (nonCliOnly) {
               targetPaneIds = openPanes.filter((p: any) => p.mode !== "TERMINAL" && !(p as any).terminalRuntimeId).map((p: any) => p.id);
@@ -5342,16 +5390,16 @@ export async function executeLiveFunction(
               const raw = Array.isArray(paneIds) ? paneIds : [paneIds];
               const unknownIds = raw.filter((id: string) => id !== paneId && !openPanes.some((op: any) => op.id === id));
               if (unknownIds.length > 0 && unknownIds.length === raw.length) {
-                outputText = `Άγνωστα ids (${unknownIds.join(", ")}). Έκανα re-inspect — πες all:true ή έγκυρα ids.`;
+                outputText = `Unknown pane ids (${unknownIds.join(", ")}). The room was inspected again; pass all:true or valid ids.`;
               } else {
                 targetPaneIds = raw.filter((id: string) => id !== paneId && openPanes.some((op: any) => op.id === id));
               }
             } else {
-              outputText = "Δεν δόθηκε στόχος — πες all:true ή έγκυρα ids.";
+              outputText = "No target given; pass all:true or valid ids.";
             }
 
             if (targetPaneIds.length === 0) {
-              if (!outputText) outputText = "Δεν βρέθηκαν παράθυρα για ελαχιστοποίηση.";
+              if (!outputText) outputText = "No panes found to minimize.";
             } else {
               const res = await executeControl(effectiveRoomId, [
                 {
@@ -5366,7 +5414,7 @@ export async function executeLiveFunction(
 
               if (isErr) {
                 const reason = data?.detail || data?.error || data?.results?.find((r: any) => r.status === "FAILED")?.detail || res?.error?.message || "Minimize failed.";
-                outputText = `Απέτυχε η ελαχιστοποίηση: ${reason}`;
+                outputText = `Minimizing failed: ${reason}`;
               } else {
                 if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
                 const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
@@ -5378,12 +5426,12 @@ export async function executeLiveFunction(
                     return found?.paneName || found?.title || id;
                   });
                   if (minNames.length === 1) {
-                    outputText = `✓ Ελαχιστοποιήθηκε το παράθυρο ${minNames[0]}.`;
+                    outputText = `✓ Minimized ${minNames[0]}.`;
                   } else {
-                    outputText = `✓ Ελαχιστοποιήθηκαν τα παράθυρα ${minNames.join(", ")} (${minimized.length}).`;
+                    outputText = `✓ Minimized ${minNames.join(", ")} (${minimized.length}).`;
                   }
                 } else {
-                  outputText = `Ελαχιστοποιήθηκαν ${minimized.length} από ${targetPaneIds.length} παράθυρα.`;
+                  outputText = `Minimized ${minimized.length} of ${targetPaneIds.length} panes.`;
                 }
               }
             }
@@ -5402,7 +5450,7 @@ export async function executeLiveFunction(
             }
 
             if (!targetPaneId) {
-              outputText = "State verification failed: Δεν βρέθηκε ανοιχτό παράθυρο για μεγιστοποίηση.";
+              outputText = "State verification failed: no open pane found to maximize.";
             } else {
               const res = await executeControl(effectiveRoomId, [
                 {
@@ -5417,16 +5465,16 @@ export async function executeLiveFunction(
 
               if (isErr) {
                 const reason = data?.detail || data?.error || data?.results?.find((r: any) => r.status === "FAILED")?.detail || res?.error?.message || "Maximize failed.";
-                outputText = `Verification FAILED: Απέτυχε η μεγιστοποίηση: ${reason}`;
+                outputText = `Verification FAILED: maximizing failed: ${reason}`;
               } else {
                 if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
                 const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
                 const targetPane = (postInspect?.result?.structuredContent?.panes || []).find((p: any) => p.id === targetPaneId);
                 if (!targetPane || !targetPane.isMaximized) {
-                  outputText = `State verification failed: Το παράθυρο ${targetPaneId} δεν εμφανίζεται ως μεγιστοποιημένο στην οθόνη.`;
+                  outputText = `State verification failed: pane ${targetPaneId} does not show as maximized.`;
                 } else {
                   const targetName = targetPane.paneName || targetPane.title || targetPane.id;
-                  outputText = `✓ State verified: Το παράθυρο ${targetName} μεγιστοποιήθηκε επιτυχώς σε πλήρη προβολή.`;
+                  outputText = `✓ State verified: ${targetName} is maximized.`;
                 }
               }
             }
@@ -5461,7 +5509,7 @@ export async function executeLiveFunction(
 
             if (isErr) {
               const reason = data?.detail || data?.error || data?.results?.find((r: any) => r.status === "FAILED")?.detail || res?.error?.message || "Restore failed.";
-              outputText = `Verification FAILED: Απέτυχε η επαναφορά: ${reason}`;
+              outputText = `Verification FAILED: restoring failed: ${reason}`;
             } else {
               if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
               const postInspect = await api.inspectControlMcp(effectiveRoomId, "STATE");
@@ -5475,12 +5523,12 @@ export async function executeLiveFunction(
                 (p: any) => p.isMinimized || p.isMaximized
               );
               if (stillAbnormal.length > 0) {
-                outputText = `State verification failed: Τα παράθυρα (${stillAbnormal.map((p: any) => p.paneName || p.id).join(", ")}) δεν επανήλθαν στην κανονική διάταξη.`;
+                outputText = `State verification failed: panes ${stillAbnormal.map((p: any) => p.paneName || p.id).join(", ")} are not back in the normal layout.`;
               } else if (targetPaneIds.length > 0) {
                 const restoredNames = targetPaneIds.map((id: string) => targetPanes.find((p: any) => p.id === id)?.paneName || id);
-                outputText = `✓ State verified: ${restoredNames.length === 1 ? `Το παράθυρο ${restoredNames[0]}` : `Τα παράθυρα ${restoredNames.join(", ")}`} επανήλθαν επιτυχώς στην κανονική διάταξη (Grid).`;
+                outputText = `✓ State verified: ${restoredNames.join(", ")} restored to the normal layout (grid).`;
               } else {
-                outputText = `✓ State verified: Όλα τα παράθυρα επανήλθαν επιτυχώς στην κανονική διάταξη (Grid).`;
+                outputText = `✓ State verified: every pane is restored to the normal layout (grid).`;
               }
             }
           } else if (name === "space_ask_dot" || name === "space_dot_status") {
@@ -5538,7 +5586,7 @@ export async function executeLiveFunction(
             if ((res?.error || res?.result?.isError) && !receipt?.id) {
               const reason = res?.error?.message || receipt?.error?.message || receipt?.detail ||
                 (typeof receipt === "string" ? receipt : undefined) || "Prompt dispatch failed.";
-              outputText = `Αποτυχία αποστολής εντολής στο παράθυρο (${reason}) σε ${elapsedMs}ms.`;
+              outputText = `Failed to send the command to the pane (${reason}) after ${elapsedMs}ms.`;
             } else {
               outputText = JSON.stringify({ operationId: receipt?.id, status: receipt?.status ?? "UNKNOWN", panes: livePromptPaneReceipts(targetPaneIds, receipt, statePanes), paneNames, elapsedMs, results: receipt?.results ?? [], instruction: "This receipt describes prompt submission, not task completion. Report each target's actual status. Completion notifications require a persisted watch receipt." });
             }
@@ -5639,12 +5687,12 @@ export async function executeLiveFunction(
                 const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE").catch(() => null);
                 const currentCols = inspectRes?.result?.structuredContent?.room?.paneLayoutColumns ?? null;
                 const CYCLE_ORDER: Array<{ label: string; columns: 0 | 1 | 2 | 3 | 4 | null }> = [
-                  { label: "Αυτόματη (Automatic)", columns: null },
-                  { label: "Πλήρης Οθόνη (Fullscreen)", columns: 0 },
-                  { label: "1 στήλη (1 column)", columns: 1 },
-                  { label: "2 στήλες (2 columns)", columns: 2 },
-                  { label: "3 στήλες (3 columns)", columns: 3 },
-                  { label: "4 στήλες (4 columns)", columns: 4 }
+                  { label: "Automatic", columns: null },
+                  { label: "Fullscreen", columns: 0 },
+                  { label: "1 column", columns: 1 },
+                  { label: "2 columns", columns: 2 },
+                  { label: "3 columns", columns: 3 },
+                  { label: "4 columns", columns: 4 }
                 ];
                 const currentIndex = CYCLE_ORDER.findIndex(o => o.columns === currentCols);
                 const nextItem = CYCLE_ORDER[(currentIndex + 1) % CYCLE_ORDER.length]!;
@@ -5663,7 +5711,7 @@ export async function executeLiveFunction(
                 columnsArg === 0
               ) {
                 targetColumns = 0;
-                presetLabel = "Πλήρης Οθόνη (Fullscreen)";
+                presetLabel = "Fullscreen";
               } else if (
                 rawPreset === "automatic" ||
                 rawPreset === "auto" ||
@@ -5675,7 +5723,7 @@ export async function executeLiveFunction(
                 columnsArg === -1
               ) {
                 targetColumns = null;
-                presetLabel = "Αυτόματη (Automatic)";
+                presetLabel = "Automatic";
               } else if (
                 rawPreset === "1 column" ||
                 rawPreset === "1" ||
@@ -5688,7 +5736,7 @@ export async function executeLiveFunction(
                 columnsArg === 1
               ) {
                 targetColumns = 1;
-                presetLabel = "1 στήλη (1 column)";
+                presetLabel = "1 column";
               } else if (
                 rawPreset === "2 columns" ||
                 rawPreset === "2" ||
@@ -5701,7 +5749,7 @@ export async function executeLiveFunction(
                 columnsArg === 2
               ) {
                 targetColumns = 2;
-                presetLabel = "2 στήλες (2 columns)";
+                presetLabel = "2 columns";
               } else if (
                 rawPreset === "3 columns" ||
                 rawPreset === "3" ||
@@ -5713,7 +5761,7 @@ export async function executeLiveFunction(
                 columnsArg === 3
               ) {
                 targetColumns = 3;
-                presetLabel = "3 στήλες (3 columns)";
+                presetLabel = "3 columns";
               } else if (
                 rawPreset === "4 columns" ||
                 rawPreset === "4" ||
@@ -5725,13 +5773,13 @@ export async function executeLiveFunction(
                 columnsArg === 4
               ) {
                 targetColumns = 4;
-                presetLabel = "4 στήλες (4 columns)";
+                presetLabel = "4 columns";
               } else if (typeof columnsArg === "number") {
                 targetColumns = columnsArg >= 0 && columnsArg <= 4 ? (columnsArg as 0 | 1 | 2 | 3 | 4) : null;
-                presetLabel = targetColumns === 0 ? "Πλήρης Οθόνη (Fullscreen)" : targetColumns === null ? "Αυτόματη (Automatic)" : `${targetColumns} ${targetColumns === 1 ? "στήλη" : "στήλες"} (${targetColumns} columns)`;
+                presetLabel = targetColumns === 0 ? "Fullscreen" : targetColumns === null ? "Automatic" : `${targetColumns} ${targetColumns === 1 ? "column" : "columns"}`;
               } else {
                 targetColumns = null;
-                presetLabel = "Αυτόματη (Automatic)";
+                presetLabel = "Automatic";
               }
 
               const targetHeight: 1 | 2 | 3 | 4 | undefined = typeof heightArg === "number" && heightArg >= 1 && heightArg <= 4 ? (heightArg as 1 | 2 | 3 | 4) : undefined;
@@ -5819,19 +5867,49 @@ export async function executeLiveFunction(
 
             outputText = `Christmas tree layout successfully created with ${currentPanes.length} panes (mode: ${appliedMode}). Outcome: ${typeof layoutData === "string" ? layoutData : JSON.stringify(layoutData)}`;
           } else if (name === "space_execute_mcp") {
-            const actions = parsedArgs.actions || [];
-            const res = await executeControl(effectiveRoomId, actions);
-            const data = await awaitOperationIfNeeded(effectiveRoomId, res, 8000);
-            const failed = Boolean(
-              res?.error ||
-              res?.result?.isError ||
-              data?.status === "FAILED" ||
-              (Array.isArray(data?.results) && data.results.some((item: any) => item?.status === "FAILED" || item?.ok === false))
-            );
-            if (failed) {
-              throw new Error(`MCP receipt reported failure: ${typeof data === "string" ? data : JSON.stringify(data).slice(0, 1200)}`);
+            const actions: any[] = Array.isArray(parsedArgs.actions) ? parsedArgs.actions : [];
+            const forbidden = actions.filter(action => action?.kind === "resource" && liveForbiddenResourceOperations.has(String(action.operation)));
+            if (forbidden.length) throw new Error(`${forbidden.map(action => action.operation).join(", ")} is never available by voice. Nothing was executed.`);
+            const sensitive = actions.filter(liveActionNeedsConfirmation);
+            const confirmKey = sensitive.length ? JSON.stringify([context.callId?.split(":")[0] ?? "", sensitive]) : "";
+            const askedAtTurn = confirmKey ? liveConfirmationRequests.get(confirmKey) : undefined;
+            // confirmed: true counts only after Live asked about this exact change and the user then spoke or typed.
+            const answered = askedAtTurn !== undefined && liveUserTurn() > askedAtTurn;
+            let declinedAnswer: string | null = null;
+            if (confirmKey && parsedArgs.confirmed === true && answered) {
+              // The transcript of the answer can land just after the tool call; wait for it briefly.
+              let answer = liveUserTextSince(askedAtTurn!);
+              for (let waited = 0; answer === null && waited < 1500; waited += 100) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                answer = liveUserTextSince(askedAtTurn!);
+              }
+              if (answer !== null && liveAnswerDeclines(answer)) declinedAnswer = answer;
             }
-            outputText = `MCP space_execute completed: ${typeof data === "string" ? data : JSON.stringify(data)}`;
+            if (declinedAnswer !== null) {
+              liveConfirmationRequests.delete(confirmKey);
+              outputText = JSON.stringify({ ok: false, code: "DECLINED", executed: false,
+                actions: sensitive.map(action => ({ kind: action.kind, operation: action.operation, id: action.id ?? null })),
+                message: `The user declined ("${declinedAnswer.slice(0, 200)}"). Nothing was executed; do not run it again unless the user asks again.` });
+            } else if (confirmKey && !(parsedArgs.confirmed === true && answered)) {
+              if (!(parsedArgs.confirmed === true && askedAtTurn !== undefined)) {
+                liveConfirmationRequests.delete(confirmKey);
+                liveConfirmationRequests.set(confirmKey, liveUserTurn());
+                if (liveConfirmationRequests.size > 64) liveConfirmationRequests.delete(liveConfirmationRequests.keys().next().value!);
+              }
+              outputText = JSON.stringify({ ok: false, code: "CONFIRMATION_REQUIRED", executed: false,
+                actions: sensitive.map(action => ({ kind: action.kind, operation: action.operation, id: action.id ?? null })),
+                message: parsedArgs.confirmed === true && askedAtTurn !== undefined
+                  ? "Nothing was executed: the user has not answered yet. Ask them, wait for their yes, then call again with confirmed: true."
+                  : "Nothing was executed. Ask the user to confirm this exact change; call again with confirmed: true only after they say yes." });
+            } else {
+              if (confirmKey) liveConfirmationRequests.delete(confirmKey);
+              const res = await executeControl(effectiveRoomId, actions);
+              const data = await awaitOperationIfNeeded(effectiveRoomId, res, 8000);
+              if (controlReceiptFailed(res, data)) {
+                throw new Error(`MCP receipt reported failure: ${typeof data === "string" ? data : JSON.stringify(data).slice(0, 1200)}`);
+              }
+              outputText = `MCP space_execute completed: ${typeof data === "string" ? data : JSON.stringify(data)}`;
+            }
           } else if (name === "space_watches") {
             const op = parsedArgs.operation || "list";
             const res = await api.watchesControlMcp(effectiveRoomId, op, parsedArgs);
@@ -5869,15 +5947,14 @@ export async function executeLiveFunction(
                   kind: "pane",
                   operation: "stop",
                   target: { paneIds: [targetPaneId] },
-                  paneId: targetPaneId,
-                  when: "NOW",
-                  reason: parsedArgs.reason
+                  when: "NOW"
                 }
               ]);
               const data = await awaitOperationIfNeeded(effectiveRoomId, res, 8000);
               const stoppedPane = openPanes.find((p: any) => p.id === targetPaneId);
               const targetName = stoppedPane?.paneName || stoppedPane?.title || targetPaneId;
-              outputText = `✓ State verified: Το παράθυρο ${targetName} διακόπηκε επιτυχώς (Stopped).`;
+              if (controlReceiptFailed(res, data)) throw new Error(`Stopping ${targetName} failed: ${JSON.stringify(data ?? res).slice(0, 800)}`);
+              outputText = `✓ State verified: ${targetName} is stopped.`;
             }
           } else if (name === "space_capture_screen" || name === "space_screenshot") {
             throw new Error("Automatic screen capture is unavailable: no authenticated room screenshot source is configured. Use the Live Screen button to choose and share a real image. No screenshot was captured and no analysis provider was called.");
@@ -5904,8 +5981,8 @@ export async function executeLiveFunction(
 
             if (!targetUrl) {
               outputText = query
-                ? `Δεν βρέθηκε βίντεο στο YouTube για την αναζήτηση: "${query}".`
-                : "Δεν δόθηκε έγκυρη αναζήτηση ή σύνδεσμος YouTube.";
+                ? `No YouTube video found for "${query}".`
+                : "No valid YouTube search or link was given.";
             } else {
               const inspectRes = await api.inspectControlMcp(effectiveRoomId, "STATE");
               const stateData = inspectRes?.result?.structuredContent || {};
@@ -5920,7 +5997,7 @@ export async function executeLiveFunction(
                 if (videoTitle) {
                   void api.updatePane(targetPane.id, { title: videoTitle.slice(0, 100) }).catch(() => {});
                 }
-                outputText = `Παίζει τώρα στο υπάρχον YouTube pane (${targetPane.title || targetPane.id}): "${videoTitle || targetUrl}"${channelName ? ` από ${channelName}` : ""}.`;
+                outputText = `Now playing in the existing YouTube pane (${targetPane.title || targetPane.id}): "${videoTitle || targetUrl}"${channelName ? ` by ${channelName}` : ""}.`;
               } else {
                 const openRes = await executeControl(effectiveRoomId, [
                   {
@@ -5934,7 +6011,7 @@ export async function executeLiveFunction(
                   }
                 ]);
                 await awaitOperationIfNeeded(effectiveRoomId, openRes, 6000);
-                outputText = `Άνοιξε νέο YouTube pane και παίζει το βίντεο: "${videoTitle || targetUrl}"${channelName ? ` από ${channelName}` : ""}.`;
+                outputText = `Opened a new YouTube pane playing "${videoTitle || targetUrl}"${channelName ? ` by ${channelName}` : ""}.`;
               }
             }
           } else if (name === "space_set_pane_color") {
@@ -5968,7 +6045,7 @@ export async function executeLiveFunction(
             }
 
             if (targetPaneIds.length === 0) {
-              outputText = "Δεν βρέθηκε ανοιχτό παράθυρο για ορισμό χρώματος.";
+              outputText = "No open pane found to color.";
             } else {
               const colorRes = await executeControl(effectiveRoomId, [
                 {
@@ -5978,13 +6055,14 @@ export async function executeLiveFunction(
                   color: targetColor
                 }
               ]);
-              await awaitOperationIfNeeded(effectiveRoomId, colorRes, 5000);
+              const colorData = await awaitOperationIfNeeded(effectiveRoomId, colorRes, 5000);
               invalidateLiveRoomCache(effectiveRoomId);
+              if (controlReceiptFailed(colorRes, colorData)) throw new Error(`Setting the pane color failed: ${JSON.stringify(colorData ?? colorRes).slice(0, 800)}`);
               if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("space-pane-control-action", { detail: { action: "refresh" } }));
               const targetNames = targetPaneIds.map((id: string) => openPanes.find((p: any) => p.id === id)?.paneName || id).join(", ");
               outputText = targetColor
-                ? `✓ Το χρώμα ${targetPaneIds.length > 1 ? "των παραθύρων" : "του παραθύρου"} ${targetNames} άλλαξε επιτυχώς σε ${targetColor}.`
-                : `✓ Το χρώμα ${targetPaneIds.length > 1 ? "των παραθύρων" : "του παραθύρου"} ${targetNames} αφαιρέθηκε (καθαρίστηκε).`;
+                ? `✓ Set the color of ${targetNames} to ${targetColor}.`
+                : `✓ Cleared the color of ${targetNames}.`;
             }
           } else if (name === "space_inspect_cli_runtimes") {
             let workingRuntimes: string[] = [];
@@ -6001,19 +6079,19 @@ export async function executeLiveFunction(
                   return {
                     id: u.id,
                     name: def?.label || u.id,
-                    reason: u.reason || "Μη διαθέσιμο"
+                    reason: u.reason || "Unavailable"
                   };
                 });
               }
             } catch {}
 
             const lines = [
-              "=== ΚΑΤΑΣΤΑΣΗ CLI RUNTIMES ===",
-              `Έτοιμα & Λειτουργικά (${workingRuntimes.length}):`,
-              workingRuntimes.length > 0 ? workingRuntimes.map((r) => `  • ${r}: ΛΕΙΤΟΥΡΓΕΙ (READY)`).join("\n") : "  (Κανένα έτοιμο CLI)",
+              "=== CLI RUNTIME STATUS ===",
+              `Ready (${workingRuntimes.length}):`,
+              workingRuntimes.length > 0 ? workingRuntimes.map((r) => `  • ${r}: READY`).join("\n") : "  (no CLI is ready)",
               "",
-              `Μη διαθέσιμα (${unavailableRuntimes.length}):`,
-              unavailableRuntimes.length > 0 ? unavailableRuntimes.map((u) => `  • ${u.name} (${u.id}): ${u.reason}`).join("\n") : "  (Όλα λειτουργούν κανονικά)",
+              `Unavailable (${unavailableRuntimes.length}):`,
+              unavailableRuntimes.length > 0 ? unavailableRuntimes.map((u) => `  • ${u.name} (${u.id}): ${u.reason}`).join("\n") : "  (all are working)",
               "=============================="
             ];
             outputText = lines.join("\n");
@@ -6026,11 +6104,11 @@ export async function executeLiveFunction(
             );
             const cliPanes = statePanes.filter((p: any) => p.mode === "TERMINAL" || (p as any).terminalRuntimeId);
             if (cliPanes.length === 0) {
-              outputText = "Δεν βρέθηκαν ανοιχτά παράθυρα CLI (τερματικά) στο δωμάτιο.";
+              outputText = "No open CLI (terminal) panes in this room.";
             } else {
               const targetPane = resolveTargetCliPane(cliPanes, parsedArgs, effectiveRoomId, true);
               if (!targetPane) {
-                outputText = "Δεν ήταν δυνατή η επιλογή του κατάλληλου παραθύρου CLI.";
+                outputText = "Could not pick the right CLI pane.";
               } else {
                 const targetPaneId = targetPane.id;
                 const targetPaneTitle = targetPane.paneName
@@ -6181,6 +6259,7 @@ export async function executeLiveFunction(
                 build_mode: { commandId: "build", label: "Build mode" },
                 plan_progress: { commandId: "plan_progress", label: "Plan completion percentage", text: "Plan completion percentage" },
                 deploy: { commandId: "deploy", label: "Deploy", text: "Deploy the project to Gitea and GitHub." },
+                promote: { commandId: "promote", label: "Promote", text: PROMOTE_PROMPT },
                 permissions: { commandId: "permissions", label: "Permissions" },
                 model: { commandId: "model", label: "Model", text: "/model", isNativeCommand: true },
                 resume: { commandId: "resume", label: "Restore tasks", text: "/resume", isNativeCommand: true },
@@ -6219,31 +6298,35 @@ export async function executeLiveFunction(
 
               // Only fall back to backend MCP if the target pane was not mounted / handled in the UI.
               // Pass waitForCompletion: false to prevent blocking Live Voice loop for 30s.
+              let shortcutRes: any = null;
               if (!handledLocally) {
                 if (entry.commandId === "continue") {
-                  await executeControl(effectiveRoomId, [
+                  shortcutRes = await executeControl(effectiveRoomId, [
                     { kind: "pane", operation: "continue", target: { paneIds: [targetPaneId], state: "ALL" }, when: "NOW" }
-                  ], undefined, false).catch(() => {});
+                  ], undefined, false);
                 } else if (entry.isNativeCommand && entry.text) {
-                  await executeControl(effectiveRoomId, [
+                  shortcutRes = await executeControl(effectiveRoomId, [
                     { kind: "native_command", target: { paneIds: [targetPaneId], state: "ALL" }, command: entry.text, when: "NOW" }
-                  ], undefined, false).catch(() => {});
+                  ], undefined, false);
                 } else if (entry.text) {
-                  await executeControl(effectiveRoomId, [
+                  shortcutRes = await executeControl(effectiveRoomId, [
                     { kind: "pane", operation: "prompt", target: { paneIds: [targetPaneId], state: "ALL" }, text: entry.text, when: "NOW" }
-                  ], undefined, false).catch(() => {});
+                  ], undefined, false);
                 } else if (parsedArgs.customCommand) {
                   const custom = String(parsedArgs.customCommand).trim();
                   if (custom.startsWith("/")) {
-                    await executeControl(effectiveRoomId, [
+                    shortcutRes = await executeControl(effectiveRoomId, [
                       { kind: "native_command", target: { paneIds: [targetPaneId], state: "ALL" }, command: custom, when: "NOW" }
-                    ], undefined, false).catch(() => {});
+                    ], undefined, false);
                   } else {
-                    await executeControl(effectiveRoomId, [
+                    shortcutRes = await executeControl(effectiveRoomId, [
                       { kind: "pane", operation: "prompt", target: { paneIds: [targetPaneId], state: "ALL" }, text: custom, when: "NOW" }
-                    ], undefined, false).catch(() => {});
+                    ], undefined, false);
                   }
                 }
+              }
+              if (shortcutRes && controlReceiptFailed(shortcutRes, await awaitOperationIfNeeded(effectiveRoomId, shortcutRes, 0))) {
+                throw new Error(`CLI shortcut "${entry.label}" failed on pane "${targetPaneTitle}": ${JSON.stringify(shortcutRes).slice(0, 800)}`);
               }
 
               outputText = `✓ CLI shortcut "${entry.label}" executed on pane "${targetPaneTitle}" (${targetPaneId}).`;
@@ -6276,7 +6359,7 @@ export async function executeLiveFunction(
                 }
               } catch {}
             } catch (err: any) {
-              outputText = `Αποτυχία κλήσης space_test_mcp_tools: ${err.message || String(err)}`;
+              outputText = `Failed to call space_test_mcp_tools: ${err.message || String(err)}`;
             }
           } else if (name === "space_list_mcp_tools") {
             try {
@@ -6287,7 +6370,7 @@ export async function executeLiveFunction(
               const data = res?.result?.structuredContent || res?.result?.content?.[0]?.text || res;
               outputText = typeof data === "string" ? data : JSON.stringify(data);
             } catch (err: any) {
-              outputText = `Αποτυχία κλήσης space_list_mcp_tools: ${err.message || String(err)}`;
+              outputText = `Failed to call space_list_mcp_tools: ${err.message || String(err)}`;
             }
           } else if (name === "space_debug") {
             try {
@@ -6304,7 +6387,7 @@ export async function executeLiveFunction(
                 recordMcpDiagnostic(diagObj);
               } catch {}
             } catch (err: any) {
-              outputText = `Αποτυχία κλήσης space_debug: ${err.message || String(err)}`;
+              outputText = `Failed to call space_debug: ${err.message || String(err)}`;
             }
           } else if (name === "space_plan_mission" || name === "space_synthesize_verdict") {
             outputText = JSON.stringify(await runLiveMissionAction({
@@ -6363,7 +6446,7 @@ export async function executeLiveFunction(
   recordMcpToolCall({
     name,
     args: argsStr,
-    status: outputText.startsWith("Tool execution error") || outputText.startsWith("Error executing") || outputText.startsWith("Αποτυχία") ? "error" : "done",
+    status: outputText.startsWith("Tool execution error") || outputText.startsWith("Error executing") || outputText.startsWith("Failed") ? "error" : "done",
     output: outputText.slice(0, 500),
     durationMs: Date.now() - toolCallStartTime
   });
@@ -6423,7 +6506,6 @@ export async function openOpenAiVoiceConversationSession(
   ]);
   const tz = ctx.tz;
   const userName = ctx.userName;
-  const dynamicGreeting = ctx.dynamicGreeting;
   const effectiveOpening = ctx.effectiveOpening;
 
   for (const track of stream.getAudioTracks()) {
@@ -6547,7 +6629,7 @@ export async function openOpenAiVoiceConversationSession(
           if (normalized > 0.05) {
             if (!userSpeaking) {
               userSpeaking = true;
-              callbacks.onInputStart?.();
+              noteLiveUserTurn(); callbacks.onInputStart?.();
               callbacks.onStatusChange?.("listening");
             }
             if (silenceTimer) {
@@ -6612,7 +6694,6 @@ export async function openOpenAiVoiceConversationSession(
 
   let statsInterval: number | null = null;
   let remoteAudioEl: HTMLAudioElement | null = null;
-  let audioCtx: AudioContext | null = null;
 
   connection.addEventListener("track", (event) => {
     const remoteStream =
@@ -6620,10 +6701,12 @@ export async function openOpenAiVoiceConversationSession(
         ? event.streams[0]
         : new MediaStream([event.track]);
 
-    // 1. Notify UI component so its mounted <audio> element plays the stream
-    callbacks.onRemoteStream?.(remoteStream);
-
-    // 2. Play via DOM-attached HTMLAudioElement as secondary path
+    // Play the reply once. Extra playouts of the same stream (a second <audio>, Web Audio) echo and
+    // let the microphone hear the assistant, so echo cancellation sees one source only.
+    if (callbacks.onRemoteStream) {
+      callbacks.onRemoteStream(remoteStream);
+      return;
+    }
     try {
       if (!remoteAudioEl) {
         remoteAudioEl = document.createElement("audio");
@@ -6636,23 +6719,6 @@ export async function openOpenAiVoiceConversationSession(
       remoteAudioEl.play().catch((err) => console.warn("Live audio element play warning:", err));
     } catch (err) {
       console.warn("DOM audio element warning:", err);
-    }
-
-    // 3. Play via Web Audio API directly to speaker destination
-    try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioContextClass) {
-        if (!audioCtx || audioCtx.state === "closed") {
-          audioCtx = new AudioContextClass();
-        }
-        if (audioCtx.state === "suspended") {
-          void audioCtx.resume();
-        }
-        const source = audioCtx.createMediaStreamSource(remoteStream);
-        source.connect(audioCtx.destination);
-      }
-    } catch (err) {
-      console.warn("AudioContext speaker routing warning:", err);
     }
   });
 
@@ -6705,12 +6771,6 @@ export async function openOpenAiVoiceConversationSession(
         remoteAudioEl = null;
       }
     } catch {}
-    try {
-      if (audioCtx && audioCtx.state !== "closed") {
-        void audioCtx.close();
-      }
-      audioCtx = null;
-    } catch {}
     if (micAnimId !== null) {
       cancelAnimationFrame(micAnimId);
       micAnimId = null;
@@ -6743,6 +6803,48 @@ export async function openOpenAiVoiceConversationSession(
   let assistantTurnStartTime = 0;
   let hasDelegatedAssistantText = false;
   const itemIdToTurnId = new Map<string, string>();
+  // GPT-Live streams transcripts with no item ids, turn or speech events (OpenAI "Managing sessions"). The caller
+  // and Live can talk at once, so each side is its own stream: a user turn ends after a pause in its own fragments
+  // (never because Live spoke), and a reply continues across the user's "uh-huh" (operator review 2026-10-15).
+  let transcriptUserTurn: { id: string; text: string; endMs: number | null } | null = null;
+  let transcriptUserTurnTimer: ReturnType<typeof setTimeout> | null = null;
+  let userTurnEndedAt = 0, lastAssistantDeltaAt = 0;
+  // The delegated model's text and Live's spoken version of it are one reply: what was spoken replaces the text.
+  let delegatedReply: { id: string; spoken: string } | null = null;
+  const endTranscriptUserTurn = () => {
+    if (transcriptUserTurnTimer) clearTimeout(transcriptUserTurnTimer);
+    transcriptUserTurnTimer = null;
+    if (closed) transcriptUserTurn = null;
+    if (!transcriptUserTurn) return;
+    const turn = transcriptUserTurn, turnTime = userTurnStartTime || Date.now(), text = turn.text.trim();
+    transcriptUserTurn = null;
+    userTurnEndedAt = Date.now();
+    if (text) {
+      callbacks.onTranscriptUpdate?.({ id: turn.id, role: "user", text, isDelta: false, createdAtMs: turnTime, timestamp: new Date(turnTime).toLocaleTimeString() });
+      void api.reportLiveVoiceLog({ roomId: options.roomId || "global", event: "user_speech", role: "user", text, timestamp: new Date().toISOString() }).catch(() => {});
+    }
+    callbacks.onInputEnd?.();
+    if (activeUserMsgId === turn.id) { activeUserMsgId = null; userTurnStartTime = 0; }
+  };
+  const startTranscriptUserTurn = () => {
+    noteLiveUserTurn(); callbacks.onInputStart?.();
+    commandOrigins.beginInput();
+    userTurnStartTime = Date.now();
+    activeUserMsgId = `user_${userTurnStartTime}_${Math.random().toString(36).slice(2, 6)}`;
+    transcriptUserTurn = { id: activeUserMsgId, text: "", endMs: null };
+    hasDelegatedAssistantText = false;
+    delegatedReply = null;
+  };
+  const assistantMessageId = (msg: Record<string, unknown>): string => {
+    const now = Date.now();
+    // A generated reply id ends after a pause in Live's speech or once the user finished a turn after it.
+    if (activeAssistantMsgId?.startsWith("assistant_") && (now - lastAssistantDeltaAt > 1500 || userTurnEndedAt > lastAssistantDeltaAt)) activeAssistantMsgId = null;
+    lastAssistantDeltaAt = now;
+    const id = activeAssistantMsgId || (typeof msg.response_id === "string" && msg.response_id) || (typeof msg.item_id === "string" && msg.item_id);
+    if (id) return id;
+    assistantTurnStartTime = now;
+    return activeAssistantMsgId = `assistant_${assistantTurnStartTime}`;
+  };
 
   channel.addEventListener("open", () => {
     updateLiveSessionStats({ dataChannelState: channel.readyState });
@@ -6762,6 +6864,7 @@ export async function openOpenAiVoiceConversationSession(
           const pending = await api.getPendingWatches(targetRoomId).catch(() => []);
           if (!pending || pending.length === 0) return;
           for (const w of pending) {
+            if (isSilentWatch(w)) { await api.ackWatch(targetRoomId, w.id).catch(() => {}); continue; }
             if (userSpeaking || assistantSpeaking) break;
             const notification = formatWatchCompletionNotification(w);
             commandOrigins.beginNotification();
@@ -6915,7 +7018,7 @@ export async function openOpenAiVoiceConversationSession(
 
       case "input_audio_buffer.speech_started":
       case "session.input_audio.speech_started": {
-        callbacks.onInputStart?.();
+        noteLiveUserTurn(); callbacks.onInputStart?.();
         commandOrigins.beginInput();
         if (closed) return;
         callbacks.onStatusChange?.("listening");
@@ -7031,6 +7134,18 @@ export async function openOpenAiVoiceConversationSession(
         const delta = typeof msg.delta === "string" ? msg.delta : "";
         if (delta) {
           const rawItemId = typeof msg.item_id === "string" && msg.item_id ? msg.item_id : null;
+          if (!rawItemId) {
+            const startMs = typeof msg.start_ms === "number" ? msg.start_ms : null;
+            const endMs = typeof msg.end_ms === "number" ? msg.end_ms : null;
+            if (transcriptUserTurn && startMs !== null && transcriptUserTurn.endMs !== null && startMs - transcriptUserTurn.endMs > 1200) endTranscriptUserTurn();
+            if (!transcriptUserTurn) startTranscriptUserTurn();
+            const turn = transcriptUserTurn!;
+            turn.text += delta;
+            if (endMs !== null) turn.endMs = endMs;
+            if (transcriptUserTurnTimer) clearTimeout(transcriptUserTurnTimer);
+            // Delivery can be uneven, so wall-clock silence only finishes a turn after a longer pause.
+            transcriptUserTurnTimer = setTimeout(endTranscriptUserTurn, 1800);
+          }
           const turnId =
             (rawItemId && itemIdToTurnId.get(rawItemId)) ||
             rawItemId ||
@@ -7096,11 +7211,8 @@ export async function openOpenAiVoiceConversationSession(
           hasDelegatedAssistantText = true;
           assistantSpeaking = true;
           callbacks.onStatusChange?.("speaking");
-          const id =
-            activeAssistantMsgId ||
-            (typeof msg.response_id === "string" && msg.response_id) ||
-            (typeof msg.item_id === "string" && msg.item_id) ||
-            (activeAssistantMsgId = `assistant_${Date.now()}`);
+          const id = assistantMessageId(msg);
+          if (delegatedReply?.id !== id) delegatedReply = { id, spoken: "" };
           const turnTime = assistantTurnStartTime || Date.now();
           callbacks.onTranscriptUpdate?.({
             id,
@@ -7119,17 +7231,21 @@ export async function openOpenAiVoiceConversationSession(
       case "session.output_transcript.delta":
       case "response.text.delta": {
         if (hasDelegatedAssistantText) {
+          const spoken = typeof msg.delta === "string" ? msg.delta : "";
+          if (delegatedReply && spoken) {
+            delegatedReply.spoken += spoken;
+            lastAssistantDeltaAt = Date.now();
+            const turnTime = assistantTurnStartTime || Date.now();
+            callbacks.onTranscriptUpdate?.({ id: delegatedReply.id, role: "assistant", text: delegatedReply.spoken, isDelta: false,
+              createdAtMs: turnTime, timestamp: new Date(turnTime).toLocaleTimeString() });
+          }
           break;
         }
         const delta = typeof msg.delta === "string" ? msg.delta : "";
         if (delta) {
           assistantSpeaking = true;
           callbacks.onStatusChange?.("speaking");
-          const id =
-            activeAssistantMsgId ||
-            (typeof msg.response_id === "string" && msg.response_id) ||
-            (typeof msg.item_id === "string" && msg.item_id) ||
-            (activeAssistantMsgId = `assistant_${Date.now()}`);
+          const id = assistantMessageId(msg);
           const turnTime = assistantTurnStartTime || Date.now();
           callbacks.onTranscriptUpdate?.({
             id,
@@ -7337,28 +7453,7 @@ export async function openOpenAiVoiceConversationSession(
 
     const offer = await connection.createOffer();
     await connection.setLocalDescription(offer);
-
-
-    if (connection.iceGatheringState && connection.iceGatheringState !== "complete") {
-      const hasCandidates = Boolean(connection.localDescription?.sdp && connection.localDescription.sdp.includes("a=candidate:"));
-      if (!hasCandidates) {
-        await new Promise<void>((resolve) => {
-          let settled = false;
-          const done = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            connection.removeEventListener("icegatheringstatechange", onState);
-            resolve();
-          };
-          const timer = setTimeout(done, 150);
-          function onState() {
-            if (connection.iceGatheringState === "complete" || (connection.localDescription?.sdp && connection.localDescription.sdp.includes("a=candidate:"))) done();
-          }
-          connection.addEventListener("icegatheringstatechange", onState);
-        });
-      }
-    }
+    // No ICE gathering wait: the Space API strips every a=candidate line before forwarding the offer.
 
     if (!connection.localDescription?.sdp) {
       throw new Error("Could not create local WebRTC SDP offer.");

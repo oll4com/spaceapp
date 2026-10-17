@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./safe-child-process.js";
 import { basename, isAbsolute, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import {

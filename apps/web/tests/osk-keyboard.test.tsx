@@ -427,7 +427,7 @@ describe("OnScreenKeyboard", () => {
       openKeyboard(container);
       expect(document.documentElement.classList.contains("space-osk-open")).toBe(true);
       expect(metaViewport.getAttribute("content")).toBe(
-        "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+        "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Close on-screen keyboard" }));
@@ -489,7 +489,7 @@ describe("OnScreenKeyboard", () => {
     expect(mainCss).toMatch(/-webkit-text-size-adjust:\s*100%;/);
   });
 
-  it("prevents right-click and long-press contextmenu while keyboard is open, restoring on close", () => {
+  it("blocks the long-press menu only on the keyboard, so the terminal's Copy/Paste menu still opens", () => {
     const { container } = render(<KeyboardHarness mobile />);
 
     // Before opening: contextmenu is not prevented
@@ -501,10 +501,10 @@ describe("OnScreenKeyboard", () => {
     const backdrop = document.body.querySelector(".osk-sheet-backdrop") as HTMLElement;
     expect(backdrop).toBeTruthy();
 
-    // While open: window contextmenu is prevented
+    // While open: a long-press outside the keyboard keeps its menu
     const openContextEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     window.dispatchEvent(openContextEvent);
-    expect(openContextEvent.defaultPrevented).toBe(true);
+    expect(openContextEvent.defaultPrevented).toBe(false);
 
     // Panel and backdrop contextmenu events are also prevented
     const panelContextEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
@@ -730,5 +730,100 @@ describe("OnScreenKeyboard", () => {
     expect(execCommand).toHaveBeenCalledWith("insertText", false, "an ");
 
     textarea.remove();
+  });
+});
+
+describe("OnScreenKeyboard Ctrl and key repeat", () => {
+  function openPanel(container: HTMLElement) {
+    fireEvent.click(container.querySelector('button[aria-label="On-screen keyboard"]')!);
+  }
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("sends Ctrl + a letter as one control character, then releases Ctrl", () => {
+    const inputs: OnScreenKeyboardInput[] = [];
+    const { container } = render(<KeyboardHarness onInput={(input) => { inputs.push(input); return true; }} />);
+    openPanel(container);
+
+    const ctrl = screen.getByRole("button", { name: "Ctrl" });
+    fireEvent.click(ctrl);
+    expect(ctrl.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "c" }));
+    fireEvent.click(screen.getByRole("button", { name: "c" }));
+
+    expect(inputs.map((input) => input.terminalData)).toEqual(["\u0003", "c"]);
+    expect(inputs[0]).toMatchObject({ ctrlKey: true, text: null });
+    expect(ctrl.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("dispatches Ctrl + letter as a keydown instead of typing into a focused textarea", () => {
+    const { container } = render(<KeyboardHarness />);
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    textarea.focus();
+    const keydown = vi.fn();
+    textarea.addEventListener("keydown", keydown);
+    openPanel(container);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ctrl" }));
+    fireEvent.click(screen.getByRole("button", { name: "a" }));
+
+    expect(textarea.value).toBe("");
+    expect(keydown.mock.calls[0]?.[0]).toMatchObject({ key: "a", ctrlKey: true });
+    textarea.remove();
+  });
+
+  it("repeats a held Backspace and does not type again on release", () => {
+    vi.useFakeTimers();
+    const inputs: OnScreenKeyboardInput[] = [];
+    const { container } = render(<KeyboardHarness onInput={(input) => { inputs.push(input); return true; }} />);
+    openPanel(container);
+
+    const backspace = screen.getByRole("button", { name: "⌫" });
+    fireEvent.pointerDown(backspace);
+    act(() => { vi.advanceTimersByTime(450 + 60 * 3); });
+    fireEvent.pointerUp(backspace);
+    fireEvent.click(backspace);
+    act(() => { vi.advanceTimersByTime(500); });
+
+    expect(inputs.map((input) => input.terminalData)).toEqual(["\u007f", "\u007f", "\u007f", "\u007f"]);
+
+    // A short tap still types once, and letters never repeat.
+    fireEvent.pointerDown(backspace);
+    fireEvent.pointerUp(backspace);
+    fireEvent.click(backspace);
+    const q = screen.getByRole("button", { name: "q" });
+    fireEvent.pointerDown(q);
+    act(() => { vi.advanceTimersByTime(1000); });
+    fireEvent.pointerUp(q);
+    fireEvent.click(q);
+    expect(inputs.slice(4).map((input) => input.terminalData)).toEqual(["\u007f", "q"]);
+  });
+});
+
+describe("OnScreenKeyboard phone inset", () => {
+  afterEach(() => cleanup());
+
+  it("reserves the board below a keyboard docked in the lower half and releases it on close", () => {
+    const { container } = render(<KeyboardHarness mobile />);
+    fireEvent.click(container.querySelector('button[aria-label="On-screen keyboard"]')!);
+    const panel = document.getElementById(OSK_PANEL_ID)!;
+    const board = document.createElement("section");
+    board.className = "board";
+    const shell = document.createElement("div");
+    shell.className = "space-shell";
+    shell.appendChild(board);
+    document.body.appendChild(shell);
+    vi.spyOn(board, "getBoundingClientRect").mockReturnValue({ bottom: 800 } as DOMRect);
+    vi.spyOn(panel, "getBoundingClientRect").mockReturnValue({ top: 560, bottom: 760, left: 8, right: 382, width: 374, height: 200 } as DOMRect);
+    act(() => { window.dispatchEvent(new Event("resize")); });
+    expect(document.documentElement.style.getPropertyValue("--osk-sheet-inset")).toBe("240px");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close on-screen keyboard" }));
+    expect(document.documentElement.style.getPropertyValue("--osk-sheet-inset")).toBe("");
+    shell.remove();
   });
 });
