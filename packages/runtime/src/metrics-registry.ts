@@ -1,4 +1,6 @@
-import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+
+type IntervalHistogram = ReturnType<typeof monitorEventLoopDelay>;
 
 /**
  * A deliberately tiny in-process metrics registry with Prometheus text
