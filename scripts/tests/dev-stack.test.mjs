@@ -155,6 +155,40 @@ test('PID reuse never signals a process whose identity changed', async () => {
   await stopRecorded([{ pid: 12345, identity: 'old' }], { identity: async () => 'new', signal: (...args) => signals.push(args), timeout: 0 });
   assert.deepEqual(signals, []);
 });
+const bootA = '11111111-1111-4111-8111-111111111111', bootB = '22222222-2222-4222-8222-222222222222';
+function virtualLinux(boot, ticks = '42') {
+  const stat = `12345 (synthetic process) ${['S', ...Array(18).fill('0'), ticks].join(' ')}`;
+  return path => path === '/proc/sys/kernel/random/boot_id' ? Promise.resolve(boot + '\n')
+    : path === '/proc/12345/stat' ? Promise.resolve(stat) : Promise.reject(new Error('Unexpected virtual proc read'));
+}
+test('Linux identities distinguish same-PID start ticks and kernel boots using virtual proc reads', async () => {
+  const identify = (boot, ticks) => processIdentity(12345, { platform: 'linux', read: virtualLinux(boot, ticks) });
+  assert.equal(await identify(bootA, '42'), `linux:${bootA}:42`);
+  assert.notEqual(await identify(bootA, '43'), await identify(bootA, '42'));
+  assert.notEqual(await identify(bootB, '42'), await identify(bootA, '42'));
+});
+test('only a same-boot same-tick virtual process is signalled; reuse and reboot cannot be adopted', async () => {
+  const record = { pid: 12345, identity: `linux:${bootA}:42` }, signals = [];
+  for (const read of [virtualLinux(bootA, '43'), virtualLinux(bootB, '42')]) {
+    const identity = pid => processIdentity(pid, { platform: 'linux', read });
+    assert.equal(await sameProcess(record, identity), false);
+    await stopRecorded([record], { identity, signal: (...args) => signals.push(args), timeout: 0 });
+  }
+  assert.deepEqual(signals, []);
+  let live = true;
+  const identity = pid => live ? processIdentity(pid, { platform: 'linux', read: virtualLinux(bootA) }) : null;
+  assert.equal(await sameProcess(record, identity), true);
+  await stopRecorded([record], { identity, signal: (...args) => { signals.push(args); live = false; }, timeout: 0 });
+  assert.deepEqual(signals, [[12345, 'SIGTERM']]);
+});
+test('unavailable or malformed kernel identity and legacy Linux records fail closed without signals', async () => {
+  for (const boot of ['', 'not-a-boot-id']) await assert.rejects(processIdentity(12345, { platform: 'linux', read: virtualLinux(boot) }), /boot identity/);
+  await assert.rejects(processIdentity(12345, { platform: 'linux', read: async () => { throw Object.assign(new Error('Synthetic missing boot identity'), { code: 'ENOENT' }); } }), /missing boot identity/);
+  await assert.rejects(processIdentity(12345, { platform: 'linux', read: virtualLinux(bootA, 'invalid') }), /process identity/);
+  const signals = [];
+  await assert.rejects(stopRecorded([{ pid: 12345, identity: 'linux:42' }], { identity: async () => 'linux:42', signal: (...args) => signals.push(args), timeout: 0 }), /Legacy or invalid Linux process record/);
+  assert.deepEqual(signals, []);
+});
 
 test('descendant discovery refuses a root reused during the ps snapshot', async () => {
   let current = 'original';

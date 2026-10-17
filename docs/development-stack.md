@@ -104,6 +104,10 @@ the matching generated ownership label. A foreign resource, unavailable daemon
 or failed process/container removal fails the command and keeps recovery state.
 Restore the original Docker context and retry `down`/`reset`; do not delete the
 manifest as a shortcut. Stop the supervisor before manually repairing owned state.
+Linux records include the kernel boot ID as well as process start ticks. A legacy
+ticks-only record is refused and recovery state is kept; it is never guessed or
+upgraded into permission to signal a process. Stop that stack with its original
+launcher before changing versions, or independently resolve its old process state.
 
 ## Reproducible complete proof
 
@@ -112,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 26 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 29 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
