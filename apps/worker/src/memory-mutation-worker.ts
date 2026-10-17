@@ -24,7 +24,7 @@ if (!memoryMutationsEnabled(process.env)) {
     workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
     activities: { executePersistedMemoryChangeSet },
     ...memoryMutationWorkerOptions,
-    sinks: createOtlpWorkflowSinks(spans),
+    ...(spans ? { sinks: createOtlpWorkflowSinks(spans) } : {}),
     interceptors: {
       activity: [createActivityObservabilityInterceptors({ spans })],
       workflowModules: spans ? [resolveWorkflowInterceptorsPath()] : []

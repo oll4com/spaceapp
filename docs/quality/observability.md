@@ -243,8 +243,10 @@ workers share the same exporter (services `space-api`, `space-worker`,
   (`COMPLETED` / `FAILED_RESULT` / `FAILED` / `CANCELLED`), and stable `reasonCode` / `category`.
 - **Strict attribute allowlist:** prompts, messages, model output, file paths, URLs, raw error
   messages, and arbitrary object fields are stripped before export (`apps/worker/src/otlp-attributes.ts`).
-- **Workflow code is unchanged.** Correlation and span emission run via Temporal interceptors
-  and worker sinks (`callDuringReplay: false`).
+- **Workflow functions are unchanged.** When OTLP export is enabled, `otlp-workflow-interceptors.js`
+  is registered via `interceptors.workflowModules` and emits spans through worker sinks
+  (`callDuringReplay: false`); when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is unset, neither the
+  workflow interceptor module nor the workflow sink is installed.
 
 ### Replay compatibility & local verification
 

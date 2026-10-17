@@ -42,6 +42,8 @@ export const ALLOWLISTED_ATTRIBUTE_KEYS = new Set<string>([
   "space.revision_id",
   "space.continued_from_run_id",
   "space.continuation_generation",
+  "space.source_run_id",
+  "link.reason",
 
   // Temporal execution metadata
   "temporal.workflow_type",

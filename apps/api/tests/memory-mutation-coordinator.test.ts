@@ -5,6 +5,7 @@ import {
   buildMemoryMutationWorkflowId,
   scheduleMemoryMutation
 } from "../src/memory-mutation-coordinator.js";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 
 describe("Memory mutation coordinator", () => {
   it("starts the dedicated workflow with deterministic duplicate guards", async () => {
@@ -31,6 +32,36 @@ describe("Memory mutation coordinator", () => {
           workflowId: result.workflowId,
           workflowIdReusePolicy: "REJECT_DUPLICATE",
           workflowIdConflictPolicy: "USE_EXISTING"
+        }
+      }
+    ]);
+  });
+
+  it("propagates the active API request traceparent and correlation memo when registered", async () => {
+    const calls: Array<{ workflowType: string; options: unknown }> = [];
+    const traceCtx = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    requestTraceContexts.remember("req:mutation-traced", traceCtx);
+    const input = { changeSetId: "memory_change:approved-traced", traceId: "req:mutation-traced" };
+
+    const result = await scheduleMemoryMutation(input, async (workflowType, options) => {
+      calls.push({ workflowType, options });
+      return { workflowId: options.workflowId, firstExecutionRunId: "run:mutation-traced" };
+    });
+
+    expect(calls).toEqual([
+      {
+        workflowType: MEMORY_MUTATION_WORKFLOW_TYPE,
+        options: {
+          args: [{ ...input, traceparent: traceCtx.traceparent }],
+          taskQueue: MEMORY_MUTATION_TASK_QUEUE,
+          workflowId: result.workflowId,
+          workflowIdReusePolicy: "REJECT_DUPLICATE",
+          workflowIdConflictPolicy: "USE_EXISTING",
+          memo: {
+            spaceTraceId: "req:mutation-traced",
+            traceparent: traceCtx.traceparent,
+            w3cTraceId: traceCtx.w3cTraceId
+          }
         }
       }
     ]);

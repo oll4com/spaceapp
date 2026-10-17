@@ -160,6 +160,9 @@ export function createOtlpWorkflowInboundInterceptor(
           spanId: linkedSpanId,
           attributes: {
             "link.reason": "room_background_continuation",
+            ...(isSafeAttributeString(argCorr.sourceRunId)
+              ? { "space.source_run_id": argCorr.sourceRunId }
+              : {}),
             ...(typeof argCorr.generation === "number"
               ? { "space.continuation_generation": argCorr.generation }
               : {})

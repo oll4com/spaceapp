@@ -44,7 +44,7 @@ const worker = await Worker.create({
   taskQueue,
   workflowsPath,
   activities,
-  sinks: createOtlpWorkflowSinks(spans),
+  ...(spans ? { sinks: createOtlpWorkflowSinks(spans) } : {}),
   interceptors: {
     activity: [createActivityObservabilityInterceptors({ spans })],
     workflowModules: spans ? [resolveWorkflowInterceptorsPath()] : []

@@ -52,6 +52,13 @@ export function createOtlpWorkflowSinks(
               ...payload.attributes,
               "space.duration_ms": realDurationMs
             };
+            const sanitizedLinks = payload.links
+              ?.filter(link => link && typeof link.traceId === "string" && typeof link.spanId === "string")
+              .map(link => ({
+                traceId: link.traceId,
+                spanId: link.spanId,
+                ...(link.attributes ? { attributes: allowlistSpanAttributes(link.attributes) } : {})
+              }));
             exporter.record({
               traceId: payload.traceId,
               spanId: payload.spanId,
@@ -62,7 +69,7 @@ export function createOtlpWorkflowSinks(
               endTimeUnixNano: endNs >= startNs ? endNs : startNs,
               attributes: allowlistSpanAttributes(mergedAttributes),
               error: payload.error,
-              ...(payload.links && payload.links.length > 0 ? { links: payload.links } : {})
+              ...(sanitizedLinks && sanitizedLinks.length > 0 ? { links: sanitizedLinks } : {})
             });
           } catch {
             // Best-effort: exporter errors must never disrupt workflow execution.

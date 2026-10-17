@@ -31,7 +31,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      sinks: createOtlpWorkflowSinks(spans),
+      ...(spans ? { sinks: createOtlpWorkflowSinks(spans) } : {}),
       interceptors: {
         activity: [createActivityObservabilityInterceptors({ spans })],
         workflowModules: spans ? [resolveWorkflowInterceptorsPath()] : []
