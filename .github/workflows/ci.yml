@@ -103,5 +103,6 @@ jobs:
         run: |
           npm run dev:stack -- reset
           test ! -d .dev-stack
-          test -z "$(docker ps -aq --filter name=space-dev-)"
+          test -z "$(docker ps -aq --filter name=spaceapp-dev-)"
+          test -z "$(docker volume ls -q --filter name=spaceapp-dev-)"
 

@@ -198,9 +198,14 @@ export function ensureSecrets(stateDir, ports = DEFAULT_PORTS) {
   const setupTokenPath = path.join(secretsDir, "setup-token");
   const databaseUrlPath = path.join(secretsDir, "database-url");
 
+  const alreadyInitialized =
+    existsSync(postgresPasswordPath) && existsSync(sessionSecretPath);
   const postgresPassword = readOrCreateSecret(postgresPasswordPath, 24);
   const sessionSecret = readOrCreateSecret(sessionSecretPath, 32);
-  const setupToken = readOrCreateSecret(setupTokenPath, 24);
+  const setupToken =
+    !alreadyInitialized || existsSync(setupTokenPath)
+      ? readOrCreateSecret(setupTokenPath, 24)
+      : null;
   const databaseUrl = `postgresql://spaceapp:${postgresPassword}@127.0.0.1:${ports.postgresPort}/spaceapp`;
   writeSecretFile(databaseUrlPath, databaseUrl);
 
@@ -260,7 +265,7 @@ export function renderCompose({ paths, ports, images }) {
     '    entrypoint: ["/bin/sh", "-ec"]',
     '    command: ["export POSTGRES_PWD=\\"$$(cat /run/secrets/postgres-password)\\"; exec /etc/temporal/entrypoint.sh autosetup"]',
     "    healthcheck:",
-    '      test: ["CMD-SHELL", "temporal operator cluster health --address 127.0.0.1:7233 >/dev/null && temporal operator namespace describe --namespace default --address 127.0.0.1:7233 >/dev/null"]',
+    '      test: ["CMD-SHELL", "addr=$$(hostname -i); addr=$${addr%% *}:7233; temporal operator cluster health --address $$addr >/dev/null && temporal operator namespace describe --namespace default --address $$addr >/dev/null"]',
     "      interval: 3s",
     "      timeout: 5s",
     "      retries: 40",
@@ -1145,10 +1150,13 @@ function startPackageWatcher(repoRoot, logPath) {
   return () => clearInterval(timer);
 }
 
-export function renderReadyBanner({ ports, secrets, paths }) {
+export function renderReadyBanner({ ports, secrets, paths, setupRequired }) {
   const webUrl = `http://127.0.0.1:${ports.webPort}`;
   const apiUrl = `http://127.0.0.1:${ports.apiPort}`;
-  const tokenAvailable = existsSync(secrets.setupTokenPath);
+  const tokenAvailable =
+    (setupRequired ?? true) &&
+    Boolean(secrets.setupToken) &&
+    existsSync(secrets.setupTokenPath);
   const lines = [
     "",
     "========================================================================",
@@ -1290,6 +1298,7 @@ export async function runUp(repoRoot, { detach = false, env = process.env } = {}
     { encoding: "utf8", mode: 0o600 }
   );
 
+  let setupRequired = true;
   try {
     await waitForHttp(`http://127.0.0.1:${ports.apiPort}/livez`, {
       label: "API /livez",
@@ -1329,7 +1338,11 @@ export async function runUp(repoRoot, { detach = false, env = process.env } = {}
         }
         try {
           const parsed = JSON.parse(bodyText);
-          return typeof parsed.setupRequired === "boolean";
+          if (typeof parsed.setupRequired === "boolean") {
+            setupRequired = parsed.setupRequired;
+            return true;
+          }
+          return false;
         } catch {
           return false;
         }
@@ -1340,7 +1353,12 @@ export async function runUp(repoRoot, { detach = false, env = process.env } = {}
     throw error;
   }
 
-  console.log(renderReadyBanner({ ports, secrets, paths }));
+  if (!setupRequired && existsSync(secrets.setupTokenPath)) {
+    rmSync(secrets.setupTokenPath, { force: true });
+    secrets.setupToken = null;
+  }
+
+  console.log(renderReadyBanner({ ports, secrets, paths, setupRequired }));
 
   if (detach) {
     return;
@@ -1480,6 +1498,15 @@ export async function runDown(repoRoot, { env = process.env, removeVolumes = fal
 
 export async function runReset(repoRoot, { env = process.env } = {}) {
   const paths = resolveStatePaths(repoRoot, env);
+  const rel = path.relative(paths.stateDir, repoRoot);
+  const containsRepo = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (
+    containsRepo ||
+    paths.stateDir === path.parse(paths.stateDir).root ||
+    (env.HOME && path.resolve(env.HOME) === paths.stateDir)
+  ) {
+    throw new Error(`Refusing to delete unsafe SPACE_DEV_STATE_DIR: ${paths.stateDir}`);
+  }
   const ports = resolvePorts(env);
   await runDown(repoRoot, { env, removeVolumes: true });
   rmSync(paths.stateDir, { recursive: true, force: true });
@@ -1555,8 +1582,8 @@ export async function runVerify(repoRoot, { env = process.env } = {}) {
 
   let sessionCookie = null;
   let starterRoomId = null;
-  const ownerEmail = "owner@example.com";
-  const ownerPassword = "correct horse battery staple";
+  const ownerEmail = env.SPACE_DEV_OWNER_EMAIL?.trim() || "owner@example.com";
+  const ownerPassword = env.SPACE_DEV_OWNER_PASSWORD || "correct horse battery staple";
 
   if (setupStatus.setupRequired) {
     if (!existsSync(paths.secretsDir)) {
@@ -1608,7 +1635,9 @@ export async function runVerify(repoRoot, { env = process.env } = {}) {
     });
     const loginText = await loginRes.text();
     if (!loginRes.ok) {
-      throw new Error(`/api/auth/login failed with HTTP ${loginRes.status}: ${loginText}`);
+      throw new Error(
+        `/api/auth/login failed with HTTP ${loginRes.status} for ${ownerEmail} (if you claimed the owner account with custom credentials, set SPACE_DEV_OWNER_EMAIL and SPACE_DEV_OWNER_PASSWORD): ${loginText}`
+      );
     }
     const setCookies =
       typeof loginRes.headers.getSetCookie === "function"

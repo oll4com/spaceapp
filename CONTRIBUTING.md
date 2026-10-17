@@ -93,7 +93,9 @@ to claim the local owner account. On first owner claim, the setup token file in
 Run an automated end-to-end smoke check against the running stack (verifies
 `/readyz`, claims the owner account if unclaimed, opens the Getting Started
 room's OpenCode CLI pane, starts a live PTY session, and attaches its terminal
-WebSocket):
+WebSocket). By default, `verify` claims or logs in with `owner@example.com`; if
+you already claimed the owner account in the browser with custom credentials,
+pass `SPACE_DEV_OWNER_EMAIL` and `SPACE_DEV_OWNER_PASSWORD`:
 
 ```sh
 npm run dev:stack -- verify
