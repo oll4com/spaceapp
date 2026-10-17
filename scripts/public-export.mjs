@@ -173,6 +173,13 @@ const publicBinaryFiles = new Map([
     "apps/web/public/brand/spaceapp-open-source-banner.webp",
     "ebe97ac74d4f287e5592b104f9ef54de1759716eba287bcbd20d21a293107de2"
   ],
+  // Web app manifest icons (source f5f90a9fff): the Space rocket mark only, PNG chunks IHDR/IDAT/IEND, reviewed 2026-10-16.
+  ["apps/web/public/brand/apple-touch-icon.png", "3bd68378e1b58b393d479970abcde878ec0f50608fe037cb222770fc6837857b"],
+  ["apps/web/public/brand/space-icon-192.png", "2cf31549af07f8116b7a13a6ae91b353646dd6dde4fa7d3d18751fc91f78f79d"],
+  ["apps/web/public/brand/space-icon-512.png", "bfae3d0b7eee9659b0f697696189a563dfb8c8356e1d7682b69f2e4301f846d2"],
+  // Liquid Glass theme wallpapers (source b7d9434873): planet and rocket artwork, a single VP8 chunk, reviewed 2026-10-16.
+  ["apps/web/public/brand/liquid-glass-planet-dark.webp", "3db606410cf74d7177e546059f5fab85a91aaaa622e2f04f60ecc67a0704e5a9"],
+  ["apps/web/public/brand/liquid-glass-planet-light.webp", "984d7b5eaad5e68db15f7628db538defe90de8e3210078e0c50d61a0148bf1b8"],
   [
     "apps/web/src/assets/autohand-icon.png",
     "79fea595f2d60a7ba1b6a451ce5b2be51c98e1792c453e7e3a23b3b8b0b4ece0"

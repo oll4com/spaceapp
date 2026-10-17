@@ -50,15 +50,46 @@ export function matchApplicationCompany<T extends { company: string }>(message: 
   }) ?? null;
 }
 
-/** Whether a message comes from an application sender, or names a tracked company. */
+// LinkedIn job alerts and recommendation digests (also sent from jobs-noreply@linkedin.com, and naming tracked companies:
+// "New jobs similar to Software Engineer at Foundation Health", "Xero is hiring in Gen AI") are not application mail.
+const LINKEDIN_DIGEST_SENDERS = ["jobalerts-noreply@linkedin.com", "jobs-listings@linkedin.com", "news@linkedin.com"];
+const LINKEDIN_DIGEST_SUBJECT = /\bnew jobs?\b|\bjobs? similar to\b|\bjobs? for you\b|\bjobs? you may (be interested in|like)\b|\b(is|are) hiring\b|\bjob alert\b|\brecommended (jobs?|for you)\b|\btop job picks\b|\bstill hiring\b/i;
+const LINKEDIN_APPLICATION_SUBJECT = /\byour application\b|\bapplication (was|has been) (sent|viewed|submitted|received)\b|\byou applied\b/i;
+export function isLinkedInDigest(message: { from: string; subject: string }): boolean {
+  if (!domainIn(senderDomain(message.from), ["linkedin.com"])) return false;
+  if (LINKEDIN_APPLICATION_SUBJECT.test(message.subject)) return false;
+  return LINKEDIN_DIGEST_SENDERS.includes(senderAddress(message.from)) || LINKEDIN_DIGEST_SUBJECT.test(message.subject);
+}
+
+// Job alerts and recommendation digests from LinkedIn and other job boards ("Job alerts - Bangkok"): the triage
+// archives them without a Job Applications label. Anything else, LinkedIn News included, stays as it is.
+const JOB_ALERT_SENDERS = ["jobalerts-noreply@linkedin.com", "jobs-listings@linkedin.com", "jobs-noreply@linkedin.com"];
+const JOB_ALERT_SUBJECT = /\bjob alerts?\b|\bjobs? similar to\b|\brecommended jobs?\b|\btop job picks\b|\bjobs? for you\b/i;
+
+/** Gmail search for the job-alert digests still in the inbox (`isJobDigest` decides). */
+export function digestQuery(days = 30): string {
+  const subjects = ["job alert", "job alerts", "jobs similar to", "recommended jobs", "top job picks", "jobs for you"].map((phrase) => `subject:"${phrase}"`);
+  return `in:inbox newer_than:${days}d {${[...JOB_ALERT_SENDERS.map((sender) => `from:${sender}`), ...subjects].join(" ")}}`;
+}
+
+export function isJobDigest(message: { from: string; subject: string }): boolean {
+  if (LINKEDIN_APPLICATION_SUBJECT.test(message.subject) || domainIn(senderDomain(message.from), ASSESSMENT_SENDER_DOMAINS)) return false;
+  if (isLinkedInDigest(message) && (senderAddress(message.from) !== "news@linkedin.com" || LINKEDIN_DIGEST_SUBJECT.test(message.subject))) return true;
+  return JOB_ALERT_SUBJECT.test(message.subject);
+}
+
+/** Whether a message comes from an application sender, or names a tracked company (never a LinkedIn digest). */
 export function isApplicationMail(message: { from: string; subject: string }, companies: readonly { company: string }[]): boolean {
   const domain = senderDomain(message.from);
+  if (isLinkedInDigest(message)) return false;
   return domainIn(domain, APPLICATION_SENDER_DOMAINS) || domainIn(domain, ASSESSMENT_SENDER_DOMAINS)
     || LINKEDIN_APPLICATION_SENDERS.includes(senderAddress(message.from)) || matchApplicationCompany(message, companies) !== null;
 }
 
 const SECURITY_CODE = /\b(security|verification|one[- ]time|confirmation) code\b|\bverify your email\b|\bconfirm your email\b/i;
-const REJECTION = /\bunfortunately\b|\bnot (be )?moving forward\b|\bdecided to (move|proceed) forward with other\b|\bwill not be (moving|proceeding)\b|\bwon't be (moving|proceeding)\b|\bposition has (already )?been filled\b|\bdecided not to (proceed|move forward)\b|\bpursue other candidates\b|\bnot (been )?selected\b/i;
+// Explicit rejection wording only. A bare "unfortunately" is not one: receipts say "Unfortunately, we aren't able to
+// respond to every candidate" and safety notes say "Unfortunately, recruiting fraud is increasingly common" (Cohere, Circle 2026-10-14).
+const REJECTION = /\bnot (be )?moving forward\b|\bdecided to (move|proceed) forward with other\b|\bwill not be (moving|proceeding|progressing)\b|\bwon't be (moving|proceeding|progressing)\b|\bposition has (already |now )?been filled\b|\bdecided not to (proceed|progress|move forward)\b|\bnot to move forward\b|\bpursue other candidates\b|\bother candidates whose\b|\bnot (been )?selected\b|\bregret to inform\b|\bunable to offer you\b|\bno longer (under consideration|being considered)\b|\bnot (be )?progress(ing)? (with )?your (application|candidacy)\b|\b(your application|you) (was|were|has been|have been) unsuccessful\b/i;
 // Receipts often say "if you are not selected, keep an eye on our jobs page": a rejection phrase inside a
 // conditional sentence is not a rejection.
 const CONDITIONAL = /\b(if|in case|in the event|should you|unless|whether)\b/i;

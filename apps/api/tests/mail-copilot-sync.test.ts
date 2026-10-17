@@ -89,8 +89,9 @@ async function fixture() {
   const store = new InMemorySpaceStore();
   const gmail = fakeGmail("token-me");
   const repository = new InMemoryMailCopilotRepository();
+  const kickoffs: string[] = [];
   const app = await createApp({ store, config, mailCopilotGoogle: google, mailCopilotGmailFetch: gmail.fetchImpl, jobApplyMailTriage: false, mailCopilotSync: false, mailCopilotRepository: repository,
-    mailCopilotKickoff: async () => undefined, auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
+    mailCopilotKickoff: async (_pane, run) => { await new Promise((resolve) => setTimeout(resolve, 50)); kickoffs.push(run.id); }, auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
   const csrf = await app.inject({ method: "GET", url: "/api/auth/csrf", headers: { cookie } });
@@ -103,7 +104,7 @@ async function fixture() {
   const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/mail-copilot`;
   // The operator's "check now" runs the same sync the poller runs for this pane.
   const sync = { tick: async () => (await app.inject({ method: "POST", url: `${paneUrl}/sync`, headers })).json() as { accounts: number; created: number } };
-  return { app, store, pane, headers, agent, gmail, sync, paneUrl, repository, owner: (await store.getRoom(room.id)).ownerUserId! };
+  return { app, store, pane, headers, agent, gmail, sync, paneUrl, repository, kickoffs, owner: (await store.getRoom(room.id)).ownerUserId! };
 }
 
 describe("mail copilot sync poller", () => {
@@ -127,6 +128,61 @@ describe("mail copilot sync poller", () => {
 });
 
 describe("mail copilot learns from Gmail history", () => {
+  it("queues mail sent to the AI ahead of the backlog, closes triage items of mail already handled, and starts the run once for back-to-back hand-offs", async () => {
+    const { app, pane, headers, agent, gmail, sync, kickoffs, paneUrl } = await fixture();
+    try {
+      await sync.tick();
+      gmail.receive({ id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Invoice", labelIds: ["INBOX"], plain: "Pay" });
+      gmail.receive({ id: "m2", threadId: "t2", from: "PVE <root@pve.example>", subject: "backup failed", labelIds: ["INBOX"], plain: "lock" });
+      gmail.receive({ id: "m3", threadId: "t3", from: "Bob <bob@acme.com>", subject: "Promo", labelIds: ["INBOX"], plain: "Sale" });
+      gmail.receive({ id: "m4", threadId: "t4", from: "PVE <root@pve.example>", subject: "New packages", labelIds: ["INBOX"], plain: "apt" });
+      await sync.tick();
+      // The operator trashes Bob's mail: its waiting triage item closes.
+      await app.inject({ method: "POST", url: "/api/mail-copilot/threads/t3/modify", headers, payload: { paneId: pane.id, account: "me@gmail.com", action: "trash" } });
+      // Two hand-offs at once: two queued items, one run, one kickoff.
+      const fix = (threadId: string, note: string) => app.inject({ method: "POST", url: `${paneUrl}/fix`, headers, payload: { account: "me@gmail.com", threadId, note } });
+      const [first, second] = await Promise.all([fix("t2", "Fix the backup"), fix("t4", "Run the upgrade")]);
+      expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
+      expect(kickoffs).toHaveLength(1);
+      const events = (await app.inject({ method: "GET", url: "/api/mail-copilot/events?limit=50", headers })).json().events as Array<{ type: string; threadId: string | null; status: string | null }>;
+      expect(events.filter((event) => event.type === "RUN_STARTED")).toHaveLength(1);
+      expect(Object.fromEntries(events.filter((event) => event.type === "MAIL_RECEIVED").map((event) => [event.threadId, event.status]))).toEqual({ t1: "PENDING", t2: "DONE", t3: "DONE", t4: "DONE" });
+      // The hand-offs come first, then the rest of the inbox.
+      const order: string[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const next = (await app.inject({ method: "POST", url: "/api/cli/mail-copilot/next", headers: agent, payload: { waitMs: 0 } })).json();
+        order.push(`${next.item.type}:${next.item.threadId}`);
+        await app.inject({ method: "POST", url: "/api/cli/mail-copilot/report", headers: agent, payload: { eventId: next.item.id, outcome: next.item.type === "FIX_REQUESTED" ? "fixed" : "skipped", summary: "Done." } });
+      }
+      expect(order.slice(0, 2).sort()).toEqual(["FIX_REQUESTED:t2", "FIX_REQUESTED:t4"]);
+      expect(order[2]).toBe("MAIL_RECEIVED:t1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("sends new mail matching an approved FIX rule to the copilot on its own, with a notification and the run started", async () => {
+    const { app, headers, gmail, sync, repository, owner, paneUrl } = await fixture();
+    try {
+      await sync.tick();
+      const rule = (await app.inject({ method: "POST", url: "/api/mail-copilot/rules", headers, payload: { name: "Backups to the copilot", accountEmail: "me@gmail.com", condition: { fromAddress: "root@pve.example", subjectPattern: "backup failed" }, action: { type: "FIX" } } })).json().rule;
+      gmail.receive({ id: "f1", threadId: "ft1", from: "PVE <root@pve.example>", subject: "vzdump backup status (pve): backup failed", labelIds: ["INBOX"], plain: "lock" });
+      gmail.receive({ id: "f2", threadId: "ft2", from: "PVE <root@pve.example>", subject: "vzdump backup status (pve): backup successful", labelIds: ["INBOX"], plain: "ok" });
+      expect(await sync.tick()).toMatchObject({ created: 2 });
+      const events = (await app.inject({ method: "GET", url: "/api/mail-copilot/events?limit=20", headers })).json().events as Array<{ type: string; threadId: string | null; status: string | null; payload: Record<string, unknown> }>;
+      expect(events.find((event) => event.type === "FIX_REQUESTED")).toMatchObject({ threadId: "ft1", status: "PENDING", payload: { by: "rule", ruleId: rule.id } });
+      expect(events.find((event) => event.type === "MAIL_RECEIVED" && event.threadId === "ft1")?.status).toBeNull();
+      expect(events.find((event) => event.type === "MAIL_RECEIVED" && event.threadId === "ft2")?.status).toBe("PENDING");
+      const titles = ((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ title: string; body: string }>);
+      expect(titles.find((entry) => entry.title.startsWith("Mail Copilot took a mail to fix"))?.body).toBe('Sent to the copilot to check and fix (rule "Backups to the copilot"): vzdump backup status (pve): backup failed');
+      expect((await repository.listActions(owner, { actions: ["FIX"], limit: 5 }))[0]).toMatchObject({ threadId: "ft1", actor: "AGENT", source: "SPACE", ruleId: rule.id });
+      expect((await repository.getRule(owner, rule.id))?.appliedCount).toBe(1);
+      expect((await app.inject({ method: "GET", url: `${paneUrl}/run`, headers })).json().status).toBe("RUNNING");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("first looks at the last 30 days of the mailbox once and records where mail ended up as inferred habits", async () => {
     const { gmail, sync, repository, owner, app } = await fixture();
     try {
@@ -205,6 +261,10 @@ describe("mail copilot learns from Gmail history", () => {
       gmail.change({ messagesDeleted: [message("m2", "t2", [])] });
       await sync.tick();
       expect((await repository.listActions(owner, { actions: ["DELETE"], limit: 5 }))[0]).toMatchObject({ threadId: "t2", fromAddress: "deals@shop.example", subject: "Weekly deals" });
+      // A draft replaced while the operator types, and a message Space never saw, are no deleted mail.
+      gmail.change({ messagesDeleted: [message("dr1", "t1", ["DRAFT"]), message("old1", "t77", [])] });
+      await sync.tick();
+      expect((await repository.listActions(owner, { actions: ["DELETE"], limit: 5 })).map((row) => row.threadId)).toEqual(["t2"]);
       expect(gmail.calls().filter((path) => path === "/history").length).toBeGreaterThan(4);
     } finally {
       await app.close();
@@ -255,6 +315,12 @@ describe("mail copilot new-mail sync", () => {
       // The pane's new-mail toggle off: items still exist for the run, notifications stop.
       await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: { version: 1, settings: { notifications: { newMail: false, needsYou: true, telegram: false } } } });
       gmail.receive({ id: "m5", threadId: "t5", from: "Anna <anna@acme.com>", subject: "Quiet", labelIds: ["INBOX"], plain: "Hi" });
+      expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
+      expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(3);
+
+      // The toggle back on with this account muted: its new mail stays quiet too.
+      await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: { version: 1, settings: { notifications: { newMail: true, needsYou: true, telegram: false, mutedAccounts: ["Me@gmail.com"] } } } });
+      gmail.receive({ id: "m6", threadId: "t6", from: "Anna <anna@acme.com>", subject: "Muted", labelIds: ["INBOX"], plain: "Hi" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
       expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(3);
     } finally {

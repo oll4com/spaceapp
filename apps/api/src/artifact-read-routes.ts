@@ -44,6 +44,10 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
       const fileStat = await handle.stat();
       const filename = artifactFilename(artifact);
       applyFileResponsePolicy(reply, artifact.mimeType, filename);
+      // An artifact's bytes never change: images (CLI photo thumbnails and viewer) reuse the browser cache.
+      if (artifact.mimeType.toLowerCase().startsWith("image/")) {
+        reply.header("cache-control", "private, max-age=86400, stale-while-revalidate=604800");
+      }
       reply.header("content-length", String(fileStat.size));
       return reply.send(handle.createReadStream());
     } catch (error) { await handle.close(); throw error; }

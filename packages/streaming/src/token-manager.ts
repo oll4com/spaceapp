@@ -1,5 +1,6 @@
 import type { StreamingOAuthProvider } from "@space/contracts";
 import { StreamingCredentialStore, type StreamingProviderClient } from "./credential-store.js";
+import { StreamingProviderError } from "./errors.js";
 
 export interface StreamingTokenSet {
   accessToken: string;
@@ -168,7 +169,11 @@ export class StreamingTokenManager {
       throw new Error("Provider token endpoint could not be reached.");
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
+      const body = await response.text().catch(() => "");
+      // invalid_grant: the sign-in expired or was revoked (Google "Testing" apps expire refresh tokens after 7 days).
+      if (/"error"\s*:\s*"invalid_grant"/.test(body.slice(0, 4096))) {
+        throw new StreamingProviderError("REAUTH_REQUIRED", "The platform sign-in expired or was revoked. Reconnect it in Overview.", false, response.status);
+      }
       throw new Error(`Provider token endpoint returned HTTP ${response.status}.`);
     }
     try {

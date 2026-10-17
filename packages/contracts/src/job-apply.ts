@@ -174,11 +174,23 @@ export const jobApplyEducationSchema = z.object({
   end: shortText(40)
 }).strict();
 
+/** The candidate's postal address for forms that require one (identity data like phone: profile only, never memory). */
+export const jobApplyPostalAddressSchema = z.object({
+  line1: shortText(200),
+  line2: shortText(200),
+  city: shortText(120),
+  region: shortText(120),
+  postalCode: shortText(40),
+  country: shortText(100)
+}).strict();
+export type JobApplyPostalAddress = z.infer<typeof jobApplyPostalAddressSchema>;
+
 /** Truthful facts the agent may use; anything missing is "unknown", never guessed silently. */
 export const jobApplyCandidateSchema = z.object({
   fullName: shortText(200),
   email: z.string().trim().email().max(320).nullable().default(null),
   phone: shortText(60),
+  address: jobApplyPostalAddressSchema.nullable().default(null),
   location: shortText(200),
   country: shortText(100),
   linkedinUrl: z.string().trim().url().max(500).nullable().default(null),
@@ -370,10 +382,12 @@ export const JOB_APPLY_MAIL_LABELS: Record<JobApplyMailCategory, string> = {
   REJECTION: "Job Applications/Rejections",
   ACTION_NEEDED: "Job Applications/Action needed"
 };
+/** Organize categories: NONE takes the Job Applications labels off mail filed by mistake (archived only with `archive: true`). */
+export const JOB_APPLY_MAIL_ORGANIZE_CATEGORIES = [...JOB_APPLY_MAIL_CATEGORIES, "NONE"] as const;
 export const jobApplyMailOrganizeSchema = z.object({
   messageIds: z.array(z.string().trim().min(1).max(300)).min(1).max(50),
-  category: jobApplyMailCategorySchema,
-  /** Defaults to true for confirmations and rejections; action-needed mail is never archived. */
+  category: z.enum(JOB_APPLY_MAIL_ORGANIZE_CATEGORIES),
+  /** Defaults to true for confirmations and rejections; action-needed and NONE mail leave the inbox only when true. */
   archive: z.boolean().optional(),
   account: z.string().trim().toLowerCase().email().max(320).optional()
 }).strict();
@@ -384,7 +398,9 @@ export const jobApplyMailTriageResultSchema = z.object({
   confirmations: z.number().int().min(0),
   rejections: z.number().int().min(0),
   actionNeeded: z.number().int().min(0),
-  skipped: z.number().int().min(0)
+  skipped: z.number().int().min(0),
+  /** Job-alert digests archived without a Job Applications label. */
+  digests: z.number().int().min(0)
 }).strict();
 export type JobApplyMailTriageResult = z.infer<typeof jobApplyMailTriageResultSchema>;
 

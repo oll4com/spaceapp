@@ -31,6 +31,7 @@ import {
   cliAccountAvailabilityColor,
   cliAccountPlan,
   cliAccountPool,
+  cliAccountWeeklyForecast,
 } from "../src/features/cli-accounts/cli-account-availability.js";
 import { resetCliAccountBalanceForTests } from "../src/features/cli-accounts/cli-account-balance.js";
 import { resetCliAccountIdentitiesForTests } from "../src/features/cli-accounts/cli-account-identities.js";
@@ -113,6 +114,26 @@ describe("CLI account availability colours", () => {
   });
 });
 
+describe("weekly forecast", () => {
+  it("projects this week's pace of the subscription accounts to their reset", () => {
+    const clock = NOW;
+    // Each fixture week resets in 4 days, so 3 of its 7 days have passed.
+    const stale = { ...claudeAccount("stale", 90, 10), weeklyResetAt: at(-60) };
+    const quota = quotaSample([claudeAccount("paced", 90, 80), claudeAccount("spent", 0, 0), claudeAccount("out", null, 30, "NOT_CONNECTED"), stale]);
+    // paced: 20 used + 20/3 a day for 4 days; spent stays at 100 until it resets; signed-out and stale weeks are left out.
+    const forecast = cliAccountWeeklyForecast("cli:claude", quota, clock)!;
+    expect(forecast.accounts).toBe(2);
+    expect(forecast.percent).toBeCloseTo(100 - (20 + 80 / 3 + 100) / 2, 1);
+    expect(forecast.color).toBe(cliAccountAvailabilityColor(forecast.percent));
+    expect(forecast.resetWhen).toMatch(/^at /);
+
+    const short = cliAccountWeeklyForecast("cli:claude", quotaSample([claudeAccount("fast", 90, 40)]), clock)!;
+    expect(short).toMatchObject({ percent: 0, color: CLI_ACCOUNT_BLOCKED_COLOR });
+    expect(cliAccountWeeklyForecast("cli:cursor", quota, clock)).toBeNull();
+    expect(cliAccountWeeklyForecast("cli:claude", null, clock)).toBeNull();
+  });
+});
+
 describe("Antigravity model groups and plans", () => {
   const group = (fiveHour: number | null, weekly: number | null) => ({
     displayName: "Models", fiveHourRemainingPercent: fiveHour, fiveHourResetAt: at(40), weeklyRemainingPercent: weekly, weeklyResetAt: at(3 * 24 * 60),
@@ -147,6 +168,16 @@ describe("Antigravity model groups and plans", () => {
     const best = cliAccountAvailability({ runtimeId: "cli:gemini", profileId: "spc", quota, identity: null, clock });
     expect(best).toMatchObject({ tone: "ready", percent: 100 });
     expect(best.windows.map((window) => window.label)).toEqual(["Gemini", "Claude · GPT"]);
+  });
+
+  it("judges the Antigravity Space Gateway account by the best pooled account for the pane's model group", () => {
+    const clock = NOW;
+    // spc is out of Gemini quota, free still has 80%: the gateway serves Gemini models from free.
+    expect(cliAccountAvailability({ runtimeId: "cli:gemini", profileId: "space-gateway", quota, identity: null, clock, modelGroup: "gemini" }))
+      .toMatchObject({ tone: "ready", percent: 80, detail: "1 of 2 pooled accounts ready" });
+    const empty = { ...quota, agy: page([agy("spc", null, group(0, 0), group(0, 0))].map((account) => ({ ...account, status: "EXPIRED" as const })), "agy") };
+    expect(cliAccountAvailability({ runtimeId: "cli:gemini", profileId: "space-gateway", quota: empty, identity: null, clock }))
+      .toMatchObject({ tone: "blocked", label: "No accounts" });
   });
 
   it("keeps the paid API key account out of use and shows the Space Gateway account as ready", () => {
@@ -282,6 +313,8 @@ describe("CliAccountPicker", () => {
     expect(lab!.getAttribute("data-tone")).toBe("blocked");
     expect(lab!.style.getPropertyValue("--cli-account-color")).toBe(CLI_ACCOUNT_BLOCKED_COLOR);
     expect(within(menu).getByText("1 of 2 available now")).toBeTruthy();
+    // ops and lab, 3 days into their weeks with 20% and 50% used, leave about 18% at their reset.
+    expect(within(menu).getByText("18%").closest(".cli-account-menu-forecast")).toBeTruthy();
 
     fireEvent.click(lab!);
     expect(onSelect).toHaveBeenCalledWith("lab");

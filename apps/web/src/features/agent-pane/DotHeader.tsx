@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import type { AgentPaneSession, DotProfile } from "@space/contracts";
+import { dotPersonalities, type AgentPaneSession, type DotMood, type DotProfile } from "@space/contracts";
 import { ChevronDown, MoreHorizontal, PanelRight, Phone, Settings, SquarePen } from "../ui-theme/app-icons.js";
+import { DotAvatar, statusMood } from "./DotAvatar.js";
 
 const artwork: Record<DotProfile["appearance"]["character"], string> = {
   astronaut: "orbit", star: "nova", robot: "byte", comet: "comet", moon: "luna", planet: "cosmo"
@@ -49,9 +50,9 @@ function usePopupMenu(triggerRef: RefObject<HTMLButtonElement | null>, menuRef: 
  * The Dot pane header, like ChatGPT dot: new conversation on the left, the Dot (and its menu of
  * Dots) in the middle, more actions, call and the info card on the right. Settings live in SpaceApp.
  */
-export function DotHeader({ dots, selected, status, blocked, motionActive, onSelect, onManage, onNewConversation, newConversationDisabled,
+export function DotHeader({ dots, selected, status, mood, blocked, motionActive, onSelect, onManage, onNewConversation, newConversationDisabled,
   onCall, callDisabledReason, panelOpen, onTogglePanel, actions, unread = 0 }: {
-  dots: DotProfile[]; selected: DotProfile | null; status: string; blocked: boolean; motionActive: boolean;
+  dots: DotProfile[]; selected: DotProfile | null; status: string; mood?: DotMood; blocked: boolean; motionActive: boolean;
   onSelect: (dot: DotProfile) => void; onManage: () => void;
   onNewConversation: () => void; newConversationDisabled: boolean;
   onCall: () => void; callDisabledReason: string | null;
@@ -94,7 +95,8 @@ export function DotHeader({ dots, selected, status, blocked, motionActive, onSel
         title={blocked ? "Finish or stop the current action before switching Dots." : "Choose Dot"}
         disabled={blocked || dots.length !== 6} onClick={() => dotsPopup.setOpen((value) => !value)}>
         {selected ? <span className="dots-selected-mascot" data-motion-active={motionActive && documentVisible ? "true" : "false"}>
-          <img src={dotArtwork(selected)} alt="" width="32" height="32" />
+          <DotAvatar character={selected.appearance.character} mood={mood ?? statusMood(status)} size={32}
+            motion={motionActive && documentVisible ? "on" : "off"} />
           {unread ? <span className="dots-unread" aria-hidden="true" /> : null}
         </span> : null}
         <span className="dots-identity-text"><strong>{name}</strong><span className="dots-status" data-status={statusTone(status)}>{status}</span></span>
@@ -103,8 +105,9 @@ export function DotHeader({ dots, selected, status, blocked, motionActive, onSel
       <span className="sr-only" role="status">{`${name}: ${status}${unread ? `, ${unread} unread` : ""}`}</span>
       {dotsPopup.open ? <div ref={dotMenu} className="dots-choice-menu" role="menu" aria-label="Dots">
         {dots.map((dot, i) => <button key={dot.dotId} type="button" role="menuitemradio" aria-checked={selected?.dotId === dot.dotId} aria-label={`Select ${dot.name}`}
+          title={dotPersonalities[dot.appearance.character].archetype}
           onKeyDown={(event) => navigate(event, i, dots.length + 1, 3, dotsPopup, dotMenu)} onClick={() => { dotsPopup.close(); onSelect(dot); }}>
-          <img src={dotArtwork(dot)} alt="" width="36" height="36" /><span>{dot.name}</span>
+          <DotAvatar character={dot.appearance.character} size={36} motion="hover" /><span>{dot.name}</span>
         </button>)}
         <button type="button" role="menuitem" className="dots-choice-manage" onKeyDown={(event) => navigate(event, dots.length, dots.length + 1, 3, dotsPopup, dotMenu)}
           onClick={() => { dotsPopup.close(); onManage(); }}><Settings aria-hidden="true" /><span>Manage Dots in Settings</span></button>

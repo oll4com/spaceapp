@@ -59,8 +59,9 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 - **Parameters**: `roomId` (optional).
 
 ### 4. `space_screenshot`
-- **Purpose**: Captures full-screen visual state of SpaceApp for Vision AI analysis.
-- **Parameters**: `roomId`, `format` (jpeg/png/webp), `quality`, `maxWidth`, `maxHeight`.
+- **Purpose**: Captures the room as SpaceApp shows it, read-only as the caller (terminals attach as observers), for Vision AI analysis. The image is saved as a SCREENSHOT in the room's Media (7 days).
+- **Parameters**: `roomId`, `format` (jpeg/png/webp), `quality`, `maxWidth`, `maxHeight`, `viewport` (desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android; default desktop).
+- **Engine**: `scripts/space-media-capture.mjs`, shared with the `space-media-studio` skill (social sizes, frames, theme previews, video).
 
 ### 5. `space_operations`
 - **Purpose**: Inspects or cancels long-running durable operations.
@@ -90,6 +91,7 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 
 ### 11. Companion skills
 - `space-cli-render-diagnostics` covers terminal render evidence (`TERMINAL_RENDER`, render proofs); `space-app-diagnostics` covers `APP_DEBUG` captures.
+- `space-media-studio` covers screenshots and videos of the app for social posts and docs (device and social sizes, theme previews, a Studio room).
 - Workflow skills (Superpowers, UI/UX Pro Max, Taste Skill, gstack and the others) are listed with descriptions by `space_inspect` section `SKILLS` and by the dispatcher's `space_list_skills`; this manual does not repeat them.
 
 ---

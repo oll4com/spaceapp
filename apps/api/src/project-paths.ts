@@ -114,3 +114,14 @@ export async function mayCreatePaneDirectory(input: {
   return decision.ok;
 }
 
+/**
+ * SEC-009 for CLI sessions: a session may create its missing working directory only under the managed CLI
+ * workspace root or where pane creation may (mayCreatePaneDirectory). The 1.1.5 internal review found the
+ * session start and the terminal attach running mkdir -p on the request's or pane's cwd unchecked.
+ */
+export async function mayCreateCliSessionDirectory(input: Parameters<typeof mayCreatePaneDirectory>[0] & { workspaceRoot: string }): Promise<boolean> {
+  if (!isAbsolute(input.cwd) || input.cwd.includes("\0")) return false;
+  if (within(resolve(input.workspaceRoot), resolve(input.cwd))) return true;
+  return mayCreatePaneDirectory(input);
+}
+

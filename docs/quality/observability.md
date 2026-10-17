@@ -64,6 +64,9 @@ What changed in this package:
    - `causalError`: the newest event with a reason code, for example
      `{ "code": "CODEX_APP_SERVER_COMMAND_UNAVAILABLE", "category": "TOOL_UNAVAILABLE", "source": "event:TURN_FAILED", "workflowId": "workflow:codex-app-server:..." }`.
    - The events, audit entries and workflow rows for that ID.
+   - The agent runs of those workflows, then their background continuations
+     (`continuationOf` names the run each one continues), and the Room Agent
+     missions and task runs created under the ID.
    - Ready-made log queries.
 
    It returns only IDs, codes, statuses and times. Event messages, payload
@@ -219,6 +222,8 @@ shared `@space/observability` package sends OTLP/HTTP JSON to `<base>/v1/traces`
 the API's previous exporter module is a compatibility re-export. This uses the
 existing Temporal SDK and adds no external tracing SDK.
 
+The current `@space/runtime` export and original API module path both re-export
+this transport; they do not create a second exporter or interceptor.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Each completed HTTP request
   emits a SERVER span with method, route template, status and request ID. API
@@ -318,6 +323,7 @@ No credential or transcript export was added.
 | `packages/contracts/tests/observability.test.ts` | Categories, `traceparent` parsing, additive contract fields |
 | `packages/runtime/tests/metrics-registry.test.ts` | Registry format, label safety, series cap, process metrics |
 | `packages/db/tests/trace-records.test.ts` | Bounded, parameterized PostgreSQL trace lookup |
+| `packages/db/tests/room-agent-trace-postgres.test.ts` | Migration 0206 on a disposable PostgreSQL: mission trace and first error code, a continuation found from its source run |
 | `apps/api/tests/trace-correlation.test.ts` | W3C context, log bindings, starter memo and input, Room Agent propagation, start-failure category, lookup projection |
 | `apps/api/tests/observability-metrics.test.ts` | New API metrics, `/metrics` access rule, redaction, CLI disconnect and reconnect counters |
 | `apps/api/src/__tests__/files-search-errors.test.ts` | `EMPTY_RESULT`/`OK` and each failure code |
@@ -354,14 +360,25 @@ use only their disposable loopback collector.
   catches a failed child or activity, it records only generic text. Changing that
   is workflow code and would need `patched()`. The activity-level cause is in the
   worker log under the same `traceId`.
-- **Some records still lack the request ID.** Room Agent missions and task runs
-  have no `trace_id` or error-code column, and the store ignores the `traceId`
-  argument of those methods. Adding them needs a migration. Today the link is
-  `TURN_FAILED` (with the run ID) plus the workflow ID suffix.
-- **Application IDs are not W3C trace IDs.** Background continuations still use
-  `trace:bg-<uuid>` and chat-pane sends from room actions use `<actionId>:chat`.
-  Their application identifiers are unchanged; background turn spans now carry
-  a separate W3C trace and a source link when available.
+- **Room Agent missions and task runs: covered since 2026-10-16.** Migration
+  0206 adds `trace_id` and `error_code` to `room_agent_missions` and
+  `room_agent_task_runs`. The store writes the request trace on mission
+  creation and on the first task-run write, and keeps the first error code.
+  The continuation and token budgets record `ROOM_AGENT_CONTINUATION_LIMIT` and
+  `ROOM_AGENT_TOKEN_LIMIT`. The trace lookup returns the trace's missions and
+  task runs (ids, status, error code and times; never instructions). A failed
+  mission's code is the cause when no event or agent run carries one. Still
+  open: other mission failures (the supervisor workflow) record text, not a
+  code, so they have no `error_code`.
+- **Background continuations keep their own trace (followed since
+  2026-10-16).** A continuation still runs as `trace:bg-<uuid>`, because the
+  turn's workflow ID embeds its trace ID. The trace lookup now follows each
+  continuation from the run it continues (`roomAgentContinuation.sourceRunId`,
+  indexed by migration 0206, at most 50 generations and the row limit) and
+  marks it with `continuationOf`. Its events and logs remain under its own
+  trace ID. Chat-pane sends from room actions use `<actionId>:chat`.
+  Background turn spans also carry a separate W3C trace and an OTLP link to
+  their source workflow when available; application trace identifiers stay unchanged.
 - **CLI terminal task IDs are not linked.** `cliTaskId` and `revisionId` are not
   tied to request IDs.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
@@ -373,23 +390,26 @@ use only their disposable loopback collector.
   The CLI hosts are checked every 30 s by the terminal manager; the Browser Host
   at each `/readyz`. Memory and CPU come from `/proc` only when the PID's command
   line is that host. The hosts themselves still have no metrics endpoint or
-  spans (a normal deploy never restarts them). The memory-maintenance and
-  memory-mutation workers now have activity observers and optional spans, but
-  their entrypoints do not start the main worker's Prometheus HTTP endpoint.
+  spans (a normal deploy never restarts them). Since 2026-10-16 the
+  memory-maintenance and memory-mutation workers write the same `activity.started`
+  and `activity.finished` records as the main worker; their counters stay
+  in-process (no metrics endpoint of their own).
 - **Some workflow-level faults are not in the trace lookup.** Workflow-task
-  failures and nondeterminism appear only in Temporal history. The lookup returns
-  events, audit entries and workflow rows, not `space_agent_runs` rows.
+  failures and nondeterminism appear only in Temporal history. Since 2026-10-16
+  the lookup also returns the Space-native agent runs (`space_agent_runs`) of the
+  trace's workflows, joined by workflow id, with their status and error code, and
+  names a failed run's code as the cause when no event carries one.
 - **Span coverage is bounded.** API requests, workflow runs and their activity
   attempts are instrumented. CLI Host, Browser Host, standalone activities and
   outbound HTTP client calls do not gain spans. This does not add OTLP metrics,
   an OpenTelemetry SDK or configurable sampling.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
-- **Worker endpoints are not scraped yet.** Since 2026-10-14 stable's
-  `deploy/space-worker.service` enables `127.0.0.1:9469/metrics` (worker
-  activities) and `127.0.0.1:9464` (Temporal SDK); they take effect at the next
-  promote. Dev and public installs keep them off (off by default). No collector
-  scrapes them yet.
+- **Worker endpoints are not scraped yet.** Stable's `deploy/space-worker.service`
+  enables `127.0.0.1:9469/metrics` (worker activities) and `127.0.0.1:9464`
+  (Temporal SDK); on 2026-10-16 both answered on stable (`space_process_*` series,
+  and 53 `temporal_*` lines). Dev and public installs keep them off (off by
+  default). No collector scrapes them yet.
 - **`/metrics` access on live, checked 2026-10-12 (d5af82d2d2).** Through the web
   origin that the public proxy forwards to (`127.0.0.1:4911`), `/metrics` is not
   proxied (it returns the app's HTML shell) and `/api/metrics` returns 401, also

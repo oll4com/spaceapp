@@ -46,3 +46,52 @@
 .mk-spark-hit { fill: transparent; }
 .mk-table-view summary { cursor: pointer; color: var(--jc-muted); font-size: 12px; }
 .mk-metrics td { font-variant-numeric: tabular-nums; }
+
+/* ---- bookmarks: one card per site, the whole card opens it; the account chip uses the browser tabs' avatar hue ---- */
+.mk-bookmarks { display: flex; flex-direction: column; gap: 10px; padding: 12px; container-type: inline-size; }
+.mk-bookmarks-head { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.mk-bookmarks-head .jc-muted { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
+.mk-bookmarks-head .jc-button { flex: 0 0 auto; white-space: nowrap; }
+.mk-bookmark-form { grid-template-columns: repeat(2, minmax(0, 1fr)); background: var(--jc-card); }
+.mk-bookmark-form .mk-span { grid-column: 1 / -1; }
+/* The rail's field wells for inputs and the select alike: the global `label input:not(...)` rule outranks the rail's own field selector. */
+.jc-rail .mk-bookmark-form .jc-field :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+  width: 100%; min-height: 38px; box-sizing: border-box; padding: 9px 12px; border: 1px solid transparent; border-radius: 12px; background: var(--jc-tint); color: var(--jc-text);
+}
+.jc-rail .mk-bookmark-form .jc-field :is(input:not([type="checkbox"]):not([type="radio"]), select):focus-visible {
+  border-color: color-mix(in srgb, var(--jc-accent) 65%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--jc-accent) 18%, transparent); outline: none;
+}
+.mk-bookmark-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mk-bookmark { display: flex; align-items: center; gap: 4px; border-radius: 12px; background: var(--jc-card); transition: background-color 120ms ease; }
+.mk-bookmark:hover, .mk-bookmark:focus-within { background: color-mix(in srgb, var(--jc-text) 8%, var(--jc-bg)); }
+.mk-bookmark[data-busy="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--jc-accent) 60%, transparent); }
+.mk-bookmark-open {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 10px 4px 10px 10px;
+  border: 0; border-radius: 12px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.mk-bookmark-open:focus-visible { outline: 2px solid color-mix(in srgb, var(--jc-accent) 70%, transparent); outline-offset: -2px; }
+.mk-bookmark-open:disabled { cursor: default; }
+.mk-bookmark[data-busy="true"] .mk-bookmark-open { cursor: progress; }
+.mk-bookmark-site {
+  flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px;
+  background: var(--jc-tint-strong); color: var(--jc-text); font-size: 14px; font-weight: 700; text-transform: uppercase;
+}
+.mk-bookmark-copy { min-width: 0; display: grid; gap: 3px; }
+.mk-bookmark-title {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+  color: var(--jc-text); font-size: 13px; font-weight: 600; line-height: 1.3;
+}
+.mk-bookmark-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; color: var(--jc-muted); font-size: 11.5px; line-height: 1.3; }
+.mk-bookmark-host { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-bookmark-account { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; color: var(--jc-text); }
+.mk-bookmark-account > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-bookmark-account .account-menu-avatar { flex: 0 0 auto; width: 16px; height: 16px; font-size: 9.5px; }
+.mk-bookmark-account .account-menu-avatar svg { width: 10px; height: 10px; }
+.jc-pane .mk-bookmark .mk-bookmark-delete { flex: 0 0 auto; margin-right: 8px; border-color: transparent; background: transparent; color: var(--jc-muted); }
+.jc-pane .mk-bookmark .mk-bookmark-delete:hover:not(:disabled) { color: var(--jc-bad); background: color-mix(in srgb, var(--jc-bad) 12%, transparent); }
+/* A narrow rail: one form column, the count without the hint. */
+@container (max-width: 420px) {
+  .mk-bookmark-form { grid-template-columns: minmax(0, 1fr); }
+  .mk-bookmarks-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .mk-bookmark { transition: none; } }

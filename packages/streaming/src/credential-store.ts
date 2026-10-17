@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { chmod, lstat, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StreamingOAuthProvider, StreamingProviderReadiness } from "@space/contracts";
 
@@ -62,6 +63,23 @@ function fileMode(mode: number): number {
   return mode & 0o777;
 }
 
+/** Owner-only: 0600 or stricter, readable by the service user. */
+function ownerOnly(mode: number): boolean {
+  return (mode & 0o077) === 0 && (mode & 0o400) !== 0;
+}
+
+/**
+ * Stats a secret file and tightens it to 0600 when group or other bits crept in on a regular file this process owns
+ * (on public-host something widened them to 0620 on 2026-10-09, like the demo credentials before). Never loosens.
+ */
+async function healedStat(path: string): Promise<Stats> {
+  const info = await stat(path);
+  const ownedHere = typeof process.getuid !== "function" || info.uid === process.getuid();
+  if (!info.isFile() || ownerOnly(info.mode) || !ownedHere || !(await lstat(path)).isFile()) return info;
+  await chmod(path, 0o600).catch(() => undefined);
+  return stat(path);
+}
+
 export class StreamingCredentialStore {
   private readonly credentialDirectory: string;
 
@@ -85,7 +103,7 @@ export class StreamingCredentialStore {
     const path = this.clientPath(provider);
     let info;
     try {
-      info = await stat(path);
+      info = await healedStat(path);
     } catch {
       return {
         provider,
@@ -97,7 +115,7 @@ export class StreamingCredentialStore {
         scopes: streamingProviderScopes[provider]
       };
     }
-    const secure = info.isFile() && fileMode(info.mode) === 0o600;
+    const secure = info.isFile() && ownerOnly(info.mode);
     if (!secure) {
       return {
         provider,
@@ -105,7 +123,10 @@ export class StreamingCredentialStore {
         clientFilePresent: true,
         clientFileSecure: false,
         code: "CLIENT_FILE_PERMISSIONS",
-        message: `${provider} OAuth client configuration must be a 0600 regular file.`,
+        // Space tightens its own files itself, so this is a file another user owns.
+        message: info.isFile()
+          ? `${path} (mode ${fileMode(info.mode).toString(8).padStart(4, "0")}) belongs to another user; run: sudo chown space:space ${path} && sudo chmod 600 ${path}`
+          : `${path} must be a regular file.`,
         scopes: streamingProviderScopes[provider]
       };
     }
@@ -135,9 +156,9 @@ export class StreamingCredentialStore {
 
   async readClient(provider: StreamingOAuthProvider): Promise<StreamingProviderClient> {
     const path = this.clientPath(provider);
-    const info = await stat(path);
-    if (!info.isFile() || fileMode(info.mode) !== 0o600) {
-      throw new Error(`${provider} client file must be a 0600 regular file.`);
+    const info = await healedStat(path);
+    if (!info.isFile() || !ownerOnly(info.mode)) {
+      throw new Error(`${provider} client file must be a regular file only its owner can read.`);
     }
     const raw = await readFile(path, { encoding: "utf8" });
     if (Buffer.byteLength(raw) > 64 * 1024) throw new Error(`${provider} client file is too large.`);
@@ -163,8 +184,8 @@ export class StreamingCredentialStore {
 
   async readCredential(credentialRef: string): Promise<Record<string, unknown>> {
     const path = this.credentialPath(credentialRef);
-    const info = await stat(path);
-    if (!info.isFile() || fileMode(info.mode) !== 0o600) {
+    const info = await healedStat(path);
+    if (!info.isFile() || !ownerOnly(info.mode)) {
       throw new Error("Streaming credential file permissions are invalid.");
     }
     const raw = await readFile(path, { encoding: "utf8" });

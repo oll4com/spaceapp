@@ -59,7 +59,8 @@ export class TwitchEventSubChat {
           protectedAccount: Array.isArray(chat.badges) && chat.badges.some(badge => badge && typeof badge === "object" && "set_id" in badge && (badge.set_id === "broadcaster" || badge.set_id === "moderator")) });
       });
       socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Twitch EventSub connection failed.")); });
-      socket.addEventListener("close", () => { if (this.socket === socket) this.socket = null; clearTimeout(timer); });
+      // A close before the welcome must settle the promise, or ensure() would hang the bot loop; after resolve it is a no-op.
+      socket.addEventListener("close", () => { if (this.socket === socket) this.socket = null; clearTimeout(timer); reject(new Error("Twitch EventSub closed before the session started.")); });
     });
   }
 

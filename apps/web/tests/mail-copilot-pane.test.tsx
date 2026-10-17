@@ -45,6 +45,8 @@ const apiMock = vi.hoisted(() => ({
   updateMailMemory: vi.fn(),
   forgetMailMemory: vi.fn(),
   mailHabits: vi.fn(async (): Promise<{ habits: unknown[] }> => ({ habits: [] })),
+  mailActions: vi.fn(async (): Promise<{ actions: unknown[] }> => ({ actions: [] })),
+  mailFixRequests: vi.fn(async (): Promise<{ requests: unknown[] }> => ({ requests: [] })),
   forgetMailHabits: vi.fn(async () => ({ forgotten: 3, retired: 1 })),
   mailAttachmentUrl: () => "/attachment"
 }));
@@ -176,8 +178,13 @@ describe("MailCopilotPane", () => {
     await screen.findByRole("tab", { name: "Setup" });
     fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
     // Accounts step: turning one account off keeps the other as the pane's explicit choice.
-    fireEvent.click(await screen.findByRole("switch", { name: "work@gmail.com" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Show work@gmail.com in this pane" }));
     await waitFor(() => expect(apiMock.updateMailCopilotSettings).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ settings: expect.objectContaining({ accounts: ["me@gmail.com"] }) })));
+    // The account no longer shown cannot notify; the bell of a shown one mutes just that account.
+    expect((screen.getByRole("button", { name: "New mail notifications from work@gmail.com" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "New mail notifications from me@gmail.com" }));
+    await waitFor(() => expect(apiMock.updateMailCopilotSettings).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ settings: expect.objectContaining({ notifications: expect.objectContaining({ newMail: true, mutedAccounts: ["me@gmail.com"] }) }) })));
+    expect(screen.getByText(/On for 0 of 1 account\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Autonomy$/ }));
     fireEvent.click(screen.getByRole("radio", { name: "Rules" }));
     await waitFor(() => expect(apiMock.updateMailCopilotSettings).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ settings: expect.objectContaining({ autonomy: "RULES" }) })));
@@ -220,6 +227,56 @@ describe("MailCopilotPane rail", () => {
   });
   afterEach(() => cleanup());
 
+  it("shows each mail sent to the AI with the request, the copilot's questions, the answers and the result", async () => {
+    apiMock.mailFixRequests.mockResolvedValue({ requests: [
+      { id: "mailevt:fix00001", account: "operator@example.invalid", threadId: "t1", subject: "vzdump backup failed", from: "root@pve.example", note: "Check and fix it", by: "operator", status: "DONE", requestedAt: "2026-10-14T15:26:48.000Z",
+        exchanges: [{ question: "Disable the duplicate job?", askedAt: "2026-10-14T15:30:03.000Z", answer: "Yes, disable the job", answeredAt: "2026-10-14T15:33:10.000Z" }],
+        outcome: { type: "FIXED", summary: "The job was disabled and the backup ran again.", at: "2026-10-14T15:33:40.000Z" }, memoryId: "mailmem:lesson01" },
+      { id: "mailevt:fix00002", account: "operator@example.invalid", threadId: "t2", subject: "New packages", from: "root@pve.example", note: null, by: "rule", status: "PENDING", requestedAt: "2026-10-14T16:00:00.000Z", exchanges: [], outcome: null, memoryId: null }
+    ] });
+    render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
+    fireEvent.click(await screen.findByRole("radio", { name: "Sent to AI" }));
+    const list = await screen.findByRole("list", { name: "Sent to AI" });
+    expect(apiMock.mailFixRequests).toHaveBeenCalledWith(pane.id);
+    const [fixed, queued] = within(list).getAllByRole("listitem");
+    expect(within(fixed!).getByText("Fixed")).toBeTruthy();
+    expect(within(fixed!).getByText("Check and fix it")).toBeTruthy();
+    expect(within(fixed!).getByText(/Disable the duplicate job\?/)).toBeTruthy();
+    expect(within(fixed!).getByText(/Yes, disable the job/)).toBeTruthy();
+    expect(within(fixed!).getByText("The job was disabled and the backup ran again.")).toBeTruthy();
+    expect(within(fixed!).getByText("Remembered for the next mail like this.")).toBeTruthy();
+    expect(within(queued!).getByText("Queued")).toBeTruthy();
+    expect(within(queued!).getByText(/sent by a rule/)).toBeTruthy();
+  });
+
+  it("shows where each mail sent to the AI stands in the copilot's queue", async () => {
+    const fixEvent = (id: string, status: string, subject: string) => ({ id, ownerUserId: "user:1", paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: `t-${id}`, messageId: null, type: "FIX_REQUESTED", status,
+      message: `You sent to the copilot to check and fix: ${subject}`, payload: { by: "operator" }, createdAt: "2026-10-14T15:26:48.000Z" });
+    apiMock.mailCopilotEvents.mockResolvedValue({ events: [fixEvent("mailevt:fix00002", "PENDING", "New packages"), fixEvent("mailevt:fix00001", "TAKEN", "Backup failed")] });
+    render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
+    const timeline = await screen.findByRole("list", { name: "Activity" });
+    expect(within(timeline).getByText("Queued")).toBeTruthy();
+    expect(within(timeline).getByText("In progress")).toBeTruthy();
+  });
+
+  it("lists the recorded actions under Activity → Your actions: who did what to which mail, on which account, where", async () => {
+    const base = { ownerUserId: "user:1", messageId: null, subjectKey: null, ruleId: null, labelIds: [] as string[], labelNames: [] as string[], fromDomain: null };
+    apiMock.mailActions.mockResolvedValue({ actions: [
+      { ...base, id: "mailact:a00001", accountEmail: "info@example.invalid", threadId: "t1", action: "MOVE", labelIds: ["Label_3"], labelNames: ["Λογιστήριο INV"], fromAddress: "noreply@skroutz.gr", subject: "Invoice 42", actor: "OPERATOR", source: "GMAIL", occurredAt: "2026-10-14T18:00:00.000Z" },
+      { ...base, id: "mailact:a00002", accountEmail: "operator@example.invalid", threadId: "t2", action: "FIX", fromAddress: "root@pve.example", subject: "vzdump backup failed", actor: "OPERATOR", source: "PANE", occurredAt: "2026-10-14T19:00:00.000Z" }
+    ] });
+    render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
+    fireEvent.click(await screen.findByRole("radio", { name: "Your actions" }));
+    const list = await screen.findByRole("list", { name: "Recorded actions" });
+    expect(apiMock.mailActions).toHaveBeenCalledWith(pane.id, { limit: 200 });
+    expect(within(list).getByText("You moved “Invoice 42” to Λογιστήριο INV from noreply@skroutz.gr")).toBeTruthy();
+    expect(within(list).getByText("info@example.invalid · in Gmail")).toBeTruthy();
+    expect(within(list).getByText("You sent to the copilot to fix “vzdump backup failed” from root@pve.example")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Review a reply" })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "Activity" }));
+    expect(await screen.findByRole("region", { name: "Review a reply" })).toBeTruthy();
+  });
+
   it("shows the run, the review waiting for the operator, sends the operator's edit, and pauses the run", async () => {
     render(<MailCopilotPane pane={pane} isVisible terminal={<div data-testid="terminal">xterm</div>} />);
     await waitFor(() => expect(apiMock.mailCopilotRun).toHaveBeenCalledWith(pane.id));
@@ -228,6 +285,15 @@ describe("MailCopilotPane rail", () => {
     expect(screen.getByText("Triage: Invoice from Anna")).toBeTruthy();
     const card = within(screen.getByRole("region", { name: "Review a reply" }));
     expect(card.getByText("Anna asked for it")).toBeTruthy();
+    // Show this mail: the list narrows to the reviewed conversation (a Message-ID search) and the conversation opens.
+    apiMock.mailThread.mockResolvedValue({ thread: { account: "me@gmail.com", threadId: "t1", subject: "Invoice", messages: [{
+      account: "me@gmail.com", threadId: "t1", messageId: "m1", from: { name: "Anna", address: "anna@acme.com" }, to: [], cc: [], replyTo: [], subject: "Invoice", receivedAt: "2026-10-13T08:00:00.000Z",
+      rfcMessageId: "<inv-1@acme.com>", references: null, labelIds: ["INBOX"], unread: false, starred: false, text: "Please find the invoice", html: null, blockedImages: false, attachments: [] }] } });
+    fireEvent.click(card.getByRole("button", { name: "Show this mail" }));
+    await waitFor(() => expect(apiMock.mailThreads).toHaveBeenCalledWith(pane.id, expect.objectContaining({ account: "me@gmail.com", labelId: "ALL", q: "rfc822msgid:inv-1@acme.com" })));
+    expect(apiMock.mailThread).toHaveBeenCalledWith(pane.id, "me@gmail.com", "t1", false);
+    expect((screen.getByRole("searchbox", { name: "Search mail" }) as HTMLInputElement).value).toBe("rfc822msgid:inv-1@acme.com");
+    expect(await screen.findByText("Please find the invoice")).toBeTruthy();
     fireEvent.change(card.getByRole("textbox", { name: "Reply text" }), { target: { value: "Hi Anna, here it is again." } });
     fireEvent.click(card.getByRole("button", { name: "Send my version" }));
     await waitFor(() => expect(apiMock.decideMailReview).toHaveBeenCalledWith(pane.id, { reviewId: "mailrev:rev00001", decision: "edit", text: "Hi Anna, here it is again." }));

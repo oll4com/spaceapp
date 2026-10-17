@@ -186,6 +186,39 @@ describe("antigravity usage services", () => {
     });
   });
 
+  it("bounds a stalled upstream profile check", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "space-test-gemini-timeout-"));
+    try {
+      const profileDir = join(tempDir, "space-gemini", "profiles", "in1", "home", ".gemini", "antigravity-cli");
+      await mkdir(profileDir, { recursive: true });
+      const payload = Buffer.from(JSON.stringify({ email: "timeout@example.com" })).toString("base64url");
+      await writeFile(join(profileDir, "antigravity-oauth-token"), JSON.stringify({
+        token: { access_token: "mock-valid-token", expiry: new Date(Date.now() + 3600_000).toISOString() },
+        id_token: `header.${payload}.sig`
+      }), "utf8");
+
+      const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => await new Promise<Response>((_resolve, reject) => {
+        const abort = () => reject(new Error("upstream aborted"));
+        if (init?.signal?.aborted) abort();
+        else init?.signal?.addEventListener("abort", abort, { once: true });
+      }));
+      const provider = createAntigravityUsageAccountProvider({
+        codexHome: tempDir,
+        fetchImpl: mockFetch as any,
+        fetchTimeoutMs: 10
+      });
+
+      const startedAt = Date.now();
+      const result = await provider();
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]?.status).toBe("ERROR");
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("leaves out a profile whose account Space Gateway keeps out of rotation, at once and only that one", async () => {
     let paused = new Set(["INDGMOPAI1@gmail.com".toLowerCase()]);
     await collectOne({ currentTier: { id: "free-tier", name: "Antigravity" } }, (acc) => expect(acc).toBeUndefined(), async () => paused);

@@ -149,10 +149,10 @@ describe("RoomsDockPanel", () => {
           createRoom: vi.fn(async () => undefined), roomCreationPending: false, selectRoom: vi.fn(async () => undefined), requestRoomDelete: vi.fn(async () => undefined),
           requestTestRoomsDelete: vi.fn(async () => undefined), deletePendingRoomId: null, setSelectedPaneId: vi.fn(), addFilesPane: vi.fn(async () => undefined), addRootAdminPane: vi.fn(async () => undefined),
           isRoomWorktreeEnabled: () => true, setRoomWorktreeEnabled: vi.fn(), projectPresets: [{ label: "space", path: "/opt/spaceapp" }],
-          reportError: vi.fn(), roomDeleteConfirmDialog: null,
+          reportError: vi.fn(), roomDeleteConfirmDialog: null, movePaneToRoom: vi.fn(async () => undefined),
           ...overrides
         }}
-        composer={{ preparingRoomId: null, presentationPanes: [], presentationRoom: null, addRoomPanes: vi.fn(async () => undefined), openSettingsSurface: vi.fn(), modernColorMode: "dark" }}
+        composer={{ preparingRoomId: null, presentationPanes: [], presentationRoom: null, addRoomPanes: vi.fn(async () => undefined), openSettingsSurface: vi.fn() }}
       />
     );
   }
@@ -167,6 +167,22 @@ describe("RoomsDockPanel", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: "Find a room" }), { target: { value: "zzz" } });
     expect(screen.getByText("No rooms match these filters.").getAttribute("role")).toBe("status");
     expect(container.querySelector(".rooms-filter-summary [role=\"status\"]")?.textContent).toBe("0 of 2 rooms");
+  });
+
+  it("moves a pane dropped on another room and never targets the active room", () => {
+    const movePaneToRoom = vi.fn(async () => undefined);
+    const rooms = [room("a", 0), room("b", 1)];
+    const { container } = render(<Panel initialRooms={rooms} overrides={{ movePaneToRoom }} />);
+    const payload = JSON.stringify({ id: "pane:1", title: "Dana", mode: "TERMINAL", roomId: "a", roomName: "Room a" });
+    const dataTransfer = { types: ["text/plain", "application/x-space-pane-context"], dropEffect: "none", getData: (type: string) => type === "application/x-space-pane-context" ? payload : "pane:1" };
+    const target = container.querySelector<HTMLElement>('.room-item[data-room-id="b"]')!;
+    const active = container.querySelector<HTMLElement>('.room-item[data-room-id="a"]')!;
+    expect(fireEvent.dragOver(active, { dataTransfer })).toBe(true);
+    expect(fireEvent.dragOver(target, { dataTransfer })).toBe(false);
+    expect(target.classList.contains("is-drop-target")).toBe(true);
+    fireEvent.drop(target, { dataTransfer });
+    expect(movePaneToRoom).toHaveBeenCalledWith("pane:1", "b");
+    expect(target.classList.contains("is-drop-target")).toBe(false);
   });
 
   it("expands the project settings of a room", () => {

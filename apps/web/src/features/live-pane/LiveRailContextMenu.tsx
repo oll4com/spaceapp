@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Captions, CaptionsOff, ChartColumn, Eye, EyeOff, MessageSquareText, Trash2 } from "lucide-react";
+import { Captions, CaptionsOff, ChartColumn, Eye, EyeOff, MessageSquareText, Trash2 } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 

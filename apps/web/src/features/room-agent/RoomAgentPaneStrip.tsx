@@ -4,7 +4,7 @@ import { DockIconButton } from "../dock-kit/DockKit.js";
 
 const modeLabels: Partial<Record<RoomAgentPaneStripItem["mode"], string>> = {
   BROWSER: "Browser", FILES: "Files", LIVE: "Live", HARNESS: "Harness", YOUTUBE: "YouTube", VNC: "Desktop",
-  DATABASES: "Databases", DEMOS: "Demos", T3CODE: "T3 Code", JOB_APPLY: "Job Copilot", MAIL_COPILOT: "Mail Copilot", MARKETING_COPILOT: "Marketing Copilot", TERMINAL: "Shell"
+  DATABASES: "Databases", DEMOS: "Demos", T3CODE: "T3 Code", JOB_APPLY: "Job Copilot", MAIL_COPILOT: "Mail Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", TERMINAL: "Shell"
 };
 
 export function paneStripName(item: RoomAgentPaneStripItem): string {

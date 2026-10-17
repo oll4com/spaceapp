@@ -5,6 +5,8 @@ import type {
   StreamingPlatformAccount
 } from "@space/contracts";
 import {
+  AlertTriangle,
+  CheckCircle2,
   Pause,
   Play,
   Plus,
@@ -29,44 +31,11 @@ interface BotTabState {
   models: Array<{ kind: "API" | "CLI"; providerId: string; modelId: string; label: string; available: boolean; reason: string | null }>;
 }
 
-function emptyState(): BotTabState {
-  return {
-    settings: {
-      version: 1,
-      enabled: false,
-      persona: { name: "Live Assistant", tone: "Friendly, concise and helpful. Answer only questions about the stream." },
-      platforms: { YOUTUBE: { enabled: false, accountId: null }, TWITCH: { enabled: false, accountId: null } },
-      facts: [],
-      faq: [],
-      instructions: "",
-      guardrails: { cooldownSeconds: 15, maxRepliesPerMinute: 5, replyToQuestionsOnly: true },
-      modelSelection: null,
-      fallbackModelSelection: null,
-      memoryEnabled: true,
-      moderationEnabled: false,
-      jevEnabled: false,
-      overlayTickerEnabled: false,
-      updatedAt: "",
-      updatedBy: null
-    },
-    status: {
-      enabled: false,
-      paused: true,
-      llmConfigured: false,
-      model: null,
-      youtubeQuota: { day: "", unitsConsumed: 0, budget: 8000 },
-      platforms: {
-        YOUTUBE: { connected: false, live: false, chatId: null, lastPollAt: null, lastReplyAt: null, pendingCount: 0 },
-        TWITCH: { connected: false, live: false, chatId: null, lastPollAt: null, lastReplyAt: null, pendingCount: 0 }
-      }
-    },
-    memoryCount: 0,
-    accounts: [],
-    models: []
-  };
-}
-
-export function StreamingBotTab() {
+export function StreamingBotTab({ active = true, onStatus }: {
+  /** Polls the bot status while true (the tab is shown and the dock is visible). */
+  active?: boolean;
+  onStatus?: (status: StreamingBotStatus) => void;
+} = {}) {
   const [state, setState] = useState<BotTabState | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -74,7 +43,7 @@ export function StreamingBotTab() {
   const [notice, setNotice] = useState<string | null>(null);
   const [testMessage, setTestMessage] = useState("");
   const [testPlatform, setTestPlatform] = useState<StreamingBotPlatform>("YOUTUBE");
-  const [testReply, setTestReply] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ text: string; model: string | null } | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [dirty, setDirty] = useState(false);
   /** Shows "saved" after a settings save until the next edit. */
@@ -98,6 +67,8 @@ export function StreamingBotTab() {
         accounts: catalog.accounts.filter(account => account.status === "ACTIVE"),
         models: modelCatalog.models
       });
+      onStatus?.(status);
+      setDirty(false);
       setError(null);
       if (message) setNotice(message);
     } catch (loadError) {
@@ -106,7 +77,19 @@ export function StreamingBotTab() {
     } finally {
       if (mounted.current) setLoading(false);
     }
-  }, []);
+  }, [onStatus]);
+
+  /** Refreshes only the status, never the settings draft. */
+  const refreshStatus = useCallback(async () => {
+    try {
+      const status = await api.streamingBotStatus();
+      if (!mounted.current) return;
+      setState((current) => current ? { ...current, status } : current);
+      onStatus?.(status);
+    } catch {
+      // A failed poll keeps the last status; the next one retries.
+    }
+  }, [onStatus]);
 
   useEffect(() => {
     mounted.current = true;
@@ -116,6 +99,14 @@ export function StreamingBotTab() {
     };
   }, [load]);
 
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refreshStatus();
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [active, refreshStatus]);
+
   function updateSettings(updater: (settings: StreamingBotSettings) => StreamingBotSettings) {
     setState((current) => current ? { ...current, settings: updater(current.settings) } : current);
     setDirty(true);
@@ -124,13 +115,19 @@ export function StreamingBotTab() {
     setNotice(null);
   }
 
-  async function runAction(key: string, action: () => Promise<unknown>, success: string) {
+  /** Pause/Resume change only `enabled` on the server; the rest of an unsaved draft stays as typed. */
+  async function setBotActive(key: "pause" | "resume", action: () => Promise<StreamingBotSettings>, success: string) {
     setPendingAction(key);
     setError(null);
     setNotice(null);
     try {
-      await action();
-      await load(success);
+      const saved = await action();
+      setState((current) => current ? {
+        ...current,
+        settings: dirty ? { ...current.settings, enabled: saved.enabled, version: saved.version } : saved
+      } : current);
+      await refreshStatus();
+      setNotice(success);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "Streaming bot action failed.");
     } finally {
@@ -179,11 +176,14 @@ export function StreamingBotTab() {
     setPendingAction("test");
     setError(null);
     setNotice(null);
-    setTestReply(null);
+    setTestResult(null);
     try {
       const result = await api.testStreamingBot({ platform: testPlatform, message: testMessage });
-      setTestReply(result.errorCode ? `No reply: ${readableCode(result.errorCode)}` : result.reply);
-      await load();
+      setTestResult({
+        text: result.errorCode ? `No reply: ${readableCode(result.errorCode)}` : result.reply ?? "No reply needed for this message.",
+        model: result.model
+      });
+      await refreshStatus();
     } catch (testError) {
       setError(testError instanceof Error ? testError.message : "The bot test could not run.");
     } finally {
@@ -207,6 +207,8 @@ export function StreamingBotTab() {
   }
 
   const { settings, status } = state;
+  // An API from before the setup checklist answers without it while a deploy settles.
+  const setup = status.setup ?? [];
   const saving = pendingAction === "save";
 
   return (
@@ -228,6 +230,28 @@ export function StreamingBotTab() {
         {notice ? <DockNotice tone="info" onDismiss={() => setNotice(null)}>{notice}</DockNotice> : null}
       </div>
 
+      {setup.length > 0 ? (
+        <section className="streaming-section" aria-labelledby="streaming-bot-setup-heading">
+          <div className="streaming-section-heading">
+            <h3 id="streaming-bot-setup-heading" className="dock-kit-section-title">Setup</h3>
+            {setup.every((item) => item.ok)
+              ? <span className="dock-kit-badge is-success">Ready</span>
+              : <span className="dock-kit-badge is-warning">{setup.filter((item) => item.ok).length}/{setup.length} ready</span>}
+          </div>
+          <ul className="streaming-setup-list">
+            {setup.map((item) => (
+              <li key={item.id} className={`streaming-setup-item ${item.ok ? "is-ok" : "is-missing"}`}>
+                {item.ok ? <CheckCircle2 aria-hidden="true" /> : <AlertTriangle aria-hidden="true" />}
+                <div>
+                  <strong>{item.label}</strong>
+                  <span className="streaming-hint">{item.ok ? "Ready" : item.hint}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <section className="streaming-section" aria-labelledby="streaming-bot-overview-heading">
         <div className="streaming-section-heading">
           <h3 id="streaming-bot-overview-heading" className="dock-kit-section-title">Live Q&amp;A bot</h3>
@@ -237,7 +261,7 @@ export function StreamingBotTab() {
           <div className="streaming-bot-overview-card">
             <span className="streaming-bot-card-label">Language model</span>
             <strong>{status.llmConfigured ? (status.model ?? "Configured") : "Not configured"}</strong>
-            <small>{status.llmConfigured ? "Dedicated Streaming model" : "Connect a dedicated Streaming API key and select a model"}</small>
+            <small>{status.llmConfigured ? "Through the bot's Space Gateway key" : "Choose a model under Provider & model"}</small>
           </div>
           <div className="streaming-bot-overview-card">
             <span className="streaming-bot-card-label">YouTube quota</span>
@@ -316,6 +340,7 @@ export function StreamingBotTab() {
 
       <section className="streaming-section" aria-labelledby="streaming-bot-model-heading">
         <div className="streaming-section-heading"><h3 id="streaming-bot-model-heading" className="dock-kit-section-title">Provider &amp; model</h3></div>
+        <p className="streaming-hint">Claude or OpenAI API through Space Gateway, on the bot's own key with a daily limit. The fallback answers when the primary fails.</p>
         <input className="dock-kit-field" aria-label="Search streaming models" maxLength={120} value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="Search providers and models…" />
         <div className="streaming-bot-field-row">
           <label className="streaming-bot-field"><span>Primary model</span>
@@ -487,19 +512,25 @@ export function StreamingBotTab() {
             Test
           </DockButton>
         </div>
-        {testReply ? <p className="streaming-bot-test-reply" role="status">{testReply}</p> : null}
+        <small className="streaming-hint">Tests use the saved settings and post nothing to chat.</small>
+        {testResult ? (
+          <p className="streaming-bot-test-reply" role="status">
+            {testResult.text}
+            {testResult.model ? <small className="dock-kit-meta-text"> · {testResult.model}</small> : null}
+          </p>
+        ) : null}
       </section>
 
       <div className="streaming-bot-actions">
         <DockButton tone="primary" icon={Save} busy={saving} className="streaming-save-button" onClick={() => void save()} disabled={pendingAction !== null || !dirty}>
           Save settings
         </DockButton>
-        {settings.enabled ? (
-          <DockButton icon={Pause} busy={pendingAction === "pause"} onClick={() => void runAction("pause", () => api.pauseStreamingBot(), "Bot paused.")} disabled={pendingAction !== null}>
+        {status.enabled ? (
+          <DockButton icon={Pause} busy={pendingAction === "pause"} onClick={() => void setBotActive("pause", () => api.pauseStreamingBot(), "Bot paused.")} disabled={pendingAction !== null}>
             Pause
           </DockButton>
         ) : (
-          <DockButton icon={Play} busy={pendingAction === "resume"} onClick={() => void runAction("resume", () => api.resumeStreamingBot(), "Bot resumed.")} disabled={pendingAction !== null}>
+          <DockButton icon={Play} busy={pendingAction === "resume"} onClick={() => void setBotActive("resume", () => api.resumeStreamingBot(), "Bot resumed.")} disabled={pendingAction !== null}>
             Resume
           </DockButton>
         )}

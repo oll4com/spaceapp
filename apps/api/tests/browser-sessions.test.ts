@@ -511,6 +511,17 @@ describe("browser runtime v2 capacity", () => {
     expect(gate.acquireSession("session:replacement")).toBe(true);
     expect(gate.acquireLive("stream:replacement")).toBe(true);
   });
+
+  it("lets streams use the session limit while recordings keep the live limit", () => {
+    const gate = new BrowserCapacityGate(8, 4);
+    for (let index = 0; index < 8; index += 1) {
+      expect(gate.acquireLive(`stream:${index}`, gate.maxSessions)).toBe(true);
+    }
+    expect(gate.acquireLive("stream:overflow", gate.maxSessions)).toBe(false);
+    expect(gate.acquireLive("capture:job")).toBe(false);
+    for (let index = 0; index < 5; index += 1) gate.releaseLive(`stream:${index}`);
+    expect(gate.acquireLive("capture:job")).toBe(true);
+  });
 });
 
 describe("browser runtime v2 agent numbering", () => {
@@ -1232,14 +1243,14 @@ describe("browser session restore metadata", () => {
 });
 
 describe("browser session display pool", () => {
-  it("allocates up to eight displays and reuses released ones", () => {
+  it("allocates up to ten displays and reuses released ones", () => {
     const allocated = new Set<number>();
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 10; index += 1) {
       const display = allocateDisplay();
       expect(display).not.toBeNull();
       allocated.add(display!);
     }
-    expect(allocated.size).toBe(8);
+    expect(allocated.size).toBe(10);
     expect(allocateDisplay()).toBeNull();
 
     const first = [...allocated][0]!;

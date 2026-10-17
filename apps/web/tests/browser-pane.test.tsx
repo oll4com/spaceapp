@@ -22,7 +22,11 @@ const apiMock = vi.hoisted(() => ({
   browserPages: vi.fn(),
   browserAccounts: vi.fn(),
   selectBrowserAccount: vi.fn(),
+  createPane: vi.fn(),
+  setBrowserPageAccount: vi.fn(),
+  panes: vi.fn(),
   createBrowserPage: vi.fn(),
+  createMarketingBookmark: vi.fn(),
   closeBrowserPage: vi.fn(),
   activateBrowserPage: vi.fn(),
   acquireBrowserControl: vi.fn(),
@@ -551,6 +555,43 @@ describe("BrowserPane", () => {
     expect(apiMock.acquireBrowserControl).toHaveBeenCalledTimes(2);
   });
 
+  it("pastes clipboard text into the page from the toolbar's Paste icon, or opens the text box without clipboard access", async () => {
+    // Operator report 2026-10-15: a Freelance Copilot sign-in field took no paste.
+    const readText = vi.fn().mockResolvedValue("s3cret pass");
+    installSpaceRuntime({ ...liveRuntime, platform: { ...liveRuntime.platform, clipboard: { read: vi.fn(), readText, write: vi.fn(), writeText: vi.fn() } } });
+    apiMock.browserSession.mockResolvedValue(sessionResponse());
+    apiMock.acquireBrowserControl.mockResolvedValue(operatorLease());
+    render(<BrowserPane pane={browserPane({ mode: "FREELANCE_COPILOT" })} agentNumber={4} />);
+    const paste = await screen.findByRole("button", { name: "Paste into browser Research Browser" });
+    await waitFor(() => expect(paste.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(paste);
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith(
+      "pane:browser-proof",
+      expect.objectContaining({ type: "KEY", eventType: "char", text: "s3cret pass", leaseId: "browser_lease:operator" })
+    ));
+    readText.mockRejectedValue(new DOMException("Read permission denied.", "NotAllowedError"));
+    fireEvent.click(paste);
+    expect(await screen.findByPlaceholderText("Type into page")).toBeTruthy();
+  });
+
+  it("asks the server again on a copilot's Take control while it already holds the browser, without the text box", async () => {
+    // Operator report 2026-10-15: the agent asked for a login while the operator already held the browser, and
+    // "Take control" never reached the server, so the request card stayed. The join must reach it (the server then
+    // accepts the handoff), and in a copilot the operator works in the page itself.
+    apiMock.browserSession.mockResolvedValue(sessionResponse());
+    apiMock.acquireBrowserControl.mockResolvedValue(operatorLease());
+    render(<BrowserPane pane={browserPane({ mode: "MARKETING_COPILOT" })} agentNumber={4} />);
+    const join = await screen.findByRole("button", { name: "Join browser session Research Browser" });
+    await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
+    fireEvent.keyDown(screen.getByRole("img", { name: "Research Browser browser frame" }), { key: "a", code: "KeyA" });
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalled());
+    expect(apiMock.acquireBrowserControl).toHaveBeenCalledTimes(1);
+    fireEvent(window, new CustomEvent(BROWSER_PANE_ACTION_EVENT, { detail: { paneId: "pane:browser-proof", action: "handoff", roomId: "room:browser-proof" } }));
+    await waitFor(() => expect(apiMock.acquireBrowserControl).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "Release browser control Research Browser" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Type into page")).toBeNull();
+  });
+
   it("keeps heartbeating browser control past the expiry of the first lease", async () => {
     apiMock.browserSession.mockResolvedValue(sessionResponse());
     const lease = operatorLease();
@@ -577,6 +618,42 @@ describe("BrowserPane", () => {
     expect(apiMock.heartbeatBrowserControl).toHaveBeenCalledTimes(6);
     expect(apiMock.heartbeatBrowserControl).toHaveBeenLastCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator", ttlSeconds: 60 });
     expect(screen.getByRole("button", { name: "Release browser control Research Browser" })).toBeTruthy();
+  });
+
+  it("gives browser control back two minutes after the last press, a hover does not count", async () => {
+    apiMock.browserSession.mockResolvedValue(sessionResponse());
+    const lease = operatorLease();
+    apiMock.acquireBrowserControl.mockResolvedValue(lease);
+    apiMock.releaseBrowserControl.mockResolvedValue({ lease: { ...lease.lease, status: "RELEASED" } });
+    const intervals = vi.spyOn(window, "setInterval");
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    const join = await screen.findByRole("button", { name: "Join browser session Research Browser" });
+    await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(join);
+    await screen.findByRole("button", { name: "Release browser control Research Browser" });
+    const heartbeat = intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now");
+    // Input at 4 minutes keeps the browser; the next tick only renews the lease.
+    now.mockReturnValue(start + 4 * 60_000);
+    apiMock.acquireBrowserControl.mockResolvedValue({ lease: { ...lease.lease, expiresAt: new Date(start + 10 * 60_000).toISOString() } });
+    fireEvent.keyDown(screen.getByRole("img", { name: "Research Browser browser frame" }), { key: "a", code: "KeyA" });
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalled());
+    now.mockReturnValue(start + 5 * 60_000);
+    apiMock.heartbeatBrowserControl.mockResolvedValueOnce({ lease: { ...lease.lease, expiresAt: new Date(start + 12 * 60_000).toISOString() } });
+    await act(async () => { heartbeat!(); await Promise.resolve(); });
+    expect(apiMock.releaseBrowserControl).not.toHaveBeenCalled();
+    // A hover at 5:30 is forwarded but is not use.
+    now.mockReturnValue(start + 5.5 * 60_000);
+    const frame = screen.getByRole("img", { name: "Research Browser browser frame" });
+    fireEvent.mouseMove(frame, { clientX: 20, clientY: 20, buttons: 0 });
+    // Two minutes after that press (operator decision 2026-10-15) the tick gives the browser back instead of renewing it.
+    now.mockReturnValue(start + 6 * 60_000 + 1);
+    apiMock.heartbeatBrowserControl.mockClear();
+    await act(async () => { heartbeat!(); await Promise.resolve(); });
+    await waitFor(() => expect(apiMock.releaseBrowserControl).toHaveBeenCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator" }));
+    expect(apiMock.heartbeatBrowserControl).not.toHaveBeenCalled();
+    await screen.findByRole("button", { name: "Join browser session Research Browser" });
   });
 
   it("preserves the URL being typed while the initial browser session is loading", async () => {
@@ -900,6 +977,116 @@ describe("BrowserPane", () => {
     return { before, after, initial };
   }
 
+  function twoAccounts() {
+    apiMock.browserAccounts.mockResolvedValue({ selectedProfileId: null, effectiveProfileId: "google_account:primary", profiles: [
+      { profileId: "google_account:primary", displayName: "Primary", email: "primary@example.com" },
+      { profileId: "google_account:second", displayName: "Second", email: "second@example.com" }] });
+  }
+
+  async function chooseSecondAccount() {
+    await screen.findByRole("tab", { name: "First tab" });
+    const picker = await screen.findByLabelText("Google account for Research Browser");
+    await waitFor(() => expect(picker.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^second@example\.com/ }));
+  }
+
+  it.each(["BROWSER", "MARKETING_COPILOT"] as const)("changes the account of the %s pane's tab in view in place; the other tabs keep the pane's", async (mode) => {
+    const { before } = tabFixture();
+    twoAccounts();
+    // A Browser Host with per-tab accounts reports `account` on every tab.
+    const own = { ...before, pages: before.pages.map((page) => ({ ...page, account: null })) };
+    apiMock.browserSession.mockResolvedValue(sessionResponse({ pages: own.pages, activePageId: own.activePageId }));
+    apiMock.browserPages.mockResolvedValue(own);
+    const second = { profileId: "google_account:second", label: "second@example.com" };
+    const switched = { ...own, pages: [own.pages[1]!, { ...own.pages[0]!, pageId: "page:three", account: second }], activePageId: "page:three" };
+    apiMock.setBrowserPageAccount.mockResolvedValue(switched);
+    render(<BrowserPane pane={browserPane({ mode })} agentNumber={4} />);
+    await chooseSecondAccount();
+    await waitFor(() => expect(apiMock.setBrowserPageAccount).toHaveBeenCalledWith("pane:browser-proof", "page:one", "google_account:second", {}));
+    expect(apiMock.createPane).not.toHaveBeenCalled();
+    expect(apiMock.selectBrowserAccount).not.toHaveBeenCalled();
+    expect(apiMock.closeBrowserPage).not.toHaveBeenCalled();
+    const tab = await screen.findByRole("tab", { name: "First tab · second@example.com" });
+    expect(tab.getAttribute("title")).toBe("https://example.com/one\nGoogle account: second@example.com");
+    expect(screen.getByRole("tab", { name: "Second tab" })).toBeTruthy();
+
+    // The menu now shows the tab's account, says it changes this tab, and moves the tab back to the pane's account.
+    apiMock.browserPages.mockResolvedValue(switched);
+    const picker = screen.getByLabelText("Google account for Research Browser");
+    await waitFor(() => expect(picker.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(picker);
+    expect(screen.getByText("This tab")).toBeTruthy();
+    expect(screen.getByRole("menuitemradio", { name: /^second@example\.com/ }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign in to selected account" }));
+    await waitFor(() => expect(apiMock.setBrowserPageAccount).toHaveBeenLastCalledWith("pane:browser-proof", "page:three", "google_account:second", { signIn: true }));
+    await waitFor(() => expect(picker.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(picker);
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^primary@example\.com/ }));
+    await waitFor(() => expect(apiMock.setBrowserPageAccount).toHaveBeenLastCalledWith("pane:browser-proof", "page:three", null, {}));
+  });
+
+  it("saves a Marketing Copilot tab to the copilot's bookmarks with the Google account it is open in", async () => {
+    const { before } = tabFixture();
+    twoAccounts();
+    const second = { profileId: "google_account:second", label: "second@example.com" };
+    const own = { ...before, pages: [{ ...before.pages[0]!, account: null }, { ...before.pages[1]!, account: second }] };
+    apiMock.browserSession.mockResolvedValue(sessionResponse({ pages: own.pages, activePageId: own.activePageId }));
+    apiMock.browserPages.mockResolvedValue(own);
+    apiMock.createMarketingBookmark.mockResolvedValue({ bookmark: {} });
+    const changed = vi.fn();
+    window.addEventListener("space:marketing-bookmarks-changed", changed);
+    const { unmount } = render(<BrowserPane pane={browserPane({ mode: "MARKETING_COPILOT" })} agentNumber={4} />);
+    await waitFor(() => expect(apiMock.browserAccounts).toHaveBeenCalled());
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "Second tab · second@example.com" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save to bookmarks" }));
+    await waitFor(() => expect(apiMock.createMarketingBookmark).toHaveBeenCalledWith({ url: "https://example.com/two", title: "Second tab", profileId: "google_account:second", accountLabel: "second@example.com" }));
+    expect(await screen.findByText("Saved to Bookmarks with second@example.com.")).toBeTruthy();
+    // A tab in the pane's own account saves that account by name.
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "First tab" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save to bookmarks" }));
+    await waitFor(() => expect(apiMock.createMarketingBookmark).toHaveBeenLastCalledWith({ url: "https://example.com/one", title: "First tab", profileId: "google_account:primary", accountLabel: "primary@example.com" }));
+    expect(changed).toHaveBeenCalledTimes(2);
+    window.removeEventListener("space:marketing-bookmarks-changed", changed);
+    unmount();
+    // Other browser panes have no copilot bookmarks and keep the native context menu.
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    fireEvent.contextMenu(await screen.findByRole("tab", { name: "First tab" }));
+    expect(screen.queryByRole("menuitem", { name: "Save to bookmarks" })).toBeNull();
+  });
+
+  it.each(["BROWSER", "MARKETING_COPILOT"] as const)("with a Browser Host from before per-tab accounts, moves the %s pane's tab to a new Browser pane in the other account", async (mode) => {
+    tabFixture();
+    twoAccounts();
+    const moved = browserPane({ id: "pane:second", title: "Browser · second@example.com" });
+    apiMock.createPane.mockResolvedValue(moved);
+    apiMock.panes.mockResolvedValue({ data: [browserPane()] });
+    const view = render(<BrowserPane pane={browserPane({ mode })} agentNumber={4} />);
+    await chooseSecondAccount();
+    await waitFor(() => expect(apiMock.closeBrowserPage).toHaveBeenCalledWith("pane:browser-proof", "page:one"));
+    expect(apiMock.createPane).toHaveBeenCalledWith("room:browser-proof", "Browser · second@example.com", "BROWSER",
+      { split: { parentId: "pane:browser-proof", direction: "horizontal", size: 50 } });
+    expect(apiMock.selectBrowserAccount).not.toHaveBeenCalled();
+    expect(await screen.findByRole("tab", { name: "Second tab" })).toBeTruthy();
+
+    // The new pane opens the moved tab's page in the chosen account.
+    view.unmount();
+    apiMock.selectBrowserAccount.mockResolvedValue({ selectedProfileId: "google_account:second", targetUrl: "https://www.google.com/" });
+    render(<BrowserPane pane={moved} agentNumber={5} />);
+    await waitFor(() => expect(apiMock.startBrowserSession).toHaveBeenCalledWith("pane:second", expect.objectContaining({ targetUrl: "https://example.com/one" })));
+    expect(apiMock.selectBrowserAccount).toHaveBeenCalledWith("pane:second", "google_account:second");
+  });
+
+  it("switches the whole Freelance Copilot browser, whose tabs must keep the platform egress route", async () => {
+    tabFixture();
+    twoAccounts();
+    apiMock.selectBrowserAccount.mockResolvedValue({ selectedProfileId: "google_account:second", targetUrl: "https://www.google.com/" });
+    render(<BrowserPane pane={browserPane({ mode: "FREELANCE_COPILOT" })} agentNumber={4} />);
+    await chooseSecondAccount();
+    await waitFor(() => expect(apiMock.selectBrowserAccount).toHaveBeenCalledWith("pane:browser-proof", "google_account:second"));
+    expect(apiMock.createPane).not.toHaveBeenCalled();
+  });
+
   it("reloads the page and restarts a stuck browser on the page it showed", async () => {
     const { before } = tabFixture();
     // The active page is a sign-in popup that closed itself; the tab list still has the page that opened it.
@@ -1109,6 +1296,18 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith(
       "pane:browser-proof",
       expect.objectContaining({ type: "KEY", eventType: "char", text: "captcha answer", leaseId: "lease:operator" })
+    ));
+    // The emptied box passes Enter and Backspace to the page.
+    const textBox = screen.getByLabelText("Browser text input Research Browser");
+    fireEvent.keyDown(textBox, { key: "Enter" });
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith(
+      "pane:browser-proof",
+      expect.objectContaining({ type: "KEY", eventType: "keyDown", key: "Enter", text: "\r" })
+    ));
+    fireEvent.keyDown(textBox, { key: "Backspace" });
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith(
+      "pane:browser-proof",
+      expect.objectContaining({ type: "KEY", eventType: "keyUp", key: "Backspace" })
     ));
     fireEvent.click(screen.getByRole("button", { name: "Release browser control Research Browser" }));
     await waitFor(() => expect(apiMock.releaseBrowserControl).toHaveBeenCalledWith("pane:browser-proof", { leaseId: "lease:operator" }));
@@ -1529,6 +1728,34 @@ describe("BrowserPane", () => {
     }));
     expect((await screen.findByRole("alert")).textContent).toContain("Browser input could not be dispatched");
     expect(apiMock.browserInput).not.toHaveBeenCalled();
+  });
+
+  it("closes the frame stream while the page is hidden and reconnects with a fresh ticket when it shows", async () => {
+    apiMock.browserSession.mockResolvedValue(streamingSessionResponse());
+    apiMock.browserStreamTicket
+      .mockResolvedValueOnce({ websocket: streamTicket(1) })
+      .mockResolvedValueOnce({ websocket: streamTicket(2) });
+    apiMock.browserStreamWebSocketUrl.mockImplementation((ticket: { token: string }) => `ws://space.test/browser?token=${ticket.token}`);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+      await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(1));
+      const first = MockBrowserWebSocket.instances[0]!;
+      await waitFor(() => expect(first.readyState).toBe(MockBrowserWebSocket.OPEN));
+
+      visibility.mockReturnValue("hidden");
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      expect(first.readyState).toBe(MockBrowserWebSocket.CLOSED);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(MockBrowserWebSocket.instances).toHaveLength(1);
+
+      visibility.mockReturnValue("visible");
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      await waitFor(() => expect(MockBrowserWebSocket.instances).toHaveLength(2));
+      expect(MockBrowserWebSocket.instances[1]!.url).toContain("browser-stream-ticket-2-test-value");
+    } finally {
+      visibility.mockRestore();
+    }
   });
 
   it("fetches a fresh one-time stream ticket before reconnecting and never replays timed-out input through REST", async () => {

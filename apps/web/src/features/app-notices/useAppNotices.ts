@@ -44,6 +44,8 @@ export function useAppNotices(): AppNotices {
 
   const showLiveDebug = useCallback((message: string, type: LiveDebugTone = "info") => {
     console.log(`[AI-Live-Debug][${type.toUpperCase()}] ${message}`);
+    // Progress notes ("button tapped", "pane opened") stay in the console; only failures reach the screen.
+    if (type !== "error") return;
     if (liveDebugTimerRef.current !== null) window.clearTimeout(liveDebugTimerRef.current);
     setLiveDebugToast({ id: Date.now(), message, type });
     liveDebugTimerRef.current = window.setTimeout(() => {

@@ -8,6 +8,8 @@ export const WARM_ROOM_CONNECTED_PANE_LIMIT_STORAGE_KEY =
 export const DEFAULT_WARM_ROOM_CONNECTED_PANE_LIMIT = 96;
 export const MIN_WARM_ROOM_CONNECTED_PANE_LIMIT = 6;
 export const MAX_WARM_ROOM_CONNECTED_PANE_LIMIT = 96;
+// Operator-approved 2026-10-16: a phone keeps at most 24 connected panes warm (battery and memory); six rooms still apply.
+export const MOBILE_WARM_ROOM_CONNECTED_PANE_LIMIT = 24;
 
 export function readStoredWarmRoomEnabled(): boolean {
   if (typeof window === "undefined") return DEFAULT_WARM_ROOM_ENABLED;

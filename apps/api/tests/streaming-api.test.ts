@@ -126,6 +126,44 @@ describe("Streaming admin API", () => {
     expect(response.json().error.code).toBe("MODEL_UNAVAILABLE");
     const status = await app.inject({ method: "GET", url: "/api/admin/streaming/bot/status", headers: authHeaders("ADMIN") });
     expect(status.json().enabled).toBe(false);
+    const checklist = status.json().setup as Array<{ id: string; ok: boolean; hint: string | null }>;
+    expect(checklist.map(item => item.id)).toEqual(["llm-key", "model", "chat", "worker"]);
+    expect(checklist.find(item => item.id === "llm-key")).toMatchObject({ ok: false, hint: expect.stringContaining("_KEY_FILE") });
+  });
+
+  it("pauses even when the selected model left the catalog and keeps bot error codes on every route", async () => {
+    const { app, botRepository } = await setup();
+    const headers = authHeaders("ADMIN");
+    const current = await botRepository.getSettings();
+    await botRepository.updateSettings({ expectedVersion: current.version, updatedBy: "test", updatedAt: new Date().toISOString(),
+      settings: { ...current, enabled: true, modelSelection: { kind: "API", providerId: "gone", modelId: "gone-model" } } as never });
+    const paused = await app.inject({ method: "POST", url: "/api/admin/streaming/bot/pause", headers, payload: {} });
+    expect(paused.statusCode).toBe(200);
+    expect((await botRepository.getSettings()).enabled).toBe(false);
+    const memory = await app.inject({ method: "POST", url: "/api/admin/streaming/bot/memory", headers,
+      payload: { title: "Contact", body: "Write to person@example.com" } });
+    expect(memory.statusCode).toBe(400);
+    expect(memory.json().error.code).toBe("PRIVATE_MEMORY_BLOCKED");
+  });
+
+  it("names the moderated viewer from chat activity and times out only items waiting for review", async () => {
+    const { app, botRepository } = await setup();
+    const headers = authHeaders("ADMIN");
+    const now = new Date().toISOString();
+    const incoming = await botRepository.appendActivity({ id: "activity:in-1", platform: "TWITCH", accountId: "account-1", channelId: "chat-1",
+      authorId: "viewer-1", messageId: "message-1", protectedAccount: false, direction: "IN", author: "viewer", message: "maybe rude", reply: null,
+      status: "SKIPPED", createdAt: now });
+    const base = { platform: "TWITCH" as const, accountId: "account-1", channelId: "chat-1", userId: "viewer-1", durationSeconds: null, platformActionId: null, safeErrorCode: null };
+    await botRepository.recordModerationAction({ ...base, id: "moderation:review", messageId: "message-1", decision: "REVIEW", reason: "AMBIGUOUS", result: "REVIEW" });
+    await botRepository.recordModerationAction({ ...base, id: "moderation:warn", messageId: "message-2", decision: "WARN", reason: "ABUSE", result: "SUCCEEDED" });
+    const list = await app.inject({ method: "GET", url: "/api/admin/streaming/bot/moderation", headers });
+    expect(list.json().actions.find((item: { id: string }) => item.id === "moderation:review"))
+      .toMatchObject({ author: "viewer", message: "maybe rude", activityId: incoming.id });
+    const warned = await app.inject({ method: "POST", url: "/api/admin/streaming/bot/moderation/moderation:warn/timeout", headers, payload: { durationSeconds: 300 } });
+    expect([warned.statusCode, warned.json().error.code]).toEqual([409, "ACTION_NOT_IN_REVIEW"]);
+    const review = await app.inject({ method: "POST", url: "/api/admin/streaming/bot/moderation/moderation:review/timeout", headers, payload: { durationSeconds: 300 } });
+    expect([review.statusCode, review.json().error.code]).toEqual([409, "ACCOUNT_UNAVAILABLE"]);
+    expect((await botRepository.getModerationAction("moderation:review"))?.result).toBe("REVIEW");
   });
 
   it("rejects private facts in settings before they can reach the public bot", async () => {

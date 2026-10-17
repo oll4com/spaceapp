@@ -2406,7 +2406,7 @@ class FakePgClient implements PgClientLike {
     if (sql.includes("FROM browser_capture_segments")) {
       return { rows: [], rowCount: 0 };
     }
-    if (sql.includes("FROM browser_handoff_requests")) {
+    if (sql.includes("FROM browser_handoff_requests") || sql.includes("UPDATE browser_handoff_requests")) {
       return { rows: [], rowCount: 0 };
     }
     if (sql.includes("pane_cli_sessions") && sql.includes("first_input")) {

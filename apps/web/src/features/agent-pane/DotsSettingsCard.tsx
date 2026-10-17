@@ -5,15 +5,16 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { DotChannels } from "./DotChannels.js";
 import { DotConnections } from "./DotConnections.js";
 import { DotEvaluationSection } from "./DotEvaluation.js";
-import { dotArtwork } from "./DotHeader.js";
+import { DotAvatar } from "./DotAvatar.js";
 import { DotPanels } from "./DotPanels.js";
+import { DotPersonalityPanel } from "./DotPersonality.js";
 import { DotModelSelect, DotProfileForm } from "./DotSettings.js";
 import { announceDotsUpdated, type DotSettingsSection } from "./dot-home-events.js";
 import { claimSettingsRequest } from "../settings/SettingsDisclosure.js";
 import { ChevronRight } from "../ui-theme/app-icons.js";
 import "./dots-chat.css";
 
-type DotTab = "Profile" | "Reminders and goals" | "Memory" | "Tools" | "Activity" | "Evaluation";
+type DotTab = "Profile" | "Personality" | "Reminders and goals" | "Memory" | "Tools" | "Activity" | "Evaluation";
 const tabForSection: Partial<Record<DotSettingsSection, DotTab>> = { profile: "Profile", reminders: "Reminders and goals", memory: "Memory", tools: "Tools",
   evaluation: "Evaluation" };
 export interface DotSettingsRequest { dotId?: string; section?: DotSettingsSection; nonce: number }
@@ -145,7 +146,7 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
   if (!dots || !settings) return <section className="dots-settings" aria-label="Dots settings"><p role="status">Loading Dots…</p></section>;
   const slackConfigured = Boolean(channels?.providers.some((provider) => provider.provider === "SLACK" && provider.configured));
   const slackLinked = Boolean(channels?.identities.some((identity) => identity.provider === "SLACK"));
-  const tabs: DotTab[] = ["Profile", "Reminders and goals", "Memory", "Tools", "Activity", ...(isAdmin && roomId ? ["Evaluation" as const] : [])];
+  const tabs: DotTab[] = ["Profile", "Personality", "Reminders and goals", "Memory", "Tools", "Activity", ...(isAdmin && roomId ? ["Evaluation" as const] : [])];
   function moveTab(event: KeyboardEvent, index: number) {
     const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
       : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
@@ -232,12 +233,12 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
       open={openParts.has("channels")} onToggle={() => togglePart("channels")}>
       <div className="dots-settings-group"><DotChannels /></div>
     </DotsPartCard>
-    <DotsPartCard title="Each Dot" summary="One Dot's name, style, model, reminders, memory and tools."
+    <DotsPartCard title="Each Dot" summary="One Dot's name, personality, style, model, reminders, memory and tools."
       open={openParts.has("each")} onToggle={() => togglePart("each")}>
     <section className="dots-settings-group" aria-label="Each Dot">
       <div className="dots-settings-picker" role="group" aria-label="Choose a Dot to set up">
         {dots.map((dot) => <button key={dot.dotId} type="button" aria-pressed={selected?.dotId === dot.dotId} onClick={() => setSelectedId(dot.dotId)}>
-          <img src={dotArtwork(dot)} alt="" width="28" height="28" /><span>{dot.name}</span></button>)}
+          <DotAvatar character={dot.appearance.character} size={28} motion="hover" /><span>{dot.name}</span></button>)}
       </div>
       {selected ? <>
         <div className="dots-settings-tabs" role="tablist" aria-label={`${selected.name} settings`}>
@@ -247,6 +248,7 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
         <div role="tabpanel" aria-label={`${selected.name}: ${tab}`}>
           {tab === "Profile" ? <DotProfileForm key={selected.dotId} dot={selected} choices={choices}
             onSaved={(saved) => setDots((current) => current?.map((dot) => dot.dotId === saved.dotId ? saved : dot) ?? current)} />
+            : tab === "Personality" ? <DotPersonalityPanel key={selected.dotId} dot={selected} />
             : tab === "Reminders and goals" ? <>
               {sessionId ? null : <p className="dots-settings-notice">To add a reminder, open a conversation with {selected.name} in this room first.</p>}
               <DotPanels key={selected.dotId} tab="Tasks" dot={selected} session={null} sessionId={sessionId} roomId={roomId} /></>

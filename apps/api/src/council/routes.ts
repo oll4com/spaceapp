@@ -73,6 +73,11 @@ export function registerCouncilRoutes(app: FastifyInstance, service: CouncilServ
     return { run: await service.anotherRound(owner, id) };
   });
 
+  app.post("/api/council/runs/:id/clipboard-plan", routeOptions, async (request) => {
+    const { owner, id } = await target(request);
+    return { run: await service.createClipboardPlan(owner, id) };
+  });
+
   app.delete("/api/council/runs/:id", routeOptions, async (request, reply) => {
     const { owner, id } = await target(request);
     await service.remove(owner, id);

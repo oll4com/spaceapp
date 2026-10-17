@@ -56,9 +56,13 @@ export function LiveSessionProvider({ ownerId, roomId, roomName = "", children }
     notifications: { list: () => api.getPendingWatches(), ack: (room, id) => api.ackWatch(room, id), visible: () => document.visibilityState === "visible" },
     // The Room Agent's questions for the operator are spoken once; they stay in the Room Agent until answered.
     announcements: {
-      list: async () => (await api.roomAgentPending()).latest
-        .filter(event => event.status === "ESCALATED" && !announcedRoomAgentEvents.has(event.eventId))
-        .map(event => ({ id: event.eventId, roomId: event.roomId, text: `Room Agent: ${event.title}. ${event.decision ?? ""}`.trim() })),
+      list: async () => {
+        const { latest, roomNames = {} } = await api.roomAgentPending();
+        // Named: the operator may be in another room ("Room Agent: Emma stopped" was heard as an agent called Emma).
+        return latest.filter(event => event.status === "ESCALATED" && !announcedRoomAgentEvents.has(event.eventId))
+          .map(event => ({ id: event.eventId, roomId: event.roomId, roomName: roomNames[event.roomId],
+            text: `Room Agent, room ${roomNames[event.roomId] ?? event.roomId}: ${event.title}. ${event.decision ?? ""}`.trim() }));
+      },
       ack: id => { announcedRoomAgentEvents.add(id); }
     },
     storage: typeof window === "undefined" ? undefined : window.localStorage,

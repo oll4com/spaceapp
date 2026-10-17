@@ -1,5 +1,5 @@
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
-export interface ControlRecord {kind:"operation"|"layout"|"snapshot"|"schedule"|"grant"|"pane_state"|"watch"|"audit"|"settings_snapshot"; actorId:string; key:string; roomId:string; version:number; value:unknown}
+export interface ControlRecord {kind:"operation"|"layout"|"snapshot"|"schedule"|"grant"|"pane_state"|"watch"|"audit"|"settings_snapshot"|"release_train"; actorId:string; key:string; roomId:string; version:number; value:unknown}
 export interface ControlRepository {
   get(kind:ControlRecord["kind"],actorId:string,key:string):Promise<ControlRecord|null>;
   list(kind:ControlRecord["kind"],actorId:string|null,roomId?:string):Promise<ControlRecord[]>;

@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildInstallPing,
+  createInstallFunnel,
+  describeOsVersion,
+  installFunnelFacts,
   isInstallPingAllowed,
   normalizeOs,
-  reportFirstInstallPing,
   sendInstallPing,
   telemetryEnvPreference
 } from "../src/telemetry.mjs";
@@ -90,49 +92,30 @@ test("sendInstallPing returns false when no request implementation exists", asyn
   assert.equal(sent, false);
 });
 
-test("reportFirstInstallPing only pings fresh installs whose owner agreed", async () => {
-  const calls = [];
-  const fakeRequest = async () => {
-    calls.push(1);
-    return { ok: true, status: 204 };
-  };
-  const base = {
-    consent: true,
-    env: {},
-    platform: "linux",
-    arch: "x64",
-    launcherVersion: "0.1.17",
-    runtimeVersion: "0.1.17"
-  };
-  const fresh = await reportFirstInstallPing(base, { request: fakeRequest });
-  assert.ok(fresh);
-  assert.equal(calls.length, 1);
+test("describeOsVersion names the distribution, macOS or Windows version with safe characters only", () => {
+  assert.equal(describeOsVersion("linux", { readOsRelease: () => 'NAME="Ubuntu"\nID=ubuntu\nVERSION_ID="24.04"\n' }), "ubuntu 24.04");
+  assert.equal(describeOsVersion("linux", { osRelease: "6.12.95+deb13-amd64", readOsRelease: () => { throw new Error("none"); } }), "linux 6.12.95+deb13-amd64");
+  assert.equal(describeOsVersion("darwin", { osRelease: "24.1.0" }), "macOS 15.1");
+  assert.equal(describeOsVersion("win32", { osRelease: "10.0.26100" }), "Windows 11 (10.0.26100)");
+  assert.equal(describeOsVersion("win32", { osRelease: "10.0.19045" }), "Windows 10 (10.0.19045)");
+  assert.equal(describeOsVersion("linux", { readOsRelease: () => 'ID="evil;rm"\nVERSION_ID="1/2"' }), "evilrm 12");
+});
 
-  const reinstall = await reportFirstInstallPing(
-    { ...base, existingConfig: { version: "0.1.14" } },
-    { request: fakeRequest }
-  );
-  assert.equal(reinstall, null);
-  assert.equal(calls.length, 1);
-
-  const declined = await reportFirstInstallPing(
-    { ...base, consent: false },
-    { request: fakeRequest }
-  );
-  assert.equal(declined, null);
-  assert.equal(calls.length, 1);
-
-  const notAsked = await reportFirstInstallPing(
-    { ...base, consent: undefined },
-    { request: fakeRequest }
-  );
-  assert.equal(notAsked, null);
-  assert.equal(calls.length, 1);
-
-  const optedOut = await reportFirstInstallPing(
-    { ...base, env: { SPACEAPP_TELEMETRY: "0" } },
-    { request: fakeRequest }
-  );
-  assert.equal(optedOut, null);
-  assert.equal(calls.length, 1);
+test("the install funnel links its events by install id and sends the facts only with install_started", async () => {
+  const bodies = [];
+  const request = async (_url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 204 }; };
+  let now = 1_000;
+  const facts = installFunnelFacts({ platform: "linux", resources: { cpuCount: 8, totalMemoryBytes: 16 * 2 ** 30 }, profile: "light", accessMode: "isolated" },
+    { readOsRelease: () => "ID=debian\nVERSION_ID=13" });
+  assert.deepEqual(facts, { os_version: "debian 13", cpus: 8, ram_gb: 16, profile: "light", access: "isolated" });
+  assert.equal(installFunnelFacts({ platform: "linux", resources: { cpuCount: 0 } }).cpus, undefined);
+  const report = createInstallFunnel({ installId: "abcdefgh-1234", platform: "linux", arch: "x64", launcherVersion: "1.1.6", runtimeVersion: "1.1.6", facts, request, now: () => now });
+  assert.equal(await report("install_started"), true);
+  now += 95_400;
+  assert.equal(await report("install_failed", { stage: "pull" }), true);
+  assert.deepEqual(bodies.map((body) => [body.event, body.install_id, body.cpus, body.stage, body.duration_s]),
+    [["install_started", "abcdefgh-1234", 8, undefined, undefined], ["install_failed", "abcdefgh-1234", undefined, "pull", 95]]);
+  assert.notEqual(bodies[0].uid, bodies[1].uid);
+  const offline = createInstallFunnel({ installId: "abcdefgh-1234", platform: "linux", request: async () => { throw new Error("offline"); } });
+  assert.equal(await offline("install_completed"), false);
 });

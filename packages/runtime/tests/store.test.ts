@@ -933,6 +933,30 @@ describe("InMemorySpaceStore", () => {
     expect(store.updateBrowserControlLease(lease.leaseId, { ttlSeconds: 60 }).heartbeatAt).not.toBeNull();
     expect(store.updateBrowserControlLease(lease.leaseId, { status: "RELEASED" }).releasedAt).not.toBeNull();
     expect(store.getPaneBrowserSession(session.sessionId)?.controlState).toBe("UNCONTROLLED");
+
+    // A request past its TTL is EXPIRED, never reported as active; an accepted one stays while its lease is alive.
+    const handoffs = (store as unknown as { browserHandoffRequests: Map<string, { expiresAt: string }> }).browserHandoffRequests;
+    const backdate = (id: string) => handoffs.set(id, { ...handoffs.get(id)!, expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const untaken = store.createBrowserHandoffRequest({
+      sessionId: session.sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "agent:test-1", reason: "CAPTCHA nobody took."
+    });
+    backdate(untaken.handoffRequestId);
+    expect(store.getActiveBrowserHandoffRequest(session.sessionId)).toBeNull();
+    expect(store.getBrowserHandoffRequest(untaken.handoffRequestId)?.status).toBe("EXPIRED");
+    const heldLease = store.createBrowserControlLease({
+      sessionId: session.sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR", holderId: "user:test-1", reason: "Long login", ttlSeconds: 60
+    });
+    const held = store.createBrowserHandoffRequest({
+      sessionId: session.sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "agent:test-1", reason: "LOGIN on the phone."
+    });
+    store.updateBrowserHandoffRequest(held.handoffRequestId, {
+      status: "ACCEPTED", operatorUserId: "user:test-1", operatorEmail: "operator@example.com", operatorRole: "OPERATOR", controlLeaseId: heldLease.leaseId
+    });
+    backdate(held.handoffRequestId);
+    expect(store.getActiveBrowserHandoffRequest(session.sessionId)).toMatchObject({ handoffRequestId: held.handoffRequestId, status: "ACCEPTED" });
+    store.updateBrowserControlLease(heldLease.leaseId, { status: "RELEASED" });
+    expect(store.getActiveBrowserHandoffRequest(session.sessionId)).toBeNull();
+    expect(store.getBrowserHandoffRequest(held.handoffRequestId)?.status).toBe("EXPIRED");
     expect(store.updateBrowserCaptureJob(job.jobId, { status: "RUNNING", progressPercent: 25 })).toMatchObject({
       status: "RUNNING",
       progressPercent: 25,

@@ -1,0 +1,111 @@
+/* Animated Dots. Idle and mood motion runs on the HTML wrapper (compositor transform); inner SVG parts move only
+   for a mood that shows them. data-motion="off" pauses everything, "hover" moves only under the pointer. */
+.dot-avatar { position: relative; display: inline-flex; flex-shrink: 0; line-height: 0; transform-origin: 50% 88%; }
+.dot-avatar svg { display: block; overflow: visible; }
+.dot-avatar :is(.dot-av-eye, .dot-av-arm, .dot-av-tail, .dot-av-antenna, .dot-av-fx g, .dot-fx-scan, .dot-fx-halo) {
+  transform-box: fill-box; transform-origin: center;
+}
+.dot-avatar .dot-av-eye { transition: transform 70ms ease-out; }
+.dot-avatar[data-blink="true"] .dot-av-eye { transform: scaleY(.12); }
+.dot-avatar .dot-av-blush { transition: opacity .4s ease; }
+
+/* Each Dot idles its own way. */
+.dot-avatar[data-character="astronaut"] { animation: dot-float 6.4s ease-in-out infinite; }
+.dot-avatar[data-character="star"] { animation: dot-twinkle 3.2s ease-in-out infinite; }
+.dot-avatar[data-character="robot"] { animation: dot-step 2.4s steps(2, jump-none) infinite; }
+.dot-avatar[data-character="comet"] { animation: dot-zip 2.6s ease-in-out infinite; }
+.dot-avatar[data-character="moon"] { animation: dot-rock 7.5s ease-in-out infinite; }
+.dot-avatar[data-character="planet"] { animation: dot-tilt 8s ease-in-out infinite; }
+
+/* Moods. */
+.dot-avatar[data-mood="happy"] { animation: dot-bounce 1s ease-in-out infinite; }
+.dot-avatar[data-mood="adoring"] { animation: dot-love 1.6s ease-in-out infinite; }
+.dot-avatar[data-mood="excited"] { animation: dot-jump .75s ease-out infinite; }
+.dot-avatar[data-mood="excited"][data-character="star"] { animation: dot-spin-hop 1.5s ease-in-out infinite; }
+.dot-avatar[data-mood="excited"][data-character="comet"] { animation: dot-dash .9s ease-in-out infinite; }
+.dot-avatar[data-mood="proud"] { animation: dot-puff 2s ease-in-out infinite; }
+.dot-avatar[data-mood="amused"] { animation: dot-chuckle .9s ease-in-out infinite; }
+.dot-avatar[data-mood="focused"] { animation: dot-lean 2.6s ease-in-out infinite; }
+.dot-avatar[data-mood="thinking"] { animation: dot-ponder 3.2s ease-in-out infinite; }
+.dot-avatar[data-mood="waiting"] { animation: dot-peek 2.2s ease-in-out infinite; }
+.dot-avatar[data-mood="cool"] { animation: dot-aloof 6s ease-in-out infinite; }
+.dot-avatar[data-mood="worried"] { animation: dot-tremble .4s linear infinite; }
+.dot-avatar[data-mood="surprised"] { animation: dot-startle .5s ease-out 1; }
+.dot-avatar[data-mood="sleepy"] { animation: dot-doze 4.5s ease-in-out infinite; }
+.dot-avatar[data-mood="comforting"] { animation: dot-nuzzle 2.2s ease-in-out infinite; }
+.dot-avatar[data-mood="working"][data-character="astronaut"] { animation: dot-float 2.8s ease-in-out infinite; }
+.dot-avatar[data-mood="working"][data-character="star"] { animation: dot-twinkle 1.2s ease-in-out infinite; }
+.dot-avatar[data-mood="working"][data-character="robot"] { animation: dot-buzz .3s steps(2, jump-none) infinite; }
+.dot-avatar[data-mood="working"][data-character="comet"] { animation: dot-zip 1s ease-in-out infinite; }
+.dot-avatar[data-mood="working"][data-character="moon"] { animation: dot-rock 4s ease-in-out infinite; }
+.dot-avatar[data-mood="working"][data-character="planet"] { animation: dot-tilt 3s ease-in-out infinite; }
+
+/* Parts that move: Orbit and Byte wave, Byte's antenna lights up, Comet's tail streams. */
+.dot-avatar[data-character="astronaut"] .dot-av-arm { transform-origin: 10% 78%; }
+.dot-avatar[data-character="robot"] .dot-av-arm { transform-origin: 0 0; }
+.dot-avatar[data-character="comet"] .dot-av-tail { transform-origin: 0 100%; }
+.dot-avatar:is([data-mood="happy"], [data-mood="proud"], [data-mood="excited"]) .dot-av-arm { animation: dot-wave .5s ease-in-out infinite alternate; }
+.dot-avatar[data-character="robot"]:is([data-mood="working"], [data-mood="waiting"], [data-mood="excited"], [data-mood="focused"]) .dot-av-antenna {
+  animation: dot-led .9s steps(1, end) infinite;
+}
+.dot-avatar[data-character="comet"]:is([data-mood="excited"], [data-mood="working"], [data-mood="happy"], [data-mood="focused"]) .dot-av-tail {
+  animation: dot-flutter .45s ease-in-out infinite alternate;
+}
+
+/* Effects. */
+.dot-fx-twinkle { animation: dot-fx-twinkle 1.4s ease-in-out infinite; }
+.dot-fx-rise { animation: dot-fx-rise 1.8s ease-out infinite; }
+.dot-fx-rise.slow { animation-duration: 3s; }
+.dot-fx-drip { animation: dot-fx-drip 1.6s ease-in infinite; }
+.dot-fx-dot { animation: dot-fx-dot 1.2s ease-in-out infinite; }
+.dot-fx-pop { animation: dot-fx-pop 1.6s ease-in-out infinite; }
+.dot-avatar .dot-fx-orbit { transform-box: view-box; transform-origin: 160px 151px; animation: dot-fx-orbit 5s linear infinite; }
+.dot-fx-scan { animation: dot-fx-scan 1.4s ease-in-out infinite alternate; }
+.dot-fx-halo { animation: dot-fx-halo 2s ease-in-out infinite; }
+
+/* Hover greets with each Dot's signature move ("hover" avatars stay still otherwise). */
+.dot-avatar[data-motion="hover"] { animation: none; }
+:is(.dots-choice-menu button, .dots-identity, .dots-settings-picker button):is(:hover, :focus-visible) .dot-avatar { animation: dot-jump .7s ease-out 1; }
+:is(.dots-choice-menu button, .dots-identity, .dots-settings-picker button):is(:hover, :focus-visible) .dot-avatar[data-character="star"] { animation: dot-spin-hop 1.2s ease-in-out 1; }
+:is(.dots-choice-menu button, .dots-identity, .dots-settings-picker button):is(:hover, :focus-visible) .dot-avatar[data-character="comet"] { animation: dot-dash .9s ease-in-out 1; }
+:is(.dots-choice-menu button, .dots-identity, .dots-settings-picker button):is(:hover, :focus-visible) .dot-avatar[data-character="moon"] { animation: dot-aloof 2.4s ease-in-out 1; }
+:is(.dots-choice-menu button, .dots-identity, .dots-settings-picker button):is(:hover, :focus-visible) .dot-avatar .dot-av-arm { animation: dot-wave .45s ease-in-out 4 alternate; }
+
+.dot-avatar[data-motion="off"], .dot-avatar[data-motion="off"] * { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  .dot-avatar, .dot-avatar * { animation: none !important; transition: none !important; }
+}
+
+@keyframes dot-float { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-6%) rotate(2deg); } }
+@keyframes dot-twinkle { 0%, 100% { transform: scale(1) rotate(0); } 30% { transform: scale(1.05) rotate(-4deg); } 60% { transform: scale(.98) rotate(3deg); } }
+@keyframes dot-step { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3%); } }
+@keyframes dot-zip { 0%, 100% { transform: translateX(-4%) rotate(-3deg); } 50% { transform: translateX(4%) rotate(2deg); } }
+@keyframes dot-rock { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(5deg); } }
+@keyframes dot-tilt { 0%, 100% { transform: rotate(-4deg) translateY(0); } 50% { transform: rotate(4deg) translateY(-3%); } }
+@keyframes dot-bounce { 0%, 100% { transform: translateY(0) scale(1); } 40% { transform: translateY(-9%) scale(1.03, .98); } 70% { transform: translateY(0) scale(1.04, .95); } }
+@keyframes dot-love { 0%, 100% { transform: rotate(-5deg) scale(1); } 50% { transform: rotate(5deg) scale(1.07); } }
+@keyframes dot-jump { 0%, 100% { transform: translateY(0) scale(1); } 15% { transform: translateY(0) scale(1.08, .9); } 45% { transform: translateY(-16%) scale(.96, 1.06); } 75% { transform: translateY(0) scale(1.05, .94); } }
+@keyframes dot-spin-hop { 0%, 100% { transform: translateY(0) rotate(0); } 45% { transform: translateY(-14%) rotate(180deg); } 90% { transform: translateY(0) rotate(360deg); } }
+@keyframes dot-dash { 0%, 100% { transform: translateX(0) skewX(0); } 30% { transform: translateX(-8%) skewX(8deg); } 60% { transform: translateX(10%) skewX(-10deg); } }
+@keyframes dot-puff { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08) translateY(-3%); } }
+@keyframes dot-chuckle { 0%, 100% { transform: translateY(0) rotate(0); } 20%, 60% { transform: translateY(-3%) rotate(-3deg); } 40%, 80% { transform: translateY(0) rotate(3deg); } }
+@keyframes dot-lean { 0%, 100% { transform: rotate(0) scale(1); } 50% { transform: rotate(-3deg) scale(1.03); } }
+@keyframes dot-ponder { 0%, 100% { transform: rotate(0); } 30%, 70% { transform: rotate(8deg) translateY(-2%); } }
+@keyframes dot-peek { 0%, 100% { transform: translateY(0) rotate(0); } 25% { transform: translateY(-6%) rotate(-5deg); } 50% { transform: translateY(0); } 75% { transform: translateY(-6%) rotate(5deg); } }
+@keyframes dot-aloof { 0%, 100% { transform: translateX(4%) rotate(7deg) scale(.96); } 50% { transform: translateX(6%) rotate(10deg) scale(.95); } }
+@keyframes dot-tremble { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-2.5%); } 75% { transform: translateX(2.5%); } }
+@keyframes dot-startle { 0% { transform: translateY(0) scale(1); } 30% { transform: translateY(-14%) scale(1.1); } 100% { transform: translateY(0) scale(1); } }
+@keyframes dot-doze { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(4%) rotate(-9deg); } }
+@keyframes dot-nuzzle { 0%, 100% { transform: rotate(0) scale(1); } 50% { transform: rotate(-8deg) translateX(-4%) scale(1.05); } }
+@keyframes dot-buzz { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(1.5%, -1.5%); } }
+@keyframes dot-wave { from { transform: rotate(-16deg); } to { transform: rotate(12deg); } }
+@keyframes dot-led { 0% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes dot-flutter { from { transform: skewY(-5deg) rotate(-3deg); } to { transform: skewY(4deg) rotate(2deg); } }
+@keyframes dot-fx-twinkle { 0%, 100% { transform: scale(.3) rotate(0); opacity: .2; } 50% { transform: scale(1.1) rotate(45deg); opacity: 1; } }
+@keyframes dot-fx-rise { 0% { transform: translateY(8px) scale(.6); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(-30px) scale(1); opacity: 0; } }
+@keyframes dot-fx-drip { 0% { transform: translateY(-4px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(14px); opacity: 0; } }
+@keyframes dot-fx-dot { 0%, 80%, 100% { transform: translateY(0); opacity: .35; } 40% { transform: translateY(-8px); opacity: 1; } }
+@keyframes dot-fx-pop { 0%, 100% { transform: scale(1) rotate(0); } 50% { transform: scale(1.15) rotate(-8deg); } }
+@keyframes dot-fx-orbit { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+@keyframes dot-fx-scan { from { transform: translateY(0); } to { transform: translateY(46px); } }
+@keyframes dot-fx-halo { 0%, 100% { opacity: .7; transform: scale(.95); } 50% { opacity: 1; transform: scale(1.04); } }

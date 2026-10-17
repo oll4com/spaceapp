@@ -37,8 +37,27 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
       category: reasonCode ? categorizeFailureCode(reasonCode) : null
     };
   });
-  // Newest classified failure first: the store returns events newest first.
+  const agentRuns = (records.agentRuns ?? []).map((run) => {
+    const errorCode = isSafeErrorCode(run.errorCode) ? run.errorCode : null;
+    return {
+      runId: run.runId,
+      workflowId: run.workflowId,
+      status: run.status,
+      errorCode,
+      category: errorCode ? categorizeFailureCode(errorCode) : null,
+      createdAt: run.createdAt,
+      completedAt: run.completedAt ?? null,
+      continuationOf: identifier(run.continuationOf)
+    };
+  });
+  const safeCode = (code: string | null) => (isSafeErrorCode(code) ? code : null);
+  const roomAgentMissions = (records.roomAgentMissions ?? []).map((mission) => ({ ...mission, errorCode: safeCode(mission.errorCode) }));
+  const roomAgentTaskRuns = (records.roomAgentTaskRuns ?? []).map((run) => ({ ...run, errorCode: safeCode(run.errorCode) }));
+  // Newest classified failure first: the store returns events newest first. A failed agent run's code is the
+  // cause when no event carries one (workflow-level faults that never became an event), then a failed mission's.
   const failure = events.find((event) => event.reasonCode);
+  const failedRun = failure ? undefined : agentRuns.find((run) => run.status === "FAILED" && run.errorCode);
+  const failedMission = failure || failedRun ? undefined : roomAgentMissions.find((mission) => mission.status === "FAILED" && mission.errorCode);
   return traceLookupResponseSchema.parse({
     traceId,
     causalError: failure
@@ -50,7 +69,28 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
           workflowId: failure.workflowId,
           at: failure.createdAt
         }
-      : null,
+      : failedRun
+        ? {
+            code: failedRun.errorCode!,
+            category: failedRun.category!,
+            source: "agent-run",
+            eventId: failedRun.runId,
+            workflowId: failedRun.workflowId,
+            at: failedRun.completedAt ?? failedRun.createdAt
+          }
+        : failedMission
+          ? {
+              code: failedMission.errorCode!,
+              category: categorizeFailureCode(failedMission.errorCode!),
+              source: "room-agent-mission",
+              eventId: failedMission.missionId,
+              workflowId: null,
+              at: failedMission.completedAt ?? failedMission.queuedAt
+            }
+          : null,
+    agentRuns,
+    roomAgentMissions,
+    roomAgentTaskRuns,
     events,
     auditEvents: records.auditEvents.map((audit) => ({
       id: audit.id,

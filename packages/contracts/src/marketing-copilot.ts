@@ -445,6 +445,29 @@ export const marketingPostMetricsRecordSchema = z.object({
   metrics: z.record(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), z.number().min(0).max(1e12)).refine((value) => Object.keys(value).length > 0 && Object.keys(value).length <= 12, "Report 1 to 12 metrics.")
 }).strict();
 
+// ---- bookmarks -------------------------------------------------------------------------------------
+/** A page the pane browser opens in a new tab with one Google account (operator request 2026-10-16); null: the pane's own. */
+export const marketingBookmarkIdSchema = idOf("mktbm");
+const bookmarkUrlSchema = z.string().trim().max(2048).url().refine((url) => /^https?:\/\//i.test(url), "Use an http or https address.");
+export const marketingBookmarkSchema = z.object({
+  id: marketingBookmarkIdSchema,
+  ownerUserId: z.string().min(1).max(200),
+  title: z.string().min(1).max(200),
+  url: bookmarkUrlSchema,
+  profileId: z.string().min(1).max(200).nullable(),
+  /** The account's address as the operator chose it, so the list and the agent name it without the account list. */
+  accountLabel: z.string().min(1).max(320).nullable(),
+  createdAt: isoDateTime
+}).strict();
+export type MarketingBookmark = z.infer<typeof marketingBookmarkSchema>;
+export const marketingBookmarkCreateSchema = z.object({
+  url: bookmarkUrlSchema,
+  title: z.string().trim().min(1).max(200).optional(),
+  profileId: z.string().trim().min(1).max(200).nullable().default(null),
+  accountLabel: z.string().trim().min(1).max(320).nullable().default(null)
+}).strict();
+export type MarketingBookmarkCreate = z.infer<typeof marketingBookmarkCreateSchema>;
+
 // ---- campaign templates ---------------------------------------------------------------------------
 /**
  * Ready campaign plans the operator starts from the Posts tab (the agent's playbooks in the skill's

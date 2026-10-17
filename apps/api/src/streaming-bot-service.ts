@@ -5,9 +5,11 @@ import {
   asksForOperatorPrivateData,
   containsSensitiveDisclosure,
   truncateReply,
+  dedicatedCredentialReady,
   resolveStreamingBotModel,
   streamingBotModelOptions,
   StreamingCredentialStore,
+  StreamingProviderError,
   StreamingTokenManager,
   TwitchChatConnector,
   YouTubeChatConnector,
@@ -26,6 +28,7 @@ import {
 } from "@space/db";
 import {
   defaultStreamingBotSettings,
+  instanceBackgroundJobEnabled,
   streamingBotMcpExecuteResponseSchema,
   type StreamingBotActivity,
   type StreamingBotMcpExecuteResponse,
@@ -38,11 +41,23 @@ import {
   type UpdateStreamingBotSettingsInput
 } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
+import { StreamingServiceError } from "./streaming-service.js";
 
-export class StreamingBotServiceError extends Error {
-  constructor(readonly code: string, message: string, readonly statusCode: number) {
-    super(message);
+/** A StreamingServiceError, so the composition root's error handler keeps its code and status on every bot route. */
+export class StreamingBotServiceError extends StreamingServiceError {
+  constructor(code: string, message: string, statusCode: number) {
+    super(code, message, statusCode);
     this.name = "StreamingBotServiceError";
+  }
+}
+
+/** A platform refusal becomes a 502 with the platform's code instead of an INTERNAL_ERROR. */
+async function platformCall<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof StreamingProviderError) throw new StreamingBotServiceError(error.code, "The streaming platform rejected the request.", 502);
+    throw error;
   }
 }
 
@@ -69,8 +84,7 @@ export class StreamingBotService {
   }
 
   async modelOptions() {
-    const [providers, models] = await Promise.all([this.options.store.listProviders(), this.options.store.listModels()]);
-    return streamingBotModelOptions(providers, models, getStreamingBotLlmConfig());
+    return streamingBotModelOptions(getStreamingBotLlmConfig());
   }
 
   async updateSettings(input: UpdateStreamingBotSettingsInput, updatedBy: string): Promise<StreamingBotSettings> {
@@ -80,18 +94,20 @@ export class StreamingBotService {
     if (containsSensitiveDisclosure(publicPolicyText)) {
       throw new StreamingBotServiceError("PRIVATE_SETTINGS_BLOCKED", "Streaming bot settings must contain only public, non-personal information.", 400);
     }
-    const [providers, models] = await Promise.all([this.options.store.listProviders(), this.options.store.listModels()]);
+    const config = getStreamingBotLlmConfig();
     if (input.enabled) {
-      const selection = resolveStreamingBotModel(input.modelSelection, providers, models, getStreamingBotLlmConfig());
-      if (!selection.modelId) throw new StreamingBotServiceError("MODEL_UNAVAILABLE", "A verified dedicated Streaming key and selected model are required before replies can be enabled.", 409);
+      const selection = resolveStreamingBotModel(input.modelSelection, config);
+      if (!selection.modelId) throw new StreamingBotServiceError("MODEL_UNAVAILABLE", "The bot's Space Gateway key and a selected model are required before replies can be enabled.", 409);
     }
     for (const selection of [input.modelSelection, input.fallbackModelSelection]) {
-      if (!selection) continue;
-      if (!models.some(model => model.id === selection.modelId && model.providerId === selection.providerId) ||
-          !providers.some(provider => provider.id === selection.providerId)) {
-        throw new StreamingBotServiceError("MODEL_NOT_IN_CATALOG", "Selected model is not in the Space catalog.", 400);
+      if (selection && resolveStreamingBotModel(selection, config).errorCode === "MODEL_NOT_IN_CATALOG") {
+        throw new StreamingBotServiceError("MODEL_NOT_IN_CATALOG", "Choose one of the bot's models.", 400);
       }
     }
+    return this.saveSettings(input, updatedBy);
+  }
+
+  private async saveSettings(input: UpdateStreamingBotSettingsInput, updatedBy: string): Promise<StreamingBotSettings> {
     try {
       return await this.options.botRepository.updateSettings({
         expectedVersion: input.expectedVersion,
@@ -110,7 +126,8 @@ export class StreamingBotService {
   async setPaused(paused: boolean, updatedBy: string): Promise<StreamingBotSettings> {
     const current = await this.options.botRepository.getSettings();
     if (current.enabled === !paused) return current;
-    return this.updateSettings({
+    // Pausing must always work, even when the selected model has since left the catalog; resuming is validated.
+    return (paused ? this.saveSettings.bind(this) : this.updateSettings.bind(this))({
       expectedVersion: current.version,
       enabled: !paused,
       persona: current.persona,
@@ -129,16 +146,16 @@ export class StreamingBotService {
   }
 
   async getStatus(): Promise<StreamingBotStatus> {
-    const [settings, quota, chatStates, accounts, authorizations] = await Promise.all([
+    const [settings, quota, chatStates, accounts, authorizations, memoryPending] = await Promise.all([
       this.options.botRepository.getSettings(),
       this.options.botRepository.getQuota("YOUTUBE", new Date().toISOString().slice(0, 10)),
       this.options.botRepository.listChatStates(),
       this.options.streamingRepository.listAccounts(),
-      this.options.streamingRepository.listAuthorizations()
+      this.options.streamingRepository.listAuthorizations(),
+      this.options.botRepository.countMemory("PENDING")
     ]);
     const llmConfig = getStreamingBotLlmConfig();
-    const [providers, models] = await Promise.all([this.options.store.listProviders(), this.options.store.listModels()]);
-    const selectedModel = resolveStreamingBotModel(settings.modelSelection, providers, models, llmConfig);
+    const selectedModel = resolveStreamingBotModel(settings.modelSelection, llmConfig);
     const connectedAccounts = new Set(
       accounts
         .filter((account) => authorizations.some((authorization) =>
@@ -174,8 +191,53 @@ export class StreamingBotService {
       platforms: {
         YOUTUBE: platformStatus("YOUTUBE", settings.platforms.YOUTUBE.accountId),
         TWITCH: platformStatus("TWITCH", settings.platforms.TWITCH.accountId)
-      }
+      },
+      moderationEnabled: settings.moderationEnabled,
+      memoryPending,
+      setup: await this.setupChecklist(settings, accounts, authorizations, selectedModel.errorCode)
     };
+  }
+
+  private async setupChecklist(
+    settings: StreamingBotSettings,
+    accounts: Awaited<ReturnType<StreamingRepository["listAccounts"]>>,
+    authorizations: Awaited<ReturnType<StreamingRepository["listAuthorizations"]>>,
+    modelErrorCode: string | null
+  ): Promise<StreamingBotStatus["setup"]> {
+    const llmConfig = getStreamingBotLlmConfig();
+    const keyReady = dedicatedCredentialReady(llmConfig);
+    const items: StreamingBotStatus["setup"] = [
+      { id: "llm-key", label: "Space Gateway key for the bot", ok: keyReady,
+        hint: keyReady ? null : "Set SPACE_STREAMING_BOT_ENABLED, _BASE_URL, _KEY_FILE and _KEY_NAME (space-streaming-*) for the API and worker. See docs/runbooks/streaming-bot.md." },
+      { id: "model", label: "Reply model selected", ok: modelErrorCode === null,
+        hint: modelErrorCode === null ? null : "Choose an available model under Language model and save." }
+    ];
+    const chatScopes: Record<StreamingBotPlatform, { read: string; write: string; moderate: string }> = {
+      YOUTUBE: { read: "https://www.googleapis.com/auth/youtube.force-ssl", write: "https://www.googleapis.com/auth/youtube.force-ssl", moderate: "https://www.googleapis.com/auth/youtube.force-ssl" },
+      TWITCH: { read: "user:read:chat", write: "user:write:chat", moderate: "moderator:manage:banned_users" }
+    };
+    const used = (["YOUTUBE", "TWITCH"] as const).filter(platform => settings.platforms[platform].enabled || settings.platforms[platform].accountId);
+    if (!used.length) items.push({ id: "chat", label: "Chat account", ok: false, hint: "Pick a YouTube or Twitch account under Platforms." });
+    for (const platform of used) {
+      const name = platform === "YOUTUBE" ? "YouTube" : "Twitch";
+      const selected = accounts.find(item => item.id === settings.platforms[platform].accountId);
+      const account = selected?.status === "ACTIVE" ? selected : undefined;
+      const authorization = authorizations.find(item => item.id === account?.authorizationId && item.status === "ACTIVE");
+      const scopes = chatScopes[platform];
+      const needed = [scopes.read, ...(settings.platforms[platform].enabled ? [scopes.write] : []), ...(settings.moderationEnabled ? [scopes.moderate] : [])];
+      const client = this.options.credentialStore ? await this.options.credentialStore.readiness(platform) : null;
+      const hint = !selected ? `Pick a connected ${name} account under Platforms.`
+        : !account ? `Reconnect ${name} in Overview. ${selected.safeErrorMessage ?? ""}`.trim().slice(0, 300)
+        : !authorization ? `Reconnect ${name} in Overview.`
+        : needed.some(scope => !authorization.scopes.includes(scope)) ? `Reconnect ${name} in Overview to grant chat${settings.moderationEnabled ? " and moderation" : ""} permissions.`
+        : client && client.status !== "READY" ? `Fix the ${name} client file in Overview: ${client.message}`.slice(0, 300)
+        : null;
+      items.push({ id: platform.toLowerCase(), label: `${name} chat`, ok: hint === null, hint });
+    }
+    const workerOn = instanceBackgroundJobEnabled(process.env, "streaming-bot");
+    items.push({ id: "worker", label: "Bot worker on this instance", ok: workerOn,
+      hint: workerOn ? null : "This instance runs the bot only with SPACE_INSTANCE_ENABLED_JOBS=streaming-bot." });
+    return items;
   }
 
   async listActivity(limit: number): Promise<StreamingBotActivity[]> {
@@ -197,8 +259,17 @@ export class StreamingBotService {
     }));
   }
 
-  async listModerationActions(limit: number): Promise<StreamingModerationActionRecord[]> {
-    return this.options.botRepository.listModerationActions(limit);
+  async listModerationActions(limit: number): Promise<Array<StreamingModerationActionRecord & { author: string | null; message: string | null; activityId: string | null }>> {
+    const [actions, activity] = await Promise.all([
+      this.options.botRepository.listModerationActions(limit),
+      this.options.botRepository.listActivity(500)
+    ]);
+    // shortcut: names and text come from retained activity (the newest 500 rows); older actions show the viewer id.
+    const incoming = new Map(activity.filter(item => item.direction === "IN" && item.messageId).map(item => [`${item.platform}\u0000${item.messageId}`, item]));
+    return actions.map(action => {
+      const source = incoming.get(`${action.platform}\u0000${action.messageId}`);
+      return { ...action, author: source?.author ?? null, message: source?.message ?? null, activityId: source?.id ?? null };
+    });
   }
 
   private async actionAccount(platform: "YOUTUBE" | "TWITCH", permission: string) {
@@ -234,9 +305,9 @@ export class StreamingBotService {
       const quota = await this.options.botRepository.getQuota("YOUTUBE", new Date().toISOString().slice(0, 10));
       if (quota.unitsConsumed + 10 > this.options.youtubeDailyBudget) throw new StreamingBotServiceError("QUOTA_LIMIT", "The YouTube reply budget is exhausted.", 429);
     }
-    const platformMessageId = platform === "YOUTUBE"
-      ? await new YouTubeChatConnector().sendChatMessage(token, state.chatId, reply)
-      : await new TwitchChatConnector({ clientId: client!.clientId }).sendChatMessage(token, account.externalAccountId, account.externalAccountId, reply);
+    const platformMessageId = await platformCall(() => platform === "YOUTUBE"
+      ? new YouTubeChatConnector().sendChatMessage(token, state.chatId, reply)
+      : new TwitchChatConnector({ clientId: client!.clientId }).sendChatMessage(token, account.externalAccountId, account.externalAccountId, reply));
     if (platform === "YOUTUBE") await this.options.botRepository.consumeQuota("YOUTUBE", new Date().toISOString().slice(0, 10), 10);
     const activity = await this.options.botRepository.appendActivity({
       id: `activity:${randomUUID()}`, platform, accountId: account.id, channelId: state.chatId,
@@ -265,19 +336,40 @@ export class StreamingBotService {
       reason: "OPERATOR_COMMAND", durationSeconds, result: "PENDING", platformActionId: null, safeErrorCode: null
     });
     if (!action) throw new StreamingBotServiceError("ACTION_ALREADY_EXISTS", "This chat message already has a moderation action.", 409);
+    return this.applyTimeout(action, account.externalAccountId, token, client);
+  }
+
+  /** The operator's answer to a REVIEW item: time the viewer out with the item's own chat and message ids. */
+  async timeoutReviewedAction(id: string, durationSeconds: 300 | 1800): Promise<StreamingModerationActionRecord> {
+    const review = await this.options.botRepository.getModerationAction(id);
+    if (!review) throw new StreamingBotServiceError("ACTION_NOT_FOUND", "Moderation action was not found.", 404);
+    if (review.result !== "REVIEW" || review.platform === "DISCORD") {
+      throw new StreamingBotServiceError("ACTION_NOT_IN_REVIEW", "Only an item waiting for review can be timed out here.", 409);
+    }
+    const permission = review.platform === "YOUTUBE" ? "https://www.googleapis.com/auth/youtube.force-ssl" : "moderator:manage:banned_users";
+    const { account, token, client } = await this.actionAccount(review.platform, permission);
+    if (account.id !== review.accountId) throw new StreamingBotServiceError("ACCOUNT_MISMATCH", "The item does not belong to the selected live account.", 409);
+    const action = await this.options.botRepository.resolveModerationReview(id, durationSeconds === 300 ? "TIMEOUT_5M" : "TIMEOUT_30M", durationSeconds);
+    if (!action) throw new StreamingBotServiceError("ACTION_NOT_IN_REVIEW", "Only an item waiting for review can be timed out here.", 409);
+    return this.applyTimeout(action, account.externalAccountId, token, client);
+  }
+
+  private async applyTimeout(action: StreamingModerationActionRecord, broadcasterId: string,
+    token: Awaited<ReturnType<StreamingTokenManager["getToken"]>>, client: { clientId: string } | null): Promise<StreamingModerationActionRecord> {
+    const durationSeconds = action.durationSeconds === 300 ? 300 : 1800;
     try {
       let platformActionId: string | null = null;
-      if (platform === "YOUTUBE") {
+      if (action.platform === "YOUTUBE") {
         const connector = new YouTubeChatConnector();
-        platformActionId = await connector.timeoutUser(token, source.channelId, source.authorId, durationSeconds);
-        await connector.deleteChatMessage(token, source.messageId).catch(() => undefined);
+        platformActionId = await connector.timeoutUser(token, action.channelId, action.userId, durationSeconds);
+        await connector.deleteChatMessage(token, action.messageId).catch(() => undefined);
       } else {
-        await new TwitchChatConnector({ clientId: client!.clientId }).timeoutUser(token, account.externalAccountId,
-          account.externalAccountId, source.authorId, durationSeconds, "Operator command");
+        await new TwitchChatConnector({ clientId: client!.clientId }).timeoutUser(token, broadcasterId,
+          broadcasterId, action.userId, durationSeconds, "Operator command");
       }
       return (await this.options.botRepository.updateModerationAction(action.id, "SUCCEEDED", platformActionId))!;
-    } catch {
-      await this.options.botRepository.updateModerationAction(action.id, "FAILED", null, "PLATFORM_ERROR");
+    } catch (error) {
+      await this.options.botRepository.updateModerationAction(action.id, "FAILED", null, error instanceof StreamingProviderError ? error.code.slice(0, 100) : "PLATFORM_ERROR");
       throw new StreamingBotServiceError("TIMEOUT_FAILED", "The platform did not confirm the timeout.", 502);
     }
   }
@@ -296,23 +388,23 @@ export class StreamingBotService {
     if (!account || !authorization) throw new StreamingBotServiceError("ACCOUNT_UNAVAILABLE", "The connected account is unavailable.", 409);
     const requiredScope = action.platform === "YOUTUBE" ? "https://www.googleapis.com/auth/youtube.force-ssl" : "moderator:manage:banned_users";
     if (!authorization.scopes.includes(requiredScope)) throw new StreamingBotServiceError("MISSING_PERMISSION", "The timeout permission is missing.", 409);
-    const token = await new StreamingTokenManager({ credentialStore: credentials }).getToken(action.platform as "YOUTUBE" | "TWITCH", authorization.credentialRef);
-    if (action.platform === "YOUTUBE") {
-      if (!action.platformActionId) throw new StreamingBotServiceError("ACTION_ID_MISSING", "The YouTube timeout id is unavailable.", 409);
-      await new YouTubeChatConnector().undoTimeout(token, action.platformActionId);
-    } else if (action.platform === "TWITCH") {
-      const client = await credentials.readClient("TWITCH");
-      await new TwitchChatConnector({ clientId: client.clientId }).undoTimeout(token, account.externalAccountId, account.externalAccountId, action.userId);
-    } else {
-      throw new StreamingBotServiceError("MODERATION_UNAVAILABLE", "Discord moderation is pending channel setup.", 409);
-    }
+    if (action.platform === "DISCORD") throw new StreamingBotServiceError("MODERATION_UNAVAILABLE", "Discord moderation is pending channel setup.", 409);
+    if (action.platform === "YOUTUBE" && !action.platformActionId) throw new StreamingBotServiceError("ACTION_ID_MISSING", "The YouTube timeout id is unavailable.", 409);
+    await platformCall(async () => {
+      const token = await new StreamingTokenManager({ credentialStore: credentials }).getToken(action.platform as "YOUTUBE" | "TWITCH", authorization.credentialRef);
+      if (action.platform === "YOUTUBE") {
+        await new YouTubeChatConnector().undoTimeout(token, action.platformActionId!);
+      } else {
+        const client = await credentials.readClient("TWITCH");
+        await new TwitchChatConnector({ clientId: client.clientId }).undoTimeout(token, account.externalAccountId, account.externalAccountId, action.userId);
+      }
+    });
     return (await this.options.botRepository.updateModerationAction(id, "UNDONE", action.platformActionId))!;
   }
 
   async test(input: StreamingBotTestInput): Promise<{ reply: string | null; errorCode: string | null; model: string | null }> {
     const settings = await this.options.botRepository.getSettings();
-    const [providers, models] = await Promise.all([this.options.store.listProviders(), this.options.store.listModels()]);
-    const selectedModel = resolveStreamingBotModel(settings.modelSelection, providers, models, getStreamingBotLlmConfig());
+    const selectedModel = resolveStreamingBotModel(settings.modelSelection, getStreamingBotLlmConfig());
     if (selectedModel.errorCode || !selectedModel.modelId) return { reply: null, errorCode: selectedModel.errorCode, model: null };
     const memorySummary = settings.memoryEnabled ? await summarizeApiMemory(this.memoryStore) : "";
     const contextPrompt: BotPromptContext = {
@@ -337,11 +429,11 @@ export class StreamingBotService {
       memorySave: async () => ({ ok: true }),
       memorySearch: async () => ({ ok: true, entries: [] })
     };
-    let turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { modelId: selectedModel.modelId });
+    let turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { modelId: selectedModel.modelId, route: selectedModel.route });
     if (turn.errorCode && settings.fallbackModelSelection) {
-      const fallback = resolveStreamingBotModel(settings.fallbackModelSelection, providers, models, getStreamingBotLlmConfig());
+      const fallback = resolveStreamingBotModel(settings.fallbackModelSelection, getStreamingBotLlmConfig());
       if (fallback.modelId && fallback.modelId !== selectedModel.modelId) {
-        turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { modelId: fallback.modelId });
+        turn = await runBotTurn({ context: contextPrompt, messages: turnMessages, tools }, { modelId: fallback.modelId, route: fallback.route });
       }
     }
     if (turn.errorCode) {

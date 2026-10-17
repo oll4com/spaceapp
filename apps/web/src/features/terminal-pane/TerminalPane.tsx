@@ -43,7 +43,7 @@ import { CliAccountPicker } from "../cli-accounts/CliAccountPicker.js";
 import { CodexAccountPicker } from "../cli-accounts/CodexAccountPicker.js";
 import { cliAccountProfileForPane, isNewCliPane, NEW_PANE_WINDOW_MS } from "../cli-accounts/cli-account-default.js";
 import { hasCliAccountProfiles, readLastCliAccountProfileId, takeNewPaneAccount, writeLastCliAccountProfileId } from "../cli-accounts/cli-account-memory.js";
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import type { IDisposable, Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
@@ -393,6 +393,7 @@ const CLIPBOARD_STALL_TIMEOUT_MS = 3_500;
 const TERMINAL_PASTE_RECENT_INTENT_MS = 15_000;
 const TERMINAL_OUTPUT_REFIT_INTERVAL_MS = 500;
 const TERMINAL_SOCKET_WATCHDOG_INTERVAL_MS = 15_000;
+const TERMINAL_SOCKET_PROBE_TIMEOUT_MS = 6_000;
 const TERMINAL_INPUT_TOKENIZER_FLUSH_MS = 12;
 const INITIAL_CLI_TERMINAL_COLS = 100;
 const INITIAL_CLI_TERMINAL_ROWS = 30;
@@ -1619,8 +1620,12 @@ export function claudePlanModeShiftTabCount(screenText: string): number | null {
   return currentMode ? CLAUDE_PLAN_MODE_SHIFT_TABS[currentMode] : null;
 }
 
+// SGR mouse reports: Claude Code tracks every pointer move, and a move is neither a prompt edit nor a reason to take focus.
+const SGR_MOUSE_REPORTS = /^(?:\u001b\[<\d+;\d+;\d+[Mm])+$/;
+
 export function shouldRefocusTerminalAfterInput(data: string): boolean {
   return !isNonMutatingTerminalProtocolResponse(data) &&
+    !SGR_MOUSE_REPORTS.test(data) &&
     data !== "\u001b[I" &&
     data !== "\u001b[O";
 }
@@ -1644,8 +1649,7 @@ export function nextTerminalPromptDraft(
       }
       const sequence = /^\u001b(?:O[@-~]|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/.exec(data.slice(index));
       if (!sequence) return null;
-      // SGR mouse reports: Claude Code tracks every pointer move, and a move is not a prompt edit.
-      if (isNonMutatingTerminalProtocolResponse(sequence[0]) || /^\u001b\[<\d+;\d+;\d+[Mm]$/.test(sequence[0])) {
+      if (isNonMutatingTerminalProtocolResponse(sequence[0]) || SGR_MOUSE_REPORTS.test(sequence[0])) {
         index += sequence[0].length - 1;
         continue;
       }
@@ -1801,6 +1805,22 @@ export function terminalPendingInputAdmission(
 ): boolean {
   if (dataLength <= 0) return true;
   return queue.length < maxEntries && queue.queuedBytes + dataLength <= maxBytes;
+}
+
+// The spinner and shimmer behind a photo stop once it has loaded (or failed).
+function markUploadImageLoaded(event: SyntheticEvent<HTMLImageElement>) {
+  event.currentTarget.dataset.loaded = event.type === "error" ? "error" : "true";
+}
+
+// Portals render under <body>; copying the pane's theme attributes keeps the room theme and color mode.
+function portalThemeAttributes(source: Element | null | undefined) {
+  const host = source?.closest<HTMLElement>("[data-shell-mode], .space-shell, [data-room-theme], [data-ui-theme]");
+  return {
+    "data-ui-theme": host?.dataset.uiTheme || document.body.dataset.uiTheme,
+    "data-interface-theme": host?.dataset.interfaceTheme || document.documentElement.dataset.interfaceTheme,
+    "data-room-theme": host?.dataset.roomTheme || document.body.dataset.roomTheme,
+    "data-color-mode": host?.dataset.colorMode || document.body.dataset.colorMode
+  };
 }
 
 export const TerminalPane = memo(function TerminalPane({
@@ -2273,6 +2293,8 @@ export const TerminalPane = memo(function TerminalPane({
   const terminalControlRef = useRef<TerminalControlSnapshot>({ ...initialTerminalControlSnapshot });
   const terminalControlHeartbeatRef = useRef<number | null>(null);
   const terminalSocketKeepaliveRef = useRef<number | null>(null);
+  const terminalSocketMessageCountRef = useRef(0);
+  const terminalSocketProbeTimerRef = useRef<number | null>(null);
   const terminalControlRequestPendingRef = useRef(false);
   const observerControlUpgradePendingRef = useRef(false);
   const pendingTerminalInputsRef = useRef<PendingTerminalInput[]>([]);
@@ -3234,6 +3256,8 @@ export const TerminalPane = memo(function TerminalPane({
     window.addEventListener("space:app-resumed", onAppResumed);
     return () => {
       window.clearInterval(intervalId);
+      if (terminalSocketProbeTimerRef.current !== null) window.clearTimeout(terminalSocketProbeTimerRef.current);
+      terminalSocketProbeTimerRef.current = null;
       window.removeEventListener("focus", onWindowFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("space:app-resumed", onAppResumed);
@@ -4974,6 +4998,7 @@ export const TerminalPane = memo(function TerminalPane({
       syncOutputVisibility();
       const handleSocketMessage = (event: MessageEvent) => {
         if (!socket || disposed || socketRef.current !== socket) return;
+        terminalSocketMessageCountRef.current += 1;
         let payload: unknown;
         try {
           payload = JSON.parse(String(event.data));
@@ -5971,12 +5996,12 @@ export const TerminalPane = memo(function TerminalPane({
     return cliAccountProfileForPane(result, readLastCliAccountProfileId(runtimeId), true);
   }
 
-  /** The account a pane was opened for on this device, else the user's Job/Mail/Marketing Copilot default for this CLI; null for other panes. */
+  /** The account a pane was opened for on this device, else the user's Job/Mail/Marketing/Freelance Copilot default for this CLI; null for other panes. */
   async function jobCopilotPaneAccount(runtimeId: string): Promise<string | null> {
     const opened = takeNewPaneAccount(pane.id, runtimeId);
-    if (opened || (pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT")) return opened;
+    if (opened || (pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT")) return opened;
     const settings = await api.userSettings().catch(() => null);
-    const saved = pane.mode === "JOB_APPLY" ? settings?.jobCopilot : pane.mode === "MAIL_COPILOT" ? settings?.mailCopilot : settings?.marketingCopilot;
+    const saved = pane.mode === "JOB_APPLY" ? settings?.jobCopilot : pane.mode === "MAIL_COPILOT" ? settings?.mailCopilot : pane.mode === "FREELANCE_COPILOT" ? settings?.freelanceCopilot : settings?.marketingCopilot;
     return saved?.runtimeId === runtimeId ? saved.accountProfileId ?? null : null;
   }
 
@@ -6028,7 +6053,25 @@ export const TerminalPane = memo(function TerminalPane({
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       triggerTerminalSocketRecovery(source);
+    } else if (source !== "watchdog" && document.visibilityState === "visible") {
+      probeTerminalSocketLiveness(socket, source);
     }
+  }
+
+  // A phone that slept can keep a dead socket OPEN: on resume one ping must get any answer within 6 s.
+  function probeTerminalSocketLiveness(socket: WebSocket, source: string): void {
+    if (terminalSocketProbeTimerRef.current !== null || readySocketRef.current?.socket !== socket) return;
+    const messagesBefore = terminalSocketMessageCountRef.current;
+    try {
+      socket.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      return;
+    }
+    terminalSocketProbeTimerRef.current = window.setTimeout(() => {
+      terminalSocketProbeTimerRef.current = null;
+      if (socketRef.current !== socket || terminalSocketMessageCountRef.current !== messagesBefore) return;
+      triggerTerminalSocketRecovery(`${source}-pong-timeout`);
+    }, TERMINAL_SOCKET_PROBE_TIMEOUT_MS);
   }
 
   async function autoAttachRunningSession() {
@@ -6082,7 +6125,7 @@ export const TerminalPane = memo(function TerminalPane({
       } else {
         if (paneAgeMs <= NEW_PANE_WINDOW_MS) {
           const runtimeId = selectedRuntime?.id ?? "";
-          if ((runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") && readLastAutoAccountMode(runtimeId) && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT") {
+          if ((runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") && readLastAutoAccountMode(runtimeId) && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") {
             setAutoAccountMode(true);
             await requestCliSession({ accountMode: "AUTO" });
           } else {
@@ -8717,31 +8760,35 @@ export const TerminalPane = memo(function TerminalPane({
             role="dialog"
             aria-modal="true"
             aria-label={`${selectedUploadPreviewLabel} preview`}
+            {...portalThemeAttributes(uploadPreviewsPickerRef.current)}
             onClick={() => setSelectedUploadPreviewId(null)}
           >
             <div className="attachment-modal-body terminal-upload-modal-body" onClick={(event) => event.stopPropagation()}>
-              <button
-                ref={uploadPreviewCloseRef}
-                type="button"
-                className="terminal-upload-modal-close"
-                aria-label="Close image preview"
-                title="Close image preview"
-                onClick={() => setSelectedUploadPreviewId(null)}
-              >
-                <X size={15} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="terminal-upload-modal-delete"
-                aria-label="Delete photo"
-                title="Delete photo"
-                onClick={() => void removeUploadPreview(selectedUploadPreview.id)}
-              >
-                <Trash2 size={15} aria-hidden="true" />
-              </button>
-              <span className="terminal-upload-modal-label" aria-live="polite">
-                {selectedUploadPreviewLabel} · {selectedUploadPreviewIndex + 1} / {uploadPreviews.length}
-              </span>
+              <div className="terminal-upload-modal-toolbar">
+                <span className="terminal-upload-modal-label" aria-live="polite">
+                  {selectedUploadPreviewLabel} · {selectedUploadPreviewIndex + 1} / {uploadPreviews.length}
+                </span>
+                <span className="terminal-upload-modal-name" title={selectedUploadPreview.name}>{selectedUploadPreview.name}</span>
+                <button
+                  type="button"
+                  className="terminal-upload-modal-delete"
+                  aria-label="Delete photo"
+                  title="Delete photo"
+                  onClick={() => void removeUploadPreview(selectedUploadPreview.id)}
+                >
+                  <Trash2 size={15} aria-hidden="true" />
+                </button>
+                <button
+                  ref={uploadPreviewCloseRef}
+                  type="button"
+                  className="terminal-upload-modal-close"
+                  aria-label="Close image preview"
+                  title="Close image preview"
+                  onClick={() => setSelectedUploadPreviewId(null)}
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </div>
               {uploadPreviews.length > 1 ? (
                 <>
                   <button type="button" className="terminal-upload-modal-nav is-previous" aria-label="Previous image" onClick={() => navigateUploadPreview(-1)}>
@@ -8752,7 +8799,18 @@ export const TerminalPane = memo(function TerminalPane({
                   </button>
                 </>
               ) : null}
-              <img src={selectedUploadPreview.objectUrl} alt={`${selectedUploadPreviewLabel} full size`} />
+              <div className="terminal-upload-modal-stage">
+                {/* Keyed per photo so the spinner shows again until the next image has loaded. */}
+                <img
+                  key={selectedUploadPreview.id}
+                  src={selectedUploadPreview.objectUrl}
+                  alt={`${selectedUploadPreviewLabel} full size`}
+                  decoding="async"
+                  onLoad={markUploadImageLoaded}
+                  onError={markUploadImageLoaded}
+                />
+                <Loader2 className="terminal-upload-modal-spinner" aria-hidden="true" />
+              </div>
             </div>
           </div>,
           document.body
@@ -8831,7 +8889,7 @@ export const TerminalPane = memo(function TerminalPane({
                         <span className="terminal-upload-index" aria-hidden="true">
                           {index + 1}
                         </span>
-                        <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} loading="lazy" />
+                        <img src={preview.objectUrl} alt={`Image ${index + 1} preview`} decoding="async" onLoad={markUploadImageLoaded} onError={markUploadImageLoaded} />
                       </button>
                       <button
                         type="button"
@@ -9115,11 +9173,6 @@ export const TerminalPane = memo(function TerminalPane({
         ) : null}
       </div>
       {contextMenu && typeof document !== "undefined" ? (() => {
-        const targetHost = xtermHostRef.current?.closest<HTMLElement>("[data-shell-mode], .space-shell, [data-room-theme], [data-ui-theme]");
-        const currentUiTheme = targetHost?.dataset.uiTheme || (typeof document !== "undefined" ? document.body.dataset.uiTheme : undefined);
-        const currentInterfaceTheme = targetHost?.dataset.interfaceTheme || (typeof document !== "undefined" ? document.documentElement.dataset.interfaceTheme : undefined);
-        const currentRoomTheme = targetHost?.dataset.roomTheme || (typeof document !== "undefined" ? document.body.dataset.roomTheme : undefined);
-        const currentColorMode = targetHost?.dataset.colorMode || (typeof document !== "undefined" ? document.body.dataset.colorMode : undefined);
         const contextMenuLeft = Math.max(8, Math.min(contextMenu.x, window.innerWidth - 210 - 8));
         const contextMenuTop = Math.max(8, Math.min(contextMenu.y, window.innerHeight - 180 - 8));
         return createPortal(
@@ -9128,10 +9181,7 @@ export const TerminalPane = memo(function TerminalPane({
             className="icon-context-menu terminal-context-menu"
             role="menu"
             aria-label={`Terminal context menu ${pane.title}`}
-            data-ui-theme={currentUiTheme}
-            data-interface-theme={currentInterfaceTheme}
-            data-room-theme={currentRoomTheme}
-            data-color-mode={currentColorMode}
+            {...portalThemeAttributes(xtermHostRef.current)}
             style={{ left: `${contextMenuLeft}px`, top: `${contextMenuTop}px` }}
           >
             <button
@@ -9258,11 +9308,6 @@ export const TerminalPane = memo(function TerminalPane({
         );
       })() : null}
       {photoContextMenu && typeof document !== "undefined" ? (() => {
-        const targetHost = xtermHostRef.current?.closest<HTMLElement>("[data-shell-mode], .space-shell, [data-room-theme], [data-ui-theme]");
-        const currentUiTheme = targetHost?.dataset.uiTheme || (typeof document !== "undefined" ? document.body.dataset.uiTheme : undefined);
-        const currentInterfaceTheme = targetHost?.dataset.interfaceTheme || (typeof document !== "undefined" ? document.documentElement.dataset.interfaceTheme : undefined);
-        const currentRoomTheme = targetHost?.dataset.roomTheme || (typeof document !== "undefined" ? document.body.dataset.roomTheme : undefined);
-        const currentColorMode = targetHost?.dataset.colorMode || (typeof document !== "undefined" ? document.body.dataset.colorMode : undefined);
         const contextMenuLeft = Math.max(8, Math.min(photoContextMenu.x, window.innerWidth - 180 - 8));
         const contextMenuTop = Math.max(8, Math.min(photoContextMenu.y, window.innerHeight - 120 - 8));
         return createPortal(
@@ -9271,10 +9316,7 @@ export const TerminalPane = memo(function TerminalPane({
             className="icon-context-menu terminal-context-menu terminal-photo-context-menu"
             role="menu"
             aria-label={`Photo options ${pane.title}`}
-            data-ui-theme={currentUiTheme}
-            data-interface-theme={currentInterfaceTheme}
-            data-room-theme={currentRoomTheme}
-            data-color-mode={currentColorMode}
+            {...portalThemeAttributes(xtermHostRef.current)}
             style={{ left: `${contextMenuLeft}px`, top: `${contextMenuTop}px` }}
           >
             <button

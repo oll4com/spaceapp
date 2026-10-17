@@ -5,6 +5,7 @@ import { defaultMarketingCopilotPaneMetadata } from "@space/contracts";
 import { MarketingCopilotPane, resolveActiveTab, tabsForLayout } from "../src/features/marketing-copilot-pane/MarketingCopilotPane.js";
 import { MARKETING_COPILOT_KIND, copilotKindForMode } from "../src/features/copilot-kit/copilot-kind.js";
 import { summarizeMetrics } from "../src/features/marketing-copilot-pane/AnalyticsTab.js";
+import { registerBrowserPaneEventTarget } from "../src/features/browser-pane/events.js";
 
 const apiMock = vi.hoisted(() => ({
   marketingCopilotSettings: vi.fn(),
@@ -27,7 +28,12 @@ const apiMock = vi.hoisted(() => ({
   marketingMemory: vi.fn(),
   createMarketingCampaign: vi.fn(),
   browserHandoff: vi.fn(),
-  navigateBrowser: vi.fn()
+  navigateBrowser: vi.fn(),
+  browserAccounts: vi.fn(),
+  marketingBookmarks: vi.fn(),
+  createMarketingBookmark: vi.fn(),
+  deleteMarketingBookmark: vi.fn(),
+  openMarketingBookmark: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
@@ -71,13 +77,20 @@ describe("MarketingCopilotPane", () => {
     apiMock.browserHandoff.mockResolvedValue({ handoff: null });
     apiMock.createMarketingCampaign.mockResolvedValue({ campaign: {} });
     apiMock.navigateBrowser.mockResolvedValue({});
+    apiMock.browserAccounts.mockResolvedValue({ selectedProfileId: null, effectiveProfileId: "google_account:dev", profiles: [
+      { profileId: "google_account:dev", displayName: "Google account · spaceappdv@gmail.com", email: "spaceappdv@gmail.com" },
+      { profileId: "google_account:me", displayName: "Google account · ntheogr@gmail.com", email: "ntheogr@gmail.com" }
+    ] });
+    apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [] });
+    apiMock.openMarketingBookmark.mockResolvedValue({});
+    apiMock.deleteMarketingBookmark.mockResolvedValue({ deleted: true });
   });
   afterEach(() => cleanup());
 
   it("is a copilot kind of its own with the browser as a tab only when stacked", () => {
     expect(copilotKindForMode("MARKETING_COPILOT")).toBe(MARKETING_COPILOT_KIND);
-    expect(tabsForLayout("split")).toEqual(["posts", "activity", "analytics", "memory", "setup", "terminal"]);
-    expect(tabsForLayout("stacked")).toEqual(["browser", "posts", "activity", "analytics", "memory", "setup", "terminal"]);
+    expect(tabsForLayout("split")).toEqual(["posts", "activity", "analytics", "memory", "bookmarks", "setup", "terminal"]);
+    expect(tabsForLayout("stacked")).toEqual(["browser", "posts", "activity", "analytics", "memory", "bookmarks", "setup", "terminal"]);
     expect(resolveActiveTab("browser", "split")).toBe("posts");
   });
 
@@ -111,12 +124,62 @@ describe("MarketingCopilotPane", () => {
     expect(within(list).queryByRole("button", { name: "Log in to Blog" })).toBeNull();
   });
 
-  it("covers the browser with the handoff card while the copilot waits for a login", async () => {
+  it("saves a bookmark with its Google account, opens it in the pane browser and deletes it", async () => {
+    const saved = { id: "mktbm:abc123", ownerUserId: "user:operator", title: "x.com", url: "https://x.com", profileId: "google_account:me", accountLabel: "ntheogr@gmail.com", createdAt: "2026-10-16T10:00:00.000Z" };
+    apiMock.createMarketingBookmark.mockResolvedValue({ bookmark: saved });
+    const tabs = vi.fn();
+    window.addEventListener("space:browser-pane-action", tabs);
+    const unregister = registerBrowserPaneEventTarget(pane.id);
+    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Bookmarks/ }));
+    // With no bookmarks yet the form is open at once.
+    const account = await screen.findByRole("combobox", { name: "Google account" }) as HTMLSelectElement;
+    // A new bookmark starts with the account the pane opens with.
+    await waitFor(() => expect(account.value).toBe("google_account:dev"));
+    fireEvent.change(account, { target: { value: "google_account:me" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Address" }), { target: { value: "x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save bookmark/ }));
+    await waitFor(() => expect(apiMock.createMarketingBookmark).toHaveBeenCalledWith({ url: "https://x.com", profileId: "google_account:me", accountLabel: "ntheogr@gmail.com" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open x.com with ntheogr@gmail.com" }));
+    // The form folds away once there is a bookmark; Add bookmark opens it again.
+    expect(screen.queryByRole("textbox", { name: "Address" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Add bookmark/ }).getAttribute("aria-expanded")).toBe("false");
+    await waitFor(() => expect(apiMock.openMarketingBookmark).toHaveBeenCalledWith(pane.id, saved.id));
+    // The pane browser shows the new tab at once instead of at its next page poll.
+    await waitFor(() => expect(tabs).toHaveBeenCalledWith(expect.objectContaining({ detail: { paneId: pane.id, action: "tabs" } })));
+    window.removeEventListener("space:browser-pane-action", tabs);
+    unregister();
+    fireEvent.click(screen.getByRole("button", { name: "Delete bookmark x.com" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Open x\.com/ })).toBeNull());
+    expect(apiMock.deleteMarketingBookmark).toHaveBeenCalledWith(saved.id);
+  });
+
+  it("lists a bookmark as one card: its title without the unread counter, the site and the account", async () => {
+    apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [
+      { id: "mktbm:abc123", ownerUserId: "user:operator", title: "(1) SpaceApp.dev on X: a long post title", url: "https://www.x.com/spaceapp_dev/status/1", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com", createdAt: "2026-10-16T10:00:00.000Z" },
+      { id: "mktbm:def456", ownerUserId: "user:operator", title: "GitHub", url: "https://github.com/oll4com/spaceapp", profileId: null, accountLabel: null, createdAt: "2026-10-16T10:01:00.000Z" }
+    ] });
+    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Bookmarks/ }));
+    const card = await screen.findByRole("button", { name: "Open SpaceApp.dev on X: a long post title with spaceappdv@gmail.com" });
+    expect(card.textContent).toBe("xSpaceApp.dev on X: a long post titlex.comSspaceappdv@gmail.com");
+    expect(screen.getByRole("button", { name: "Open GitHub" }).textContent).toContain("Pane's account");
+    expect(screen.getByText(/^2 bookmarks/).textContent).toBe("2 bookmarks · right-click a browser tab to save it");
+    expect(screen.queryByRole("textbox", { name: "Address" })).toBeNull();
+  });
+
+  it("shows the login request in a strip above the browser, never over it", async () => {
     apiMock.browserHandoff.mockResolvedValue({ handoff: { handoffRequestId: "handoff:1", status: "REQUESTED", reason: "X asks for a login before posting", requestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString(), acceptedAt: null } });
-    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div data-testid="browser" />} />);
-    const card = await screen.findByRole("alertdialog", { name: "The copilot needs you" });
-    expect(within(card).getByText("X asks for a login before posting")).toBeTruthy();
-    expect(within(card).getByRole("button", { name: "Take control" })).toBeTruthy();
+    const { container } = render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div data-testid="browser" />} />);
+    const strip = await screen.findByRole("status", { name: "The copilot needs you" });
+    expect(strip.textContent).toContain("X asks for a login before posting");
+    expect(within(strip).getByRole("button", { name: "Take control" })).toBeTruthy();
+    // The strip sits beside the browser (the operator can work in the page at once), and the pane marks the request
+    // so the browser's control icon pulses.
+    expect(strip.classList.contains("jc-handoff-strip")).toBe(true);
+    expect(strip.contains(screen.getByTestId("browser"))).toBe(false);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(container.querySelector("[data-handoff]")?.getAttribute("data-handoff")).toBe("requested");
   });
 
   it("sends briefs, starts the run and decides a post in review (approve, or approve the operator's edit)", async () => {

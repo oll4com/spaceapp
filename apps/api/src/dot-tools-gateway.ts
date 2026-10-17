@@ -10,6 +10,7 @@ import {
   dotApprovalDecisionSchema,
   dotIdSchema,
   dotMcpToolId,
+  dotPersonalityInstructions,
   dotToolCallInputSchema,
   dotToolDescribeInputSchema,
   dotToolSearchInputSchema,
@@ -319,6 +320,8 @@ async function planControl(deps: DotToolGatewayDeps, entry: DotToolEntry, args: 
     case "space.inspect": return { tool: "space_inspect", payload: { ...args, roomId }, risk: "READ" };
     case "space.capabilities": return { tool: "space_capabilities", payload: { ...args, roomId }, risk: "READ" };
     case "space.pane_types": return { tool: "space_describe_pane_types", payload: { ...args, roomId }, risk: "READ" };
+    // A read-only capture of the Dot's own room, saved in that room's Media (apps/api/src/space-control-capture.ts).
+    case "space.screenshot": return { tool: "space_screenshot", payload: { ...args, roomId }, risk: "READ" };
     case "space.operations": return { tool: "space_operations", payload: { ...args, roomId }, risk: operation === "cancel" ? "WRITE" : "READ" };
     case "space.watches": return { tool: "space_watches", payload: { ...args, roomId },
       risk: operation === "register" ? "SENSITIVE" : ["list", "status"].includes(operation) ? "READ" : "WRITE" };
@@ -671,15 +674,37 @@ export function registerDotToolGatewayRoutes(app: FastifyInstance, deps: DotTool
   }));
 }
 
-/** Developer context for a Dot thread: identity and preferences, never authority. */
-export function dotDeveloperContext(dot: Pick<DotProfile, "name" | "preferences">, project: string | null, dotWorkspace: string | null = null,
-  memories: ReadonlyArray<Pick<DotMemory, "memoryId" | "scope" | "text">> = []): string {
+/** The room owner and their Dot, or null when the room's owner has no such Dot. */
+export async function findRoomOwnerDot(store: Pick<SpaceStore, "getRoom">, dots: Pick<DotsRepository, "get"> | null, roomId: string, dotId: string) {
+  const owner = (await store.getRoom(roomId)).ownerUserId;
+  const dot = owner && dots ? await dots.get(owner, dotId) : null;
+  return owner && dot ? { owner, dot } : null;
+}
+
+/** The identity context of a session's Dot (see dotIdentityContext), or null. */
+export async function sessionDotIdentity(store: Pick<SpaceStore, "getRoom">, dots: Pick<DotsRepository, "get"> | null,
+  session: { roomId: string; dotId?: string | null }): Promise<string | null> {
+  const owned = session.dotId ? await findRoomOwnerDot(store, dots, session.roomId, session.dotId) : null;
+  return owned ? dotIdentityContext(owned.dot) : null;
+}
+
+/** Who a Dot is and how it speaks; every runtime gets it, CLI runtimes (no Space tools, one bounded prompt) only this. */
+export function dotIdentityContext(dot: Pick<DotProfile, "name" | "preferences"> & Partial<Pick<DotProfile, "appearance">>): string {
   const style = dot.preferences.communicationStyle?.trim();
   const language = dot.preferences.language?.trim();
   return [
     `You are ${dot.name}, one of the user's six Space Dots in SpaceApp. Each Dot keeps its own conversations, tasks and memory; all Dots have the same capabilities and act only with the user's authorization.`,
+    dot.appearance ? dotPersonalityInstructions(dot.appearance.character) : null,
     style ? `Communication style: ${style.slice(0, 2000)}` : null,
-    language ? `Preferred reply language: ${language.slice(0, 80)}.` : "Reply in the language the user writes in.",
+    language ? `Preferred reply language: ${language.slice(0, 80)}.` : "Reply in the language the user writes in."
+  ].filter(Boolean).join("\n");
+}
+
+/** Developer context for a Dot thread: identity and preferences, never authority. */
+export function dotDeveloperContext(dot: Pick<DotProfile, "name" | "preferences"> & Partial<Pick<DotProfile, "appearance">>, project: string | null,
+  dotWorkspace: string | null = null, memories: ReadonlyArray<Pick<DotMemory, "memoryId" | "scope" | "text">> = []): string {
+  return [
+    dotIdentityContext(dot),
     project ? `Project directory: ${project}. Run project work there.` : null,
     dotWorkspace ? `Your private workspace: ${dotWorkspace}. Keep drafts, downloads, scratch code and files you produce for the user there${project ? " unless they belong in the project" : ""}.` : null,
     "For web work, call computer.browser to open your own browser (isolated profile, not signed in to the user's accounts) instead of the user's Browser panes.",

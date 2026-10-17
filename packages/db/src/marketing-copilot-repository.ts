@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type {
-  MarketingCampaign, MarketingChannel, MarketingEvent, MarketingMemory, MarketingMemoryQuery, MarketingMetric, MarketingPost, MarketingPostStatus, MarketingRule, MarketingRun
+  MarketingBookmark, MarketingCampaign, MarketingChannel, MarketingEvent, MarketingMemory, MarketingMemoryQuery, MarketingMetric, MarketingPost, MarketingPostStatus, MarketingRule, MarketingRun
 } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
@@ -22,6 +22,7 @@ export interface MarketingEventFilter { paneId?: string | null; postId?: string 
 export type MarketingRunPatch = Partial<Pick<MarketingRun, "status" | "counters" | "kickoffSentAt" | "stoppedAt" | "lastActivityAt">>;
 export type MarketingRuleCreateRecord = Omit<MarketingRule, "id" | "appliedCount" | "lastAppliedAt" | "decidedAt" | "createdAt" | "updatedAt">;
 export type MarketingRulePatch = Partial<Pick<MarketingRule, "status" | "decidedAt" | "appliedCount" | "lastAppliedAt">>;
+export type MarketingBookmarkCreateRecord = Omit<MarketingBookmark, "id" | "createdAt">;
 
 export interface MarketingCopilotRepository {
   listCampaigns(owner: string, status?: MarketingCampaign["status"][]): Promise<MarketingCampaign[]>;
@@ -57,6 +58,11 @@ export interface MarketingCopilotRepository {
   recordMetrics(owner: string, metrics: MarketingMetric[]): Promise<void>;
   /** Values since a day (YYYY-MM-DD), oldest first. */
   listMetrics(owner: string, sinceDay: string): Promise<MarketingMetric[]>;
+  /** Oldest first, the order the operator added them. */
+  listBookmarks(owner: string): Promise<MarketingBookmark[]>;
+  getBookmark(owner: string, id: string): Promise<MarketingBookmark | null>;
+  createBookmark(input: MarketingBookmarkCreateRecord): Promise<MarketingBookmark>;
+  deleteBookmark(owner: string, id: string): Promise<boolean>;
   dispose(): Promise<void>;
 }
 
@@ -215,6 +221,15 @@ export class InMemoryMarketingCopilotRepository implements MarketingCopilotRepos
     return [...this.metrics.values()].filter((row) => row.owner === owner && row.day >= sinceDay)
       .sort((a, b) => a.day.localeCompare(b.day) || a.source.localeCompare(b.source) || a.key.localeCompare(b.key)).map((row) => ({ day: row.day, source: row.source, key: row.key, value: row.value }));
   }
+  private bookmarks = new Map<string, MarketingBookmark>();
+  async listBookmarks(owner: string) { return [...this.bookmarks.values()].filter((row) => row.ownerUserId === owner).map((row) => ({ ...row })); }
+  async getBookmark(owner: string, id: string) { const row = this.owned(this.bookmarks, owner, id); return row ? { ...row } : null; }
+  async createBookmark(input: MarketingBookmarkCreateRecord) {
+    const row: MarketingBookmark = { ...input, id: newId("mktbm"), createdAt: this.now() };
+    this.bookmarks.set(row.id, row);
+    return { ...row };
+  }
+  async deleteBookmark(owner: string, id: string) { return this.owned(this.bookmarks, owner, id) ? this.bookmarks.delete(id) : false; }
   async dispose() {}
 }
 
@@ -272,6 +287,12 @@ const ruleTable: Table<MarketingRule> = {
   json: new Set(), arrays: new Set(["kinds", "evidence"]),
   row: (raw) => ({ ...(raw as unknown as MarketingRule), kinds: (raw.kinds as MarketingRule["kinds"] | null) ?? [], evidence: (raw.evidence as string[] | null) ?? [], appliedCount: Number(raw.appliedCount),
     lastAppliedAt: iso(raw.lastAppliedAt), decidedAt: iso(raw.decidedAt), createdAt: iso(raw.createdAt)!, updatedAt: iso(raw.updatedAt)! })
+};
+const bookmarkTable: Table<MarketingBookmark> = {
+  name: "marketing_copilot_bookmarks",
+  columns: { id: "id", ownerUserId: "owner_user_id", title: "title", url: "url", profileId: "profile_id", accountLabel: "account_label", createdAt: "created_at" },
+  json: new Set(), arrays: new Set(),
+  row: (raw) => ({ ...(raw as unknown as MarketingBookmark), createdAt: iso(raw.createdAt)! })
 };
 /** `websearch_to_tsquery` accepts free text safely; an empty query matches everything. */
 function searchText(query: string | null | undefined): string | null {
@@ -388,6 +409,14 @@ export class PostgresMarketingCopilotRepository implements MarketingCopilotRepos
     return (await this.pool.query<{ day: string; source: string; key: string; value: unknown }>(`SELECT to_char(day, 'YYYY-MM-DD') AS day, source, key, value FROM marketing_copilot_metrics
       WHERE owner_user_id=$1 AND day >= $2 ORDER BY day, source, key LIMIT 5000`, [owner, sinceDay])).rows
       .map((row) => ({ day: row.day, source: row.source, key: row.key, value: Number(row.value) }));
+  }
+  async listBookmarks(owner: string) {
+    return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(bookmarkTable)} FROM marketing_copilot_bookmarks WHERE owner_user_id=$1 ORDER BY created_at, id LIMIT 500`, [owner])).rows.map(bookmarkTable.row);
+  }
+  getBookmark(owner: string, id: string) { return this.one(bookmarkTable, owner, id); }
+  createBookmark(input: MarketingBookmarkCreateRecord) { return this.insert(bookmarkTable, { ...input, id: newId("mktbm") }); }
+  async deleteBookmark(owner: string, id: string) {
+    return ((await this.pool.query("DELETE FROM marketing_copilot_bookmarks WHERE owner_user_id=$1 AND id=$2", [owner, id])) as { rowCount?: number | null }).rowCount! > 0;
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

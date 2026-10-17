@@ -21,7 +21,8 @@ import {
 import { clearAgentPaneDraft, readAgentPaneDraft, writeAgentPaneDraft, type AgentPaneDraftState } from "./agent-pane-draft.js";
 import { readDotDraft, writeDotDraft, clearDotDraft } from "./dot-drafts.js";
 import { useDotSession } from "./useDotSession.js";
-import { DotHeader, dotArtwork, dotStatus } from "./DotHeader.js";
+import { DotHeader, dotStatus } from "./DotHeader.js";
+import { useDotMood } from "./DotAvatar.js";
 import { DotApprovals } from "./DotApprovals.js";
 import { DotGoalDialog, DotGoalStrip } from "./DotGoals.js";
 import { DotFeed } from "./DotFeed.js";
@@ -47,7 +48,7 @@ import {
   registerAgentPaneEventTarget
 } from "./events.js";
 import { takePendingThreadOpen } from "../terminal-pane/cli-resume-intent.js";
-import { CLEAN_WORKTREE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
+import { CLEAN_WORKTREE_PROMPT, PROMOTE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
 import type { AgentPaneActionAvailability } from "./agent-action-availability.js";
 
 const DOT_PANEL_KEY = "space.dotPane.panel.";
@@ -87,6 +88,7 @@ type AgentPaneAction =
   | "build"
   | "plan_progress"
   | "deploy"
+  | "promote"
   | "clean_worktree"
   | "scroll_top"
   | "scroll_bottom"
@@ -148,6 +150,7 @@ function isAgentPaneAction(detail: unknown): detail is AgentPaneActionDetail {
       maybeDetail.action === "build" ||
       maybeDetail.action === "plan_progress" ||
       maybeDetail.action === "deploy" ||
+      maybeDetail.action === "promote" ||
       maybeDetail.action === "clean_worktree" ||
       maybeDetail.action === "scroll_top" ||
       maybeDetail.action === "scroll_bottom" ||
@@ -509,6 +512,8 @@ export function AgentPane({
     }) : [];
     return [...feed.items, ...live].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }, [feed.items, feed.status, session?.messages, session?.threadId, session?.binding.sessionId, session?.dotId, selectedDot?.dotId, pane.roomId, thread]);
+  const dotHeaderStatus = dotStatus(session, sessionUnavailable || dotFlow.transitioning, dotGoal?.sessionId === session?.binding.sessionId ? dotGoal?.status : undefined);
+  const dotMood = useDotMood(selectedDot?.appearance.character ?? null, selectedDot?.dotId ?? null, dotHeaderStatus, feedItems);
   const runProgress = useMemo(() => {
     // Without a Dot the thread itself is the conversation, so its replies already show as bubbles.
     if (!isRunning || !thread || !selectedDot) return null;
@@ -1305,14 +1310,16 @@ export function AgentPane({
         if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
         return;
       }
-      if (event.detail.action === "plan_progress" || event.detail.action === "deploy" || event.detail.action === "clean_worktree") {
+      if (event.detail.action === "plan_progress" || event.detail.action === "deploy" || event.detail.action === "promote" || event.detail.action === "clean_worktree") {
         if (!isVisible || pane.isMinimized) return;
         void submitQuickMessage(
           event.detail.action === "plan_progress"
             ? "Plan completion percentage"
             : event.detail.action === "deploy"
               ? "Deploy the project to Gitea and GitHub."
-              : CLEAN_WORKTREE_PROMPT
+              : event.detail.action === "promote"
+                ? PROMOTE_PROMPT
+                : CLEAN_WORKTREE_PROMPT
         );
         return;
       }
@@ -1504,7 +1511,7 @@ export function AgentPane({
       />
       <div ref={shellRef} className="codex-chat-shell dots-chat-shell" data-panel={panelOpen ? (wide ? "docked" : "overlay") : "closed"}>
         <div className="dots-home-main">
-        <DotHeader dots={dots} selected={selectedDot} status={dotStatus(session, sessionUnavailable || dotFlow.transitioning, dotGoal?.sessionId === session?.binding.sessionId ? dotGoal?.status : undefined)} blocked={switchBlocked}
+        <DotHeader dots={dots} selected={selectedDot} status={dotHeaderStatus} mood={dotMood} blocked={switchBlocked}
           motionActive={isVisible && !pane.isMinimized} onSelect={dot => void selectDot(dot)} onManage={() => openDotSettings({ dotId: selectedDot?.dotId })}
           onNewConversation={() => void startNewTask()} newConversationDisabled={switchBlocked || !isChatEnabled}
           onCall={() => { if (selectedDot) requestDotCall({ roomId: pane.roomId, dotId: selectedDot.dotId, dotName: selectedDot.name, slot: selectedDot.slot }); }}
@@ -1535,7 +1542,8 @@ export function AgentPane({
         ) : null}
         <div className="chat-transcript-region">
           <div ref={transcriptRef} className="codex-transcript-scroll dots-feed-scroll" onScroll={handleFeedScroll} data-thread-loading={threadLoading ? "true" : "false"}>
-            <DotFeed dot={{ name: selectedDot?.name ?? "Dots", artwork: selectedDot ? dotArtwork(selectedDot) : "/dots/orbit.svg" }}
+            <DotFeed dot={{ name: selectedDot?.name ?? "Dots", character: selectedDot?.appearance.character ?? "astronaut" }} mood={dotMood}
+              motion={isVisible && !pane.isMinimized}
               items={feedItems} status={selectedDot ? feed.status : loading ? "loading" : "ready"}
               hasOlder={Boolean(feed.nextBefore)} loadingOlder={feed.loadingOlder} onLoadOlder={() => void feed.loadOlder()} onRetry={() => void feed.refresh()}
               running={isRunning ? { status: session?.runStatus ?? "RUNNING", elapsedSeconds, progress: runProgress } : null}

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CouncilAnswer, CouncilModel, CouncilPlan, CouncilPosition, CouncilReview } from "@space/contracts";
 import { InMemoryCouncilRepository } from "@space/db";
-import { COUNCIL_PROMPT_LIMIT, buildFinalPrompt, buildMergePrompt, buildPlanPrompt, buildReviewPrompt } from "../src/council/prompts.js";
+import { COUNCIL_PROMPT_LIMIT, buildClipboardPlanPrompt, buildFinalPrompt, buildMergePrompt, buildPlanPrompt, buildReviewPrompt } from "../src/council/prompts.js";
 import { anonymizeModelText, consensusLine, councilAgreementReached, councilTopEntries, rankCouncilPositions, scrubContactDetails } from "../src/council/ranking.js";
 import { createCouncilService, jsonReply, normalizeCouncilPlan, parseCouncilAnswer, parseCouncilReview } from "../src/council/service.js";
 import { finalMessageFromResponsesStream, finalTextFromResponsesStream, parseSearchFindings } from "../src/council/web-search.js";
+import { notifyCouncilStatus } from "../src/council/wiring.js";
 
 const position = (id: string, support = 1): CouncilPosition => ({ id, title: `Option ${id}`, summary: `Summary ${id}`, support });
 const review = (modelId: string, scores: Record<string, number>): CouncilReview => ({
@@ -82,7 +83,8 @@ describe("council prompts", () => {
         changeRequests: ["c".repeat(2_000)], memoryQueriesAllowed: true }),
       buildMergePrompt({ question: "q".repeat(2_000), plan, answers, previous: { merged: long, positions, ranking, reviews } }),
       buildReviewPrompt({ question: "q".repeat(2_000), plan: { ...plan, personalContext: "p".repeat(2_500) }, evidence, merged: long, positions }),
-      buildFinalPrompt({ question: "q".repeat(2_000), plan, evidence, merged: long, positions, ranking, reviews, top: 3 })
+      buildFinalPrompt({ question: "q".repeat(2_000), plan, evidence, merged: long, positions, ranking, reviews, top: 3 }),
+      buildClipboardPlanPrompt({ question: "q".repeat(2_000), personalContext: "p".repeat(2_500), final: "f".repeat(12_000) })
     ];
     for (const prompt of prompts) expect(prompt.length).toBeLessThanOrEqual(COUNCIL_PROMPT_LIMIT);
   });
@@ -116,9 +118,10 @@ describe("council web search parsing", () => {
   });
 });
 
-function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Promise<void> } = {}) {
+function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Promise<void>; onStatus?: Parameters<typeof createCouncilService>[0]["onStatus"]; planReply?: string } = {}) {
   const repository = new InMemoryCouncilRepository();
   const calls: Array<{ modelId: string; prompt: string }> = [];
+  const savedPlans: Array<Parameters<Parameters<typeof createCouncilService>[0]["savePlan"]>[1]> = [];
   const models: CouncilModel[] = [
     { id: "codex/gpt-6-astra", displayName: "GPT-6 Astra", providerId: "codex", available: true, note: null },
     { id: "codex/gpt-5.6-sol", displayName: "GPT-5.6 Sol", providerId: "codex", available: true, note: null },
@@ -132,7 +135,9 @@ function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Pr
     coordinatorDefault: "claude/claude-opus-5-5",
     webSearchAvailable: true,
     random: () => 0.5,
+    onStatus: options.onStatus,
     catalog: async () => models,
+    savePlan: async (_owner, plan) => { savedPlans.push(plan); return { id: "clipboard_plan1" }; },
     personalData: async (_owner, _question, memoryQueries) => `PROFILE:\nName: Nikos\nSkills: TypeScript${memoryQueries.length ? "\nSPACE MEMORY: found" : ""}`,
     searchWeb: async (query) => [{ title: `About ${query}`, url: `https://example.com/${encodeURIComponent(query)}`, finding: "A fact." }],
     async callModel({ modelId, prompt, signal }) {
@@ -165,11 +170,15 @@ function fakeCouncil(options: { failOnce?: string; holdModel?: string; hold?: Pr
           { positionId: "P3", score: modelId === "opencode/free" ? 5 : 8, verdict: "partly" }, { positionId: "P4", score: 1, verdict: "disagree", issue: "Not a plan." }],
         corrections: ["Wolt needs a few days to onboard."], missing: [] });
       }
+      if (prompt.includes("Turn its agreed answer into a plan")) {
+        return options.planReply ?? JSON.stringify({ title: "Courier shift today", summary: "Work one Wolt shift.", minimumModel: "", minimumReasoning: "LOW",
+          steps: [{ title: "Sign up with Wolt", instructions: "Register.\nUpload documents.", completionCriteria: ["Account approved"] }, { title: "" }, { title: "Do the shift" }] });
+      }
       if (prompt.includes("Write the final answer")) return "## Answer\nDo a courier shift.\n## Top 3\n1. Courier shift — 9.0/10 · 3 of 3 agree";
       throw new Error(`unexpected prompt: ${prompt.slice(0, 60)}`);
     }
   });
-  return { service, repository, calls };
+  return { service, repository, calls, savedPlans };
 }
 
 describe("council run", () => {
@@ -252,6 +261,44 @@ describe("council run", () => {
     expect(calls.filter((call) => call.modelId === "opencode/free" && call.prompt.startsWith("You are one member"))).toHaveLength(2);
   });
 
+  it("has the coordinator write a plan into the clipboard, and reports a plan it could not write", async () => {
+    const finished = async (council: ReturnType<typeof fakeCouncil>) => {
+      const run = await council.service.create(owner, { question: "How can I earn 100 euros today?" });
+      await council.service.settled(run.id);
+      await council.service.answer(owner, run.id, { q1: "Athens" });
+      await council.service.settled(run.id);
+      await council.service.approve(owner, run.id, {});
+      await council.service.settled(run.id);
+      return run.id;
+    };
+    const council = fakeCouncil();
+    const id = await finished(council);
+    expect((await council.service.createClipboardPlan(owner, id)).clipboardPlan?.status).toBe("WRITING");
+    await expect(council.service.anotherRound(owner, id)).rejects.toThrow(/already working/);
+    await council.service.settled(id);
+    const done = await council.service.get(owner, id);
+    expect(done).toMatchObject({ status: "COMPLETED", clipboardPlan: { status: "DONE", itemId: "clipboard_plan1", title: "Courier shift today", error: null } });
+    const prompt = council.calls.at(-1)!;
+    expect(prompt.modelId).toBe("codex/gpt-6-astra");
+    expect(prompt.prompt).toContain("Do a courier shift.");
+    const saved = council.savedPlans[0]!;
+    expect(saved).toMatchObject({ minimumModel: "GPT-6 Astra", minimumReasoning: "low", steps: [{ title: "Sign up with Wolt", completionCriteria: ["Account approved"] }, { title: "Do the shift", instructions: "" }] });
+    expect(saved.text).toBe(["# Courier shift today", "Work one Wolt shift.", `Source: Research Council run ${id}, coordinated by GPT-6 Astra.\nQuestion: How can I earn 100 euros today?`,
+      "## Steps\n1. **Sign up with Wolt**\n   Register.\n   Upload documents.\n   Done when: Account approved\n2. **Do the shift**"].join("\n\n"));
+
+    const failing = fakeCouncil({ planReply: "I cannot help with that." });
+    const failedId = await finished(failing);
+    await failing.service.createClipboardPlan(owner, failedId);
+    await failing.service.settled(failedId);
+    expect(await failing.service.get(owner, failedId)).toMatchObject({ status: "COMPLETED", clipboardPlan: { status: "FAILED", error: "The coordinator did not return a usable plan." } });
+    expect(failing.savedPlans).toEqual([]);
+
+    // A restart dropped the job: the plan shows as failed and can be asked again.
+    const stored = await failing.repository.get(owner, failedId);
+    await failing.repository.save({ ...stored!, clipboardPlan: { status: "WRITING", itemId: null, title: null, error: null } });
+    expect((await failing.service.get(owner, failedId)).clipboardPlan).toMatchObject({ status: "FAILED", error: expect.stringMatching(/server restarted/) });
+  });
+
   it("closes runs a restart left working", async () => {
     const { service, repository } = fakeCouncil();
     const at = "2026-10-14T12:00:00.000Z";
@@ -259,5 +306,34 @@ describe("council run", () => {
       stage: "ANSWERS", plan, estimate: null, qa: [], changeRequests: [], evidence: [], answers: [], rounds: [], final: null, events: [], error: null, createdAt: at, updatedAt: at });
     expect(await service.interruptStale()).toBe(1);
     expect(await service.get(owner, "council_run:stale123456")).toMatchObject({ status: "INTERRUPTED", error: expect.stringMatching(/server restarted/) });
+  });
+
+  it("notifies when the council needs you and when it finishes, and resolves what you answered", async () => {
+    const log: string[] = [];
+    const notifications = {
+      async raise(input: { kind: string; severity: string; title: string; body: string; dedupeKey: string | null }) {
+        log.push(`raise ${input.kind} ${input.severity} ${input.dedupeKey ?? "-"} ${input.title} | ${input.body.split("\n").slice(1).join(" ")}`);
+        return {} as never;
+      },
+      async resolve(_owner: string, key: string) { log.push(`resolve ${key}`); return 0; }
+    };
+    const { service } = fakeCouncil({ onStatus: (owner, id, run) => notifyCouncilStatus(notifications, owner, id, run) });
+    const run = await service.create(owner, { question: "How can I earn 100 euros today?" });
+    const key = `council:${run.id}`;
+    await service.settled(run.id);
+    await service.answer(owner, run.id, { q1: "Athens" });
+    await service.settled(run.id);
+    await service.approve(owner, run.id, {});
+    await service.settled(run.id);
+    await service.remove(owner, run.id);
+    await service.settled(run.id);
+    expect(log).toEqual([
+      `resolve ${key}`, `raise NEEDS_INPUT ATTENTION ${key} The council needs your answers | `,
+      `resolve ${key}`,
+      `resolve ${key}`, `raise AWAITING_APPROVAL ATTENTION ${key} The council's plan waits for your approval | `,
+      `resolve ${key}`,
+      `resolve ${key}`, "raise COMPLETED INFO - The council finished | 1. Courier shift 2. Sell unused items 3. Freelance gig",
+      `resolve ${key}`
+    ]);
   });
 });

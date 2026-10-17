@@ -95,6 +95,8 @@ export interface StreamingBotRepository {
   moderationStrikes(platform: StreamingBotPlatform, accountId: string, channelId: string, userId: string, since: string): Promise<number>;
   recordModerationAction(input: Omit<StreamingModerationActionRecord, "createdAt" | "updatedAt">): Promise<StreamingModerationActionRecord | null>;
   updateModerationAction(id: string, result: StreamingModerationActionRecord["result"], platformActionId?: string | null, safeErrorCode?: string | null): Promise<StreamingModerationActionRecord | null>;
+  /** The operator's decision on a REVIEW item: it becomes a pending timeout; null if it is no longer in review. */
+  resolveModerationReview(id: string, decision: "TIMEOUT_5M" | "TIMEOUT_30M", durationSeconds: 300 | 1800): Promise<StreamingModerationActionRecord | null>;
   listModerationActions(limit: number): Promise<StreamingModerationActionRecord[]>;
   getModerationAction(id: string): Promise<StreamingModerationActionRecord | null>;
   claimMessage(platform: StreamingBotPlatform, accountId: string, messageId: string): Promise<boolean>;
@@ -166,6 +168,11 @@ function mapActivity(row: Record<string, unknown>): StreamingBotActivityRecord {
   };
 }
 
+/** Any of up to five words of 2+ characters matches; a whole multi-word phrase rarely appears verbatim in a fact. */
+export function memorySearchWords(query: string): string[] {
+  return [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length >= 2))].slice(0, 5);
+}
+
 export class InMemoryStreamingBotRepository implements StreamingBotRepository {
   private settings: StreamingBotSettings = defaultSettings();
   private readonly chatStates = new Map<string, StreamingBotChatStateRecord>();
@@ -185,6 +192,14 @@ export class InMemoryStreamingBotRepository implements StreamingBotRepository {
     const item = { ...input, createdAt: now, updatedAt: now };
     this.moderationActions.set(item.id, item);
     return structuredClone(item);
+  }
+
+  async resolveModerationReview(id: string, decision: "TIMEOUT_5M" | "TIMEOUT_30M", durationSeconds: 300 | 1800): Promise<StreamingModerationActionRecord | null> {
+    const item = this.moderationActions.get(id);
+    if (!item || item.result !== "REVIEW") return null;
+    const updated = { ...item, decision, durationSeconds, reason: "OPERATOR_COMMAND", result: "PENDING" as const, updatedAt: nowIso() };
+    this.moderationActions.set(id, updated);
+    return structuredClone(updated);
   }
 
   async updateModerationAction(id: string, result: StreamingModerationActionRecord["result"], platformActionId: string | null = null, safeErrorCode: string | null = null): Promise<StreamingModerationActionRecord | null> {
@@ -226,9 +241,10 @@ export class InMemoryStreamingBotRepository implements StreamingBotRepository {
   }
 
   async listMemory(status: "PENDING" | "APPROVED", limit: number, query = ""): Promise<StreamingBotMemoryRecord[]> {
-    const needle = query.toLowerCase();
+    const words = memorySearchWords(query);
+    if (query.trim() && !words.length) return [];
     return [...this.memories.values()].filter(item => item.status === status &&
-      `${item.title} ${item.body}`.toLowerCase().includes(needle))
+      (!words.length || words.some(word => `${item.title} ${item.body}`.toLowerCase().includes(word))))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, Math.max(1, Math.min(limit, 100))).map(item => structuredClone(item));
   }
@@ -270,8 +286,9 @@ export class InMemoryStreamingBotRepository implements StreamingBotRepository {
     if (this.settings.version !== input.expectedVersion) {
       throw new StreamingBotSettingsVersionConflictError(this.settings.version);
     }
+    const { expectedVersion: _expectedVersion, ...settings } = input.settings;
     this.settings = streamingBotSettingsSchema.parse({
-      ...input.settings,
+      ...settings,
       version: this.settings.version + 1,
       updatedAt: input.updatedAt,
       updatedBy: input.updatedBy
@@ -471,6 +488,15 @@ export class PostgresStreamingBotRepository implements StreamingBotRepository {
     return result.rows[0] ? mapModerationAction(result.rows[0]) : null;
   }
 
+  async resolveModerationReview(id: string, decision: "TIMEOUT_5M" | "TIMEOUT_30M", durationSeconds: 300 | 1800): Promise<StreamingModerationActionRecord | null> {
+    const rows = await this.pool.query<Record<string, unknown>>(
+      `UPDATE streaming_moderation_actions SET decision=$2,duration_seconds=$3,reason='OPERATOR_COMMAND',result='PENDING',updated_at=now()
+       WHERE id=$1 AND result='REVIEW' RETURNING *`,
+      [id, decision, durationSeconds]
+    );
+    return rows.rows[0] ? mapModerationAction(rows.rows[0]) : null;
+  }
+
   async updateModerationAction(id: string, result: StreamingModerationActionRecord["result"], platformActionId: string | null = null, safeErrorCode: string | null = null): Promise<StreamingModerationActionRecord | null> {
     const rows = await this.pool.query<Record<string, unknown>>(
       `UPDATE streaming_moderation_actions SET result=$2,platform_action_id=$3,safe_error_code=$4,updated_at=now() WHERE id=$1 RETURNING *`,
@@ -526,11 +552,14 @@ export class PostgresStreamingBotRepository implements StreamingBotRepository {
   }
 
   async listMemory(status: "PENDING" | "APPROVED", limit: number, query = ""): Promise<StreamingBotMemoryRecord[]> {
+    const words = memorySearchWords(query);
+    if (query.trim() && !words.length) return [];
     const result = await this.pool.query<Record<string, unknown>>(
       `SELECT id, title, body, status, source, version, created_at, updated_at
-       FROM streaming_bot_memory WHERE status = $1 AND ($2 = '' OR title ILIKE '%' || $2 || '%' OR body ILIKE '%' || $2 || '%')
+       FROM streaming_bot_memory WHERE status = $1 AND (cardinality($2::text[]) = 0 OR EXISTS (
+         SELECT 1 FROM unnest($2::text[]) AS word WHERE strpos(lower(title), word) > 0 OR strpos(lower(body), word) > 0))
        ORDER BY updated_at DESC LIMIT $3`,
-      [status, query, Math.max(1, Math.min(limit, 100))]
+      [status, words, Math.max(1, Math.min(limit, 100))]
     );
     return result.rows.map(mapMemory);
   }

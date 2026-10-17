@@ -217,14 +217,14 @@ export function UserManagementDialog({
                           </div>
                         </div>
                       </td>
-                      <td>
+                      <td data-label="Current role">
                         <span
                           className={`user-role-badge user-role-${user.role.toLowerCase()}`}
                         >
                           {user.role}
                         </span>
                       </td>
-                      <td>
+                      <td data-label="Change role">
                         {isOperator ? (
                           <span style={{ fontSize: "0.75rem", color: "var(--room-muted, #a7a59e)" }}>
                             Fixed Operator
@@ -248,8 +248,8 @@ export function UserManagementDialog({
                           </select>
                         )}
                       </td>
-                      <td>{user.roomCount}</td>
-                      <td>{formatDate(user.createdAt)}</td>
+                      <td data-label="Rooms">{user.roomCount}</td>
+                      <td data-label="Created">{formatDate(user.createdAt)}</td>
                     </tr>
                   );
                 })}

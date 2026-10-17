@@ -5,11 +5,11 @@ import { z } from "zod";
  * delivered through the channels the user turned on (in-app badges and toasts, sound, browser desktop
  * notifications, Telegram) and kept in the Notification Center until read or acknowledged.
  */
-export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "ROOM_AGENT", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
+export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "ROOM_AGENT", "COUNCIL", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
 export const notificationSourceSchema = z.enum(NOTIFICATION_SOURCES);
 export type NotificationSource = z.infer<typeof notificationSourceSchema>;
 export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
-  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", ROOM_AGENT: "Room Agent", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
+  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", ROOM_AGENT: "Room Agent", COUNCIL: "Council", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
 };
 
 export const notificationSeveritySchema = z.enum(["INFO", "ATTENTION", "URGENT"]);

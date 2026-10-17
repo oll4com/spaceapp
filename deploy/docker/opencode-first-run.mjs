@@ -1,7 +1,7 @@
 // Uses the native catalog and native completion path; never overrides provider.opencode.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -118,6 +118,9 @@ export async function configureFirstRun(env=process.env) {
   for(;;){
     try {await mkdir(lock);break;} catch(error){
       if(error.code!=='EEXIST')throw error;
+      // A lock older than a whole selection was left by a killed run (OOM, SIGKILL); without this every start waited 120 s.
+      const age=await stat(lock).then(info=>Date.now()-info.mtimeMs,()=>0);
+      if(age>SELECTION_BUDGET_MS+20000){await rm(lock,{recursive:true,force:true});continue;}
       if(Date.now()>=deadline)throw new Error('OpenCode initialization is already running. Retry after it finishes.');
       await delay(500);
     }

@@ -3,6 +3,7 @@
    overlay and its metric tiles further down keep their broadcast look. */
 
 .streaming-dock {
+  container: streaming-dock / inline-size;
   color: var(--dock-text);
   gap: 0.75rem;
   grid-template-columns: minmax(0, 1fr);
@@ -16,16 +17,107 @@
   margin: 0;
 }
 
-/* Tabs */
-/* Tabs wrap like the dock filter chips, so every label stays whole. */
+/* Tabs: two even rows of three in a narrow dock, one row when it is wide; every label stays whole. */
 .streaming-dock-tabs {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.3rem;
 }
 
-.streaming-dock-tabs > .streaming-dock-tab {
-  flex: 1 0 auto;
+@container streaming-dock (min-width: 34rem) {
+  .streaming-dock-tabs {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+/* Overview strip: bot, moderation and memory at a glance; each opens its tab. */
+.streaming-status-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.streaming-status-chip {
+  display: grid;
+  justify-items: start;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.streaming-status-chip:hover {
+  border-color: var(--dock-border-strong);
+  background: var(--dock-soft);
+}
+
+.streaming-status-chip:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.streaming-status-chip-label {
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+}
+
+/* Bot setup checklist */
+.streaming-setup-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.streaming-setup-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2rem 0.5rem;
+  align-items: start;
+}
+
+.streaming-setup-item > svg {
+  width: var(--dock-icon);
+  height: var(--dock-icon);
+  margin-top: 0.1rem;
+}
+
+.streaming-setup-item.is-ok > svg {
+  color: var(--dock-success);
+}
+
+.streaming-setup-item.is-missing > svg {
+  color: var(--dock-warning);
+}
+
+.streaming-setup-item > div {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.streaming-setup-item strong {
+  font-size: var(--dock-font);
+}
+
+.streaming-setup-item > .dock-kit-button {
+  grid-column: 2;
+  justify-self: start;
+}
+
+.streaming-moderation-message {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .streaming-dock-tab {
@@ -261,6 +353,10 @@ small.streaming-hint {
   height: 1.65rem;
   display: grid;
   place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
   border-radius: var(--dock-radius-sm);
   color: var(--dock-muted);
   cursor: pointer;
@@ -330,6 +426,14 @@ small.streaming-hint {
 
 .streaming-provider-card[data-provider="TIKTOK"] .streaming-provider-mark {
   color: #25c2b8;
+}
+
+.streaming-provider-card[data-provider="X"] .streaming-provider-mark {
+  color: var(--dock-text);
+}
+
+.streaming-provider-card[data-provider="DISCORD"] .streaming-provider-mark {
+  color: #7289ff;
 }
 
 .streaming-safe-error {
@@ -693,7 +797,7 @@ small.streaming-hint {
 .streaming-bot-overview-grid,
 .streaming-bot-platform-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 0.55rem;
 }
 
@@ -841,7 +945,8 @@ small.streaming-hint {
   flex: 1;
 }
 
-@media (max-width: 420px) {
+/* The dock width decides, not the window: a narrow dock on a wide screen stacks the fact fields too. */
+@container streaming-dock (max-width: 26rem) {
   .streaming-bot-pair {
     grid-template-columns: minmax(0, 1fr) auto;
   }
@@ -927,6 +1032,14 @@ small.streaming-hint {
 
 .streaming-metric-tile[data-provider="TIKTOK"] .streaming-provider-icon {
   color: #7ff5ea;
+}
+
+.streaming-metric-tile[data-provider="X"] .streaming-provider-icon {
+  color: #e7e9ea;
+}
+
+.streaming-metric-tile[data-provider="DISCORD"] .streaming-provider-icon {
+  color: #9aa6ff;
 }
 
 .streaming-metric-tile[data-provider="SPACE"] .streaming-provider-icon {

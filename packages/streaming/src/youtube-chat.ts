@@ -54,8 +54,9 @@ export class YouTubeChatConnector {
     const url = new URL("https://www.googleapis.com/youtube/v3/liveBroadcasts");
     url.search = formBody({
       part: "id,snippet,contentDetails,status",
-      mine: "true",
+      // Google accepts exactly one filter (broadcastStatus, id or mine); "all" includes the persistent "Stream now" broadcast.
       broadcastStatus: "active",
+      broadcastType: "all",
       maxResults: "1"
     }).toString();
     const payload = await this.requestJson(url.toString(), { headers: bearerHeaders(token) });

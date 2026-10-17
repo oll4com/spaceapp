@@ -8,7 +8,7 @@ import {
 import { CouncilActiveRunError, newCouncilRunId, type CouncilRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
 import { extractJsonObject } from "../asteroids-arena/protocol.js";
-import { buildAnswerPrompt, buildFinalPrompt, buildMergePrompt, buildPlanPrompt, buildReviewPrompt } from "./prompts.js";
+import { buildAnswerPrompt, buildClipboardPlanPrompt, buildFinalPrompt, buildMergePrompt, buildPlanPrompt, buildReviewPrompt } from "./prompts.js";
 import { anonymizeModelText, clip, councilAgreementReached, councilTopEntries, deriveClaims, rankCouncilPositions, scrubContactDetails, shuffled } from "./ranking.js";
 
 /** A run gives up after this long, whatever stage it reached. */
@@ -26,7 +26,11 @@ export interface CouncilServiceDeps {
   webSearchAvailable: boolean;
   /** The operator's CV, profile and memory as one text block for the coordinator (extra keyword searches optional). */
   personalData(owner: string, question: string, memoryQueries: readonly string[]): Promise<string>;
+  /** Saves the coordinator's plan as a PLAN record in the owner's clipboard. */
+  savePlan(owner: string, plan: CouncilClipboardPlanDraft & { text: string }): Promise<{ id: string }>;
   coordinatorDefault: string;
+  /** Told of each new status of a run (null once it is deleted), one after another; notifications hang off it. */
+  onStatus?(owner: string, id: string, run: CouncilRun | null): Promise<void>;
   now?: () => Date;
   random?: () => number;
   log?: { warn(meta: object, message: string): void };
@@ -171,6 +175,37 @@ export function parseCouncilReview(text: string, positions: readonly CouncilPosi
   return { scores, corrections: strings(json.corrections, 5, 300), missing: strings(json.missing, 5, 300) };
 }
 
+export interface CouncilClipboardPlanDraft {
+  title: string;
+  summary: string;
+  minimumModel: string;
+  minimumReasoning: "low" | "medium" | "high" | null;
+  steps: Array<{ title: string; instructions: string; completionCriteria: string[] }>;
+}
+
+/** The coordinator's plan for the clipboard; null without a title or a single step. */
+export function parseCouncilClipboardPlan(text: string): CouncilClipboardPlanDraft | null {
+  const json = jsonReply(text);
+  const title = clip(String(json?.title ?? "").trim(), 120);
+  const steps = (Array.isArray(json?.steps) ? json.steps : []).flatMap((raw) => {
+    const entry = (raw ?? {}) as Record<string, unknown>;
+    const stepTitle = clip(String(entry.title ?? "").trim(), 120);
+    return stepTitle ? [{ title: stepTitle, instructions: clip(String(entry.instructions ?? "").trim(), 1_500), completionCriteria: strings(entry.completionCriteria, 5, 300) }] : [];
+  }).slice(0, 12);
+  if (!title || !steps.length) return null;
+  const reasoning = String(json?.minimumReasoning ?? "").toLowerCase();
+  return { title, summary: clip(String(json?.summary ?? "").trim(), 1_000), minimumModel: clip(String(json?.minimumModel ?? "").trim(), 80),
+    minimumReasoning: reasoning === "low" || reasoning === "medium" || reasoning === "high" ? reasoning : null, steps };
+}
+
+/** The PLAN record's text: the plan, then where it came from, so the clipboard links back to the run. */
+export function councilClipboardPlanText(run: Pick<CouncilRun, "id" | "question">, draft: CouncilClipboardPlanDraft, coordinator: string): string {
+  const steps = draft.steps.map((step, index) => [`${index + 1}. **${step.title}**`, step.instructions ? `   ${step.instructions.replace(/\n/g, "\n   ")}` : "",
+    step.completionCriteria.length ? `   Done when: ${step.completionCriteria.join("; ")}` : ""].filter(Boolean).join("\n"));
+  return [`# ${draft.title}`, draft.summary, `Source: Research Council run ${run.id}, coordinated by ${coordinator}.\nQuestion: ${run.question}`, `## Steps\n${steps.join("\n")}`]
+    .filter(Boolean).join("\n\n");
+}
+
 export function createCouncilService(deps: CouncilServiceDeps) {
   const now = () => (deps.now?.() ?? new Date()).toISOString();
   const random = deps.random ?? Math.random;
@@ -185,6 +220,23 @@ export function createCouncilService(deps: CouncilServiceDeps) {
   }
   const displayName = (models: readonly CouncilModel[], modelId: string) => models.find((model) => model.id === modelId)?.displayName ?? modelId;
 
+  // Queued, so a resolve for one status never overtakes the raise for the next.
+  const lastStatus = new Map<string, CouncilRun["status"]>();
+  let statusQueue: Promise<unknown> = Promise.resolve();
+  function statusChanged(owner: string, id: string, run: CouncilRun | null) {
+    if (!deps.onStatus) return;
+    statusQueue = statusQueue.then(() => deps.onStatus!(owner, id, run))
+      .catch((error: unknown) => deps.log?.warn({ err: error, runId: id }, "Council status hook failed."));
+  }
+  async function save(run: CouncilRun): Promise<CouncilRun> {
+    const saved = await deps.repository.save(run);
+    if (lastStatus.get(saved.id) !== saved.status) {
+      lastStatus.set(saved.id, saved.status);
+      statusChanged(saved.ownerUserId, saved.id, saved);
+    }
+    return saved;
+  }
+
   /** The only writer of a run: every change is applied to the latest copy and saved in order. */
   function writer(initial: CouncilRun) {
     let current = initial;
@@ -195,7 +247,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
         const next = queue.then(async () => {
           let updated = change(current);
           if (event) updated = { ...updated, events: [...updated.events, { at: now(), text: clip(event, 300) }].slice(-200) };
-          current = await deps.repository.save({ ...updated, updatedAt: now() });
+          current = await save({ ...updated, updatedAt: now() });
           return current;
         });
         queue = next.catch(() => undefined);
@@ -393,6 +445,25 @@ export function createCouncilService(deps: CouncilServiceDeps) {
     await w.update((current) => ({ ...current, status: "COMPLETED", stage: "DONE", final: { text: clip(text, 12_000), top }, error: null }), "The council finished.");
   }
 
+  /** Never throws: a plan that fails leaves the finished run as it was and only reports why. */
+  async function writeClipboardPlan(w: Writer, signal: AbortSignal): Promise<void> {
+    const run = w.current;
+    try {
+      const prompt = buildClipboardPlanPrompt({ question: run.question, personalContext: run.plan?.personalContext ?? "", final: run.final?.text ?? "" });
+      let parsed: CouncilClipboardPlanDraft | null = null;
+      for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) parsed = parseCouncilClipboardPlan(await deps.callModel({ modelId: run.coordinatorModelId, prompt, role: "coordinator", signal }));
+      if (!parsed) throw new Error("The coordinator did not return a usable plan.");
+      const draft = parsed;
+      const coordinator = displayName(await catalog(), run.coordinatorModelId);
+      const item = await deps.savePlan(run.ownerUserId, { ...draft, minimumModel: draft.minimumModel || coordinator, text: councilClipboardPlanText(run, draft, coordinator) });
+      await w.update((current) => ({ ...current, clipboardPlan: { status: "DONE", itemId: item.id, title: draft.title, error: null } }),
+        `The coordinator saved the plan "${draft.title}" to your clipboard.`);
+    } catch (error) {
+      const reason = signal.aborted ? "Stopped before the plan was saved." : errorText(error);
+      await w.update((current) => ({ ...current, clipboardPlan: { status: "FAILED", itemId: null, title: null, error: reason } }), `The plan could not be written: ${reason}`);
+    }
+  }
+
   /** Continues from the saved stage, so a resumed run skips what is already done. */
   async function execute(w: Writer, signal: AbortSignal, extraRound = false): Promise<void> {
     const models = await catalog();
@@ -455,14 +526,19 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       return deps.repository.list(owner, limit);
     },
 
-    get: load,
+    /** A restart drops the job writing a plan, so a plan left WRITING without one shows as failed and can be asked again. */
+    async get(owner: string, id: string): Promise<CouncilRun> {
+      const run = await load(owner, id);
+      return run.clipboardPlan?.status === "WRITING" && !running.has(id)
+        ? { ...run, clipboardPlan: { status: "FAILED", itemId: null, title: null, error: "Stopped: the server restarted." } } : run;
+    },
 
     async answer(owner: string, id: string, provided: Record<string, string>): Promise<CouncilRun> {
       const run = await load(owner, id);
       assertStatus(run, ["NEEDS_INPUT"], "take answers");
       const last = run.qa.at(-1)!;
       const answersById = Object.fromEntries(last.questions.map((question) => [question.id, clip((provided[question.id] ?? "").trim(), 2_000)]));
-      const saved = await deps.repository.save({ ...run, status: "PLANNING", qa: [...run.qa.slice(0, -1), { ...last, answers: answersById }],
+      const saved = await save({ ...run, status: "PLANNING", qa: [...run.qa.slice(0, -1), { ...last, answers: answersById }],
         events: [...run.events, { at: now(), text: "You answered; the coordinator continues the plan." }].slice(-200), updatedAt: now() });
       launch(saved, plan);
       return saved;
@@ -472,7 +548,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       const run = await load(owner, id);
       assertStatus(run, ["AWAITING_APPROVAL"], "change its plan");
       if (run.changeRequests.length >= 10) throw new SpaceConflictError("This plan has had ten change requests; approve it or start a new question.");
-      const saved = await deps.repository.save({ ...run, status: "PLANNING", changeRequests: [...run.changeRequests, text],
+      const saved = await save({ ...run, status: "PLANNING", changeRequests: [...run.changeRequests, text],
         events: [...run.events, { at: now(), text: "You asked for changes; the coordinator revises the plan." }].slice(-200), updatedAt: now() });
       launch(saved, plan);
       return saved;
@@ -492,7 +568,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       const approved = councilPlanSchema.parse({ ...current, members, personalContext: edits.personalContext ?? current.personalContext, reviewRounds: edits.reviewRounds ?? current.reviewRounds });
       let saved: CouncilRun;
       try {
-        saved = await deps.repository.save({ ...run, status: "RUNNING", stage: "RESEARCH", plan: approved, estimate: estimateCouncil(approved), error: null,
+        saved = await save({ ...run, status: "RUNNING", stage: "RESEARCH", plan: approved, estimate: estimateCouncil(approved), error: null,
           events: [...run.events, { at: now(), text: "You approved the plan." }].slice(-200), updatedAt: now() });
       } catch (error) {
         if (error instanceof CouncilActiveRunError) throw new SpaceConflictError(error.message);
@@ -522,7 +598,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
         await entry.done;
         return load(owner, id);
       }
-      return deps.repository.save({ ...run, status: "CANCELLED", error: "Cancelled.", events: [...run.events, { at: now(), text: "Cancelled." }].slice(-200), updatedAt: now() });
+      return save({ ...run, status: "CANCELLED", error: "Cancelled.", events: [...run.events, { at: now(), text: "Cancelled." }].slice(-200), updatedAt: now() });
     },
 
     async resume(owner: string, id: string): Promise<CouncilRun> {
@@ -532,7 +608,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       const planning = run.plan === null || run.stage === "PLAN";
       let saved: CouncilRun;
       try {
-        saved = await deps.repository.save({ ...run, status: planning ? "PLANNING" : "RUNNING", error: null,
+        saved = await save({ ...run, status: planning ? "PLANNING" : "RUNNING", error: null,
           events: [...run.events, { at: now(), text: "Resumed where it stopped." }].slice(-200), updatedAt: now() });
       } catch (error) {
         if (error instanceof CouncilActiveRunError) throw new SpaceConflictError(error.message);
@@ -546,9 +622,10 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       const run = await load(owner, id);
       assertStatus(run, ["COMPLETED"], "run another review round");
       if (run.rounds.length >= COUNCIL_MAX_TOTAL_ROUNDS) throw new SpaceConflictError(`A council run stops at ${COUNCIL_MAX_TOTAL_ROUNDS} review rounds.`);
+      if (running.has(id)) throw new SpaceConflictError("This Council run is already working.");
       let saved: CouncilRun;
       try {
-        saved = await deps.repository.save({ ...run, status: "RUNNING", stage: "MERGE", error: null,
+        saved = await save({ ...run, status: "RUNNING", stage: "MERGE", error: null,
           events: [...run.events, { at: now(), text: "You asked for another review round." }].slice(-200), updatedAt: now() });
       } catch (error) {
         if (error instanceof CouncilActiveRunError) throw new SpaceConflictError(error.message);
@@ -558,10 +635,23 @@ export function createCouncilService(deps: CouncilServiceDeps) {
       return saved;
     },
 
+    /** "Create plan": the coordinator turns the final answer into a PLAN record in the owner's clipboard. */
+    async createClipboardPlan(owner: string, id: string): Promise<CouncilRun> {
+      const run = await load(owner, id);
+      assertStatus(run, ["COMPLETED"], "write a plan");
+      if (running.has(id)) throw new SpaceConflictError("This Council run is already working.");
+      const saved = await save({ ...run, clipboardPlan: { status: "WRITING", itemId: null, title: null, error: null },
+        events: [...run.events, { at: now(), text: "You asked the coordinator for a plan in your clipboard." }].slice(-200), updatedAt: now() });
+      launch(saved, writeClipboardPlan);
+      return saved;
+    },
+
     async remove(owner: string, id: string): Promise<void> {
       await load(owner, id);
       if (running.has(id)) throw new SpaceConflictError("Stop this Council run before deleting it.");
       await deps.repository.delete(owner, id);
+      lastStatus.delete(id);
+      statusChanged(owner, id, null);
     },
 
     /** On start: runs a stopped process left working end as INTERRUPTED. */
@@ -580,6 +670,7 @@ export function createCouncilService(deps: CouncilServiceDeps) {
     /** Test hook: resolves when the run's background work ends. */
     async settled(id: string): Promise<void> {
       await running.get(id)?.done;
+      await statusQueue;
     }
   };
 }

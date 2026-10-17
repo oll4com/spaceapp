@@ -9,12 +9,13 @@ import {
   Images,
   Link as LinkIcon,
   ListTodo,
-  MessageSquare,
+  MessagesSquare,
   PanelLeft,
   Radio,
   Settings,
   Terminal,
-  type LucideIcon
+  type LucideIcon,
+  AgentFiles
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 
@@ -22,11 +23,11 @@ export const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: str
   rooms: { icon: PanelLeft, label: "rooms", surfaceLabel: "Rooms" },
   notifications: { icon: Bell, label: "notifications", surfaceLabel: "Notifications" },
   "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
-  "shared-chat": { icon: MessageSquare, label: "council", surfaceLabel: "Council" },
+  "shared-chat": { icon: MessagesSquare, label: "council", surfaceLabel: "Council" },
   media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
   streaming: { icon: Radio, label: "streaming dock", surfaceLabel: "Streaming dock" },
   "source-control": { icon: GitBranch, label: "source control", surfaceLabel: "Source Control" },
-  "agent-files": { icon: FolderOpen, label: "Agent Files", surfaceLabel: "Agent Files" },
+  "agent-files": { icon: AgentFiles, label: "Agent Files", surfaceLabel: "Agent Files" },
   clipboard: { icon: Clipboard, label: "clipboard", surfaceLabel: "Clipboard" },
   tasks: { icon: ListTodo, label: "tasks", surfaceLabel: "Tasks" },
   links: { icon: LinkIcon, label: "links", surfaceLabel: "Links" },
