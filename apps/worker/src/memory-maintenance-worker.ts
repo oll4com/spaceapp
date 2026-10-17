@@ -7,7 +7,6 @@ import {
   memoryMaintenanceWorkerOptions
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
-import { createActivityObservabilityInterceptors } from "./activity-observability.js";
 import { workerOtlp } from "./worker-otlp.js";
 
 const service = "space-memory-maintenance-worker";
@@ -30,12 +29,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      sinks: otlp.workerOptions.sinks,
-      interceptors: {
-        workflowModules: otlp.workerOptions.interceptors?.workflowModules ?? [],
-        activity: [createActivityObservabilityInterceptors({ spans })]
-      }
-      // interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      ...otlp.workerOptions
     });
     console.log(JSON.stringify({
       service,

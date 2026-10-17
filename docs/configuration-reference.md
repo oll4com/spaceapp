@@ -60,5 +60,5 @@ routes set the modules they keep, for example
   `memory-mutation-worker.ts`) export traces to `<endpoint>/v1/traces` over OTLP/HTTP JSON without heavy
   external SDK dependencies. API requests emit `SERVER` spans; Temporal workers emit `INTERNAL` workflow
   spans (parented to the API request) and per-attempt activity spans. When unset (default), span export is
-  completely disabled and incurs zero runtime or network overhead.
+  disabled, no spans are exported, and no network requests are made.
 

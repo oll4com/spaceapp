@@ -242,17 +242,17 @@ bounded exporter in `@space/runtime`).
   - **Strict attribute allowlist:** only allowlisted identifiers (`space.workflow_id`, `space.run_id`,
     `space.attempt`, `space.outcome`, `space.reason_code`, `space.category`, etc.) and durations are exported.
     Prompts, model output, file paths, URLs, error messages, and user text are never exported.
-- **Workflow code is unchanged.** Tracing is handled cleanly via workflow and activity interceptors and
-  worker sinks.
+- **Workflow code is unchanged.** Tracing is handled via workflow interceptors (configured in worker
+  options, issuing no extra commands) and worker sinks.
 
 ### Replay compatibility
 
-No file under `apps/worker/src` that the workflow bundle imports was changed
-(`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
-`dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base
-commit and for this change and compared after normalizing paths and webpack
-module numbers. The only differences are in `@space/contracts`:
-- the new `observability` module;
+No existing workflow file under `apps/worker/src` was changed (`workflows.ts`,
+`room-supervisor-state.ts`, `turn-runtime-policy.ts`, `dot-goal-loop.ts`). The
+`agent-turns` workflow bundle was built for the base commit and for this change
+and compared after normalizing paths and webpack module numbers. The bundle differences are:
+- `apps/worker/src/otlp-workflow-interceptors.ts` (pure sink calls, issuing zero Temporal commands);
+- the new `@space/contracts` `observability` module;
 - the optional `traceparent` turn-input field;
 - the optional file search and readiness fields.
 

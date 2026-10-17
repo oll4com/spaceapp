@@ -43,13 +43,7 @@ const worker = await Worker.create({
   taskQueue,
   workflowsPath,
   activities,
-  sinks: otlp.workerOptions.sinks,
-  interceptors: {
-    workflowModules: otlp.workerOptions.interceptors?.workflowModules ?? [],
-    // Structured, correlated activity records and worker metrics.
-    activity: [createActivityObservabilityInterceptors({ spans })]
-  }
-  // interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+  ...otlp.workerOptions
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.

@@ -1,6 +1,7 @@
 import {
   ApplicationFailure,
   ContinueAsNew,
+  TemporalFailure,
   isCancellation,
   proxySinks,
   workflowInfo,
@@ -62,8 +63,9 @@ function isTerminalWorkflowError(error: unknown): boolean {
   if (error instanceof ContinueAsNew) return true;
   if (isCancellation(error)) return true;
   if (error instanceof ApplicationFailure) return Boolean(error.nonRetryable);
+  if (error instanceof TemporalFailure) return true;
   const name = typeof (error as { name?: unknown })?.name === "string" ? (error as { name: string }).name : "";
-  if (/ContinueAsNew/i.test(name) || /Cancel/i.test(name)) return true;
+  if (/ContinueAsNew/i.test(name) || /Cancel/i.test(name) || /Failure/i.test(name)) return true;
   return false;
 }
 
