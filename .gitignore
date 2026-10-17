@@ -52,3 +52,7 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Isolated contributor containers, secrets, provider state and sockets
+.dev-stack/
+.dev-stack-*/

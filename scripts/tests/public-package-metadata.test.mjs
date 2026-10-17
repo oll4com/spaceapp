@@ -19,6 +19,7 @@ const publicTestModules = [
   "public-compose-config.test.mjs",
   "public-credential-install.test.mjs",
   "public-docker-distribution.test.mjs",
+  "public-dev-stack.test.mjs",
   "public-export.test.mjs",
   "public-package-metadata.test.mjs",
   "public-release-readiness.test.mjs",

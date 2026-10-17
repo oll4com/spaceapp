@@ -5,7 +5,7 @@ import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "./antigravity-usage-services.js";
 
 // A dev instance on another port of the same host must not overwrite the stable session cookie.
-const SESSION_COOKIE = sessionCookieNameFor(resolveSpaceInstance(process.env));
+const SESSION_COOKIE = sessionCookieNameFor(resolveSpaceInstance(process.env), process.env.SPACE_DEV_SESSION_COOKIE_NAMESPACE);
 const CSRF_HEADER = "x-space-csrf-token";
 const DEV_OPERATOR_EMAIL = "space@space.local";
 const SCRYPT_MAXMEM_BYTES = 128 * 1024 * 1024;
