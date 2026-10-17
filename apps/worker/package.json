@@ -10,7 +10,8 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "temporal:record-histories": "SPACE_RECORD_WORKFLOW_HISTORIES=1 vitest run tests/temporal-sandbox.test.ts"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -27,7 +28,9 @@
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "@temporalio/testing": "1.24.0",
+    "@temporalio/proto": "1.24.0"
   },
   "license": "BUSL-1.1"
 }
