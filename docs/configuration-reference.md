@@ -52,3 +52,15 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Optional worker trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP/HTTP JSON export in the API
+and all three Temporal workers. Use a collector base URL, for example
+`http://127.0.0.1:4318`. Export is disabled when the variable is unset.
+Workflow runs, child workflows and activity attempts share trace context;
+continued runs use span links. Export queues hold at most 4096 spans per
+process, batches contain at most 256 spans and HTTP posts time out after
+three seconds. Slow collectors never block activity results. Unset the
+variable to stop export; leave workflow interceptors installed for replay.
+CLI host and Browser Host tracing are outside this coverage.

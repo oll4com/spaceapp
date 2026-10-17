@@ -1,3 +1,4 @@
+import { currentActivityTraceparent } from "./activity-trace-context.js";
 import {
   buildCodexAppServerProcessEnv,
   codexTurnTokenUsage,
@@ -452,8 +453,10 @@ export async function runRoomAgentBackgroundAction(input: {
 async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown>, fetchImpl: typeof fetch = fetch) {
   const config = getCodexAppServerTurnActivityConfig();
   if (!config.internalApiToken) throw new Error("Dot Goals require internal API authentication.");
+  const traceparent = currentActivityTraceparent();
   const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/goals/${path}`, {
-    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken,
+      ...(traceparent ? { traceparent } : {}) },
     body: JSON.stringify(body), signal: AbortSignal.timeout(90_000)
   });
   const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -1643,6 +1646,8 @@ async function recordSpaceAgentRunCompleted(
             }
       )
     : undefined;
+  const traceparent = currentActivityTraceparent();
+  if (roomAgentOutcome && traceparent) roomAgentOutcome.activityTraceparent = traceparent;
   const verified = !roomAgentOutcome || roomAgentOutcome.status === "VERIFIED";
   const completedAt = new Date().toISOString();
   if (verified) {

@@ -5,6 +5,9 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Connect optional worker OTLP traces across workflow runs, child workflows,
+  activity retries and continuation links, using a shared bounded exporter.
+
 ## [1.1.6] - 2026-10-16
 
 Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry

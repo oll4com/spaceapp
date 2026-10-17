@@ -23,9 +23,11 @@
     "@temporalio/client": "1.24.0",
     "@temporalio/worker": "1.24.0",
     "@temporalio/workflow": "1.24.0",
-    "undici": "8.10.2"
+    "undici": "8.10.2",
+    "@space/runtime": "0.2.5"
   },
   "devDependencies": {
+    "@temporalio/testing": "1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },

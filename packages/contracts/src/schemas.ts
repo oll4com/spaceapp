@@ -6751,6 +6751,7 @@ export const dummyTurnInputSchema = z.object({
   // Optional W3C trace context of the originating request (additive; see
   // docs/quality/observability.md). Never part of a workflow id.
   traceparent: traceparentSchema.optional(),
+  traceLinks: z.array(traceparentSchema).max(8).optional(),
   // Space Dots Stage 3 (additive): a gateway-enabled native Chat turn.
   dotId: dotIdSchema.optional(),
   toolGateway: z.literal("space-dot-tools-v1").optional(),
@@ -6827,6 +6828,7 @@ export const dummyTurnResultSchema = z.object({
 
 export const roomAgentTurnOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
+    activityTraceparent: traceparentSchema.optional(),
     status: z.literal("VERIFIED"),
     pendingActionIds: z.array(idSchema).max(64).optional(),
     executedActionCount: z.number().int().min(1).max(100),
@@ -6834,6 +6836,7 @@ export const roomAgentTurnOutcomeSchema = z.discriminatedUnion("status", [
   }),
   z.object({
     status: z.literal("UNVERIFIED"),
+    activityTraceparent: traceparentSchema.optional(),
     executedActionCount: z.number().int().min(0).max(100),
     statusReason: z.string().min(1).max(1000)
   })

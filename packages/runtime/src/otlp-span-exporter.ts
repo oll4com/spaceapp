@@ -22,6 +22,7 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  links?: ReadonlyArray<{ traceId: string; spanId: string }>;
 }
 
 export interface SpanExporterStats {
@@ -82,6 +83,7 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
           kind: span.kind ?? 2,
+          ...(span.links?.length ? { links: span.links.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId)) } : {}),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
@@ -103,24 +105,33 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const queue: ServerSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
+  let closed = false;
 
   const flushOnce = async () => {
     const batch = queue.splice(0, batchSize);
     if (!batch.length) return;
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      const response = await send(url, {
+      const expired = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => { controller.abort(); reject(new Error("OTLP timeout")); }, timeoutMs);
+      });
+      const response = await Promise.race([send(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(otlpTraceRequest(batch, options.serviceName)),
-        signal: AbortSignal.timeout(timeoutMs)
-      });
+        signal: controller.signal
+      }), expired]);
       if (response.ok) stats.exported += batch.length;
       else stats.failed += batch.length;
     } catch {
       stats.failed += batch.length;
+    } finally {
+      clearTimeout(timeout);
     }
   };
   const flush = (): Promise<void> => {
+    if (!queue.length && !inFlight) return Promise.resolve();
     if (!inFlight) {
       inFlight = (async () => {
         try {
@@ -137,6 +148,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
 
   return {
     record(span) {
+      if (closed) return;
       if (!traceIdPattern.test(span.traceId) || !spanIdPattern.test(span.spanId)) return;
       if (queue.length >= maxQueue) {
         stats.dropped += 1;
@@ -147,6 +159,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     },
     flush,
     async close() {
+      closed = true;
       clearInterval(timer);
       await flush();
     },

@@ -13,6 +13,7 @@ import {
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { currentActivityTraceparent } from "./activity-trace-context.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -57,6 +58,8 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
 
 /** traceparent for an outbound call: same W3C trace, new span id; null if none. */
 export function childTraceparent(traceparent: string | null | undefined): string | null {
+  const current = currentActivityTraceparent();
+  if (current) return current;
   const parsed = parseTraceparent(traceparent);
   if (!parsed) return null;
   let spanId = randomBytes(8).toString("hex");
@@ -137,6 +140,7 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  onFinished?: (event: { outcome: ActivityOutcome; reasonCode: string | null; category: FailureCategory | null; startedAt: number; durationMs: number }) => void;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -194,6 +198,10 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
+    if (dependencies.onFinished) {
+      try { dependencies.onFinished({ outcome, reasonCode, category, startedAt, durationMs }); } catch {}
+      return;
+    }
     const parent = dependencies.spans ? activityTraceparent(args) : null;
     if (parent) {
       dependencies.spans!.record({

@@ -50,6 +50,8 @@ describe("request trace context", () => {
     registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
     expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    // The workflow parent must name the actual exported HTTP span, not a phantom child.
+    expect(filled.traceparent).toBe(registry.lookup("req:dddddddddddd")?.traceparent);
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });

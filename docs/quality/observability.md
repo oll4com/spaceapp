@@ -217,11 +217,14 @@ Without the endpoint, every activity still writes `activity.started` and
 
 The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
 SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
-2026-10-16 the worker and both memory workers use the same exporter (services
-`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). The worker and both memory workers share this exporter. When configured, they
+export one workflow span per completed run and one activity span per attempt.
+Temporal headers connect activities and child workflows to their workflow span;
+the root workflow is parented by the actual API SERVER span. Continued runs link
+to the preceding run. Background continuation turns carry a link to the completed
+source activity, persisted with the Room Agent outcome. Legacy outcomes have no
+source link. Export includes bounded identifiers, outcomes, attempts and stable
+failure codes/categories, never prompts, results or free-form errors.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
@@ -233,23 +236,20 @@ that span, with the activity type, outcome and attempt only.
 - **Worker:** worker logs read the trace ID from the activity input. Internal
   room-action calls from the worker send a child `traceparent`, so the internal
   API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+- **Workflow tracing:** `workflow-tracing.ts` propagates headers without network
+  I/O. A host sink exports completed spans with `callDuringReplay: false`.
+  Long-running workflows export their workflow span only when the run ends.
+  Workflow-task failures are not misreported as completed workflows.
 
 ### Replay compatibility
 
-No file under `apps/worker/src` that the workflow bundle imports was changed
-(`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
-`dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base
-commit and for this change and compared after normalizing paths and webpack
-module numbers. The only differences are in `@space/contracts`:
-- the new `observability` module;
-- the optional `traceparent` turn-input field;
-- the optional file search and readiness fields.
-
-A history without `traceparent` parses exactly as before. Activity inputs are
-not part of Temporal's determinism check.
+The interceptor uses the `space-otlp-workflow-v1` patch marker. Histories predating
+that marker follow the old path. Keep this interceptor installed even when the
+exporter is disabled so histories recorded with tracing remain replayable.
+The integration suite records and replays synthetic history against a real test
+server. This is separate from validation of an operator's production histories.
+Sinks do not provide exactly-once delivery: a retried workflow task may emit the
+same deterministic span ID again. Delivery remains bounded and best effort.
 
 The read-only live replay (`node scripts/temporal-replay-check.mjs --limit 30`)
 could not be run from the agent sandbox that made this change. Its network
