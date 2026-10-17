@@ -1,6 +1,7 @@
 // Test-only source transforms. Production files are never changed. The legacy
 // variant records a history before the patch existed; the negative variant
 // proves that inserting a command without a patch breaks replay.
+/** Build historical or intentionally incompatible test variants without changing production files. */
 module.exports = function (source) {
   const { variant } = this.getOptions();
   if (variant === "legacy") {

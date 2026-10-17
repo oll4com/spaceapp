@@ -33,6 +33,7 @@ const completed = { status: "COMPLETED", message: "Synthetic completion", roomAg
   status: "VERIFIED", executedActionCount: 1, statusReason: "Synthetic completion"
 } };
 
+/** Bundle production workflows, optionally applying a historical or replay-negative transform. */
 async function compile(variant?: "legacy" | "negative") {
   return bundleWorkflowCode({
     workflowsPath: resolve(here, "support/sandbox-workflows.ts"),
@@ -54,6 +55,7 @@ beforeAll(async () => {
 beforeEach(async () => { env = await TestWorkflowEnvironment.createTimeSkipping(); }, 30_000);
 afterEach(async () => { await env?.teardown(); }, 30_000);
 
+/** Capture a synthetic execution and write it only in explicit recording mode. */
 async function save(name: string, handle: Handle) {
   const history = await handle.fetchHistory();
   if (name.startsWith("supervisor-")) {
@@ -68,6 +70,7 @@ async function save(name: string, handle: Handle) {
   return history;
 }
 
+/** Run a registered production bundle with local activities on a unique task queue. */
 async function withWorker(activities: Activities, body: (queue: string) => Promise<void>, code = bundle) {
   const queue = `sandbox-${randomUUID()}`;
   const worker = await Worker.create({ connection: env.nativeConnection, workflowBundle: code,
@@ -75,6 +78,7 @@ async function withWorker(activities: Activities, body: (queue: string) => Promi
   await worker.runUntil(() => body(queue));
 }
 
+/** Start a synthetic execution and pin history access to its first run. */
 async function start(queue: string, type: string, arg: unknown) {
   const h = await env.client.workflow.start(type, {
     workflowId: `synthetic-${type}-${randomUUID()}`, taskQueue: queue, args: [arg]
@@ -83,11 +87,13 @@ async function start(queue: string, type: string, arg: unknown) {
   return env.client.workflow.getHandle(h.workflowId, h.firstExecutionRunId);
 }
 
+/** Clean up an infinite supervisor, tolerating an execution that has already closed. */
 async function terminate(handle: Handle) {
   try { await handle.terminate(); }
   catch (error) { if (!(error instanceof Error) || error.name !== "WorkflowNotFoundError") throw error; }
 }
 
+/** Poll an observable activity or history event with a bounded wall-clock deadline. */
 async function eventually(check: () => Promise<boolean>) {
   const deadline = Date.now() + 30_000;
   while (!await check()) {
@@ -98,6 +104,7 @@ async function eventually(check: () => Promise<boolean>) {
 
 // Bound virtual-clock advancement: waiting for an infinite supervisor result
 // lets the test server jump to its execution timeout after the queue drains.
+/** Advance virtual time in bounded increments until the expected supervisor state appears. */
 async function advanceUntil(check: () => Promise<boolean>) {
   await eventually(async () => {
     if (await check()) return true;
@@ -361,6 +368,7 @@ it("uses the legacy boolean settle contract without preparing a continuation", a
   }, legacyBundle);
 }, 30_000);
 
+/** Connect stub activities to the in-memory continuation store used by regression scenarios. */
 function persistedSupervisorDriver() {
   const c = continuationFixture();
   const prepared: any[] = [];
