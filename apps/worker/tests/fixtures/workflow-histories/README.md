@@ -37,13 +37,21 @@ workflow code. It does not remove marker events or mock `patched()` during repla
 The suite also checks that the continuation patch marker is present in the current
 case and absent from the pre-patch case.
 
-Histories must remain immutable when a behavior change is made. Only re-record
-alongside a workflow change protected by `patched()`, retaining the older
-compatibility histories. Never re-record
-to hide a failed replay or make CI green. Review the resulting diff and use the
-same pinned Temporal SDK version for recording and replay (`1.24.0`).
+Histories must remain immutable when a behavior change is made. Only record new
+histories alongside a workflow change protected by `patched()`, retaining the
+older compatibility histories. Add versioned recording names to the recorder and
+the fixed fixture list in `workflow-replay.test.ts` so both old and new histories
+are replayed. Never remove an old fixture or refresh one to hide a failed replay
+or make CI green. Review the resulting diff and use the same pinned Temporal SDK
+version for recording and replay (`1.24.0`).
 
-To regenerate with Node.js 22.12 or newer in the supported Node.js 22 line:
+The recorder creates files exclusively and fails with `EEXIST` if a target name
+already exists. There is no overwrite option. Consequently, the command below
+refuses to replace the committed fixture set in a normal checkout; it initializes
+only absent target names. All executions finish before writes start, but the set
+of file creations is not an atomic transaction.
+
+To record with Node.js 22.12 or newer in the supported Node.js 22 line:
 
 ```sh
 ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci

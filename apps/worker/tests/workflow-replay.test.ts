@@ -19,6 +19,7 @@ const fixtures = [
   "memoryMutationWorkflow"
 ] as const;
 
+/** Rehydrates a committed protobuf history and restores the fixed workflow ID used when it was recorded. */
 async function loadHistory(name: typeof fixtures[number]) {
   return {
     workflowId: `replay-${name}`,
@@ -30,6 +31,7 @@ async function loadHistory(name: typeof fixtures[number]) {
   };
 }
 
+/** Decodes Temporal patch marker payloads so legacy coverage cannot accidentally use a current-branch fixture. */
 function recordedPatchIds(history: temporal.api.history.v1.IHistory): string[] {
   return (history.events ?? []).flatMap((event) => {
     const marker = event.markerRecordedEventAttributes;
@@ -41,6 +43,7 @@ function recordedPatchIds(history: temporal.api.history.v1.IHistory): string[] {
   });
 }
 
+/** Fully consumes batch replay results, including each history's determinism error, without running activities. */
 async function replay(workflowBundle: WorkflowBundle, histories: Awaited<ReturnType<typeof loadHistory>>[]) {
   const results: ReplayResult[] = [];
   // The batch API reports per-history errors in yielded results. Merely awaiting

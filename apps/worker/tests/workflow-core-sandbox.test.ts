@@ -16,12 +16,14 @@ const timeout = 180_000;
 type Sandbox = Awaited<ReturnType<typeof createSandbox>>;
 type SandboxOptions = Parameters<typeof createSandbox>[0];
 
+/** Creates an externally released promise for pausing an activity at a known test boundary. */
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
 
+/** Runs a scenario with real workers and always disposes its isolated Temporal server. */
 async function inSandbox<T>(options: SandboxOptions, test: (sandbox: Sandbox) => Promise<T>): Promise<T> {
   const sandbox = await createSandbox(options);
   try {
@@ -31,21 +33,24 @@ async function inSandbox<T>(options: SandboxOptions, test: (sandbox: Sandbox) =>
   }
 }
 
+/** Starts a single-input workflow on the sandbox queue, with a unique ID unless explicitly supplied. */
 function start(sandbox: Sandbox, workflow: string, input: unknown, workflowId = `sandbox-core-${randomUUID()}`) {
   return sandbox.env.client.workflow.start(workflow, { taskQueue: sandbox.queue, workflowId, args: [input] });
 }
 
+/** Waits for workflow completion while retaining its handle for assertions against recorded events. */
 async function execute(sandbox: Sandbox, workflow: string, input: unknown) {
   const handle = await start(sandbox, workflow, input);
   return { handle, result: await handle.result() };
 }
 
+/** Reads server-recorded activity commands in order, rather than inferring them from stub calls. */
 async function scheduled(handle: WorkflowHandle) {
   return (await handle.fetchHistory()).events!.flatMap((event) =>
     event.activityTaskScheduledEventAttributes ? [event.activityTaskScheduledEventAttributes] : []);
 }
 
-/** Observe the real server without unlocking automatic time skipping. */
+/** Waits up to 15 real seconds for a durable timer without unlocking automatic time skipping. */
 async function waitForTimer(handle: WorkflowHandle) {
   const deadline = Date.now() + 15_000;
   for (;;) {
@@ -73,6 +78,7 @@ const mutationInput = { changeSetId: "change_set:sandbox", traceId: "trace:mutat
 const mutationResult: MemoryMutationWorkflowResult = {
   status: "APPLIED", changeSetId: mutationInput.changeSetId, resultingSourceHash: "b".repeat(64), reason: null
 };
+/** Builds a synthetic consolidation result with a unique child workflow ID to avoid run collisions. */
 function consolidationRun(status: MemoryConsolidationRun["status"] = "SUCCEEDED"): MemoryConsolidationRun {
   return {
     id: "memory_run:sandbox", mode: "REPAIR", triggerKind: "SCHEDULED", status,

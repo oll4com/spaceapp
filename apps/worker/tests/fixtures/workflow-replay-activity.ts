@@ -11,6 +11,7 @@ const { recordDummyTurnStarted, recordDummyTurnCompleted, unexpectedReplayActivi
   retry: { maximumAttempts: 3 }
 });
 
+/** Inserts a different first activity to prove replay compares activity types, not only command kinds. */
 export async function dummyTurnWorkflow(input: DummyTurnInput): Promise<DummyTurnResult> {
   // Same command kind, but an activity type absent from the recorded history.
   await unexpectedReplayActivity();

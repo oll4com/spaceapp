@@ -25,12 +25,14 @@ import { createSandbox } from "./support/workflow-sandbox.js";
 type Sandbox = Awaited<ReturnType<typeof createSandbox>>;
 type ActivityStubs = Parameters<typeof createSandbox>[0]["activities"];
 
+/** Creates a gate that lets a scenario deliver a signal while an activity is still pending. */
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
 
+/** Polls an assertion on the host clock and rethrows its last failure when the timeout expires. */
 async function eventually(assertion: () => void | Promise<void>, timeout = 20_000) {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -41,6 +43,7 @@ async function eventually(assertion: () => void | Promise<void>, timeout = 20_00
   }
 }
 
+/** Builds a schema-validated turn whose stable indexed IDs make queue order and deduplication observable. */
 function queueItem(index: number, roomId = "room:sandbox", missionId = `mission:${index}`): RoomAgentSupervisorQueueItem {
   return roomAgentSupervisorQueueItemSchema.parse({
     missionId,
@@ -51,12 +54,14 @@ function queueItem(index: number, roomId = "room:sandbox", missionId = `mission:
   });
 }
 
+/** Returns a completed child-turn result with the verification evidence the supervisor expects. */
 const verified = (): TurnWorkflowResult => ({
   workflowId: "workflow:sandbox", roomId: "room:sandbox", paneId: "pane:sandbox", traceId: "trace:sandbox",
   status: "COMPLETED", message: "Verified",
   roomAgentOutcome: { status: "VERIFIED", executedActionCount: 1, statusReason: "Verified remaining request." }
 });
 
+/** Supplies typed, overridable activity spies while leaving Temporal's workflow APIs and scheduling real. */
 function defaultActivities() {
   return {
     checkRoomAgentSupervisorTurn: vi.fn<(item: RoomAgentSupervisorQueueItem) => Promise<"READY" | "PAUSED" | "SKIP">>().mockResolvedValue("READY"),
@@ -71,6 +76,10 @@ function defaultActivities() {
   };
 }
 
+/**
+ * Runs an otherwise unbounded supervisor until the scenario finishes, then terminates it and closes the sandbox.
+ * The initial handle stays pinned to the first run so continue-as-new assertions inspect the intended history.
+ */
 async function withSupervisor(
   input: Partial<RoomAgentSupervisorInput> & { roomId: string },
   activities: ActivityStubs,
@@ -100,6 +109,7 @@ async function withSupervisor(
   }
 }
 
+/** Waits for the first run's continue-as-new event and validates the state carried into its successor. */
 async function carriedInput(initial: WorkflowHandle): Promise<RoomAgentSupervisorInput> {
   let carried: RoomAgentSupervisorInput | undefined;
   await eventually(async () => {
@@ -112,6 +122,7 @@ async function carriedInput(initial: WorkflowHandle): Promise<RoomAgentSuperviso
   return carried!;
 }
 
+/** Connects real continuation state transitions to the in-memory store through sandbox activity spies. */
 function continuationDriver() {
   const fixture = continuationFixture();
   const activities = {

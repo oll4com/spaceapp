@@ -31,6 +31,7 @@ const memoryRun = {
   createdAt: memoryInput.scheduledAt, startedAt: memoryInput.scheduledAt,
   completedAt: memoryInput.scheduledAt, updatedAt: memoryInput.scheduledAt
 };
+/** Supply synthetic memory results, including recoverable optional failures. */
 function memoryActivities() {
   return {
     refreshMemoryGraphSnapshot: async () => snapshot,
@@ -44,6 +45,7 @@ function memoryActivities() {
 }
 
 const recorded = new Map<string, string>();
+/** Serialize protobuf history losslessly while omitting local failure stacks. */
 function historyJSON(history: temporal.api.history.v1.IHistory): string {
   // Use the generated schema on both sides of the fixture boundary, preserving
   // int64 IDs and base64 payloads without depending on protobuf reflection copies.
@@ -51,6 +53,7 @@ function historyJSON(history: temporal.api.history.v1.IHistory): string {
     longs: String, enums: String, bytes: String, json: true
   }), (key, value) => key === "stackTrace" ? "Synthetic test failure (local stack omitted)" : value, 2)}\n`;
 }
+/** Record a real synthetic execution and always tear down its private server. */
 async function record(
   workflow: string,
   input: unknown,
@@ -140,9 +143,12 @@ await record("memoryConsolidationWorkflow", { runId: memoryRun.id, traceId: memo
 });
 await record("memoryMutationWorkflow", mutationInput, { activities: memoryActivities() });
 
-// Write only after every real workflow run has succeeded. A recording failure
-// must not leave a partially refreshed set that could hide replay incompatibility.
+// Wait for every real workflow run to succeed before writing any new fixtures.
+// Existing compatibility histories must never be replaced, even on an explicit run.
 const destination = new URL("../tests/fixtures/workflow-histories/", import.meta.url);
 await mkdir(destination, { recursive: true });
-for (const [name, history] of recorded) await writeFile(new URL(`${name}.json`, destination), history);
+for (const [name, history] of recorded) {
+  const target = new URL(`${name}.json`, destination);
+  await writeFile(target, history, { flag: "wx" });
+}
 console.log(`Wrote ${recorded.size} synthetic histories. Review the diff before committing.`);

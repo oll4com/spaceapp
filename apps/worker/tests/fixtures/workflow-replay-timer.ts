@@ -10,6 +10,7 @@ const { recordDummyTurnStarted, recordDummyTurnCompleted } = proxyActivities<{
   retry: { maximumAttempts: 3 }
 });
 
+/** Inserts a timer before the normal dummy activities to prove replay rejects an extra durable command. */
 export async function dummyTurnWorkflow(input: DummyTurnInput): Promise<DummyTurnResult> {
   // The committed history schedules recordDummyTurnStarted here, not a timer.
   await sleep("1 second");
