@@ -62,29 +62,44 @@ try {
   const currentSession = () => request(`/api/panes/${encodeURIComponent(pane.id)}/cli/session`);
   await eventually(async () => {
     interactive.assertHealthy();
-    return interactive.live(await currentSession()) && interactive.sequence > 0;
+    const response = await currentSession();
+    if (!interactive.live(response)) return false;
+    interactive.pinGeneration(response);
+    return interactive.sequence > 0;
   }, 'Current matching OpenCode API/WS session');
   browser = await browserProof({ state: config.state, origin, cookie, artifacts, paneId: pane.id });
   // Exercise real terminal keyboard input through the actual matching browser pane.
   // No Enter or provider/model command is sent: only a local palette and filter.
   const deadline = Date.now() + 120000;
   const waitInteractive = async (predicate, label) => eventually(async () => { interactive.assertHealthy(); const response = await currentSession(); return interactive.live(response) && await predicate(response); }, label, Math.max(1, deadline - Date.now()));
+  // The observer's initial grid is not the browser's measured grid. Wait for
+  // the existing DOM coordinator and actual host/API acknowledgment before the
+  // one pre-input latch; every later generation/grid change remains fatal.
+  await eventually(async () => {
+    const before = await browser.terminalState(), response = await currentSession(), after = await browser.terminalState();
+    return interactive.acknowledgeBrowserGeometry(pane.id, before, response, after);
+  }, 'Stable matching browser grid acknowledged by the live API', Math.max(1, deadline - Date.now()));
+  const key = async (name, text) => {
+    interactive.assertBrowserGeometry(await browser.terminalState(), pane.id, `before-key-${name}`);
+    await browser.key(name, text);
+  };
   let transition = await waitInteractive(response => interactive.beginScreenTransition('open', response), 'Known closed-menu pre-input screen');
-  await browser.key('Ctrl+P');
+  await key('Ctrl+P');
   await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh pinned OpenCode command menu after Ctrl+P');
   await browser.screenshot('opencode-command-menu.png');
   const challenge = `spaceproof${randomBytes(8).toString('hex')}`;
   transition = await waitInteractive(response => interactive.beginScreenTransition('filter', response, challenge), 'Known unfiltered menu without the new challenge');
-  await browser.key('text', challenge);
+  await key('text', challenge);
   await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh unique palette filter response on the current terminal screen');
   await browser.screenshot('opencode-filter-response.png');
   transition = await waitInteractive(response => interactive.beginScreenTransition('dismiss', response, challenge), 'Known current filtered menu before dismissal');
-  await browser.key('Escape');
+  await key('Escape');
   await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh screen with the menu and challenge dismissed');
   transition = await waitInteractive(response => interactive.beginScreenTransition('open', response), 'Known closed-menu screen before reopening');
-  await browser.key('Ctrl+P');
+  await key('Ctrl+P');
   await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh command menu after dismissal and reopening');
   const browserState = await browser.terminalState(); assertBrowserTerminal(browserState, pane.id);
+  interactive.assertBrowserGeometry(browserState, pane.id, 'final-browser-seal');
   await browser.screenshot('opencode-pane.png');
   interactive.seal(await currentSession());
   await writeFile(join(artifacts, 'opencode-interactive-proof.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, browser: browserState, terminal: interactive.diagnostic([cookie, ticket.token, password, token]), challenge, transitions: ['Ctrl+P -> fresh Commands and registered menu entries', 'unique palette filter -> fresh matching response', 'Escape -> fresh response', 'Ctrl+P -> fresh full command menu'], modelInference: false }, null, 2) + '\n', { mode: 0o600 });

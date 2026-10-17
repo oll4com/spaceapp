@@ -598,3 +598,104 @@ test('retained full synthetic frames redact generated secrets across event bound
   assert.deepEqual(value.frames.map(frame => [frame.sequence, frame.data.length]), proof.frames.map(frame => [frame.sequence, frame.data.length]));
   assert.equal(value.completeReplay, true);
 });
+
+const browserGrid = (cols = 153, rows = 46) => ({ paneId: 'tested-pane', status: 'attached', hasSession: 'true', hasWebsocket: 'true', hasError: 'false', width: 1105, geometry: { cols, rows, initialFitPending: false, fontsLoaded: true } });
+const initialObserverGeometry = { generationId: 'same-original-generation', cols: 120, rows: 32 };
+function browserGridProof() { const proof = screenProof(); proof.message({ type: 'output', data: closedFrame }); proof.pinGeneration(screenSession(initialObserverGeometry)); return proof; }
+function acknowledgedGridProof() {
+  const proof = browserGridProof(), state = browserGrid(), response = screenSession({ ...initialObserverGeometry, cols: 153, rows: 46 });
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 0), null);
+  assert(proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 400));
+  return { proof, state, response };
+}
+
+test('browser measured grid waits for actual API acknowledgment before the first latch instead of adopting the observer grid', async () => {
+  const historical = screenProof(); historical.message({ type: 'output', data: closedFrame });
+  const historicalTransition = await historical.beginScreenTransition('open', screenSession(initialObserverGeometry));
+  historical.message({ type: 'output', data: menuFrame });
+  await assert.rejects(historical.screenTransition(historicalTransition, screenSession({ ...initialObserverGeometry, cols: 153, rows: 46 })), /generation or geometry changed/, 'The old pre-input ordering reproduces the same guard family under a synthetic delayed resize.');
+  const premature = browserGridProof();
+  await assert.rejects(premature.beginScreenTransition('open', screenSession(initialObserverGeometry)), /acknowledgment is required/);
+  const proof = browserGridProof(), state = browserGrid(), observer = screenSession(initialObserverGeometry), response = screenSession({ ...initialObserverGeometry, cols: 153, rows: 46 });
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', state, observer, state, 0), null, 'The browser target153x46 is not acknowledged by observer120x32.');
+  assert.equal(proof.geometry, null); assert.equal(proof.activeTransition, null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 400), null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 799), null, 'Two immediate agreeing reads cannot replace the400ms observation.');
+  const ack = proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 800);
+  assert.equal(ack.stableForMs, 400); assert.equal(ack.acknowledgedSamples, 2); assert.deepEqual(proof.initialGeometry, initialObserverGeometry);
+  const transition = await proof.beginScreenTransition('open', response); assert.deepEqual(proof.geometry, response.session.terminalGeometry);
+  proof.assertBrowserGeometry(state, 'tested-pane', 'before-key-Ctrl+P'); proof.message({ type: 'output', data: menuFrame });
+  assert(await proof.screenTransition(transition, response));
+});
+
+test('a changing DOM sandwich or stale API clears startup samples and only pre-input dimensions may settle', () => {
+  const proof = browserGridProof(), first = browserGrid(), second = browserGrid(150, 44), firstResponse = screenSession({ ...initialObserverGeometry, cols: 153, rows: 46 }), secondResponse = screenSession({ ...initialObserverGeometry, cols: 150, rows: 44 });
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', first, firstResponse, first, 0), null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', first, firstResponse, second, 400), null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', second, firstResponse, second, 800), null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', second, secondResponse, second, 1200), null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', second, secondResponse, second, 1599), null);
+  assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', second, secondResponse, second, 1600).geometry.cols, 150);
+  assert.equal(proof.geometry, null, 'Acknowledgment is not a screen/input latch.');
+  assert.throws(() => proof.acknowledgeBrowserGeometry('tested-pane', second, secondResponse, second, 2000), /cannot be resampled/);
+});
+
+test('missing malformed pending or font-loading browser grids never establish readiness', () => {
+  for (const geometry of [null, {}, { cols: 0, rows: 46 }, { cols: 401, rows: 46 }, { cols: 153, rows: 201 }, { cols: 153.5, rows: 46 }, { cols: 153, rows: 46 }, { ...browserGrid().geometry, initialFitPending: true }, { ...browserGrid().geometry, fontsLoaded: false }]) {
+    const proof = browserGridProof(), state = { ...browserGrid(), geometry }, response = screenSession({ ...initialObserverGeometry, cols: 153, rows: 46 });
+    assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 0), null);
+    assert.equal(proof.acknowledgeBrowserGeometry('tested-pane', state, response, state, 400), null);
+    assert.equal(proof.browserGeometry, null); assert.equal(proof.geometry, null);
+  }
+  for (const change of [{ paneId: 'foreign-pane' }, { status: 'closed' }, { hasError: 'true' }, { width: 0 }]) {
+    const proof = browserGridProof(), state = { ...browserGrid(), ...change };
+    assert.throws(() => proof.acknowledgeBrowserGeometry('tested-pane', state, screenSession(initialObserverGeometry), state, 0));
+    assert.equal(proof.browserGeometry, null);
+  }
+});
+
+test('first live generation is pinned before browser startup and cannot roll over during dimension rendezvous', () => {
+  for (const geometry of [{ ...initialObserverGeometry, generationId: 'replacement-generation' }, null, { ...initialObserverGeometry, generationId: '' }, { ...initialObserverGeometry, cols: 401 }]) {
+    const proof = browserGridProof(), state = browserGrid();
+    assert.throws(() => proof.acknowledgeBrowserGeometry('tested-pane', state, screenSession(geometry), state, 400), /generation/);
+    assert.equal(proof.expectedGenerationId, initialObserverGeometry.generationId); assert.equal(proof.browserGeometry, null);
+  }
+  const replaced = browserGridProof(), state = browserGrid(), response = screenSession(initialObserverGeometry); response.session.sessionId = 'replacement-session';
+  assert.throws(() => replaced.acknowledgeBrowserGeometry('tested-pane', state, response, state, 0), /Fresh API/);
+  const unpinned = screenProof(); assert.throws(() => unpinned.acknowledgeBrowserGeometry('tested-pane', state, screenSession(initialObserverGeometry), state, 0), /Pin the first live generation/);
+});
+
+test('acknowledged geometry cannot change before the first latch or after it and every keyboard grid is checked', async () => {
+  const before = acknowledgedGridProof();
+  await assert.rejects(before.proof.beginScreenTransition('open', screenSession({ ...before.response.session.terminalGeometry, cols: 154 })), /changed after browser\/API/);
+  for (const change of [{ cols: 154 }, { rows: 47 }, { generationId: 'replacement-generation' }]) {
+    const { proof, response } = acknowledgedGridProof(); await proof.beginScreenTransition('open', response); proof.message({ type: 'output', data: menuFrame });
+    await assert.rejects(proof.screen(screenSession({ ...response.session.terminalGeometry, ...change })), /generation or geometry changed/);
+    assert.equal(proof.diagnostic().geometryObservation.observedAPI.cols, change.cols || 153);
+  }
+  for (const change of [{ cols: 154 }, { rows: 47 }, { initialFitPending: true }, { fontsLoaded: false }]) {
+    const { proof, state, response } = acknowledgedGridProof(); await proof.beginScreenTransition('open', response);
+    assert.throws(() => proof.assertBrowserGeometry({ ...state, geometry: { ...state.geometry, ...change } }, 'tested-pane', 'before-key-filter'), /browser terminal grid differs/);
+  }
+  const foreign = acknowledgedGridProof();
+  assert.throws(() => foreign.proof.assertBrowserGeometry({ ...foreign.state, paneId: 'foreign-pane' }, 'foreign-pane', 'before-key-filter'), /remain the acknowledged pane/);
+});
+
+test('rendezvous retains error close and truncated replay failures instead of resetting them into readiness', () => {
+  for (const fail of [proof => proof.error('CONTROL_FAILURE'), proof => proof.close(1006), proof => proof.message({ type: 'status', status: 'EXITED', exitCode: 0 }), proof => proof.message({ type: 'status', status: 'RUNNING', replayContinuity: 'TRUNCATED' })]) {
+    const proof = browserGridProof(), state = browserGrid(); fail(proof);
+    assert.throws(() => proof.acknowledgeBrowserGeometry('tested-pane', state, screenSession(initialObserverGeometry), state, 400));
+    assert.equal(proof.browserGeometry, null); assert.equal(proof.geometry, null);
+  }
+});
+
+test('geometry failure evidence retains only bounded expected and observed fields without raw session or DOM secrets', async () => {
+  const { proof, response } = acknowledgedGridProof(); await proof.beginScreenTransition('open', response);
+  const changed = screenSession({ ...response.session.terminalGeometry, cols: 154 }); changed.session.websocket = { token: 'private-token', url: 'ws://private-url/' }; changed.session.password = 'private-password';
+  await assert.rejects(proof.screen(changed, 'after-open'), /generation or geometry changed/);
+  const value = proof.diagnostic(), evidence = proof.streamEvidence(), encoded = JSON.stringify({ value, evidence });
+  assert.deepEqual(value.geometryObservation, { phase: 'after-open', sequence: proof.sequence, expected: response.session.terminalGeometry, observedAPI: changed.session.terminalGeometry });
+  assert(!encoded.includes('private-token')); assert(!encoded.includes('private-url')); assert(!encoded.includes('private-password'));
+  assert.deepEqual(evidence.initialGeometry, initialObserverGeometry); assert.deepEqual(evidence.browserGeometry.geometry, response.session.terminalGeometry);
+  const clock = browserGridProof(), state = browserGrid(); assert.throws(() => clock.acknowledgeBrowserGeometry('tested-pane', state, screenSession(initialObserverGeometry), state, NaN), /clock must be finite/);
+});

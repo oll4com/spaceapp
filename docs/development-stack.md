@@ -116,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 62 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 69 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
@@ -187,7 +187,14 @@ provider HOME/XDG roots do not replace the pane's requested working directory.
 Screen predicates use the already locked headless terminal renderer, matching
 the canonical API projection. They await the complete observed ANSI stream at
 the current session's generation-bound geometry, latched at the pre-input
-baseline. Truncated/oversized replay, unknown geometry or any later dimension/
+baseline. Before opening the browser, the proof pins the first live process
+generation. It then waits for the matching pane's existing measured DOM grid,
+completed initial fit and loaded fonts to agree with fresh API geometry in two
+DOM/API/DOM samples at least 400 ms apart. Only dimensions may settle before the
+first baseline; the process generation cannot change. This is a bounded startup
+observation, not a promise of future layout stability. Every key checks the same
+browser grid, and selected expected/observed geometry is retained on failure.
+Truncated/oversized replay, unknown geometry or any later dimension/
 generation change fails explicitly. A known unfiltered menu must precede the
 fresh challenge; current full value and empty-result state must follow new output.
 Dismissal must remove the dialog/challenge before reopening. Historical or erased
