@@ -369,9 +369,8 @@ describe("Temporal workflows in real time-skipping sandbox", () => {
             checkRoomAgentSupervisorTurn: async (item) => supervisorTurnState(item, c.store),
             discardRoomAgentSupervisorTurn: async ({ item, reason }) =>
               discardSupervisorTurn(item, reason, c.store),
-            finishRoomAgentSupervisorTurn: async (input) => {
-              finishSupervisorTurn(input, c.store);
-            },
+            finishRoomAgentSupervisorTurn: async (input) =>
+              finishSupervisorTurn(input, c.store),
             runCodexAppServerTurn: async (turn: DummyTurnInput) => {
               childTurns += 1;
               if (childTurns === 1) {
