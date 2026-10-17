@@ -2,7 +2,7 @@
 // can restart space-gateway only when this file's content changes. Everything else stays external (node_modules).
 import { createHash } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
@@ -22,7 +22,7 @@ const common = {
     name: "external-dependencies",
     setup(context) {
       const bundled = new Set(["@space/contracts", "@space/db"]);
-      context.onResolve({ filter: /^[^./]/ }, (args) => (bundled.has(args.path) ? undefined : { path: args.path, external: true }));
+      context.onResolve({ filter: /^[^./]/ }, (args) => (isAbsolute(args.path) || bundled.has(args.path) ? undefined : { path: args.path, external: true }));
     }
   }]
 };
