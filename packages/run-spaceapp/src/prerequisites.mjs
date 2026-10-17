@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -664,6 +664,177 @@ async function dockerIsReady(execute) {
     }
   }
   return true;
+}
+
+async function runProbeWithOutput(execute, spec) {
+  let stdoutText = "";
+  let stderrText = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      if (stdoutText.length < 1024 * 1024) stdoutText += chunk.toString();
+      callback();
+    }
+  });
+  const stderr = new Writable({
+    write(chunk, _encoding, callback) {
+      if (stderrText.length < 1024 * 1024) stderrText += chunk.toString();
+      callback();
+    }
+  });
+  try {
+    const code = await execute(spec, { stdin: null, stdout, stderr });
+    return { code, stdout: stdoutText.trim(), stderr: stderrText.trim() };
+  } catch {
+    return { code: 127, stdout: "", stderr: "" };
+  }
+}
+
+export async function inspectPodmanEnvironment({ execute }) {
+  const cliProbe = await runProbeWithOutput(execute, { command: "podman", args: ["--version"] });
+  const composeProbe = await runProbeWithOutput(execute, { command: "podman", args: ["compose", "version"] });
+  const infoProbe = await runProbeWithOutput(execute, { command: "podman", args: ["info", "--format", "{{json .}}"] });
+  let info = null;
+  if (infoProbe.code === 0 && infoProbe.stdout) {
+    try {
+      info = JSON.parse(infoProbe.stdout);
+    } catch {
+      info = null;
+    }
+  }
+  const versionMatch = /podman(?:\s+version)?\s+([0-9]+(?:\.[0-9]+)*(?:-[A-Za-z0-9.+_-]+)?)/i.exec(cliProbe.stdout);
+  const version = versionMatch?.[1] ?? info?.version?.Version ?? (cliProbe.code === 0 ? "5.0.0" : "unknown");
+  const majorVersion = Number.parseInt(String(version).split(".")[0], 10);
+  const versionOk = cliProbe.code === 0 && (!Number.isFinite(majorVersion) || majorVersion >= 5);
+  const combinedComposeOutput = `${composeProbe.stdout}\n${composeProbe.stderr}`;
+  const unsupportedCompose =
+    /podman-compose\s+version|provider\s+"[^"]*podman-compose"|docker-compose\s+version\s+1\./i.test(combinedComposeOutput);
+  const composeOk = composeProbe.code === 0 && !unsupportedCompose;
+  const rootless = typeof info?.host?.security?.rootless === "boolean" ? info.host.security.rootless : true;
+  const cgroupVersion = info?.host?.cgroupVersion ?? "v2";
+  const cgroupControllers = Array.isArray(info?.host?.cgroupControllers)
+    ? info.host.cgroupControllers
+    : ["cpu", "memory"];
+  const cpuDelegated = cgroupControllers.includes("cpu");
+  const memoryDelegated = cgroupControllers.includes("memory");
+  const limitsDelegated = cpuDelegated && memoryDelegated;
+  const selinuxEnabled = Boolean(info?.host?.security?.selinuxEnabled);
+  return {
+    engine: "podman",
+    cliCode: cliProbe.code,
+    cliOk: cliProbe.code === 0,
+    version,
+    majorVersion,
+    versionOk,
+    composeCode: composeProbe.code,
+    composeOk,
+    unsupportedCompose,
+    infoCode: infoProbe.code,
+    infoOk: infoProbe.code === 0,
+    rootless,
+    mode: rootless ? "rootless" : "rootful",
+    cgroupVersion,
+    cgroupControllers,
+    cpuDelegated,
+    memoryDelegated,
+    limitsDelegated,
+    selinuxEnabled,
+    info
+  };
+}
+
+export function podmanInstallInstructions(platform = process.platform, release = {}) {
+  if (platform === "darwin") {
+    return [
+      "Install Podman 5+ and a Compose v2 provider on macOS, then initialize the Podman machine:",
+      "  brew install podman docker-compose",
+      "  podman machine init --cpus 4 --memory 4096 --disk-size 20 && podman machine start"
+    ].join("\n");
+  }
+  const id = String(release?.ID || "").toLowerCase();
+  const idFamily = new Set([
+    id,
+    ...String(release?.ID_LIKE || "").toLowerCase().split(/\s+/).filter(Boolean)
+  ]);
+  if (id === "ubuntu" || id === "debian" || idFamily.has("debian")) {
+    return [
+      "Install rootless Podman 5+ and Compose v2 on Debian/Ubuntu:",
+      "  sudo apt-get update && sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs docker-compose-v2"
+    ].join("\n");
+  }
+  if (id === "fedora" || id === "rhel" || id === "centos" || idFamily.has("fedora") || idFamily.has("rhel")) {
+    return [
+      "Install rootless Podman 5+ and Compose v2 on Fedora/RHEL:",
+      "  sudo dnf install -y podman docker-compose"
+    ].join("\n");
+  }
+  if (idFamily.has("arch") || idFamily.has("archlinux")) {
+    return [
+      "Install rootless Podman 5+ and Compose v2 on Arch Linux:",
+      "  sudo pacman -S --needed podman docker-compose"
+    ].join("\n");
+  }
+  return [
+    "Install rootless Podman 5+ and a Compose v2 provider (for native `podman compose`) from https://podman.io/docs/installation"
+  ].join("\n");
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stderr = process.stderr,
+  execute,
+  osRelease
+}) {
+  const probe = await inspectPodmanEnvironment({ execute });
+  if (!probe.cliOk || !probe.versionOk || !probe.composeOk) {
+    const release = platform === "linux" ? (osRelease ?? await readLinuxOsRelease().catch(() => ({}))) : {};
+    if (!probe.cliOk) {
+      stderr.write("Podman is required when \"--engine podman\" is selected and is not installed.\n");
+    } else if (!probe.versionOk) {
+      stderr.write(`Podman 5.0 or newer is required for SpaceApp (found ${probe.version}).\n`);
+    } else if (probe.unsupportedCompose) {
+      stderr.write("SpaceApp requires native \"podman compose\" backed by Compose v2 (Python podman-compose and docker-compose v1 are not supported).\n");
+    } else {
+      stderr.write("Podman Compose provider is not available for \"podman compose\".\n");
+    }
+    stderr.write(`${podmanInstallInstructions(platform, release)}\n`);
+    return { code: 1, reexecuted: false };
+  }
+  if (!probe.infoOk) {
+    if (platform === "darwin") {
+      stderr.write(
+        "Podman is installed, but the Podman machine is not running or initialized.\n" +
+        "Start or resize the machine with:\n" +
+        "  podman machine init --cpus 4 --memory 4096 --disk-size 20 && podman machine start\n" +
+        "  podman machine stop && podman machine set --cpus 4 --memory 4096 --disk-size 20 && podman machine start\n"
+      );
+    } else {
+      stderr.write(
+        "Podman is installed, but \"podman info\" failed. Verify rootless Podman and subuid/subgid mappings for the current user.\n"
+      );
+    }
+    return { code: 1, reexecuted: false };
+  }
+  if (platform === "linux") {
+    if (!probe.rootless) {
+      stderr.write("SpaceApp requires rootless Podman on Linux, but Podman is running in rootful mode. Run SpaceApp as a non-root user without sudo.\n");
+      return { code: 1, reexecuted: false };
+    }
+    if (probe.cgroupVersion !== "v2") {
+      stderr.write(`Rootless Podman requires cgroup v2, but ${probe.cgroupVersion} is active. Enable unified cgroup v2 hierarchy on this host.\n`);
+      return { code: 1, reexecuted: false };
+    }
+    if (!probe.limitsDelegated) {
+      stderr.write(
+        `Rootless Podman requires delegated CPU and memory cgroup v2 controllers (active controllers: ${probe.cgroupControllers.join(", ") || "none"}).\n` +
+        "Delegate cpu and memory controllers via systemd:\n" +
+        "  sudo mkdir -p /etc/systemd/system/user@.service.d\n" +
+        "  printf \"[Service]\\nDelegate=cpu cpuset io memory pids\\n\" | sudo tee /etc/systemd/system/user@.service.d/delegate.conf\n" +
+        "  sudo systemctl daemon-reload\n"
+      );
+      return { code: 1, reexecuted: false };
+    }
+  }
+  return { code: 0, reexecuted: false };
 }
 
 async function installLinuxDockerEngine({

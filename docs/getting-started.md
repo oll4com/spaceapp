@@ -146,8 +146,52 @@ data, credentials, workspaces, secrets, and persistent volumes, run:
 npx --yes run-spaceapp@latest install --access isolated
 ```
 
-Host-root is supported only on Linux; the launcher refuses it on macOS and
-Windows.
+Host-root is supported only on Linux with Docker; the launcher refuses it on
+macOS, Windows, and rootless Podman (`--engine podman`).
+
+## Rootless Podman (`--engine podman`)
+
+For developers who cannot or do not want to grant root-equivalent `docker`
+group access on Linux or install Docker Desktop on macOS, SpaceApp supports
+rootless Podman 5+:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+If Docker is not installed and `podman` is available on `PATH`, interactive
+setup offers rootless Podman automatically. The chosen engine is saved in
+`config.json` and used by all lifecycle commands (`up`, `down`, `status`,
+`logs`, `update`, `rollback`, `backup`, `restore`, `doctor`, `repair`,
+`reinstall`, `uninstall`, and `factory-reset`).
+
+Prerequisites and differences from Docker:
+
+- **Manual installation**: `run-spaceapp` does not auto-install Podman. Install
+  Podman 5.0+ and a Compose v2 provider so `podman compose version` succeeds
+  (Python `podman-compose` and `docker-compose` v1 are not supported).
+- **Linux rootless & cgroup v2**: Requires rootless mode, `cgroup v2`, and
+  delegated `cpu` and `memory` controllers. Workspace mounts automatically add
+  `userns_mode: "keep-id:uid=10001,gid=10001"` and SELinux `:z` labels so
+  container user `10001:10001` can read and write registered host directories
+  without changing host file ownership.
+- **macOS (`podman machine`)**: Initialize and start a Podman machine with
+  sufficient CPU, memory, and disk before running `install`:
+  ```bash
+  podman machine init --cpus 4 --memory 8192 --disk-size 20
+  podman machine start
+  ```
+  If `doctor` or `install` reports insufficient Podman machine resources, resize
+  the VM with:
+  ```bash
+  podman machine stop && podman machine set --cpus 4 --memory 8192 --disk-size 20 && podman machine start
+  ```
+- **No `--access host-root`**: Rejected with `--engine podman` because rootless
+  Podman user namespaces cannot provide true host-root access.
+- **Switching engines**: Because Docker and Podman volumes are separate,
+  switching `--engine` on an existing installation is refused. To migrate, run
+  `backup`, `uninstall --purge-data`, `install --engine <docker|podman>`, and
+  `restore`.
 
 The `npx` command is the universal one-command installer. To retain a global
 launcher for later operations, optionally run `npm install -g run-spaceapp`;

@@ -92,7 +92,9 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 - **Hardware**:
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
-- **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Container Engine (Docker or Rootless Podman)**:
+  - **Docker (default)**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+  - **Rootless Podman (`--engine podman`)**: Supported on Linux and macOS without a root-equivalent Docker daemon. Requires manually installed **Podman 5+** with native `podman compose` (Compose v2 provider; Python `podman-compose` is not supported), `cgroup v2` with delegated `cpu` and `memory` controllers on Linux, or an initialized `podman machine` on macOS (`podman machine init --cpus 4 --memory 8192 --disk-size 20 && podman machine start`). Note: `--access host-root` is not supported on Podman, and switching engines on an existing install requires `backup` → `uninstall --purge-data` → `install --engine` → `restore`.
 
 ### Run the Installation Command
 
@@ -100,6 +102,8 @@ Run the universal command in your terminal:
 
 ```bash
 npx --yes run-spaceapp@latest install
+# Or on Linux/macOS with rootless Podman 5+:
+npx --yes run-spaceapp@latest install --engine podman
 ```
 
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
