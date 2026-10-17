@@ -67,6 +67,7 @@ jobs:
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { execFileSync } from 'node:child_process';
+          import { appendFileSync, realpathSync } from 'node:fs';
           assert.match(process.env.SPACE_DEV_CANDIDATE, /^[a-f0-9]{40}$/);
           const actual = execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim();
           assert.equal(actual, process.env.SPACE_DEV_CANDIDATE);
@@ -74,6 +75,7 @@ jobs:
             assert.match(process.env.EXPECTED_SOURCE, /^[a-f0-9]{40}$/);
             assert.equal(actual, process.env.EXPECTED_SOURCE);
           }
+          appendFileSync(process.env.GITHUB_ENV, `TMPDIR=${realpathSync(process.env.RUNNER_TEMP)}\n`);
           console.log(`Exact source ${actual}; Node ${process.version}; ${process.platform}/${process.arch}`);
           NODE
           git diff --exit-code
