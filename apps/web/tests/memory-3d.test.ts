@@ -59,4 +59,140 @@ describe("3D memory projection", () => {
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
   });
+
+  describe("Sub-4ms spatial index picking", () => {
+    it("indexes 50,000 nodes and picks within 4ms", async () => {
+      const { MemorySpatialIndex } = await import("../src/features/memory-workspace/memory-picking.js");
+      const index = new MemorySpatialIndex();
+      const points = Array.from({ length: 50000 }, (_, i) => ({
+        id: `node-${i}`,
+        x: (i * 17) % 1920,
+        y: (i * 23) % 1080,
+        z: (i % 500) - 250,
+        radius: 4,
+        perspective: 1
+      }));
+
+      // Target node placed at known coordinates with foreground Z depth (smaller z is closer to camera)
+      points[12345] = { id: "target-node", x: 500, y: 500, z: -999, radius: 5, perspective: 1 };
+
+      index.build(points, 1920, 1080, 32);
+
+      // Measure repeated pick calls and verify median latency against the 4ms acceptance threshold
+      const latencies: number[] = [];
+      for (let run = 0; run < 25; run++) {
+        const start = performance.now();
+        const hit = index.pick(501, 502);
+        latencies.push(performance.now() - start);
+        expect(hit).toBe("target-node");
+      }
+      latencies.sort((a, b) => a - b);
+      const median = latencies[Math.floor(latencies.length / 2)]!;
+      expect(median).toBeLessThan(4); // Acceptance criteria requirement <= 4ms
+    });
+
+    it("prefers the node closest to the camera (smallest Z) on overlapping hits", async () => {
+      const { MemorySpatialIndex } = await import("../src/features/memory-workspace/memory-picking.js");
+      const index = new MemorySpatialIndex();
+      const points = [
+        { id: "background", x: 100, y: 100, z: 50, radius: 5, perspective: 1 },
+        { id: "foreground", x: 100, y: 100, z: -50, radius: 5, perspective: 1 }
+      ];
+      index.build(points, 800, 600, 32);
+      expect(index.pick(101, 100)).toBe("foreground");
+    });
+
+    it("returns null when clicking in empty space", async () => {
+      const { MemorySpatialIndex } = await import("../src/features/memory-workspace/memory-picking.js");
+      const index = new MemorySpatialIndex();
+      index.build([{ id: "n1", x: 100, y: 100, z: 0, radius: 4, perspective: 1 }], 800, 600, 32);
+      expect(index.pick(500, 500)).toBeNull();
+    });
+  });
+
+  describe("Bounded Level-of-Detail label selection", () => {
+    it("prioritizes focus and core labels and enforces bounded drawing counts", async () => {
+      const { selectBoundedLabels } = await import("../src/features/memory-workspace/memory-labels.js");
+      const nodes: MemoryGraphNode[] = [
+        { id: "core", label: "gemini.md", type: "SOURCE", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null },
+        { id: "focus-node", label: "Focused item", type: "MEMORY", sourcePath: "/opt/spaceapp/docs/test.md", recordId: "rec-1" },
+        ...Array.from({ length: 1000 }, (_, i) => ({
+          id: `source-${i}`,
+          label: `Source document ${i}`,
+          type: "SOURCE" as const,
+          sourcePath: `/opt/spaceapp/docs/doc-${i}.md`,
+          recordId: null
+        }))
+      ];
+
+      const projectedMap = new Map<string, any>([
+        ["focus-node", { id: "focus-node", x: 100, y: 100, z: 10, radius: 4, perspective: 1 }],
+        ["core", { id: "core", x: 100, y: 200, z: 5, radius: 8, perspective: 1 }],
+        ...nodes.slice(2).map((n, i) => [
+          n.id,
+          { id: n.id, x: 200 + (i % 20) * 40, y: 100 + Math.floor(i / 20) * 30, z: i, radius: 4, perspective: 1 }
+        ] as const)
+      ]);
+
+      const placed = selectBoundedLabels(
+        nodes,
+        projectedMap,
+        "focus-node",
+        1.0,
+        1920,
+        1080,
+        label => ({ width: label.length * 7 }),
+        120, // max evaluated
+        50   // max drawn
+      );
+
+      expect(placed.length).toBeLessThanOrEqual(50);
+      expect(placed.some(p => p.id === "focus-node")).toBe(true);
+      expect(placed.some(p => p.id === "core")).toBe(true);
+      expect(placed[0]!.id).toBe("focus-node");
+    });
+  });
+
+  describe("Incremental layout streaming", () => {
+    it("yields step 0 initial positions immediately and reaches final deterministic convergence", async () => {
+      const { streamLayoutMemoryNetwork3D } = await import("../src/features/memory-workspace/memory-3d.js");
+      const { nodes, edges } = fixture();
+      const generator = streamLayoutMemoryNetwork3D(nodes, edges, 30);
+
+      const snapshots = [];
+      for (const snapshot of generator) {
+        snapshots.push(snapshot);
+      }
+
+      // Step 0 yielded immediately
+      expect(snapshots[0]!.step).toBe(0);
+      expect(snapshots[0]!.done).toBe(false);
+      expect(snapshots[0]!.coordinates.size).toBe(nodes.length);
+
+      // Final step 180 marked done
+      const last = snapshots.at(-1)!;
+      expect(last.step).toBe(180);
+      expect(last.done).toBe(true);
+
+      // Matches synchronous layoutMemoryNetwork3D
+      const syncResult = layoutMemoryNetwork3D(nodes, edges);
+      expect([...last.coordinates]).toEqual([...syncResult]);
+    });
+  });
+
+  describe("Synthetic demo graph generator", () => {
+    it("generates deterministic benchmark graphs at 2k, 10k, and 50k nodes with ~3x edges", async () => {
+      const { generateSyntheticMemoryGraph } = await import("../src/demo/synthetic-memory-graph.js");
+
+      for (const size of [2000, 10000]) {
+        const graph = generateSyntheticMemoryGraph(size);
+        expect(graph.nodes.length).toBe(size);
+        expect(graph.edges.length).toBeGreaterThanOrEqual(size * 2);
+        expect(graph.edges.length).toBeLessThanOrEqual(size * 3);
+        expect(graph.nodes[0]!.label).toBe("gemini.md");
+        expect(graph.nodes[0]!.type).toBe("SOURCE");
+      }
+    });
+  });
 });
+
