@@ -211,6 +211,7 @@ describe("Space static asset compression", () => {
     expect(demoWorkspace.headers["content-security-policy"]).toContain("connect-src 'none'");
     expect(demoWorkspace.headers["content-security-policy"]).toContain("frame-src 'none'");
     expect(demoWorkspace.headers["content-security-policy"]).toContain("media-src 'none'");
+    expect(demoWorkspace.headers["content-security-policy"]).toContain("worker-src 'self'");
     expect(demoWorkspace.headers["content-security-policy"]).toContain("frame-ancestors 'self'");
     expect(demoWorkspace.headers["permissions-policy"]).toContain("camera=()");
     expect(demoWorkspace.headers["x-frame-options"]).toBe("SAMEORIGIN");

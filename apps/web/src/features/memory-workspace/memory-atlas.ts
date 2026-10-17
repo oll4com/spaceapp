@@ -10,8 +10,66 @@ export const memoryMonthLabel = (month: string) => new Date(`${month}-01T00:00:0
 
 export const MIN_ATLAS_TAG_COUNT = 10;
 
+function createLargeAtlasWithoutTopics(inputNodes: MemoryGraphNode[], inputEdges: MemoryGraphEdge[]) {
+  let nodes = inputNodes.filter(node => node.type === "MEMORY" || node.type === "SOURCE" || node.type === "ROOM");
+  if (!nodes.length) nodes = inputNodes;
+  const visibleIds = new Set(nodes.map(node => node.id));
+  const edges = inputEdges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  const monthCounts = new Map<string, number>();
+  const monthById = new Map<string, string>();
+  for (const node of nodes) {
+    const month = memorySourceMonth(node);
+    if (!month) continue;
+    monthById.set(node.id, month);
+    monthCounts.set(month, (monthCounts.get(month) ?? 0) + 1);
+  }
+  let semanticCount = 0;
+  for (const edge of edges) {
+    if (edge.type === "SEMANTICALLY_RELATED") semanticCount++;
+  }
+  const monthKeys = [...monthCounts]
+    .sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))
+    .slice(0, 8)
+    .map(([month]) => month)
+    .sort();
+  const monthLabels = new Map([...monthCounts.keys()].map(month => [month, memoryMonthLabel(month)]));
+  const prominentMonths = new Set(monthKeys);
+  const groups: MemoryAtlasGroup[] = monthKeys.map((month, index) => ({
+    id: `month:${month}`,
+    label: monthLabels.get(month)!,
+    color: ATLAS_COLORS[index % ATLAS_COLORS.length]!,
+    count: 0,
+    kind: "month"
+  }));
+  const groupById = new Map(groups.map(group => [group.id, group]));
+  const positions = new Map<string, MemoryAtlasPosition>();
+  nodes.forEach((node, index) => {
+    const month = monthById.get(node.id);
+    const groupId = month && prominentMonths.has(month) ? `month:${month}` : "archive:other";
+    let group = groupById.get(groupId);
+    if (!group) {
+      group = { id: groupId, label: month ? "Other months" : "Other knowledge", color: "#7395ad", count: 0, kind: "archive" };
+      groupById.set(groupId, group);
+      groups.push(group);
+    }
+    if (node.type === "MEMORY") group.count++;
+    const position = node.position?.relations ?? { x: index % 40, y: Math.floor(index / 40) };
+    positions.set(node.id, {
+      ...position,
+      color: isMemoryCoreLabel(node.label) ? "#fff0b0" : group.color,
+      hub: node.type === "SOURCE",
+      groupId,
+      ...(month ? { monthLabel: monthLabels.get(month)! } : {})
+    });
+  });
+  return { nodes, edges, positions, groups, topics: [], explicitCount: 0, semanticCount };
+}
+
 /** Colors and labels describe real taxonomy or canonical source months; links are never invented. */
 export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], computeLayout = true, minTagCount = MIN_ATLAS_TAG_COUNT) {
+  if (!computeLayout && nodes.length > 5_000 && !nodes.some(node => node.type === "TOPIC")) {
+    return createLargeAtlasWithoutTopics(nodes, edges);
+  }
   const byId = new Map(nodes.map(node => [node.id, node]));
   const topicMembers = new Map<string, Set<string>>();
   const explicit = new Set<string>();

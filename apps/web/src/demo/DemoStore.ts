@@ -21,6 +21,7 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryGraphEdge,
   MemoryGraphNode,
   MemoryGraphPayload,
   Pane,
@@ -146,9 +147,68 @@ type DemoMemoryGraphQuery = {
   lifecycleStatus?: "ACTIVE" | "ARCHIVED";
   month?: string;
   relationMode?: "CLUSTERED" | "RELATIONS";
+  limit?: number;
   page?: number;
   pageSize?: number;
 };
+
+async function syntheticMemoryGraph(base: MemoryGraphPayload, nodeCount: number): Promise<MemoryGraphPayload> {
+  const boundedNodeCount = Math.max(1, Math.min(50_000, Math.floor(nodeCount)));
+  const sourceCount = Math.min(16, boundedNodeCount);
+  const memoryCount = boundedNodeCount - sourceCount;
+  const nodes: MemoryGraphNode[] = [];
+  for (let index = 0; index < sourceCount; index++) {
+    nodes.push({
+      id: `source:synthetic-${index}`,
+      type: "SOURCE",
+      label: index === 0 ? "gemini.md" : `synthetic-${index}.md`,
+      sourcePath: `/demo/synthetic-${index}.md`,
+      recordId: null
+    });
+  }
+  for (let index = 0; index < memoryCount; index++) {
+    nodes.push({
+      id: `memory:synthetic-${index}`,
+      type: "MEMORY",
+      label: `Synthetic memory ${index}`,
+      sourcePath: `/demo/synthetic-${index % Math.max(1, sourceCount)}.md`,
+      recordId: `memory:synthetic-${index}`
+    });
+    if (index > 0 && index % 1_000 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
+  const edges: MemoryGraphEdge[] = [];
+  for (let index = 1; index < sourceCount; index++) {
+    edges.push({ id: `edge:synthetic-source-${index}`, type: "DERIVED_FROM", source: "source:synthetic-0", target: `source:synthetic-${index}` });
+  }
+  for (let index = 0; index < memoryCount; index++) {
+    const id = `memory:synthetic-${index}`;
+    edges.push({ id: `edge:synthetic-contains-${index}`, type: "CONTAINS", source: `source:synthetic-${index % Math.max(1, sourceCount)}`, target: id });
+    if (memoryCount > 1) {
+      edges.push({ id: `edge:synthetic-next-${index}`, type: "SEMANTICALLY_RELATED", source: id, target: `memory:synthetic-${(index + 1) % memoryCount}`, origin: "EMBEDDING", confidence: 0.84, evidence: "Synthetic benchmark edge." });
+      edges.push({ id: `edge:synthetic-skip-${index}`, type: "SEMANTICALLY_RELATED", source: id, target: `memory:synthetic-${(index * 17 + 31) % memoryCount}`, origin: "EMBEDDING", confidence: 0.72, evidence: "Synthetic benchmark edge." });
+    }
+    if (index > 0 && index % 1_000 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
+  const targetEdges = Math.min(150_000, boundedNodeCount * 3);
+  for (let index = 0; edges.length < targetEdges && memoryCount > 1; index++) {
+    edges.push({
+      id: `edge:synthetic-fill-${index}`,
+      type: "SEMANTICALLY_RELATED",
+      source: `memory:synthetic-${index % memoryCount}`,
+      target: `memory:synthetic-${(index + 97) % memoryCount}`,
+      origin: "EMBEDDING",
+      confidence: 0.65,
+      evidence: "Synthetic benchmark edge."
+    });
+  }
+  if (boundedNodeCount > 5_000) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  return {
+    ...base,
+    summary: { sourceCount, recordCount: memoryCount, nodeCount: nodes.length, edgeCount: edges.length, issueCount: 0 },
+    nodes,
+    edges
+  };
+}
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
   const { beforeSnapshot: _before, afterSnapshot: _after, ...summary } = changeSet;
@@ -204,6 +264,7 @@ function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult>
 
 export class DemoStore {
   private fixture = cloneFixture();
+  private syntheticMemoryGraphs = new Map<number, Promise<MemoryGraphPayload>>();
   private sequence = 0;
   private cliRuntimeEnabled = new Map<CliToggleRuntimeId, boolean>(
     cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true])
@@ -668,9 +729,35 @@ export class DemoStore {
     };
   }
 
-  private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+  private async memoryGraph(query: DemoMemoryGraphQuery = {}): Promise<MemoryGraphPayload> {
+    const fixtureGraph = this.fixture.memoryWorkspace.graph;
+    let base = fixtureGraph;
+    const syntheticRequested = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("memoryGraphSize");
+    if (syntheticRequested && query.limit && query.limit > fixtureGraph.nodes.length && !query.q) {
+      let pending = this.syntheticMemoryGraphs.get(query.limit);
+      if (!pending) {
+        pending = syntheticMemoryGraph(fixtureGraph, query.limit);
+        this.syntheticMemoryGraphs.set(query.limit, pending);
+      }
+      base = await pending;
+    }
     const needle = query.q?.trim().toLowerCase();
+    const hasNodeFilters = Boolean(needle || query.nodeType || query.sourcePath || query.scope || query.roomId || query.lifecycleStatus || (query.month && query.month !== "all"));
+    if (base !== fixtureGraph && !hasNodeFilters) {
+      return {
+        ...base,
+        filters: {
+          q: query.q ?? null,
+          nodeType: query.nodeType ?? null,
+          scope: query.scope ?? null,
+          roomId: query.roomId ?? null,
+          sourcePath: query.sourcePath ?? null,
+          lifecycleStatus: query.lifecycleStatus ?? null,
+          relationMode: query.relationMode ?? "RELATIONS",
+          month: query.month ?? null
+        }
+      };
+    }
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
       const expectedMonthPath = query.month && query.month !== "all"
@@ -687,7 +774,7 @@ export class DemoStore {
     const nodeIds = new Set(nodes.map((node) => node.id));
     const edges = base.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
     const recordCount = nodes.filter((node) => node.recordId).length;
-    return structuredClone({
+    const result = {
       ...base,
       summary: {
         sourceCount: new Set(nodes.flatMap((node) => node.sourcePath ? [node.sourcePath] : [])).size,
@@ -708,7 +795,8 @@ export class DemoStore {
         relationMode: query.relationMode ?? "RELATIONS",
         month: query.month ?? null
       }
-    });
+    };
+    return base === fixtureGraph ? structuredClone(result) : result;
   }
 
   private invokeStreamingBot(method: string, args: unknown[]): unknown {
@@ -1477,21 +1565,23 @@ export class DemoStore {
       }
       case "memoryGraph": {
         const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
-        const graph = this.memoryGraph(query);
-        const page = requestedPage(graph.nodes, query);
-        const visibleIds = new Set(page.data.map((node) => node.id));
-        return Promise.resolve({
-          data: {
-            ...graph,
-            nodes: page.data,
-            edges: graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
-          },
-          pagination: page.pagination
+        return this.memoryGraph(query).then(graph => {
+          const page = requestedPage(graph.nodes, query);
+          const visibleIds = new Set(page.data.map((node) => node.id));
+          return {
+            data: {
+              ...graph,
+              nodes: page.data,
+              edges: graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
+            },
+            pagination: page.pagination
+          };
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
-        return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        return this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery).then(graph => ({
+          data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false }
+        }));
       }
       case "memoryCalendar": {
         const query = (args[0] ?? {}) as { year?: number; month?: string; date?: string };
@@ -1569,6 +1659,20 @@ export class DemoStore {
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        if (!detail && roomId?.startsWith("memory:synthetic-")) {
+          const index = Number.parseInt(roomId.slice("memory:synthetic-".length), 10);
+          return Promise.resolve({
+            node: { id: roomId, type: "MEMORY", label: `Synthetic memory ${index}`, sourcePath: `/demo/synthetic-${index % 16}.md`, recordId: roomId },
+            record: null, relatedNodes: [], relatedEdges: [], issues: []
+          });
+        }
+        if (!detail && roomId?.startsWith("source:synthetic-")) {
+          const index = Number.parseInt(roomId.slice("source:synthetic-".length), 10);
+          return Promise.resolve({
+            node: { id: roomId, type: "SOURCE", label: index === 0 ? "gemini.md" : `synthetic-${index}.md`, sourcePath: `/demo/synthetic-${index}.md`, recordId: null },
+            record: null, relatedNodes: [], relatedEdges: [], issues: []
+          });
+        }
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
       }

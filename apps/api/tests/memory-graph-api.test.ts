@@ -434,6 +434,41 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("lets the 3D view opt into a larger bounded overview while preserving the default", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    const largeNodeId = (index: number) => `memory:large-${String(index).padStart(5, "0")}`;
+    graphSnapshot.nodes = Array.from({ length: 50_000 }, (_, index) => ({
+      id: largeNodeId(index),
+      type: "MEMORY" as const,
+      label: `Large memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 150_000 }, (_, index) => ({
+      id: `edge:large-${index}`,
+      type: "CONTAINS" as const,
+      source: largeNodeId(index % graphSnapshot.nodes.length),
+      target: largeNodeId((index * 17 + 1) % graphSnapshot.nodes.length)
+    }));
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: graphSnapshot.nodes.length, edgeCount: graphSnapshot.edges.length };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const defaultResponse = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(defaultResponse.statusCode).toBe(200);
+    expect(defaultResponse.json().data.nodes).toHaveLength(2000);
+    expect(defaultResponse.json().data.truncated).toBe(true);
+
+    const expanded = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(expanded.statusCode).toBe(200);
+    expect(expanded.json().data.nodes).toHaveLength(50_000);
+    expect(expanded.json().data.edges).toHaveLength(150_000);
+    expect(expanded.json().data.truncated).toBe(false);
+
+    const rejected = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(rejected.statusCode).toBe(422);
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;

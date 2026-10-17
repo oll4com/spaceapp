@@ -40,6 +40,10 @@ vi.mock("../src/features/memory-workspace/DesktopMemoryGraph.js", () => ({
   }
 }));
 
+vi.mock("../src/features/memory-workspace/MemoryGraph3D.js", () => ({
+  MemoryGraph3D: () => <div data-testid="memory-graph-3d" />
+}));
+
 const sourceHash = "a".repeat(64);
 const sourcePath = "/opt/spaceapp/docs/gemini_history_2026-07.md";
 const memoryNode = {
@@ -324,6 +328,23 @@ describe("Memory atlas search-only experience", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear memory search" }));
     await waitFor(() => expect(String(requests.mock.calls.at(-1)?.[0])).not.toContain("q=backup"));
     expect(graphLifecycle.mounted).toHaveBeenCalledTimes(1);
+  });
+  it("unmounts the 2D renderer while the 3D graph is active", async () => {
+    installFetch();
+    render(<MemoryWorkspace shellMode="desktop" activeRoomId={null} onClose={() => undefined} initialMode="atlas" />);
+    await screen.findByTestId("memory-graph-renderer");
+    const mountsBefore3D = graphLifecycle.mounted.mock.calls.length;
+    const unmountsBefore3D = graphLifecycle.unmounted.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 3D memory view" }));
+    expect(document.querySelector(".memory-graph-layout")?.getAttribute("data-raw-node-count")).toBe("0");
+    await screen.findByTestId("memory-graph-3d");
+    await waitFor(() => expect(screen.queryByTestId("memory-graph-renderer")).toBeNull());
+    expect(graphLifecycle.unmounted.mock.calls.length).toBeGreaterThan(unmountsBefore3D);
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 3D memory view" }));
+    expect(document.querySelector(".memory-graph-layout")?.getAttribute("data-raw-node-count")).toBe("0");
+    await screen.findByTestId("memory-graph-renderer");
+    expect(graphLifecycle.mounted.mock.calls.length).toBeGreaterThan(mountsBefore3D);
   });
   it("opens readable evidence from the graph and Escape closes detail before the workspace", async () => {
     installFetch(); const onClose = vi.fn();
