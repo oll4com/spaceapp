@@ -250,6 +250,8 @@ this transport; they do not create a second exporter or interceptor.
   workflow span. A supervisor may adopt its initial signal's context before it
   schedules work; later signal requests add bounded links without changing the
   parent of activities already scheduled.
+  Operator turns queued later under that supervisor use their own API span and
+  link to the supervisor, including when two requests share the same trace ID.
 - **Continuations:** continue-as-new retains the original trace and parent,
   creates a new run span and adds an OTLP link to the previous run. The SDK's
   continue-as-new control exception is a successful continuation outcome.

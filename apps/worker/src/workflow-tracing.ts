@@ -8,7 +8,7 @@ import {
   type WorkflowInterceptorsFactory,
   type WorkflowInfo
 } from "@temporalio/workflow";
-import { categorizeFailureCode, isSafeErrorCode } from "@space/contracts";
+import { CODEX_APP_SERVER_TURN_WORKFLOW_TYPE, ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE, categorizeFailureCode, isSafeErrorCode } from "@space/contracts";
 import {
   MAX_TRACE_LINKS,
   findBackgroundTrace,
@@ -153,9 +153,19 @@ export function createWorkflowTracingInterceptors(dependencies: WorkflowTracingD
       scheduleLocalActivity: (input, next) => next({ ...input, headers: childHeaders(input.headers) }),
       // Pass the SDK's promise pair through unchanged, including each rejection.
       startChildWorkflowExecution(input, next) {
-        const background = findBackgroundTrace(input.options.args ?? []);
+        const args = input.options.args ?? [];
+        const background = findBackgroundTrace(args);
+        const request = info.workflowType === ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE && input.workflowType === CODEX_APP_SERVER_TURN_WORKFLOW_TYPE
+          ? findTraceContext(args) : null;
+        const active = current();
         contextLocked = true;
-        return next({ ...input, headers: background ? withTraceHeader(input.headers, background) : childHeaders(input.headers) });
+        // A later operator request owns its turn's trace even though the room
+        // supervisor already belongs to an earlier request. Keep a causal link
+        // to that supervisor; same-request children retain normal nesting.
+        const parent = request && (request.traceId !== active.traceId || request.spanId !== parentSpanId)
+          ? { context: request, links: [{ traceId: active.traceId, spanId: active.spanId }] }
+          : { context: active };
+        return next({ ...input, headers: withTraceHeader(input.headers, background ?? parent) });
       },
       signalWorkflow: (input, next) => next({ ...input, headers: childHeaders(input.headers) }),
       continueAsNew(input, next) {
