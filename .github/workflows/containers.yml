@@ -71,3 +71,11 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Verify container smoke checks
+        run: >-
+          node deploy/docker/container-smoke-check.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+          --arch "${{ matrix.arch }}"
+
