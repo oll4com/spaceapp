@@ -84,7 +84,9 @@ const ask = (socketPath, body) => new Promise((resolve, reject) => {
 test('the credential agent runs only a wrapper\'s fixed credential actions, input on stdin', async () => {
   // Short path: Unix socket paths are limited to about 100 bytes.
   const root = await mkdtemp('/tmp/spaceapp-agent-');
-  await writeFile(join(root, 'codex-vscode-parity'), '#!/bin/sh\nprintf "%s %s\\n" "$1" "$(wc -c)"\n');
+  await writeFile(join(root, 'codex-vscode-parity'), `#!/bin/sh
+printf "%s %s\\n" "$1" "$(wc -c | tr -d '[:space:]')"
+`);
   await chmod(join(root, 'codex-vscode-parity'), 0o755);
   const socketPath = join(root, 'credentials.sock');
   const server = await startCredentialAgent({ socketPath, commandPath: root });
