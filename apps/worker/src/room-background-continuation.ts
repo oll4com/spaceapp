@@ -1,3 +1,6 @@
+import { currentActivityTraceparent } from "./activity-observability.js";
+import { randomBytes } from "node:crypto";
+import { formatTraceparent, parseTraceparent } from "@space/contracts";
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
@@ -122,10 +125,15 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  // Link to the real preparing activity, including on second and later generations.
+  const sourceTraceparent = currentActivityTraceparent() ??
+    (!source.queueItem.turn.roomAgentContinuation ? source.queueItem.turn.traceparent : undefined);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
-    roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    roomAgentContinuation: { sourceRunId: source.run.runId, generation,
+      ...(parseTraceparent(sourceTraceparent) ? { sourceTraceparent } : {}) },
+    traceparent: formatTraceparent(randomBytes(16).toString("hex"), randomBytes(8).toString("hex")),
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,

@@ -1,3 +1,4 @@
+import { traceWorkflowRequest } from "./workflow-trace-scope.js";
 import {
   CancellationScope,
   ChildWorkflowCancellationType,
@@ -176,7 +177,7 @@ async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorIn
       await condition(() => pending.length > 0 || interrupted.length > 0, "1 second");
       if (!pending.length && !interrupted.length) {
         for (const missionId of monitoring) {
-          const finished = await roomAgentTurnActivities.settleRoomAgentBackgroundMission({ roomId: input.roomId, missionId });
+          const finished = await traceWorkflowRequest({ missionId }, () => roomAgentTurnActivities.settleRoomAgentBackgroundMission({ roomId: input.roomId, missionId }));
           if (finished) monitoring.delete(missionId);
         }
         if (++monitoringPolls >= 250) return continueAsNew<typeof roomAgentSupervisorWorkflow>({ ...input, pending, processedCount, monitoringMissionIds: [...monitoring] });
@@ -186,21 +187,22 @@ async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorIn
 
     const stoppedBeforeStart = interrupted.shift();
     if (stoppedBeforeStart) {
-      await markRoomAgentMissionFinished({
+      await traceWorkflowRequest(stoppedBeforeStart.item, () => markRoomAgentMissionFinished({
         missionId: stoppedBeforeStart.item.missionId,
         roomId: stoppedBeforeStart.item.turn.roomId,
         status: "INTERRUPTED",
         statusReason: stoppedBeforeStart.reason
-      });
+      }));
       processedCount += 1;
     } else {
       const item = pending.shift()!;
       activeMissionId = item.missionId;
       activeStopReason = "Stopped by operator.";
       activeScope = new CancellationScope({ cancellable: true });
+      await traceWorkflowRequest(item, async () => {
       await markRoomAgentMissionStarted({ missionId: item.missionId, roomId: item.turn.roomId, paneId: item.turn.paneId });
       try {
-        const result = await activeScope.run(() =>
+        const result = await activeScope!.run(() =>
           executeChild(codexAppServerTurnWorkflow, {
             args: [item.turn],
             workflowId: buildCodexAppServerTurnWorkflowId(item.turn),
@@ -240,6 +242,7 @@ async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorIn
         activeScope = null;
         processedCount += 1;
       }
+      });
     }
 
     if (processedCount >= 50) {
@@ -305,9 +308,11 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
   for (;;) {
     if (interrupted.length) {
       const stopped = interrupted.shift()!;
-      await supervisorActivities.discardRoomAgentSupervisorTurn(stopped);
-      // A discarded automatic turn must never terminate its newer operator turn.
-      await supervisorActivities.finishRoomAgentSupervisorTurn({ item: stopped.item, status: "INTERRUPTED", statusReason: stopped.reason });
+      await traceWorkflowRequest(stopped.item, async () => {
+        await supervisorActivities.discardRoomAgentSupervisorTurn(stopped);
+        // A discarded automatic turn must never terminate its newer operator turn.
+        await supervisorActivities.finishRoomAgentSupervisorTurn({ item: stopped.item, status: "INTERRUPTED", statusReason: stopped.reason });
+      });
       processedCount++;
     } else if (pending.length) {
       const item = pending.shift()!;
@@ -315,8 +320,9 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
       scope = new CancellationScope({ cancellable: true });
       stopReason = "Stopped by operator.";
       let paused = false;
+      await traceWorkflowRequest(item, async () => {
       try {
-        await scope.run(async () => {
+        await scope!.run(async () => {
           const state = await supervisorActivities.checkRoomAgentSupervisorTurn(item);
           if (state === "PAUSED") { paused = true; return; }
           if (state === "SKIP") {
@@ -347,6 +353,7 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
           }
         });
       } finally { active = null; scope = null; processedCount++; }
+      });
       if (paused) {
         pending.push(item);
         const revision = signalRevision;
@@ -356,6 +363,7 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
       await condition(() => pending.length > 0 || interrupted.length > 0, "1 second");
       if (!pending.length && !interrupted.length) for (const missionId of monitoring) {
         const revision = signalRevision;
+        await traceWorkflowRequest({ missionId }, async () => {
         const result = await supervisorActivities.prepareRoomAgentBackgroundContinuation({
           roomId: input.roomId, missionId, continuationId: uuid4()
         });
@@ -365,6 +373,7 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
             await supervisorActivities.discardRoomAgentSupervisorTurn({ item: result.item, reason: "Superseded while preparing the automatic continuation." });
           } else pending = enqueueRoomAgentMission(pending, null, result.item);
         }
+        });
         if (pending.length || interrupted.length) break;
       }
       polls++;

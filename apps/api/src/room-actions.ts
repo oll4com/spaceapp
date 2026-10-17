@@ -25,6 +25,7 @@ import { isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
 import { executeDurableRoomControl, RetryableRoomControlError, UnconfirmedRoomControlError } from "./room-control-execution.js";
 import { resolveMissionControlTarget, missionControlGuard, activeMissionStatuses, type RoomMissionControlTarget } from "./room-mission-control.js";
 import type { DecisionsService } from "./decisions-service.js";
+import { requestTraceContexts } from "./trace-context.js";
 
 function actionType(request: SpaceAgentRoomActionRequest): RoomAgentActionType {
   switch (request.action.type) {
@@ -659,6 +660,10 @@ export function createRoomActionExecutor(options: {
         await store.updateRoomAgentAction(input.actionId, { evidence: { ...input.evidence, chatSend: checkpoint },
           statusReason: "Chat send intent persisted before submission." }, input.traceId);
         await assertActionCanContinue(input.bridge, input.actionId);
+        // Keep the durable submission key while associating this turn with the
+        // real internal HTTP span that submitted it (no synthetic parent span).
+        const requestContext = requestTraceContexts.lookup(input.traceId);
+        if (requestContext) requestTraceContexts.remember(sendTrace, requestContext);
         const sent = await spaceAgentAdapter.sendMessage({ pane, content: input.instruction, traceId: sendTrace });
         if (!sent.submission) throw new Error(sent.session.statusReason || "Chat did not accept a new task.");
         if (sent.submission.sessionId !== session.sessionId) throw new Error("Chat session changed during submission; no input will be resent.");

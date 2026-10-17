@@ -1,3 +1,4 @@
+import { createRequestTraceContext, requestTraceContexts, traceparentForTraceId } from "../src/trace-context.js";
 import { describe, expect, it, vi } from "vitest";
 import { dotGoalStepPrompt, type DotGoal } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
@@ -194,4 +195,17 @@ it("writes a bounded, visible step prompt", () => {
     usage: { steps: 0, lastRunId: null, lastStepAt: null, consecutiveFailures: 0 }, steering: [] }, 1);
   expect(prompt.length).toBeLessThanOrEqual(7900);
   expect(prompt).toContain("Goal step 1 of at most 5.");
+});
+
+it("carries the internal request context through the Goal service into its submitted turn", async () => {
+  const { service, deps } = fixture();
+  const goal = await service.create("user:1", dotId, input, null);
+  const ctx = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+  requestTraceContexts.remember("req:goal-step", ctx);
+  vi.mocked(deps.sendStep).mockImplementationOnce(async (turn) => {
+    expect(traceparentForTraceId(turn.traceId)).toBe(ctx.traceparent);
+    return { runId: "run:correlated-step" };
+  });
+  await service.step(goal.goalId, "req:goal-step");
+  expect(deps.sendStep).toHaveBeenCalledWith(expect.objectContaining({ traceId: "req:goal-step" }));
 });

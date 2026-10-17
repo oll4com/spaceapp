@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./otlp-span-exporter": {
+      "types": "./dist/otlp-span-exporter.d.ts",
+      "import": "./dist/otlp-span-exporter.js"
     }
   },
   "scripts": {

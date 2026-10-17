@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
+      "@space/runtime/otlp-span-exporter": resolve(__dirname, "../../packages/runtime/src/otlp-span-exporter.ts"),
       "@space/cli-host": resolve(__dirname, "../../packages/cli-host/src/index.ts"),
       "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
       "@space/gateway": resolve(__dirname, "../../packages/gateway/src/index.ts"),
