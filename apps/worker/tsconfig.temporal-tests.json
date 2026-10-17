@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "tests/temporal-sandbox.test.ts",
+    "tests/history-json.test.ts",
+    "tests/history-files.test.ts"
+  ]
+}
