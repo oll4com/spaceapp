@@ -45,6 +45,8 @@ export function withActivityObservationScope<T>(execute: () => Promise<T>): { pr
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
 }
 
+export const failureReasonScope = withActivityObservationScope;
+
 /** traceparent for an outbound call: same W3C trace, new span id; null if none. */
 export function childTraceparent(traceparent: string | null | undefined): string | null {
   const parsed = parseTraceparent(traceparent);

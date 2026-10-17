@@ -110,7 +110,7 @@ describe("OTLP worker and workflow spans integration", { timeout: 45_000 }, () =
 
     // Flaky activity attempt 1
     const act1Attempt1 = collector.spans.find(
-      (s) => s.name === "activity/flakyProbeActivity" && s.attributes["space.attempt"] === 1
+      (s) => (s.name === "activity/flakyProbeActivity" || s.name === "activity flakyProbeActivity") && s.attributes["space.attempt"] === 1
     );
     expect(act1Attempt1).toBeDefined();
     expect(act1Attempt1?.parentSpanId).toBe(rootWfSpan?.spanId);
@@ -121,7 +121,7 @@ describe("OTLP worker and workflow spans integration", { timeout: 45_000 }, () =
 
     // Flaky activity attempt 2
     const act1Attempt2 = collector.spans.find(
-      (s) => s.name === "activity/flakyProbeActivity" && s.attributes["space.attempt"] === 2
+      (s) => (s.name === "activity/flakyProbeActivity" || s.name === "activity flakyProbeActivity") && s.attributes["space.attempt"] === 2
     );
     expect(act1Attempt2).toBeDefined();
     expect(act1Attempt2?.parentSpanId).toBe(rootWfSpan?.spanId);
@@ -135,7 +135,7 @@ describe("OTLP worker and workflow spans integration", { timeout: 45_000 }, () =
     expect(childWfSpan?.attributes["space.outcome"]).toBe("COMPLETED");
 
     // Echo activity in child workflow
-    const childEchoAct = collector.spans.find((s) => s.name === "activity/echoProbeActivity");
+    const childEchoAct = collector.spans.find((s) => s.name === "activity/echoProbeActivity" || s.name === "activity echoProbeActivity");
     expect(childEchoAct).toBeDefined();
     expect(childEchoAct?.parentSpanId).toBe(childWfSpan?.spanId);
     expect(childEchoAct?.attributes["space.outcome"]).toBe("COMPLETED");
