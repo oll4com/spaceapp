@@ -52,3 +52,6 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Isolated from-source contributor runtime (contains secrets).
+/.dev-stack*/

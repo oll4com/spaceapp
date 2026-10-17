@@ -27,6 +27,11 @@ packaging requires its normal toolchain and separate platform acceptance.
 Dependency installation may use the network; the smoke command below does not
 need a provider account, API key, Docker, PostgreSQL or Temporal.
 
+For the real source API/web/worker/CLI stack with isolated Docker dependencies,
+normal owner setup and hot reload, use `npm run dev:stack`. See the
+[development stack guide](docs/development-stack.md) for prerequisites, ports,
+private state, down/reset, and the complete Linux/Intel-macOS browser/lifecycle proof.
+
 ## First executed task, without a provider
 
 ```sh

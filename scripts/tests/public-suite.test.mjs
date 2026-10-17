@@ -18,3 +18,5 @@ import "./trivy-report-summary.test.mjs";
 import "./verify-export-provenance.test.mjs";
 
 import './opencode-first-run.test.mjs';
+
+import "./dev-stack.test.mjs";

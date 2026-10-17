@@ -54,6 +54,7 @@ const rootFiles = new Set([
 ]);
 
 const publicDocs = new Set([
+  "docs/development-stack.md",
   // Linked from the README (review F4: the link was stripped because the file was not exported).
   "docs/architecture.md",
   "docs/clean-room-testing.md",
@@ -78,6 +79,16 @@ const publicDocs = new Set([
 export const publicRepositoryMaintainedFiles = new Set(["docs/security-model.md"]);
 
 const publicScripts = new Set([
+  "scripts/dev-stack.mjs",
+  "scripts/dev-stack/state.mjs",
+  "scripts/dev-stack/processes.mjs",
+  "scripts/dev-stack/resources.mjs",
+  "scripts/dev-stack/supervisor.mjs",
+  "scripts/dev-stack/opencode-wrapper.mjs",
+  "scripts/dev-stack/acceptance.mjs",
+  "scripts/dev-stack/browser-proof.mjs",
+  "scripts/dev-stack/lifecycle-proof.mjs",
+  "scripts/tests/dev-stack.test.mjs",
   // Loaded by apps/api/src/cli-render-proof-fixture.ts (proof rooms); missing, that path failed (review F18).
   "scripts/cli-render-fixture.mjs",
   // Maintained here; listed so the CI re-export of this repository keeps them.

@@ -1,0 +1,147 @@
+name: Source development stack
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack*"
+      - "scripts/dev-stack/**"
+      - "scripts/tests/dev-stack.test.mjs"
+      - "apps/web/vite.config.ts"
+      - "packages/**"
+      - "apps/api/**"
+      - "apps/worker/**"
+      - "package*.json"
+      - "Dockerfile"
+      - ".github/workflows/dev-stack.yml"
+  push:
+    branches:
+      - "codex/spaceapp65-*"
+  workflow_dispatch:
+    inputs:
+      expected_source:
+        description: "Optional exact40hex reviewed source SHA; mismatch fails before executing project code"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-stack-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-stack:
+    # Standard public runners only. No private, self-hosted, larger or paid fallback.
+    if: github.event.repository.private == false
+    name: Real source stack / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      SPACE_DEV_REDACT_SETUP: "true"
+      SPACE_DEV_CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
+      SPACE_DEV_PROOF_DIR: ${{ runner.temp }}/spaceapp-dev-stack-proof
+      EXPECTED_SOURCE: ${{ inputs.expected_source }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Verify exact public candidate
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          assert.match(process.env.SPACE_DEV_CANDIDATE, /^[a-f0-9]{40}$/);
+          const actual = execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim();
+          assert.equal(actual, process.env.SPACE_DEV_CANDIDATE);
+          if (process.env.EXPECTED_SOURCE) {
+            assert.match(process.env.EXPECTED_SOURCE, /^[a-f0-9]{40}$/);
+            assert.equal(actual, process.env.EXPECTED_SOURCE);
+          }
+          console.log(`Exact source ${actual}; Node ${process.version}; ${process.platform}/${process.arch}`);
+          NODE
+          git diff --exit-code
+
+      - name: Prepare ephemeral Intel-macOS Docker
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = x86_64
+          brew install colima docker docker-compose ripgrep
+          mkdir -p "$HOME/.docker/cli-plugins"
+          ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" "$HOME/.docker/cli-plugins/docker-compose"
+          colima start --profile spaceapp-dev-proof --cpu 3 --memory 6 --disk 30
+          docker context use colima-spaceapp-dev-proof
+
+      - name: Verify existing Docker, Compose, browser and search tools
+        run: |
+          docker version
+          docker compose version
+          command -v rg
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            test -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          else
+            test -x /usr/bin/google-chrome
+          fi
+
+      - name: Install locked workspace dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Daemon-free isolation and cleanup regressions
+        run: npm run test:dev-stack
+
+      - name: Full stock check
+        run: npm run check
+
+      - name: Full stock tests
+        run: npm test
+
+      - name: Full stock build
+        run: npm run build
+
+      - name: Full stock hygiene
+        run: npm run hygiene:preflight
+
+      - name: Real HTTP, owner, browser, PTY, HMR, isolation and failure cleanup
+        run: node scripts/dev-stack/lifecycle-proof.mjs
+
+      - name: Final clean exact-source guard
+        if: always()
+        run: |
+          test "$(git rev-parse HEAD)" = "$SPACE_DEV_CANDIDATE"
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Remove ephemeral hosted Colima profile
+        if: always() && runner.os == 'macOS'
+        run: |
+          if colima status --profile spaceapp-dev-proof >/dev/null 2>&1; then
+            colima stop --profile spaceapp-dev-proof
+          fi
+          if colima list --json | grep -q 'spaceapp-dev-proof'; then
+            colima delete --profile spaceapp-dev-proof --force
+          fi
+
+      - name: Preserve redacted evidence only
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dev-stack-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/spaceapp-dev-stack-proof
+          if-no-files-found: warn
+          retention-days: 7

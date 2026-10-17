@@ -59,7 +59,9 @@
     "test:architecture": "node --test scripts/tests/domain-boundaries.test.mjs scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs && node scripts/domain-boundaries.mjs",
     "smoke:offline": "npm run build -w @space/cli-host && node scripts/contributor-smoke.mjs",
     "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs",
-    "lint": "eslint --max-warnings=-1 apps packages scripts"
+    "lint": "eslint --max-warnings=-1 apps packages scripts",
+    "dev:stack": "node scripts/dev-stack.mjs",
+    "test:dev-stack": "node --test scripts/tests/dev-stack.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
