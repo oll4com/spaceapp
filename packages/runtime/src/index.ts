@@ -16,3 +16,4 @@ export * from "./plan-execution-repository.js";
 export * from "./plan-execution-projection.js";
 export * from "./google-accounts.js";
 export * from "./metrics-registry.js";
+export * from "./otlp-span-exporter.js";
