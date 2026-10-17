@@ -7200,8 +7200,11 @@ export const memoryGraphPayloadSchema = z.object({
 export const memoryGraphOverviewPayloadSchema = memoryGraphPayloadSchema
   .omit({ nodes: true, edges: true })
   .extend({
-    nodes: z.array(memoryGraphNodeSchema).max(2000),
-    edges: z.array(memoryGraphEdgeSchema).max(6000),
+    // Hard server maximum. The overview endpoint serves at most OVERVIEW_MAX_NODES nodes and
+    // OVERVIEW_MAX_EDGES edges; the default request still asks for 2,000 / 6,000 (unchanged), so
+    // existing clients keep the same payload budget until they opt in with `limit`.
+    nodes: z.array(memoryGraphNodeSchema).max(50000),
+    edges: z.array(memoryGraphEdgeSchema).max(150000),
     totalMatchingNodes: z.number().int().min(0),
     totalMatchingEdges: z.number().int().min(0),
     truncated: z.boolean()
@@ -7232,6 +7235,13 @@ export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema.omi
   pageSize: true,
   sortBy: true,
   sortOrder: true
+}).extend({
+  /**
+   * How many nodes the 3D view may ask for. Omitted = 2,000, exactly as before this parameter
+   * existed. The server caps it at 50,000 (see memoryGraphOverviewPayloadSchema); edges scale at
+   * three per node, capped at 150,000, which mirrors the old 2,000 / 6,000 ratio.
+   */
+  limit: z.coerce.number().int().min(1).max(50000).optional()
 });
 
 export const memoryCalendarQuerySchema = z.object({

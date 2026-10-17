@@ -105,3 +105,35 @@ attachment, room retention, control, readiness, polling or deployment.
 Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.
+
+## Measuring the 3D memory graph
+
+The memory graph's 3D view is the one screen whose cost depends on graph size, so it ships with a
+harness instead of a claim. It needs no Docker, no database and no provider: the page builds a
+synthetic graph and mounts the real component.
+
+```sh
+cd apps/web
+npm run dev                                        # terminal 1, dev server on :4911
+node scripts/memory-3d-bench.mjs                   # terminal 2
+```
+
+The script drives headless Chrome against `memory-3d-bench.html`, rotates and zooms the camera
+through the real pointer and wheel handlers, and prints:
+
+- `p95ms` / `p99ms` of `requestAnimationFrame` deltas, and whether they meet the 33 ms budget
+- `longtasks`, counted with `PerformanceObserver({ entryTypes: ["longtask"] })` from mount onwards
+- `layout_180_steps_total_ms`, the cost of the whole force layout at that graph size
+- `renderer`, which is `webgl2` or `canvas2d`
+
+Append `?nodes=5000` for a smaller graph. Two things to know before quoting a number:
+
+- **Say which GPU.** Headless Chrome uses whatever ANGLE picks; a dedicated GPU and an integrated
+  one are not interchangeable evidence.
+- **The layout is the expensive part, not the drawing.** At 50,000 nodes the 180-step layout is on
+  the order of 90 seconds of CPU. It runs in the layout worker and streams positions, so the view is
+  usable while it converges — but the total is still that large, and it is the next thing to fix.
+
+`apps/web/src/features/memory-workspace/memory-graph-webgl.ts` explains why the projection is not a
+standard perspective matrix: the CPU path it replaces clamps its perspective denominator, and a
+textbook matrix changes the look.
