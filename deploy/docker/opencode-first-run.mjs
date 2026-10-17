@@ -45,7 +45,7 @@ const LEGACY_EXTERNAL_DIRECTORY={'*':'ask',[MEMORY_DIRECTORY]:'allow',[`${MEMORY
 const PROVIDER_TMPDIR=/^\/var\/lib\/spaceapp-cli\/providers\/[a-z0-9-]+\/tmp$/;
 export function scratchDirectory(tmpdir) {
   if(typeof tmpdir!=='string'||!isAbsolute(tmpdir))return null;
-  const path=normalize(tmpdir).replace(/\/+$/,'');
+  const path=normalize(tmpdir).replace(/\\/g, '/').replace(/\/+$/,'');
   return PROVIDER_TMPDIR.test(path)?path:null;
 }
 const scratchRules=tmpdir=>{const scratch=scratchDirectory(tmpdir);return scratch?{[scratch]:'allow',[`${scratch}/*`]:'allow'}:{};};
