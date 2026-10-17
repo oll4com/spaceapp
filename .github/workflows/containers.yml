@@ -71,3 +71,94 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check core container (/readyz)
+        if: matrix.target == 'core'
+        run: |
+          docker network create spaceapp-smoke-${{ matrix.arch }}
+          docker run -d --name smoke-pg-${{ matrix.arch }} --network spaceapp-smoke-${{ matrix.arch }} \
+            -e POSTGRES_PASSWORD=smokepassword -e POSTGRES_USER=spaceapp -e POSTGRES_DB=spaceapp \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec smoke-pg-${{ matrix.arch }} pg_isready -U spaceapp; then ready=1; break; fi
+            sleep 1
+          done
+          [ "$ready" = 1 ] || { echo "PostgreSQL not ready"; exit 1; }
+
+          mkdir -p /tmp/smoke-secrets-${{ matrix.arch }}
+          echo "postgres://spaceapp:smokepassword@smoke-pg-${{ matrix.arch }}:5432/spaceapp" > /tmp/smoke-secrets-${{ matrix.arch }}/database-url
+          echo "smoke-session-secret-at-least-32-chars-long" > /tmp/smoke-secrets-${{ matrix.arch }}/session-secret
+          echo "smoke-setup-token" > /tmp/smoke-secrets-${{ matrix.arch }}/setup-token
+          chmod 0600 /tmp/smoke-secrets-${{ matrix.arch }}/*
+
+          docker run -d --name smoke-core-${{ matrix.arch }} --network spaceapp-smoke-${{ matrix.arch }} \
+            -v /tmp/smoke-secrets-${{ matrix.arch }}:/run/secrets:ro \
+            -p 4911:4911 \
+            spaceapp-ci:core-${{ matrix.arch }}
+
+          core_ready=0
+          for _ in $(seq 1 45); do
+            if curl -sf http://127.0.0.1:4911/readyz | grep -q '"ok":true'; then
+              echo "Core readyz smoke check passed"
+              core_ready=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$core_ready" = 1 ] || { echo "Core /readyz not ready"; exit 1; }
+
+      - name: Cleanup core smoke check resources
+        if: always() && matrix.target == 'core'
+        run: |
+          docker logs smoke-core-${{ matrix.arch }} 2>/dev/null || true
+          docker stop smoke-core-${{ matrix.arch }} smoke-pg-${{ matrix.arch }} 2>/dev/null || true
+          docker rm -f smoke-core-${{ matrix.arch }} smoke-pg-${{ matrix.arch }} 2>/dev/null || true
+          docker network rm spaceapp-smoke-${{ matrix.arch }} 2>/dev/null || true
+          rm -rf /tmp/smoke-secrets-${{ matrix.arch }}
+
+      - name: Smoke check browser container (Chromium launch)
+        if: matrix.target == 'browser'
+        run: |
+          docker run --rm spaceapp-ci:browser-${{ matrix.arch }} \
+            chromium --no-sandbox --headless --disable-gpu --dump-dom about:blank
+
+      - name: Smoke check cli container (CLI host socket & OpenCode)
+        if: matrix.target == 'cli'
+        run: |
+          docker run --rm spaceapp-ci:cli-${{ matrix.arch }} \
+            opencode-ai --version
+
+          docker run -d --name smoke-cli-${{ matrix.arch }} \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            spaceapp-ci:cli-${{ matrix.arch }}
+
+          socket_ready=0
+          for _ in $(seq 1 30); do
+            if ! docker inspect -f '{{.State.Running}}' smoke-cli-${{ matrix.arch }} 2>/dev/null | grep -q 'true'; then
+              echo "CLI container terminated unexpectedly"
+              exit 1
+            fi
+            if docker exec smoke-cli-${{ matrix.arch }} test -S /run/spaceapp-cli/host.sock 2>/dev/null; then
+              socket_ready=1
+              break
+            fi
+            sleep 1
+          done
+          [ "$socket_ready" = 1 ] || { echo "CLI socket not created"; exit 1; }
+
+          docker exec smoke-cli-${{ matrix.arch }} node -e "
+            const net = require('node:net');
+            const client = net.createConnection('/run/spaceapp-cli/host.sock');
+            client.on('connect', () => { console.log('CLI host socket reachable'); process.exit(0); });
+            client.on('error', (err) => { console.error('Socket connect failed:', err); process.exit(1); });
+            setTimeout(() => { console.error('Socket timeout'); process.exit(1); }, 5000);
+          "
+
+      - name: Cleanup cli smoke check resources
+        if: always() && matrix.target == 'cli'
+        run: |
+          docker logs smoke-cli-${{ matrix.arch }} 2>/dev/null || true
+          docker stop smoke-cli-${{ matrix.arch }} 2>/dev/null || true
+          docker rm -f smoke-cli-${{ matrix.arch }} 2>/dev/null || true
