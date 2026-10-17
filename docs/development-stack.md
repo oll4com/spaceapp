@@ -42,11 +42,15 @@ it requires an explicitly configured direct LibreOffice command and private work
 directory. The launcher does not install that optional tool.
 
 Changes in `apps/api/src` restart the API. Worker or shared-package source changes
-stop the dependent source services, run the normal complete build, and restart
-them from this checkout. Vite handles web HMR directly, including WebSocket proxying
+stop the dependent source services, rebuild their shared dependencies and restart
+them from this checkout. For these service reloads, the build follows the canonical
+shared-workspace order through the API and worker, then normalizes build permissions.
+The running Vite server serves web source and handles HMR, including WebSocket proxying
 to the chosen API port. A required child exiting unexpectedly produces a named
 error and stops the stack. Sustained readiness loss also fails instead of leaving
 an apparently healthy partial stack.
+Initial startup and stock validation retain the complete root build, including
+demo generation and production web assets.
 Intentional reloads invalidate earlier readiness probes. The replacement receives
 the same bounded startup checks after compilation and launch, then the normal
 four-loss readiness policy once it is ready; old responses cannot change that state.
@@ -119,7 +123,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 76 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 80 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`

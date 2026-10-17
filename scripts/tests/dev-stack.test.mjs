@@ -788,3 +788,69 @@ test('only one matching readiness probe can settle and release each generation',
   assert.equal(policy.diagnostic().paused, true);
   assert(isPublicExportPath('scripts/dev-stack/readiness.mjs'));
 });
+
+const { sourceReloadWorkspaces, sourceReloadBuildPlan, buildSourceServices } = await import('../dev-stack/source-build.mjs');
+
+test('source reload preserves canonical workspace order and the complete API worker CLI dependency closure', async () => {
+  const { readdir } = await import('node:fs/promises');
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  const canonical = [...manifest.scripts.build.matchAll(/npm run build -w (@space\/[a-z-]+)/g)].map(x => x[1]);
+  const packages = new Map();
+  for (const directory of ['packages', 'apps']) for (const item of await readdir(join(root, directory), { withFileTypes: true })) {
+    if (!item.isDirectory()) continue;
+    const value = await readFile(join(root, directory, item.name, 'package.json'), 'utf8').then(JSON.parse).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (value) packages.set(value.name, value);
+  }
+  const required = new Set();
+  const include = name => {
+    if (required.has(name)) return; required.add(name);
+    const value = packages.get(name); assert(value, `Missing required workspace ${name}`);
+    for (const dependency of Object.keys({ ...value.dependencies, ...value.optionalDependencies, ...value.devDependencies }).filter(x => x.startsWith('@space/'))) include(dependency);
+  };
+  for (const name of ['@space/api', '@space/worker', '@space/cli-host']) include(name);
+  assert.deepEqual(sourceReloadWorkspaces, canonical.filter(name => name !== '@space/web'));
+  assert.deepEqual(sourceReloadWorkspaces.filter(name => required.has(name)), canonical.filter(name => required.has(name)));
+  for (const name of required) {
+    assert(sourceReloadWorkspaces.includes(name), `Reload omits ${name}`);
+    const value = packages.get(name);
+    for (const dependency of Object.keys({ ...value.dependencies, ...value.optionalDependencies, ...value.devDependencies }).filter(x => x.startsWith('@space/'))) assert(sourceReloadWorkspaces.indexOf(dependency) < sourceReloadWorkspaces.indexOf(name), `${dependency} must be built before ${name}`);
+  }
+  assert(sourceReloadWorkspaces.includes('@space/icons')); assert.equal(sourceReloadWorkspaces.length, required.size + 1);
+  assert(isPublicExportPath('scripts/dev-stack/source-build.mjs'));
+});
+
+test('hot service builds finish strictly in canonical order with permissions before a replacement can launch', async () => {
+  const calls = []; let active = 0, launched = false;
+  const completion = buildSourceServices(async (executable, args) => {
+    assert.equal(++active, 1, 'Builds must not overlap.'); assert.equal(launched, false);
+    calls.push({ executable, args: [...args] }); await new Promise(resolvePromise => setImmediate(resolvePromise)); active--;
+  }, () => false).then(() => { launched = true; });
+  assert.equal(launched, false); await completion; assert.equal(launched, true);
+  assert.deepEqual(calls, [...sourceReloadWorkspaces.map(name => ({ executable: 'npm', args: ['run', 'build', '-w', name] })), { executable: 'node', args: ['scripts/fix-build-permissions.mjs'] }]);
+  assert(Object.isFrozen(sourceReloadBuildPlan)); assert(sourceReloadBuildPlan.every(step => Object.isFrozen(step) && Object.isFrozen(step.args)));
+  assert.equal(calls.some(step => step.args.includes('@space/web') || step.args.includes('scripts/build-demo-projects.mjs')), false);
+  assert.equal(calls.some(step => step.executable === 'npm' && step.args.length === 2), false, 'The frozen old full-root invocation would rebuild production web/demos on this path.');
+});
+
+test('failure in any shared service or permission build prevents all later commands and relaunch', async () => {
+  for (let failureAt = 0; failureAt < sourceReloadBuildPlan.length; failureAt++) {
+    const failure = new Error(`synthetic build failure ${failureAt}`), calls = []; let launched = false;
+    await assert.rejects(buildSourceServices(async (executable, args) => {
+      calls.push({ executable, args }); if (calls.length - 1 === failureAt) throw failure;
+    }, () => false).then(() => { launched = true; }), error => error === failure);
+    assert.equal(calls.length, failureAt + 1); assert.equal(launched, false);
+  }
+});
+
+test('source rebuild cancellation before during and after commands never permits a later step or relaunch', async () => {
+  const calls = []; await assert.rejects(buildSourceServices(async () => { calls.push('unexpected'); }, () => true), /cancelled before relaunch/); assert.equal(calls.length, 0);
+  let stopping = false, release, launched = false;
+  const pending = buildSourceServices(async executable => {
+    calls.push(executable); await new Promise(resolvePromise => { release = resolvePromise; });
+  }, () => stopping).then(() => { launched = true; });
+  stopping = true; release(); await assert.rejects(pending, /cancelled before relaunch/);
+  assert.equal(calls.length, 1); assert.equal(launched, false);
+  stopping = false; let finished = 0;
+  await assert.rejects(buildSourceServices(async () => { if (++finished === sourceReloadBuildPlan.length) stopping = true; }, () => stopping).then(() => { launched = true; }), /cancelled before relaunch/);
+  assert.equal(finished, sourceReloadBuildPlan.length); assert.equal(launched, false);
+});

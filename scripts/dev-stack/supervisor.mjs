@@ -10,6 +10,7 @@ import { assertOwnedDocker, compose, dockerEnvironment, removeOwnedDocker, run }
 import { verifyOpenCode } from './opencode-runtime.mjs';
 import { verifyPtyCapability } from './pty-capability.mjs';
 import { ReadinessEpoch } from './readiness.mjs';
+import { buildSourceServices } from './source-build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const say = text => process.stdout.write(`[dev-stack] ${text}\n`);
@@ -63,7 +64,7 @@ export async function start(config, inherited = process.env) {
   const perform = fn => { activeCommand = fn(); return activeCommand; };
   const recordChildren = () => { record.children = [...children.values()].map(x => x.record); const text = JSON.stringify(record); writeTail = writeTail.then(() => privateWrite(config.supervisor, text)); return writeTail; };
   const log = chunk => process.stdout.write(chunk);
-  async function command(args) { return perform(() => run('npm', args, { cwd: config.root, env, secrets: redactions, output: log, signal: cancellation.signal })); }
+  async function command(args, executable = 'npm') { return perform(() => run(executable, args, { cwd: config.root, env, secrets: redactions, output: log, signal: cancellation.signal })); }
   const stopChildren = (names = [...children.keys()]) => {
     const job = stopTail.then(async () => {
     for (const name of names) {
@@ -115,7 +116,7 @@ export async function start(config, inherited = process.env) {
     try {
       const names = kind === 'api' ? ['api'] : ['api', 'worker', 'cli-host'];
       await stopChildren(names);
-      if (kind !== 'api') await command(['run', 'build']);
+      if (kind !== 'api') await buildSourceServices((executable, args) => command(args, executable === 'node' ? process.execPath : 'npm'), () => stopping);
       if (stopping) return;
       if (kind === 'api') await launch('api', ['--import', 'tsx', 'apps/api/src/server.ts']); else await sourceServices();
       if (stopping) return;
