@@ -1,5 +1,16 @@
-import { spawn } from "node-pty";
+import { createRequire } from "node:module";
 import type { CliHostSpawn } from "./types.js";
+
+const require = createRequire(import.meta.url);
+let cachedSpawn: typeof import("node-pty").spawn | null = null;
+
+function resolveNodePtySpawn(): typeof import("node-pty").spawn {
+  if (!cachedSpawn) {
+    const nodePty = require("node-pty") as typeof import("node-pty");
+    cachedSpawn = nodePty.spawn;
+  }
+  return cachedSpawn;
+}
 
 /**
  * Disable the PTY interrupt characters (ISIG) for every CLI pane so that
@@ -9,7 +20,7 @@ import type { CliHostSpawn } from "./types.js";
  * and app-level exits (Ctrl-D, /exit) are unaffected.
  */
 export const spawnNodePty: CliHostSpawn = (spec) =>
-  spawn("/bin/sh", ["-c", '/usr/bin/stty -isig; exec "$@"', "space-cli-host", spec.command, ...spec.args], {
+  resolveNodePtySpawn()("/bin/sh", ["-c", '/usr/bin/stty -isig; exec "$@"', "space-cli-host", spec.command, ...spec.args], {
     name: "xterm-256color",
     cols: spec.cols,
     rows: spec.rows,
