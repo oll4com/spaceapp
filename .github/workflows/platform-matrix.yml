@@ -81,7 +81,10 @@ jobs:
           sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs dbus-user-session docker-compose-v2
           PODMAN_MAJOR="$(podman --version | sed -E 's/.*version ([0-9]+).*/\1/')"
           if [ "${PODMAN_MAJOR:-0}" -lt 5 ]; then
-            if curl -fsSL -o /tmp/podman-linux-amd64.tar.gz https://github.com/mgoltzsche/podman-static/releases/latest/download/podman-linux-amd64.tar.gz; then
+            PODMAN_STATIC_VERSION="v5.8.8"
+            PODMAN_STATIC_SHA256="e0e12f9de61bdb054d19a77df0e84ddd51cadfee13688e0fb607d61b6833e8cd"
+            if curl -fsSL -o /tmp/podman-linux-amd64.tar.gz "https://github.com/mgoltzsche/podman-static/releases/download/${PODMAN_STATIC_VERSION}/podman-linux-amd64.tar.gz" && \
+               echo "${PODMAN_STATIC_SHA256}  /tmp/podman-linux-amd64.tar.gz" | sha256sum -c -; then
               tar -xzf /tmp/podman-linux-amd64.tar.gz -C /tmp
               sudo cp -r /tmp/podman-linux-amd64/usr /tmp/podman-linux-amd64/etc /
               sudo cp -f /usr/local/bin/podman /usr/bin/podman || true

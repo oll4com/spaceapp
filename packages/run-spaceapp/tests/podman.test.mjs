@@ -56,7 +56,7 @@ function ttyStdin(...answers) {
   };
 }
 
-const FRESH_APPROVALS = ["", "", "", "", "", "y"];
+const FRESH_APPROVALS = ["", "", "", "", "", "", "y"];
 
 test("validateConfig and createDefaultConfig enforce engine validity and disallow podman with host-root", () => {
   const dockerConfig = createDefaultConfig({ version: "1.0.0", engine: "docker" });
@@ -167,7 +167,7 @@ test("install --engine podman succeeds, configures podman engine, and creates ru
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: ttyStdin(...FRESH_APPROVALS),
+    stdin: ttyStdin("", "", "", "", "", "y"),
     inspectResources: async () => ({
       cpuCount: 8,
       totalMemoryBytes: 16 * 1024 ** 3,
@@ -215,7 +215,7 @@ test("install --engine podman refuses --access host-root with a clear error mess
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: ttyStdin(...FRESH_APPROVALS),
+    stdin: ttyStdin("", "", "", "", "", "y"),
     inspectResources: async () => ({
       cpuCount: 8,
       totalMemoryBytes: 16 * 1024 ** 3,
@@ -367,22 +367,17 @@ test("inspectStoragePlan measures Podman machine capacity on macOS", async () =>
     return 0;
   };
 
-  const originalPlatform = process.platform;
-  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-  try {
-    const plan = await inspectStoragePlan({
-      root,
-      config,
-      existingConfig: null,
-      resources: { cpuCount: 8, totalMemoryBytes: 16 * 1024 ** 3, freeDiskBytes: 100 * 1024 ** 3 },
-      execute,
-      operation: "fresh"
-    });
-    assert.equal(plan.dockerFreeDiskBytes, 66060288 * 1024);
-    assert.equal(plan.resources.engineCpuCount, 8);
-  } finally {
-    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
-  }
+  const plan = await inspectStoragePlan({
+    root,
+    config,
+    existingConfig: null,
+    resources: { cpuCount: 8, totalMemoryBytes: 16 * 1024 ** 3, freeDiskBytes: 100 * 1024 ** 3 },
+    execute,
+    operation: "fresh",
+    platform: "darwin"
+  });
+  assert.equal(plan.dockerFreeDiskBytes, 66060288 * 1024);
+  assert.equal(plan.resources.engineCpuCount, 8);
 });
 
 test("doctor inspects podman engine when config.json specifies engine: podman", async () => {

@@ -601,7 +601,7 @@ export async function run(argv, {
       return code;
     }
     if (args.length === 1 && args[0] === "--purge-data") {
-      const confirmation = await readSecret(stdin, stdout, `Type DELETE to remove ${engineLabel} volumes: `, { mask: false });
+      const confirmation = await readSecret(stdin, stdout, `Type DELETE to remove ${engineLabel} volumes: `, { mask: false, answerKey: "confirm" });
       if (confirmation !== "DELETE") {
         throw new Error("Purge cancelled.");
       }
@@ -693,7 +693,7 @@ async function installCommand(args, {
     );
   }
   const engine = requestedEngine || existingConfig?.engine || "docker";
-  const result = await prepareInstallation(root, {
+  let result = await prepareInstallation(root, {
     version: runtimeVersion,
     profile,
     accessMode,
@@ -784,23 +784,29 @@ async function installCommand(args, {
   if (prerequisiteResult.reexecuted) {
     return prerequisiteResult.code;
   }
-  const explicitEngine = requestedEngine !== undefined || stdin?._spaceappPromptController?.answers?.engine !== undefined;
-  if (prerequisiteResult.code !== 0 && !existingConfig && !explicitEngine && accessMode !== "host-root") {
+  const explicitEngine = parseInstallArgs(args).requestedEngine !== undefined || stdin?._spaceappPromptController?.answers?.engine !== undefined;
+  if (prerequisiteResult.code !== 0 && !existingConfig && !explicitEngine && accessMode !== "host-root" && interactiveAvailable(stdin)) {
     const podmanReady = await podmanIsReady(execute, { platform });
     if (podmanReady) {
-      let pickPodman = false;
-      if (!interactiveAvailable(stdin)) {
-        pickPodman = true;
-      } else {
-        pickPodman = await promptYesNo(
-          stdin,
-          stdout,
-          "Docker was not detected, but Podman is available. Use Podman as container engine?",
-          { defaultYes: true, answerKey: "engine" }
-        );
-      }
+      const pickPodman = await promptYesNo(
+        stdin,
+        stdout,
+        "Docker was not detected, but Podman is available. Use Podman as container engine?",
+        { defaultYes: false, answerKey: "engine" }
+      );
       if (pickPodman) {
-        result.config = { ...result.config, engine: "podman" };
+        const previousConfig = result.config;
+        result = await prepareInstallation(root, {
+          version: runtimeVersion,
+          profile,
+          accessMode,
+          engine: "podman",
+          ...(companionsEnabled ? { companionsEnabled } : {})
+        });
+        if (previousConfig.telemetry) {
+          result.config = { ...result.config, telemetry: true, installId: previousConfig.installId };
+        }
+        stage = "podman";
         prerequisiteResult = await ensurePodman({
           platform,
           arch,
@@ -1186,7 +1192,7 @@ async function planInteractiveSetup({
     const openBrowserChoice = await promptYesNo(stdin, stdout, "Open the web application when installation completes?", { defaultYes: !parsed.noOpen, answerKey: "open" });
 
     let engineChoice = parsed.requestedEngine;
-    if (!engineChoice && stdin?._spaceappPromptController?.answers?.engine !== undefined) {
+    if (!engineChoice && platform !== "win32") {
       engineChoice = await promptChoice(stdin, stdout, "Which container engine?", [
         { label: "Docker (default; Docker Desktop or Engine)", value: "docker" },
         { label: "Podman (rootless container engine)", value: "podman" }
