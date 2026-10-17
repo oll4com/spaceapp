@@ -21,7 +21,9 @@ export function maintainSocketPath(server: Server, socketPath: string): () => vo
       // A live upgraded connection belongs to the HTTP/WebSocket server, not
       // its listening handle. Closing only the listener preserves these clients.
       await chmod(dirname(socketPath), 0o770);
-      if (stopped) return;
+      // A transport failure or shutdown may close the listener during any of
+      // the filesystem awaits. Never undo that intentional close by rebinding.
+      if (stopped || !server.listening) return;
       server.close();
       await new Promise<void>((resolve, reject) => {
         const failed = (error: Error) => { server.off("listening", ready); reject(error); };
