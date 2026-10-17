@@ -27,10 +27,50 @@ packaging requires its normal toolchain and separate platform acceptance.
 Dependency installation may use the network; the smoke command below does not
 need a provider account, API key, Docker, PostgreSQL or Temporal.
 
-For the real source API/web/worker/CLI stack with isolated Docker dependencies,
-normal owner setup and hot reload, use `npm run dev:stack`. See the
-[development stack guide](docs/development-stack.md) for prerequisites, ports,
-private state, down/reset, and the complete Linux/Intel-macOS browser/lifecycle proof.
+## Run the full app from source
+
+Use the Node/npm prerequisites above and a working Docker Engine or Docker
+Desktop with Compose V2. On macOS, Docker Desktop or an existing Colima context
+must already work. On Windows 11, run these commands inside an existing WSL2
+Linux environment with Docker integration. The launcher does not install these
+tools or change OS settings.
+
+From the checkout root:
+
+```sh
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+npm run dev:stack
+```
+
+The command starts the isolated PostgreSQL/Temporal containers, migrations,
+source API, Vite web app, worker and CLI host. Open the printed web URL, create
+your local owner with the one-time setup token, then sign in and open Getting
+Started and an OpenCode pane. No provider account or API key is needed to reach
+the terminal UI. Web changes hot-reload; API changes restart the API; changes
+to worker/shared packages rebuild and restart the dependent source services.
+
+Defaults are API `4810`, web `4811`, PostgreSQL `54329` and Temporal `47233`,
+all bound to `127.0.0.1`. Use `SPACE_DEV_API_PORT`, `SPACE_DEV_WEB_PORT`,
+`SPACE_DEV_POSTGRES_PORT` and `SPACE_DEV_TEMPORAL_PORT` to select unused ports.
+Choose `SPACE_DEV_STATE_DIR=.dev-stack-<name>` for a separate instance; the
+default is `.dev-stack/`. Installed ports `4910`/`4911` are rejected.
+
+Keep the same state/port environment when stopping or resetting:
+
+```sh
+npm run dev:stack -- down
+npm run dev:stack -- reset
+```
+
+`down` preserves the private database/state; `reset` also removes only that
+state and its owned resources. For an occupied port, choose an unused port
+before first startup. If Docker is unavailable or cleanup fails, restore the
+original Docker context and retry `down` or `reset`; retain the ownership
+manifest instead of deleting it. A required process exit is reported by name
+and stops the stack. Never share the setup token or generated state directory.
+
+See the [development stack guide](docs/development-stack.md) for alternate-port
+examples, private-state details, troubleshooting and the Linux/Intel-macOS proof.
 
 ## First executed task, without a provider
 
