@@ -43,6 +43,7 @@
     "@napi-rs/canvas": "1.0.9"
   },
   "scripts": {
+    "dev:stack": "node scripts/dev-stack.mjs",
     "dev:api": "npm run dev -w @space/api",
     "dev:web": "npm run dev -w @space/web",
     "dev:worker": "npm run dev -w @space/worker",

@@ -50,6 +50,57 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+Contributors can run the complete SpaceApp stack from source with hot reload using a single command:
+
+```sh
+npm run dev:stack
+```
+
+### What it starts
+
+In order, `dev:stack`:
+1. Launches PostgreSQL (pgvector) and Temporal in Docker containers using the repository's pinned image digests.
+2. Applies database migrations (`npm run db:migrate`).
+3. Starts the backend API (`apps/api` with hot restart via `tsx watch`), Vite web dev server (`apps/web` with HMR), Temporal worker (`apps/worker`), and CLI host (`packages/cli-host`) from source.
+4. Generates an owner setup token and prints the Web UI URL.
+
+### Commands
+
+- **Start**: `npm run dev:stack`
+- **Stop**: `npm run dev:stack -- down` (stops supervised processes and Docker containers)
+- **Reset**: `npm run dev:stack -- reset` (stops services and removes only the containers, volumes, and `.dev-stack/` state directory created by this command)
+
+### Ports and isolation
+
+To prevent collisions with production or installer SpaceApp instances (which use 4910/4911), `dev:stack` defaults to separate ports bound strictly to `127.0.0.1`:
+
+| Service | Default Port | Environment Variable Override |
+| :--- | :--- | :--- |
+| Web UI (Vite) | `http://127.0.0.1:5173` | `SPACE_DEV_STACK_WEB_PORT` / `SPACE_WEB_PORT` |
+| API Server | `http://127.0.0.1:4920` | `SPACE_DEV_STACK_API_PORT` / `SPACE_API_PORT` |
+| PostgreSQL | `127.0.0.1:5433` | `SPACE_DEV_STACK_POSTGRES_PORT` |
+| Temporal | `127.0.0.1:7234` | `SPACE_DEV_STACK_TEMPORAL_PORT` |
+
+All state, secrets (mode `0600`), and provider data live in the git-ignored `.dev-stack/` directory.
+
+### CLI panes and OpenCode
+
+The Getting Started room opens with an OpenCode CLI pane. The pinned `opencode-ai` CLI version from `Dockerfile` is automatically installed into `.dev-stack/` (not globally), and wrappers live inside `.dev-stack/bin`. No external AI provider key is required to launch and view the OpenCode terminal interface.
+
+### Platform notes
+
+- **Linux**: Requires Docker with the Compose v2 plugin (`docker compose`).
+- **macOS**: Supported with Docker Desktop for Mac or Colima (`colima start`).
+- **Windows 11**: Supported via WSL2 (Ubuntu) with the Docker Desktop WSL2 backend enabled. Run `npm run dev:stack` inside your WSL2 terminal.
+
+### Troubleshooting
+
+- **Port collision**: Set `SPACE_DEV_STACK_API_PORT=<port>` or `SPACE_DEV_STACK_WEB_PORT=<port>`.
+- **Database or container issues**: Run `npm run dev:stack -- reset` to cleanly wipe state and volumes, then rerun `npm run dev:stack`.
+- **Process errors**: If any supervised process exits unexpectedly, the dev stack immediately reports the failing service and terminates safely without silent hangs.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
