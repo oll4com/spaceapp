@@ -381,10 +381,14 @@ export function registerMemoryGraphRoutes(
     const snapshot = await options.service.withSourceTopology?.(snapshotData.snapshot) ?? snapshotData.snapshot;
     const nodeLimit = query.limit ?? DEFAULT_MEMORY_GRAPH_OVERVIEW_NODES;
     const baseRevision = snapshot.revisionHash ?? snapshot.sourceHash;
-    const etagRevision =
-      nodeLimit === DEFAULT_MEMORY_GRAPH_OVERVIEW_NODES
-        ? baseRevision
-        : digest(`${baseRevision}:limit=${nodeLimit}`);
+    const hasCustomQuery =
+      nodeLimit !== DEFAULT_MEMORY_GRAPH_OVERVIEW_NODES ||
+      Boolean(query.q || query.nodeType || query.scope || query.roomId || query.sourcePath || query.lifecycleStatus || query.month || query.relationMode !== "CLUSTERED");
+    const etagRevision = !hasCustomQuery
+      ? baseRevision
+      : digest(
+          `${baseRevision}:limit=${nodeLimit}:q=${query.q ?? ""}:type=${query.nodeType ?? ""}:scope=${query.scope ?? ""}:room=${query.roomId ?? ""}:src=${query.sourcePath ?? ""}:status=${query.lifecycleStatus ?? ""}:month=${query.month ?? ""}:rel=${query.relationMode}`
+        );
     if (setSnapshotEtag(request, reply, etagRevision)) return reply.code(304).send();
     const availableMonths = await options.service.listAvailableMonths();
 
