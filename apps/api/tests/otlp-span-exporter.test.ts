@@ -125,8 +125,33 @@ describe("OTLP span exporter", () => {
     const created = exporter(fetchImpl);
     created.record(span({ traceId: "not-a-trace" }));
     created.record(span({ spanId: "xyz" }));
+    created.record(span({ links: [{ traceId: "not-a-trace", spanId: "0000000000000001" }] }));
+    created.record(span({ links: [{ traceId: traceId, spanId: "xyz" }] }));
     await created.flush();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("exports span links in the OTLP payload", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    const linkTraceId = "11112222333344445555666677778888";
+    const linkSpanId = "9999aaaabbbbcccc";
+    created.record(span({
+      links: [
+        { traceId: linkTraceId, spanId: linkSpanId, attributes: { "link.reason": "continue_as_new" } }
+      ]
+    }));
+    await created.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    const exportedSpan = body.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(exportedSpan.links).toEqual([
+      {
+        traceId: linkTraceId,
+        spanId: linkSpanId,
+        attributes: [{ key: "link.reason", value: { stringValue: "continue_as_new" } }]
+      }
+    ]);
   });
 });
 

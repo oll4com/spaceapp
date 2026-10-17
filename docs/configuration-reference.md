@@ -52,3 +52,15 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## OpenTelemetry / OTLP Traces
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` configures an optional HTTP endpoint for exporting W3C traces in OTLP/HTTP (JSON) format across API and Worker processes:
+- **Destination:** Spans are POSTed via HTTP to `${SPACE_OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces` (or directly to the endpoint if it already ends in `/v1/traces`).
+- **Disabled behavior:** When `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is unset or empty, span exporting is completely disabled across both API and Worker processes, generating zero network overhead.
+- **Worker span coverage:**
+  - Emits INTERNAL spans for Temporal workflow executions (`workflow <WorkflowType>`) via replay-safe sinks (`callDuringReplay: false`).
+  - Emits INTERNAL spans for activity execution attempts (`activity <ActivityType>`), nested under the calling workflow execution span.
+  - Links continue-as-new iterations (`continue_as_new`) and background continuation turns (`background_continuation`) via OTLP span links.
+- **Span sanitization:** All exported span attributes and link attributes conform to a strict allowlist (`packages/runtime/src/span-attributes.ts`) of identifiers, types, status codes, attempts, and durations; payloads, prompt contents, URLs, and paths are stripped.
+

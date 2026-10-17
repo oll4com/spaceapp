@@ -11,6 +11,14 @@
  * request.
  */
 
+import { sanitizeSpanAttributes } from "./span-attributes.js";
+
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -22,6 +30,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Optional OTLP span links (e.g., continue-as-new, background continuation). */
+  links?: readonly SpanLink[];
 }
 
 export interface SpanExporterStats {
@@ -85,6 +95,15 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length ? {
+            links: span.links.map(link => ({
+              traceId: link.traceId,
+              spanId: link.spanId,
+              ...(link.attributes && Object.keys(link.attributes).length > 0 ? {
+                attributes: Object.entries(link.attributes).map(([key, value]) => ({ key, value: attributeValue(value) }))
+              } : {})
+            }))
+          } : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
@@ -138,11 +157,26 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   return {
     record(span) {
       if (!traceIdPattern.test(span.traceId) || !spanIdPattern.test(span.spanId)) return;
+      if (span.links) {
+        for (const link of span.links) {
+          if (!traceIdPattern.test(link.traceId) || !spanIdPattern.test(link.spanId)) return;
+        }
+      }
       if (queue.length >= maxQueue) {
         stats.dropped += 1;
         return;
       }
-      queue.push(span);
+      queue.push({
+        ...span,
+        attributes: sanitizeSpanAttributes(span.attributes),
+        ...(span.links ? {
+          links: span.links.map(link => ({
+            traceId: link.traceId,
+            spanId: link.spanId,
+            ...(link.attributes ? { attributes: sanitizeSpanAttributes(link.attributes) } : {})
+          }))
+        } : {})
+      });
       if (queue.length >= batchSize) void flush();
     },
     flush,

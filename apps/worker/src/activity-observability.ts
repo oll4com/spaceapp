@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import { defaultPayloadConverter } from "@temporalio/common";
 import {
   categorizeFailureCode,
   formatTraceparent,
@@ -10,7 +11,7 @@ import {
   traceIdFromTraceparent,
   type FailureCategory
 } from "@space/contracts";
-import type { SpanExporter } from "@space/runtime";
+import { sanitizeSpanAttributes, type SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -137,9 +138,20 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** Inbound headers from the Temporal activity invocation. */
+  headers?: Record<string, unknown>;
 }
 
-function activityTraceparent(args: readonly unknown[]) {
+export function activityTraceparent(args: readonly unknown[], headers?: Record<string, unknown>) {
+  if (headers?.traceparent) {
+    try {
+      const decoded = defaultPayloadConverter.fromPayload(headers.traceparent as any);
+      if (typeof decoded === "string") {
+        const parsed = parseTraceparent(decoded);
+        if (parsed) return parsed;
+      }
+    } catch {}
+  }
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
@@ -194,8 +206,35 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans ? activityTraceparent(args, dependencies.headers) : null;
     if (parent) {
+      const correlation = activityCorrelation(args);
+      const spanAttributes: Record<string, unknown> = {
+        "space.activity_type": activityType,
+        "space.activity_id": info.activityId,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.duration_ms": durationMs
+      };
+      if (queueMs !== null) spanAttributes["space.queue_ms"] = queueMs;
+      if (info.workflowExecution?.workflowId) spanAttributes["space.workflow_id"] = info.workflowExecution.workflowId;
+      if (info.workflowExecution?.runId) spanAttributes["space.temporal_run_id"] = info.workflowExecution.runId;
+      if (info.workflowType) spanAttributes["space.workflow_type"] = info.workflowType;
+      if (reasonCode && isSafeErrorCode(reasonCode)) spanAttributes["space.reason_code"] = reasonCode;
+      if (category) spanAttributes["space.category"] = category;
+      if (correlation.traceId) spanAttributes["space.trace_id"] = correlation.traceId;
+      if (correlation.roomId) spanAttributes["space.room_id"] = correlation.roomId;
+      if (correlation.paneId) spanAttributes["space.pane_id"] = correlation.paneId;
+      if (correlation.missionId) spanAttributes["space.mission_id"] = correlation.missionId;
+      if (correlation.turnId) spanAttributes["space.turn_id"] = correlation.turnId;
+      if (correlation.goalId) spanAttributes["space.goal_id"] = correlation.goalId;
+      if (correlation.dotId) spanAttributes["space.dot_id"] = correlation.dotId;
+      if (correlation.agentRunId) spanAttributes["space.agent_run_id"] = correlation.agentRunId;
+      if (correlation.agentSessionId) spanAttributes["space.agent_session_id"] = correlation.agentSessionId;
+      if (correlation.actionId) spanAttributes["space.action_id"] = correlation.actionId;
+      if (correlation.cliTaskId) spanAttributes["space.cli_task_id"] = correlation.cliTaskId;
+      if (correlation.revisionId) spanAttributes["space.revision_id"] = correlation.revisionId;
+
       dependencies.spans!.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
@@ -203,7 +242,7 @@ export async function observeActivityExecution<T>(
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: sanitizeSpanAttributes(spanAttributes),
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -229,6 +268,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headers: input.headers,
         cancelled: () => context.cancellationSignal.aborted
       })
     }
