@@ -12,7 +12,7 @@ import { createOtlpWorkflowSinks } from "../src/otlp-workflow-sink.js";
 import { createActivityObservabilityInterceptors } from "../src/activity-observability.js";
 import { resolveWorkflowInterceptorsPath } from "../src/worker-otlp.js";
 import { createOtlpWorkflowInboundInterceptor } from "../src/otlp-workflow-interceptors.js";
-import { runIdToSpanId } from "../src/otlp-attributes.js";
+import { encodeTraceCarrierHeader, runIdToSpanId } from "../src/otlp-attributes.js";
 import { MEMORY_MAINTENANCE_TASK_QUEUE } from "../src/memory-maintenance-config.js";
 import { MEMORY_MUTATION_TASK_QUEUE } from "../src/memory-mutation-config.js";
 
@@ -494,6 +494,65 @@ describe("OTLP Spans Integration & Determinism Suite (Issue #61)", () => {
         ])
       })
     );
+
+    // 3. Two child turn workflows started under a long-lived supervisor keep their own request traceparent
+    receivedSpans.length = 0;
+    const supervisorRunId = "dddddddd-0000-1111-2222-333333333333";
+    const supervisorSpanId = runIdToSpanId(supervisorRunId);
+    const req1TraceId = "aaaa1111bbbb2222cccc3333dddd4444";
+    const req1ApiSpanId = "1111111111111111";
+    const req2TraceId = "eeee5555ffff66660000777788889999";
+    const req2ApiSpanId = "2222222222222222";
+    const supervisorCarrierHeader = encodeTraceCarrierHeader({
+      traceparent: formatTraceparent(req1TraceId, supervisorSpanId, "01"),
+      w3cTraceId: req1TraceId,
+      spaceTraceId: "req:turn-1"
+    });
+
+    const turn1Interceptor = createOtlpWorkflowInboundInterceptor({
+      workflowInfo: () =>
+        ({
+          workflowType: "dummyTurnWorkflow",
+          workflowId: "workflow:turn-1",
+          runId: "eeeeeeee-1111-2222-3333-444444444444",
+          parent: { workflowId: "workflow:supervisor", runId: supervisorRunId },
+          memo: {}
+        }) as never,
+      proxySinks: mockProxySinks
+    });
+    await turn1Interceptor.execute!(
+      {
+        args: [{ traceId: "req:turn-1", traceparent: formatTraceparent(req1TraceId, req1ApiSpanId, "01") }],
+        headers: { "x-space-otlp-trace": supervisorCarrierHeader } as never
+      },
+      async () => "ok"
+    );
+
+    const turn2Interceptor = createOtlpWorkflowInboundInterceptor({
+      workflowInfo: () =>
+        ({
+          workflowType: "dummyTurnWorkflow",
+          workflowId: "workflow:turn-2",
+          runId: "ffffffff-1111-2222-3333-444444444444",
+          parent: { workflowId: "workflow:supervisor", runId: supervisorRunId },
+          memo: {}
+        }) as never,
+      proxySinks: mockProxySinks
+    });
+    await turn2Interceptor.execute!(
+      {
+        args: [{ traceId: "req:turn-2", traceparent: formatTraceparent(req2TraceId, req2ApiSpanId, "01") }],
+        headers: { "x-space-otlp-trace": supervisorCarrierHeader } as never
+      },
+      async () => "ok"
+    );
+    await spanExporter.flush();
+
+    const turnSpans = receivedSpans.filter((s) => s.name === "workflow dummyTurnWorkflow");
+    expect(turnSpans).toHaveLength(2);
+    expect(turnSpans[0].traceId).toBe(req1TraceId);
+    expect(turnSpans[1].traceId).toBe(req2TraceId);
+    expect(turnSpans[1].parentSpanId).toBe(req2ApiSpanId);
 
     await spanExporter.close();
   });

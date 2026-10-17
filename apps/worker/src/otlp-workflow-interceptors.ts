@@ -93,11 +93,12 @@ export function createOtlpWorkflowInboundInterceptor(
       const memoW3cTraceId = typeof memo.w3cTraceId === "string" ? memo.w3cTraceId : undefined;
       const memoSpaceTraceId = typeof memo.spaceTraceId === "string" ? memo.spaceTraceId : undefined;
 
-      const rawTraceparent =
-        carrier?.traceparent ??
-        memoTraceparent ??
-        (typeof argCorr.traceparent === "string" ? argCorr.traceparent : undefined);
-      const parsedTp = parseTraceparent(rawTraceparent);
+      const argTp = parseTraceparent(typeof argCorr.traceparent === "string" ? argCorr.traceparent : undefined);
+      const inheritedTp = parseTraceparent(carrier?.traceparent ?? memoTraceparent);
+      // A workflow input that names its own originating request wins over the
+      // context inherited from a long-lived parent (e.g. the room supervisor).
+      const ownTrace = Boolean(argTp && argTp.traceId !== inheritedTp?.traceId);
+      const parsedTp = ownTrace ? argTp : inheritedTp ?? argTp;
 
       const traceId =
         parsedTp?.traceId ??
@@ -118,9 +119,12 @@ export function createOtlpWorkflowInboundInterceptor(
       activeFlags = parsedTp?.flags ?? "01";
       activeWorkflowTraceIds.set(info.runId, traceId);
 
-      // Child workflows nest under their parent workflow span.
+      // Child workflows nest under their parent workflow span unless they carry
+      // their own originating request traceparent from a long-lived supervisor.
       let parentSpanId: string | null = null;
-      if (info.parent?.runId) {
+      if (ownTrace) {
+        parentSpanId = argTp!.parentId;
+      } else if (info.parent?.runId) {
         parentSpanId = runIdToSpanId(info.parent.runId);
       } else if (parsedTp?.parentId) {
         parentSpanId = parsedTp.parentId;
