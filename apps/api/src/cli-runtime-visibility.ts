@@ -56,6 +56,7 @@ export const defaultCliRuntimeVisibilityFile = "/opt/spaceapp/var/cli-runtime-vi
 
 export function resolveCliRuntimeVisibilityFile(option: string | null | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
   if (option !== undefined) return option;
+  if (env.SPACE_CLI_RUNTIME_VISIBILITY_FILE) return env.SPACE_CLI_RUNTIME_VISIBILITY_FILE;
   return env.NODE_ENV === "test" || env.VITEST === "true" ? null : defaultCliRuntimeVisibilityFile;
 }
 

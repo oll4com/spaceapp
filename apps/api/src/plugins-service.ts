@@ -10,7 +10,7 @@ import {
 } from "@space/contracts";
 import { parseSkillFrontmatter } from "@space/runtime";
 
-const PLUGINS_DIR = "/opt/spaceapp/var/plugins";
+const PLUGINS_DIR = process.env.SPACE_PLUGIN_STORAGE_ROOT || "/opt/spaceapp/var/plugins";
 
 export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
   {
@@ -513,12 +513,14 @@ export async function nestedBundleSkills(root: string): Promise<Array<{ path: st
   return found.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-const SKILL_DIRS = [
-  "/var/lib/spaceapp-user/.codex/skills",
-  "/var/lib/spaceapp-user/.agents/skills",
-  "/var/lib/spaceapp-cli/.codex/skills",
-  "/var/lib/spaceapp-cli/.agents/skills"
-];
+const SKILL_DIRS = process.env.SPACE_PROVIDER_SKILL_LINKS_ROOT
+  ? [process.env.SPACE_PROVIDER_SKILL_LINKS_ROOT]
+  : [
+      "/var/lib/spaceapp-user/.codex/skills",
+      "/var/lib/spaceapp-user/.agents/skills",
+      "/var/lib/spaceapp-cli/.codex/skills",
+      "/var/lib/spaceapp-cli/.agents/skills"
+    ];
 
 function findSkillSourceDir(folder: string): string | null {
   const candidates = [
