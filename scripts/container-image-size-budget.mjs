@@ -11,9 +11,9 @@ const mebibyte = 1024 * 1024;
 // 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
 // the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 850 * mebibyte,
+  browser: 1350 * mebibyte,
+  cli: 1000 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
