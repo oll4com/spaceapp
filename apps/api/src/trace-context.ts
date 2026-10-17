@@ -94,9 +94,13 @@ export class TraceContextRegistry {
 
 export const requestTraceContexts = new TraceContextRegistry();
 
-/** traceparent for work started on behalf of this Space request id, if known. */
+/**
+ * traceparent naming the API request span (`00-<w3cTraceId>-<requestSpanId>-01`)
+ * for work started on behalf of this Space request id, so downstream workflow
+ * spans have `parentSpanId === requestSpanId`.
+ */
 export function traceparentForTraceId(traceId: string | null | undefined, registry = requestTraceContexts): string | null {
-  return childTraceparent(registry.lookup(traceId)?.traceparent ?? null);
+  return registry.lookup(traceId)?.traceparent ?? null;
 }
 
 /** Adds the request's traceparent to a turn input unless it already has a valid one. */

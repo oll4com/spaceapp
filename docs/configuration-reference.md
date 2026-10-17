@@ -52,3 +52,10 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Observability and OTLP trace export
+
+- `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT`: optional plain `http://` or `https://` collector base URL (no credentials or query string). When set, `space-api`, `space-worker`, `space-memory-maintenance-worker`, and `space-memory-mutation-worker` export W3C-correlated spans over OTLP/HTTP JSON (`POST <base>/v1/traces`) linking `API request -> workflow -> child workflow -> activity attempt`, plus OTLP span links across `continueAsNew` and background continuations (`trace:bg-<id>`). Unset by default (zero network export when unset). See [Observability and error semantics](quality/observability.md).
+- `SPACE_WORKER_METRICS_PORT` / `SPACE_WORKER_METRICS_HOST`: optional loopback (`127.0.0.1` or `::1`) port for the worker's Prometheus `/metrics` endpoint. Unset by default.
+- `SPACE_WORKER_TEMPORAL_METRICS_BIND`: optional loopback bind address (for example `127.0.0.1:9464`) for the Temporal Core SDK Prometheus exporter. Unset by default.
+

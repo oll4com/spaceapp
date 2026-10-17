@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHttpObservability } from "../src/observability.js";
+import { TraceContextRegistry, traceContextForRawRequest, traceparentForTraceId } from "../src/trace-context.js";
 import {
   createOtlpSpanExporter,
   otlpSpanExporterFromEnv,
@@ -181,4 +182,85 @@ describe("HTTP observability with span export", () => {
       observability.close();
     }
   });
+
+  it("serializes OTLP span links and filters both span and link attributes to the allowlist", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    created.record(
+      span({
+        attributes: {
+          "space.workflow_type": "dotGoalWorkflow",
+          "space.goal_id": "dot_goal:abc12345",
+          "space.prompt": "should be dropped",
+          "http.url": "http://internal/secret"
+        },
+        links: [
+          {
+            traceId,
+            spanId: "1234567890abcdef",
+            attributes: {
+              "space.link_type": "continue_as_new",
+              "space.source_run_id": "run:prev-1",
+              "space.secret": "dropped"
+            }
+          }
+        ]
+      })
+    );
+    await created.flush();
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    const exported = body.resourceSpans[0].scopeSpans[0].spans[0];
+    expect(exported.attributes).toEqual([
+      { key: "space.workflow_type", value: { stringValue: "dotGoalWorkflow" } },
+      { key: "space.goal_id", value: { stringValue: "dot_goal:abc12345" } }
+    ]);
+    expect(exported.links).toEqual([
+      {
+        traceId,
+        spanId: "1234567890abcdef",
+        attributes: [
+          { key: "space.link_type", value: { stringValue: "continue_as_new" } },
+          { key: "space.source_run_id", value: { stringValue: "run:prev-1" } }
+        ]
+      }
+    ]);
+  });
+
+  it("propagates the exported API server spanId as the parentId in traceparentForTraceId", async () => {
+    const recorded: ServerSpan[] = [];
+    const spanExporter: SpanExporter = {
+      record: s => void recorded.push(s),
+      flush: async () => undefined,
+      close: async () => undefined,
+      stats: () => ({ exported: recorded.length, dropped: 0, failed: 0 })
+    };
+    const registry = new TraceContextRegistry();
+    const observability = createHttpObservability({ serviceName: "space-api", spanExporter });
+    const app = Fastify();
+    let capturedTraceId = "";
+    let downstreamTraceparent: string | null = null;
+    app.addHook("onRequest", async request => {
+      observability.onRequest(request);
+      capturedTraceId = `req:${request.id}`;
+      registry.remember(capturedTraceId, traceContextForRawRequest(request.raw));
+    });
+    app.addHook("onResponse", async (request, reply) => observability.onResponse(request, reply));
+    app.post("/api/rooms/:roomId/agent/messages", async () => {
+      downstreamTraceparent = traceparentForTraceId(capturedTraceId, registry);
+      return { ok: true };
+    });
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/rooms/room:1/agent/messages",
+        headers: { traceparent: `00-${traceId}-${parentId}-01` }
+      });
+    } finally {
+      await app.close();
+      observability.close();
+    }
+    expect(recorded).toHaveLength(1);
+    expect(downstreamTraceparent).toBe(`00-${traceId}-${recorded[0]!.spanId}-01`);
+  });
 });
+

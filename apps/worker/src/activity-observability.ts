@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
-import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import type { ActivityInterceptorsFactory, Headers } from "@temporalio/worker";
 import {
   categorizeFailureCode,
   formatTraceparent,
@@ -10,9 +10,14 @@ import {
   traceIdFromTraceparent,
   type FailureCategory
 } from "@space/contracts";
-import type { SpanExporter } from "@space/runtime";
+import { sanitizeSpanAttributes, type SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import {
+  decodeSpaceTraceHeader,
+  extractArgsTraceContext,
+  mergeTraceContexts
+} from "./workflow-observability-interceptors.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -55,13 +60,18 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
 }
 
+function randomNonZeroHex(bytes: number): string {
+  for (;;) {
+    const value = randomBytes(bytes).toString("hex");
+    if (!/^0+$/.test(value)) return value;
+  }
+}
+
 /** traceparent for an outbound call: same W3C trace, new span id; null if none. */
 export function childTraceparent(traceparent: string | null | undefined): string | null {
   const parsed = parseTraceparent(traceparent);
   if (!parsed) return null;
-  let spanId = randomBytes(8).toString("hex");
-  while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
-  return formatTraceparent(parsed.traceId, spanId, parsed.flags);
+  return formatTraceparent(parsed.traceId, randomNonZeroHex(8), parsed.flags);
 }
 
 // Keys whose values are identifiers. Prompts, content and messages are never read.
@@ -135,8 +145,10 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input or workflow header carries a traceparent. */
   spans?: SpanExporter | null;
+  /** Inbound Temporal headers from the workflow outbound interceptor. */
+  headers?: Headers;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -158,6 +170,11 @@ export async function observeActivityExecution<T>(
   const queueMs = Number.isFinite(info.currentAttemptScheduledTimestampMs)
     ? Math.max(0, startedAt - info.currentAttemptScheduledTimestampMs)
     : null;
+  const headerCtx = decodeSpaceTraceHeader(dependencies.headers);
+  const argsCtx = extractArgsTraceContext(args, info.workflowType);
+  const mergedCtx = mergeTraceContexts(headerCtx, argsCtx);
+  const argCorr = activityCorrelation(args);
+  const w3cTraceId = traceIdFromTraceparent(mergedCtx.traceparent) ?? argCorr.w3cTraceId;
   const base: Record<string, WorkerLogValue> = {
     activityType,
     activityId: info.activityId,
@@ -165,7 +182,18 @@ export async function observeActivityExecution<T>(
     workflowId: info.workflowExecution?.workflowId ?? null,
     temporalRunId: info.workflowExecution?.runId ?? null,
     attempt: info.attempt,
-    ...activityCorrelation(args)
+    ...(mergedCtx.traceId ? { traceId: mergedCtx.traceId } : {}),
+    ...(w3cTraceId ? { w3cTraceId } : {}),
+    ...(mergedCtx.parentTraceId ? { parentTraceId: mergedCtx.parentTraceId } : {}),
+    ...(mergedCtx.roomId ? { roomId: mergedCtx.roomId } : {}),
+    ...(mergedCtx.paneId ? { paneId: mergedCtx.paneId } : {}),
+    ...(mergedCtx.missionId ? { missionId: mergedCtx.missionId } : {}),
+    ...(mergedCtx.agentRunId ? { agentRunId: mergedCtx.agentRunId } : {}),
+    ...(mergedCtx.actionId ? { actionId: mergedCtx.actionId } : {}),
+    ...(mergedCtx.goalId ? { goalId: mergedCtx.goalId } : {}),
+    ...(mergedCtx.dotId ? { dotId: mergedCtx.dotId } : {}),
+    ...(mergedCtx.turnId ? { turnId: mergedCtx.turnId } : {}),
+    ...argCorr
   };
   const labels = { activity_type: activityType };
   if (info.attempt > 1) metrics.activityRetries.inc(labels);
@@ -194,16 +222,46 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans
+      ? (parseTraceparent(headerCtx?.traceparent) ?? activityTraceparent(args))
+      : null;
     if (parent) {
+      const rawAttributes: Record<string, unknown> = {
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.duration_ms": durationMs,
+        ...(queueMs !== null ? { "space.queue_ms": queueMs } : {}),
+        ...(info.workflowType ? { "space.workflow_type": info.workflowType } : {}),
+        ...(info.workflowExecution?.workflowId ? { "space.workflow_id": info.workflowExecution.workflowId } : {}),
+        ...(info.workflowExecution?.runId ? { "space.run_id": info.workflowExecution.runId } : {}),
+        ...(mergedCtx.traceId ? { "space.trace_id": mergedCtx.traceId } : {}),
+        ...(mergedCtx.parentTraceId ? { "space.parent_trace_id": mergedCtx.parentTraceId } : {}),
+        ...(mergedCtx.roomId ? { "space.room_id": mergedCtx.roomId } : {}),
+        ...(mergedCtx.paneId ? { "space.pane_id": mergedCtx.paneId } : {}),
+        ...(mergedCtx.missionId ? { "space.mission_id": mergedCtx.missionId } : {}),
+        ...(mergedCtx.agentRunId ? { "space.agent_run_id": mergedCtx.agentRunId } : {}),
+        ...(mergedCtx.continuationOfRunId ? { "space.continuation_of_run_id": mergedCtx.continuationOfRunId } : {}),
+        ...(mergedCtx.continuationGeneration !== undefined ? { "space.continuation_generation": mergedCtx.continuationGeneration } : {}),
+        ...(mergedCtx.actionId ? { "space.action_id": mergedCtx.actionId } : {}),
+        ...(mergedCtx.goalId ? { "space.goal_id": mergedCtx.goalId } : {}),
+        ...(mergedCtx.dotId ? { "space.dot_id": mergedCtx.dotId } : {}),
+        ...(mergedCtx.turnId ? { "space.turn_id": mergedCtx.turnId } : {}),
+        ...(mergedCtx.changeSetId ? { "space.change_set_id": mergedCtx.changeSetId } : {}),
+        ...(mergedCtx.consolidationRunId ? { "space.consolidation_run_id": mergedCtx.consolidationRunId } : {}),
+        ...(reasonCode && isSafeErrorCode(reasonCode)
+          ? { "space.reason_code": reasonCode, "space.error_code": reasonCode }
+          : {}),
+        ...(category ? { "space.category": category } : {})
+      };
       dependencies.spans!.record({
         traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
+        spanId: randomNonZeroHex(8),
         parentSpanId: parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: sanitizeSpanAttributes(rawAttributes),
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -224,11 +282,12 @@ export async function observeActivityExecution<T>(
 }
 
 /** Temporal worker interceptor factory: register in Worker.create({ interceptors }). */
-export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled"> = {}): ActivityInterceptorsFactory {
+export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled" | "headers"> = {}): ActivityInterceptorsFactory {
   return (context) => ({
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headers: input.headers,
         cancelled: () => context.cancellationSignal.aborted
       })
     }
