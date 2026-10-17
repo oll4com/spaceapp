@@ -5,6 +5,22 @@ import { continuationEvidence, discardSupervisorTurn, finishSupervisorTurn, prep
 import { continuationFixture } from "./room-continuation-fixture.js";
 import { runCodexAppServerTurn } from "../src/activities.js";
 
+const predecessorSpan = { traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: "00f067aa0ba902b7" };
+const olderSpan = { traceId: "0123456789abcdef0123456789abcdef", spanId: "0123456789abcdef" };
+
+function completeInitialTurn(c: ReturnType<typeof continuationFixture>, workflowTrace?: { traceId: string; spanId: string }) {
+  return c.store.completeSpaceAgentRun({
+    runId: c.initial.run.runId, sessionId: c.session.sessionId,
+    responseMessageId: c.initial.responseMessage.messageId, responseContent: "Allocated", finalResponse: "Allocated",
+    codexThreadId: null, codexTurnId: null, sourceType: "ROOM_AGENT", traceId: c.initial.queueItem.turn.traceId,
+    completedAt: new Date().toISOString(), roomAgentOutcome: {
+      status: "VERIFIED", executedActionCount: 1, pendingActionIds: [c.action.actionId],
+      statusReason: "Allocation completed; remaining request is pending.",
+      ...(workflowTrace ? { workflowTrace } : {})
+    }
+  });
+}
+
 describe("durable background continuation", () => {
   it("includes the actual failure reason when resuming after a parsed background action", () => {
     const c = continuationFixture();
@@ -74,17 +90,63 @@ describe("durable background continuation", () => {
     const prepared = await prepareBackgroundContinuation(c.input, c.store);
     if (prepared.state !== "READY") throw Error("Missing continuation");
     const item = prepared.item;
-    const outcome = { status: "VERIFIED" as const, executedActionCount: 1,
+    const outcome = { status: "VERIFIED" as const, executedActionCount: 1, workflowTrace: predecessorSpan,
       pendingActionIds: [c.action.actionId], statusReason: "Allocation completed; remaining request is pending." };
-    c.store.completeSpaceAgentRun({ runId: item.turn.agentRunId!, sessionId: c.session.sessionId,
+    const complete = c.store.completeSpaceAgentRun.bind(c.store);
+    const completion = vi.spyOn(c.store, "completeSpaceAgentRun").mockImplementationOnce(input => {
+      complete(input);
+      throw Error("Completion reply lost after commit");
+    });
+    expect(() => c.store.completeSpaceAgentRun({ runId: item.turn.agentRunId!, sessionId: c.session.sessionId,
       responseMessageId: item.turn.agentAssistantMessageId!, responseContent: "Allocated", finalResponse: "Allocated",
       codexThreadId: null, codexTurnId: null, sourceType: "ROOM_AGENT", traceId: item.turn.traceId,
-      completedAt: new Date().toISOString(), roomAgentOutcome: outcome });
+      completedAt: new Date().toISOString(), roomAgentOutcome: outcome })).toThrow("Completion reply lost after commit");
+    expect(c.store.getRoomAgentTurn(c.initial.mission.id, item.turn.agentRunId)?.roomAgentOutcome).toEqual(outcome);
     const executor = vi.fn();
     const result = await runCodexAppServerTurn(item.turn, { completionStore: c.store, executeStdioTurn: executor });
     expect(result.roomAgentOutcome).toEqual(outcome);
     expect(executor).not.toHaveBeenCalled();
+    expect(completion).toHaveBeenCalledTimes(1);
     expect(await supervisorTurnState(item, c.store)).toBe("READY");
+
+    const continued = await prepareBackgroundContinuation({ ...c.input, continuationId: "test-2" }, c.store);
+    if (continued.state !== "READY") throw Error("Missing linked continuation");
+    expect(continued.item.turn.traceLink).toEqual(predecessorSpan);
+    expect(continued.item.turn.roomAgentContinuation).toEqual({ sourceRunId: item.turn.agentRunId, generation: 2 });
+  });
+
+  it("replaces an inherited link with the exact workflow span saved by the predecessor completion", async () => {
+    const c = continuationFixture();
+    // The stored predecessor may itself have been linked to an earlier turn.
+    c.initial.queueItem.turn.traceLink = olderSpan;
+    completeInitialTurn(c, predecessorSpan);
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceLink).toEqual(predecessorSpan);
+    expect(prepared.item.turn.traceLink).not.toEqual(olderSpan);
+    const stored = c.store.getRoomAgentTurn(c.initial.mission.id, prepared.item.turn.agentRunId)!;
+    expect(stored.queueItem.turn.traceLink).toEqual(predecessorSpan);
+    const resumed = roomAgentSupervisorInputSchema.parse(JSON.parse(JSON.stringify({ roomId: c.room.id, pending: [stored.queueItem] })));
+    expect(resumed.pending[0]!.turn.traceLink).toEqual(predecessorSpan);
+  });
+
+  it.each([
+    { name: "legacy completion without a span", workflowTrace: undefined },
+    { name: "application IDs instead of span IDs", workflowTrace: { traceId: "trace:application", spanId: "agent_run:previous" } },
+    { name: "all-zero trace ID", workflowTrace: { traceId: "0".repeat(32), spanId: predecessorSpan.spanId } },
+    { name: "all-zero span ID", workflowTrace: { traceId: predecessorSpan.traceId, spanId: "0".repeat(16) } }
+  ])("omits inherited links for $name", async ({ workflowTrace }) => {
+    const c = continuationFixture();
+    c.initial.queueItem.turn.traceLink = olderSpan;
+    // The in-memory fixture can represent a legacy or malformed stored record;
+    // continuation preparation must not turn it into an exported span link.
+    completeInitialTurn(c, workflowTrace);
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceLink).toBeUndefined();
+    const stored = c.store.getRoomAgentTurn(c.initial.mission.id, prepared.item.turn.agentRunId)!;
+    expect(stored.queueItem.turn.traceLink).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(stored.queueItem)).turn).not.toHaveProperty("traceLink");
   });
   it.each(["OPEN_TYPES", "CONFIGURE_PANE"] as const)("continues %s with the entire request and real results", async (type) => {
     const c = continuationFixture(type);
@@ -105,12 +167,17 @@ describe("durable background continuation", () => {
 
   it("reuses the committed continuation after a lost activity reply", async () => {
     const c = continuationFixture();
+    completeInitialTurn(c, predecessorSpan);
     const enqueue = c.store.enqueueRoomAgentMission.bind(c.store);
-    vi.spyOn(c.store, "enqueueRoomAgentMission").mockImplementationOnce((input) => { enqueue(input); throw Error("Worker exited after commit"); });
+    const write = vi.spyOn(c.store, "enqueueRoomAgentMission").mockImplementationOnce((input) => { enqueue(input); throw Error("Worker exited after commit"); });
     await expect(prepareBackgroundContinuation(c.input, c.store)).rejects.toThrow("Worker exited");
+    const committed = c.store.getRoomAgentTurn(c.initial.mission.id, "agent_run:bg-test-1")!;
+    expect(committed.queueItem.turn.traceLink).toEqual(predecessorSpan);
     const retried = await prepareBackgroundContinuation(c.input, c.store);
     const repeated = await prepareBackgroundContinuation(c.input, c.store);
+    expect(retried).toEqual({ state: "READY", item: committed.queueItem });
     expect(retried).toEqual(repeated);
+    expect(write).toHaveBeenCalledTimes(1);
     expect(c.store.listSpaceAgentMessages(c.session.sessionId)).toHaveLength(4);
   });
 

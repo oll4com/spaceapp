@@ -30,9 +30,16 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  workflowTrace?: { traceId: string; spanId: string };
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
+
+/** Exact workflow span carried in this activity's durable Temporal header. */
+export function currentActivityWorkflowTrace(): { traceId: string; spanId: string } | undefined {
+  const trace = observations.getStore()?.workflowTrace;
+  return trace ? { ...trace } : undefined;
+}
 
 /**
  * Called by failure recorders (for example recordCodexAppServerTurnFailure)
@@ -137,12 +144,24 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  workflowTrace?: { traceId: string; spanId: string };
+  /** When provided, this callback owns span export instead of the legacy spans option. */
+  onFinished?: (summary: ActivityExecutionSummary) => void;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
+}
+
+export interface ActivityExecutionSummary {
+  outcome: ActivityOutcome;
+  reasonCode: string | null;
+  category: FailureCategory | null;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
 }
 
 export async function observeActivityExecution<T>(
@@ -172,10 +191,11 @@ export async function observeActivityExecution<T>(
   if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
   metrics.activitiesInFlight.inc(labels);
   workerLog("info", "activity.started", { ...base, queueMs });
-  const observation: ActivityObservation = { reasonCode: null };
+  const observation: ActivityObservation = { reasonCode: null, workflowTrace: dependencies.workflowTrace };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
-    const durationMs = Math.max(0, now() - startedAt);
+    const endedAt = now();
+    const durationMs = Math.max(0, endedAt - startedAt);
     metrics.activitiesInFlight.inc(labels, -1);
     metrics.activityExecutions.inc({ activity_type: activityType, outcome });
     metrics.activityDuration.observe(labels, durationMs / 1000);
@@ -194,20 +214,28 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
-    }
+    // Export is observational: neither a collector nor an exporter callback can
+    // change the activity's result or mask its original failure.
+    try {
+      if (dependencies.onFinished) {
+        dependencies.onFinished({ outcome, reasonCode, category, startedAt, endedAt, durationMs });
+      } else {
+        const parent = dependencies.spans ? activityTraceparent(args) : null;
+        if (parent) {
+          dependencies.spans!.record({
+            traceId: parent.traceId,
+            spanId: randomBytes(8).toString("hex"),
+            parentSpanId: parent.parentId,
+            name: `activity ${activityType}`,
+            startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+            endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+            attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+            error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+            kind: 1
+          });
+        }
+      }
+    } catch {}
   };
 
   try {

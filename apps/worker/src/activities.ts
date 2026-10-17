@@ -72,7 +72,7 @@ import { executeSkillActionBridge, parseSkillActionBlock } from "./skill-action-
 import { ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS } from "./room-supervisor-state.js";
 import { isCliChatQuotaError, isCliChatTurnProviderId, isNativeChatTurn } from "./turn-runtime-policy.js";
 import { evaluateCompletedTaskResult } from "./task-result-evaluation.js";
-import { noteActivityFailureReason } from "./activity-observability.js";
+import { currentActivityWorkflowTrace, noteActivityFailureReason } from "./activity-observability.js";
 import { observeTurnActivity, recordTurnStatePersistenceFailure } from "./turn-observability.js";
 import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIdentity, handleDotToolCall, nativeChatThreadConfig } from "./dot-tool-gateway.js";
 import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
@@ -1628,7 +1628,7 @@ async function recordSpaceAgentRunCompleted(
       codexTurnId: followUp.turnId ?? turnId
     });
   }
-  const roomAgentOutcome: RoomAgentTurnOutcome | undefined = input.roomAgentMissionId
+  const completedOutcome: RoomAgentTurnOutcome | undefined = input.roomAgentMissionId
     ? roomAgentLoop?.outcome ?? (
         (roomAgentToolObservation?.executedActionCount ?? 0) === 0
           ? {
@@ -1643,6 +1643,10 @@ async function recordSpaceAgentRunCompleted(
             }
       )
     : undefined;
+  // Piggyback on the existing completion transaction; tracing adds no database
+  // call or column. A retry reads this same outcome and continuation link.
+  const workflowTrace = currentActivityWorkflowTrace();
+  const roomAgentOutcome = completedOutcome && workflowTrace ? { ...completedOutcome, workflowTrace } : completedOutcome;
   const verified = !roomAgentOutcome || roomAgentOutcome.status === "VERIFIED";
   const completedAt = new Date().toISOString();
   if (verified) {

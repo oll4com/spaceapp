@@ -219,6 +219,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
     // the child turn workflow and its activities (additive optional field).
     const item = { ...parsed, turn: withTurnTraceparent(parsed.turn) };
     const workflowId = buildRoomAgentSupervisorWorkflowId(item.turn.roomId);
+    const memo = workflowCorrelationMemo({ traceId: item.turn.traceId, traceparent: item.turn.traceparent, missionId: item.missionId });
     const lease = await this.connect(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE);
     try {
       const handle = await lease.client.workflow.signalWithStart(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE, {
@@ -226,7 +227,8 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
         taskQueue: this.options.taskQueue,
         args: [{ roomId: item.turn.roomId, pending: [], processedCount: 0 }],
         signal: ROOM_AGENT_ENQUEUE_SIGNAL,
-        signalArgs: [item]
+        signalArgs: [item],
+        ...(memo.traceparent ? { memo } : {})
       });
       recordWorkflowStart(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE, "SIGNALED");
       return { workflowId, runId: handle.signaledRunId };
