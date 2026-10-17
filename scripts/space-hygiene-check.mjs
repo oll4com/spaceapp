@@ -35,7 +35,7 @@ function isRuntimeOrSecretPath(path) {
     /(^|\/)\.env($|\/)/.test(normalized) ||
     /(^|\/)\.env\.local$/.test(normalized) ||
     /(^|\/)\.env\..*\.local$/.test(normalized) ||
-    /(^|\/)(node_modules|dist|dist-types|coverage|playwright-report|test-results|secrets|backups|bin|var|lost\+found)(\/|$)/.test(normalized) ||
+    /(^|\/)(node_modules|dist|dist-types|coverage|playwright-report|test-results|secrets|backups|bin|var|\.dev-stack|lost\+found)(\/|$)/.test(normalized) ||
     /\.(pem|key|log)$/.test(normalized)
   );
 }

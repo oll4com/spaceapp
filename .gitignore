@@ -36,6 +36,7 @@ bin/
 !packages/run-spaceapp/bin/spaceapp.mjs
 var/
 projects/
+.dev-stack/
 /lost+found/
 
 # Local credentials and machine-specific environment.

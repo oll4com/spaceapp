@@ -30,17 +30,25 @@ export default defineConfig({
       }
     }
   },
-  server: {
-    host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
-    port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
-    proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
-    }
-  },
+  server: (() => {
+    const apiOrigin =
+      process.env.SPACE_API_ORIGIN ??
+      `http://127.0.0.1:${Number.parseInt(process.env.SPACE_API_PORT ?? "4910", 10)}`;
+    return {
+      host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
+      port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
+      proxy: {
+        "/api": {
+          target: apiOrigin,
+          ws: true
+        },
+        "/plugins": apiOrigin,
+        "/healthz": apiOrigin,
+        "/readyz": apiOrigin,
+        "/version": apiOrigin
+      }
+    };
+  })(),
   test: {
     environment: "jsdom",
     globals: true,

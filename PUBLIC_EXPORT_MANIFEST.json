@@ -8,8 +8,8 @@
     {
       "path": ".gitignore",
       "sourceObjectId": "1fdf2ac77a391fc36521502732002c96a11913d4",
-      "sha256": "18242d3b694d31c2e42ccf6b02261a946906352537ab4b83a5f3278b09584aea",
-      "size": 1144
+      "sha256": "ff36afcea27bcf9dc99df41e2db547f2bc6d14fd6cebc58815a2b048c9b94dae",
+      "size": 1156
     },
     {
       "path": ".nvmrc",
@@ -19,9 +19,9 @@
     },
     {
       "path": "CONTRIBUTING.md",
-      "sourceObjectId": "03bcdad05875b4b7df37437ee5ca9f4b4c72a53b",
-      "sha256": "885d1358b6843b35d8c66934de80c7d49eab9187e8f7604343cbc856a05afa0f",
-      "size": 4519
+      "sourceObjectId": "2d14dd15a3edc26aadb5f15d9bd81fcb6a0eb9cc",
+      "sha256": "10532d229760f2d71ea41a92461b6198c1e2ea23ab61da4a122e6e4a9304139a",
+      "size": 6100
     },
     {
       "path": "LICENSE",
@@ -19934,8 +19934,8 @@
     {
       "path": "apps/web/vite.config.ts",
       "sourceObjectId": "440a79e31a3f86df0c66bb67ed1d44a4dbcba128",
-      "sha256": "6903aa14b349193f17c903d4c14f984dbb547868a650ef3acc7a7f12b9d8849c",
-      "size": 2700
+      "sha256": "456383196c17b82b166ad7a5f3ce711b3dfbde109f544b61242d8c09bbff3c00",
+      "size": 2875
     },
     {
       "path": "apps/web/vite.demo-boundary.ts",
@@ -20768,8 +20768,8 @@
     {
       "path": "package.json",
       "sourceObjectId": "4d47b7aeac89e15f5a36bcd3c6d88558c846847b",
-      "sha256": "d81b40d9fd6402153aebf404b7563249bd590a1dc519f515928d97fd65254eaa",
-      "size": 4225
+      "sha256": "94ecb0db7f6b511ae297bc740509b43093aad5900e7ee77d39550b3013b7f560",
+      "size": 4461
     },
     {
       "path": "packages/browser-host/package.json",
@@ -26144,8 +26144,8 @@
     {
       "path": "scripts/space-hygiene-check.mjs",
       "sourceObjectId": "e055d6f10c1bb6f87220c0da5f7a8b4c3800ddef",
-      "sha256": "43b18bb9902745f8d1999fbd1861fba43cbf56c56d0e5499361c6881aad4bdda",
-      "size": 5803
+      "sha256": "0393cae6cff24520eb37fd8070ac045909684ec101a0e63dec4a9d509dcd9d05",
+      "size": 5815
     },
     {
       "path": "scripts/tests/composition-root-size.test.mjs",
