@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises';
+import { chmod, copyFile, readFile, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { composeDocument, extractPins, initialize, loadOwner, locations, ownerLabel, privateWrite, secrets, serviceEnvironment } from '../dev-stack/state.mjs';
 import { descendants, LaunchBarrier, lineRedactor, processIdentity, sameProcess, stopRecorded } from '../dev-stack/processes.mjs';
 import { assertLoopbackPublications, assertOwnedDocker, composeArgs, diagnoseOwnedDocker, dockerEnvironment, readOwnedPortPublications, removeOwnedDocker, run } from '../dev-stack/resources.mjs';
+import { confinedFile, nativePackage, opencodeEnvironment, resolveOpenCode, verifyOpenCode } from '../dev-stack/opencode-runtime.mjs';
+import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/terminal-proof.mjs';
+import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
+import { isPublicExportPath } from '../public-export.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
@@ -180,22 +184,28 @@ test('owned failure diagnostics redact split secrets and select health data with
     if (args.includes('{{json .Config.Labels}}')) return JSON.stringify({ [ownerLabel]: owner.nonce });
     if (args.includes('logs')) { options.output('synthetic-pass'); options.output('word\n'); return ''; }
     if (args.includes('{{json .State.Health}}')) { options.output('{"Status":"unhealthy","Output":"synthetic-password"}\n'); return ''; }
+    if (args.some(arg => arg.includes('"oomKilled":'))) { options.output('{"status":"running","oomKilled":false,"error":"synthetic-password"}\n'); return ''; }
+    if (args[0] === '-ltn' || args[0] === '-nP') return `LISTEN 127.0.0.1:${owner.ports.temporal}\nLISTEN 0.0.0.0:11111 unrelated-must-not-be-retained`;
     throw new Error('Unexpected diagnostic command');
   };
   await diagnoseOwnedDocker(config, owner, { invoke, env: { PATH: '/synthetic' }, secrets: ['synthetic-password'], output: text => { output += text; } });
   assert(!output.includes('synthetic-password')); assert.match(output, /\[redacted\]/);
   assert(calls.some(args => args.includes('--tail') && args.includes('100')));
   assert(calls.some(args => args.includes('{{json .State.Health}}')));
+  assert(calls.some(args => args.some(arg => arg.includes('"oomKilled":'))));
+  assert(output.includes(`127.0.0.1:${owner.ports.temporal}`)); assert(!output.includes('unrelated-must-not-be-retained'));
   assert(!calls.some(args => args.includes('{{json .Config.Env}}') || (args.includes('inspect') && !args.includes('--format'))));
 });
 test('diagnostics run before owned down and a diagnostic failure cannot prevent cleanup', async t => {
   const config = await sandbox(t), owner = await initialize(config), calls = [];
   let down = false, output = '';
-  const invoke = async (_command, args) => {
+  const invoke = async (_command, args, options) => {
     calls.push(args);
     if (args[1] === 'ls') return args[0] === 'container' && !down ? 'owned-container' : '';
     if (args.includes('{{json .Config.Labels}}')) return JSON.stringify({ [ownerLabel]: owner.nonce });
     if (args.includes('logs')) throw new Error('Synthetic diagnostic failure must not escape into logs');
+    if (args.includes('{{json .State.Health}}') || args.some(arg => arg.includes('"oomKilled":'))) { options.output('{}\n'); return ''; }
+    if (args[0] === '-ltn' || args[0] === '-nP') return '';
     if (args.includes('down')) { down = true; return ''; }
     throw new Error('Unexpected cleanup command');
   };
@@ -305,4 +315,114 @@ test('a command timeout cannot be converted into success by its signal handler',
 
 test('a missing executable rejects promptly instead of leaving an identity wait', async () => {
   await assert.rejects(run('spaceapp-deliberately-missing-executable', [], { env: { ...process.env }, timeout: 200 }), /could not start/);
+});
+
+async function nativeFixture(t, platform = 'linux', arch = 'x64') {
+  const config = await sandbox(t); await initialize(config);
+  const name = nativePackage(platform, arch), modules = join(config.state, 'cli/vendor/opencode/node_modules');
+  const core = join(modules, 'opencode-ai/package.json'), selected = join(modules, name, 'package.json'), executable = join(modules, name, 'bin/opencode');
+  await mkdir(join(modules, 'opencode-ai'), { recursive: true }); await mkdir(join(modules, name, 'bin'), { recursive: true });
+  await writeFile(core, JSON.stringify({ name: 'opencode-ai', version: pins.opencode, optionalDependencies: { [name]: pins.opencode } }));
+  await writeFile(selected, JSON.stringify({ name, version: pins.opencode }));
+  await writeFile(executable, `#!/bin/sh\nif [ "$1" = '--version' ]; then printf '%s\\n' '${pins.opencode}'; else printf '%s\\n' "$PWD" "$HOME"; fi\n`); await chmod(executable, 0o700);
+  return { config, core, selected, executable, name };
+}
+test('native OpenCode resolves the exact confined optional binary rather than the postinstall placeholder', async t => {
+  const fixture = await nativeFixture(t);
+  const native = await resolveOpenCode(fixture.config.state, pins.opencode, { platform: 'linux', arch: 'x64' });
+  assert.equal(native.executable, fixture.executable); assert.equal(native.package, fixture.name); assert.match(native.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(nativePackage('darwin', 'x64'), 'opencode-darwin-x64-baseline');
+  assert.throws(() => nativePackage('win32', 'x64'), /Unsupported/);
+  assert.throws(() => nativePackage('linux', 'unknown'), /Unsupported/);
+});
+test('the public source export retains every new runtime and capability proof module', () => {
+  for (const name of ['opencode-runtime.mjs', 'pty-capability.mjs', 'capability-proof.mjs', 'terminal-proof.mjs']) assert.equal(isPublicExportPath(`scripts/dev-stack/${name}`), true, name);
+});
+test('native version verification executes the selected file directly with only a private provider environment', async t => {
+  const { config, executable } = await nativeFixture(t); let calls = 0;
+  const invoke = async (file, args, options) => {
+    calls++; assert.equal(file, executable); assert.deepEqual(args, ['--version']); assert.equal(options.timeout, 15000);
+    assert.equal(options.env.OPENAI_API_KEY, undefined); assert.equal(options.env.SSH_AUTH_SOCK, undefined);
+    assert.equal(options.env.HOME, join(config.state, 'providers/opencode')); assert.equal(options.cwd, options.env.HOME);
+    return pins.opencode + '\n';
+  };
+  await verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke, inherited: { PATH: '/reviewed', OPENAI_API_KEY: 'must-not-inherit', SSH_AUTH_SOCK: 'must-not-inherit' } });
+  assert.equal(calls, 1);
+  let failure;
+  await assert.rejects(verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke: async () => '0.0.0', observe: async value => { failure = value; } }), /Actual private.*version/);
+  assert.equal(failure.ok, false); assert.equal(failure.stage, 'actual-native-version'); assert.equal(failure.actualVersion, '0.0.0'); assert.equal(failure.error.code, 'VERSION_MISMATCH'); assert.equal(failure.native.relativeExecutable.includes('node_modules'), true);
+  assert.equal(opencodeEnvironment(config.state, { ANTHROPIC_API_KEY: 'secret' }).ANTHROPIC_API_KEY, undefined);
+});
+test('wrong core/native version, missing optional dependency and linked package paths fail closed', async t => {
+  const fixture = await nativeFixture(t);
+  const original = JSON.parse(await readFile(fixture.core, 'utf8'));
+  for (const core of [{ ...original, version: '0.0.0' }, { ...original, optionalDependencies: {} }]) {
+    await writeFile(fixture.core, JSON.stringify(core)); await assert.rejects(resolveOpenCode(fixture.config.state, pins.opencode, { platform: 'linux', arch: 'x64' }), /mismatch/);
+  }
+  await writeFile(fixture.core, JSON.stringify(original));
+  await writeFile(fixture.selected, JSON.stringify({ name: fixture.name, version: '0.0.0' }));
+  await assert.rejects(resolveOpenCode(fixture.config.state, pins.opencode, { platform: 'linux', arch: 'x64' }), /mismatch/);
+  const external = join(fixture.config.root, 'foreign'); await mkdir(external);
+  const link = join(fixture.config.state, 'linked'); await symlink(external, link, process.platform === 'win32' ? 'junction' : 'dir');
+  await writeFile(join(external, 'binary'), 'foreign sentinel');
+  await assert.rejects(confinedFile(fixture.config.state, join(link, 'binary')), /linked/);
+  await assert.rejects(confinedFile(fixture.config.state, join(external, 'binary')), /physical private root/);
+  assert.equal(await readFile(join(external, 'binary'), 'utf8'), 'foreign sentinel');
+});
+test('actual private wrapper preserves the requested pane cwd while keeping provider HOME private', { skip: process.platform === 'win32' }, async t => {
+  const { config } = await nativeFixture(t, process.platform, process.arch);
+  const bin = join(config.state, 'cli/bin');
+  for (const name of ['opencode-wrapper.mjs', 'opencode-runtime.mjs']) await copyFile(join(root, 'scripts/dev-stack', name), join(bin, name));
+  await writeFile(join(config.state, 'cli/opencode-version'), pins.opencode);
+  const output = await run(process.execPath, [join(bin, 'opencode-wrapper.mjs')], { cwd: join(config.state, 'workspaces'), env: { PATH: process.env.PATH }, timeout: 15000 });
+  assert.deepEqual(output.trim().split('\n'), [join(config.state, 'workspaces'), join(config.state, 'providers/opencode')]);
+});
+const liveSession = () => ({ session: { sessionId: 'tested', runtimeId: 'cli:opencode', status: 'RUNNING', isActive: true, exitCode: null } });
+function liveProof() { const proof = new InteractiveTerminalProof('tested'); proof.open(); proof.message({ type: 'status', status: 'RUNNING' }); assert.equal(proof.live(liveSession()), true); return proof; }
+test('the historical module-error/brand substring false positive is explicitly rejected', () => {
+  const output = "Error: Cannot find module '/private/opencode-ai/bin/opencode'\nMODULE_NOT_FOUND\nCLI process exited (code 1)";
+  assert.equal(/opencode/i.test(output), true, 'The old assertion accepts this actual error family.');
+  const proof = liveProof(); proof.message({ type: 'output', data: output });
+  assert.throws(() => proof.live(liveSession()), /bootstrap\/exit failure/);
+  const split = liveProof(); split.message({ type: 'output', data: 'MODULE_NOT_' }); split.message({ type: 'output', data: 'FOUND opencode' }); assert.throws(() => split.live(liveSession()), /bootstrap\/exit failure/);
+});
+test('RUNNING cannot survive a terminal error, exit, WebSocket error or close', () => {
+  for (const end of [p => p.message({ type: 'status', status: 'ERROR' }), p => p.message({ type: 'status', status: 'EXITED' }), p => p.message({ type: 'status', status: 'RUNNING', exitCode: 0 }), p => p.message({ type: 'error', code: 'CLI_TERMINAL_SETUP_FAILED' }), p => p.error('ECONNRESET'), p => p.close(1008)]) {
+    const proof = liveProof(); end(proof); proof.message({ type: 'status', status: 'RUNNING' }); assert.throws(() => proof.live(liveSession()));
+  }
+  const proof = liveProof(); proof.message({ type: 'status', status: 'IDLE' }); assert.equal(proof.live(liveSession()), false);
+});
+test('each interactive result needs a fresh matching active RUNNING API session', () => {
+  for (const response of [null, { session: { ...liveSession().session, sessionId: 'another' } }, { session: { ...liveSession().session, runtimeId: 'cli:other' } }, { session: { ...liveSession().session, isActive: false } }, { session: { ...liveSession().session, status: 'EXITED' } }, { session: { ...liveSession().session, exitCode: 0 } }]) assert.throws(() => liveProof().live(response), /Fresh API/);
+  assert.equal(liveProof().live({ session: { ...liveSession().session, status: 'IDLE' } }), false);
+});
+test('menu and unique filter evidence must arrive after the corresponding input barrier', () => {
+  const proof = liveProof(), menu = 'Commands\nSwitch model\nSwitch agent\nExit the app';
+  proof.message({ type: 'output', data: menu }); let barrier = proof.barrier(); assert.equal(proof.menu(barrier), false);
+  proof.message({ type: 'output', data: 'opencode' }); assert.equal(proof.menu(barrier), false);
+  proof.message({ type: 'output', data: menu }); assert.equal(proof.menu(barrier), true);
+  proof.message({ type: 'output', data: 'spaceproof-unique' }); barrier = proof.barrier(); assert.equal(proof.challenge(barrier, 'spaceproof-unique'), false);
+  proof.message({ type: 'output', data: 'Search: spaceproof-unique' }); assert.equal(proof.challenge(barrier, 'spaceproof-unique'), false);
+  proof.message({ type: 'output', data: 'No results found' }); assert.equal(proof.challenge(barrier, 'spaceproof-unique'), true);
+});
+test('browser proof rejects unrelated, disconnected, empty or erroneous terminal panes', () => {
+  const state = { paneId: 'tested', status: 'attached', hasSession: 'true', hasWebsocket: 'true', hasError: 'false', width: 1200 };
+  assert.doesNotThrow(() => assertBrowserTerminal(state, 'tested'));
+  for (const change of [{ paneId: 'unrelated' }, { status: 'closed' }, { hasSession: 'false' }, { hasWebsocket: 'false' }, { hasError: 'true' }, { width: 0 }]) assert.throws(() => assertBrowserTerminal({ ...state, ...change }, 'tested'));
+});
+test('interactive fatal latch ends only after verified success, allowing later intentional HMR/cleanup', () => {
+  const proof = liveProof(); proof.seal(liveSession()); proof.close(1000); assert.equal(proof.diagnostic().websocket.fatal, null);
+  const failed = liveProof(); failed.close(1000); assert.throws(() => failed.seal(liveSession()));
+});
+test('synthetic terminal diagnostics are bounded, selected and redact supplied/query secrets', () => {
+  const proof = liveProof(); proof.message({ type: 'output', data: 'x'.repeat(8000) + '\nprivate-cookie http://local/?token=private-ticket\n' });
+  const value = proof.diagnostic(['private-cookie', 'private-ticket']); assert(value.syntheticTerminalExcerpt.length <= 6000);
+  assert.equal(JSON.stringify(value).includes('private-cookie'), false); assert.equal(JSON.stringify(value).includes('private-ticket'), false);
+  assert.deepEqual(Object.keys(value.currentSession), ['sessionId', 'status', 'isActive', 'exitCode']);
+});
+test('known Darwin helper repair refuses any unpinned, linked, foreign, changed or already executable metadata', () => {
+  const record = { platform: 'darwin', arch: 'x64', version: '1.1.0', sha256: '46a4455777c6122d7e71cd706ea4b37b19bedd297684be8b6dabb833ff2a3965', mode: 0o644, uid: 123, nlink: 1 };
+  assert.equal(knownHelperRepair(record, 123), true);
+  for (const change of [{ platform: 'linux' }, { arch: 'other' }, { version: '1.1.1' }, { sha256: 'changed' }, { mode: 0o755 }, { uid: 124 }, { nlink: 2 }]) assert.equal(knownHelperRepair({ ...record, ...change }, 123), false);
+  assert.equal(knownHelperRepair(record, null), false);
 });

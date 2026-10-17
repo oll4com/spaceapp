@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { assertPlainState, composeDocument, extractPins, initialize, loadOwner, locations, privateWrite, readJson, secrets, serviceEnvironment } from './state.mjs';
 import { delay, descendants, LaunchBarrier, lineRedactor, processIdentity, sameProcess, stopRecorded } from './processes.mjs';
 import { assertOwnedDocker, compose, dockerEnvironment, removeOwnedDocker, run } from './resources.mjs';
+import { verifyOpenCode } from './opencode-runtime.mjs';
+import { verifyPtyCapability } from './pty-capability.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const say = text => process.stdout.write(`[dev-stack] ${text}\n`);
@@ -119,6 +121,7 @@ export async function start(config, inherited = process.env) {
   try {
     const pins = extractPins(await readFile(join(config.root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(config.root, 'Dockerfile'), 'utf8'));
     await privateWrite(config.compose, JSON.stringify(composeDocument(owner, pins, secret.password), null, 2) + '\n');
+    await verifyPtyCapability(config.root, config.state, { inherited: env });
     await assertOwnedDocker(owner);
     say('Starting canonical digest-pinned PostgreSQL and Temporal on loopback.');
     await perform(() => compose(config, owner, ['up', '-d', '--wait', '--wait-timeout', '240'], { output: log, secrets: redactions, timeout: 420000, signal: cancellation.signal }));
@@ -126,8 +129,11 @@ export async function start(config, inherited = process.env) {
     const vendor = join(config.state, 'cli/vendor/opencode');
     const installed = await readJson(join(vendor, 'node_modules/opencode-ai/package.json')).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
     if (installed?.version !== pins.opencode) await command(['install', '--prefix', vendor, '--ignore-scripts', '--no-audit', '--no-fund', `opencode-ai@${pins.opencode}`]);
+    await verifyOpenCode(config.state, pins.opencode, { inherited: env });
+    await privateWrite(join(config.state, 'cli/opencode-version'), pins.opencode);
     const wrapper = join(config.state, 'cli/bin/opencode-vscode-parity');
     await copyFile(join(root, 'scripts/dev-stack/opencode-wrapper.mjs'), wrapper); await chmod(wrapper, 0o700);
+    await copyFile(join(root, 'scripts/dev-stack/opencode-runtime.mjs'), join(config.state, 'cli/bin/opencode-runtime.mjs'));
     await perform(() => run(process.execPath, ['packages/db/dist/migrate.js'], { cwd: config.root, env, secrets: redactions, output: log, signal: cancellation.signal }));
     await sourceServices();
     await launch('web', [join(config.root, 'node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', String(owner.ports.web), '--strictPort'], join(config.root, 'apps/web'));

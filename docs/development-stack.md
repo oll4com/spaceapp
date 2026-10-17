@@ -116,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 34 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 47 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
@@ -128,11 +128,29 @@ remain unchanged.
 The macOS job uses an ephemeral named Colima profile, removed afterward. It does
 not use a larger runner, paid fallback, provider credentials or an operator profile.
 
+Before the lengthy stock gates, a separate private-state capability step executes
+the exact pinned OpenCode native optional-package binary with `--version` and a
+real, zero-provider `printf` PTY. It never executes the npm postinstall or its
+network fallback. The manifest versions, physical private path, executable and
+actual version must match; a missing/mismatched binary fails with a bounded receipt.
+On Darwin only, a real failed `posix_spawnp` probe plus the exact published
+node-pty1.1.0 helper hash, mode0644, checkout confinement, ownership and single
+link can authorize restoring that one helper's execute bits. The failure, modes,
+unchanged bytes and successful second real probe are retained. Other failures
+are not repaired or hidden; no installed/global dependency path is changed.
+
 After those gates, `scripts/dev-stack/lifecycle-proof.mjs` starts a real stack with
 synthetic installed ports4910/4911 occupied by an independent process. It exercises
 HTTP owner claim and sign-in, invalidates the consumed token, creates the actual
 Getting Started/OpenCode pane, observes the real PTY UI, and renders that pane in
-the runner’s existing headless Chrome. It changes a CSS canary and observes real
+the runner’s existing headless Chrome. Its current matching API/WS session must
+remain active/RUNNING; error, exit or unexpected close is fatal. Keyboard input
+targets only that pane's attached error-free terminal: Ctrl+P opens the pinned
+command menu, a unique local filter produces the matching empty-result state,
+Escape dismisses it, and Ctrl+P opens a fresh menu again. Only new output after
+each input counts. No Enter, provider login or model prompt is sent. The private
+provider HOME/XDG roots do not replace the pane's requested working directory.
+It changes a CSS canary and observes real
 HMR without a navigation, then changes API/shared-package source and observes
 rebuilt output plus new API/worker processes and restored readiness. All changed
 source bytes are restored.

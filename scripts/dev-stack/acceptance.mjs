@@ -4,12 +4,14 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { stripVTControlCharacters } from 'node:util';
 import WebSocket from 'ws';
 import { locations, loadOwner, readJson } from './state.mjs';
 import { sameProcess, delay } from './processes.mjs';
 import { browserProof, eventually } from './browser-proof.mjs';
 import { assertLoopbackPublications, readOwnedPortPublications, run, dockerEnvironment } from './resources.mjs';
+import { InteractiveTerminalProof, assertBrowserTerminal } from './terminal-proof.mjs';
+import { extractPins } from './state.mjs';
+import { verifyOpenCode } from './opencode-runtime.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url))), config = locations(root, process.env), owner = await loadOwner(config);
 const artifacts = process.env.SPACE_DEV_PROOF_DIR;
@@ -18,7 +20,7 @@ const proofRelative = relative(root, resolve(artifacts));
 if (!proofRelative || (!proofRelative.startsWith('..') && !isAbsolute(proofRelative))) throw new Error('Proof output must be outside the checkout/state.');
 await mkdir(artifacts, { recursive: true });
 const origin = `http://127.0.0.1:${owner.ports.web}`, api = `http://127.0.0.1:${owner.ports.api}`;
-let cookie = '', csrf = null, browser, terminal;
+let cookie = '', csrf = null, browser, terminal, interactive, password, token, ticketToken, native;
 const checks = [];
 async function request(path, body, expected = 200) {
   const response = await fetch(`${api}${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { ...(cookie ? { cookie } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(csrf ? { [csrf.headerName]: csrf.csrfToken } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15000) });
@@ -33,8 +35,8 @@ try {
   assert.equal((await (await fetch(`${origin}/readyz`)).json()).ok, true); marker('Vite forwards to the isolated API port');
   for (const name of ['postgres-password', 'session-secret', 'setup-token']) assert.equal((await stat(join(config.state, 'secrets', name))).mode & 0o777, 0o600);
   assert.equal((await stat(config.compose)).mode & 0o777, 0o600); marker('all generated secret/config files0600');
-  const token = await readFile(join(config.state, 'secrets/setup-token'), 'utf8');
-  const password = randomBytes(24).toString('hex'), email = 'dev-stack-owner@example.invalid';
+  token = await readFile(join(config.state, 'secrets/setup-token'), 'utf8');
+  password = randomBytes(24).toString('hex'); const email = 'dev-stack-owner@example.invalid';
   const claimed = await request('/api/setup/claim', { token, email, password }); assert.equal(claimed.isAuthenticated, true);
   await request('/api/setup/claim', { token, email, password }, 409); marker('normal one-use owner claim');
   await request('/api/auth/login', { email, password }); csrf = await request('/api/auth/csrf'); marker('normal owner sign-in');
@@ -45,18 +47,44 @@ try {
   if (!pane) pane = await request('/api/panes', { roomId: starter.room.id, title: 'OpenCode CLI', mode: 'TERMINAL', terminalRuntimeId: 'cli:opencode', cwd: join(config.state, 'workspaces') });
   const started = await request(`/api/panes/${encodeURIComponent(pane.id)}/cli/session`, { runtimeId: 'cli:opencode' });
   const ticket = started.websocket; assert(ticket?.token && ticket.sessionId);
+  ticketToken = ticket.token;
+  const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
+  const selected = await verifyOpenCode(config.state, pins.opencode);
+  native = { version: selected.version, package: selected.package, relativeExecutable: selected.relativeExecutable, sha256: selected.sha256 };
   const url = new URL(`${api.replace('http:', 'ws:')}/api/panes/${encodeURIComponent(pane.id)}/cli/terminal`);
   for (const [k, v] of Object.entries({ sessionId: ticket.sessionId, token: ticket.token, clientId: randomUUID(), initialCols: '120', initialRows: '32' })) url.searchParams.set(k, v);
   terminal = new WebSocket(url, { headers: { cookie, origin } });
-  let ui = '', running = false, terminalError;
-  terminal.on('error', error => { terminalError = error; });
-  terminal.on('message', chunk => { const event = JSON.parse(chunk.toString()); if (event.type === 'output') ui += event.data; if (event.type === 'status' && event.status === 'RUNNING') running = true; });
+  interactive = new InteractiveTerminalProof(ticket.sessionId);
+  terminal.on('open', () => interactive.open());
+  terminal.on('error', error => interactive.error(error.code));
+  terminal.on('close', code => interactive.close(code));
+  terminal.on('message', chunk => { try { interactive.message(JSON.parse(chunk.toString())); } catch { interactive.fail('Malformed terminal WebSocket message.'); } });
+  const currentSession = () => request(`/api/panes/${encodeURIComponent(pane.id)}/cli/session`);
   await eventually(async () => {
-    const current = await request(`/api/panes/${encodeURIComponent(pane.id)}/cli/session`);
-    running ||= current?.session?.status === 'RUNNING';
-    if (terminalError) throw new Error('Actual CLI terminal WebSocket failed.');
-    return running && /opencode/i.test(stripVTControlCharacters(ui));
-  }, 'Real pinned OpenCode PTY terminal UI'); marker('source CLI host/PTY and actual OpenCode UI; no model prompt sent');
+    interactive.assertHealthy();
+    return interactive.live(await currentSession()) && interactive.sequence > 0;
+  }, 'Current matching OpenCode API/WS session');
+  browser = await browserProof({ state: config.state, origin, cookie, artifacts, paneId: pane.id });
+  // Exercise real terminal keyboard input through the actual matching browser pane.
+  // No Enter or provider/model command is sent: only a local palette and filter.
+  const deadline = Date.now() + 120000;
+  const waitInteractive = async (predicate, label) => eventually(async () => { interactive.assertHealthy(); return interactive.live(await currentSession()) && predicate(); }, label, Math.max(1, deadline - Date.now()));
+  let barrier = interactive.barrier(); await browser.key('Ctrl+P');
+  await waitInteractive(() => interactive.menu(barrier), 'Fresh pinned OpenCode command menu after Ctrl+P');
+  await browser.screenshot('opencode-command-menu.png');
+  const challenge = `spaceproof${randomBytes(8).toString('hex')}`;
+  barrier = interactive.barrier(); await browser.key('text', challenge);
+  await waitInteractive(() => interactive.challenge(barrier, challenge), 'Fresh unique palette filter response');
+  await browser.screenshot('opencode-filter-response.png');
+  barrier = interactive.barrier(); await browser.key('Escape');
+  await waitInteractive(() => interactive.sequence > barrier, 'Fresh terminal response to palette dismissal');
+  barrier = interactive.barrier(); await browser.key('Ctrl+P');
+  await waitInteractive(() => interactive.menu(barrier), 'Fresh command menu after dismissal and reopening');
+  const browserState = await browser.terminalState(); assertBrowserTerminal(browserState, pane.id);
+  await browser.screenshot('opencode-pane.png');
+  interactive.seal(await currentSession());
+  await writeFile(join(artifacts, 'opencode-interactive-proof.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, browser: browserState, terminal: interactive.diagnostic([cookie, ticket.token, password, token]), challenge, transitions: ['Ctrl+P -> fresh Commands and registered menu entries', 'unique palette filter -> fresh matching response', 'Escape -> fresh response', 'Ctrl+P -> fresh full command menu'], modelInference: false }, null, 2) + '\n', { mode: 0o600 });
+  terminal.close(); marker('actual pinned OpenCode command menu, reversible filter, current API/WS and matching live browser pane; no model prompt sent');
   const services = await readOwnedPortPublications(config, owner);
   // Preserve actual selected metadata before validation, including failures; no environment or command fields.
   await writeFile(join(artifacts, 'docker-port-bindings.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, services }, null, 2) + '\n', { mode: 0o600 });
@@ -66,7 +94,7 @@ try {
   for (const port of [owner.ports.api, owner.ports.web]) {
     const lines = sockets.split('\n').filter(x => new RegExp(`:${port}(?:\\s|$)`).test(x)); assert(lines.length > 0); assert(lines.every(x => x.includes(`127.0.0.1:${port}`)));
   } marker('API and Vite bind only loopback');
-  browser = await browserProof({ state: config.state, origin, cookie, artifacts }); marker('actual browser Getting Started/terminal rendering');
+  marker('actual browser Getting Started and tested live terminal rendering');
   const css = join(root, 'apps/web/src/styles.css'), originalCss = await readFile(css), canary = `proof-${randomUUID()}`;
   const timeOrigin = await browser.evaluate('performance.timeOrigin');
   try {
@@ -92,4 +120,9 @@ try {
     assert((await readFile(join(root, 'packages/contracts/dist/index.js'), 'utf8')).includes(canary), 'Changed shared package source must actually reach built output');
   } finally { await writeFile(packageFile, originalPackage); }
   await writeFile(join(artifacts, 'acceptance.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, checks, model_inference: false, real_operator_data: false }, null, 2) + '\n');
+} catch (error) {
+  // Selected synthetic state only. Never serialize a session response, ticket,
+  // cookie, websocket URL, environment or real provider/owner credentials.
+  if (interactive) await writeFile(join(artifacts, 'opencode-failure.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, terminal: interactive.diagnostic([cookie, cookie.split('=').slice(1).join('='), password, token, ticketToken, csrf?.csrfToken]), browser: await browser?.terminalState().catch(() => null) }, null, 2) + '\n', { mode: 0o600 });
+  throw error;
 } finally { terminal?.close(); await browser?.close(); }

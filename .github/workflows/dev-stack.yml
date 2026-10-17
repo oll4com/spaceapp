@@ -108,6 +108,9 @@ jobs:
       - name: Install locked workspace dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Early actual pinned CLI and zero-provider PTY capability
+        run: node scripts/dev-stack/capability-proof.mjs
+
       - name: Daemon-free isolation and cleanup regressions
         run: npm run test:dev-stack
 

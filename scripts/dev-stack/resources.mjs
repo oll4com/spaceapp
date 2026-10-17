@@ -97,13 +97,21 @@ export async function diagnoseOwnedDocker(config, owner, { output = () => {}, se
   await assertOwnedDocker(owner, control, env);
   const redactor = lineRedactor(secrets, output);
   try {
-    output('[dev-stack] Bounded owned-service logs and health probes before cleanup:\n');
-    await control('docker', composeArgs(config, owner, ['logs', '--no-color', '--tail', '100', 'postgres', 'temporal']), { secrets, output: chunk => redactor.chunk(chunk) });
+    output(`[dev-stack] Bounded owned-service logs and health probes before cleanup (${new Date().toISOString()}):\n`);
     const ids = (await control('docker', ['container', 'ls', '-a', '-q', '--filter', `label=com.docker.compose.project=${owner.project}`])).trim().split(/\s+/).filter(Boolean);
     for (const id of ids) {
+      // A field allowlist, never full State/inspect or Config.Env/command.
+      const format = '{"status":{{json .State.Status}},"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}},"oomKilled":{{json .State.OOMKilled}},"startedAt":{{json .State.StartedAt}},"finishedAt":{{json .State.FinishedAt}},"error":{{json .State.Error}},"restartCount":{{json .RestartCount}},"ports":{{json .NetworkSettings.Ports}}}';
+      await control('docker', ['container', 'inspect', '--format', format, id], { secrets, output: chunk => redactor.chunk(chunk) });
       // Health has status/probe output only. Never inspect Config.Env or the whole container.
       await control('docker', ['container', 'inspect', '--format', '{{json .State.Health}}', id], { secrets, output: chunk => redactor.chunk(chunk) });
     }
+    try {
+      const text = await control(process.platform === 'darwin' ? 'lsof' : 'ss', process.platform === 'darwin' ? ['-nP', `-iTCP:${owner.ports.postgres}`, `-iTCP:${owner.ports.temporal}`, '-sTCP:LISTEN'] : ['-ltn']);
+      const lines = text.split('\n').filter(line => [owner.ports.postgres, owner.ports.temporal].some(port => new RegExp(`:${port}(?:\\s|$)`).test(line))).map(line => line.slice(0, 400));
+      redactor.chunk(JSON.stringify({ selectedHostPortListeners: lines }) + '\n');
+    } catch { output('[dev-stack] Selected host-port listener inspection unavailable or no listener; container metadata retained.\n'); }
+    await control('docker', composeArgs(config, owner, ['logs', '--no-color', '--tail', '100', 'postgres', 'temporal']), { secrets, output: chunk => redactor.chunk(chunk) });
   } finally { redactor.end(); }
 }
 export async function removeOwnedDocker(config, owner, { volumes = false, output, secrets, diagnose = false, invoke = run, env = dockerEnvironment() } = {}) {

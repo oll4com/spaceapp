@@ -5,13 +5,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import WebSocket from 'ws';
 import { delay, descendants, processIdentity, sameProcess, stopRecorded } from './processes.mjs';
+import { assertBrowserTerminal } from './terminal-proof.mjs';
 
 export async function eventually(fn, label, timeout = 120000) {
   const until = Date.now() + timeout; let last;
-  while (Date.now() < until) { try { const value = await fn(); if (value) return value; } catch (error) { last = error; } await delay(400); }
+  while (Date.now() < until) { try { const value = await fn(); if (value) return value; } catch (error) { if (error.fatal) throw error; last = error; } await delay(400); }
   throw new Error(`${label} did not succeed${last ? ` (${last.message})` : ''}.`);
 }
-export async function browserProof({ state, origin, cookie, artifacts }) {
+export async function browserProof({ state, origin, cookie, artifacts, paneId }) {
   const binary = process.env.SPACE_DEV_BROWSER || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/google-chrome');
   if (!existsSync(binary)) throw new Error('Hosted Chrome is missing. Set SPACE_DEV_BROWSER to an existing reviewed browser; no hidden download/fallback.');
   const profile = join(state, 'browser-proof'); await mkdir(profile, { mode: 0o700 });
@@ -45,9 +46,19 @@ export async function browserProof({ state, origin, cookie, artifacts }) {
     await call('Page.navigate', { url: `${origin}/` });
     await eventually(() => evaluate('document.body.innerText.toLowerCase().includes("getting started")'), 'Actual Getting Started web room');
     await evaluate(`(() => { const room = [...document.querySelectorAll('button,[role="button"]')].find(x => /getting started/i.test(x.textContent || x.getAttribute('title') || '')); room?.click(); return Boolean(room); })()`);
-    await eventually(() => evaluate('Boolean(document.querySelector(".xterm-screen")?.getBoundingClientRect().width)'), 'Rendered terminal pane in the actual browser');
+    const paneExpression = `document.querySelector('[data-space-pane-id="' + CSS.escape(${JSON.stringify(paneId)}) + '"]')`;
+    const terminalState = () => evaluate(`(() => { const pane = ${paneExpression}, terminal = pane?.querySelector('.terminal-pane'); if (!terminal) return null; return { paneId: pane.dataset.spacePaneId, status: terminal.dataset.terminalStatus, hasSession: terminal.dataset.terminalHasSession, hasWebsocket: terminal.dataset.terminalHasWebsocket, hasError: terminal.dataset.terminalHasError, width: terminal.querySelector('.xterm-screen')?.getBoundingClientRect().width || 0 }; })()`);
+    await eventually(async () => { const current = await terminalState(); assertBrowserTerminal(current, paneId); return current; }, 'Matching attached error-free terminal in the actual browser');
     await mkdir(artifacts, { recursive: true });
-    await writeFile(join(artifacts, 'opencode-pane.png'), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    return { evaluate, async screenshot(name) { await writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64')); }, close };
+    const key = async (name, text) => {
+      assertBrowserTerminal(await terminalState(), paneId);
+      assert.equal(await evaluate(`(() => { const input = ${paneExpression}?.querySelector('.xterm-helper-textarea'); input?.focus(); return document.activeElement === input; })()`), true, 'Keyboard must target the tested terminal.');
+      if (text) await call('Input.dispatchKeyEvent', { type: 'char', text });
+      else {
+        const params = name === 'Ctrl+P' ? { key: 'p', code: 'KeyP', windowsVirtualKeyCode: 80, modifiers: 2 } : { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 };
+        await call('Input.dispatchKeyEvent', { type: 'keyDown', ...params }); await call('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+      }
+    };
+    return { evaluate, terminalState, key, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64')); }, close };
   } catch (error) { await close(); throw error; }
 }
