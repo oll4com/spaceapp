@@ -1,6 +1,5 @@
 import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
-import { otlpSpanExporterFromEnv } from "@space/runtime";
 import * as activities from "./memory-maintenance-activities.js";
 import {
   MEMORY_MAINTENANCE_TASK_QUEUE,
@@ -9,6 +8,7 @@ import {
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workerOtlp } from "./worker-otlp.js";
 
 const service = "space-memory-maintenance-worker";
 
@@ -21,7 +21,8 @@ if (!memoryMaintenanceEnabled(process.env)) {
 
   try {
     const connection = await NativeConnection.connect({ address });
-    const spans = otlpSpanExporterFromEnv(process.env, service);
+    const otlp = workerOtlp(service);
+    const spans = otlp.spanExporter;
     const worker = await Worker.create({
       connection,
       namespace,
@@ -29,7 +30,12 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      sinks: otlp.workerOptions.sinks,
+      interceptors: {
+        workflowModules: otlp.workerOptions.interceptors?.workflowModules ?? [],
+        activity: [createActivityObservabilityInterceptors({ spans })]
+      }
+      // interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
     });
     console.log(JSON.stringify({
       service,
