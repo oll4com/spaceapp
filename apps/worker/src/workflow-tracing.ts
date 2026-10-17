@@ -58,6 +58,7 @@ export function createWorkflowTracingInterceptors(dependencies: WorkflowTracingD
   const addLinks = (incoming: readonly TraceLink[]) => {
     links = sanitizeTraceLinks([...links, ...incoming].slice(0, MAX_TRACE_LINKS * 2));
   };
+  /** Adopt a parent before scheduling locks context; later requests become links. */
   const adopt = (envelope: TraceEnvelope | null) => {
     if (!envelope) return;
     if (!propagated && !contextLocked) {
@@ -72,10 +73,12 @@ export function createWorkflowTracingInterceptors(dependencies: WorkflowTracingD
     addLinks(envelope.links ?? []);
   };
   const current = (): TraceContext => context ??= { traceId: workflowTraceId(info.runId), spanId, flags: "01" };
+  /** Freeze parentage before propagating the workflow span to newly scheduled work. */
   const childHeaders = (headers: Parameters<typeof withTraceHeader>[0]) => {
     contextLocked = true;
     return withTraceHeader(headers, { context: current() });
   };
+  /** Emit at most one sanitized outcome without allowing sink failures to affect execution. */
   const finish = (outcome: string, error: boolean, reasonCode?: string) => {
     if (completed) return;
     completed = true;
@@ -172,6 +175,7 @@ export function createWorkflowTracingInterceptors(dependencies: WorkflowTracingD
   };
 }
 
+/** Temporal sandbox entrypoint: hand deterministic spans to the host sink without HTTP. */
 export const interceptors: WorkflowInterceptorsFactory = () => {
   const sinks = proxySinks<WorkflowTracingSinks>();
   return createWorkflowTracingInterceptors({ info: workflowInfo, now: Date.now, record: span => sinks.tracing.record(span) });

@@ -37,6 +37,7 @@ const promptSentinel = "PRIVATE_PROMPT_SENTINEL /home/private/input.txt https://
 const outputSentinel = "PRIVATE_OUTPUT_SENTINEL /home/private/result.txt token=private-result";
 const errorSentinel = "PRIVATE_ERROR_SENTINEL /home/private/failure.txt token=private-error";
 
+/** Allow an optional proof mirror only at an unauthenticated loopback HTTP origin. */
 function jaegerTraceUrl(): string | null {
   const value = process.env.SPACE_TEST_JAEGER_ENDPOINT;
   if (!value) return null;
@@ -48,6 +49,7 @@ function jaegerTraceUrl(): string | null {
   return `${url.origin}/v1/traces`;
 }
 
+/** Capture actual OTLP bytes and track optional, sentinel-guarded local Jaeger mirroring. */
 async function startProofCollector() {
   const mirror = jaegerTraceUrl();
   const bodies: TraceBody[] = [];

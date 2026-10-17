@@ -53,6 +53,10 @@ function recordedTokenUsage(executionState: Record<string, unknown>): MissionTok
     : null;
 }
 
+/**
+ * Prepare a durable, budget-checked continuation linked to the settled source
+ * turn. Retrying the same continuation ID reuses its stored item and trace.
+ */
 export async function prepareBackgroundContinuation(input: {
   roomId: string; missionId: string; continuationId: string;
 }, store: SpaceStore, maxContinuations = DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS,

@@ -9,6 +9,7 @@ const traceparent = `00-${api.traceId}-${api.spanId}-01`;
 const runId = "8cf9d522-63c9-4a66-9fe2-e2301b2ea468";
 const privateText = "PRIVATE PROMPT /home/operator/private.txt token sk-live-secret https://private.example";
 
+/** Exercise deterministic interceptors with controlled workflow metadata, time and sink output. */
 function harness(overrides: Partial<ReturnType<WorkflowTracingDependencies["info"]>> = {}, record?: WorkflowTracingDependencies["record"]) {
   const spans: WorkflowTraceSpan[] = [];
   const interceptors = createWorkflowTracingInterceptors({

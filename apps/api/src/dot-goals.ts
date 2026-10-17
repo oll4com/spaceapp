@@ -101,6 +101,7 @@ function requestKeyFor(goalId: string, step: number): string {
   return `goal-${createHash("sha256").update(`${goalId}:${step}`).digest("hex").slice(0, 40)}`;
 }
 
+/** Bind persisted goal operations to owned conversations and their workflow coordinator. */
 export function createDotGoalService(deps: DotGoalServiceDeps) {
   async function activeSession(goal: DotGoal) {
     const session = await deps.store.getSpaceAgentSession(goal.sessionId);
@@ -110,6 +111,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return (await deps.goals.transition(goal.goalId, ["ACTIVE", "PAUSED"], status, reason)) ?? goal;
   }
 
+  /** Create an owned goal and start its workflow under the initiating request's trace when present. */
   async function create(owner: string, dotId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const input = createDotGoalInputSchema.parse(raw);
     if (!deps.workflow) throw new DotGoalError(503, "DOT_GOALS_UNAVAILABLE", "Goals need the Space worker runtime.");

@@ -10,6 +10,7 @@ export function runWithActivityTraceContext<T>(context: ActivityTraceContext | n
   return context ? activityTraceContexts.run(context, run) : run();
 }
 
+/** Generate a nonzero host-side carrier ID without using workflow sandbox randomness. */
 function randomId(bytes: number): string {
   let value: string;
   do { value = randomBytes(bytes).toString("hex"); } while (/^0+$/.test(value));

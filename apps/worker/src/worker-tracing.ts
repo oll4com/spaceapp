@@ -14,12 +14,14 @@ export interface WorkerTracingOptions {
   exporter?: Omit<OtlpSpanExporterOptions, "endpoint" | "serviceName">;
 }
 
+/** Generate a nonzero host-side span ID for each activity attempt, including retries. */
 function activitySpanId(): string {
   let id: string;
   do { id = randomBytes(8).toString("hex"); } while (/^0+$/.test(id));
   return id;
 }
 
+/** Convert workflow milliseconds to OTLP nanoseconds and enforce host name/attribute limits. */
 function safeWorkflowSpan(span: WorkflowTraceSpan): ServerSpan | null {
   if (!Number.isFinite(span.startTimeMs) || !Number.isFinite(span.endTimeMs)) return null;
   return {
