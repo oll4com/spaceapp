@@ -52,3 +52,19 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## OpenTelemetry / OTLP Tracing
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` enables optional export of traces over OTLP/HTTP
+(JSON) to `<endpoint>/v1/traces`. It is shared across the API and Temporal workers:
+- **API (`space-api`):** exports one `SERVER` span per HTTP request, continuing inbound
+  W3C `traceparent` headers.
+- **Workers (`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):**
+  exports `INTERNAL` spans for workflow executions (parented to the inbound `traceparent`)
+  and each activity execution attempt (parented to the enclosing workflow span).
+  Child workflows nest under their parent workflow span. Continue-as-new executions and
+  room background continuations carry OTLP span links.
+
+When unset or empty, export is disabled across all processes and no background network
+calls are made. Prompts, messages, model outputs, file paths, URLs, and secrets are
+strictly filtered by an attribute allowlist (`apps/worker/src/otlp-attributes.ts`) and never exported.
