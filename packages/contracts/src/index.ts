@@ -49,6 +49,7 @@ export * from "./notifications.js";
 export * from "./council.js";
 export * from "./version.js";
 export * from "./observability.js";
+export * from "./otlp-span-exporter.js";
 
 export * from "./managed-plan-execution.js";
 export * from "./dots.js";
