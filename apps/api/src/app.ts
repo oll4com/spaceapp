@@ -91,6 +91,7 @@ import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
 import { createControlScreenshotCapture } from "./space-control-capture.js";
 import { registerSpaceControlRoutes } from "./space-control-routes.js";
 import { pluginsService } from "./plugins-service.js";
+import { instanceStorageDirectory } from "./instance-storage.js";
 import { InMemorySourceControlRepository, PostgresSourceControlRepository } from "@space/db";
 import { SourceControlService } from "./source-control/service.js";
 import { registerSourceControlRoutes } from "./source-control/routes.js";
@@ -1471,7 +1472,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }
   const sourceControlPublishingManager =
     options.sourceControlPublishingManager ?? new SourceControlPublishingManager({ store });
-  const personalGitRoot = process.env.SPACE_PERSONAL_GIT_ROOT || "/opt/spaceapp/var/personal-source-control";
+  const personalGitRoot = instanceStorageDirectory("personal-source-control", process.env.SPACE_PERSONAL_GIT_ROOT);
   const sourceControlService = options.sourceControlService ?? new SourceControlService({
     repository: config.runtimeStore === "postgres" && config.databaseUrl
       ? PostgresSourceControlRepository.fromConnectionString(config.databaseUrl)
@@ -4404,7 +4405,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if(action.operation==="panes.open"){
           const recordDebugIncident = async (incident: Record<string, unknown>) => {
             try {
-              const dir = "/opt/spaceapp/var/live-voice-logs";
+              const dir = instanceStorageDirectory("live-voice-logs");
               await mkdir(dir, { recursive: true });
               await appendFile(`${dir}/debug-incidents.jsonl`, JSON.stringify(incident) + "\n", "utf8");
             } catch (err) {

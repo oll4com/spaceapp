@@ -37,6 +37,9 @@ first-launch model smoke test. Authentication/inference commands are blocked;
 the acceptance proof sends no model prompt and needs no provider API key/account.
 Other provider wrappers, companion services, root CLI/file administration,
 background integrations and optional modules are disabled in this isolated stack.
+DOCX conversion never falls back to the installed privileged normalizer in dev;
+it requires an explicitly configured direct LibreOffice command and private work
+directory. The launcher does not install that optional tool.
 
 Changes in `apps/api/src` restart the API. Worker or shared-package source changes
 stop the dependent source services, run the normal complete build, and restart
@@ -44,6 +47,9 @@ them from this checkout. Vite handles web HMR directly, including WebSocket prox
 to the chosen API port. A required child exiting unexpectedly produces a named
 error and stops the stack. Sustained readiness loss also fails instead of leaving
 an apparently healthy partial stack.
+On failure, bounded logs and health-probe output from owned containers are redacted
+before cleanup. This capture does not expose container environments and a failed
+diagnostic cannot skip the normal ownership checks or cleanup.
 
 ## State, ports and privacy
 
@@ -61,7 +67,10 @@ npm run dev:stack
 
 The same state preserves its ports and database across restarts. It gets a random
 Compose project and ownership nonce, separate database/Temporal namespace/task
-queue, Unix socket, writable directories and CLI/provider homes. The subprocess
+queue, Unix socket, writable directories and CLI/provider homes. Plugin configuration,
+personal Git credential storage, OAuth settings and diagnostic history stay under
+that private install root. The canonical dev-instance job policy disables plugin
+skill-link synchronization, including connect/disconnect calls. The subprocess
 environment is allowlisted; inherited provider keys, session secrets, operator
 homes and SSH agents are not forwarded to application children. Docker control
 connectivity still uses your selected Docker context, including the normal Docker

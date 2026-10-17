@@ -14,6 +14,8 @@ import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceSt
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
 import { resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
+import { instanceStorageDirectory } from "./instance-storage.js";
+import { join } from "node:path";
 
 /** `dotId` attributes operations and schedules to the Space Dot acting for this user. */
 export interface ControlActor {id:string; role:AuthUser["role"]; dotId?:string}
@@ -1798,7 +1800,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           failedTools: failedTools.map(f => ({ tool: f.tool, error: f.error })),
           agentHandoffPrompt
         }) + "\n";
-        appendFileSync("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", line);
+        appendFileSync(join(instanceStorageDirectory("live-voice-logs"), "debug-incidents.jsonl"), line);
       } catch {}
     }
 
@@ -1906,7 +1908,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
 
     let recentIncidents: any[] = [];
     try {
-      const content = await fsPromises.readFile("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", "utf8");
+      const content = await fsPromises.readFile(join(instanceStorageDirectory("live-voice-logs"), "debug-incidents.jsonl"), "utf8");
       recentIncidents = content.trim().split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).slice(-5);
     } catch {}
 

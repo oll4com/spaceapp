@@ -3,6 +3,7 @@ import { createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSa
 import { authUserSchema, resolveSpaceInstance, sessionCookieNameFor, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "./antigravity-usage-services.js";
+import { instanceSecretDirectories } from "./instance-storage.js";
 
 // A dev instance on another port of the same host must not overwrite the stable session cookie.
 const SESSION_COOKIE = sessionCookieNameFor(resolveSpaceInstance(process.env));
@@ -55,7 +56,7 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
   let googleClientSecret = env.SPACE_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || undefined;
   if (!googleClientId) {
     try {
-      const candidates = ["/opt/spaceapp/secrets/google-oauth.json", "/var/lib/spaceapp/google-oauth.json"];
+      const candidates = instanceSecretDirectories(env).map(dir => `${dir}/google-oauth.json`);
       for (const p of candidates) {
         if (existsSync(p)) {
           const raw = JSON.parse(readFileSync(p, "utf8"));

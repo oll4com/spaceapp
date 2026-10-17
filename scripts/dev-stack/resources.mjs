@@ -43,12 +43,31 @@ export async function assertOwnedDocker(owner, invoke = run, env = dockerEnviron
 export async function compose(config, owner, args, options = {}) {
   return run('docker', composeArgs(config, owner, args), { env: dockerEnvironment(), ...options });
 }
-export async function removeOwnedDocker(config, owner, { volumes = false, output, secrets } = {}) {
-  await assertOwnedDocker(owner);
-  await compose(config, owner, ['down', '--remove-orphans', ...(volumes ? ['--volumes'] : [])], { output, secrets, timeout: 120000 });
-  await assertOwnedDocker(owner);
+export async function diagnoseOwnedDocker(config, owner, { output = () => {}, secrets = [], invoke = run, env = dockerEnvironment() } = {}) {
+  const signal = AbortSignal.timeout(15000);
+  const control = (command, args, options = {}) => invoke(command, args, { env, timeout: 5000, signal, ...options });
+  await assertOwnedDocker(owner, control, env);
+  const redactor = lineRedactor(secrets, output);
+  try {
+    output('[dev-stack] Bounded owned-service logs and health probes before cleanup:\n');
+    await control('docker', composeArgs(config, owner, ['logs', '--no-color', '--tail', '100', 'postgres', 'temporal']), { secrets, output: chunk => redactor.chunk(chunk) });
+    const ids = (await control('docker', ['container', 'ls', '-a', '-q', '--filter', `label=com.docker.compose.project=${owner.project}`])).trim().split(/\s+/).filter(Boolean);
+    for (const id of ids) {
+      // Health has status/probe output only. Never inspect Config.Env or the whole container.
+      await control('docker', ['container', 'inspect', '--format', '{{json .State.Health}}', id], { secrets, output: chunk => redactor.chunk(chunk) });
+    }
+  } finally { redactor.end(); }
+}
+export async function removeOwnedDocker(config, owner, { volumes = false, output, secrets, diagnose = false, invoke = run, env = dockerEnvironment() } = {}) {
+  await assertOwnedDocker(owner, invoke, env);
+  if (diagnose) {
+    try { await diagnoseOwnedDocker(config, owner, { output, secrets, invoke, env }); }
+    catch { output?.('[dev-stack] Bounded diagnostics unavailable; continuing owned cleanup.\n'); }
+  }
+  await invoke('docker', composeArgs(config, owner, ['down', '--remove-orphans', ...(volumes ? ['--volumes'] : [])]), { env, output, secrets, timeout: 120000 });
+  await assertOwnedDocker(owner, invoke, env);
   for (const kind of ['container', 'network', ...(volumes ? ['volume'] : [])]) {
-    const remaining = await run('docker', [kind, 'ls', ...(kind === 'container' ? ['-a'] : []), '-q', '--filter', `label=com.docker.compose.project=${owner.project}`], { env: dockerEnvironment() });
+    const remaining = await invoke('docker', [kind, 'ls', ...(kind === 'container' ? ['-a'] : []), '-q', '--filter', `label=com.docker.compose.project=${owner.project}`], { env });
     if (remaining.trim()) throw new Error(`Owned ${kind} remains; recovery state retained.`);
   }
 }

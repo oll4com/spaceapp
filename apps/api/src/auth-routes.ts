@@ -20,6 +20,7 @@ import { sendApiError } from "./http-errors.js";
 import { createDesktopAuthHandoffStore, isValidDesktopAuthHandoffId } from "./desktop-auth-handoffs.js";
 import { recordAudit } from "./request-audit.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
+import { instanceSecretDirectories } from "./instance-storage.js";
 
 /**
  * Operator login/logout and Google sign-in (OAuth, linked accounts, desktop handoff); the parent retains
@@ -219,7 +220,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     auth.googleClientId = clientId;
     auth.googleClientSecret = clientSecret;
     let saved = false;
-    for (const dir of ["/opt/spaceapp/secrets", "/var/lib/spaceapp"]) {
+    for (const dir of instanceSecretDirectories()) {
       try {
         await mkdir(dir, { recursive: true, mode: 0o700 });
         await writeFile(

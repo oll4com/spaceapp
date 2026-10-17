@@ -78,7 +78,7 @@ export async function start(config, inherited = process.env) {
     if (stopping) return; stopping = true;
     cancellation.abort();
     clearTimeout(debounce); clearInterval(statusTimer); clearInterval(readyTimer); for (const w of watchers) w.close();
-    try { await activeCommand.catch(() => {}); await launches.stop(); await stopChildren(); await removeOwnedDocker(config, owner, { output: log, secrets: redactions }); await writeTail; await unlink(config.supervisor); }
+    try { await activeCommand.catch(() => {}); await launches.stop(); await stopChildren(); await removeOwnedDocker(config, owner, { output: log, secrets: redactions, diagnose: code !== 0 }); await writeTail; await unlink(config.supervisor); }
     catch (error) { say(`Cleanup failed: ${error.message} Recovery state kept; retry down/reset.`); process.exitCode = 1; return; }
     say('All owned services stopped.'); process.exitCode = code;
   }

@@ -8,12 +8,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import sanitizeHtml from "sanitize-html";
-import { idSchema, isAgentFileArtifact, type Artifact } from "@space/contracts";
+import { idSchema, isAgentFileArtifact, resolveSpaceInstance, type Artifact } from "@space/contracts";
 import { makeSpaceId, type SpaceStore } from "@space/runtime";
 import { z } from "zod";
 import type { SpaceApiConfig } from "./config.js";
 import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { instanceStorageDirectory } from "./instance-storage.js";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
 export const agentFileMaxBytes = 100 * 1024 * 1024;
@@ -208,8 +209,13 @@ export async function normalizeAgentFileDocx(
     throw new AgentFileDocxNormalizationError("The DOCX source is not a valid Office package.");
   }
   const directCommand = options.command ?? process.env.SPACE_LIBREOFFICE_PATH;
-  const temporaryRoot = options.temporaryRoot ??
-    (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
+  const dev = resolveSpaceInstance(process.env) === "dev";
+  if (dev && !directCommand) {
+    throw new AgentFileDocxNormalizationError("Dev DOCX normalization requires an explicit direct LibreOffice command; the installed privileged broker is not used.");
+  }
+  const temporaryRoot = dev
+    ? instanceStorageDirectory("agent-docx-work", options.temporaryRoot ?? process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT)
+    : options.temporaryRoot ?? (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
   await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
   const workingRoot = await mkdtemp(join(temporaryRoot, "request-"));
   const inputDirectory = join(workingRoot, "input");

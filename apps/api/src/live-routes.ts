@@ -18,6 +18,7 @@ import { createLivePersonalMemory } from "./live-personal-memory.js";
 import { buildLiveRoomContext } from "./live-room-context.js";
 import type { RoomAgentService } from "./room-agent.js";
 import type { RoomPaneController } from "./room-pane-control.js";
+import { instanceStorageDirectory } from "./instance-storage.js";
 
 /**
  * Live pane search, URL fetch, room context, personal memory and history (with their repositories and close hooks);
@@ -203,7 +204,7 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
     legacyOwnerId: auth.operatorEmail ? "user:operator" : auth.devLogin ? "user:dev-operator" : undefined,
     readLegacy: async () => {
       if (!(store instanceof PostgresSpaceStore)) return null;
-      try { return await readFile("/opt/spaceapp/var/live-personal-memory.json", "utf8"); }
+      try { return await readFile(instanceStorageDirectory("live-personal-memory.json"), "utf8"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     }
   });
@@ -233,13 +234,13 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
     assertAccess: (request, room) => assertRoomAccess(room, request.user!),
     readLegacy: async room => {
       if (!(store instanceof PostgresSpaceStore) || !/^[a-zA-Z0-9:_-]+$/.test(room)) return null;
-      try { return await readFile(join("/opt/spaceapp/var/live-voice-logs", `live-voice-${room}.jsonl`), "utf8"); }
+      try { return await readFile(join(instanceStorageDirectory("live-voice-logs"), `live-voice-${room}.jsonl`), "utf8"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     },
     audit: async (owner, room, event) => {
       if (!(store instanceof PostgresSpaceStore)) return;
       const key = createHash("sha256").update(JSON.stringify([owner, room])).digest("hex");
-      const directory = "/opt/spaceapp/var/live-voice-logs/owners";
+      const directory = join(instanceStorageDirectory("live-voice-logs"), "owners");
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await appendFile(join(directory, `${key}.jsonl`), JSON.stringify({ ...event, ownerId: owner, roomId: room, recordedAt: nowIso() }) + "\n", { mode: 0o600 });
     }

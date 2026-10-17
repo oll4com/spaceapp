@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { composeDocument, extractPins, initialize, loadOwner, locations, ownerLabel, privateWrite, secrets, serviceEnvironment } from '../dev-stack/state.mjs';
 import { descendants, LaunchBarrier, lineRedactor, processIdentity, sameProcess, stopRecorded } from '../dev-stack/processes.mjs';
-import { assertOwnedDocker, composeArgs, dockerEnvironment, run } from '../dev-stack/resources.mjs';
+import { assertOwnedDocker, composeArgs, diagnoseOwnedDocker, dockerEnvironment, removeOwnedDocker, run } from '../dev-stack/resources.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
@@ -88,17 +88,62 @@ test('generated Docker services keep pins, loopback ports, generated ownership l
   for (const service of Object.values(doc.services)) { assert.equal(service.labels[ownerLabel], owner.nonce); assert.match(service.image, /@sha256:/); for (const port of service.ports) assert.match(port, /^127\.0\.0\.1:/); }
   assert.equal(doc.volumes.postgres.labels[ownerLabel], owner.nonce); assert.equal(doc.networks.default.labels[ownerLabel], owner.nonce);
   assert.equal(doc.services.temporal.environment.POSTGRES_PWD, secret.password);
+  const probe = doc.services.temporal.healthcheck.test[1];
+  assert.match(probe, /cluster health --address temporal:7233/);
+  assert.match(probe, /namespace describe --namespace spaceapp-dev --address temporal:7233/);
+  assert(!probe.includes('127.0.0.1:7233'));
 });
 test('service environment isolates all writable state and never forwards provider credentials', async t => {
   const config = await sandbox(t), owner = await initialize(config), secret = await secrets(config);
-  const env = serviceEnvironment(config, owner, secret, { PATH: '/node/bin:/usr/bin', HOME: '/owner/private', OPENAI_API_KEY: 'synthetic-should-not-propagate', SPACE_DEV_LOGIN: 'true', SSH_AUTH_SOCK: '/owner/agent' });
+  const env = serviceEnvironment(config, owner, secret, { PATH: '/node/bin:/usr/bin', HOME: '/owner/private', OPENAI_API_KEY: 'synthetic-should-not-propagate', SPACE_DEV_LOGIN: 'true', SPACE_INSTANCE_ENABLED_JOBS: 'plugin-skill-links', SPACE_LIBREOFFICE_PATH: '/owner/private/normalizer', SSH_AUTH_SOCK: '/owner/agent' });
   assert.equal(env.OPENAI_API_KEY, undefined); assert.equal(env.SSH_AUTH_SOCK, undefined); assert.equal(env.SPACE_DEV_LOGIN, 'false');
   assert.equal(env.HOME, join(config.state, 'home')); assert.equal(env.SPACE_API_ORIGIN, 'http://127.0.0.1:4810'); assert.equal(env.SPACEAPP_WORKFLOWS_ENABLED, 'true');
+  assert.equal(env.SPACE_PERSONAL_GIT_ROOT, join(config.state, 'install/var/personal-source-control'));
+  assert.equal(env.SPACE_AGENT_FILE_DOCX_WORK_ROOT, join(config.state, 'install/var/agent-docx-work'));
+  assert.equal(env.SPACE_INSTANCE_ENABLED_JOBS, undefined); assert.equal(env.SPACE_LIBREOFFICE_PATH, undefined);
   assert.equal(env.SPACE_ENABLE_CLI_CHAT_TURNS, 'false'); assert.equal(env.SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE, 'false');
   assert(Object.values(env).every(x => !x.includes('/owner/private') && !x.includes('/opt/spaceapp')));
 });
 test('Docker context forwarding is limited to control-plane connectivity', () => {
   assert.deepEqual(dockerEnvironment({ PATH: '/bin', DOCKER_CONTEXT: 'colima', OPENAI_API_KEY: 'synthetic', SPACE_SESSION_SECRET: 'synthetic' }), { PATH: '/bin', DOCKER_CONTEXT: 'colima' });
+});
+test('owned failure diagnostics redact split secrets and select health data without container environments', async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  let output = '';
+  const invoke = async (_command, args, options) => {
+    calls.push(args);
+    if (args[1] === 'ls') return args[0] === 'container' ? 'owned-container' : '';
+    if (args.includes('{{json .Config.Labels}}')) return JSON.stringify({ [ownerLabel]: owner.nonce });
+    if (args.includes('logs')) { options.output('synthetic-pass'); options.output('word\n'); return ''; }
+    if (args.includes('{{json .State.Health}}')) { options.output('{"Status":"unhealthy","Output":"synthetic-password"}\n'); return ''; }
+    throw new Error('Unexpected diagnostic command');
+  };
+  await diagnoseOwnedDocker(config, owner, { invoke, env: { PATH: '/synthetic' }, secrets: ['synthetic-password'], output: text => { output += text; } });
+  assert(!output.includes('synthetic-password')); assert.match(output, /\[redacted\]/);
+  assert(calls.some(args => args.includes('--tail') && args.includes('100')));
+  assert(calls.some(args => args.includes('{{json .State.Health}}')));
+  assert(!calls.some(args => args.includes('{{json .Config.Env}}') || (args.includes('inspect') && !args.includes('--format'))));
+});
+test('diagnostics run before owned down and a diagnostic failure cannot prevent cleanup', async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  let down = false, output = '';
+  const invoke = async (_command, args) => {
+    calls.push(args);
+    if (args[1] === 'ls') return args[0] === 'container' && !down ? 'owned-container' : '';
+    if (args.includes('{{json .Config.Labels}}')) return JSON.stringify({ [ownerLabel]: owner.nonce });
+    if (args.includes('logs')) throw new Error('Synthetic diagnostic failure must not escape into logs');
+    if (args.includes('down')) { down = true; return ''; }
+    throw new Error('Unexpected cleanup command');
+  };
+  await removeOwnedDocker(config, owner, { diagnose: true, invoke, env: {}, output: text => { output += text; } });
+  assert(down); assert(calls.findIndex(args => args.includes('logs')) < calls.findIndex(args => args.includes('down')));
+  assert.match(output, /diagnostics unavailable/); assert(!output.includes('Synthetic diagnostic failure'));
+});
+test('a foreign project resource prevents both diagnostic reads and cleanup', async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  const invoke = async (_command, args) => { calls.push(args); return args[1] === 'ls' ? 'foreign' : JSON.stringify({ [ownerLabel]: 'not-ours' }); };
+  await assert.rejects(removeOwnedDocker(config, owner, { diagnose: true, invoke, env: {} }), /Foreign/);
+  assert(!calls.some(args => args.includes('logs') || args.includes('down') || args.includes('{{json .State.Health}}')));
 });
 test('redactor handles secrets split between stdout chunks', () => {
   let output = ''; const stream = lineRedactor(['synthetic-password', 'synthetic-token'], x => { output += x; });
