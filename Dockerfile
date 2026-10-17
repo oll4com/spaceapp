@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS build
+ARG TARGETARCH
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential liblzma5 python3 pkg-config \
@@ -9,7 +10,10 @@ COPY . .
 RUN npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev \
-    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete \
+    && node scripts/prepare-container-target.mjs --target core --arch "${TARGETARCH:-amd64}" --dest /app/targets/core \
+    && node scripts/prepare-container-target.mjs --target browser --arch "${TARGETARCH:-amd64}" --dest /app/targets/browser \
+    && node scripts/prepare-container-target.mjs --target cli --arch "${TARGETARCH:-amd64}" --dest /app/targets/cli
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
@@ -54,16 +58,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
-COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -72,6 +67,9 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
        done
 
 FROM runtime-base AS core
+# Maintenance scripts are included in /app/targets/core/scripts:
+# reset-owner-password.mjs, rotate-owner-setup-token.mjs, portable-backup.mjs, portable-restore.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/targets/core ./
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -93,6 +91,7 @@ RUN apt-get update \
       /run/spaceapp-browser
 ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
     SPACE_BROWSER_SESSIONS_CHROME_PATH=/usr/bin/chromium
+COPY --from=build --chown=spaceapp:spaceapp /app/targets/browser ./
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
@@ -115,4 +114,5 @@ RUN npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
 # /etc/AGENTS.md documents, so that path resolves to /etc in this image. Without it, the
 # Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts.
 RUN ln -s /etc /opt/spaceapp
+COPY --from=build --chown=spaceapp:spaceapp /app/targets/cli ./
 ENTRYPOINT ["/app/deploy/docker/cli-entrypoint.sh"]
