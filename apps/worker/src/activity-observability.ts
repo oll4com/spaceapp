@@ -153,6 +153,11 @@ function activityTraceparent(args: readonly unknown[]) {
   return parseTraceparent(found.traceparent);
 }
 
+/**
+ * Observe one activity attempt, preserving its returned value or thrown error.
+ * Logs/metrics classify outcomes; optional tracing hooks are best effort and
+ * receive timing and safe reason/category codes rather than error text.
+ */
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],

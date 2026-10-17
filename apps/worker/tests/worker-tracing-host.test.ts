@@ -23,6 +23,7 @@ afterEach(async () => {
   for (const restore of restores.splice(0).reverse()) restore();
 });
 
+/** Capture host spans/logs through an injected transport and register afterEach cleanup. */
 function setup(options: WorkerTracingOptions = {}) {
   const bodies: any[] = [];
   const logs: Array<Record<string, unknown>> = [];

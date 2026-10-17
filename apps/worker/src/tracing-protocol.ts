@@ -46,20 +46,24 @@ const typePattern = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
 const errorCodePattern = /^[A-Z][A-Z0-9_]{1,95}$/;
 const nestedInputKeys = ["turn", "turnInput", "item", "input", "bridge"] as const;
 
+/** Restrict decoded carriers to object records; arrays and primitives carry no context. */
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
 }
 
+/** Accept only nonzero, lowercase 128-bit W3C trace identifiers. */
 export function isTraceId(value: unknown): value is string {
   return typeof value === "string" && traceIdPattern.test(value) && !/^0+$/.test(value);
 }
 
+/** Accept only nonzero, lowercase 64-bit W3C span identifiers. */
 export function isSpanId(value: unknown): value is string {
   return typeof value === "string" && spanIdPattern.test(value) && !/^0+$/.test(value);
 }
 
+/** Copy only valid trace/span identifiers and flags from an untrusted carrier. */
 export function sanitizeTraceContext(value: unknown): TraceContext | null {
   const record = recordOf(value);
   if (!record || !isTraceId(record.traceId) || !isSpanId(record.spanId)) return null;
@@ -67,6 +71,7 @@ export function sanitizeTraceContext(value: unknown): TraceContext | null {
   return { traceId: record.traceId, spanId: record.spanId, flags: record.flags };
 }
 
+/** Parse a bounded W3C header, rejecting reserved versions and invalid or zero identifiers. */
 export function traceContextFromTraceparent(value: unknown): TraceContext | null {
   if (typeof value !== "string" || value.length > 512) return null;
   const normalized = value.trim().toLowerCase();
@@ -75,10 +80,12 @@ export function traceContextFromTraceparent(value: unknown): TraceContext | null
   return sanitizeTraceContext({ traceId: match[2], spanId: match[3], flags: match[4] });
 }
 
+/** Serialize an already validated context as a version-00 W3C traceparent. */
 export function traceparentFromContext(value: TraceContext): string {
   return `00-${value.traceId}-${value.spanId}-${value.flags}`;
 }
 
+/** Inspect at most 32 candidates and retain at most 16 distinct, valid span links. */
 export function sanitizeTraceLinks(value: unknown): TraceLink[] {
   if (!Array.isArray(value)) return [];
   const links: TraceLink[] = [];
@@ -96,6 +103,7 @@ export function sanitizeTraceLinks(value: unknown): TraceLink[] {
   return links;
 }
 
+/** Validate context and explicit continuation/root overrides before propagating an envelope. */
 function sanitizeEnvelope(value: unknown): TraceEnvelope | null {
   const record = recordOf(value);
   if (!record) return null;
@@ -118,12 +126,15 @@ function sanitizeEnvelope(value: unknown): TraceEnvelope | null {
   return envelope;
 }
 
-// The sanitized envelope is ASCII only. Avoid Node Buffer and browser text
-// encoder globals, neither of which belongs in the workflow sandbox.
+/**
+ * Encode sanitized ASCII envelopes without Node Buffer or browser text encoders,
+ * neither of which belongs in the workflow sandbox.
+ */
 function asciiBytes(value: string): Uint8Array {
   return Uint8Array.from(value, character => character.charCodeAt(0));
 }
 
+/** Decode a validated ASCII envelope of at most 4096 bytes; malformed headers are ignored. */
 export function readTraceHeader(headers: Headers | undefined): TraceEnvelope | null {
   const payload = headers?.[TRACE_CONTEXT_HEADER];
   const data = payload?.data;
@@ -153,6 +164,7 @@ export function withTraceHeader(headers: Headers, value: TraceEnvelope): Headers
   };
 }
 
+/** Visit at most 16 inputs through known keys to depth three, plus top-level memo fields. */
 function visitInputs(args: readonly unknown[], memo: unknown, visit: (record: Record<string, unknown>) => void): void {
   const walk = (value: unknown, depth: number) => {
     const record = recordOf(value);
@@ -171,6 +183,7 @@ export function findTraceContext(args: readonly unknown[], memo?: unknown): Trac
   return found;
 }
 
+/** Gather and deduplicate bounded links from the same known input/memo shapes as context. */
 export function findTraceLinks(args: readonly unknown[], memo?: unknown): TraceLink[] {
   const found: TraceLink[] = [];
   visitInputs(args, memo, record => {
@@ -246,6 +259,7 @@ export function sanitizeTraceAttributes(value: unknown): Record<string, string |
   return attributes;
 }
 
+/** Map allowlisted correlation identifiers to span attributes without copying payload text. */
 export function traceCorrelationAttributes(args: readonly unknown[], memo?: unknown): Record<string, string | number> {
   const found: Record<string, unknown> = {};
   visitInputs(args, memo, record => {
@@ -257,6 +271,7 @@ export function traceCorrelationAttributes(args: readonly unknown[], memo?: unkn
   return sanitizeTraceAttributes(found);
 }
 
+/** Derive nonzero deterministic IDs without sandbox randomness; this hash is not cryptographic. */
 function stableHex(value: string, seeds: readonly number[]): string {
   const result = seeds.map(seed => {
     let hash = seed;

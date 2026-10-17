@@ -39,6 +39,10 @@ function isAlreadyStarted(error: unknown): boolean {
   return error instanceof Error && error.name === "WorkflowExecutionAlreadyStartedError";
 }
 
+/**
+ * Validate and idempotently start consolidation with the request's recorded
+ * HTTP span in its correlation memo; report duplicate starts without retrying.
+ */
 export async function scheduleMemoryConsolidation(
   rawInput: MemoryConsolidationWorkflowInput,
   workflowId: string,

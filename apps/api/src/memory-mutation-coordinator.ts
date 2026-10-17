@@ -40,6 +40,10 @@ function isAlreadyStarted(error: unknown): boolean {
   return error instanceof Error && error.name === "WorkflowExecutionAlreadyStartedError";
 }
 
+/**
+ * Validate and idempotently start a change-set mutation, preserving the request's
+ * recorded HTTP parent in memo. Existing workflow IDs return ALREADY_SCHEDULED.
+ */
 export async function scheduleMemoryMutation(
   rawInput: MemoryMutationWorkflowInput,
   startWorkflow: MemoryMutationWorkflowStarter,

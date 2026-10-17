@@ -37,9 +37,13 @@ export interface SpanExporterStats {
 }
 
 export interface SpanExporter {
+  /** Enqueue without awaiting HTTP; valid spans rejected by capacity or close are counted as dropped. */
   record(span: ServerSpan): void;
+  /** Share the active drain, bounding each POST by the configured timeout. */
   flush(): Promise<void>;
+  /** Stop periodic flushing and new admissions, then await the queued spans' drain. */
   close(): Promise<void>;
+  /** Return a snapshot of exported, dropped and failed span counts. */
   stats(): SpanExporterStats;
 }
 
@@ -77,10 +81,15 @@ export function otlpTracesUrl(value: string | undefined): string | null {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}/v1/traces`;
 }
 
+/** Encode integers as OTLP intValue and other supplied values as stringValue. */
 function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
+/**
+ * Encode OTLP/HTTP JSON, dropping invalid span/link IDs and defaulting scope to
+ * the service name. Callers must redact attributes before using this transport.
+ */
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string, scopeName = serviceName) {
   return {
     resourceSpans: [{
@@ -107,11 +116,17 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
   };
 }
 
+/** Reject invalid queue/timing options before allocating timers or admitting spans. */
 function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer.`);
   return value;
 }
 
+/**
+ * Create a bounded, best-effort exporter whose record calls never await HTTP.
+ * Invalid endpoint/options throw during setup; delivery failures are counted.
+ * Close stops admissions and the timer, then drains with a timeout per batch.
+ */
 export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanExporter {
   const url = otlpTracesUrl(options.endpoint);
   if (!url) throw new Error("Invalid OTLP endpoint.");
@@ -125,6 +140,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   let inFlight: Promise<void> | null = null;
   let closed = false;
 
+  /** Send one batch with a deadline even when the transport ignores abort. */
   const flushOnce = async () => {
     const batch = queue.splice(0, batchSize);
     if (!batch.length) return;
@@ -150,6 +166,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
       clearTimeout(timeout);
     }
   };
+  /** Drain queued batches once, sharing work with concurrent flush/close callers. */
   const flush = (): Promise<void> => {
     // Avoid caching an already-resolved promise after a quiet interval, which
     // would otherwise prevent later records from starting a new flush.

@@ -16,12 +16,14 @@ const privateError = "PRIVATE_ERROR_SENTINEL_83c2";
 const input = () => ({ roomId: "room:otlp", paneId: "pane:otlp", prompt: privatePrompt,
   traceId: "request:otlp", traceparent, workspacePath: privatePath, providerId: "codex" });
 
+/** Require one matching span so duplicate exports cannot satisfy parent-tree assertions. */
 function one(spans: CollectedSpan[], name: string): CollectedSpan {
   const matches = spans.filter((span) => span.name === name);
   expect(matches, name).toHaveLength(1);
   return matches[0]!;
 }
 
+/** Reject fixture secrets and free-form exception fields anywhere in raw collector payloads. */
 function privateDataAbsent(bodies: unknown[]) {
   const payload = JSON.stringify(bodies);
   for (const sentinel of [privatePrompt, privatePath, privateError, "workspacePath", "exception.stacktrace", "exception.message"]) {

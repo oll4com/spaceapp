@@ -18,6 +18,7 @@ export interface CollectedSpan {
   links?: Array<{ traceId: string; spanId: string }>;
 }
 
+/** Decode supported OTLP scalar slots while retaining integer strings without precision loss. */
 export function attributes(span: CollectedSpan): Record<string, string | boolean | undefined> {
   return Object.fromEntries(span.attributes.map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue]));
 }
@@ -57,6 +58,7 @@ export async function startOtlpCollector(mode: "ok" | "reject" | "hold" = "ok") 
 }
 
 const bundles = new Map<boolean, Promise<WorkflowBundle>>();
+/** Cache production-workflow fixture bundles separately for enabled and disabled tracing. */
 export function otlpWorkflowBundle(traced = true): Promise<WorkflowBundle> {
   let bundle = bundles.get(traced);
   if (!bundle) {
@@ -79,6 +81,11 @@ export interface OtlpHarnessContext {
   collectUntil(predicate: (spans: CollectedSpan[]) => boolean): Promise<CollectedSpan[]>;
 }
 
+/**
+ * Run real time-skipping workers against a loopback collector, including outage
+ * modes. Terminate tracked workflows and release collector/worker/environment
+ * resources when the scenario succeeds or throws.
+ */
 export async function withOtlpHarness(
   activities: Record<string, (...args: any[]) => any>,
   run: (context: OtlpHarnessContext) => Promise<void>,
