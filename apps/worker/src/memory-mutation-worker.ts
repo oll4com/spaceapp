@@ -6,6 +6,8 @@ import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constant
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
 
+import { configureWorkerOtlp } from "./worker-otlp.js";
+
 const service = "space-memory-mutation-worker";
 
 if (!memoryMutationsEnabled(process.env)) {
@@ -14,15 +16,20 @@ if (!memoryMutationsEnabled(process.env)) {
   const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const connection = await NativeConnection.connect({ address });
-  const spans = otlpSpanExporterFromEnv(process.env, service);
+  const { spans, sinks, interceptors } = configureWorkerOtlp(service);
   const worker = await Worker.create({
     connection,
     namespace,
     taskQueue: MEMORY_MUTATION_TASK_QUEUE,
     workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
     activities: { executePersistedMemoryChangeSet },
-    ...memoryMutationWorkerOptions,
-    interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+    sinks,
+    interceptors: {
+      activity: [createActivityObservabilityInterceptors({ spans })],
+      workflowModules: interceptors.workflowModules
+    },
+    // interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+    ...memoryMutationWorkerOptions
   });
   console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
   try {

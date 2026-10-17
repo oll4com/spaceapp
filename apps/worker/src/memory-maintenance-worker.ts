@@ -10,6 +10,8 @@ import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constant
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
 
+import { configureWorkerOtlp } from "./worker-otlp.js";
+
 const service = "space-memory-maintenance-worker";
 
 if (!memoryMaintenanceEnabled(process.env)) {
@@ -20,16 +22,21 @@ if (!memoryMaintenanceEnabled(process.env)) {
   const workflowsPath = fileURLToPath(new URL("./memory-maintenance-workflows.js", import.meta.url));
 
   try {
+    const { spans, sinks, interceptors } = configureWorkerOtlp(service);
     const connection = await NativeConnection.connect({ address });
-    const spans = otlpSpanExporterFromEnv(process.env, service);
     const worker = await Worker.create({
       connection,
       namespace,
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       workflowsPath,
       activities,
-      ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      sinks,
+      interceptors: {
+        activity: [createActivityObservabilityInterceptors({ spans })],
+        workflowModules: interceptors.workflowModules
+      },
+      // interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      ...memoryMaintenanceWorkerOptions
     });
     console.log(JSON.stringify({
       service,
