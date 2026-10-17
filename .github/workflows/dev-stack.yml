@@ -1,0 +1,278 @@
+name: Contributor source stack
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack*.mjs"
+      - "scripts/tests/dev-stack*.test.mjs"
+      - "apps/web/vite.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/dev-stack.yml"
+  push:
+    branches: ["feat/issue-65-dev-stack-nexo", "diagnostics/issue-65-native-pty-nexo"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contributor-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-source-stack:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/diagnostics/issue-65-native-pty-nexo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install exact locked source dependencies
+        run: npm ci
+      - name: Source stack unit and negative controls
+        run: npm run test:dev-stack
+      - name: Type and dependency checks
+        run: npm run check
+      - name: Real owner, OpenCode transport, worker failure and owned cleanup
+        run: node scripts/dev-stack-ci.mjs
+      - name: Preserve synthetic source-run diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: contributor-source-stack-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/spaceapp-dev-stack-*.txt
+            ${{ runner.temp }}/spaceapp-dev-stack-browser-*/*.png
+            ${{ runner.temp }}/spaceapp-dev-stack-browser-*/*.json
+          # PNGs and bounded aggregate receipts contain only the synthetic owner UI.
+          # No cookie, password, setup token, raw network header or terminal input.
+          retention-days: 1
+          if-no-files-found: ignore
+
+  public-source-tests:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/diagnostics/issue-65-native-pty-nexo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install exact locked source dependencies
+        run: npm ci
+      # Same prerequisite as the repository's original CI/release/security jobs.
+      # This installs only in the disposable public Ubuntu runner, not the host.
+      - name: Install ripgrep (the file search tests run the real rg)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+          command -v rg
+          rg --version
+          node -e "require('node:child_process').execFileSync('rg', ['--version'], { cwd: process.cwd(), stdio: 'inherit' })"
+      - name: Repository public source and workspace suites
+        run: npm test
+
+  macos-source-stack:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/diagnostics/issue-65-native-pty-nexo'
+    # Standard public runner, not a larger/paid runner. Intel permits Colima's VM.
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install exact locked source dependencies
+        run: npm ci
+      - name: Prepare Docker only in this isolated macOS runner
+        run: |
+          test ! -e "$HOME/.colima/default"
+          brew install colima docker docker-compose
+          mkdir -p "$HOME/.docker/cli-plugins"
+          compose_plugin="$(brew --prefix)/lib/docker/cli-plugins/docker-compose"
+          test -x "$compose_plugin"
+          if test ! -e "$HOME/.docker/cli-plugins/docker-compose" && test ! -L "$HOME/.docker/cli-plugins/docker-compose"; then
+            ln -s "$compose_plugin" "$HOME/.docker/cli-plugins/docker-compose"
+          fi
+          echo "SPACEAPP_COLIMA_OWNED=1" >> "$GITHUB_ENV"
+          colima start --runtime docker --cpu 2 --memory 6 --disk 20
+          test "$(docker context show)" = "colima"
+          docker info
+          docker compose version
+      - name: Native source stack unit controls
+        run: npm run test:dev-stack
+      - name: Real macOS owner, CLI transport, watch, rebuild and owned reset
+        run: node scripts/dev-stack-ci.mjs
+      - name: Preserve synthetic native macOS diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: contributor-source-stack-macos-${{ github.run_id }}
+          path: ${{ runner.temp }}/spaceapp-dev-stack-*.txt
+          retention-days: 1
+          if-no-files-found: ignore
+      - name: Remove only this job's Colima profile and data
+        if: always() && env.SPACEAPP_COLIMA_OWNED == '1'
+        run: colima delete --data -f
+
+  native-pty-diagnostic:
+    # A bounded layer control, never a replacement for full source acceptance.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/diagnostics/issue-65-native-pty-nexo'
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install exact locked source dependencies
+        run: npm ci
+      - name: Observe actual native binding and adjacent helper without repair
+        run: |
+          node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const info = require('node-pty/package.json');
+          const root = path.dirname(require.resolve('node-pty/package.json'));
+          require('node-pty');
+          const bindings = Object.keys(require.cache).filter(file =>
+            file.startsWith(root + path.sep) && file.endsWith('.node'));
+          if (bindings.length !== 1) throw new Error('Native binding observation is not unique.');
+          const records = bindings.map(binding => {
+            const helper = path.join(path.dirname(binding), 'spawn-helper');
+            let helperObservation;
+            try {
+              const stat = fs.lstatSync(helper);
+              let executable = false;
+              try { fs.accessSync(helper, fs.constants.X_OK); executable = true; } catch {}
+              helperObservation = { present: true, file: stat.isFile(), symbolicLink: stat.isSymbolicLink(),
+                mode: (stat.mode & 0o777).toString(8), uid: stat.uid, executable };
+            } catch (error) {
+              if (error.code !== 'ENOENT') throw new Error('Native helper metadata observation failed.');
+              helperObservation = { present: false, executable: false };
+            }
+            return { binding: path.relative(root, binding), helper: helperObservation };
+          });
+          console.log(JSON.stringify({ mode: 'READ_ONLY_NATIVE_METADATA', platform: process.platform,
+            arch: process.arch, node: process.version, nodePty: info.version, records }));
+          NODE
+      - name: Build only the original CLI host workspace
+        run: npm run build -w @space/cli-host
+      - name: Original PTY tests before and after one reversible owner-execute bit
+        run: |
+          node --input-type=commonjs <<'CONTROL'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const { spawnSync } = require('node:child_process');
+          assert.equal(process.platform, 'darwin');
+          assert.equal(require('node-pty/package.json').version, '1.1.0');
+          require('node-pty');
+          const checkout = fs.realpathSync(process.cwd());
+          const packageRoot = path.dirname(require.resolve('node-pty/package.json'));
+          const allowedRoot = fs.realpathSync(path.join(checkout, 'node_modules', 'node-pty'));
+          assert.equal(packageRoot, allowedRoot);
+          const bindings = Object.keys(require.cache).filter(file =>
+            file.startsWith(packageRoot + path.sep) && file.endsWith('.node'));
+          assert.equal(bindings.length, 1);
+          const helper = path.join(path.dirname(bindings[0]), 'spawn-helper');
+          assert.ok(helper.startsWith(allowedRoot + path.sep));
+          assert.equal(fs.realpathSync(helper), helper);
+          const executable = () => {
+            try { fs.accessSync(helper, fs.constants.X_OK); return true; }
+            catch (error) { if (error.code !== 'EACCES') throw error; return false; }
+          };
+          const fd = fs.openSync(helper, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+          try {
+            const stat = fs.fstatSync(fd);
+            assert.ok(stat.isFile() && stat.nlink === 1 && stat.uid === process.getuid());
+            assert.ok(stat.size > 0 && stat.size <= 8 * 1024 * 1024);
+            const originalMode = stat.mode & 0o7777;
+            assert.equal(originalMode, 0o644);
+            assert.equal(executable(), false);
+            const digest = () => {
+              const current = fs.fstatSync(fd);
+              const named = fs.lstatSync(helper);
+              assert.ok(named.isFile() && !named.isSymbolicLink());
+              assert.equal(named.dev, stat.dev); assert.equal(named.ino, stat.ino);
+              assert.equal(current.size, stat.size);
+              const bytes = Buffer.alloc(stat.size);
+              assert.equal(fs.readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+              return crypto.createHash('sha256').update(bytes).digest('hex');
+            };
+            const originalHash = digest();
+            const run = phase => {
+              const result = spawnSync(process.execPath,
+                ['--test', 'scripts/tests/contributor-smoke.test.mjs'],
+                { cwd: checkout, env: process.env, encoding: 'utf8', timeout: 30000, maxBuffer: 262144 });
+              process.stdout.write(`=== ${phase}: unchanged original tests ===\n`);
+              process.stdout.write(result.stdout || '');
+              process.stderr.write(result.stderr || '');
+              assert.equal(result.error, undefined);
+              assert.equal(result.signal, null);
+              assert.match(result.stdout, /^# tests 3$/m);
+              return result;
+            };
+            const baseline = run('BEFORE');
+            assert.equal(baseline.status, 1);
+            assert.match(baseline.stdout, /^# pass 0$/m);
+            assert.match(baseline.stdout, /^# fail 3$/m);
+            assert.match(baseline.stdout, /posix_spawnp failed\./);
+            assert.equal(digest(), originalHash);
+            try {
+              // Descriptor-only: one owned regular file, no recursive/path chmod.
+              fs.fchmodSync(fd, originalMode | 0o100);
+              assert.equal(fs.fstatSync(fd).mode & 0o777, 0o744);
+              assert.equal(digest(), originalHash);
+              assert.equal(executable(), true);
+              const after = run('AFTER_OWNER_EXECUTE');
+              assert.equal(after.status, 0);
+              assert.match(after.stdout, /^# pass 3$/m);
+              assert.match(after.stdout, /^# fail 0$/m);
+            } finally {
+              fs.fchmodSync(fd, originalMode);
+              assert.equal(fs.fstatSync(fd).mode & 0o777, originalMode);
+              assert.equal(digest(), originalHash);
+              assert.equal(executable(), false);
+              console.log(JSON.stringify({ phase: 'RESTORED', mode: '644', helperSha256: originalHash }));
+            }
+            const reversed = run('AFTER_RESTORE');
+            assert.equal(reversed.status, 1);
+            assert.match(reversed.stdout, /^# pass 0$/m);
+            assert.match(reversed.stdout, /^# fail 3$/m);
+            assert.match(reversed.stdout, /posix_spawnp failed\./);
+            assert.equal(digest(), originalHash);
+            assert.equal(fs.fstatSync(fd).mode & 0o7777, originalMode);
+            assert.equal(executable(), false);
+            console.log(JSON.stringify({ mode: 'REVERSIBLE_NATIVE_HELPER_CONTROL',
+              runtime: 'SIMULATED_RUNTIME', transport: 'REAL_PTY_UNIX_IPC',
+              beforeMode: '644', trialMode: '744', restoredMode: '644',
+              helperSha256: originalHash, sourceBytesUnchanged: true, modeRestored: true,
+              before: { pass: 0, fail: 3 }, ownerExecute: { pass: 3, fail: 0 },
+              restored: { pass: 0, fail: 3 }, passed: true }));
+          } finally { fs.closeSync(fd); }
+          CONTROL

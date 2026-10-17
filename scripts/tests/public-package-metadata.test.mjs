@@ -28,7 +28,18 @@ const publicTestModules = [
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
   "trivy-report-summary.test.mjs",
-  "verify-export-provenance.test.mjs"
+  "verify-export-provenance.test.mjs",
+  "dev-stack-state.test.mjs",
+  "dev-stack-config.test.mjs",
+  "dev-stack-process.test.mjs",
+  "dev-stack-wrapper.test.mjs",
+  "dev-stack-acceptance.test.mjs",
+  "dev-stack-runner.test.mjs",
+  "dev-stack-lifecycle.test.mjs",
+  "dev-stack-browser.test.mjs",
+  "dev-stack-reload.test.mjs",
+  "dev-stack-native.test.mjs",
+  "dev-stack-diagnostics.test.mjs"
 ];
 
 async function packageFiles(directory) {

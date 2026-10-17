@@ -52,3 +52,7 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Isolated contributor stack (credentials, owned processes and provider state).
+/.dev-stack/
+/.dev-stack-control.lock/

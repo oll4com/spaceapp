@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const blockedHeavyStorage = {
   id: "space-storage" as const,
@@ -47,6 +50,55 @@ async function loginCookie(app: Awaited<ReturnType<typeof createApp>>): Promise<
 const APP_TEST_TIMEOUT_MS = 60_000;
 
 describe("public profile storage warning", () => {
+  it("default storage collection uses the configured existing checkout without inventing dedicated-volume readiness", async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "space-source-storage-"));
+    let app: Awaited<ReturnType<typeof createApp>> | undefined;
+    try {
+      app = await createApp({
+        config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "false", SPACE_INSTALL_ROOT: fixture }),
+        auth: { sessionSecret: "source-storage-test-session-secret", devLogin: true, secureCookies: false }
+        // Deliberately no injected storageReadinessChecker: exercise the failing default.
+      });
+      const cookie = await loginCookie(app);
+      const admin = await app.inject({ method: "GET", url: "/api/admin", headers: { cookie } });
+      expect(admin.statusCode).toBe(200);
+      expect(admin.json()).toMatchObject({ status: "ok", storageWarning: "" });
+      const storage = await app.inject({ method: "GET", url: "/api/admin/storage", headers: { cookie } });
+      expect(storage.statusCode).toBe(200);
+      const value = storage.json();
+      expect(value.app.path).toBe(fixture);
+      expect(value.root.path).toBe("/");
+      expect(value.minimumRecommendedFreeBytes).toBe(20 * 1024 ** 3);
+      expect(value.dedicatedAppVolume).toBe(value.root.deviceId !== value.app.deviceId);
+      const expected = !value.dedicatedAppVolume || value.app.availableBytes < value.minimumRecommendedFreeBytes
+        ? "BLOCKED" : value.root.usedPercent >= 80 ? "WARN" : "VERIFIED";
+      expect(value.status).toBe(expected);
+      if (!value.dedicatedAppVolume) expect(value.statusReason).toContain(fixture);
+    } finally {
+      try { await app?.close(); } finally { await rm(fixture, { recursive: true, force: true }); }
+    }
+  }, APP_TEST_TIMEOUT_MS);
+
+  it("default storage collection retains a real missing-root failure without creating the configured path", async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "space-source-missing-storage-"));
+    const missing = join(fixture, "absent");
+    let app: Awaited<ReturnType<typeof createApp>> | undefined;
+    try {
+      app = await createApp({
+        config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "false", SPACE_INSTALL_ROOT: missing }),
+        auth: { sessionSecret: "source-storage-test-session-secret", devLogin: true, secureCookies: false }
+      });
+      const cookie = await loginCookie(app);
+      for (const url of ["/api/admin", "/api/admin/storage"]) {
+        const response = await app.inject({ method: "GET", url, headers: { cookie } });
+        expect(response.statusCode).toBe(500);
+      }
+      await expect(stat(missing)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      try { await app?.close(); } finally { await rm(fixture, { recursive: true, force: true }); }
+    }
+  }, APP_TEST_TIMEOUT_MS);
+
   it("does not show the browser-heavy storage banner when browser sessions are disabled", async () => {
     const app = await createApp({
       config: getApiConfig({

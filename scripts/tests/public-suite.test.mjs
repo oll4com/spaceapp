@@ -18,3 +18,14 @@ import "./trivy-report-summary.test.mjs";
 import "./verify-export-provenance.test.mjs";
 
 import './opencode-first-run.test.mjs';
+import "./dev-stack-state.test.mjs";
+import "./dev-stack-config.test.mjs";
+import "./dev-stack-process.test.mjs";
+import "./dev-stack-wrapper.test.mjs";
+import "./dev-stack-acceptance.test.mjs";
+import "./dev-stack-runner.test.mjs";
+import "./dev-stack-lifecycle.test.mjs";
+import "./dev-stack-browser.test.mjs";
+import "./dev-stack-reload.test.mjs";
+import "./dev-stack-native.test.mjs";
+import "./dev-stack-diagnostics.test.mjs";

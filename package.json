@@ -43,6 +43,8 @@
     "@napi-rs/canvas": "1.0.9"
   },
   "scripts": {
+    "dev:stack": "node scripts/dev-stack.mjs",
+    "test:dev-stack": "node --test scripts/tests/dev-stack-state.test.mjs scripts/tests/dev-stack-config.test.mjs scripts/tests/dev-stack-process.test.mjs scripts/tests/dev-stack-wrapper.test.mjs scripts/tests/dev-stack-acceptance.test.mjs scripts/tests/dev-stack-runner.test.mjs scripts/tests/dev-stack-lifecycle.test.mjs scripts/tests/dev-stack-browser.test.mjs scripts/tests/dev-stack-reload.test.mjs scripts/tests/dev-stack-native.test.mjs scripts/tests/dev-stack-diagnostics.test.mjs",
     "dev:api": "npm run dev -w @space/api",
     "dev:web": "npm run dev -w @space/web",
     "dev:worker": "npm run dev -w @space/worker",

@@ -16,7 +16,7 @@ export interface WatchdogAlert { id: string; message: string; timestamp: string 
 export interface AppNotices {
   liveDebugToast: LiveDebugToast | null;
   dismissLiveDebugToast: () => void;
-  /** Logs the message and shows it as a toast for 4.5 seconds. */
+  /** Logs every message; only errors show a toast for 4.5 seconds. */
   showLiveDebug: (message: string, type?: LiveDebugTone) => void;
   watchdogAlerts: WatchdogAlert[];
   /** Adds an alert unless one with the same id is shown. */
@@ -55,12 +55,19 @@ export function useAppNotices(): AppNotices {
   }, []);
 
   useEffect(() => {
+    const ownerWindow = window;
     const handleDebug = (event: Event) => {
       const detail = (event as CustomEvent<{ message: string; type?: LiveDebugTone }>).detail;
       if (detail?.message) showLiveDebug(detail.message, detail.type || "info");
     };
-    window.addEventListener("space-live-debug", handleDebug);
-    return () => window.removeEventListener("space-live-debug", handleDebug);
+    ownerWindow.addEventListener("space-live-debug", handleDebug);
+    return () => {
+      ownerWindow.removeEventListener("space-live-debug", handleDebug);
+      if (liveDebugTimerRef.current !== null) {
+        ownerWindow.clearTimeout(liveDebugTimerRef.current);
+        liveDebugTimerRef.current = null;
+      }
+    };
   }, [showLiveDebug]);
 
   const [storageWarning, setStorageWarning] = useState<string>("");

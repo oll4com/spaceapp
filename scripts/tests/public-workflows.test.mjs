@@ -9,6 +9,62 @@ async function workflow(name) {
   return readFile(join(root, ".github", "workflows", name), "utf8");
 }
 
+test("the native diagnostic push cannot replace full feature, PR or manual source jobs", async () => {
+  const source = await workflow("dev-stack.yml");
+  const branch = "refs/heads/diagnostics/issue-65-native-pty-nexo";
+  assert.match(source, /branches: \["feat\/issue-65-dev-stack-nexo", "diagnostics\/issue-65-native-pty-nexo"\]/);
+  assert.match(source, /\n  pull_request:\n    paths:/);
+  assert.match(source, /\n  workflow_dispatch:/);
+  const full = `github.event_name != 'push' || github.ref != '${branch}'`;
+  const diagnostic = `github.event_name == 'push' && github.ref == '${branch}'`;
+  for (const job of ["linux-source-stack", "public-source-tests", "macos-source-stack"]) {
+    const condition = source.match(new RegExp(`\\n  ${job}:\\n    if: ([^\\n]+)`))?.[1];
+    assert.equal(condition, full);
+  }
+  assert.equal(source.match(/\n  native-pty-diagnostic:\n[^\n]*\n    if: ([^\n]+)/)?.[1], diagnostic);
+  // The pinned simple expressions have identical JS/GitHub boolean semantics.
+  for (const [event_name, ref, expectedFull, expectedDiagnostic] of [
+    ["push", branch, false, true],
+    ["push", "refs/heads/feat/issue-65-dev-stack-nexo", true, false],
+    ["pull_request", "refs/pull/1/merge", true, false],
+    ["workflow_dispatch", branch, true, false]
+  ]) {
+    const github = { event_name, ref };
+    assert.equal(new Function("github", `return ${full};`)(github), expectedFull);
+    assert.equal(new Function("github", `return ${diagnostic};`)(github), expectedDiagnostic);
+  }
+});
+
+test("the macOS native control keeps original tests and cannot start or repair the full stack", async () => {
+  const source = await workflow("dev-stack.yml");
+  const job = source.split("\n  native-pty-diagnostic:\n")[1];
+  assert.ok(job);
+  assert.match(job, /runs-on: macos-15-intel/);
+  assert.match(job, /timeout-minutes: 10/);
+  assert.match(job, /persist-credentials: false/);
+  assert.match(job, /node-version-file: \.nvmrc/);
+  assert.match(job, /ELECTRON_SKIP_BINARY_DOWNLOAD: "1"/);
+  assert.match(job, /run: npm ci/);
+  const build = job.indexOf("run: npm run build -w @space/cli-host");
+  const tests = job.indexOf("['--test', 'scripts/tests/contributor-smoke.test.mjs']");
+  assert.ok(build >= 0 && tests >= 0 && build < tests);
+  assert.doesNotMatch(job, /continue-on-error|--ignore-scripts|colima|brew|upload-artifact|dev-stack-ci|chmodSync\(helper/);
+  for (const ref of job.matchAll(/uses:\s+([^\s]+)/g)) assert.match(ref[1], /@[0-9a-f]{40}$/);
+  const metadata = job.match(/node --input-type=commonjs <<'NODE'\n([\s\S]*?)\n          NODE/)[1]
+    .split("\n").map(line => line.slice(10)).join("\n");
+  assert.doesNotThrow(() => new Function(metadata));
+  assert.match(metadata, /path\.relative\(root, binding\)/);
+  assert.match(metadata, /fs\.accessSync\(helper, fs\.constants\.X_OK\)/);
+  const control = job.match(/node --input-type=commonjs <<'CONTROL'\n([\s\S]*?)\n          CONTROL/)[1]
+    .split("\n").map(line => line.slice(10)).join("\n");
+  assert.doesNotThrow(() => new Function(control));
+  assert.match(control, /fs\.constants\.O_NOFOLLOW/);
+  assert.match(control, /stat\.nlink === 1 && stat\.uid === process\.getuid\(\)/);
+  assert.match(control, /fs\.fchmodSync\(fd, originalMode \| 0o100\)/);
+  assert.match(control, /finally \{\n\s+fs\.fchmodSync\(fd, originalMode\)/);
+  assert.match(control, /assert\.equal\(digest\(\), originalHash\)/);
+});
+
 test("CI creates and validates only the sanitized public candidate", async () => {
   const ci = await workflow("ci.yml");
 
