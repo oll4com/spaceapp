@@ -18,6 +18,28 @@ export function safeBrowserStderr(text) {
 export function selectedBrowserDiagnostic({ profile, tmpdir, binaryVersion, versionError, child, startError, stderr, socket, failedCdpMethod }, phase) {
   return { platform: process.platform, phase, profile, tmpdir, binaryVersion, versionError, exitCode: child.exitCode, signalCode: child.signalCode, startErrorCode: startError?.code ?? null, cdpSocketState: socket?.readyState ?? null, failedCdpMethod: failedCdpMethod ?? null, stderr: safeBrowserStderr(stderr) };
 }
+export async function syntheticCookieCapability(call, value, diagnostic = () => null) {
+  assert(typeof value === 'string' && /^[a-z0-9]{1,64}$/.test(value), 'Only the synthetic local challenge is permitted.');
+  const url = 'http://127.0.0.1/', name = 'spaceapp-dev-proof';
+  let phase = 'enable', failure;
+  try {
+    await call('Network.enable'); phase = 'set';
+    assert.equal((await call('Network.setCookie', { url, name, value, httpOnly: true, sameSite: 'Lax' })).success, true, 'Synthetic cookie set must report success.');
+    phase = 'get'; const jar = await call('Network.getCookies', { urls: [url] }), matching = jar.cookies?.filter(cookie => cookie.name === name);
+    assert.equal(matching?.length, 1, 'Exactly one synthetic cookie must be read back.');
+    assert(matching[0].value === value && matching[0].httpOnly === true && matching[0].sameSite === 'Lax' && matching[0].domain === '127.0.0.1', 'Synthetic cookie value and native attributes must match.');
+  } catch (error) { error.browserRuntime = diagnostic(`synthetic-cookie-${phase}`); failure = error; }
+  try {
+    phase = 'delete'; await call('Network.deleteCookies', { url, name });
+    phase = 'delete-readback'; const jar = await call('Network.getCookies', { urls: [url] });
+    assert(Array.isArray(jar.cookies) && !jar.cookies.some(cookie => cookie.name === name), 'Synthetic cookie deletion must be read back.');
+  } catch (error) {
+    if (failure) failure.cookieCleanupError = { name: error.name, phase };
+    else { error.browserRuntime = diagnostic(`synthetic-cookie-${phase}`); failure = error; }
+  }
+  if (failure) throw failure;
+  return { syntheticLoopbackOnly: true, httpOnly: true, sameSite: 'Lax', exactSetGetMatch: true, deletionReadback: true, navigationOrFetchSent: false, valueRecorded: false };
+}
 
 export async function typeTerminalFilter(call, text) {
   assert(typeof text === 'string' && /^[a-z0-9]{1,64}$/.test(text), 'Only the synthetic local palette filter is permitted.');
@@ -72,11 +94,14 @@ async function openProofBrowser(state) {
   }
 }
 export async function browserKeyboardCapability({ state, artifacts, challenge }) {
-  const proof = { source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, challengeLength: challenge.length, baseline: null, perCharacter: null, ok: false };
+  const proof = { source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, challengeLength: challenge.length, phase: 'browser-startup', cookie: null, baseline: null, perCharacter: null, ok: false };
   let browser;
   try {
     browser = await openProofBrowser(state);
     const { call, evaluate } = browser; proof.browser = browser.version;
+    proof.phase = 'synthetic-loopback-cookie';
+    proof.cookie = await syntheticCookieCapability(call, challenge, browser.diagnostic);
+    proof.phase = 'blank-page-keyboard';
     // Task-owned about:blank only; no account, external page, app session or model.
     await call('Page.enable');
     await eventually(() => evaluate('Boolean(document.body)'), 'Synthetic blank-page readiness', 10000);
@@ -93,8 +118,8 @@ export async function browserKeyboardCapability({ state, artifacts, challenge })
     await typeTerminalFilter(call, challenge);
     assert.equal(await evaluate(`document.getElementById('filter').value === ${JSON.stringify(challenge)}`), true, 'Actual Chrome must receive every serial character in exact order.');
     proof.perCharacter = { eventCount: challenge.length, maxUtf16UnitsPerEvent: 1, deliveredExactText: true, enterOrPasteSent: false };
-    proof.ok = true; return proof;
-  } catch (error) { proof.error = { name: error.name, message: error.message.slice(0, 300) }; if (error.browserStartup) proof.startup = error.browserStartup; else if (browser) proof.runtime = browser.diagnostic('early-blank-page-keyboard'); throw error;
+    proof.phase = 'complete'; proof.ok = true; return proof;
+  } catch (error) { proof.error = { name: error.name, message: error.message.slice(0, 300) }; if (error.browserStartup) proof.startup = error.browserStartup; else if (browser) proof.runtime = error.browserRuntime || browser.diagnostic(proof.phase); if (error.cookieCleanupError) proof.cookieCleanupError = error.cookieCleanupError; throw error;
   } finally { await mkdir(artifacts, { recursive: true }); await writeFile(join(artifacts, 'early-browser-keyboard-capability.json'), JSON.stringify(proof, null, 2) + '\n', { mode: 0o600 }); await browser?.close(); }
 }
 export async function browserProof({ state, origin, cookie, artifacts, paneId }) {
@@ -120,6 +145,7 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
         await call('Input.dispatchKeyEvent', { type: 'keyDown', ...params }); await call('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
       }
     };
-    return { evaluate, terminalState, key, diagnostic, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64')); }, close };
+    const capture = async name => writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    return { evaluate, terminalState, key, diagnostic, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await capture(name); }, async failureScreenshot() { await capture('opencode-failure.png'); }, close };
   } catch (error) { error.browserRuntime = diagnostic('application-browser'); await close(); throw error; }
 }

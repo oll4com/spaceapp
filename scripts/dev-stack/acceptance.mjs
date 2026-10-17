@@ -68,18 +68,22 @@ try {
   // Exercise real terminal keyboard input through the actual matching browser pane.
   // No Enter or provider/model command is sent: only a local palette and filter.
   const deadline = Date.now() + 120000;
-  const waitInteractive = async (predicate, label) => eventually(async () => { interactive.assertHealthy(); return interactive.live(await currentSession()) && predicate(); }, label, Math.max(1, deadline - Date.now()));
-  let barrier = interactive.barrier(); await browser.key('Ctrl+P');
-  await waitInteractive(() => interactive.menu(barrier), 'Fresh pinned OpenCode command menu after Ctrl+P');
+  const waitInteractive = async (predicate, label) => eventually(async () => { interactive.assertHealthy(); const response = await currentSession(); return interactive.live(response) && await predicate(response); }, label, Math.max(1, deadline - Date.now()));
+  let transition = await waitInteractive(response => interactive.beginScreenTransition('open', response), 'Known closed-menu pre-input screen');
+  await browser.key('Ctrl+P');
+  await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh pinned OpenCode command menu after Ctrl+P');
   await browser.screenshot('opencode-command-menu.png');
   const challenge = `spaceproof${randomBytes(8).toString('hex')}`;
-  barrier = interactive.barrier(); await browser.key('text', challenge);
-  await waitInteractive(() => interactive.challenge(barrier, challenge), 'Fresh unique palette filter response');
+  transition = await waitInteractive(response => interactive.beginScreenTransition('filter', response, challenge), 'Known unfiltered menu without the new challenge');
+  await browser.key('text', challenge);
+  await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh unique palette filter response on the current terminal screen');
   await browser.screenshot('opencode-filter-response.png');
-  barrier = interactive.barrier(); await browser.key('Escape');
-  await waitInteractive(() => interactive.sequence > barrier, 'Fresh terminal response to palette dismissal');
-  barrier = interactive.barrier(); await browser.key('Ctrl+P');
-  await waitInteractive(() => interactive.menu(barrier), 'Fresh command menu after dismissal and reopening');
+  transition = await waitInteractive(response => interactive.beginScreenTransition('dismiss', response, challenge), 'Known current filtered menu before dismissal');
+  await browser.key('Escape');
+  await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh screen with the menu and challenge dismissed');
+  transition = await waitInteractive(response => interactive.beginScreenTransition('open', response), 'Known closed-menu screen before reopening');
+  await browser.key('Ctrl+P');
+  await waitInteractive(response => interactive.screenTransition(transition, response), 'Fresh command menu after dismissal and reopening');
   const browserState = await browser.terminalState(); assertBrowserTerminal(browserState, pane.id);
   await browser.screenshot('opencode-pane.png');
   interactive.seal(await currentSession());
@@ -123,6 +127,11 @@ try {
 } catch (error) {
   // Selected synthetic state only. Never serialize a session response, ticket,
   // cookie, websocket URL, environment or real provider/owner credentials.
-  if (interactive) await writeFile(join(artifacts, 'opencode-failure.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, terminal: interactive.diagnostic([cookie, cookie.split('=').slice(1).join('='), password, token, ticketToken, csrf?.csrfToken]), browser: await browser?.terminalState().catch(() => null), browserStartup: error.browserStartup, browserRuntime: error.browserRuntime || browser?.diagnostic('interactive-proof') }, null, 2) + '\n', { mode: 0o600 });
+  const failureBrowser = error.browserRuntime || browser?.diagnostic('interactive-proof');
+  if (browser) await browser.failureScreenshot().catch(() => {});
+  if (interactive) await writeFile(join(artifacts, 'opencode-failure.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, terminal: interactive.diagnostic([cookie, cookie.split('=').slice(1).join('='), password, token, ticketToken, csrf?.csrfToken]), browser: await browser?.terminalState().catch(() => null), browserStartup: error.browserStartup, browserRuntime: failureBrowser }, null, 2) + '\n', { mode: 0o600 });
   throw error;
-} finally { terminal?.close(); await browser?.close(); }
+} finally {
+  try { if (interactive) await writeFile(join(artifacts, 'opencode-terminal-stream.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, ...interactive.streamEvidence([cookie, cookie.split('=').slice(1).join('='), password, token, ticketToken, csrf?.csrfToken]) }, null, 2) + '\n', { mode: 0o600 }); }
+  finally { terminal?.close(); await browser?.close(); }
+}

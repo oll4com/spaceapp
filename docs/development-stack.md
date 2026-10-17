@@ -116,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 51 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 61 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
@@ -147,8 +147,14 @@ are not repaired or hidden; no installed/global dependency path is changed.
 The same early step uses the hosted browser's isolated blank page to record its
 actual version and long-character-event behavior, then verifies exact delivery
 of the synthetic filter through awaited single-character events. It uses no
-app/account session, paste, Enter, provider or model. The actual terminal proof
-uses that same bounded typing method while retaining every live/menu/filter check.
+app/account session, paste, Enter, provider or model.
+Before typing, the same private blank-page browser sets/reads/deletes a synthetic
+loopback HttpOnly/SameSite=Lax cookie through CDP, checking its exact attributes
+and deletion readback. No URL is fetched or navigated. Failure retains its phase
+and selected pre-cleanup diagnostics; cleanup cannot replace the original error.
+This early capability does not replace normal application setup/authentication.
+The actual terminal proof uses that same bounded typing method while retaining
+every live/menu/filter check.
 Its capability state uses a short random name and refuses an existing directory;
 full-size ownership/secret nonces remain unchanged. This avoids the Linux Chrome
 singleton socket's small Unix path budget while keeping HOME/TMPDIR/profile in
@@ -170,6 +176,15 @@ command menu, a unique local filter produces the matching empty-result state,
 Escape dismisses it, and Ctrl+P opens a fresh menu again. Only new output after
 each input counts. No Enter, provider login or model prompt is sent. The private
 provider HOME/XDG roots do not replace the pane's requested working directory.
+Screen predicates use the already locked headless terminal renderer, matching
+the canonical API projection. They await the complete observed ANSI stream at
+the current session's generation-bound geometry, latched at the pre-input
+baseline. Truncated/oversized replay, unknown geometry or any later dimension/
+generation change fails explicitly. A known unfiltered menu must precede the
+fresh challenge; current full value and empty-result state must follow new output.
+Dismissal must remove the dialog/challenge before reopening. Historical or erased
+text never counts. Selected synthetic frames are retained with cross-event secret
+redaction, projected transition screens and a best-effort failure screenshot.
 It changes a CSS canary and observes real
 HMR without a navigation, then changes API/shared-package source and observes
 rebuilt output plus new API/worker processes and restored readiness. All changed

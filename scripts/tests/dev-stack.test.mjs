@@ -12,9 +12,49 @@ import { confinedFile, nativePackage, opencodeEnvironment, resolveOpenCode, veri
 import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/terminal-proof.mjs';
 import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
-import { assertBrowserRunning, eventually, safeBrowserStderr, selectedBrowserDiagnostic, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
+import { assertBrowserRunning, eventually, safeBrowserStderr, selectedBrowserDiagnostic, syntheticCookieCapability, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+function syntheticCookieFixture({ mutate = cookie => cookie, retainAfterDelete = false } = {}) {
+  let cookie; const calls = [];
+  const call = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'Network.enable') return {};
+    if (method === 'Network.setCookie') { cookie = mutate({ ...params, domain: '127.0.0.1' }); return { success: true }; }
+    if (method === 'Network.getCookies') return { cookies: cookie ? [cookie] : [] };
+    if (method === 'Network.deleteCookies') { if (!retainAfterDelete) cookie = null; return {}; }
+    throw new Error('Unexpected synthetic cookie command');
+  };
+  return { call, calls };
+}
+test('early cookie capability sets and reads exact synthetic HttpOnly Lax attributes then verifies deletion', async () => {
+  const fixture = syntheticCookieFixture(), value = 'spaceproof0123456789abcdef';
+  const proof = await syntheticCookieCapability(fixture.call, value);
+  assert.deepEqual(fixture.calls.map(x => x.method), ['Network.enable', 'Network.setCookie', 'Network.getCookies', 'Network.deleteCookies', 'Network.getCookies']);
+  assert.deepEqual(fixture.calls[1].params, { url: 'http://127.0.0.1/', name: 'spaceapp-dev-proof', value, httpOnly: true, sameSite: 'Lax' });
+  assert.equal(proof.exactSetGetMatch, true); assert.equal(proof.deletionReadback, true); assert.equal(proof.navigationOrFetchSent, false); assert.equal(proof.valueRecorded, false);
+});
+test('wrong stored cookie value or attributes fail while the synthetic cookie is still deleted', async () => {
+  for (const override of [{ value: 'wrong' }, { httpOnly: false }, { sameSite: 'None' }, { domain: 'other.invalid' }]) {
+    const fixture = syntheticCookieFixture({ mutate: cookie => ({ ...cookie, ...override }) });
+    await assert.rejects(syntheticCookieCapability(fixture.call, 'spaceproof0123456789abcdef'), /value and native attributes/);
+    assert.equal(fixture.calls.filter(x => x.method === 'Network.deleteCookies').length, 1);
+    assert.equal(fixture.calls.at(-1).method, 'Network.getCookies');
+  }
+});
+test('cookie deletion requires an empty readback and never converts a retained cookie into success', async () => {
+  const fixture = syntheticCookieFixture({ retainAfterDelete: true });
+  await assert.rejects(syntheticCookieCapability(fixture.call, 'spaceproof0123456789abcdef'), /deletion must be read back/);
+  assert.equal(fixture.calls.filter(x => x.method === 'Network.setCookie').length, 1);
+});
+test('cookie cleanup retains the original timeout and pre-cleanup failure snapshot without a retry or parameters', async () => {
+  const original = new Error('CDP Network.setCookie timed out.'), calls = [];
+  const call = async method => { calls.push(method); if (method === 'Network.enable') return {}; if (method === 'Network.setCookie') throw original; throw new TypeError('synthetic cleanup failed'); };
+  await assert.rejects(syntheticCookieCapability(call, 'spaceproof0123456789abcdef', phase => ({ phase, failedCdpMethod: 'Network.setCookie' })), error => error === original);
+  assert.deepEqual(calls, ['Network.enable', 'Network.setCookie', 'Network.deleteCookies']);
+  assert.deepEqual(original.browserRuntime, { phase: 'synthetic-cookie-set', failedCdpMethod: 'Network.setCookie' });
+  assert.deepEqual(original.cookieCleanupError, { name: 'TypeError', phase: 'delete' });
+});
 test('post-CDP diagnostics retain selected failure state and redact endpoints without exposing request parameters', () => {
   const selected = selectedBrowserDiagnostic({ profile: '/private/profile', tmpdir: '/private/tmp', binaryVersion: 'Synthetic Chrome', versionError: null, child: { exitCode: null, signalCode: 'SIGTRAP', env: { secret: 'must-not-appear' } }, startError: null, stderr: 'cookie=private-cookie ws://127.0.0.1/private-session', socket: { readyState: 3, url: 'must-not-appear' }, failedCdpMethod: 'Network.setCookie', params: { value: 'must-not-appear' } }, 'application-browser');
   assert.equal(selected.failedCdpMethod, 'Network.setCookie'); assert.equal(selected.phase, 'application-browser'); assert.equal(selected.cdpSocketState, 3); assert.equal(selected.signalCode, 'SIGTRAP');
@@ -464,4 +504,87 @@ test('a signalled Chrome fails immediately and bounded startup diagnostics redac
   assert.doesNotThrow(() => assertBrowserRunning({ exitCode: null, signalCode: null }));
   const text = safeBrowserStderr('x'.repeat(8000) + ' DevTools listening on ws://127.0.0.1:1234/devtools/browser/private-endpoint token=private-token\n');
   assert(text.length <= 6000); assert(!text.includes('private-endpoint')); assert(!text.includes('private-token')); assert(!text.includes('ws://'));
+});
+
+const screenGeometry = { generationId: 'synthetic-host-generation', cols: 100, rows: 20 };
+const screenSession = (geometry = screenGeometry) => ({ session: { ...liveSession().session, terminalGeometry: geometry } });
+const menuFrame = '\x1b[2J\x1b[HCommands\r\nSearch: \r\nSwitch model\r\nConnect provider';
+const closedFrame = '\x1b[2J\x1b[HAsk anything...\r\nctrl+p commands';
+function screenProof() { const proof = liveProof(); proof.message({ type: 'status', status: 'RUNNING', replayContinuity: 'COMPLETE' }); return proof; }
+
+test('complete ANSI screen projection proves fresh menu filter dismissal and reopen while the old contiguous predicate rejects redraw deltas', async () => {
+  const proof = screenProof(), response = screenSession(), value = 'spaceproof0123456789abcdef';
+  proof.message({ type: 'output', data: closedFrame });
+  let transition = await proof.beginScreenTransition('open', response);
+  assert.equal(await proof.screenTransition(transition, response), null, 'No output after the input barrier cannot pass.');
+  proof.message({ type: 'output', data: menuFrame }); assert(await proof.screenTransition(transition, response));
+  transition = await proof.beginScreenTransition('filter', response, value); const barrier = transition.sequence;
+  // Synthetic ANSI cursor-addressing control, not a recovered historical frame.
+  for (const data of ['\x1b[2;9Hspace', '\x1b[3;1H\x1b[JNo results found', '\x1b[2;1', '4Hproof0123', '\x1b[5;1Hunrelated redraw', '\x1b[2;23H456789abcdef']) proof.message({ type: 'output', data });
+  assert.equal(proof.challenge(barrier, value), false, 'The historical stripped-text predicate cannot reconstruct these deltas.');
+  const filtered = await proof.screenTransition(transition, response); assert(filtered?.text.includes(value)); assert(filtered.text.includes('No results found'));
+  transition = await proof.beginScreenTransition('dismiss', response, value);
+  proof.message({ type: 'output', data: closedFrame }); assert(await proof.screenTransition(transition, response));
+  transition = await proof.beginScreenTransition('open', response);
+  proof.message({ type: 'output', data: menuFrame }); assert(await proof.screenTransition(transition, response));
+  await assert.rejects(proof.screenTransition(transition, response), /current pre-input transition/);
+  proof.seal(response); assert.equal(proof.sealed, true);
+});
+
+test('a stale preexisting or wrong current challenge cannot satisfy the projected screen proof', async () => {
+  const value = 'spaceproof0123456789abcdef', response = screenSession(), stale = screenProof();
+  stale.message({ type: 'output', data: `${menuFrame}\r\n${value}` });
+  assert.equal(await stale.beginScreenTransition('filter', response, value), null);
+  stale.message({ type: 'output', data: '\x1b[8;1Hunrelated fresh output' });
+  assert.equal(await stale.beginScreenTransition('filter', response, value), null);
+  const wrong = screenProof(); wrong.message({ type: 'output', data: menuFrame });
+  const transition = await wrong.beginScreenTransition('filter', response, value);
+  wrong.message({ type: 'output', data: '\x1b[2J\x1b[HCommands\r\nspaceproof0123456789abcdeg\r\nNo results found' });
+  assert.equal(await wrong.screenTransition(transition, response), null);
+  wrong.message({ type: 'output', data: '\x1b[8;1Hunrelated fresh output' });
+  assert.equal(await wrong.screenTransition(transition, response), null);
+  wrong.message({ type: 'output', data: `\x1b[2J\x1b[HCommands\r\n${value}\r\nNo results found` });
+  wrong.message({ type: 'output', data: '\x1b[2;1H\x1b[2Kwrong-current-value' });
+  assert.equal(wrong.challenge(transition.sequence, value), true, 'The historical concatenated predicate accepts a value already erased from the screen.');
+  assert.equal(await wrong.screenTransition(transition, response), null, 'Only the current visible full challenge can pass.');
+});
+
+test('projection refuses missing invalid and post-baseline changed generation or geometry', async () => {
+  for (const geometry of [null, { ...screenGeometry, generationId: '' }, { ...screenGeometry, cols: 0 }, { ...screenGeometry, cols: 401 }, { ...screenGeometry, rows: 201 }, { ...screenGeometry, rows: 2.5 }]) {
+    const proof = screenProof(); proof.message({ type: 'output', data: closedFrame });
+    await assert.rejects(proof.screen(screenSession(geometry)), /generation-bound terminal geometry/);
+  }
+  for (const change of [{ generationId: 'different-host-generation' }, { cols: 101 }, { rows: 21 }]) {
+    const proof = screenProof(); proof.message({ type: 'output', data: closedFrame });
+    await proof.beginScreenTransition('open', screenSession()); proof.message({ type: 'output', data: menuFrame });
+    await assert.rejects(proof.screen(screenSession({ ...screenGeometry, ...change })), /generation or geometry changed/);
+  }
+});
+
+test('missing truncated or oversized replay fails closed instead of projecting a retained tail', async () => {
+  const missing = liveProof(); missing.message({ type: 'output', data: menuFrame });
+  await assert.rejects(missing.screen(screenSession()), /complete terminal replay/);
+  const truncated = screenProof(); truncated.message({ type: 'status', status: 'RUNNING', replayContinuity: 'TRUNCATED' });
+  truncated.message({ type: 'status', status: 'RUNNING', replayContinuity: 'COMPLETE' });
+  await assert.rejects(truncated.screen(screenSession()), /replay is truncated/);
+  const oversized = screenProof(); oversized.message({ type: 'output', data: 'x'.repeat(8 * 1024 * 1024 + 1) });
+  await assert.rejects(oversized.screen(screenSession()), /exceeds the projection limit/);
+  assert.equal(oversized.frames.length, 0);
+});
+
+test('an error or close during awaited screen projection cannot approve a live transition', async () => {
+  for (const fail of [proof => proof.error('SYNTHETIC_ERROR'), proof => proof.close(1006), proof => proof.message({ type: 'status', status: 'EXITED', exitCode: 0 })]) {
+    const proof = screenProof(); proof.message({ type: 'output', data: closedFrame });
+    const projecting = proof.screen(screenSession()); fail(proof);
+    await assert.rejects(projecting);
+  }
+});
+
+test('retained full synthetic frames redact generated secrets across event boundaries without changing sequence offsets', () => {
+  const proof = screenProof();
+  proof.message({ type: 'output', data: 'before-private-' }); proof.message({ type: 'output', data: 'cookie-after ?tok' }); proof.message({ type: 'output', data: 'en=private-query\n' });
+  const value = proof.streamEvidence(['private-cookie']), text = value.frames.map(frame => frame.data).join('');
+  assert(!text.includes('private-cookie')); assert(!text.includes('private-query'));
+  assert.deepEqual(value.frames.map(frame => [frame.sequence, frame.data.length]), proof.frames.map(frame => [frame.sequence, frame.data.length]));
+  assert.equal(value.completeReplay, true);
 });
