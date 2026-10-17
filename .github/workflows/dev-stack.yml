@@ -49,7 +49,6 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       SPACE_DEV_REDACT_SETUP: "true"
       SPACE_DEV_CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
-      SPACE_DEV_PROOF_DIR: ${{ runner.temp }}/spaceapp-dev-stack-proof
       EXPECTED_SOURCE: ${{ inputs.expected_source }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,6 +63,7 @@ jobs:
 
       - name: Verify exact public candidate
         run: |
+          printf 'SPACE_DEV_PROOF_DIR=%s/spaceapp-dev-stack-proof\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { execFileSync } from 'node:child_process';
