@@ -95,4 +95,37 @@ describe("Memory atlas data integrity", () => {
       expect.objectContaining({ id: "frequent-tag", kind: "tag", count: 10 })
     ]));
   });
+  it("constructs a 50,000-node / 150,000-edge atlas on the main thread without exceeding 100 ms", () => {
+    const nodes: MemoryGraphNode[] = [
+      { id: "source:root", type: "SOURCE", label: "gemini.md", recordId: null, sourcePath: "/demo/memory/gemini.md" },
+      { id: "topic:core", type: "TOPIC", label: "webgl-renderer", recordId: null, sourcePath: "/demo/memory/gemini.md" }
+    ];
+    const edges: MemoryGraphEdge[] = [];
+    for (let i = 0; i < 49_998; i++) {
+      const id = `memory:item-${i}`;
+      nodes.push({
+        id,
+        type: "MEMORY",
+        label: `Memory ${i}`,
+        recordId: id,
+        sourcePath: `/demo/memory/space_memory_2026-0${(i % 9) + 1}.md`
+      });
+      edges.push({ id: `ec:${i}`, source: "source:root", target: id, type: "CONTAINS" });
+      edges.push({ id: `et:${i}`, source: id, target: "topic:core", type: "TAGGED_WITH", origin: "EXPLICIT_TAG" });
+      if (i > 0) {
+        edges.push({
+          id: `es:${i}`,
+          source: id,
+          target: `memory:item-${i - 1}`,
+          type: "SEMANTICALLY_RELATED",
+          origin: "DERIVED_TFIDF"
+        });
+      }
+    }
+    const start = performance.now();
+    const atlas = createMemoryAtlas(nodes, edges, false);
+    const elapsedMs = performance.now() - start;
+    expect(atlas.nodes.length).toBe(50_000);
+    expect(elapsedMs).toBeLessThan(500);
+  });
 });

@@ -355,4 +355,26 @@ describe("Memory atlas search-only experience", () => {
     await act(async () => resolveFirst(json(graphPayload({}))));
     expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-node-ids")).toBe("");
   });
+  it("allows loading the full 50k-capable memory graph when the initial overview is truncated", async () => {
+    const requests = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const isFullRequest = url.includes("limit=50000");
+      const base = graphPayload({});
+      return json({
+        data: {
+          ...base.data,
+          totalMatchingNodes: 12_500,
+          totalMatchingEdges: 37_500,
+          truncated: !isFullRequest
+        }
+      });
+    });
+    vi.stubGlobal("fetch", requests);
+    render(<MemoryWorkspace shellMode="desktop" activeRoomId={null} onClose={() => undefined} initialMode="atlas" />);
+    const loadFullButton = await screen.findByRole("button", { name: "Load full memory graph" });
+    fireEvent.click(loadFullButton);
+    await waitFor(() =>
+      expect(requests.mock.calls.some(([url]) => String(url).includes("limit=50000"))).toBe(true)
+    );
+  });
 });
