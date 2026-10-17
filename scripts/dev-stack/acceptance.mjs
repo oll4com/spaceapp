@@ -123,6 +123,6 @@ try {
 } catch (error) {
   // Selected synthetic state only. Never serialize a session response, ticket,
   // cookie, websocket URL, environment or real provider/owner credentials.
-  if (interactive) await writeFile(join(artifacts, 'opencode-failure.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, terminal: interactive.diagnostic([cookie, cookie.split('=').slice(1).join('='), password, token, ticketToken, csrf?.csrfToken]), browser: await browser?.terminalState().catch(() => null) }, null, 2) + '\n', { mode: 0o600 });
+  if (interactive) await writeFile(join(artifacts, 'opencode-failure.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, native, terminal: interactive.diagnostic([cookie, cookie.split('=').slice(1).join('='), password, token, ticketToken, csrf?.csrfToken]), browser: await browser?.terminalState().catch(() => null), browserStartup: error.browserStartup }, null, 2) + '\n', { mode: 0o600 });
   throw error;
 } finally { terminal?.close(); await browser?.close(); }

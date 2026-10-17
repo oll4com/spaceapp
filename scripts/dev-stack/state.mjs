@@ -43,10 +43,13 @@ export async function loadOwner(config) {
   }
   return owner;
 }
-export async function initialize(config) {
+export async function initialize(config, { fresh = false } = {}) {
   await assertPlainState(config);
   const existing = await lstat(config.state).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
-  if (existing) return loadOwner(config); // Never adopt an unknown/nonempty directory.
+  if (existing) {
+    if (fresh) throw new Error('Fresh capability state already exists; refusing adoption.');
+    return loadOwner(config); // Never adopt an unknown/nonempty directory.
+  }
   await mkdir(config.state, { mode: 0o700 });
   const nonce = randomBytes(16).toString('hex');
   const owner = { version: 1, root: await realpath(config.root), state: await realpath(config.state), nonce, project: `spaceapp-dev-${nonce.slice(0, 16)}`, ports: config.ports };

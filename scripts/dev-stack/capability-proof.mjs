@@ -1,7 +1,7 @@
 // Fail early on real native dependencies before the lengthy stock gates. This
 // isolated temporary state is never an operator profile or a provider login.
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,8 +15,10 @@ const root = resolve(fileURLToPath(new URL('../..', import.meta.url))), artifact
 const rel = relative(root, artifacts);
 assert(process.env.SPACE_DEV_PROOF_DIR && rel && (rel.startsWith('..') || isAbsolute(rel)), 'Private proof directory must be outside the checkout.');
 await mkdir(artifacts, { recursive: true, mode: 0o700 });
-const config = locations(root, { SPACE_DEV_STATE_DIR: `.dev-stack-capability-${randomUUID()}` });
-const owner = await initialize(config), env = serviceEnvironment(config, owner, await secrets(config), process.env);
+// Keep Chrome's private TMPDIR short enough for its Unix singleton socket. The
+// owner/secret nonces remain full-size; this short directory name is not identity.
+const config = locations(root, { SPACE_DEV_STATE_DIR: `.dev-stack-${randomBytes(2).toString('hex')}` });
+const owner = await initialize(config, { fresh: true }), env = serviceEnvironment(config, owner, await secrets(config), process.env);
 const proof = { source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, stage: 'before-pty', ok: false, providerCredentials: false, modelInference: false };
 try {
   await browserKeyboardCapability({ state: config.state, artifacts, challenge: `spaceproof${randomBytes(8).toString('hex')}` });

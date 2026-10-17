@@ -12,7 +12,7 @@ import { confinedFile, nativePackage, opencodeEnvironment, resolveOpenCode, veri
 import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/terminal-proof.mjs';
 import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
-import { typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
+import { assertBrowserRunning, eventually, safeBrowserStderr, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
@@ -445,4 +445,18 @@ test('CDP typing preserves the exact long filter through serial bounded characte
   let attempts = 0;
   await assert.rejects(typeTerminalFilter(async () => { if (++attempts === 3) throw new Error('Typed transport failure'); }, challenge), /Typed transport failure/);
   assert.equal(attempts, 3, 'A failed event must stop typing rather than mask/retry it.');
+});
+test('a short fresh capability state cannot adopt or delete an existing owned instance', async t => {
+  const config = await sandbox(t), owner = await initialize(config, { fresh: true }), secret = await secrets(config);
+  await assert.rejects(initialize(config, { fresh: true }), /refusing adoption/);
+  assert.deepEqual(await secrets(config), secret); assert.equal((await loadOwner(config)).nonce, owner.nonce);
+  assert.equal((await initialize(config)).nonce, owner.nonce, 'Default named dev-stack resume remains unchanged.');
+});
+test('a signalled Chrome fails immediately and bounded startup diagnostics redact control endpoints', async () => {
+  let calls = 0;
+  await assert.rejects(eventually(() => { calls++; assertBrowserRunning({ exitCode: null, signalCode: 'SIGTRAP' }); }, 'Virtual Chrome'), /SIGTRAP/);
+  assert.equal(calls, 1, 'A dead child must not consume the full startup wait.');
+  assert.doesNotThrow(() => assertBrowserRunning({ exitCode: null, signalCode: null }));
+  const text = safeBrowserStderr('x'.repeat(8000) + ' DevTools listening on ws://127.0.0.1:1234/devtools/browser/private-endpoint token=private-token\n');
+  assert(text.length <= 6000); assert(!text.includes('private-endpoint')); assert(!text.includes('private-token')); assert(!text.includes('ws://'));
 });

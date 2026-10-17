@@ -116,7 +116,7 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 48 launcher
+and `macos-15-intel` runners and checks the exact source. Both run all 50 launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
@@ -143,6 +143,11 @@ actual version and long-character-event behavior, then verifies exact delivery
 of the synthetic filter through awaited single-character events. It uses no
 app/account session, paste, Enter, provider or model. The actual terminal proof
 uses that same bounded typing method while retaining every live/menu/filter check.
+Its capability state uses a short random name and refuses an existing directory;
+full-size ownership/secret nonces remain unchanged. This avoids the Linux Chrome
+singleton socket's small Unix path budget while keeping HOME/TMPDIR/profile in
+that private state. Startup failures retain bounded redacted stderr, binary
+version, exit/signal and selected paths; a terminated child fails immediately.
 
 After those gates, `scripts/dev-stack/lifecycle-proof.mjs` starts a real stack with
 synthetic installed ports4910/4911 occupied by an independent process. It exercises
