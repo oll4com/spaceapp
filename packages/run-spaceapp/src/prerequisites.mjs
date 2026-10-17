@@ -133,10 +133,15 @@ export async function ensureDockerAvailable({
   osRelease,
   installArgs,
   scheduleResume = scheduleWindowsInstallResume,
-  confirmRestart = confirmWindowsRestart
+  confirmRestart = confirmWindowsRestart,
+  alternativeEngine
 }) {
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
+  }
+  if (platform !== "win32" && alternativeEngine) {
+    const alternative = await alternativeEngine();
+    if (alternative) return alternative;
   }
   if (platform === "win32") {
     return ensureWindowsDocker({

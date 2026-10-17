@@ -18,6 +18,7 @@ import {
   stripTrailingLineEndings
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
+import { containerEngine } from "./engine.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -114,7 +115,8 @@ const CONFIG_KEYS = new Set([
   "workspaces",
   "companionsEnabled",
   "optionalModules",
-  "installId"
+  "installId",
+  "engine"
 ]);
 
 // Optional SpaceApp modules (games, copilots, channels, ...): "all", "none" or a comma list.
@@ -277,9 +279,9 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
       ok: freeDiskBytes >= minFreeDisk,
       detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
+    ...(resources.engineMemoryBytes > 0 ? [{ name: `${resources.engineName ?? "Docker"} memory`, ok: resources.engineMemoryBytes >= engineMemoryBytes,
       detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
+    ...(resources.engineCpuCount > 0 ? [{ name: `${resources.engineName ?? "Docker"} CPU`, ok: resources.engineCpuCount >= 4,
       detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
   ];
 }
@@ -288,13 +290,15 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  if (containerEngine(engine) === "podman" && resolvedAccessMode === "host-root") throw new Error("Podman supports only isolated access; --access host-root is refused.");
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -306,7 +310,8 @@ export function createDefaultConfig({
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
-    workspaces: []
+    workspaces: [],
+    ...(engine === undefined ? {} : { engine: containerEngine(engine) })
   };
 }
 
@@ -326,6 +331,7 @@ export function validateConfig(config) {
     throw new Error(`Unsupported SpaceApp config schema ${config.schemaVersion}.`);
   }
   assertVersion(config.version);
+  if (containerEngine(config.engine) === "podman" && config.accessMode === "host-root") throw new Error("Podman supports only isolated access; --access host-root is refused.");
   if (config.previousVersion !== null) {
     assertVersion(config.previousVersion);
   }
@@ -577,11 +583,15 @@ export function renderRuntimeEnv(config) {
 
 export function renderWorkspaceCompose(config) {
   validateConfig(config);
+  // Compose's Mount API drops SELinux labels when create_host_path is false.
+  // Select its Bind API so :z reaches Podman; the launcher checks registered
+  // paths before any Compose up/run instead of creating missing workspaces.
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(config.engine === "podman" ? ["        bind:", "          selinux: z", "          create_host_path: true"] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -599,6 +609,7 @@ export function renderWorkspaceCompose(config) {
 export function renderHostAccessCompose(config) {
   validateConfig(config);
   if (config.accessMode === "isolated") {
+    if (config.engine === "podman") return renderPodmanCompose();
     return "services: {}\n";
   }
   const hostMount = (readOnly) => [
@@ -623,6 +634,25 @@ export function renderHostAccessCompose(config) {
     ...hostMount(false),
     ""
   ].join("\n");
+}
+
+function renderPodmanCompose() {
+  // Map the calling host user to the application's UID, while retaining root
+  // only for the image entrypoint's mkdir/install/gosu initialization. Never :U
+  // or chown a registered host workspace. Shared SELinux labels permit the
+  // core and CLI services to access the same files and sockets.
+  const lines = ["services:"];
+  const fileSecrets = { "spaceapp-core": ["setup-token", "session-secret", "database-url"], "spaceapp-browser": ["database-url"], postgres: ["postgres-password"], temporal: ["postgres-password"] };
+  for (const name of ["spaceapp-core", "spaceapp-cli", "spaceapp-browser", "postgres", "temporal"]) {
+    lines.push(`  ${name}:`);
+    if (name.startsWith("spaceapp-")) lines.push('    user: "0:0"', '    userns_mode: "keep-id:uid=10001,gid=10001"');
+    if (fileSecrets[name]) lines.push("    secrets: !reset []");
+    lines.push("    volumes:");
+    if (name === "spaceapp-core") lines.push("      - ./backups:/backups:z");
+    if (name === "spaceapp-cli") lines.push("      - ./secrets/providers:/run/spaceapp-secrets/providers:ro,z");
+    for (const secret of fileSecrets[name] ?? []) lines.push(`      - ./secrets/${secret}:/run/secrets/${secret}:ro,z`);
+  }
+  return lines.join("\n") + "\n";
 }
 
 export function composeCommand(action, root, options = {}) {
@@ -701,7 +731,9 @@ export function composeCommand(action, root, options = {}) {
   };
   if (action === "installProvider") {
     assertProvider(options.provider);
-    actions.installProvider = ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
+    actions.installProvider = PROVIDERS.bundled.includes(options.provider)
+      ? ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", options.provider, "--version"]
+      : ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
   }
   let selected = actions[action];
   if (action === "restore") {
@@ -731,7 +763,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: containerEngine(options.engine), args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -768,7 +800,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -790,9 +823,11 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine
     });
   }
+  if (engine !== undefined && containerEngine(config.engine) !== containerEngine(engine)) throw new Error("Switching the engine of an existing installation is refused; its volumes belong to the saved engine.");
   if (config.version !== version) {
     config = {
       ...config,

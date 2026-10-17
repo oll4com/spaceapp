@@ -88,6 +88,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
   let engine = null;
   try { engine = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
+  const podman = config.engine === "podman";
+  if (podman && engine) engine = { ...engine, Architecture: engine.host?.arch, NCPU: engine.host?.cpus, MemTotal: engine.host?.memTotal,
+    DockerRootDir: engine.store?.graphRoot, availableDisk: Number.isFinite(engine.store?.graphRootAllocated) && Number.isFinite(engine.store?.graphRootUsed) ? Math.max(0, engine.store.graphRootAllocated - engine.store.graphRootUsed) : null };
   const cachedLayers = new Set();
   if (engine && existingConfig) {
     for (const type of ["core", "cli", "browser"]) {
@@ -130,6 +133,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   const plan = calculateStoragePlan({ operation, profile: config.profile, missingImageBytes, databaseBytes,
     configBytes: await configurationBytes(root), databaseSizeKnown });
   let dockerFreeDiskBytes = null;
+  if (podman && engine?.availableDisk !== null) dockerFreeDiskBytes = engine?.availableDisk ?? null;
   if (existingConfig) {
     const free = await captureProbe(execute, composeCommand("storageFree", root, existingConfig));
     if (/^\d+$/.test(free ?? "")) dockerFreeDiskBytes = Number(free);
@@ -139,8 +143,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const { inspectSystemResources } = await import("./index.mjs");
     try { dockerFreeDiskBytes = (await inspectSystemResources(engine.DockerRootDir)).freeDiskBytes; } catch {}
   }
-  return { ...plan, missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
+  return { ...plan, missingImages, sharedLayersEstimated, dockerFreeDiskBytes, ...(podman ? { engineName: "Podman" } : {}),
     resources: { ...resources,
+      ...(podman ? { engineName: "Podman" } : {}),
       freeDiskBytes: dockerFreeDiskBytes === null ? resources.freeDiskBytes : Math.min(resources.freeDiskBytes, dockerFreeDiskBytes),
       engineCpuCount: engine?.NCPU,
       engineMemoryBytes: engine?.MemTotal
@@ -150,9 +155,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
 export function storageChecks(plan, resources) {
   const checks = [{ name: "Free disk", ok: resources.freeDiskBytes >= plan.requiredDiskBytes,
     detail: `${gib(resources.freeDiskBytes)} GiB available; ${gib(plan.requiredDiskBytes)} GiB required additionally for ${plan.operation} (images ${gib(plan.missingImageBytes)}, checkpoint ${gib(plan.checkpointBytes)}, reserve 0.5)` }];
-  if (plan.dockerFreeDiskBytes !== null) checks.push({ name: "Docker storage", ok: plan.dockerFreeDiskBytes >= plan.requiredDiskBytes,
+  if (plan.dockerFreeDiskBytes !== null) checks.push({ name: `${plan.engineName ?? "Docker"} storage`, ok: plan.dockerFreeDiskBytes >= plan.requiredDiskBytes,
     detail: `${gib(plan.dockerFreeDiskBytes)} GiB available; ${gib(plan.requiredDiskBytes)} GiB required additionally` });
-  else checks.push({ name: "Docker storage", ok: true, detail: "Separate engine disk capacity unavailable; host estimate used. Docker ENOSPC will stop the operation before cutover." });
+  else checks.push({ name: `${plan.engineName ?? "Docker"} storage`, ok: !plan.engineName, detail: "Separate engine disk capacity unavailable; host estimate used. Engine ENOSPC will stop the operation before cutover." });
   return checks;
 }
 

@@ -30,7 +30,7 @@ With SpaceApp, you can:
 - **Control Your Deployment**: Self-host the application and choose its providers and integrations. Remote model requests send the context needed for execution to the configured provider or gateway. Host filesystem access and credentials depend on deployment settings and explicit operator permissions; see the [state and trust boundaries](docs/quality/state-ownership.md).
 - **Start with OpenCode**: Setup presents OpenCode first. Available models, free tiers and authentication requirements depend on the installed CLI and its current provider catalog. Select and verify a model during setup.
 - **Shared Vector Memory (optional)**: When the memory graph is enabled for a deployment, SpaceApp stores memory records and their embeddings in PostgreSQL with `pgvector` and shows them as a 3D graph that agent sessions can query. Embeddings are computed by the configured embedding provider, so that provider receives the indexed text.
-- **One-Command Setup**: A single universal launcher command installs Docker prerequisites (if missing), configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11.
+- **One-Command Setup**: A single universal launcher command installs Docker prerequisites (if missing), configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11. Linux and macOS may use existing rootless Podman >=5 with Docker Compose >=2.24.4 as its provider: `install --engine podman`. Podman requires cgroup v2 with CPU/memory delegation, supports isolated access, and cannot replace the engine of an existing installation. See [Podman prerequisites and machine sizing](packages/run-spaceapp/README.md#rootless-podman).
 
 ---
 

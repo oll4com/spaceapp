@@ -1,6 +1,70 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for SpaceApp.
+Cross-platform container launcher for SpaceApp. Docker remains the default;
+rootless Podman is available on Linux and macOS.
+
+## Rootless Podman
+
+Install [Podman >=5](https://podman.io/docs/installation) and use
+[Docker Compose >=2.24.4 as its external provider](https://docs.podman.io/en/latest/markdown/podman-compose.1.html).
+Set `PODMAN_COMPOSE_PROVIDER` to the Docker Compose executable if Podman does not
+discover it. The Python `podman-compose` provider is not supported. Docker
+Compose itself is free and does not require a Docker daemon for this path.
+
+```sh
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The engine is saved in `config.json`; subsequent lifecycle, workspace, provider,
+credential, backup, restore, repair and owner commands use it automatically.
+The `engine` key also works in `--answers`. Without an explicit choice, a
+working Docker installation is preferred. When Docker is unavailable and
+Podman is installed, setup offers Podman (or selects it unattended).
+
+Linux requires a rootless connection, cgroup v2, and delegated CPU and memory
+controllers. `doctor` reports those facts, the engine and Compose versions,
+and resource allocation. `support-bundle` includes only these selected engine
+facts. Rootful connections and `--access host-root` are refused. Switching the
+engine of an existing installation is refused because the other engine cannot
+see its volumes; automated cross-engine migration is not supported.
+
+On macOS create and start a rootless Podman machine first. Small, medium and
+large require at least 4 machine CPUs and 3, 5 and 7 GiB of machine RAM
+respectively, in addition to the existing host requirements. Allow disk space
+for the reported image and checkpoint reserve. Stop a machine before resizing
+it with `podman machine set --cpus 4 --memory <MiB> --disk-size <GiB> <name>`.
+The launcher does not install or resize Podman machines. Windows Podman is out
+of scope.
+
+Workspace bind mounts use shared SELinux `z` labels and
+`keep-id:uid=10001,gid=10001`, so files created by the application belong to the
+calling host user. Read-only workspace mounts remain read-only. SpaceApp does
+not recursively change host-workspace ownership. Before starting containers,
+the launcher refuses missing or non-directory workspace paths. The Compose
+bind configuration retains the shared SELinux label through its Bind API;
+`create_host_path: false` would drop that label in the Mount API. The Podman override mounts
+file-backed secrets read-only with shared SELinux labels; secret files remain
+inside the private installation directory. Named data and socket volumes,
+profiles, health dependencies, init, and resource limits are retained.
+
+The opt-in acceptance command performs a real small-profile install, readiness
+check, backup, and purge using a new isolated state directory:
+
+```sh
+node packages/run-spaceapp/tests/podman-acceptance.mjs
+```
+
+Set `SPACEAPP_ACCEPTANCE_EXTENDED=1` to also check writable/read-only workspaces,
+host ownership, bundled OpenCode, repair, restart, restore, retained-data uninstall
+and the support bundle. If the checkout version has no published images yet,
+an explicit `SPACEAPP_ACCEPTANCE_RUNTIME_VERSION=1.1.5` selects that public runtime
+fixture; the receipt states the tested version. It does not certify unpublished
+runtime images. Restore and purge automation require `confirm:true` and the
+explicit `restore:"RESTORE"` or `purge:"DELETE"` answers respectively.
+
+It needs port 4911 to be unused and downloads the normal public images. It
+never logs in to an AI provider or submits a model prompt. Unit tests and this
+small-profile check do not certify all profiles or cross-engine migration.
 
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 

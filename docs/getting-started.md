@@ -3,7 +3,28 @@
 SpaceApp packages its application services and redistributable AI coding CLIs
 in Docker. The host needs Node.js only for the small `spaceapp` launcher,
 and enough resources for the stack. The launcher installs and starts Docker
-automatically when it is missing.
+automatically when it is missing. Linux and macOS can instead use an existing
+rootless Podman installation; see the requirements below.
+
+## Podman alternative
+
+Use Podman >=5 with cgroup v2 and delegated CPU/memory controllers, and Docker
+Compose >=2.24.4 as the `podman compose` provider. Set
+`PODMAN_COMPOSE_PROVIDER` to its executable when needed. On macOS start a
+rootless Podman machine with enough CPU, RAM and disk for the selected profile.
+
+```sh
+npx --yes run-spaceapp@latest install --engine podman --profile small
+npx --yes run-spaceapp@latest doctor
+```
+
+Docker stays the default when available. The saved engine drives every later
+command; existing installations cannot switch engines in place. Podman supports
+isolated access only and refuses rootful connections and `--access host-root`.
+SELinux workspace mounts preserve host ownership and read-only restrictions.
+The launcher does not install Podman itself or support Podman on Windows.
+See [the launcher guide](../packages/run-spaceapp/README.md#rootless-podman)
+for machine sizing, provider setup and the opt-in acceptance check.
 
 ## Requirements
 

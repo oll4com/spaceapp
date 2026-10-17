@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - main
+      - bounty/63-rootless-podman
   workflow_dispatch:
 
 permissions:
@@ -19,6 +20,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  podman:
+    name: Rootless Podman / ${{ matrix.profile }} profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [small, medium]
+    env:
+      # Explicit public runtime fixture: main is 1.1.6, whose images are not
+      # published yet. The acceptance receipt identifies the tested release.
+      SPACEAPP_ACCEPTANCE_RUNTIME_VERSION: "1.1.4"
+      SPACEAPP_ACCEPTANCE_UPGRADE_VERSION: "1.1.5"
+      SPACEAPP_ACCEPTANCE_PROFILE: ${{ matrix.profile }}
+      SPACEAPP_ACCEPTANCE_EXTENDED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+      - name: Prepare Podman 5 or newer with the Docker Compose provider
+        run: |
+          # Ubuntu 24.04 ships Podman 4.9; use the free Homebrew bottle on this
+          # disposable runner, without changing the user's launcher prerequisites.
+          HOMEBREW_NO_AUTO_UPDATE=1 /home/linuxbrew/.linuxbrew/bin/brew install podman
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          # Ubuntu's user-namespace exception covers /usr/bin/podman. Apply
+          # the same per-program permission to the bottle on this disposable
+          # runner; keep the global unprivileged-userns restriction enabled.
+          sudo tee /etc/apparmor.d/spaceapp-ci-podman > /dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile spaceapp-ci-podman /home/linuxbrew/.linuxbrew/Cellar/podman/*/bin/podman flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/spaceapp-ci-podman
+          provider=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "compose"}}{{.Path}}{{end}}{{end}}')
+          test -x "$provider"
+          echo "PODMAN_COMPOSE_PROVIDER=$provider" >> "$GITHUB_ENV"
+      - name: Install, check readiness, back up and purge the rootless stack
+        run: |
+          # The runner's system crun 1.14.1 cannot read current OCI bundles.
+          # Select the runtime installed with Podman rather than /usr/bin/crun.
+          runtime=/home/linuxbrew/.linuxbrew/bin/crun
+          test -x "$runtime"
+          podman --remote=false --runtime "$runtime" info --format json
+          mkdir -p "$RUNNER_TEMP/podman-api"
+          podman --runtime "$runtime" system service --time=0 "unix://$RUNNER_TEMP/podman-api/api.sock" > "$RUNNER_TEMP/podman-api/service.log" 2>&1 &
+          api_pid=$!
+          trap 'code=$?; if [ "$code" -ne 0 ]; then tail -n 80 "$RUNNER_TEMP/podman-api/service.log"; fi; kill "$api_pid" 2>/dev/null || true; exit "$code"' EXIT
+          export CONTAINER_HOST="unix://$RUNNER_TEMP/podman-api/api.sock"
+          for attempt in $(seq 1 30); do test -S "$RUNNER_TEMP/podman-api/api.sock" && break; sleep 1; done
+          test -S "$RUNNER_TEMP/podman-api/api.sock"
+          node packages/run-spaceapp/tests/podman-acceptance.mjs
   launcher:
     name: Launcher / ${{ matrix.os }} / Node ${{ matrix.node }}
     strategy:
