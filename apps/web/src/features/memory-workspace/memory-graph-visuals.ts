@@ -20,7 +20,7 @@ const CANONICAL_INDEX_STYLE: MemoryGraphVisualStyle = { color: "#e8c05f", size: 
 
 /** The agent core rules file, the root of the memory atlas: space.md (legacy gemini.md). */
 export function isMemoryCoreLabel(label: string): boolean {
-  return /^(?:space|gemini)\.md$/.test(label);
+  return label === "space.md" || label === "gemini.md";
 }
 
 /** The Space Memory index: space_memory.md (legacy gemini_history.md). */
