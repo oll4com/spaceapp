@@ -31,7 +31,7 @@ afterEach(async () => {
   await Promise.all(exporters.splice(0).map(exporter => exporter.close()));
 });
 
-function exporter(fetchImpl: ReturnType<typeof vi.fn>, options: { batchSize?: number; maxQueue?: number } = {}) {
+function exporter(fetchImpl: ReturnType<typeof vi.fn>, options: { batchSize?: number; maxQueue?: number; scopeName?: string } = {}) {
   const created = createOtlpSpanExporter({ endpoint: "http://127.0.0.1:4318/", serviceName: "space-api", fetch: fetchImpl, flushIntervalMs: 60_000, ...options });
   exporters.push(created);
   return created;
@@ -125,8 +125,65 @@ describe("OTLP span exporter", () => {
     const created = exporter(fetchImpl);
     created.record(span({ traceId: "not-a-trace" }));
     created.record(span({ spanId: "xyz" }));
+    created.record(span({ parentSpanId: "not-a-span-id" }));
     await created.flush();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still delivers after a flush on an empty queue (no wedged in-flight promise)", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    // An idle flush (what the interval timer does between batches) must not
+    // disable later flushes: the drain used to complete synchronously on an
+    // empty queue and wedge the in-flight promise non-null forever.
+    await created.flush();
+    created.record(span({ spanId: "1111111111111111" }));
+    await created.flush();
+    expect(created.stats().exported).toBe(1);
+    await created.flush();
+    created.record(span({ spanId: "2222222222222222" }));
+    await created.flush();
+    expect(created.stats().exported).toBe(2);
+    const bodies = fetchImpl.mock.calls.map(([, init]) => init.body).join("");
+    expect(bodies).toContain("2222222222222222");
+  });
+
+  it("serializes span links with valid ids and drops links whose ids are invalid", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    created.record(span({
+      links: [
+        { traceId, spanId: "0123456789abcdef", attributes: { "space.link.type": "continue_as_new" } },
+        { traceId: "not-a-trace", spanId: "0123456789abcdef" },
+        { traceId, spanId: "xyz" }
+      ]
+    }));
+    created.record(span({ spanId: "3333333333333333" }));
+    await created.flush();
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    const [linked, plain] = body.resourceSpans[0].scopeSpans[0].spans;
+    expect(linked.links).toEqual([{
+      traceId,
+      spanId: "0123456789abcdef",
+      attributes: [{ key: "space.link.type", value: { stringValue: "continue_as_new" } }]
+    }]);
+    expect(plain.links).toBeUndefined();
+  });
+
+  it("names the instrumentation scope after the service unless a scope name is given", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const byDefault = exporter(fetchImpl);
+    byDefault.record(span());
+    await byDefault.flush();
+    expect(JSON.parse(fetchImpl.mock.calls[0]![1].body).resourceSpans[0].scopeSpans[0].scope.name).toBe("space-api");
+
+    const scopedFetch = vi.fn(async () => ({ ok: true }));
+    const scoped = exporter(scopedFetch, { scopeName: "space-worker" });
+    scoped.record(span());
+    await scoped.flush();
+    const body = JSON.parse(scopedFetch.mock.calls[0]![1].body);
+    expect(body.resourceSpans[0].scopeSpans[0].scope.name).toBe("space-worker");
+    expect(body.resourceSpans[0].resource.attributes).toEqual([{ key: "service.name", value: { stringValue: "space-api" } }]);
   });
 });
 
