@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { type AgentRuntimeRegistry, type RoomPaneBatchItem, type SpaceWorktree } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createRoomPaneCommands } from "../src/room-pane-commands.js";
-import { execGit, WorktreeService } from "../src/worktrees/worktree-service.js";
+import { execGit, WorktreeError, WorktreeService } from "../src/worktrees/worktree-service.js";
 import { defaultWorktreeBaseBranch } from "../src/worktrees/default-base-branch.js";
 
 const roots: string[] = [];
@@ -101,7 +101,20 @@ it.each([false, true])("creates sixteen isolated and recorded Git worktrees (unb
   }
   const service = new WorktreeService(join(root, "worktrees"));
   const { room, commands } = setup(service, repo);
+  const createWorktree = service.createWorktree.bind(service);
+  const provisioningErrors: Array<{ branch: string | null; code: string | null; message: string; truncated: boolean }> = [];
+  vi.spyOn(service, "createWorktree").mockImplementation(async input => {
+    try {
+      return await createWorktree(input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      provisioningErrors.push({ branch: input.branchName ?? null, code: error instanceof WorktreeError ? error.code : null,
+        message: message.slice(0, 4096), truncated: message.length > 4096 });
+      throw error;
+    }
+  });
   const panes = await commands.resolve(room.id, items(16));
+  expect(provisioningErrors).toEqual([]);
   expect(new Set(panes.map(pane => pane.cwd)).size).toBe(16);
   for (const [index, pane] of panes.entries()) {
     expect(pane.cwd).not.toBe(repo);
