@@ -7,12 +7,22 @@ import {
 
 const mebibyte = 1024 * 1024;
 
-test("public container size budgets preserve the lightweight release ceilings", () => {
+test("public container size budgets preserve the per-service uncompressed sizes with headroom", () => {
   assert.deepEqual(containerImageSizeBudgets, {
-    core: 1100 * mebibyte,
-    browser: 1750 * mebibyte,
-    cli: 2800 * mebibyte
+    core: 800 * mebibyte,
+    browser: 1300 * mebibyte,
+    cli: 900 * mebibyte
   });
+});
+
+test("per-service budgets stay under the #64 release ceilings", () => {
+  const ceilings = { core: 850, browser: 1350, cli: 1000 };
+  for (const [target, ceiling] of Object.entries(ceilings)) {
+    assert.ok(
+      containerImageSizeBudgets[target] <= ceiling * mebibyte,
+      target + " budget exceeds the " + ceiling + " MiB ceiling"
+    );
+  }
 });
 
 test("container size budget accepts an image exactly at its target ceiling", () => {

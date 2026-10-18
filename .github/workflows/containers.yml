@@ -1,5 +1,4 @@
 name: Container matrix
-
 on:
   pull_request:
     paths:
@@ -10,6 +9,9 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/container-image-trim.mjs"
+      - "scripts/container-image-size-budget.mjs"
+      - "scripts/container-smoke/**"
   push:
     branches:
       - main
@@ -21,6 +23,9 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/container-image-trim.mjs"
+      - "scripts/container-image-size-budget.mjs"
+      - "scripts/container-smoke/**"
   workflow_dispatch:
 
 permissions:
@@ -44,7 +49,24 @@ jobs:
           - amd64
           - arm64
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # arm64 builds under QEMU need far longer than native amd64 ones.
+    timeout-minutes: ${{ matrix.arch == 'arm64' && 150 || 75 }}
+    services:
+      # The same pinned pgvector image the launcher compose file uses; the
+      # core and browser smoke checks run their migrations against it.
+      postgres:
+        image: pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: spaceapp
+          POSTGRES_PASSWORD: spaceapp
+          POSTGRES_DB: spaceapp
+        options: >-
+          --health-cmd "pg_isready -U spaceapp"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,3 +93,13 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check
+        run: >-
+          node scripts/container-smoke/${{ matrix.target }}-smoke.mjs
+          "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+        env:
+          SMOKE_DATABASE_URL: postgres://spaceapp:spaceapp@127.0.0.1:5432/spaceapp
+          # Chromium cannot start under qemu-user emulation; on an amd64 runner
+          # the arm64 job asserts the binary instead of launching it.
+          SMOKE_SKIP_CHROMIUM_LAUNCH: "${{ matrix.arch == 'arm64' && runner.arch == 'X64' }}"

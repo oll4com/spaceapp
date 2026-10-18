@@ -4,16 +4,25 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// 1.1.3 raised core and browser (998.7 / 1670.6 MiB measured): the current
-// application adds production dependencies pdfjs-dist with @napi-rs/canvas
-// (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
-// js-tiktoken (22 MiB, Space Gateway token counting).
-// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
-// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// #64 split the monolithic image into per-target production dependency
+// closures, so each budget tracks only what its target runs. The budgets
+// are UNCOMPRESSED image sizes: what `docker image inspect .Size` reports
+// on the classic overlay2 store used by the containers.yml runners, which
+// is where the budget step runs. Measured by the containers.yml matrix:
+// linux/amd64 core 724.9 MiB, browser 1218.8 MiB, cli 758.2 MiB (the old
+// monolithic image measured core 1045.0 MiB); linux/arm64 tracks amd64
+// within ~25 MiB (browser 1242.9 MiB). Each budget keeps room for the
+// arm64 delta and dependency growth, while staying under the ceilings from
+// the issue: core 850 MiB, browser 1350 MiB, cli 1000 MiB.
+// Caveat: docker hosts running the containerd image store (Docker Desktop;
+// docker 29 with the containerd snapshotter) report the COMPRESSED size in
+// `docker image inspect .Size`, roughly 2.5-3x smaller for these images
+// (core ~252 MiB, browser ~446 MiB, cli ~261 MiB on the wire). The CI
+// matrix numbers are authoritative for these budgets.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 800 * mebibyte,
+  browser: 1300 * mebibyte,
+  cli: 900 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
