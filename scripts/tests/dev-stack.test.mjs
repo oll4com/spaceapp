@@ -13,6 +13,7 @@ import { InteractiveTerminalProof, assertBrowserTerminal } from '../dev-stack/te
 import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
 import { assertBrowserRunning, eventually, proofBrowserArguments, safeBrowserStderr, selectedBrowserDiagnostic, syntheticCookieCapability, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
+import { debounceSourceChanges } from '../dev-stack/reload-debounce.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 test('only Darwin CI proof browsers request a mock keychain and every other browser argument stays unchanged', () => {
@@ -254,6 +255,7 @@ test('owned failure diagnostics redact split secrets and select health data with
 });
 test('diagnostics run before owned down and a diagnostic failure cannot prevent cleanup', async t => {
   const config = await sandbox(t), owner = await initialize(config), calls = [];
+  await privateWrite(config.compose, JSON.stringify(composeDocument(owner, pins, 'synthetic-password')));
   let down = false, output = '';
   const invoke = async (_command, args, options) => {
     calls.push(args);
@@ -274,6 +276,83 @@ test('a foreign project resource prevents both diagnostic reads and cleanup', as
   const invoke = async (_command, args) => { calls.push(args); return args[1] === 'ls' ? 'foreign' : JSON.stringify({ [ownerLabel]: 'not-ours' }); };
   await assert.rejects(removeOwnedDocker(config, owner, { diagnose: true, invoke, env: {} }), /Foreign/);
   assert(!calls.some(args => args.includes('logs') || args.includes('down') || args.includes('{{json .State.Health}}')));
+});
+
+test('pre-Compose startup state can be cleaned without invoking a missing Compose file', async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  const invoke = async (_command, args) => { calls.push(args); assert.equal(args[1], 'ls'); return ''; };
+  await removeOwnedDocker(config, owner, { volumes: true, invoke, env: {} });
+  assert.equal(calls.some(args => args.includes('down')), false);
+  assert.equal((await loadOwner(config)).nonce, owner.nonce);
+});
+
+test('a missing Compose file never hides owned containers networks or volumes', async t => {
+  for (const kind of ['container', 'network', 'volume']) {
+    const config = await sandbox(t), owner = await initialize(config), calls = [];
+    const invoke = async (_command, args) => {
+      calls.push(args);
+      if (args[1] === 'ls') return args[0] === kind ? 'owned-resource' : '';
+      if (args[1] === 'inspect') return JSON.stringify({ [ownerLabel]: owner.nonce });
+      throw new Error('Missing Compose must not be passed to Docker.');
+    };
+    await assert.rejects(removeOwnedDocker(config, owner, { invoke, env: {} }), new RegExp(`Owned ${kind} remains`));
+    assert.equal(calls.some(args => args.includes('down')), false);
+    assert.equal((await loadOwner(config)).nonce, owner.nonce);
+  }
+});
+
+test('cleanup refuses a directory in place of the generated Compose document', async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  await mkdir(config.compose);
+  const invoke = async (_command, args) => { calls.push(args); assert.equal(args[1], 'ls'); return ''; };
+  await assert.rejects(removeOwnedDocker(config, owner, { invoke, env: {} }), /regular.*non-symlink/);
+  assert.equal(calls.some(args => args.includes('down')), false);
+});
+
+test('cleanup refuses a linked Compose document without touching its target', { skip: process.platform === 'win32' }, async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  const target = join(config.root, 'compose-sentinel'); await writeFile(target, 'unchanged');
+  await symlink(target, config.compose);
+  const invoke = async (_command, args) => { calls.push(args); assert.equal(args[1], 'ls'); return ''; };
+  await assert.rejects(removeOwnedDocker(config, owner, { invoke, env: {} }), /regular.*non-symlink/);
+  assert.equal(calls.some(args => args.includes('down')), false);
+  assert.equal(await readFile(target, 'utf8'), 'unchanged');
+});
+
+test('a present Compose document still runs owned down and intentionally retains database volumes', async t => {
+  const config = await sandbox(t), owner = await initialize(config), calls = [];
+  await privateWrite(config.compose, JSON.stringify(composeDocument(owner, pins, 'synthetic-password')));
+  const invoke = async (_command, args) => {
+    calls.push(args);
+    if (args[1] === 'ls') return args[0] === 'volume' ? 'retained-owned-volume' : '';
+    if (args[1] === 'inspect') return JSON.stringify({ [ownerLabel]: owner.nonce });
+    if (args.includes('down')) return '';
+    throw new Error('Unexpected cleanup call');
+  };
+  await removeOwnedDocker(config, owner, { invoke, env: {} });
+  assert.equal(calls.filter(args => args.includes('down')).length, 1);
+  assert.equal(calls.find(args => args.includes('down')).includes('--volumes'), false);
+});
+
+test('a package edit keeps reload precedence in either event order and each later debounce window starts fresh', { timeout: 5000 }, async t => {
+  const calls = []; let notify;
+  const changes = debounceSourceChanges(kind => { calls.push(kind); notify(); });
+  t.after(() => changes.stop());
+  for (const sequence of [['packages', 'api'], ['api', 'packages'], ['api', 'packages', 'api'], ['api', 'api']]) {
+    const fired = new Promise(resolvePromise => { notify = resolvePromise; });
+    for (const kind of sequence) changes.change(kind);
+    await fired;
+    assert.equal(calls.at(-1), sequence.includes('packages') ? 'packages' : 'api');
+  }
+  assert.deepEqual(calls, ['packages', 'packages', 'packages', 'api']);
+  assert(isPublicExportPath('scripts/dev-stack/reload-debounce.mjs'));
+});
+
+test('shutdown cancels a pending reload and ignores source notifications already queued by a closing watcher', { timeout: 5000 }, async () => {
+  const calls = [], changes = debounceSourceChanges(kind => calls.push(kind));
+  changes.change('packages'); changes.stop(); changes.change('api');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
+  assert.deepEqual(calls, []);
 });
 test('redactor handles secrets split between stdout chunks', () => {
   let output = ''; const stream = lineRedactor(['synthetic-password', 'synthetic-token'], x => { output += x; });

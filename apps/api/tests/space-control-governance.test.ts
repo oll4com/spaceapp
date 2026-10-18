@@ -3,6 +3,9 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryControlRepository } from "@space/db";
 import { controlExecuteSchema, SPACE_CONTROL_VERSION } from "@space/contracts";
 import { createSpaceControl } from "../src/space-control.js";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const actor = { id: "operator:one", role: "ADMIN" as const };
 
@@ -262,6 +265,31 @@ describe("Space Control Governance & Security", () => {
     const c = fixture();
     const result = await c.service.testMcpTools(actor, c.room.id, { tools: ["space_screenshot", "voice_youtube_search"] });
     expect(result).toMatchObject({ status: "PARTIAL", passedCount: 0, failedCount: 0, warnedCount: 2 });
+  });
+
+  it("persists failed MCP-probe incidents when the private log directory does not yet exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "space-mcp-incident-"));
+    const install = join(root, "install");
+    const file = join(install, "var", "live-voice-logs", "debug-incidents.jsonl");
+    const removeFixture = async () => {
+      const inside = relative(resolve(tmpdir()), resolve(root));
+      if (!inside.startsWith("space-mcp-incident-") || inside.includes(sep) || isAbsolute(inside)) throw new Error("Refusing cleanup outside the private MCP fixture.");
+      await rm(root, { recursive: true, force: true });
+    };
+    vi.stubEnv("SPACE_INSTANCE", "dev"); vi.stubEnv("SPACE_INSTALL_ROOT", install);
+    try {
+      await expect(stat(join(install, "var", "live-voice-logs"))).rejects.toMatchObject({ code: "ENOENT" });
+      const c = fixture({ inspectExtra: async () => { throw new Error("Synthetic MCP probe failure"); } });
+      const result = await c.service.testMcpTools(actor, c.room.id, { tools: ["space_inspect:SYSTEM_HEALTH"] });
+      expect(result).toMatchObject({ status: "PARTIAL", testedCount: 1, passedCount: 0, failedCount: 1 });
+      expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
+        incidentId: result.incidentId, operation: "space_test_mcp_tools", roomId: c.room.id, failedCount: 1,
+        failedTools: [{ tool: "space_inspect:SYSTEM_HEALTH", error: "Synthetic MCP probe failure" }]
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await removeFixture();
+    }
   });
 
   it("does not enqueue transient commands or claim success for a disconnected client", async () => {

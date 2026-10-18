@@ -201,6 +201,11 @@ export function resolveAgentFileMimeType(originalFilename: string, declaredMimeT
   return "application/octet-stream";
 }
 
+/**
+ * Rebuild a DOCX package through an explicit direct command or the stable installed broker.
+ * Dev work-root rejection becomes a typed normalization error before writes or child execution;
+ * conversion uses a private request directory, which is removed after success or failure.
+ */
 export async function normalizeAgentFileDocx(
   input: AgentFileDocxNormalizerInput,
   options: NormalizeAgentFileDocxOptions = {}
@@ -213,9 +218,14 @@ export async function normalizeAgentFileDocx(
   if (dev && !directCommand) {
     throw new AgentFileDocxNormalizationError("Dev DOCX normalization requires an explicit direct LibreOffice command; the installed privileged broker is not used.");
   }
-  const temporaryRoot = dev
-    ? instanceStorageDirectory("agent-docx-work", options.temporaryRoot ?? process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT)
-    : options.temporaryRoot ?? (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
+  let temporaryRoot: string;
+  try {
+    temporaryRoot = dev
+      ? instanceStorageDirectory("agent-docx-work", options.temporaryRoot ?? process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT)
+      : options.temporaryRoot ?? (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
+  } catch (error) {
+    throw new AgentFileDocxNormalizationError(error instanceof Error ? error.message : undefined);
+  }
   await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
   const workingRoot = await mkdtemp(join(temporaryRoot, "request-"));
   const inputDirectory = join(workingRoot, "input");

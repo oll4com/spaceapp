@@ -11,10 +11,12 @@ import { verifyOpenCode } from './opencode-runtime.mjs';
 import { verifyPtyCapability } from './pty-capability.mjs';
 import { ReadinessEpoch } from './readiness.mjs';
 import { buildSourceServices } from './source-build.mjs';
+import { debounceSourceChanges } from './reload-debounce.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const say = text => process.stdout.write(`[dev-stack] ${text}\n`);
 async function assertFreePort(port) { await new Promise((resolvePromise, reject) => { const s = createServer(); s.once('error', () => reject(new Error(`Loopback port ${port} is already in use; choose SPACE_DEV_*_PORT values.`))); s.listen(port, '127.0.0.1', () => s.close(resolvePromise)); }); }
+/** Stop verified owned processes and containers; preserve database/state and propagate failures for recovery. */
 export async function down(config) {
   const owner = await loadOwner(config);
   const record = await readJson(config.supervisor).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
@@ -33,6 +35,7 @@ export async function down(config) {
   await unlink(config.supervisor).catch(e => { if (e.code !== 'ENOENT') throw e; });
   say('Stopped owned services; state/volumes retained for the next start.');
 }
+/** After owned shutdown and nonce/path rechecks, remove this stack's volumes and private state only. */
 export async function reset(config) {
   await assertPlainState(config);
   if (!await lstat(config.state).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) { say('No dev-stack state to reset.'); return; }
@@ -44,8 +47,9 @@ export async function reset(config) {
   await rm(config.state, { recursive: true });
   say('Removed only this dev stack’s containers, volumes and state.');
 }
+/** Start isolated source services; supervise reload/readiness and keep recovery records when owned shutdown fails. */
 export async function start(config, inherited = process.env) {
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run dev:stack in Linux, macOS, or Windows11 WSL2. Native Windows is not the supported Unix-socket environment.');
+  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run dev:stack in Linux, macOS, or Windows 11 WSL2. Native Windows is not the supported Unix-socket environment.');
   await run('docker', ['compose', 'version'], { env: dockerEnvironment(inherited) });
   await Promise.all(Object.values(config.ports).map(assertFreePort));
   const owner = await initialize(config);
@@ -58,7 +62,7 @@ export async function start(config, inherited = process.env) {
   const env = serviceEnvironment(config, owner, secret, inherited), children = new Map(), watchers = [];
   const launches = new LaunchBarrier();
   const readiness = new ReadinessEpoch();
-  let stopping = false, restarting = false, queued = false, startupComplete = false, statusTimer, readyTimer, debounce;
+  let stopping = false, restarting = false, queued = false, startupComplete = false, statusTimer, readyTimer, sourceChanges;
   const cancellation = new AbortController();
   let activeCommand = Promise.resolve(), writeTail = Promise.resolve(), stopTail = Promise.resolve();
   const perform = fn => { activeCommand = fn(); return activeCommand; };
@@ -83,7 +87,7 @@ export async function start(config, inherited = process.env) {
     if (stopping) return; stopping = true;
     readiness.pause();
     cancellation.abort();
-    clearTimeout(debounce); clearInterval(statusTimer); clearInterval(readyTimer); for (const w of watchers) w.close();
+    sourceChanges?.stop(); clearInterval(statusTimer); clearInterval(readyTimer); for (const w of watchers) w.close();
     try { await activeCommand.catch(() => {}); await launches.stop(); await stopChildren(); await removeOwnedDocker(config, owner, { output: log, secrets: redactions, diagnose: code !== 0 }); await writeTail; await unlink(config.supervisor); }
     catch (error) { say(`Cleanup failed: ${error.message} Recovery state kept; retry down/reset.`); process.exitCode = 1; return; }
     say('All owned services stopped.'); process.exitCode = code;
@@ -149,9 +153,9 @@ export async function start(config, inherited = process.env) {
     const tokenDisplay = inherited.CI || inherited.SPACE_DEV_REDACT_SETUP === 'true' ? '[redacted: private state file]' : secret.token || '[already consumed]';
     say(`One-time owner setup token: ${tokenDisplay}`);
     say(`State ${config.state}; down stops, reset removes only owned state. Browser/companion/root services are disabled. No provider account or inference is used.`);
-    const change = kind => { clearTimeout(debounce); debounce = setTimeout(() => { void rebuild(kind); }, 400); };
+    sourceChanges = debounceSourceChanges(rebuild);
     for (const [dir, kind] of [['apps/api/src', 'api'], ['apps/worker/src', 'packages'], ['packages', 'packages']]) {
-      watchers.push(watch(join(config.root, dir), { recursive: true }, (_event, file) => { if (file && !/(?:^|[\\/])(?:node_modules|dist|\.git)(?:[\\/]|$)/.test(file) && /\.(?:ts|tsx|js|mjs|json)$/.test(file)) change(kind); }));
+      watchers.push(watch(join(config.root, dir), { recursive: true }, (_event, file) => { if (file && !/(?:^|[\\/])(?:node_modules|dist|\.git)(?:[\\/]|$)/.test(file) && /\.(?:ts|tsx|js|mjs|json)$/.test(file)) sourceChanges.change(kind); }));
     }
     readiness.start();
     readyTimer = setInterval(async () => {
@@ -167,7 +171,7 @@ export async function start(config, inherited = process.env) {
       finally { readiness.release(probe); }
       if (!result) return; // Completion/finally of a deliberately stopped epoch is inert.
       if (result.changed) say(result.outcome === 'ready' ? 'readyz ok: workflows and source services are ready.' : result.outcome === 'unreachable' ? 'readyz failed: API is not responding.' : `readyz failed: ${failed} unavailable; inspect its service log.`);
-      if (result.fatal) { say(`Required service failure: ${failed}; readiness generation${result.epoch}, failures${result.failures}; stopping the stack.`); await shutdown(1); }
+      if (result.fatal) { say(`Required service failure: ${failed}; readiness generation ${result.epoch}, failures ${result.failures}; stopping the stack.`); await shutdown(1); }
     }, 4000);
     statusTimer = setInterval(() => { if (startupComplete && !stopping) void recordChildren().catch(() => { void shutdown(1); }); }, 3000);
   } catch (error) { say(error.message); await shutdown(1); }

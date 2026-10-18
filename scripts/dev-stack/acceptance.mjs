@@ -34,7 +34,7 @@ try {
   await eventually(async () => { const response = await fetch(`${api}/readyz`, { signal: AbortSignal.timeout(3000) }); const value = await response.json(); return response.ok && value.ok === true; }, 'Workflows-enabled readyz'); marker('real readiness');
   assert.equal((await (await fetch(`${origin}/readyz`)).json()).ok, true); marker('Vite forwards to the isolated API port');
   for (const name of ['postgres-password', 'session-secret', 'setup-token']) assert.equal((await stat(join(config.state, 'secrets', name))).mode & 0o777, 0o600);
-  assert.equal((await stat(config.compose)).mode & 0o777, 0o600); marker('all generated secret/config files0600');
+  assert.equal((await stat(config.compose)).mode & 0o777, 0o600); marker('all generated secret/config files 0600');
   token = await readFile(join(config.state, 'secrets/setup-token'), 'utf8');
   password = randomBytes(24).toString('hex'); const email = 'dev-stack-owner@example.invalid';
   const claimed = await request('/api/setup/claim', { token, email, password }); assert.equal(claimed.isAuthenticated, true);

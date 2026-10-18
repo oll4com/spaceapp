@@ -1575,6 +1575,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     };
   }
 
+  /** Run selected bounded probes, retain skips as WARN, and record failures privately without replacing their outcome if logging fails. */
   async function testMcpTools(actor: ControlActor, targetRoomId?: string, params?: { tools?: string[]; fast?: boolean }) {
     let effectiveRoomId = targetRoomId;
     if (!effectiveRoomId) {
@@ -1800,7 +1801,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           failedTools: failedTools.map(f => ({ tool: f.tool, error: f.error })),
           agentHandoffPrompt
         }) + "\n";
-        appendFileSync(join(instanceStorageDirectory("live-voice-logs"), "debug-incidents.jsonl"), line);
+        const directory = instanceStorageDirectory("live-voice-logs");
+        await fsPromises.mkdir(directory, { recursive: true, mode: 0o700 });
+        appendFileSync(join(directory, "debug-incidents.jsonl"), line);
       } catch {}
     }
 

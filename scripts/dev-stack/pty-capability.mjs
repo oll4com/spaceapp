@@ -60,7 +60,7 @@ export async function verifyPtyCapability(root, state, { inherited = {}, evidenc
         if (!knownHelperRepair({ ...helper, sha256, mode: info.mode & 0o777, uid: info.uid, nlink: info.nlink })) throw new Error('PTY helper changed; refusing repair.');
         await confinedFile(root, file); await handle.chmod(0o755);
       } finally { await handle.close(); }
-      proof.repair = { reason: 'Actual posix_spawnp failure and exact pinned private helper0644', before: helper.mode, after: (await lstat(file)).mode & 0o777, bytesUnchanged: await fileHash(file) === helper.sha256 };
+      proof.repair = { reason: 'Actual posix_spawnp failure and exact pinned private helper 0644', before: helper.mode, after: (await lstat(file)).mode & 0o777, bytesUnchanged: await fileHash(file) === helper.sha256 };
       assert.equal(proof.repair.bytesUnchanged, true);
       if (!await probe()) throw new Error('Real printf PTY still fails after the bounded helper permission correction.');
     }

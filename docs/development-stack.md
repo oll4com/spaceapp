@@ -8,9 +8,9 @@ not an installed operator instance or a desktop packaging command.
 
 ## Prerequisites and startup
 
-Use Node22 from `.nvmrc`, npm, Docker Engine/Desktop with ComposeV2, and the normal
+Use Node 22 from `.nvmrc`, npm, Docker Engine/Desktop with Compose V2, and the normal
 native build tools for `node-pty` if its prebuilt package is unavailable. On macOS,
-an existing Docker Desktop or Colima context must already work. On Windows11 use
+an existing Docker Desktop or Colima context must already work. On Windows 11 use
 an existing WSL2 Linux environment with Docker integration; native Windows is not
 a Unix-socket runtime. The launcher never installs Docker/WSL, requests elevation,
 changes OS features or reboots. WSL2 instructions describe the supported route;
@@ -60,8 +60,8 @@ diagnostic cannot skip the normal ownership checks or cleanup.
 
 ## State, ports and privacy
 
-Defaults are API4810, web4811, PostgreSQL54329 and Temporal47233. All listeners bind
-to127.0.0.1. Installed defaults4910/4911 are rejected. To run a second checkout or
+Defaults are API `4810`, web `4811`, PostgreSQL `54329` and Temporal `47233`. All listeners bind
+to `127.0.0.1`. Installed defaults `4910`/`4911` are rejected. To run a second checkout or
 separate instance, choose four distinct unused ports and a different direct child
 state directory:
 
@@ -85,8 +85,8 @@ configuration/agent if that context requires it.
 
 Generated state defaults to `.dev-stack/` and is ignored by Git. Only recognizable
 direct children `.dev-stack` or `.dev-stack-<name>` are allowed; linked state/control
-paths are rejected. The state directory is0700 and generated secrets/manifests/
-Compose configuration are0600. The PostgreSQL password is in the private generated
+paths are rejected. The state directory is `0700` and generated secrets/manifests/
+Compose configuration are `0600`. The PostgreSQL password is in the private generated
 Compose file as container environment, avoiding weaker world-readable bind-mounted
 secrets. A Docker administrator can inspect container environment; this does not
 isolate a secret from the host/Docker administrator. Never print `docker compose
@@ -147,7 +147,7 @@ actual compiled PTY spawn entry for another exact-output `printf` control. It
 records whether the selected native `stty` path is already executable. This does
 not substitute for the later actual OpenCode/browser interaction.
 On Darwin only, a real failed `posix_spawnp` probe plus the exact published
-node-pty1.1.0 helper hash, mode0644, checkout confinement, ownership and single
+node-pty 1.1.0 helper hash, mode `0644`, checkout confinement, ownership and single
 link can authorize restoring that one helper's execute bits. The failure, modes,
 unchanged bytes and successful second real probe are retained. Other failures
 are not repaired or hidden; no installed/global dependency path is changed.
@@ -181,7 +181,7 @@ cookies, session URLs and environments are excluded. A missing `stty` message an
 a CDP cookie timeout are distinct observations, without an assumed shared cause.
 
 After those gates, `scripts/dev-stack/lifecycle-proof.mjs` starts a real stack with
-synthetic installed ports4910/4911 occupied by an independent process. It exercises
+synthetic installed ports `4910`/`4911` occupied by an independent process. It exercises
 HTTP owner claim and sign-in, invalidates the consumed token, creates the actual
 Getting Started/OpenCode pane, observes the real PTY UI, and renders that pane in
 the runner’s existing headless Chrome. Its current matching API/WS session must
@@ -231,7 +231,7 @@ node scripts/dev-stack/lifecycle-proof.mjs
 ```
 
 Only use a disposable development host: the proof deliberately edits/restores
-three source files and binds4910/4911. It refuses pre-existing proof state and never
+three source files and binds `4910`/`4911`. It refuses pre-existing proof state and never
 adopts an installed instance. Hosted transcripts certify their actual platform and
 commit only; no unperformed Windows, provider-inference or desktop-install result
 is implied.

@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve package reload priority and recovery before Compose setup in the source
+  development stack.
+- Validate isolated storage roots and preserve typed DOCX errors and MCP diagnostics
+  in new development instances.
+
 ### Added
 
 - A source development stack (`npm run dev:stack`) with isolated local state,

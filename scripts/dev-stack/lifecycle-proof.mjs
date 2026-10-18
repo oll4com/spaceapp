@@ -63,7 +63,7 @@ async function waitReady(stack) {
     } catch { /* Startup can legitimately take time before the API binds. */ }
     await delay(1000);
   }
-  throw new Error('Stack readiness exceeded15minutes; no acceptance is claimed.');
+  throw new Error('Stack readiness exceeded 15 minutes; no acceptance is claimed.');
 }
 async function processSnapshot(config) {
   const record = await readJson(config.supervisor), result = [];
@@ -95,7 +95,7 @@ async function action(settings, verb, options = {}) {
 try {
   const sentinelSource = `const http=require('node:http'); const servers=[4910,4911].map(port=>http.createServer((_q,r)=>r.end(${JSON.stringify(nonce)})).listen(port,'127.0.0.1')); let ready=0; for(const s of servers){s.on('listening',()=>{if(++ready===2)process.send('ready')});s.on('error',()=>process.exit(1))}`;
   sentinel = spawn(process.execPath, ['-e', sentinelSource], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
-  await new Promise((done, reject) => { sentinel.once('message', done); sentinel.once('error', reject); sentinel.once('exit', () => reject(new Error('Could not reserve synthetic installed ports4910/4911.'))); });
+  await new Promise((done, reject) => { sentinel.once('message', done); sentinel.once('error', reject); sentinel.once('exit', () => reject(new Error('Could not reserve synthetic installed ports 4910/4911.'))); });
   sentinelRecord = { pid: sentinel.pid, identity: await processIdentity(sentinel.pid) };
   const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
   await docker(['pull', pins.postgres], { timeout: 300000 });
@@ -105,7 +105,7 @@ try {
   await assertSentinels();
   const first = await configuration('a'), stack = await capture(first, 'normal-stack');
   await waitReady(stack); const owner = await loadOwner(first.config);
-  mark('normal workflows-enabled startup with installed ports4910/4911 already occupied');
+  mark('normal workflows-enabled startup with installed ports 4910/4911 already occupied');
   const firstSecretHashes = await Promise.all(['postgres-password', 'session-secret'].map(async name => createHash('sha256').update(await readFile(join(first.config.state, 'secrets', name))).digest('hex')));
   await run(process.execPath, ['scripts/dev-stack/acceptance.mjs'], { cwd: root, env: first.env, timeout: 900000, output: text => process.stdout.write(text) });
   const records = await processSnapshot(first.config);

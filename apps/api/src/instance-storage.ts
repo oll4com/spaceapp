@@ -1,12 +1,21 @@
 import { isAbsolute, relative, resolve, sep, join } from "node:path";
 import { resolveSpaceInstance } from "@space/contracts";
 
+/** Resolve a dev root disjoint from the installed tree; ancestors and descendants fail before any storage access. */
 function privateInstallRoot(env: NodeJS.ProcessEnv): string {
   const configured = env.SPACE_INSTALL_ROOT;
-  if (!configured || !isAbsolute(configured) || resolve(configured) === resolve("/opt/spaceapp")) {
+  if (!configured || !isAbsolute(configured)) {
     throw new Error("Dev service storage requires a private absolute SPACE_INSTALL_ROOT.");
   }
-  return resolve(configured);
+  const root = resolve(configured), installed = resolve("/opt/spaceapp");
+  const contains = (parent: string, target: string) => {
+    const inside = relative(parent, target);
+    return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+  };
+  if (contains(root, installed) || contains(installed, root)) {
+    throw new Error("Dev service storage requires a private absolute SPACE_INSTALL_ROOT.");
+  }
+  return root;
 }
 
 /** Keep installed defaults; a dev instance's mutable service data stays under its own install root. */

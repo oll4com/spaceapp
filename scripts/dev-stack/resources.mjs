@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { lstat } from 'node:fs/promises';
 import { ownerLabel } from './state.mjs';
 import { descendants, lineRedactor, processIdentity, sameProcess, stopRecorded } from './processes.mjs';
 
@@ -114,15 +115,24 @@ export async function diagnoseOwnedDocker(config, owner, { output = () => {}, se
     await control('docker', composeArgs(config, owner, ['logs', '--no-color', '--tail', '100', 'postgres', 'temporal']), { secrets, output: chunk => redactor.chunk(chunk) });
   } finally { redactor.end(); }
 }
+/**
+ * Remove only the nonce-owned Compose project, retaining volumes unless reset requests them.
+ * Missing Compose is recoverable only with no remaining labeled resources; unsafe files,
+ * ownership changes and cleanup failures propagate so the caller retains recovery state.
+ */
 export async function removeOwnedDocker(config, owner, { volumes = false, output, secrets, diagnose = false, invoke = run, env = dockerEnvironment() } = {}) {
   await assertOwnedDocker(owner, invoke, env);
   if (diagnose) {
     try { await diagnoseOwnedDocker(config, owner, { output, secrets, invoke, env }); }
     catch { output?.('[dev-stack] Bounded diagnostics unavailable; continuing owned cleanup.\n'); }
   }
-  await invoke('docker', composeArgs(config, owner, ['down', '--remove-orphans', ...(volumes ? ['--volumes'] : [])]), { env, output, secrets, timeout: 120000 });
+  const document = await lstat(config.compose).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (document) {
+    if (!document.isFile() || document.isSymbolicLink()) throw new Error('Compose document must be a regular non-symlink file; recovery state retained.');
+    await invoke('docker', composeArgs(config, owner, ['down', '--remove-orphans', ...(volumes ? ['--volumes'] : [])]), { env, output, secrets, timeout: 120000 });
+  }
   await assertOwnedDocker(owner, invoke, env);
-  for (const kind of ['container', 'network', ...(volumes ? ['volume'] : [])]) {
+  for (const kind of ['container', 'network', ...(volumes || !document ? ['volume'] : [])]) {
     const remaining = await invoke('docker', [kind, 'ls', ...(kind === 'container' ? ['-a'] : []), '-q', '--filter', `label=com.docker.compose.project=${owner.project}`], { env });
     if (remaining.trim()) throw new Error(`Owned ${kind} remains; recovery state retained.`);
   }

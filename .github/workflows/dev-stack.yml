@@ -7,6 +7,8 @@ on:
       - "scripts/dev-stack/**"
       - "scripts/tests/dev-stack.test.mjs"
       - "apps/web/vite.config.ts"
+      - "apps/web/**"
+      - ".nvmrc"
       - "packages/**"
       - "apps/api/**"
       - "apps/worker/**"
@@ -19,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_source:
-        description: "Optional exact40hex reviewed source SHA; mismatch fails before executing project code"
+        description: "Optional exact 40-character reviewed source SHA; mismatch fails before executing project code"
         type: string
         required: false
 
@@ -127,6 +129,7 @@ jobs:
           node node_modules/vitest/vitest.mjs run --config apps/api/vitest.config.ts
           apps/api/tests/instance-storage.test.ts apps/api/tests/dev-oauth-storage.test.ts
           apps/api/tests/dev-docx-isolation.test.ts apps/api/tests/dev-incidents-storage.test.ts
+          apps/api/tests/space-control-governance.test.ts
 
       - name: Native macOS CLI host regressions
         if: runner.os == 'macOS'

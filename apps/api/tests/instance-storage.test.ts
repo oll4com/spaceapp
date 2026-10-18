@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { instanceStorageDirectory } from "../src/instance-storage.js";
+import { instanceSecretDirectories, instanceStorageDirectory } from "../src/instance-storage.js";
 import { PluginsService } from "../src/plugins-service.js";
 
 const temporaryRoots: string[] = [];
@@ -52,6 +52,16 @@ describe("instance-local service storage", () => {
     }
     const credentials = join(first.SPACE_INSTALL_ROOT, "private-credentials");
     expect(instanceStorageDirectory("personal-source-control", credentials, first)).toBe(credentials);
+  });
+
+  it("rejects install roots on either side of the installed storage boundary", () => {
+    for (const SPACE_INSTALL_ROOT of ["/", "/opt", "/opt/spaceapp", "/opt/spaceapp/var", "/opt/spaceapp/../spaceapp/var"]) {
+      const env = { SPACE_INSTANCE: "dev", SPACE_INSTALL_ROOT };
+      expect(() => instanceStorageDirectory("plugins", "/opt/spaceapp/var/plugins", env)).toThrow(/private absolute/);
+      expect(() => instanceSecretDirectories(env)).toThrow(/private absolute/);
+    }
+    const root = resolve("/opt/spaceapp-independent");
+    expect(instanceStorageDirectory("plugins", undefined, { SPACE_INSTANCE: "dev", SPACE_INSTALL_ROOT: root })).toBe(join(root, "var", "plugins"));
   });
 
   it("persists real dev plugin changes privately without syncing operator skill links", async () => {

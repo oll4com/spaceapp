@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { normalizeAgentFileDocx } from "../src/cli-agent-files.js";
+import { AgentFileDocxNormalizationError, normalizeAgentFileDocx } from "../src/cli-agent-files.js";
 
 const boundary = vi.hoisted(() => ({ directories: [] as string[], writes: [] as string[], commands: [] as { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] }));
 // Every filesystem/process boundary is virtual, including the historical installed
@@ -58,6 +58,17 @@ describe("dev DOCX normalization isolation", () => {
   it("rejects a direct dev normalizer's work-directory escape before writing", async () => {
     await expect(normalizeAgentFileDocx(input, { command: "/synthetic/libreoffice", temporaryRoot: "/opt/spaceapp/var/agent-docx-work" })).rejects.toThrow(/escape/);
     expect(boundary.directories).toEqual([]); expect(boundary.commands).toEqual([]);
+  });
+
+  it.each([
+    { install, temporaryRoot: "relative" },
+    { install, temporaryRoot: "/opt/spaceapp/var/agent-docx-work" },
+    { install: undefined, temporaryRoot: undefined },
+    { install: "/opt", temporaryRoot: undefined }
+  ])("maps private work-root rejection to the DOCX error before any side effect: %j", async ({ install: configured, temporaryRoot }) => {
+    vi.stubEnv("SPACE_INSTALL_ROOT", configured);
+    await expect(normalizeAgentFileDocx(input, { command: "/synthetic/libreoffice", temporaryRoot })).rejects.toBeInstanceOf(AgentFileDocxNormalizationError);
+    expect(boundary.directories).toEqual([]); expect(boundary.writes).toEqual([]); expect(boundary.commands).toEqual([]);
   });
 
   it("preserves the stable work directory and broker arguments without executing either", async () => {
