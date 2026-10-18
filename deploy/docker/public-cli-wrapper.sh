@@ -2,8 +2,10 @@
 set -euo pipefail
 
 runtime_name="$(basename "$0" -vscode-parity)"
-state_root="/var/lib/spaceapp-cli/providers/$runtime_name"
-credential_root="/var/lib/spaceapp-cli/imported-credentials"
+cli_root="${SPACE_CLI_STATE_ROOT:-/var/lib/spaceapp-cli}"
+app_root="${SPACE_CLI_APP_ROOT:-/app}"
+state_root="$cli_root/providers/$runtime_name"
+credential_root="$cli_root/imported-credentials"
 credential_file="$credential_root/$runtime_name.key"
 
 export USER=spaceapp
@@ -105,9 +107,9 @@ credential_ready() {
 }
 
 ensure_optional_provider() {
-  export PATH="/var/lib/spaceapp-cli/vendor/$runtime_name/node_modules/.bin:/var/lib/spaceapp-cli/vendor/$runtime_name:$PATH"
+  export PATH="$cli_root/vendor/$runtime_name/node_modules/.bin:$cli_root/vendor/$runtime_name:$PATH"
   if [ "$runtime_name" != "opencode" ] && ! command -v "$command_name" >/dev/null 2>&1; then
-    node /app/deploy/docker/provider-install.mjs "$runtime_name"
+    node "$app_root/deploy/docker/provider-install.mjs" "$runtime_name"
   fi
 }
 
@@ -138,7 +140,7 @@ case "${1:-}" in
   credential-install)
     # A configuration import's login for this CLI arrives on stdin through the CLI host.
     ensure_runtime_dirs
-    exec node /app/deploy/docker/credential-install.mjs "$runtime_name" "$state_root"
+    exec node "$app_root/deploy/docker/credential-install.mjs" "$runtime_name" "$state_root"
     ;;
   inspect-env)
     printf 'runtime=%s\nhome=isolated\ncredential=%s\n' \
@@ -175,7 +177,7 @@ esac
 
 ensure_runtime_dirs
 ensure_optional_provider
-if [ "$runtime_name" = "opencode" ]; then
+if [ "$runtime_name" = "opencode" ] && [ "${SPACE_DEV_STACK_CLI:-false}" != "true" ]; then
   case "${1:-}" in
     models|auth|--help|--version|version) ;;
     # A free-model outage must not leave an empty pane: the owner still gets OpenCode

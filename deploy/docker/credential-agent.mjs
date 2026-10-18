@@ -57,7 +57,7 @@ export async function startCredentialAgent({ socketPath, commandPath, socketMode
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   startCredentialAgent({
     socketPath: process.env.SPACEAPP_CREDENTIAL_SOCKET || '/run/spaceapp-cli/credentials.sock',
-    commandPath: '/usr/local/bin'
+    commandPath: process.env.SPACE_CLI_COMMAND_PATH || '/usr/local/bin'
   }).catch((error) => {
     process.stderr.write(`credential agent: ${error.message}\n`);
     process.exitCode = 1;

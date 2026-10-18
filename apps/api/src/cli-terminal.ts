@@ -1952,6 +1952,8 @@ export class CliTerminalManager {
       // SEC-009: a missing folder is created only where a CLI session may create one; otherwise the session
       // starts in the managed workspace root instead of creating an arbitrary path.
       const { config } = this.options;
+      // Source contributors must never attach a starter pane to an installed tree.
+      if (config.instance === "dev" && (cwd === "/opt/spaceapp" || cwd === "/etc")) cwd = config.cliWorkspaceRoot;
       if (!existsSync(cwd) && !await mayCreateCliSessionDirectory({
         cwd, role: null, projectsRoot: config.projectsRoot, installRoot: config.installRoot,
         worktreesRoot: WORKTREES_ROOT, workspaceRoot: config.cliWorkspaceRoot

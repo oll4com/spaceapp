@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Isolated `npm run dev:stack` contributor workflow with pinned Docker infrastructure,
+  source API/web hot reload, normal owner setup, OpenCode panes and scoped cleanup.
+
 ## [1.1.6] - 2026-10-16
 
 Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry
