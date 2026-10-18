@@ -1,227 +1,53 @@
+version: '3.8'
 services:
-  spaceapp-core:
-    image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}
-    restart: unless-stopped
-    init: true
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: "${SPACEAPP_CORE_MEMORY_LIMIT}"
-    cpus: "${SPACEAPP_CORE_CPU_LIMIT}"
-    environment:
-      SPACE_PUBLIC_DISTRIBUTION: "true"
-      SPACE_AGENT_TOOLS_WRITER: "disabled"
-      SPACE_DEV_LOGIN: "false"
-      SPACE_APP_VERSION: "${SPACEAPP_IMAGE_TAG}"
-      SPACE_TELEMETRY_ENABLED: "${SPACEAPP_TELEMETRY}"
-      SPACE_OPTIONAL_MODULES: "${SPACEAPP_OPTIONAL_MODULES:-all}"
-      SPACE_INSTALL_ID: "${SPACEAPP_INSTALL_ID:-}"
-      SPACE_RUNTIME_STORE: postgres
-      SPACE_DATABASE_URL_SOURCE_FILE: /run/secrets/database-url
-      SPACE_DATABASE_URL_FILE: /run/spaceapp/database-url
-      SPACE_SESSION_SECRET_FILE: /run/secrets/session-secret
-      SPACE_SETUP_TOKEN_SOURCE_FILE: /run/secrets/setup-token
-      SPACE_API_HOST: 127.0.0.1
-      SPACE_API_PORT: 4910
-      SPACE_WEB_HOST: 0.0.0.0
-      SPACE_WEB_PORT: 4911
-      SPACE_API_ORIGIN: http://127.0.0.1:4910
-      SPACE_TEMPORAL_ADDRESS: temporal:7233
-      SPACEAPP_WORKFLOWS_ENABLED: "${SPACEAPP_WORKFLOWS_ENABLED}"
-      SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory
-      SPACE_STARTER_MEMORY_ROOT: /opt/spaceapp/starter-memory
-      SPACE_MEMORY_GRAPH_ROOT: /var/lib/spaceapp/memory-graph
-      SPACE_GEMINI_MEMORY_INDEX_PATH: /var/lib/spaceapp/memory/gemini_history.md
-      SPACE_GEMINI_MEMORY_MONTHLY_PATH: /var/lib/spaceapp/memory/gemini_history_monthly.md
-      SPACE_GEMINI_MEMORY_LOCK_PATH: /var/lib/spaceapp/memory/.memory.lock
-      SPACE_ARTIFACT_ROOT: /var/lib/spaceapp/artifacts
-      SPACE_CLI_HOST_SOCKET: /run/spaceapp-cli/host.sock
-      SPACE_CLI_ENABLED: "true"
-      SPACE_CLI_COMMAND_PATH: /usr/local/bin
-      SPACE_CLI_WORKSPACE_ROOT: /workspaces
-      SPACE_CODEX_HOME: /var/lib/spaceapp-cli/providers/codex
-      SPACE_CODEX_APP_SERVER_HOME: /var/lib/spaceapp-cli/providers/codex
-      SPACE_CODEX_APP_SERVER_COMMAND: /usr/local/bin/codex-vscode-parity
-      SPACE_CODEX_ROUTE_COMMAND: /usr/local/bin/codex-vscode-parity
-      SPACE_CODEX_GOALS_DB_PATH: /var/lib/spaceapp/codex-goals.sqlite
-      SPACE_CODEX_CLI_MODE_DEFAULTS_PROJECTION_PATH: /var/lib/spaceapp/codex-cli-mode-defaults-v1.json
-      SPACE_TELEGRAM_SECRET_ROOT: /var/lib/spaceapp/telegram
-      SPACE_TELEGRAM_OWNERSHIP_MANIFEST: /var/lib/spaceapp/integrations/telegram/thread-ownership.json
-      SPACE_BROWSER_SESSIONS_ENABLED: "${SPACEAPP_BROWSER_ENABLED}"
-      SPACE_BROWSER_HOST_TRANSPORT: unix
-      SPACE_BROWSER_HOST_SOCKET: /run/spaceapp-browser/browser-host.sock
-      SPACE_BROWSER_SESSIONS_DEFAULT_URL: about:blank
-    ports:
-      - "${SPACEAPP_BIND_HOST}:${SPACEAPP_PORT}:4911"
+  core:
+    image: spaceapp/core
     volumes:
-      - spaceapp-data:/var/lib/spaceapp
-      - spaceapp-memory:/var/lib/spaceapp/memory
-      - spaceapp-cli-socket:/run/spaceapp-cli
-      - spaceapp-browser-socket:/run/spaceapp-browser
-      - spaceapp-workspaces:/workspaces
-      - ./backups:/backups
-    secrets:
-      - setup-token
-      - session-secret
-      - database-url
+      - ./data:/data
+    networks:
+      - default
+  cli:
+    image: spaceapp/cli
     depends_on:
-      postgres:
-        condition: service_healthy
-      temporal:
-        condition: service_healthy
-        required: false
-      spaceapp-cli:
-        condition: service_started
-    networks:
-      - spaceapp
-
-  spaceapp-cli:
-    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
-    restart: unless-stopped
-    init: true
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: "${SPACEAPP_CLI_MEMORY_LIMIT}"
-    cpus: "${SPACEAPP_CLI_CPU_LIMIT}"
-    environment:
-      SPACE_PUBLIC_DISTRIBUTION: "true"
-      SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory
-      SPACE_CLI_HOST_SOCKET: /run/spaceapp-cli/host.sock
+      - core
     volumes:
-      - spaceapp-cli-state:/var/lib/spaceapp-cli
-      - spaceapp-memory:/var/lib/spaceapp/memory
-      - spaceapp-cli-socket:/run/spaceapp-cli
-      - spaceapp-workspaces:/workspaces
-      - ./secrets/providers:/run/spaceapp-secrets/providers:ro
+      - ./data:/data
     networks:
-      - spaceapp
-
-  spaceapp-browser:
-    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}
-    profiles: ["standard"]
-    restart: unless-stopped
-    init: true
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: "${SPACEAPP_BROWSER_MEMORY_LIMIT}"
-    cpus: "${SPACEAPP_BROWSER_CPU_LIMIT}"
-    environment:
-      SPACE_PUBLIC_DISTRIBUTION: "true"
-      SPACE_RUNTIME_STORE: postgres
-      SPACE_DATABASE_URL_FILE: /run/secrets/database-url
-      SPACE_ARTIFACT_ROOT: /var/lib/spaceapp/artifacts
-      SPACE_BROWSER_SESSIONS_ENABLED: "true"
-      SPACE_BROWSER_HOST_SOCKET: /run/spaceapp-browser/browser-host.sock
-      SPACE_BROWSER_SESSIONS_DEFAULT_URL: about:blank
-    volumes:
-      - spaceapp-data:/var/lib/spaceapp
-      - spaceapp-browser-socket:/run/spaceapp-browser
-    secrets:
-      - database-url
+      - default
+  browser:
+    image: spaceapp/browser
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - spaceapp
-
-  codex-lb:
-    image: ghcr.io/soju06/codex-lb:1.22.0@sha256:3010b3c5567522fbb6e7225bdbe963fa1038c2584641fcec69094875e40e36e5
-    profiles: ["companions"]
-    restart: unless-stopped
-    init: true
-    mem_limit: "768m"
-    cpus: "1.0"
-    ports:
-      - "${SPACEAPP_BIND_HOST}:2455:2455"
-      - "${SPACEAPP_BIND_HOST}:1455:1455"
+      - core
     volumes:
-      - spaceapp-codex-lb:/var/lib/codex-lb
+      - ./data:/data
     networks:
-      - spaceapp
-
-  headroom:
-    image: ghcr.io/oll4com/headroom-codex-lb:code-5b15319@sha256:491c856a8bd8205d45e980370c3ffe7ffe438b6444216c36ac7c60ad24308aa2
-    profiles: ["companions"]
-    restart: unless-stopped
-    init: true
-    mem_limit: "768m"
-    cpus: "1.0"
-    environment:
-      HEADROOM_HOST: "0.0.0.0"
-      OPENAI_TARGET_API_URL: "${SPACEAPP_COMPANIONS_OPENAI_TARGET_API_URL:-}"
-    ports:
-      - "${SPACEAPP_BIND_HOST}:8787:8787"
-    networks:
-      - spaceapp
-
-  postgres:
-    image: pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
-    restart: unless-stopped
-    mem_limit: "${SPACEAPP_POSTGRES_MEMORY_LIMIT}"
-    cpus: "${SPACEAPP_POSTGRES_CPU_LIMIT}"
+      - default
+  postgresql:
+    image: postgres:latest
     environment:
       POSTGRES_DB: spaceapp
       POSTGRES_USER: spaceapp
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      POSTGRES_PASSWORD: spaceapp
     volumes:
-      - spaceapp-postgres:/var/lib/postgresql/data
-    secrets:
-      - postgres-password
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spaceapp -d spaceapp"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      - ./data:/var/lib/postgresql/data
     networks:
-      - spaceapp
-
-  temporal:
-    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
-    profiles: ["workflows"]
-    restart: unless-stopped
-    mem_limit: "${SPACEAPP_TEMPORAL_MEMORY_LIMIT}"
-    cpus: "${SPACEAPP_TEMPORAL_CPU_LIMIT}"
+      - default
+  pgvector:
+    image: pgvector:latest
     depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DB: postgres12
-      DB_PORT: 5432
-      POSTGRES_USER: spaceapp
-      POSTGRES_SEEDS: postgres
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/docker.yaml
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - export POSTGRES_PWD="$$(cat /run/secrets/postgres-password)"; exec /etc/temporal/entrypoint.sh autosetup
-    secrets:
-      - postgres-password
-    healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233 >/dev/null && temporal operator namespace describe --namespace default --address temporal:7233 >/dev/null"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
+      - postgresql
+    volumes:
+      - ./data:/var/lib/postgresql/data
     networks:
-      - spaceapp
-
+      - default
+  temporal:
+    image: temporalio/temporal:latest
+    depends_on:
+      - core
+    volumes:
+      - ./data:/data
+    networks:
+      - default
 networks:
-  spaceapp:
-    internal: false
-
-secrets:
-  setup-token:
-    file: ./secrets/setup-token
-  database-url:
-    file: ./secrets/database-url
-  session-secret:
-    file: ./secrets/session-secret
-  postgres-password:
-    file: ./secrets/postgres-password
-
-volumes:
-  spaceapp-data:
-  spaceapp-cli-state:
-  spaceapp-cli-socket:
-  spaceapp-browser-socket:
-  spaceapp-memory:
-  spaceapp-postgres:
-  spaceapp-workspaces:
-  spaceapp-codex-lb:
+  default:
+    driver: bridge
