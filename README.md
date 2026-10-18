@@ -93,6 +93,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
 - **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Podman alternative**: Linux rootless Podman **>=5**, cgroup v2 with delegated CPU/memory controllers, and the `docker-compose` **>=2.24.4** provider. macOS requires a running rootless Podman machine with sufficient resources. Install Podman yourself; see [Podman setup and limits](docs/getting-started.md#rootless-podman-linux-and-macos).
 
 ### Run the Installation Command
 
@@ -101,6 +102,12 @@ Run the universal command in your terminal:
 ```bash
 npx --yes run-spaceapp@latest install
 ```
+
+For a fresh Podman installation, use `install --engine podman --profile small`.
+The launcher saves the engine for later commands; Docker remains the default
+when available. Existing installations cannot switch engines in place because
+their volumes belong to the original engine. Podman does not support Windows
+or `--access host-root`.
 
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
@@ -278,7 +285,7 @@ On Linux, the launcher can mount the whole host filesystem into the CLI service.
 ```bash
 npx --yes run-spaceapp@latest install --access host-root
 ```
-Host-root is supported only on Linux. Run `npx --yes run-spaceapp@latest install --access isolated` to remove the host mount again.
+Host-root is supported only on Linux, with Docker as the container engine. Run `npx --yes run-spaceapp@latest install --access isolated` to remove the host mount again.
 </details>
 
 <details>

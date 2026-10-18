@@ -1,10 +1,10 @@
 import { createWriteStream } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, statfs, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,161 @@ const WINDOWS_DOCKER_WINGET_ARGS = Object.freeze([
   "--accept-source-agreements",
   "--disable-interactivity"
 ]);
+
+export async function captureProbe(execute, spec) {
+  let output = "", oversized = false;
+  const stdout = new Writable({ write(chunk, _encoding, done) {
+    const text = chunk.toString();
+    if (output.length + text.length > 1024 * 1024) oversized = true;
+    if (!oversized) output += text;
+    done();
+  } });
+  try {
+    const code = await execute({ ...spec, timeoutMs: 15000 }, { stdout, stderr: null });
+    return code === 0 && !oversized ? output.trim() : null;
+  } catch { return null; }
+}
+
+function parseProbeJson(output) {
+  try { return JSON.parse(output); } catch { return null; }
+}
+
+function probeNumber(value) {
+  if (typeof value !== "number" && !(typeof value === "string" && /^\d+$/.test(value))) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function probeVersion(value) {
+  return typeof value === "string" && /^v?\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(value)
+    ? value.replace(/^v/, "") : null;
+}
+
+function versionAtLeast(version, minimum) {
+  if (!version) return false;
+  const actual = version.split(".").map(Number);
+  const required = minimum.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (actual[i] !== required[i]) return actual[i] > required[i];
+  }
+  return true;
+}
+
+export async function probeEngineInfo({ engine = "docker", platform = process.platform, execute }) {
+  if (!["docker", "podman"].includes(engine)) throw new Error("Container engine must be docker or podman.");
+  const podman = engine === "podman";
+  const cli = await captureProbe(execute, { command: engine, args: podman ? ["version", "--format", "json"] : ["--version"] });
+  const raw = parseProbeJson(await captureProbe(execute, { command: engine,
+    args: ["info", "--format", podman ? "json" : "{{json .}}"] }));
+  const data = raw && !Array.isArray(raw) && typeof raw === "object" ? raw : null;
+  const host = podman ? data?.host : data;
+  const composeEnv = podman ? { env: { PODMAN_COMPOSE_PROVIDER: "docker-compose" } } : {};
+  const compose = await captureProbe(execute, { command: engine, args: ["compose", "version"], ...composeEnv });
+  const cliVersions = podman ? parseProbeJson(cli) : null;
+  const cliVersion = probeVersion(podman ? cliVersions?.Client?.Version : /Docker version ([^,\s]+)/.exec(cli ?? "")?.[1]);
+  const version = probeVersion(podman ? data?.version?.Version : data?.ServerVersion);
+  const remoteVersion = probeVersion(cliVersions?.Server?.Version);
+  const composeVersion = probeVersion(/(?:^|\n)Docker Compose version v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/.exec(compose ?? "")?.[1]);
+  const rootless = podman ? (typeof host?.security?.rootless === "boolean" ? host.security.rootless : null)
+    : (Array.isArray(data?.SecurityOptions) ? data.SecurityOptions.some(item => typeof item === "string" && (item === "name=rootless" || item.startsWith("name=rootless,"))) : null);
+  const groupVersion = podman ? host?.cgroupVersion : data?.CgroupVersion;
+  const cgroupVersion = ["v1", "1"].includes(groupVersion) ? "v1" : ["v2", "2"].includes(groupVersion) ? "v2" : null;
+  const controllers = podman && Array.isArray(host?.cgroupControllers) ? host.cgroupControllers : null;
+  const cpuLimitDelegated = podman ? (controllers && cgroupVersion ? cgroupVersion === "v2" && controllers.includes("cpu") : null)
+    : (typeof data?.CpuCfsQuota === "boolean" && typeof data?.CpuCfsPeriod === "boolean" ? data.CpuCfsQuota && data.CpuCfsPeriod : null);
+  const memoryLimitDelegated = podman ? (controllers && cgroupVersion ? cgroupVersion === "v2" && controllers.includes("memory") : null)
+    : (typeof data?.MemoryLimit === "boolean" ? data.MemoryLimit : null);
+  const cpuCount = probeNumber(podman ? host?.cpus : data?.NCPU);
+  const memoryBytes = probeNumber(podman ? host?.memTotal : data?.MemTotal);
+  const arch = podman ? host?.arch : data?.Architecture;
+  const architecture = ["arm64", "aarch64"].includes(arch) ? "arm64" : ["amd64", "x86_64"].includes(arch) ? "amd64" : null;
+  let freeDiskBytes = null;
+  const graphRoot = podman ? data?.store?.graphRoot : data?.DockerRootDir;
+  if (platform === "linux" && typeof graphRoot === "string" && graphRoot.startsWith("/") && !graphRoot.includes("\0")) {
+    try {
+      const fs = await statfs(graphRoot);
+      freeDiskBytes = probeNumber(Number(fs.bavail) * Number(fs.bsize));
+    } catch { /* Unknown usable space must not fall back to the Bfree-based engine estimate. */ }
+  }
+  let machine = null;
+  if (podman && platform === "darwin") {
+    const machines = parseProbeJson(await captureProbe(execute, { command: "podman", args: ["machine", "list", "--format", "json"] }));
+    const defaults = Array.isArray(machines) ? machines.filter(item => item?.Default === true) : [];
+    const selected = defaults.length === 1 ? defaults[0] : null;
+    if (selected && typeof selected.Name === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(selected.Name)) {
+      machine = { name: selected.Name, running: selected.Running === true, cpus: probeNumber(selected.CPUs),
+        memoryBytes: probeNumber(selected.Memory), diskBytes: probeNumber(selected.DiskSize),
+        vmType: ["qemu", "applehv", "libkrun"].includes(selected.VMType) ? selected.VMType : null };
+    }
+    // SSH joins remote arguments: allow only shell-inert machine names and absolute paths.
+    if (machine?.running && !process.env.CONTAINER_HOST && !process.env.CONTAINER_CONNECTION && typeof graphRoot === "string" && /^\/[A-Za-z0-9_./-]{0,4095}$/.test(graphRoot)) {
+      const output = await captureProbe(execute, { command: "podman", args: ["machine", "ssh", machine.name, "df", "-Pk", "--", graphRoot] });
+      const lines = output?.split(/\r?\n/);
+      const fields = lines?.length === 2 ? lines[1].trim().split(/\s+/) : [];
+      if (fields.length >= 6 && /^\d+$/.test(fields[1]) && /^\d+$/.test(fields[2]) && /^\d+$/.test(fields[3]) && /^\d+%$/.test(fields[4])) {
+        freeDiskBytes = probeNumber(Number(fields[3]) * 1024);
+      }
+    }
+  }
+  const available = Boolean(host && typeof host === "object" && !Array.isArray(host));
+  const checks = podman ? [
+    { name: "Podman CLI", ok: versionAtLeast(cliVersion, "5.0.0"), detail: `Podman ${cliVersion ?? "unavailable"}; version 5 or newer required.` },
+    { name: "Podman Engine", ok: available && versionAtLeast(version, "5.0.0") && (cliVersions?.Server === undefined || versionAtLeast(remoteVersion, "5.0.0")),
+      detail: `Podman ${version ?? "unavailable"}${cliVersions?.Server === undefined ? "" : `; remote server ${remoteVersion ?? "unavailable"}`}; a reachable engine version 5 or newer is required.` },
+    { name: "Podman Compose", ok: versionAtLeast(composeVersion, "2.24.4"), detail: `docker-compose ${composeVersion ?? "unavailable"}; Docker Compose 2.24.4 or newer must be installed as docker-compose.` },
+    { name: "Podman rootless", ok: rootless === true, detail: rootless === true ? "Rootless execution enabled." : "Select rootless Podman; rootful installations use separate volumes." },
+    { name: "Podman cgroup", ok: cgroupVersion === "v2", detail: `${cgroupVersion ?? "Unknown cgroup version"}; cgroup v2 is required.` },
+    { name: "Podman CPU delegation", ok: cgroupVersion === "v2" && cpuLimitDelegated === true, detail: cpuLimitDelegated === true ? "CPU controller available." : "CPU limits are not delegated. Configure the user's systemd cgroup delegation before starting SpaceApp." },
+    { name: "Podman memory delegation", ok: cgroupVersion === "v2" && memoryLimitDelegated === true, detail: memoryLimitDelegated === true ? "Memory controller available." : "Memory limits are not delegated. Configure the user's systemd cgroup delegation before starting SpaceApp." },
+    { name: "Podman resources", ok: cpuCount > 0 && memoryBytes > 0, detail: cpuCount > 0 && memoryBytes > 0 ? "Engine CPU and memory capacity available." : "Engine CPU or memory capacity is unavailable." },
+    { name: "Podman storage", ok: freeDiskBytes !== null && freeDiskBytes > 0, detail: freeDiskBytes === null ? "Engine free disk space is unavailable; inspect Podman storage before continuing."
+      : freeDiskBytes === 0 ? "Podman storage has zero free disk space; free space or enlarge the machine disk before continuing." : "Engine free disk space available." }
+  ] : [
+    { name: "Docker CLI", ok: cli !== null, detail: cliVersion ? `Docker ${cliVersion}` : "Docker CLI unavailable." },
+    { name: "Docker Compose", ok: compose !== null, detail: composeVersion ? `Docker Compose ${composeVersion}` : "Docker Compose unavailable." },
+    { name: "Docker Engine", ok: available, detail: available ? `Docker ${version ?? "version unknown"}` : "Docker Engine unavailable." }
+  ];
+  if (podman) {
+    const help = await captureProbe(execute, { command: "podman", args: ["compose", "up", "--help"], ...composeEnv });
+    checks.push({ name: "Podman Compose wait", ok: /--wait(?:\s|,|=|$)/.test(help ?? "") && /--wait-timeout(?:\s|,|=|$)/.test(help ?? ""),
+      detail: "Compose must support up --wait and --wait-timeout for safe checkpoints." });
+    const projects = parseProbeJson(await captureProbe(execute, { command: "podman", args: ["compose", "ls", "--format", "json"], ...composeEnv }));
+    checks.push({ name: "Podman Compose API", ok: Array.isArray(projects), detail: Array.isArray(projects) ? "Compose can reach the Podman API."
+      : platform === "linux" ? "Compose cannot reach the rootless Podman API. Run systemctl --user start podman.socket, then retry."
+        : "Compose cannot reach the Podman machine API. Check the running default machine and its forwarded socket." });
+    if (platform === "linux") checks.push({ name: "Podman local engine", ok: host?.serviceIsRemote === false,
+      detail: "Linux support requires a local rootless Podman engine." });
+    if (platform === "darwin") checks.push({ name: "Podman machine", ok: machine?.running === true && !process.env.CONTAINER_HOST && !process.env.CONTAINER_CONNECTION,
+      detail: machine?.running ? "Running default Podman machine selected; custom connection overrides are unsupported."
+        : "Start the default Podman machine before continuing." });
+  }
+  return { engine, available, cliVersion, version, composeProvider: composeVersion ? (podman ? "docker-compose" : "docker compose") : null,
+    composeVersion, rootless, cgroupVersion, cpuLimitDelegated, memoryLimitDelegated, cpuCount, memoryBytes, freeDiskBytes, architecture, machine, checks };
+}
+
+export async function ensurePodmanAvailable({ platform = process.platform, profile = "small", execute,
+  stdout = process.stdout, stderr = process.stderr }) {
+  if (!["linux", "darwin"].includes(platform)) {
+    stderr.write("Podman is supported on Linux and macOS only. Windows Podman support is unavailable.\n");
+    return { code: 1, reexecuted: false, engineInfo: null };
+  }
+  const engineInfo = await probeEngineInfo({ engine: "podman", platform, execute });
+  if (profile !== "auto") {
+    const memoryGiB = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile];
+    const cpuCount = profile === "large" ? 8 : 4;
+    engineInfo.checks.push({ name: "Podman profile resources", ok: Boolean(memoryGiB) && engineInfo.cpuCount >= cpuCount && engineInfo.memoryBytes >= memoryGiB * 1024 ** 3,
+      detail: memoryGiB ? `${profile} requires ${cpuCount} engine CPUs and ${memoryGiB} GiB engine memory.` : "Unknown installation profile." });
+  }
+  for (const check of engineInfo.checks) (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
+  const ok = engineInfo.checks.every(check => check.ok);
+  if (!ok) {
+    stderr.write("Install or configure Podman >=5 and docker-compose >=2.24.4, then retry. The launcher does not install or reconfigure Podman.\n");
+    if (platform === "darwin") stderr.write(engineInfo.machine?.vmType === "qemu"
+      ? "Stop the machine, use podman machine set --cpus / --memory / --disk-size with larger values, then start it again. Disk size can only be increased.\n"
+      : "Adjust the machine's CPU, memory or disk allocation using its VM provider's supported controls; Podman machine set resource resizing supports QEMU only.\n");
+  }
+  return { code: ok ? 0 : 1, reexecuted: false, engineInfo };
+}
 
 export function windowsPowerShellArgs(operation) {
   const scripts = {

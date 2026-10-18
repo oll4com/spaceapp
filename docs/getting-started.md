@@ -1,9 +1,10 @@
 # Getting started
 
 SpaceApp packages its application services and redistributable AI coding CLIs
-in Docker. The host needs Node.js only for the small `spaceapp` launcher,
+in containers. The host needs Node.js only for the small `spaceapp` launcher,
 and enough resources for the stack. The launcher installs and starts Docker
-automatically when it is missing.
+automatically when it is missing. Rootless Podman can be selected explicitly
+on Linux and macOS after installing it yourself.
 
 ## Requirements
 
@@ -52,6 +53,93 @@ Desktop's terms, downloads the official architecture-specific DMG, verifies
 its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
+
+## Rootless Podman (Linux and macOS)
+
+Install [Podman >=5](https://podman.io/docs/installation) and the standalone
+[`docker-compose` executable](https://docs.docker.com/compose/install/standalone/)
+>=2.24.4 on `PATH`. `podman-compose` is not the supported provider. The
+launcher pins `PODMAN_COMPOSE_PROVIDER=docker-compose` for every Compose call;
+[`podman compose`](https://docs.podman.io/en/latest/markdown/podman-compose.1.html)
+uses that provider against the Podman socket. The provider floor is needed
+for the [`!override` merge tag](https://docs.docker.com/reference/compose-file/merge/#replace-value).
+
+On Linux, use a non-root account with subordinate UID/GID ranges and the
+`newuidmap`/`newgidmap` helpers configured by your distribution. cgroup v2 and
+delegated CPU and memory controllers are required. The rootless API socket
+can be started with `systemctl --user start podman.socket` on systemd hosts.
+Keep its Unix socket private to your user. Run:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+npx --yes run-spaceapp@latest doctor
+```
+
+On macOS, create and start a rootless Podman machine first. For example, on a
+host with enough spare memory and disk:
+
+```bash
+podman machine init --cpus 4 --memory 9216 --disk-size 30 --rootful=false spaceapp-small
+podman machine start spaceapp-small
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+Machine memory is in MiB and disk capacity is in GiB. The launcher checks
+the active machine's allocation and **free guest disk**, alongside host
+resources; a 30 GiB virtual disk is not 30 GiB free. Inspect the active
+machine with `podman machine list` and `podman machine inspect`. To resize,
+stop that machine, use `podman machine set --cpus 4 --memory 9216 --disk-size 40 <name>`,
+then start it again; supported resizing options depend on the VM provider.
+See [machine setup](https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html)
+and [resize limits](https://docs.podman.io/en/latest/markdown/podman-machine-set.1.html).
+Allow space for the VM OS, image downloads and backups beyond the profile's
+fresh-install floor. Only directories shared with the machine can be used as
+host workspaces; the default machine share is your home directory.
+
+Docker remains the default when available. If only Podman is available, the
+wizard offers it; `--non-interactive` can select it automatically. The engine
+also accepts an `engine` key in `--answers` and is saved in `config.json`.
+Later lifecycle commands, checkpoints, backups and restore use that saved
+engine. An absent engine field on an older install means Docker. Switching
+an existing installation to the other engine is refused because its volumes
+are separate. Recover from portable backups on the original engine; automatic
+cross-engine migration is not supported.
+
+Podman does not support Windows or `--access host-root`. On SELinux enforcing
+hosts, register only project folders you own: shared bind labels let the
+services access them, and UID/GID mapping preserves ownership of agent edits.
+Read-only workspaces retain read-only mounts. Relabeling affects file security
+labels, so do not register system directories or your entire home directory.
+Do not disable SELinux or container labeling to make the stack start.
+
+Before creating services that mount workspaces, the launcher runs a temporary
+read-only container from the selected core image to validate the paths on the
+Podman server and apply shared labels. It removes that container afterward.
+Paths containing commas, double quotes or line breaks are refused because
+Podman's Compose compatibility API cannot represent them safely. Spaces,
+colons and equals signs are supported. Do not move or delete registered
+directories during startup: Podman's compatibility API can recreate a source
+deleted between this check and Compose, despite `create_host_path: false`.
+
+The Ubuntu CI job exercises a fresh `small` installation with readiness,
+read-write/read-only workspace ownership, backup/restore, lifecycle commands
+and purge. It uses synthetic state and no provider login or AI requests.
+The opt-in harness in a source checkout repeats that proof:
+
+```bash
+node packages/run-spaceapp/tests/podman-acceptance.mjs --profile small
+# Optional published-version upgrade/checkpoint/rollback proof:
+node packages/run-spaceapp/tests/podman-acceptance.mjs --profile medium --source-version 1.1.4 --target-version 1.1.5
+```
+
+It requires port 4911 to be unused, creates its own installation and workspace
+directories in your home directory, and removes its project containers,
+volumes, networks and host fixtures even after a failed check. Downloaded
+images remain cached. Its final `REAL_PODMAN` JSON record is emitted only
+after success and cleanup. `--self-test` only checks harness control flow and
+does not contact an engine. Ubuntu `small` evidence does not certify
+`medium`/`large`, SELinux enforcing or macOS: repeat the real harness on each
+target host and retain the output for review.
 
 ## Windows 11 — Command Prompt
 

@@ -1,6 +1,6 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for SpaceApp.
+Cross-platform Docker launcher for SpaceApp, with rootless Podman on Linux and macOS.
 
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
@@ -62,6 +62,49 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+### Rootless Podman
+
+Install [Podman >=5](https://podman.io/docs/installation) and the standalone
+`docker-compose` >=2.24.4 executable on `PATH`, then run as your normal user:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The launcher runs `podman compose` with
+`PODMAN_COMPOSE_PROVIDER=docker-compose`; the minimum provider version supports
+the Compose overrides used for secrets and bind mounts. Linux requires cgroup
+v2 and delegated CPU and memory controllers. `doctor` reports these facts and
+refuses unsupported limits before startup. On macOS, start a rootless Podman
+machine first; the launcher checks its CPU, RAM and free guest disk rather
+than treating its virtual disk capacity as free space. Podman is not installed
+or started automatically. Windows and `--access host-root` are unsupported
+with Podman.
+
+`provider install opencode` on Podman verifies the already bundled OpenCode
+binary; it does not download a second copy.
+
+Docker stays the default when it works. A fresh installation can also select
+Podman through `--answers '{"engine":"podman","profile":"small","confirm":true}'`;
+the saved choice is used by later commands. Changing the engine of an existing
+installation is refused: Docker and Podman cannot see each other's volumes.
+Keep backups and recover using the original engine; cross-engine migration
+has no supported automatic path.
+
+Register only project directories you own. On SELinux systems, the launcher
+requests shared container labels for these binds, including read-only binds;
+relabeling changes file security labels. Host file ownership is preserved by
+mapping the calling user to the CLI's UID/GID 10001. Keep SELinux enforcing.
+Before starting services with registered workspaces, a temporary read-only
+Podman container validates server-side paths and applies shared labels. It
+uses the selected core image and is removed afterward. Workspace paths with
+commas, double quotes or line breaks are refused because Podman's Compose
+compatibility API cannot carry them safely. Keep registered directories in
+place during startup; a deletion between validation and Compose is not atomic.
+See the [setup and acceptance instructions](https://github.com/oll4com/spaceapp/blob/main/docs/getting-started.md#rootless-podman-linux-and-macos)
+for machine sizing and the separate real-engine proof. CI exercises `small`
+on Ubuntu; macOS, other profiles and SELinux enforcing require their own runs.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard lists what is sent
@@ -114,7 +157,7 @@ before enabling it:
 npx --yes run-spaceapp@latest install --access host-root
 ```
 
-Host-root is supported only on Linux. Run
+Host-root is supported only on Linux, with Docker as the container engine. Run
 `npx --yes run-spaceapp@latest install --access isolated` to remove the host
 mount while keeping SpaceApp data and volumes.
 

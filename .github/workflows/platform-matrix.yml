@@ -10,6 +10,25 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      jobs:
+        description: Jobs to run
+        type: choice
+        options: [all, podman]
+        default: all
+      profile:
+        description: Podman acceptance profile (runner must meet its requirements)
+        type: choice
+        options: [small, medium, large]
+        default: small
+      source_version:
+        description: Published source runtime version (empty uses the checkout default)
+        type: string
+        default: ""
+      target_version:
+        description: Published target runtime version for upgrade/checkpoint/rollback (optional)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -20,6 +39,7 @@ concurrency:
 
 jobs:
   launcher:
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs != 'podman'
     name: Launcher / ${{ matrix.os }} / Node ${{ matrix.node }}
     strategy:
       fail-fast: false
@@ -57,3 +77,130 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+      - run: node --check packages/run-spaceapp/tests/podman-acceptance.mjs
+      - run: node packages/run-spaceapp/tests/podman-acceptance.mjs --self-test
+
+  podman:
+    name: Rootless Podman / Ubuntu / ${{ inputs.profile || 'small' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PODMAN_COMPOSE_PROVIDER: docker-compose
+      SPACEAPP_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+
+      - name: Prepare rootless Podman on the disposable runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y uidmap slirp4netns
+          # Ubuntu 24.04 currently bundles Podman 4.9; do not weaken the >=5 floor.
+          if ! podman --version | awk '{split($3,v,"."); exit !(v[1]>=5)}'; then
+            /home/linuxbrew/.linuxbrew/bin/brew install podman
+            echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          fi
+          podman --version
+          podman --version | awk '{split($3,v,"."); exit !(v[1]>=5)}'
+          test "$(id -u)" -ne 0
+          test -x /usr/bin/newuidmap
+          test -x /usr/bin/newgidmap
+          grep "^$(id -un):" /etc/subuid
+          grep "^$(id -un):" /etc/subgid
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          sudo mkdir -p "/etc/systemd/system/user@$(id -u).service.d"
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | \
+            sudo tee "/etc/systemd/system/user@$(id -u).service.d/50-spaceapp-delegate.conf" > /dev/null
+          sudo systemctl daemon-reload
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl restart "user@$(id -u).service"
+          test "$(systemctl show "user@$(id -u).service" --property=Delegate --value)" = yes
+          user_cgroup=$(systemctl show "user@$(id -u).service" --property=ControlGroup --value)
+          test -n "$user_cgroup"
+          grep -qw cpu "/sys/fs/cgroup$user_cgroup/cgroup.controllers"
+          grep -qw memory "/sys/fs/cgroup$user_cgroup/cgroup.controllers"
+          mkdir -p "$XDG_RUNTIME_DIR/podman"
+          # Use this binary, not the distro unit's older /usr/bin/podman.
+          podman_binary=$(readlink -f "$(command -v podman)")
+          echo "$podman_binary"
+          if test "$podman_binary" != /usr/bin/podman; then
+            [[ "$podman_binary" =~ ^/home/linuxbrew/\.linuxbrew/Cellar/podman/[0-9]+(\.[0-9]+){2}(_[0-9]+)?/bin/podman$ ]] || { echo "Unexpected Podman binary: $podman_binary" >&2; exit 1; }
+            # Ubuntu's packaged userns allowance only attaches to /usr/bin/podman.
+            printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile spaceapp-ci-podman %s flags=(unconfined) {\n  userns,\n}\n' "$podman_binary" | \
+              sudo tee /etc/apparmor.d/spaceapp-ci-podman > /dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/spaceapp-ci-podman
+            crun_binary=$(readlink -f "$(command -v crun)")
+            [[ "$crun_binary" =~ ^/home/linuxbrew/\.linuxbrew/Cellar/crun/[0-9]+(\.[0-9]+){1,2}(_[0-9]+)?/bin/crun$ ]] || { echo "Unexpected crun binary" >&2; exit 1; }
+            podman_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf.d"
+            mkdir -p "$podman_config_dir"
+            test ! -e "$podman_config_dir/99-spaceapp-ci.conf"
+            # Keep the OCI runtime from the same installation as Podman.
+            printf '[engine]\nruntime = "crun"\n[engine.runtimes]\ncrun = ["%s"]\n' "$crun_binary" > "$podman_config_dir/99-spaceapp-ci.conf"
+            "$crun_binary" --version
+          fi
+          readlink -f "$(command -v pasta)"
+          pasta --version
+          podman_api_started=$(date --iso-8601=seconds)
+          systemd-run --user --unit=spaceapp-podman-api --property=Delegate=yes --setenv=PATH="$PATH" \
+            "$podman_binary" system service --time=0 "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+          for _ in $(seq 1 30); do
+            test ! -S "$XDG_RUNTIME_DIR/podman/podman.sock" || break
+            sleep 1
+          done
+          if ! test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; then
+            systemctl --user show spaceapp-podman-api.service \
+              --property=LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus || true
+            journalctl --user --unit=spaceapp-podman-api.service --boot --no-pager --lines=100 || true
+            sudo journalctl -k --boot --since "$podman_api_started" --no-pager --lines=100 \
+              --grep='apparmor="DENIED".*(comm="podman"|name="/proc/self/exe")' || true
+            exit 1
+          fi
+          podman info --format '{{.Host.Security.Rootless}} {{.Host.CgroupsVersion}} {{.Host.CgroupControllers}}'
+          podman info --format '{{.Host.OCIRuntime.Path}}'
+
+      - name: Install the supported Compose provider
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/spaceapp-compose"
+          gh release download v2.38.2 --repo docker/compose \
+            --pattern docker-compose-linux-x86_64 --dir "$RUNNER_TEMP/spaceapp-compose"
+          # Digest from the upstream release asset; !override requires >=2.24.4.
+          echo "486b3ffc0f806ca2efbc430cef89955386011662f0c76bad17c103d059cfa9cf  $RUNNER_TEMP/spaceapp-compose/docker-compose-linux-x86_64" | sha256sum --check
+          mv "$RUNNER_TEMP/spaceapp-compose/docker-compose-linux-x86_64" "$RUNNER_TEMP/spaceapp-compose/docker-compose"
+          chmod +x "$RUNNER_TEMP/spaceapp-compose/docker-compose"
+          echo "$RUNNER_TEMP/spaceapp-compose" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/spaceapp-compose/docker-compose" version
+
+      - name: Install, prove readiness and ownership, backup, restore and purge
+        shell: bash
+        env:
+          ACCEPTANCE_PROFILE: ${{ inputs.profile || 'small' }}
+          SOURCE_VERSION: ${{ inputs.source_version }}
+          TARGET_VERSION: ${{ inputs.target_version }}
+        run: |
+          args=(--profile "$ACCEPTANCE_PROFILE" --state-file "$RUNNER_TEMP/spaceapp-podman-state.json")
+          if test -n "$SOURCE_VERSION"; then args+=(--source-version "$SOURCE_VERSION"); fi
+          if test -n "$TARGET_VERSION"; then args+=(--target-version "$TARGET_VERSION"); fi
+          node packages/run-spaceapp/tests/podman-acceptance.mjs "${args[@]}"
+
+      - name: Always clean up only this acceptance project
+        if: always()
+        shell: bash
+        run: |
+          trap 'systemctl --user stop spaceapp-podman-api.service || true' EXIT
+          node packages/run-spaceapp/tests/podman-acceptance.mjs --cleanup "$RUNNER_TEMP/spaceapp-podman-state.json"
