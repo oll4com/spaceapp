@@ -57,3 +57,83 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+
+  podman-linux:
+    name: Launcher / rootless Podman / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+          cache: npm
+
+      - name: Report the preinstalled rootless Podman
+        run: |
+          podman --version
+          podman compose version
+          podman info --format '{{json .}}' | jq '.host.security'
+
+      - run: npm ci
+
+      - run: npm test -w run-spaceapp
+
+      - name: Stage the runtime images locally
+        # The launcher pins the runtime image tag from package.json, and the
+        # registry publishes that tag after the release. Stage the latest
+        # published images under the pinned tag so the lifecycle below runs
+        # with --local-images while the registry catches up.
+        run: |
+          RUNTIME_TAG=$(node -e 'console.log(require("./packages/run-spaceapp/package.json").spaceappRuntimeVersion)')
+          PUBLISHED_TAG=1.1.5
+          podman pull "ghcr.io/oll4com/spaceapp-core:$PUBLISHED_TAG"
+          podman pull "ghcr.io/oll4com/spaceapp-cli:$PUBLISHED_TAG"
+          PGVECTOR_REF=$(grep -o 'pgvector/pgvector:[^ ]*' packages/run-spaceapp/templates/compose.yml | head -1)
+          podman pull "$PGVECTOR_REF"
+          if [ "$RUNTIME_TAG" != "$PUBLISHED_TAG" ]; then
+            podman tag "ghcr.io/oll4com/spaceapp-core:$PUBLISHED_TAG" "ghcr.io/oll4com/spaceapp-core:$RUNTIME_TAG"
+            podman tag "ghcr.io/oll4com/spaceapp-cli:$PUBLISHED_TAG" "ghcr.io/oll4com/spaceapp-cli:$RUNTIME_TAG"
+          fi
+          podman images
+
+      - name: Install with the rootless Podman engine (small profile)
+        env:
+          SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman-home
+        run: >
+          node packages/run-spaceapp/bin/spaceapp.mjs --local-images install
+          --engine podman --profile small --access isolated --no-open
+          --non-interactive --answers '{"confirm":true,"profile":"small","access":"isolated","companions":false,"telemetry":false,"open":false}'
+
+      - name: Dump the podman state if a lifecycle step fails
+        if: failure()
+        run: |
+          podman ps -a || true
+          podman volume ls || true
+          for container in $(podman ps -a --format '{{.Names}}'); do
+            echo "=== logs of $container ==="
+            podman logs --tail 80 "$container" || true
+          done
+
+      - name: Doctor reports the podman engine facts
+        env:
+          SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman-home
+        run: node packages/run-spaceapp/bin/spaceapp.mjs doctor
+
+      - name: Backup the running installation
+        env:
+          SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman-home
+        run: node packages/run-spaceapp/bin/spaceapp.mjs backup
+
+      - name: Uninstall and purge the podman volumes
+        env:
+          SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman-home
+        run: printf 'DELETE\n' | node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data
+
+      - name: Assert no containers or volumes remain
+        run: |
+          test "$(podman ps -aq | wc -l)" -eq 0
+          test "$(podman volume ls -q | wc -l)" -eq 0

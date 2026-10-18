@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -1094,4 +1095,282 @@ function launchDetachedCommand(spec) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+// ---------------------------------------------------------------------------
+// Podman engine support (issue #63): rootless Podman as an alternative engine.
+// Podman >= 5 ships "podman compose" on top of the docker-compose v2 provider,
+// so the launcher reuses the compose workflow with an engine-specific overlay.
+// ---------------------------------------------------------------------------
+
+async function captureEngineOutput(execute, spec) {
+  let output = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (output.length < 1024 * 1024) output += chunk.toString();
+      done();
+    }
+  });
+  try {
+    const code = await execute({ ...spec, timeoutMs: 15000 }, { stdout, stderr: null });
+    return code === 0 ? output.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Engines whose CLI and compose provider both work on this machine. Docker is
+// checked first and short-circuits the probe: it is the default engine, so
+// Podman is not probed (and its install help is not needed) when Docker works.
+export async function detectAvailableEngines(execute) {
+  if (await dockerIsReady(execute)) {
+    return ["docker"];
+  }
+  const engines = [];
+  if (await podmanIsReady(execute)) engines.push("podman");
+  return engines;
+}
+
+export function podmanInstallHelp(platform = process.platform) {
+  const docs = "https://podman.io/docs/installation";
+  if (platform === "darwin") {
+    return [
+      "Podman is not ready on this Mac.",
+      "",
+      "Install Podman and start its virtual machine first:",
+      "  brew install podman",
+      "  podman machine init",
+      "  podman machine start",
+      "  podman compose version                # verify the compose provider works",
+      "",
+      "Documentation: " + docs
+    ].join("\n");
+  }
+  if (platform === "win32") {
+    return [
+      "The Podman engine is not supported on Windows by this launcher.",
+      "",
+      "Use the Docker engine instead, or run Podman inside WSL2 manually.",
+      "Documentation: " + docs
+    ].join("\n");
+  }
+  return [
+    "Podman is not ready on this system.",
+    "",
+    "Install Podman (>= 5) with a working compose provider:",
+    "  sudo apt-get install podman            # Debian/Ubuntu",
+    "  sudo dnf install podman                # Fedora/RHEL",
+    "  # The compose provider is docker-compose v2; install it from",
+    "  # https://github.com/docker/compose/releases into $PATH, or",
+    "  # register it as a Podman compose provider.",
+    "",
+    "Verify with: podman --version && podman compose version",
+    "Documentation: " + docs
+  ].join("\n");
+}
+
+function formatPodmanBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "unknown";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return Math.round(value * 10) / 10 + " " + units[unit];
+}
+
+// Legacy top-level machine values keep the byte normalization; the Podman 5+
+// Resources values use the documented MiB and GiB units directly.
+function normalizePodmanBytes(value) {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return parsed < 1024 * 1024 ? parsed * 1024 * 1024 : parsed;
+}
+
+// Checks that the local podman machine (macOS) satisfies the profile
+// requirements and reports podman machine set / resize instructions.
+export async function checkPodmanMachineResources(execute, requirements = PROFILE_REQUIREMENTS.small) {
+  const raw = await captureEngineOutput(execute, {
+    command: "podman",
+    args: ["machine", "inspect", "--format", "{{json .}}"]
+  });
+  if (!raw) {
+    return {
+      ok: false,
+      reason: "podman-machine-inspect-failed",
+      issues: ["podman machine inspect did not return usable output. Is the machine running?"]
+    };
+  }
+  let machine;
+  try {
+    const parsed = JSON.parse(raw);
+    machine = Array.isArray(parsed) ? parsed[0] : parsed;
+  } catch {
+    return {
+      ok: false,
+      reason: "podman-machine-inspect-failed",
+      issues: ["podman machine inspect returned invalid JSON."]
+    };
+  }
+  const state = typeof machine?.State === "string" ? machine.State.toLowerCase() : null;
+  if (!machine || machine.Running === false || (state !== null && state !== "running")) {
+    return {
+      ok: false,
+      reason: "podman-machine-not-running",
+      issues: ["The podman machine is not running. Start it with: podman machine start"]
+    };
+  }
+  const issues = [];
+  // Podman 5+ nests the machine sizing under Resources (CPUs; Memory in MiB;
+  // DiskSize in GiB) and reports the status in State. Keep the legacy
+  // top-level fields as a fallback for older output.
+  const resources = machine.Resources ?? {};
+  const cpus = Number(resources.CPUs ?? machine.CPUs ?? 0);
+  const memoryBytes = resources.Memory !== undefined
+    ? Number(resources.Memory) * 1024 ** 2
+    : normalizePodmanBytes(machine.Memory);
+  const diskBytes = resources.DiskSize !== undefined
+    ? Number(resources.DiskSize) * 1024 ** 3
+    : normalizePodmanBytes(machine.DiskSize);
+  if (requirements.cpuCount && cpus > 0 && cpus < requirements.cpuCount) {
+    issues.push(
+      "podman machine CPU cores: " + cpus + " (profile needs " + requirements.cpuCount + ")." +
+      " Resize with: podman machine set --cpus " + requirements.cpuCount
+    );
+  }
+  if (requirements.memoryBytes && memoryBytes > 0 && memoryBytes < requirements.memoryBytes) {
+    issues.push(
+      "podman machine memory: " + formatPodmanBytes(memoryBytes) + " (profile needs " +
+      formatPodmanBytes(requirements.memoryBytes) + "). Resize with: podman machine set --memory " +
+      Math.ceil(requirements.memoryBytes / (1024 * 1024))
+    );
+  }
+  if (requirements.freshDiskBytes && diskBytes > 0 && diskBytes < requirements.freshDiskBytes) {
+    issues.push(
+      "podman machine disk: " + formatPodmanBytes(diskBytes) + " (profile needs " +
+      formatPodmanBytes(requirements.freshDiskBytes) + "). Resize the machine disk" +
+      " (podman machine set --disk-size, or recreate it with a larger --disk-size)."
+    );
+  }
+  return { ok: issues.length === 0, reason: issues.length === 0 ? "ok" : "podman-machine-undersized", issues };
+}
+
+// The docker-compose v2 provider talks to Podman through the Docker-compatible
+// API socket. The plain podman CLI does not need it, so a host can report a
+// ready engine while compose cannot connect yet. This probe runs the exact
+// command path a compose command would use.
+export async function podmanApiServiceReady(execute) {
+  return (await execute({ command: "podman", args: ["compose", "ls"] }, { stdout: null, stderr: null })) === 0;
+}
+
+export function podmanApiServiceHelp() {
+  return [
+    "The Podman API socket is not reachable, so the compose provider cannot connect.",
+    "Start it once and retry:",
+    "  systemctl --user enable --now podman.socket   # systemd hosts",
+    "  podman system service --time=0 &               # hosts without systemd"
+  ];
+}
+
+// Ensures the rootless Podman API socket is serving. systemd hosts provide it
+// through the podman.socket user unit; everywhere else the launcher starts a
+// detached podman system service that outlives this invocation, so later
+// compose commands find the same socket.
+export async function ensurePodmanApiService(
+  execute,
+  {
+    platform = process.platform,
+    waitMs = 15000,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  } = {}
+) {
+  if (await podmanApiServiceReady(execute)) {
+    return { ok: true, started: false };
+  }
+  if (platform !== "linux") {
+    return {
+      ok: false,
+      instructions: [
+        "The Podman API socket is not reachable, so the compose provider cannot connect.",
+        "Start (or restart) the podman machine and try again:",
+        "  podman machine start"
+      ]
+    };
+  }
+  const startCode = await execute(
+    { command: "podman", args: ["system", "service", "--time=0"], background: true },
+    { stdout: null, stderr: null }
+  );
+  if (startCode !== 0) {
+    return { ok: false, instructions: podmanApiServiceHelp() };
+  }
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (await podmanApiServiceReady(execute)) {
+      return { ok: true, started: true };
+    }
+    await sleep(250);
+  }
+  return { ok: false, instructions: podmanApiServiceHelp() };
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  requirements = PROFILE_REQUIREMENTS.small,
+  apiService = ensurePodmanApiService
+} = {}) {
+  if (platform === "win32") {
+    stderr.write("The Podman engine is not supported on Windows. Use --engine docker.\n");
+    return { code: 1 };
+  }
+  if (await podmanIsReady(execute)) {
+    if (platform === "darwin") {
+      const machine = await checkPodmanMachineResources(execute, requirements);
+      if (!machine.ok) {
+        stderr.write(machine.issues.join("\n") + "\n");
+        return { code: 1, machine };
+      }
+      const service = await apiService(execute, { platform });
+      if (!service.ok) {
+        stderr.write(service.instructions.join("\n") + "\n");
+        return { code: 1, machine };
+      }
+      return { code: 0, machine };
+    }
+    const service = await apiService(execute, { platform });
+    if (!service.ok) {
+      stderr.write(service.instructions.join("\n") + "\n");
+      return { code: 1, apiService: service };
+    }
+    return { code: 0 };
+  }
+  stderr.write(podmanInstallHelp(platform) + "\n");
+  return { code: 1 };
+}
+
+// Single entry point used by the CLI: verifies the requested engine and prints
+// engine-specific install guidance when it is not usable yet.
+export async function ensureEngineAvailable(engine, options = {}) {
+  if (engine === "podman") {
+    return ensurePodmanAvailable(options);
+  }
+  return ensureDockerAvailable(options);
 }

@@ -1797,7 +1797,7 @@ test("confirmed purge reports removed volumes and retained host files", async ()
     stdin: Readable.from(["DELETE\n"])
   }), 0);
   assert.match(stdout.value(), /Docker volumes removed/);
-  assert.match(stdout.value(), /Host configuration and backups remain/);
+  assert.match(stdout.value(), /Host configuration was removed/);
   assert.match(stdout.value(), /npm uninstall -g run-spaceapp/);
 });
 

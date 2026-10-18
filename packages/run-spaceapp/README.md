@@ -62,6 +62,60 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+### Rootless Podman engine
+
+Docker stays the default engine and nothing changes for Docker users. On
+Linux and macOS the launcher can also run the whole stack on **rootless
+Podman** with the same commands and the same data safety:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+Requirements:
+
+- Podman 5 or newer. Compose runs through `podman compose` with the
+  **docker-compose v2 provider**; install the `docker-compose` v2 binary on
+  `PATH` or register it as a Podman compose provider.
+- The compose provider connects through the Podman API socket. On Linux the
+  launcher starts a rootless `podman system service` when the socket is
+  absent; `systemctl --user enable --now podman.socket` provides it
+  permanently on systemd hosts.
+- Linux: rootless Podman with cgroup v2 and delegated `cpu`, `memory` and
+  `pids` controllers (the default on current Fedora, Debian, Ubuntu and
+  Arch). If a limit cannot be delegated, `doctor` and the install plan say
+  so instead of failing late.
+- macOS: a started `podman machine`. The launcher checks the machine's CPU,
+  memory and disk against the selected profile and explains how to resize it
+  (`podman machine set` plus a restart) when it is too small.
+- Windows is not supported with Podman; use Docker there.
+
+Behavior:
+
+- The choice is saved as `engine` in the launcher configuration and used by
+  every later command (`up`, `down`, `status`, `logs`, `update`,
+  `rollback`, `backup`, `restore`, `doctor`, `repair`, `uninstall`,
+  `factory-reset`, ...). It also works through `--answers`, for example
+  `--answers '{"confirm":true,"engine":"podman",...}'`.
+- `install` without `--engine` keeps using Docker when it works. If Docker is
+  unusable and only Podman is present, the wizard offers Podman (or picks it
+  with `--non-interactive`) instead of installing Docker.
+- Compose runs through `podman compose` with the standard `compose.yml`.
+  Rootless Podman runs the published images through its default subordinate
+  UID/GID mapping (the standard mechanism for rootful images run rootless):
+  the image entrypoints start as root and drop privileges to `10001:10001`
+  themselves, so no user-namespace overlay is needed. Bind mounts registered
+  with `workspace add` are relabeled with SELinux `z` on the podman engine,
+  so they work unchanged on SELinux-enforcing hosts.
+- `doctor` reports the engine, its version, rootless or rootful, the cgroup
+  version and whether CPU/memory limits are delegated. `support-bundle`
+  includes the same facts, without secrets.
+- `--access host-root` is refused on Podman with a clear message.
+- Switching engines on an existing installation is refused (Docker volumes are
+  not visible to Podman). The documented migration path is: `backup`,
+  `uninstall --purge-data`, `install --engine <docker|podman>`, then
+  `restore`.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard lists what is sent

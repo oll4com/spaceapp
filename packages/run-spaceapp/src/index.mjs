@@ -113,6 +113,7 @@ const CONFIG_KEYS = new Set([
   "accessMode",
   "workspaces",
   "companionsEnabled",
+  "engine",
   "optionalModules",
   "installId"
 ]);
@@ -310,6 +311,12 @@ export function createDefaultConfig({
   };
 }
 
+// The engine is only written to config.json for Podman installations; Docker
+// configurations keep their exact shape and default to the Docker engine.
+export function configEngine(config) {
+  return config?.engine === "podman" ? "podman" : "docker";
+}
+
 export function validateConfig(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw new Error("SpaceApp config must be an object.");
@@ -346,6 +353,9 @@ export function validateConfig(config) {
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
+  }
+  if (config.engine !== undefined && config.engine !== "docker" && config.engine !== "podman") {
+    throw new Error('engine must be "docker" or "podman".');
   }
   if (config.optionalModules !== undefined && !OPTIONAL_MODULES_PATTERN.test(config.optionalModules)) {
     throw new Error("optionalModules must be all, none or a comma-separated list of module names.");
@@ -577,11 +587,13 @@ export function renderRuntimeEnv(config) {
 
 export function renderWorkspaceCompose(config) {
   validateConfig(config);
+  const selinuxBind = configEngine(config) === "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(selinuxBind ? ["        bind:", '          selinux: "z"'] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -630,6 +642,16 @@ export function composeCommand(action, root, options = {}) {
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
+  const engine = options.engine === "podman" ? "podman" : "docker";
+  // Backup and restore write into the host bind mount at ./backups, which the
+  // launcher creates with mode 0700 owned by the host user. Under rootless
+  // Podman the container root maps to the host user, so running them as 0:0
+  // keeps the produced files owned by the host user and writable through the
+  // bind mount. The image app user 10001:10001 maps to a subordinate UID there
+  // and gets EACCES on the same directory; the in-image actions that stay
+  // inside named volumes (provider install, owner token rotation) keep
+  // their own 10001:10001 exec users.
+  const appUser = "0:0";
   const settings = profileRuntimeSettings(profile);
   const base = [
     "compose",
@@ -666,7 +688,7 @@ export function composeCommand(action, root, options = {}) {
       "--no-fund",
       "@anthropic-ai/claude-code@2.1.206"
     ],
-    backup: ["exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"],
+    backup: ["exec", "-T", "--user", appUser, "spaceapp-core", "node", "scripts/portable-backup.mjs"],
     stopForRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"],
     resetOwnerPassword: [
       "exec",
@@ -713,7 +735,7 @@ export function composeCommand(action, root, options = {}) {
       "--rm",
       "--no-deps",
       "--user",
-      "0:0",
+      appUser,
       "--env",
       "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
       "--entrypoint",
@@ -731,7 +753,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -762,13 +784,19 @@ export async function writeRuntimeFiles(root, config) {
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
+  // Rootless Podman runs the published images through its default subordinate
+  // UID/GID mapping; the image entrypoints start as root and drop privileges
+  // themselves, so no user-namespace overlay is written. A keep-id overlay would
+  // run the entrypoints as the mapped user without capabilities and crash them.
+  await rm(join(root, "compose.podman.yml"), { force: true });
 }
 
 export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -779,19 +807,31 @@ export async function prepareInstallation(root, {
   const resolvedProfile = profile === undefined
     ? undefined
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
+  const requestedEngine = engine === "podman" ? "podman" : "docker";
   let config;
+  let existing = true;
   try {
     config = await loadConfig(root);
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
     }
+    existing = false;
     config = createDefaultConfig({
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
       companionsEnabled
     });
+  }
+  if (existing && configEngine(config) !== requestedEngine) {
+    throw new Error(
+      `This SpaceApp installation was set up with the ${configEngine(config)} engine; switching to ${requestedEngine} in place is not supported because the existing volumes are not visible to the other engine. ` +
+      `Migrate instead: run "${UNIVERSAL_COMMAND} backup", then "${UNIVERSAL_COMMAND} uninstall --purge-data", install again with --engine ${requestedEngine}, and finish with "${UNIVERSAL_COMMAND} restore".`
+    );
+  }
+  if (!existing && requestedEngine === "podman") {
+    config = { ...config, engine: "podman" };
   }
   if (config.version !== version) {
     config = {

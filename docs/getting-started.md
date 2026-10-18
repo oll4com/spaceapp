@@ -3,7 +3,9 @@
 SpaceApp packages its application services and redistributable AI coding CLIs
 in Docker. The host needs Node.js only for the small `spaceapp` launcher,
 and enough resources for the stack. The launcher installs and starts Docker
-automatically when it is missing.
+automatically when it is missing. Docker is the default engine; on Linux and
+macOS the stack can also run on rootless Podman — see
+[Rootless Podman](#rootless-podman) below.
 
 ## Requirements
 
@@ -38,6 +40,40 @@ the native `docker` and `docker-compose` packages through `pacman`. It then
 starts the service. Before adding the current user to the `docker` group, it
 explains that the group grants root-level privileges, adds the user
 automatically, and continues in the same command.
+
+## Rootless Podman
+
+Docker stays the default engine. On Linux and macOS the same launcher commands
+can run the stack on **rootless Podman** instead:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The engine choice is stored in the launcher configuration and used by every
+later command, and it also works through `--answers`
+(`{"confirm":true,"engine":"podman",...}` with `--non-interactive`).
+
+Requirements and limits:
+
+- Podman 5 or newer with `podman compose` using the **docker-compose v2
+  provider** (the `docker-compose` v2 binary on `PATH` or registered as a
+  Podman compose provider).
+- Linux: rootless Podman with cgroup v2 and delegated `cpu`, `memory` and
+  `pids` controllers. `workspace add` bind mounts keep working on
+  SELinux-enforcing hosts (the launcher relabels them).
+- macOS: a started `podman machine` with enough CPU, memory and disk for the
+  selected profile; the launcher explains how to resize the machine when it is
+  too small.
+- `--access host-root` is refused on Podman.
+- An existing installation cannot switch engines in place (Docker volumes are
+  not visible to Podman). Migrate with `backup`, `uninstall --purge-data`,
+  `install --engine <docker|podman>`, then `restore`.
+- Windows supports Docker only.
+
+`doctor` and `support-bundle` report the engine, its version, rootless or
+rootful, the cgroup version and whether CPU/memory limits are delegated; when
+a limit cannot be applied, `doctor` says so instead of failing late.
 
 ## macOS
 
