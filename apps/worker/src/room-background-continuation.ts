@@ -130,7 +130,10 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`,
+    // The continuation's workflow span links to the trace of the run it
+    // continues (the source run's W3C trace context, when it has one).
+    ...(source.queueItem.turn.traceparent ? { sourceTraceparent: source.queueItem.turn.traceparent } : {})
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({

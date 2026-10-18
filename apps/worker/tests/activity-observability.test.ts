@@ -182,11 +182,13 @@ describe("worker metrics endpoint", () => {
   });
 });
 
-it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+it("registers the activity interceptor, workflow interceptor modules and the workflow span sink on every Temporal worker, including both memory workers", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/createActivityObservabilityInterceptors\(\{ spans \}\)/);
+    expect(source, entry).toMatch(/workflow-observability-interceptors\.js/);
+    expect(source, entry).toMatch(/sinks: workerSpanSinks\(spans\)/);
   }
 });
 
@@ -202,4 +204,36 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+
+it("nests the activity span under the workflow span header and exports the reason code and category", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (span: Record<string, unknown>) => recorded.push(span), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const info = {
+    activityType: "runTurn", activityId: "1", attempt: 2, currentAttemptScheduledTimestampMs: 0,
+    workflowType: "codexAppServerTurnWorkflow", workflowExecution: { workflowId: "w", runId: "r" }
+  } as never;
+  const workflowSpan = { traceId: "cd1f4bf57516094773a6a3ce929d0e0e4736", spanId: "abcdef0123456789", kind: "parent" };
+  await observeActivityExecution(info, [{ traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }], async () => {
+    noteActivityFailureReason("CODEX_APP_SERVER_TURN_TIMEOUT");
+    return { status: "FAILED" };
+  }, { metrics, spans: spans as never, workflowSpan });
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0]).toMatchObject({
+    traceId: "cd1f4bf57516094773a6a3ce929d0e0e4736",
+    parentSpanId: "abcdef0123456789",
+    attributes: {
+      "space.activity_type": "runTurn",
+      "space.outcome": "FAILED_RESULT",
+      "space.attempt": 2,
+      "space.workflow_type": "codexAppServerTurnWorkflow",
+      "space.reason_code": "CODEX_APP_SERVER_TURN_TIMEOUT",
+      "space.category": "TIMEOUT"
+    },
+    error: true
+  });
+  // A link-kind header never parents an activity.
+  await observeActivityExecution(info, [], async () => "ok", { metrics, spans: spans as never, workflowSpan: { ...workflowSpan, kind: "link" } });
+  expect(recorded).toHaveLength(1);
 });

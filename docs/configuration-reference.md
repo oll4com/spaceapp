@@ -39,6 +39,20 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Optional OTLP span export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` (off by default) names the OTLP/HTTP JSON
+collector base URL (`<base>/v1/traces`) for optional span export. Since
+2026-10-18 the same endpoint enables the worker's workflow spans too: every
+workflow run exports one INTERNAL span (`workflow <type>`) beside the activity
+spans, with API-started runs nested under the propagated `traceparent`,
+deterministic traces for worker-internal runs, and OTLP span links from
+continue-as-new and background continuation runs to what they continue.
+Attributes pass the worker allowlist (ids, types, attempt, outcome, error
+code/category, durations; never prompts or user text). The exporter is
+dependency-free and best effort: a bounded queue drops (and counts) spans and a
+failing collector never affects requests (docs/quality/observability.md, Traces).
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:
