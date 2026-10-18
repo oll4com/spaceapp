@@ -14,7 +14,9 @@ export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" 
       modelId: "gpt-5.6-sol", reasoningEffort: "high", agentSessionId: session.sessionId,
       agentRunId: `agent_run:${suffix}`, agentUserMessageId: `agent_msg:user-${suffix}`,
       agentAssistantMessageId: `agent_msg:assistant-${suffix}`, roomAgentMissionId: "mission:continuation",
-      traceId: `trace:continuation-${suffix}`, selectedToolIds: ["room:inspect", "room:open_types", "room:send"]
+      traceId: `trace:continuation-${suffix}`,
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      selectedToolIds: ["room:inspect", "room:open_types", "room:send"]
     } });
     return store.enqueueRoomAgentMission({ requestId: `request:${suffix}`, clientRequestId: `client-${suffix}`, content: prompt,
       supervisorWorkflowId: `room-supervisor:${room.id}`, childWorkflowId: buildCodexAppServerTurnWorkflowId(item.turn),
@@ -23,7 +25,10 @@ export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" 
   }
   const initial = enqueue("initial");
   store.updateRoomAgentMission(initial.mission.id, { status: "RUNNING" });
-  store.updateSpaceAgentRun(initial.run.runId, { status: "COMPLETED" });
+  store.updateSpaceAgentRun(initial.run.runId, {
+    status: "COMPLETED",
+    temporalRunId: "00000000-0000-4000-8000-000000000123"
+  });
   store.markRoomAgentMissionSignaled(room.id, "client-initial");
   const action = store.createRoomAgentAction({ actionId: "action:allocation", missionId: initial.mission.id, roomId: room.id,
     paneId: null, actionType, status: "COMPLETED", idempotencyKey: "allocation-once",

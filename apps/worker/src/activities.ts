@@ -72,7 +72,7 @@ import { executeSkillActionBridge, parseSkillActionBlock } from "./skill-action-
 import { ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS } from "./room-supervisor-state.js";
 import { isCliChatQuotaError, isCliChatTurnProviderId, isNativeChatTurn } from "./turn-runtime-policy.js";
 import { evaluateCompletedTaskResult } from "./task-result-evaluation.js";
-import { noteActivityFailureReason } from "./activity-observability.js";
+import { activityTraceparent, noteActivityFailureReason } from "./activity-observability.js";
 import { observeTurnActivity, recordTurnStatePersistenceFailure } from "./turn-observability.js";
 import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIdentity, handleDotToolCall, nativeChatThreadConfig } from "./dot-tool-gateway.js";
 import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
@@ -452,8 +452,10 @@ export async function runRoomAgentBackgroundAction(input: {
 async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown>, fetchImpl: typeof fetch = fetch) {
   const config = getCodexAppServerTurnActivityConfig();
   if (!config.internalApiToken) throw new Error("Dot Goals require internal API authentication.");
+  const traceparent = activityTraceparent();
   const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/goals/${path}`, {
-    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken,
+      ...(traceparent ? { traceparent } : {}) },
     body: JSON.stringify(body), signal: AbortSignal.timeout(90_000)
   });
   const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -764,7 +766,16 @@ async function markSpaceAgentRunStarted(input: DummyTurnInput, storeOverride?: S
   const store = getCompletionStore(storeOverride);
   if (!store) return null;
   const workflowId = buildCodexAppServerTurnWorkflowId(input);
-  const run = await store.updateSpaceAgentRunByWorkflowId(workflowId, { status: "RUNNING" });
+  let temporalRunId: string | undefined;
+  try {
+    temporalRunId = Context.current().info.workflowExecution?.runId;
+  } catch {
+    // Direct activity-unit tests may call this outside a Temporal context.
+  }
+  const run = await store.updateSpaceAgentRunByWorkflowId(workflowId, {
+    status: "RUNNING",
+    ...(temporalRunId ? { temporalRunId } : {})
+  });
   await store.updateSpaceAgentMessage(input.agentAssistantMessageId, { status: "RUNNING" });
   await store.updateSpaceAgentSession(input.agentSessionId, { status: "RUNNING", lastSyncedAt: new Date().toISOString() });
   return run;

@@ -438,9 +438,9 @@ export function createHttpObservability(input: { serviceName: "space-api"; spanE
     onResponse: observe,
     observeErrorResponse,
     observeWorkerReadiness,
-    close: () => {
+    close: async () => {
       processMetrics.close();
-      void spanExporter?.close();
+      await spanExporter?.close();
     },
     observeCliTerminalEvent,
     snapshot,

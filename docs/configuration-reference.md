@@ -39,6 +39,18 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Optional OTLP trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is a cross-service setting and is not part
+of the generated `SpaceApiConfig` reference or its `--check` preflight. Set the
+same collector base URL in the API and each worker process to export API SERVER
+spans and workflow/activity spans from the main, memory-maintenance and
+memory-mutation workers. The exporter posts OTLP/HTTP JSON to
+`<endpoint>/v1/traces`; only plain HTTP or HTTPS URLs without user information,
+query parameters or fragments are accepted. An unset or invalid value leaves
+export disabled. Export is best effort and does not require an OpenTelemetry
+SDK; see [observability](quality/observability.md#traces-w3c-trace-context).
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

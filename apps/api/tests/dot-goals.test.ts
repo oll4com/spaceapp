@@ -73,9 +73,17 @@ describe("Dot Goals", () => {
     const { service, deps } = fixture();
     const goal = await service.create("user:1", dotId, input, null);
     expect(goal).toMatchObject({ status: "ACTIVE", budget: { maxSteps: 2, maxMinutes: 180 }, milestones: [{ id: "m1", title: "Draft" }, { id: "m2" }] });
-    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, undefined);
     await expect(service.create("user:1", dotId, input, null)).rejects.toMatchObject({ status: 409, code: "DOT_GOAL_OPEN" });
     await expect(service.create("user:2", dotId, input, null)).rejects.toBeInstanceOf(DotGoalError);
+  });
+
+  it("forwards the request id to the workflow coordinator and step turn sender for trace propagation", async () => {
+    const { service, deps } = fixture();
+    const goal = await service.create("user:1", dotId, input, { id: "req:dot-goal-trace" } as never);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, "req:dot-goal-trace");
+    await service.step(goal.goalId, "req:dot-goal-step-trace");
+    expect(vi.mocked(deps.sendStep).mock.calls[0]![0]).toMatchObject({ traceId: "req:dot-goal-step-trace" });
   });
 
   it("starts each step once with an idempotent key, delivers guidance, and waits while a run is active", async () => {

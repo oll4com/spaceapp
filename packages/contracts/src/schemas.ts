@@ -6738,7 +6738,11 @@ export const dummyTurnInputSchema = z.object({
   roomAgentOperatorRequest: z.string().trim().min(1).max(4000).optional(),
   roomAgentContinuation: z.object({
     sourceRunId: idSchema,
-    generation: z.number().int().min(1).max(16)
+    generation: z.number().int().min(1).max(16),
+    sourceSpanContext: z.object({
+      traceId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/),
+      spanId: z.string().regex(/^(?!0{16}$)[0-9a-f]{16}$/)
+    }).optional()
   }).optional(),
   agentUserMessageId: idSchema.optional(),
   agentAssistantMessageId: idSchema.optional(),

@@ -6,6 +6,8 @@ import { getApiConfig } from "../src/config.js";
 import { apiDomainMetrics } from "../src/api-metrics.js";
 import { TemporalCodexAppServerTurnStarter } from "../src/turns.js";
 import { TemporalRoomAgentWorkflowCoordinator } from "../src/room-agent.js";
+import { scheduleMemoryConsolidation } from "../src/memory-consolidation-coordinator.js";
+import { scheduleMemoryMutation } from "../src/memory-mutation-coordinator.js";
 import type { TemporalClientFactory } from "../src/temporal-client.js";
 import {
   TraceContextRegistry,
@@ -50,6 +52,8 @@ describe("request trace context", () => {
     registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
     expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(filled.traceparent).toBe(registry.lookup("req:dddddddddddd")?.traceparent);
+    expect(parseTraceparent(filled.traceparent)?.parentId).toBe(registry.lookup("req:dddddddddddd")?.spanId);
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });
@@ -235,6 +239,35 @@ describe("workflow starters", () => {
       spaceTraceId: "req:internal0001",
       parentSpaceTraceId: "req:roomagent0001",
       missionId: "room_agent_mission:trace",
+      w3cTraceId: inboundTraceId
+    });
+
+    requestTraceContexts.remember("req:memconsolid1", createRequestTraceContext(inbound));
+    let consolidationMemo: Record<string, string> | undefined;
+    await scheduleMemoryConsolidation(
+      { runId: "memory_consolidation:run-1", traceId: "req:memconsolid1" },
+      `space-memory-consolidation:${"c".repeat(64)}`,
+      async (_type, options) => {
+        consolidationMemo = options.memo;
+        return { workflowId: options.workflowId, firstExecutionRunId: "run-mem-1" };
+      }
+    );
+    expect(consolidationMemo).toMatchObject({
+      spaceTraceId: "req:memconsolid1",
+      w3cTraceId: inboundTraceId
+    });
+
+    requestTraceContexts.remember("req:memmutation1", createRequestTraceContext(inbound));
+    let mutationMemo: Record<string, string> | undefined;
+    await scheduleMemoryMutation(
+      { changeSetId: "memory_change:approved", traceId: "req:memmutation1" },
+      async (_type, options) => {
+        mutationMemo = options.memo;
+        return { workflowId: options.workflowId, firstExecutionRunId: "run-mut-1" };
+      }
+    );
+    expect(mutationMemo).toMatchObject({
+      spaceTraceId: "req:memmutation1",
       w3cTraceId: inboundTraceId
     });
   });

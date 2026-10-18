@@ -1,3 +1,5 @@
+import { sanitizeSpanAttributes } from "./span-attributes.js";
+
 /**
  * Optional OTLP/HTTP (JSON) export of API server spans and worker activity spans. Off unless
  * SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector base URL (spans go to
@@ -22,6 +24,13 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  links?: readonly SpanLink[];
+}
+
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
 }
 
 export interface SpanExporterStats {
@@ -49,9 +58,8 @@ export interface OtlpSpanExporterOptions {
   timeoutMs?: number;
 }
 
-const hexId = (length: number) => new RegExp(`^[0-9a-f]{${length}}$`);
-const traceIdPattern = hexId(32);
-const spanIdPattern = hexId(16);
+const traceIdPattern = /^(?!0{32}$)[0-9a-f]{32}$/;
+const spanIdPattern = /^(?!0{16}$)[0-9a-f]{16}$/;
 
 /** The collector base URL, or null when export is off or the value is unsafe. */
 export function otlpTracesUrl(value: string | undefined): string | null {
@@ -67,7 +75,10 @@ export function otlpTracesUrl(value: string | undefined): string | null {
 }
 
 function attributeValue(value: string | number) {
-  return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
+  }
+  return { stringValue: String(value) };
 }
 
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string) {
@@ -76,18 +87,32 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
         scope: { name: serviceName },
-        spans: spans.map(span => ({
-          traceId: span.traceId,
-          spanId: span.spanId,
-          ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
-          name: span.name,
-          kind: span.kind ?? 2,
-          startTimeUnixNano: span.startTimeUnixNano.toString(),
-          endTimeUnixNano: span.endTimeUnixNano.toString(),
-          attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
-          // STATUS_CODE_ERROR or STATUS_CODE_UNSET
-          status: { code: span.error ? 2 : 0 }
-        }))
+        spans: spans.map(span => {
+          const validLinks = (span.links ?? [])
+            .filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId))
+            .slice(0, 4);
+          return {
+            traceId: span.traceId,
+            spanId: span.spanId,
+            ...(span.parentSpanId && spanIdPattern.test(span.parentSpanId) ? { parentSpanId: span.parentSpanId } : {}),
+            name: span.name,
+            kind: span.kind ?? 2,
+            startTimeUnixNano: span.startTimeUnixNano.toString(),
+            endTimeUnixNano: span.endTimeUnixNano.toString(),
+            attributes: Object.entries(sanitizeSpanAttributes(span.attributes)).map(([key, value]) => ({ key, value: attributeValue(value) })),
+            ...(validLinks.length ? {
+              links: validLinks.map(link => ({
+                traceId: link.traceId,
+                spanId: link.spanId,
+                ...(link.attributes ? {
+                  attributes: Object.entries(sanitizeSpanAttributes(link.attributes)).map(([key, value]) => ({ key, value: attributeValue(value) }))
+                } : {})
+              }))
+            } : {}),
+            // STATUS_CODE_ERROR or STATUS_CODE_UNSET
+            status: { code: span.error ? 2 : 0 }
+          };
+        })
       }]
     }]
   };
@@ -122,13 +147,17 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
+      // Schedule the drain after storing its promise. An async IIFE can finish
+      // synchronously when the queue is empty, clearing inFlight in finally
+      // before the assignment below then leaves a permanently settled promise.
+      const running = Promise.resolve().then(async () => {
         try {
           while (queue.length) await flushOnce();
         } finally {
-          inFlight = null;
+          if (inFlight === running) inFlight = null;
         }
-      })();
+      });
+      inFlight = running;
     }
     return inFlight;
   };
@@ -137,12 +166,24 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
 
   return {
     record(span) {
-      if (!traceIdPattern.test(span.traceId) || !spanIdPattern.test(span.spanId)) return;
+      if (!traceIdPattern.test(span.traceId) || !spanIdPattern.test(span.spanId) ||
+          (span.parentSpanId !== null && !spanIdPattern.test(span.parentSpanId))) return;
+      if (span.links?.some(link => !traceIdPattern.test(link.traceId) || !spanIdPattern.test(link.spanId))) return;
       if (queue.length >= maxQueue) {
         stats.dropped += 1;
         return;
       }
-      queue.push(span);
+      queue.push({
+        ...span,
+        attributes: sanitizeSpanAttributes(span.attributes),
+        ...(span.links ? {
+          links: span.links.slice(0, 4).map(link => ({
+            traceId: link.traceId,
+            spanId: link.spanId,
+            ...(link.attributes ? { attributes: sanitizeSpanAttributes(link.attributes) } : {})
+          }))
+        } : {})
+      });
       if (queue.length >= batchSize) void flush();
     },
     flush,

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
+import { ApplicationFailure, type Headers } from "@temporalio/common";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import {
@@ -11,6 +12,13 @@ import {
   type FailureCategory
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
+import {
+  contextFromHeaders,
+  inputTraceContext,
+  runSpanId,
+  runTraceId,
+  type SpanContext
+} from "./workflow-trace-context.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -30,6 +38,7 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  spanContext?: SpanContext;
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
@@ -55,13 +64,12 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
 }
 
-/** traceparent for an outbound call: same W3C trace, new span id; null if none. */
-export function childTraceparent(traceparent: string | null | undefined): string | null {
-  const parsed = parseTraceparent(traceparent);
-  if (!parsed) return null;
-  let spanId = randomBytes(8).toString("hex");
-  while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
-  return formatTraceparent(parsed.traceId, spanId, parsed.flags);
+/** Propagate the recorded activity span, or the existing caller when tracing is off. */
+export function activityTraceparent(fallback?: string | null): string | null {
+  const active = observations.getStore()?.spanContext;
+  if (active) return formatTraceparent(active.traceId, active.spanId);
+  const parsed = parseTraceparent(fallback);
+  return parsed ? formatTraceparent(parsed.traceId, parsed.parentId, parsed.flags) : null;
 }
 
 // Keys whose values are identifiers. Prompts, content and messages are never read.
@@ -76,6 +84,7 @@ const correlationKeys = [
   "agentRunId",
   "agentSessionId",
   "actionId",
+  "sourceRunId",
   "goalId",
   "dotId",
   "turnId",
@@ -94,6 +103,12 @@ function readCorrelation(value: unknown, into: Partial<Record<CorrelationKey, st
     const identifier = logIdentifier(record[key]);
     if (identifier !== null) into[key] = identifier;
   }
+  const continuation = record.roomAgentContinuation;
+  if (into.sourceRunId === undefined && continuation && typeof continuation === "object") {
+    const sourceRunId = (continuation as Record<string, unknown>).sourceRunId;
+    const identifier = logIdentifier(sourceRunId);
+    if (identifier !== null) into.sourceRunId = identifier;
+  }
   if (depth <= 0) return;
   for (const key of nestedKeys) readCorrelation(record[key], into, depth - 1);
 }
@@ -109,21 +124,34 @@ export function activityCorrelation(args: readonly unknown[]): Record<string, st
   if (found.requestId && found.requestId !== found.traceId) correlation.parentTraceId = found.requestId;
   const missionId = found.missionId ?? found.roomAgentMissionId;
   if (missionId) correlation.missionId = missionId;
-  for (const key of ["roomId", "paneId", "agentRunId", "agentSessionId", "actionId", "goalId", "dotId", "turnId", "cliTaskId", "revisionId"] as const) {
+  for (const key of ["roomId", "paneId", "agentRunId", "agentSessionId", "actionId", "sourceRunId", "goalId", "dotId", "turnId", "cliTaskId", "revisionId"] as const) {
     if (found[key]) correlation[key] = found[key]!;
   }
   return correlation;
 }
 
 function errorCodeOf(error: unknown): string {
-  const record = error as { code?: unknown; type?: unknown; name?: unknown } | null;
-  if (isSafeErrorCode(record?.code)) return record!.code as string;
-  if (isSafeErrorCode(record?.type)) return record!.type as string;
-  const name = typeof record?.name === "string" ? record.name : "";
-  if (/Cancel/i.test(name)) return "ACTIVITY_CANCELLED";
-  if (/Timeout/i.test(name)) return "ACTIVITY_TIMEOUT";
-  if (/NotFound/i.test(name)) return "STATE_NOT_FOUND";
-  if (/Retryable/i.test(name)) return "UPSTREAM_RETRYABLE_UNAVAILABLE";
+  const seen = new Set<unknown>();
+  let found: string | null = null;
+  let fallbackName = "";
+  for (let depth = 0; depth < 8 && error && typeof error === "object" && !seen.has(error); depth++) {
+    seen.add(error);
+    const record = error as { code?: unknown; type?: unknown; name?: unknown; cause?: unknown };
+    if (isSafeErrorCode(record.code)) found = record.code;
+    else if (isSafeErrorCode(record.type)) found = record.type;
+    if (!fallbackName && typeof record.name === "string" && record.name && record.name !== "Error") {
+      fallbackName = record.name;
+    } else if (!fallbackName && typeof record.type === "string" && record.type) {
+      fallbackName = record.type;
+    }
+    error = record.cause;
+  }
+  if (found) return found;
+  if (/Cancel/i.test(fallbackName)) return "ACTIVITY_CANCELLED";
+  if (/Timeout/i.test(fallbackName)) return "ACTIVITY_TIMEOUT";
+  if (/Conflict/i.test(fallbackName)) return "CONFLICT";
+  if (/NotFound/i.test(fallbackName)) return "STATE_NOT_FOUND";
+  if (/Retryable/i.test(fallbackName)) return "UPSTREAM_RETRYABLE_UNAVAILABLE";
   return "ACTIVITY_ERROR";
 }
 
@@ -135,14 +163,26 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** Optional OTLP export: one span per attempt, parented to its workflow. */
   spans?: SpanExporter | null;
+  headers?: Headers;
 }
 
-function activityTraceparent(args: readonly unknown[]) {
-  const found: Partial<Record<CorrelationKey, string>> = {};
-  for (const arg of args) readCorrelation(arg, found, 2);
-  return parseTraceparent(found.traceparent);
+function randomSpanId(): string {
+  let spanId = randomBytes(8).toString("hex");
+  while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
+  return spanId;
+}
+
+export function activitySpanParent(info: ActivityInfo, args: readonly unknown[], headers?: Headers): SpanContext | null {
+  const propagated = contextFromHeaders(headers);
+  if (propagated) return { traceId: propagated.traceId, spanId: propagated.spanId };
+  const request = inputTraceContext(args);
+  const runId = info.workflowExecution?.runId;
+  if (request && runId) return { traceId: request.traceId, spanId: runSpanId(runId) };
+  if (request) return request;
+  if (runId) return { traceId: runTraceId(runId), spanId: runSpanId(runId) };
+  return null;
 }
 
 export async function observeActivityExecution<T>(
@@ -172,7 +212,9 @@ export async function observeActivityExecution<T>(
   if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
   metrics.activitiesInFlight.inc(labels);
   workerLog("info", "activity.started", { ...base, queueMs });
-  const observation: ActivityObservation = { reasonCode: null };
+  const parent = dependencies.spans ? activitySpanParent(info, args, dependencies.headers) : null;
+  const spanContext = parent ? { traceId: parent.traceId, spanId: randomSpanId() } : undefined;
+  const observation: ActivityObservation = { reasonCode: null, ...(spanContext ? { spanContext } : {}) };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
     const durationMs = Math.max(0, now() - startedAt);
@@ -194,19 +236,55 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
+    if (parent && spanContext) {
+      const correlation = activityCorrelation(args);
+      const spanAttributes: Record<string, string | number> = {
+        "space.activity_type": activityType,
+        "space.activity_id": info.activityId,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.duration_ms": durationMs
+      };
+      if (queueMs !== null) spanAttributes["space.queue_ms"] = queueMs;
+      if (info.workflowExecution?.workflowId) spanAttributes["space.workflow_id"] = info.workflowExecution.workflowId;
+      if (info.workflowExecution?.runId) spanAttributes["space.temporal_run_id"] = info.workflowExecution.runId;
+      if (info.workflowType) spanAttributes["space.workflow_type"] = info.workflowType;
+      if (reasonCode && isSafeErrorCode(reasonCode)) spanAttributes["space.reason_code"] = reasonCode;
+      if (category) spanAttributes["space.category"] = category;
+      const fields: Array<[string, string]> = [
+        ["traceId", "space.trace_id"],
+        ["roomId", "space.room_id"],
+        ["paneId", "space.pane_id"],
+        ["missionId", "space.mission_id"],
+        ["turnId", "space.turn_id"],
+        ["goalId", "space.goal_id"],
+        ["dotId", "space.dot_id"],
+        ["agentRunId", "space.agent_run_id"],
+        ["agentSessionId", "space.agent_session_id"],
+        ["actionId", "space.action_id"],
+        ["sourceRunId", "space.source_run_id"],
+        ["cliTaskId", "space.cli_task_id"],
+        ["revisionId", "space.revision_id"]
+      ];
+      for (const [source, target] of fields) {
+        const value = correlation[source];
+        if (value) spanAttributes[target] = value;
+      }
+      try {
+        dependencies.spans!.record({
+          traceId: parent.traceId,
+          spanId: spanContext.spanId,
+          parentSpanId: parent.spanId,
+          name: "activity " + activityType,
+          startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+          endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+          attributes: spanAttributes,
+          error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+          kind: 1
+        });
+      } catch {
+        // Telemetry is best effort and cannot change an Activity result.
+      }
     }
   };
 
@@ -218,7 +296,20 @@ export async function observeActivityExecution<T>(
   } catch (error) {
     const cancelled = dependencies.cancelled?.() === true || /Cancel/i.test((error as { name?: string } | null)?.name ?? "");
     const errorName = logIdentifier((error as { name?: unknown } | null)?.name);
-    finish(cancelled ? "CANCELLED" : "FAILED", observation.reasonCode ?? errorCodeOf(error), errorName);
+    const reasonCode = observation.reasonCode ?? errorCodeOf(error);
+    finish(cancelled ? "CANCELLED" : "FAILED", reasonCode, errorName);
+    if (
+      dependencies.headers &&
+      error instanceof Error &&
+      !isSafeErrorCode((error as { type?: unknown }).type) &&
+      isSafeErrorCode(reasonCode)
+    ) {
+      // Temporal derives an Error's failure type from `constructor.name`, not
+      // its mutable `name` property. Wrap it with an explicit type so a safe
+      // custom code survives serialization into ActivityFailure. Keep it
+      // retryable and preserve the original error as its cause.
+      throw ApplicationFailure.create({ message: error.message, type: reasonCode, nonRetryable: false, cause: error });
+    }
     throw error;
   }
 }
@@ -229,6 +320,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headers: input.headers,
         cancelled: () => context.cancellationSignal.aborted
       })
     }

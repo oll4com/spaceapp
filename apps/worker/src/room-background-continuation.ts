@@ -9,6 +9,7 @@ import {
 import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { roomActionSummary } from "./room-action-summary.js";
 import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
+import { contextFromTraceparent, runSpanId } from "./workflow-trace-context.js";
 
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
   // Count the entire mission, including synchronous actions. Background roots
@@ -122,10 +123,22 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const sourceTrace = contextFromTraceparent(source.queueItem.turn.traceparent);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
-    roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    roomAgentContinuation: {
+      sourceRunId: source.run.runId,
+      generation,
+      ...(sourceTrace
+        ? {
+            sourceSpanContext: {
+              traceId: sourceTrace.traceId,
+              spanId: source.run.temporalRunId ? runSpanId(source.run.temporalRunId) : sourceTrace.spanId
+            }
+          }
+        : {})
+    },
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,

@@ -7,6 +7,7 @@ import {
   type SpaceAgentMcpActionEnvelope
 } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
+import { activityTraceparent } from "./activity-observability.js";
 import type { CodexAppServerTurnActivityConfig } from "./activities.js";
 
 const mcpActionBlockPattern = /```space-mcp-actions\s*([\s\S]*?)```/gi;
@@ -124,11 +125,13 @@ export async function executeMcpActionBridge(input: {
 
   try {
     const fetchImpl = input.fetchImpl ?? fetch;
+    const traceparent = activityTraceparent(input.turnInput.traceparent);
     const response = await fetchImpl(internalApiUrl(input.config), {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-space-internal-token": input.config.internalApiToken
+        "x-space-internal-token": input.config.internalApiToken,
+        ...(traceparent ? { traceparent } : {})
       },
       body: JSON.stringify(requestBody)
     });

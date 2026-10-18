@@ -35,6 +35,17 @@ describe("durable background continuation", () => {
     expect(prepared.item.turn.prompt.length).toBeLessThanOrEqual(8000);
   });
 
+  it("links a background continuation to the exact source workflow span", async () => {
+    const c = continuationFixture();
+    const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.roomAgentContinuation?.sourceSpanContext).toEqual({
+      traceId,
+      spanId: "8000000000000123"
+    });
+  });
+
   it("retains totals beyond the detail window and emits intact bounded JSON", () => {
     const c = continuationFixture();
     const actions = Array.from({ length: 80 }, (_, index) => ({ ...c.action, actionId: `action:${index}`,

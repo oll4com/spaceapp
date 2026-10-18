@@ -113,7 +113,7 @@ describe("error and readiness helpers", () => {
     expect(categorizeHttpFailure(null, 429)).toBe("RATE_LIMITED");
   });
 
-  it("converts Temporal durations and counts CLI disconnects and reconnects", () => {
+  it("converts Temporal durations and counts CLI disconnects and reconnects", async () => {
     expect(durationToSeconds({ seconds: "12", nanos: 500_000_000 })).toBe(12.5);
     expect(durationToSeconds(null)).toBeNull();
     const observability = createHttpObservability({ serviceName: "space-api" });
@@ -132,7 +132,7 @@ describe("error and readiness helpers", () => {
       expect(text).toContain('space_cli_terminal_reconnects_total{source="CLIENT",outcome="STOPPED"} 1');
       expect(text).toContain('space_cli_terminal_reconnects_total{source="SERVER",outcome="REATTACHED"} 1');
     } finally {
-      observability.close();
+      await observability.close();
     }
   });
 });

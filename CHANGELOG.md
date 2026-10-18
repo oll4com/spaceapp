@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Optional OTLP workflow and activity-attempt spans across all Temporal workers,
+  connected to API requests, with child workflow nesting, continuation links,
+  replay suppression and allowlisted span attributes. Enable export with
+  `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT`; it remains disabled by default.
+
 ## [1.1.6] - 2026-10-16
 
 Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry

@@ -88,6 +88,17 @@ describe("OTLP span exporter", () => {
     expect(created.stats()).toEqual({ exported: 2, dropped: 0, failed: 0 });
   });
 
+  it("preserves fractional durations as OTLP doubles", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    created.record(span({ attributes: { "space.duration_ms": 1.25, "space.queue_ms": 0.5, "space.attempt": 2 } }));
+    await created.flush();
+    const attributes = JSON.parse(fetchImpl.mock.calls[0]![1].body).resourceSpans[0].scopeSpans[0].spans[0].attributes;
+    expect(attributes).toContainEqual({ key: "space.duration_ms", value: { doubleValue: 1.25 } });
+    expect(attributes).toContainEqual({ key: "space.queue_ms", value: { doubleValue: 0.5 } });
+    expect(attributes).toContainEqual({ key: "space.attempt", value: { intValue: "2" } });
+  });
+
   it("sends full batches without waiting for the interval and flushes the rest on close", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl, { batchSize: 2 });
@@ -100,12 +111,63 @@ describe("OTLP span exporter", () => {
     expect(created.stats().exported).toBe(3);
   });
 
+  it("can flush again after an empty flush", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    await created.flush();
+    created.record(span());
+    await created.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(created.stats()).toEqual({ exported: 1, dropped: 0, failed: 0 });
+  });
+
   it("drops and counts spans instead of growing past the queue bound", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl, { batchSize: 100, maxQueue: 2 });
     for (let index = 0; index < 5; index += 1) created.record(span({ spanId: `000000000000000${index + 1}` }));
     await created.flush();
     expect(created.stats()).toEqual({ exported: 2, dropped: 3, failed: 0 });
+  });
+
+  it("exports bounded workflow links and strips non-allowlisted values before queuing", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    created.record(span({
+      name: "roomAgentActionWorkflow",
+      kind: 1,
+      attributes: {
+        "space.workflow_id": "workflow:room:1",
+        "space.attempt": 2,
+        prompt: "PRIVATE PROMPT: never export this",
+        modelOutput: "PRIVATE MODEL OUTPUT: never export this",
+        filePath: "/private/users/alice/project/secrets.txt",
+        url: "https://private.example/path?token=PRIVATE_URL_TOKEN",
+        errorMessage: "PRIVATE ERROR MESSAGE: never export this",
+        userText: "PRIVATE USER TEXT: never export this",
+        "space.reason_code": "BAD PRIVATE TEXT"
+      },
+      links: [{ traceId, spanId: "1111111111111111", attributes: {
+        "link.reason": "background_continuation",
+        prompt: "secret",
+        filePath: "/private/link/path",
+        url: "https://private.example/link?token=PRIVATE_LINK_TOKEN"
+      } }]
+    }));
+    await created.flush();
+
+    const body = JSON.stringify(JSON.parse(fetchImpl.mock.calls[0]![1].body));
+    expect(body).toContain("background_continuation");
+    expect(body).toContain("workflow:room:1");
+    expect(body).toContain("space.attempt");
+    expect(body).not.toContain("PRIVATE PROMPT");
+    expect(body).not.toContain("PRIVATE MODEL OUTPUT");
+    expect(body).not.toContain("/private/users/alice");
+    expect(body).not.toContain("PRIVATE_URL_TOKEN");
+    expect(body).not.toContain("PRIVATE ERROR MESSAGE");
+    expect(body).not.toContain("PRIVATE USER TEXT");
+    expect(body).not.toContain("PRIVATE_LINK_TOKEN");
+    expect(body).not.toContain("BAD PRIVATE TEXT");
+    expect(body).not.toContain("secret");
   });
 
   it("counts rejected or unreachable deliveries as failed and never throws", async () => {
@@ -120,17 +182,64 @@ describe("OTLP span exporter", () => {
     expect(unreachable.stats()).toEqual({ exported: 0, dropped: 0, failed: 1 });
   });
 
+  it("aborts a slow collector POST at the configured timeout and counts it as failed", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init: { signal: AbortSignal }) => await new Promise<{ ok: boolean }>((_resolve, reject) => {
+      if (init.signal.aborted) {
+        reject(init.signal.reason);
+        return;
+      }
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }));
+    const created = createOtlpSpanExporter({
+      endpoint: "http://127.0.0.1:4318",
+      serviceName: "space-api",
+      fetch: fetchImpl,
+      batchSize: 1,
+      flushIntervalMs: 60_000,
+      timeoutMs: 20
+    });
+    exporters.push(created);
+    created.record(span());
+
+    await expect(created.flush()).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(created.stats()).toEqual({ exported: 0, dropped: 0, failed: 1 });
+  });
+
   it("ignores spans whose ids are not W3C trace and span ids", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl);
     created.record(span({ traceId: "not-a-trace" }));
     created.record(span({ spanId: "xyz" }));
+    created.record(span({ traceId: "0".repeat(32) }));
+    created.record(span({ spanId: "0".repeat(16) }));
+    created.record(span({ parentSpanId: "0".repeat(16) }));
+    created.record(span({ links: [{ traceId: "0".repeat(32), spanId: "1111111111111111" }] }));
     await created.flush();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
 describe("HTTP observability with span export", () => {
+  it("waits for the exporter to flush during shutdown", async () => {
+    let finishClose!: () => void;
+    const exporterClosed = new Promise<void>(resolve => { finishClose = resolve; });
+    const spanExporter: SpanExporter = {
+      record: () => undefined,
+      flush: async () => undefined,
+      close: () => exporterClosed,
+      stats: () => ({ exported: 0, dropped: 0, failed: 0 })
+    };
+    const observability = createHttpObservability({ serviceName: "space-api", spanExporter });
+    let closed = false;
+    const closing = observability.close().then(() => { closed = true; });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    finishClose();
+    await closing;
+    expect(closed).toBe(true);
+  });
+
   it("exports one server span per request, continuing an inbound traceparent", async () => {
     const recorded: ServerSpan[] = [];
     const spanExporter: SpanExporter = {
@@ -153,7 +262,7 @@ describe("HTTP observability with span export", () => {
       expect(response.statusCode).toBe(200);
     } finally {
       await app.close();
-      observability.close();
+      await observability.close();
     }
 
     expect(recorded).toHaveLength(1);
@@ -173,12 +282,12 @@ describe("HTTP observability with span export", () => {
     expect(observability.renderPrometheus()).toContain('space_otlp_spans_total{outcome="exported"} 1');
   });
 
-  it("adds no span work or metric lines when export is off", () => {
+  it("adds no span work or metric lines when export is off", async () => {
     const observability = createHttpObservability({ serviceName: "space-api", spanExporter: null });
     try {
       expect(observability.renderPrometheus()).not.toContain("space_otlp_spans_total");
     } finally {
-      observability.close();
+      await observability.close();
     }
   });
 });

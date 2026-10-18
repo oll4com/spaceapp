@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request } from "node:http";
+import { ApplicationFailure, defaultPayloadConverter } from "@temporalio/common";
 import { MetricsRegistry } from "@space/runtime";
 import {
   activityCorrelation,
-  childTraceparent,
+  activityTraceparent,
   createActivityObservabilityInterceptors,
   noteActivityFailureReason,
   observeActivityExecution
 } from "../src/activity-observability.js";
+import { TRACE_HEADER, runSpanId, runTraceId } from "../src/workflow-trace-context.js";
 import { captureWorkerLogs, workerLog } from "../src/worker-log.js";
 import {
   createWorkerMetrics,
@@ -61,11 +63,11 @@ describe("activity correlation", () => {
     expect(activityCorrelation(["goal:positional", { roomId: "has spaces in it", traceId: secretPrompt }])).toEqual({});
   });
 
-  it("creates child traceparents in the same trace", () => {
-    const child = childTraceparent(traceparent);
+  it("preserves the recorded caller when no activity span is active", () => {
+    const child = activityTraceparent(traceparent);
     expect(child).toMatch(/^00-4bf92f3577b34da6a3ce929d0e0e4736-[0-9a-f]{16}-01$/);
-    expect(child).not.toBe(traceparent);
-    expect(childTraceparent("invalid")).toBeNull();
+    expect(child).toBe(traceparent);
+    expect(activityTraceparent("invalid")).toBeNull();
   });
 });
 
@@ -135,6 +137,49 @@ describe("observeActivityExecution", () => {
     expect(value).toBe("done");
     expect(logs.records.map((record) => record.event)).toEqual(["activity.started", "activity.finished"]);
   });
+
+  it("records each retry as an activity child of its workflow span with bounded failure attributes", async () => {
+    const spans: Array<Record<string, unknown>> = [];
+    const runId = "12345678-1234-4234-8234-123456789abc";
+    const parent = { traceId: "4bf92f3577b34da6a3ce929d0e0e4736", spanId: runSpanId(runId) };
+    const context = defaultPayloadConverter.toPayload(parent);
+    const telemetry = {
+      record: (span: Record<string, unknown>) => { spans.push(span); },
+      flush: async () => undefined,
+      close: async () => undefined,
+      stats: () => ({ exported: spans.length, dropped: 0, failed: 0 })
+    };
+    const failed = Object.assign(new Error(secretPrompt), { code: "UPSTREAM_RETRYABLE_UNAVAILABLE" });
+
+    await expect(observeActivityExecution(info({
+      attempt: 2,
+      workflowExecution: { workflowId: "workflow:example:1", runId }
+    }), [{ traceparent, prompt: secretPrompt, roomAgentContinuation: { sourceRunId: "agent_run:source1", generation: 1 } }],
+    async () => { throw failed; }, {
+      spans: telemetry,
+      headers: { [TRACE_HEADER]: context },
+      now: () => 1_500
+    })).rejects.toMatchObject({
+      type: "UPSTREAM_RETRYABLE_UNAVAILABLE",
+      nonRetryable: false,
+      cause: failed
+    } satisfies Partial<ApplicationFailure>);
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({ traceId: parent.traceId, parentSpanId: parent.spanId, error: true, kind: 1 });
+    expect(spans[0]!.attributes).toMatchObject({
+      "space.activity_type": "runCodexAppServerTurn",
+      "space.activity_id": "3",
+      "space.workflow_id": "workflow:example:1",
+      "space.temporal_run_id": runId,
+      "space.attempt": 2,
+      "space.outcome": "FAILED",
+      "space.reason_code": "UPSTREAM_RETRYABLE_UNAVAILABLE",
+      "space.category": "UPSTREAM_UNAVAILABLE",
+      "space.source_run_id": "agent_run:source1"
+    });
+    expect(JSON.stringify(spans, (_key, value) => typeof value === "bigint" ? value.toString() : value)).not.toContain("PRIVATE PROMPT");
+  });
 });
 
 describe("worker log", () => {
@@ -186,11 +231,14 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/workerTracingOptions\(spans\)/);
   }
+  const tracing = await readFile(new URL("../src/worker-tracing.ts", import.meta.url), "utf8");
+  expect(tracing).toMatch(/createActivityObservabilityInterceptors\(\{ spans: exporter \}\)/);
+  expect(tracing).toMatch(/callDuringReplay: false/);
 });
 
-it("exports one INTERNAL span per activity under the caller's traceparent", async () => {
+it("exports activity spans under propagated context or the owning Temporal run", async () => {
   const recorded: Array<Record<string, unknown>> = [];
   const spans = { record: (span: Record<string, unknown>) => recorded.push(span), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
   const metrics = createWorkerMetrics(new MetricsRegistry());
@@ -199,7 +247,8 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
   await observeActivityExecution(info, [{ turn: { traceparent } }], async () => { clock += 250; return "ok"; }, { metrics, now: () => clock, spans: spans as never });
   await observeActivityExecution(info, [{ traceId: "req:no-w3c-parent" }], async () => "ok", { metrics, now: () => clock, spans: spans as never });
-  expect(recorded).toHaveLength(1);
-  expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
+  expect(recorded).toHaveLength(2);
+  expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: runSpanId("r"), name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+  expect(recorded[1]).toMatchObject({ traceId: runTraceId("r"), parentSpanId: runSpanId("r"), name: "activity runTurn", kind: 1 });
 });

@@ -16,6 +16,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { DotGoalsRepository, DotsRepository } from "@space/db";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 
 /**
  * Space Dots Stage 4: Goals.
@@ -26,7 +27,7 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string): Promise<void>;
+  start(goalId: string, traceId?: string): Promise<void>;
   wake(goalId: string): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
   ensure?(goalId: string): Promise<boolean>;
@@ -38,11 +39,14 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string) {
+  start(goalId: string, traceId?: string) {
     return this.client(async (client) => {
       try {
+        const traceparent = traceparentForTraceId(traceId);
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE" });
+          args: [{ goalId }],
+          ...(traceparent && traceId ? { memo: workflowCorrelationMemo({ traceId, traceparent }) } : {}),
+          workflowIdReusePolicy: "REJECT_DUPLICATE" });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
@@ -75,7 +79,7 @@ export interface DotGoalServiceDeps {
   goals: DotGoalsRepository;
   workflow: DotGoalWorkflowCoordinator | null;
   /** Sends a visible Chat turn in the Goal's conversation (idempotent by request key). */
-  sendStep(input: { paneId: string; sessionId: string; ownerUserId: string; content: string; requestKey: string }): Promise<{ runId: string }>;
+  sendStep(input: { paneId: string; sessionId: string; ownerUserId: string; content: string; requestKey: string; traceId?: string }): Promise<{ runId: string }>;
   interrupt(paneId: string, reason: string): Promise<void>;
   /** A step this Goal already submitted under its request key, if any (survives retries and restarts). */
   submission(paneId: string, requestKey: string): Promise<{ runId: string; status: string } | null>;
@@ -125,7 +129,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       if ((error as { code?: string }).code === "DOT_GOAL_OPEN") throw new DotGoalError(409, "DOT_GOAL_OPEN", "This conversation already has an open Goal.");
       throw error;
     }
-    try { await deps.workflow.start(goal.goalId); }
+    try { await deps.workflow.start(goal.goalId, request?.id); }
     catch {
       goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");
@@ -164,7 +168,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
   }
 
   /** One workflow iteration: start the next step, or report why not. Idempotent per step number. */
-  async function step(goalId: string): Promise<DotGoalStepState> {
+  async function step(goalId: string, traceId?: string): Promise<DotGoalStepState> {
     let goal = await deps.goals.get(goalId);
     if (!goal) throw new DotGoalError(404, "DOT_GOAL_NOT_FOUND", "Goal was not found.");
     if (goal.status === "PAUSED" || goal.status === "BLOCKED") return { state: "PAUSED", goal };
@@ -193,7 +197,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     let runId: string;
     try {
       ({ runId } = await deps.sendStep({ paneId: session.paneId, sessionId: session.sessionId, ownerUserId: goal.ownerUserId,
-        content: message.prompt, requestKey: requestKeyFor(goal.goalId, stepNumber) }));
+        content: message.prompt, requestKey: requestKeyFor(goal.goalId, stepNumber), ...(traceId ? { traceId } : {}) }));
     } catch (error) {
       // A busy conversation, a pending request or a changed session is a reason to wait, not to fail the Goal.
       if (error instanceof SpaceConflictError) return { state: "WAITING", goal };
@@ -309,7 +313,7 @@ export function registerDotGoalRoutes(app: FastifyInstance, service: DotGoalServ
   const internalGoal = z.object({ goalId: z.string().regex(/^dot_goal:[A-Za-z0-9_-]{8,64}$/) }).strict();
   app.post("/api/internal/dots/goals/step", options.routeOptions, async (request, reply) => {
     if (!service) return reply.code(503).send({ error: { code: "DOT_GOALS_UNAVAILABLE", message: "Goals are unavailable." } });
-    try { return await service.step(internalGoal.parse(request.body ?? {}).goalId); }
+    try { return await service.step(internalGoal.parse(request.body ?? {}).goalId, request.id); }
     catch (error) { return failure(reply, error); }
   });
   app.post("/api/internal/dots/goals/observe", options.routeOptions, async (request, reply) => {

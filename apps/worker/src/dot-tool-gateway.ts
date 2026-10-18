@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { CodexAppServerTurnActivityConfig } from "./activities.js";
+import { activityTraceparent } from "./activity-observability.js";
 import { executeChatActionBridge } from "./chat-action-bridge.js";
 import { executeClipboardActionBridge } from "./clipboard-action-bridge.js";
 import { executeMemoryActionBridge } from "./memory-action-bridge.js";
@@ -161,8 +162,10 @@ export async function runNativeDotTool(context: DotToolCallContext, toolId: stri
 
 async function internalApi(context: DotToolCallContext, path: "catalog" | "call", body: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
   if (!context.config.internalApiToken) return { status: 503, body: { error: { message: "Space tools require internal API authentication." } } };
+  const traceparent = activityTraceparent(context.turnInput.traceparent);
   const response = await (context.fetchImpl ?? fetch)(`${context.config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/tools/${path}`, {
-    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": context.config.internalApiToken },
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": context.config.internalApiToken,
+      ...(traceparent ? { traceparent } : {}) },
     body: JSON.stringify(body), signal: AbortSignal.timeout(path === "call" ? 20 * 60_000 : 30_000)
   });
   const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;
