@@ -54,6 +54,7 @@ import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-prese
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
+import { createLargeDemoMemoryGraph, demoMemoryNodeCount, largeDemoMemoryDetail, largeDemoMemoryOverview, type DemoMemoryGraph, type DemoMemoryNodeCount } from "./demo-memory-graph.js";
 
 export const DEMO_WARNING = "DEMO MODE — Everything is simulated locally. No production service is connected.";
 export { DEMO_LOCAL_REPLY } from "../runtime/SpaceRuntime.js";
@@ -138,6 +139,7 @@ function initialStreamingBotStatus(): StreamingBotStatus {
 }
 
 type DemoMemoryGraphQuery = {
+  limit?: number;
   q?: string;
   nodeType?: MemoryGraphNode["type"];
   scope?: "SYSTEM" | "PROJECT" | "ROOM";
@@ -226,8 +228,15 @@ export class DemoStore {
   private mockServices = new MockServices(() => this.fixture);
   private readonly publicMock: boolean;
   private readonly initialFixture: DemoFixture;
+  private readonly memoryNodeCount: DemoMemoryNodeCount | undefined;
+  private largeMemoryGraph: Promise<DemoMemoryGraph> | undefined;
+  private largeMemoryOverviews = new Map<string, ReturnType<typeof largeDemoMemoryOverview>>();
 
-  constructor(initialFixture?: DemoFixture) {
+  constructor(initialFixture?: DemoFixture, options: { memoryNodes?: DemoMemoryNodeCount } = {}) {
+    // This configuration is read only by the local demo store, never the live API.
+    this.memoryNodeCount = options.memoryNodes ?? demoMemoryNodeCount(
+      typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("memoryNodes") : undefined
+    );
     this.publicMock = initialFixture !== undefined;
     if (initialFixture) {
       this.fixture = structuredClone(initialFixture);
@@ -1490,6 +1499,19 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
+        if (this.memoryNodeCount) {
+          this.largeMemoryGraph ??= createLargeDemoMemoryGraph(this.memoryNodeCount);
+          const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+          const key = JSON.stringify(query);
+          let overview = this.largeMemoryOverviews.get(key);
+          if (!overview) {
+            overview = this.largeMemoryGraph.then(graph => largeDemoMemoryOverview(graph, query));
+            // Bound search result retention while reusing graph generation and common view requests.
+            if (this.largeMemoryOverviews.size >= 8) this.largeMemoryOverviews.delete(this.largeMemoryOverviews.keys().next().value!);
+            this.largeMemoryOverviews.set(key, overview);
+          }
+          return overview;
+        }
         const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
@@ -1568,6 +1590,14 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        if (this.memoryNodeCount && roomId?.includes(":synthetic")) {
+          this.largeMemoryGraph ??= createLargeDemoMemoryGraph(this.memoryNodeCount);
+          return this.largeMemoryGraph.then(graph => {
+            const detail = largeDemoMemoryDetail(graph, roomId);
+            if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
+            return detail;
+          });
+        }
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));

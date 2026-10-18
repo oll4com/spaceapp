@@ -4,6 +4,7 @@ import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pan
 import type { LiveRoomContext } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
+import { readMemoryOverviewResponse } from "./features/memory-workspace/memory-overview-response.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
 import type {
   DemoAccountsResponse,
@@ -928,7 +929,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw upstreamTransportError(error);
   }
 
-  const payload = await readResponsePayload(response);
+  const payload = await readMemoryOverviewResponse(url, response, () => readResponsePayload(response));
   reportCoreApiResponse(response, payload, requestStartedAt);
   if (response.status === 401 || response.status === 403) {
     csrfToken = null;
@@ -2995,6 +2996,7 @@ export const api = {
     return request<MemoryGraphResponse>(`/api/admin/memory/graph${suffix ? `?${suffix}` : ""}`);
   },
   memoryGraphOverview: (query: {
+    limit?: number;
     q?: string;
     nodeType?: MemoryGraphNodeType;
     scope?: MemoryEntry["scope"];
@@ -3005,6 +3007,7 @@ export const api = {
     relationMode?: "CLUSTERED" | "RELATIONS";
   } = {}) => {
     const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.q) params.set("q", query.q);
     if (query.nodeType) params.set("nodeType", query.nodeType);
     if (query.scope) params.set("scope", query.scope);

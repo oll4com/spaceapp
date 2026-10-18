@@ -2,11 +2,21 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { ListMemoryQuery, MemoryEntry, MemoryGraphSnapshot } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
+import { InMemoryStreamingRepository } from "@space/db";
+import { StreamingCredentialStore } from "@space/streaming";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import type { MemoryMutationCoordinator } from "../src/memory-mutation-coordinator.js";
 import type { MemoryConsolidationCoordinator } from "../src/memory-consolidation-coordinator.js";
+import { StreamingService } from "../src/streaming-service.js";
+
+// Memory route tests do not exercise streaming credentials. Isolate that unrelated
+// lifecycle: its production temporary-path guard currently assumes POSIX paths.
+class MemoryRouteStreamingService extends StreamingService {
+  override async initialize(): Promise<void> {}
+  override async dispose(): Promise<void> {}
+}
 
 const sessionSecret = "test-secret-with-enough-length";
 const sessionToken = signSession(
@@ -100,6 +110,10 @@ async function memoryGraphApp(
 ) {
   return createApp({
     store,
+    streamingService: new MemoryRouteStreamingService({
+      repository: new InMemoryStreamingRepository(), store,
+      credentialStore: new StreamingCredentialStore("/memory-route-test-not-opened")
+    }),
     config: getApiConfig({
       SPACE_MEMORY_GRAPH_ENABLED: enabled ? "true" : "false",
       SPACE_MEMORY_MAINTENANCE_ENABLED: options.maintenanceEnabled ? "true" : "false",
@@ -433,6 +447,76 @@ describe("Memory graph API", () => {
     expect(data.totalMatchingNodes).toBe(2202);
     await app.close();
   });
+
+  it("requires privileged authentication and validates opt-in overview limits", async () => {
+    const app = await memoryGraphApp(true);
+    try {
+      expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000" })).statusCode).toBe(401);
+      const user = signSession({ id: "user:regular", email: "regular@space.test", role: "USER" }, sessionSecret);
+      expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie: `space_session=${user}` } })).statusCode).toBe(403);
+      expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie: `space_session=${user}` } })).statusCode).toBe(403);
+      const admin = signSession({ id: "user:admin", email: "admin@space.test", role: "ADMIN" }, sessionSecret);
+      expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie: `space_session=${admin}` } })).statusCode).toBe(200);
+      for (const limit of ["0", "-1", "50001", "1.5", "invalid", ""]) {
+        const response = await app.inject({ method: "GET", url: `/api/admin/memory/graph/overview?limit=${limit}`, headers: { cookie } });
+        expect(response.statusCode, `limit=${limit}`).toBe(422);
+      }
+      const one = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=1", headers: { cookie } });
+      expect(one.statusCode).toBe(200);
+      expect(one.json().data.nodes).toHaveLength(1);
+      expect(one.json().data.truncated).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps legacy caps and returns up to 50k redacted nodes and 150k edges on request", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 50_000 }, (_, index) => ({
+      id: `memory:large:${String(index).padStart(5, "0")}`, type: "MEMORY" as const,
+      label: index === 0 ? "Memory token=raw-large-secret" : `Memory ${index}`, sourcePath: null, recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 150_001 }, (_, index) => ({
+      id: `edge:large:${index}`, type: "CONTAINS" as const,
+      source: graphSnapshot.nodes[0]!.id, target: graphSnapshot.nodes[(index % 1000) + 1]!.id,
+      ...(index === 0 ? { evidence: "Relationship token=raw-large-edge-secret" } : {})
+    }));
+    graphSnapshot.summary = { sourceCount: 0, recordCount: 0, nodeCount: 50_000, edgeCount: 150_001, issueCount: 0 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    try {
+      const legacy = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+      expect(legacy.statusCode).toBe(200);
+      expect(legacy.json().data.nodes).toHaveLength(2000);
+      expect(legacy.json().data.edges).toHaveLength(6000);
+      const largeStartedAt = performance.now();
+      const large = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+      const largeElapsedMs = performance.now() - largeStartedAt;
+      expect(large.statusCode).toBe(200);
+      const data = large.json().data;
+      if (process.env.MEMORY_GRAPH_BENCHMARK === "1") {
+        console.log(JSON.stringify({
+          benchmark: "memory-graph-overview-fastify-inject",
+          fixture: "synthetic-in-memory-graph",
+          nodeVersion: process.version,
+          nodes: data.nodes.length,
+          edges: data.edges.length,
+          serializedBytes: Buffer.byteLength(large.body, "utf8"),
+          handlerAndSerializationMs: Math.round(largeElapsedMs * 100) / 100
+        }));
+      }
+      expect(data.nodes).toHaveLength(50_000);
+      expect(data.edges).toHaveLength(150_000);
+      expect(data).toMatchObject({ totalMatchingNodes: 50_000, totalMatchingEdges: 150_001, truncated: true });
+      expect(large.body).not.toContain("raw-large-secret");
+      expect(large.body).not.toContain("raw-large-edge-secret");
+      const medium = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=10000", headers: { cookie } });
+      expect(medium.statusCode).toBe(200);
+      expect(medium.json().data.nodes).toHaveLength(10_000);
+      expect(medium.json().data.edges).toHaveLength(30_000);
+    } finally {
+      await app.close();
+    }
+  }, 30_000);
 
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;

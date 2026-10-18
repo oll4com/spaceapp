@@ -5,13 +5,25 @@ import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 export const ATLAS_COLORS = ["#57ccff", "#ff79bc", "#ab95ff", "#53e2ba", "#ffc56c", "#fa887e", "#a0df73", "#8caaff"];
 export type MemoryAtlasPosition = { x: number; y: number; color: string; hub: boolean; groupId: string; monthLabel?: string };
 export type MemoryAtlasGroup = { id: string; label: string; color: string; count: number; kind: "tag" | "topic" | "month" | "archive" };
+/** Read a canonical YYYY-MM month from the real source path, returning null for undated sources. */
 export const memorySourceMonth = (node: MemoryGraphNode) => node.sourcePath?.match(/(?:^|[_/-])(20\d{2}-(?:0[1-9]|1[0-2]))(?:[_. /-]|$)/)?.[1] ?? null;
+/** Format an archive month in UTC so the user's timezone cannot shift its displayed month. */
 export const memoryMonthLabel = (month: string) => new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" });
 
 export const MIN_ATLAS_TAG_COUNT = 10;
 
-/** Colors and labels describe real taxonomy or canonical source months; links are never invented. */
-export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], computeLayout = true, minTagCount = MIN_ATLAS_TAG_COUNT) {
+/**
+ * Group real taxonomy/source months without inventing links. Disabling layout prepares metadata only;
+ * preserveAll retains rare topic nodes for the complete 3D view while the default 2D thresholds stay intact.
+ */
+export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], computeLayout = true, minTagCount = MIN_ATLAS_TAG_COUNT, preserveAll = false) {
+  const monthLabels = new Map<string, string>();
+  /** Format each distinct month once instead of invoking date formatting for every record. */
+  const monthLabel = (month: string) => {
+    let label = monthLabels.get(month);
+    if (label === undefined) { label = memoryMonthLabel(month); monthLabels.set(month, label); }
+    return label;
+  };
   const byId = new Map(nodes.map(node => [node.id, node]));
   const topicMembers = new Map<string, Set<string>>();
   const explicit = new Set<string>();
@@ -55,7 +67,7 @@ export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEd
     if (best) assignments.set(topic.id, best[0]);
   }
   const topicIds = new Set(topics.map(node => node.id));
-  let visibleNodes = nodes.filter(node => node.type === "MEMORY" || node.type === "SOURCE" || node.type === "ROOM" || topicIds.has(node.id));
+  let visibleNodes = preserveAll ? nodes : nodes.filter(node => node.type === "MEMORY" || node.type === "SOURCE" || node.type === "ROOM" || topicIds.has(node.id));
   if (!visibleNodes.length) visibleNodes = nodes;
   const ids = new Set(visibleNodes.map(node => node.id));
   const visibleEdges = edges.filter(edge => ids.has(edge.source) && ids.has(edge.target));
@@ -68,7 +80,7 @@ export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEd
   const monthSlots = 8;
   const monthKeys = [...residualMonths].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0])).slice(0, monthSlots).map(([month]) => month).sort();
   const groupInfo = new Map<string, Pick<MemoryAtlasGroup, "label" | "kind">>(anchors.map(topic => [topic.id, { label: topic.label, kind: explicit.has(topic.id) ? "tag" : "topic" }]));
-  for (const month of monthKeys) groupInfo.set(`month:${month}`, { label: memoryMonthLabel(month), kind: "month" });
+  for (const month of monthKeys) groupInfo.set(`month:${month}`, { label: monthLabel(month), kind: "month" });
   for (const node of visibleNodes) {
     if (assignments.has(node.id)) continue;
     const month = memorySourceMonth(node);
@@ -94,7 +106,7 @@ export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEd
       const hub = node.type === "SOURCE" || anchors.some(anchor => anchor.id === node.id);
       const position = networkPositions.get(node.id)!;
       const month = memorySourceMonth(node);
-      positions.set(node.id, { ...position, color: isMemoryCoreLabel(node.label) ? "#fff0b0" : color, hub, groupId, ...(month ? { monthLabel: memoryMonthLabel(month) } : {}) });
+      positions.set(node.id, { ...position, color: isMemoryCoreLabel(node.label) ? "#fff0b0" : color, hub, groupId, ...(month ? { monthLabel: monthLabel(month) } : {}) });
     });
   });
   return {

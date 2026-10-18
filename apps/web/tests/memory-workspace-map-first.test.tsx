@@ -3,9 +3,15 @@ import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryWorkspace } from "../src/features/memory-workspace/MemoryWorkspace.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
+import { api } from "../src/live-api.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
+import { createMemoryAtlas } from "../src/features/memory-workspace/memory-atlas.js";
+import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
+import { packMemoryAtlas, packMemoryDepth } from "../src/features/memory-workspace/memory-network-replies.js";
+import { streamMemoryOverviewResponse, type MemoryOverviewParseRequest } from "../src/features/memory-workspace/memory-overview-parser.js";
 
 const graphRenderer = vi.hoisted(() => vi.fn());
+const graph3DRenderer = vi.hoisted(() => vi.fn());
 const graphLifecycle = vi.hoisted(() => ({
   mounted: vi.fn(),
   unmounted: vi.fn()
@@ -19,6 +25,8 @@ vi.mock("../src/features/memory-workspace/DesktopMemoryGraph.js", () => ({
     relationMode: "CLUSTERED" | "RELATIONS";
     selectedNodeId: string | null;
     onSelectNode: (nodeId: string) => void;
+    loading: boolean;
+    error: string | null;
   }) => {
     useEffect(() => {
       graphLifecycle.mounted();
@@ -34,9 +42,18 @@ vi.mock("../src/features/memory-workspace/DesktopMemoryGraph.js", () => ({
         data-display-mode={props.displayMode}
         data-relation-mode={props.relationMode}
         data-selected-node-id={props.selectedNodeId ?? ""}
+        data-loading={props.loading}
+        data-error={props.error ?? ""}
         role="button" tabIndex={0} aria-label="Open map memory" onClick={() => props.onSelectNode("memory:agent")}
       />
     );
+  }
+}));
+
+vi.mock("../src/features/memory-workspace/MemoryGraph3D.js", () => ({
+  MemoryGraph3D: (props: { nodes: MemoryGraphNode[]; coordinates: Map<string, unknown>; loading: boolean; selectedNodeId: string | null }) => {
+    graph3DRenderer(props);
+    return <div data-testid="memory-3d-renderer" data-node-count={props.nodes.length} data-coordinate-count={props.coordinates.size} data-loading={props.loading} data-selected-node-id={props.selectedNodeId ?? ""} />;
   }
 }));
 
@@ -284,7 +301,7 @@ beforeEach(() => {
 });
 
 describe("Memory atlas search-only experience", () => {
-  afterEach(() => { graphRenderer.mockReset(); graphLifecycle.mounted.mockReset(); graphLifecycle.unmounted.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  afterEach(() => { graphRenderer.mockReset(); graph3DRenderer.mockReset(); graphLifecycle.mounted.mockReset(); graphLifecycle.unmounted.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   function installFetch() {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -294,6 +311,32 @@ describe("Memory atlas search-only experience", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;
+  }
+  function installProgressiveWorkers() {
+    type LayoutRequest = { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[]; mode: string; prepareAtlas: boolean };
+    const workers: MockWorker[] = [];
+    class MockWorker {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      terminate = vi.fn();
+      request: LayoutRequest | null = null;
+      constructor(url: URL) { if (!String(url).includes("memory-overview-parser")) workers.push(this); }
+      postMessage(request: LayoutRequest | MemoryOverviewParseRequest) {
+        if ("buffer" in request) {
+          void streamMemoryOverviewResponse(request, message => this.onmessage?.({ data: message }))
+            .catch(error => this.onerror?.({ message: String(error) }));
+          return;
+        }
+        this.request = request;
+        const atlas = createMemoryAtlas(request.nodes, request.edges, false, undefined, request.mode === "3D");
+        queueMicrotask(() => this.onmessage?.({ data: { atlas, depth: request.nodes.map(node => [node.id, { x: 1, y: 2, z: 3 }]), done: false, progress: 0.25 } }));
+      }
+      finish() {
+        this.onmessage?.({ data: { depth: this.request!.nodes.map(node => [node.id, { x: 2, y: 3, z: 4 }]), done: true, progress: 1 } });
+      }
+    }
+    vi.stubGlobal("Worker", MockWorker);
+    return workers;
   }
   it.each(["desktop", "tablet", "mobile"] as const)("offers only search and the interactive map on %s", async shellMode => {
     const requests = installFetch();
@@ -343,6 +386,59 @@ describe("Memory atlas search-only experience", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(graphLifecycle.mounted).toHaveBeenCalledTimes(1);
   });
+  it("keeps the selected detail across 2D/3D refetches and closes it for a new query or workspace mode", async () => {
+    const requests = installFetch();
+    vi.spyOn(api, "memoryCalendar").mockResolvedValue({ data: { year: 2026, month: "2026-10", selectedDate: null, availableMonths: [], availableYears: [], stats: { totalMemories: 0, activeDays: 0, yearMemories: 0, maxDailyCount: 0 }, heatMap: {}, records: [] } });
+    render(<MemoryWorkspace shellMode="desktop" activeRoomId={null} onClose={() => undefined} initialMode="atlas" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open map memory" }));
+    await within(await screen.findByLabelText("Memory node detail")).findByText("Durable fact.");
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 3D memory view" }));
+    await waitFor(() => expect(requests.mock.calls.some(([url]) => String(url).includes("limit=50000"))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("false"));
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-selected-node-id")).toBe("memory:agent");
+    expect(within(screen.getByLabelText("Memory node detail")).getByText("Durable fact.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 3D memory view" }));
+    await waitFor(() => { expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-loading")).toBe("false"); expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-selected-node-id")).toBe("memory:agent"); });
+    expect(requests.mock.calls.filter(([url]) => String(url).includes("/nodes/"))).toHaveLength(1);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "another" } }); fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(screen.queryByLabelText("Memory node detail")).toBeNull());
+    await waitFor(() => expect(requests.mock.calls.some(([url]) => String(url).includes("q=another"))).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Open map memory" }));
+    await within(await screen.findByLabelText("Memory node detail")).findByText("Durable fact.");
+    fireEvent.click(screen.getByRole("button", { name: "Calendar" }));
+    expect(screen.queryByLabelText("Memory node detail")).toBeNull();
+  });
+
+  it("ends pending state on worker failure and ignores failures from earlier graph/view requests", async () => {
+    installFetch(); const workers = installProgressiveWorkers();
+    render(<MemoryWorkspace shellMode="desktop" activeRoomId={null} onClose={() => undefined} initialMode="atlas" />);
+    await waitFor(() => expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-node-ids")).toContain("memory:agent"));
+    const twoD = workers[0]!;
+    expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-loading")).toBe("true");
+    act(() => twoD.onerror?.({ message: "2D layout offline" }));
+    await waitFor(() => expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-loading")).toBe("false"));
+    expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-error")).toContain("2D layout offline");
+    expect(twoD.terminate).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 3D memory view" }));
+    await waitFor(() => expect(workers).toHaveLength(2));
+    await waitFor(() => expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-coordinate-count")).not.toBe("0"));
+    const threeD = workers[1]!;
+    act(() => twoD.onerror?.({ message: "stale 2D failure" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("true");
+    act(() => threeD.onerror?.({ message: "3D layout offline" }));
+    await waitFor(() => expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("false"));
+    expect(screen.getByRole("alert").textContent).toContain("3D layout offline");
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "fresh" } }); fireEvent.submit(screen.getByRole("search"));
+    await waitFor(() => expect(workers).toHaveLength(3));
+    await waitFor(() => expect(screen.getByLabelText("Memory workspace").getAttribute("data-layout-progress")).toBe("0.25"));
+    act(() => { threeD.onerror?.({ message: "stale 3D failure" }); threeD.finish(); });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("true");
+    await act(async () => workers[2]!.finish());
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("false");
+    expect(screen.getByLabelText("Memory workspace").getAttribute("data-layout-progress")).toBe("1");
+  });
   it("ignores stale search responses and reports request failures", async () => {
     let resolveFirst: (response: Response) => void = () => undefined;
     const first = new Promise<Response>(resolve => { resolveFirst = resolve; });
@@ -354,5 +450,47 @@ describe("Memory atlas search-only experience", () => {
     await screen.findByText("No memories found. Try another search.");
     await act(async () => resolveFirst(json(graphPayload({}))));
     expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-node-ids")).toBe("");
+  });
+
+  it("opts 3D into the full graph and keeps progressive worker results alive", async () => {
+    const requests = installFetch();
+    const workers: MockWorker[] = [];
+    class MockWorker {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: ((event: { message: string }) => void) | null = null;
+      terminate = vi.fn();
+      request: { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[]; mode: string; prepareAtlas: boolean } | null = null;
+      constructor(url: URL) { if (!String(url).includes("memory-overview-parser")) workers.push(this); }
+      postMessage(request: NonNullable<MockWorker["request"]> | MemoryOverviewParseRequest) {
+        if ("buffer" in request) {
+          void streamMemoryOverviewResponse(request, message => this.onmessage?.({ data: message }))
+            .catch(error => this.onerror?.({ message: String(error) }));
+          return;
+        }
+        this.request = request;
+        const atlas = createMemoryAtlas(request.nodes, request.edges, false, undefined, request.mode === "3D");
+        queueMicrotask(() => this.onmessage?.({ data: { atlas: request.mode === "3D" ? { ...atlas, nodes: [], edges: [], positions: new Map() } : atlas,
+          rawGraph: request.mode === "3D", ...(request.mode === "3D" ? {
+            packedAtlas: packMemoryAtlas(request.nodes, atlas.positions), packedDepth: packMemoryDepth(request.nodes, new Map(request.nodes.map(node => [node.id, { x: 1, y: 2, z: 3 }])))
+          } : { depth: request.nodes.map(node => [node.id, { x: 1, y: 2, z: 3 }]) }),
+          done: request.mode !== "3D", progress: request.mode === "3D" ? 0.25 : 1 } }));
+      }
+    }
+    vi.stubGlobal("Worker", MockWorker);
+    render(<MemoryWorkspace shellMode="desktop" activeRoomId={null} onClose={() => undefined} initialMode="atlas" />);
+    await waitFor(() => expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-node-ids")).toContain("memory:agent"));
+    expect(String(requests.mock.calls[0]![0])).not.toContain("limit=");
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 3D memory view" }));
+    await waitFor(() => expect(requests.mock.calls.some(([url]) => String(url).includes("limit=50000"))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-coordinate-count")).not.toBe("0"));
+    const worker = workers.at(-1)!;
+    expect(worker.request).toMatchObject({ mode: "3D", prepareAtlas: true });
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-node-count")).toBe(String(worker.request!.nodes.length));
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("true");
+    await act(async () => worker.onmessage?.({ data: { depth: worker.request!.nodes.map(node => [node.id, { x: 2, y: 3, z: 4 }]), done: true, progress: 1 } }));
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("memory-3d-renderer").getAttribute("data-loading")).toBe("false");
+    expect(screen.getByLabelText("Memory workspace").getAttribute("data-layout-progress")).toBe("1");
   });
 });

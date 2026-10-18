@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
+import { createMemoryNetwork3DSimulation, layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA, MEMORY_3D_LAYOUT_STEPS } from "../src/features/memory-workspace/memory-3d.js";
+import { createMemoryAtlas } from "../src/features/memory-workspace/memory-atlas.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 
 describe("3D memory projection", () => {
@@ -58,5 +59,51 @@ describe("3D memory projection", () => {
     const plane = Array.from({ length: 100 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10), z: i % 10 + Math.floor(i / 10) }));
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
+  });
+  it("streams independent snapshots from the same deterministic force simulation", () => {
+    const { nodes, edges } = fixture();
+    const simulation = createMemoryNetwork3DSimulation(nodes, edges);
+    const initial = simulation.snapshot();
+    const initialRecord = { ...initial.get("source-0-memory-0")! };
+    expect(simulation.progress).toBe(0);
+    expect(simulation.done).toBe(false);
+    simulation.advance(7);
+    expect(simulation.progress).toBe(7 / MEMORY_3D_LAYOUT_STEPS);
+    expect(simulation.snapshot().get("source-0-memory-0")).not.toEqual(initialRecord);
+    expect(initial.get("source-0-memory-0")).toEqual(initialRecord);
+    simulation.advance(MEMORY_3D_LAYOUT_STEPS);
+    expect(simulation.done).toBe(true);
+    expect(simulation.progress).toBe(1);
+    expect(simulation.snapshot()).toEqual(layoutMemoryNetwork3D(nodes, edges));
+  });
+  it("preserves the full 3D topology without changing the 2D tag threshold", () => {
+    const nodes: MemoryGraphNode[] = [
+      { id: "memory", label: "memory", type: "MEMORY", recordId: "memory", sourcePath: null },
+      { id: "rare", label: "rare tag", type: "TOPIC", recordId: null, sourcePath: null }
+    ];
+    const edges: MemoryGraphEdge[] = [{ id: "tag", source: "memory", target: "rare", type: "TAGGED_WITH", origin: "EXPLICIT_TAG" }];
+    expect(createMemoryAtlas(nodes, edges, false).nodes).toHaveLength(1);
+    const full = createMemoryAtlas(nodes, edges, false, undefined, true);
+    expect(full.nodes).toEqual(nodes);
+    expect(full.edges).toEqual(edges);
+    expect(full.positions.size).toBe(2);
+  });
+  it("advances a dense 50k archive with real springs and finite XYZ coordinates", () => {
+    const nodes: MemoryGraphNode[] = [{ id: "root", label: "space.md", type: "SOURCE", recordId: null, sourcePath: "space.md" }];
+    const edges: MemoryGraphEdge[] = [];
+    for (let i = 1; i < 50_000; i++) {
+      const id = `memory:${i}`;
+      nodes.push({ id, label: id, type: "MEMORY", recordId: id, sourcePath: "space.md" });
+      edges.push({ id, source: "root", target: id, type: "CONTAINS" });
+    }
+    const simulation = createMemoryNetwork3DSimulation(nodes, edges);
+    const before = simulation.snapshot().get("memory:1");
+    simulation.advance(2);
+    const snapshot = simulation.snapshot();
+    expect(snapshot.size).toBe(50_000);
+    expect(snapshot.get("root")).toEqual({ x: 0, y: 0, z: 0 });
+    expect(snapshot.get("memory:1")).not.toEqual(before);
+    expect([...snapshot.values()].every(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))).toBe(true);
+    expect(memory3DVolumeRatio([...snapshot.values()])).toBeGreaterThan(0.8);
   });
 });

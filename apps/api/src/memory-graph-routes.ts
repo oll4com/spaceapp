@@ -57,6 +57,7 @@ import {
   type MemoryMutationCoordinator
 } from "./memory-mutation-coordinator.js";
 import type { MemoryConsolidationCoordinator } from "./memory-consolidation-coordinator.js";
+import { sendApiError } from "./http-errors.js";
 
 function requireMemoryGraph(config: SpaceApiConfig): void {
   if (!config.memoryGraphEnabled) {
@@ -312,9 +313,15 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
   return digest(JSON.stringify({ snapshotRevision, stateRevisions }));
 }
 
-// Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
-export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
-  if (nodes.length <= 2000) return nodes;
+/**
+ * Retain source/topic taxonomy and visible topic neighbors within the requested node budget.
+ * @param nodes Filtered nodes in the order used to fill remaining slots.
+ * @param edges Matching edges used to rank topic membership.
+ * @param limit Positive node budget; the route validates 1..50,000 and defaults to 2,000.
+ * @returns At most `limit` nodes; reuses the input array when it already fits.
+ */
+export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], limit = 2000): MemoryGraphNode[] {
+  if (nodes.length <= limit) return nodes;
   const members = new Map<string, Set<string>>();
   const explicit = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -329,14 +336,15 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
   ).slice(0, 160);
   const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
-  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
+  const selected = new Map([...sources, ...topics].slice(0, limit).map(node => [node.id, node]));
   // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
   for (const topic of topics) {
+    if (selected.size >= limit) break;
     const first = [...members.get(topic.id)!].sort()[0];
     if (first) selected.set(first, byId.get(first)!);
   }
   for (const node of nodes) {
-    if (selected.size >= 2000) break;
+    if (selected.size >= limit) break;
     selected.set(node.id, node);
   }
   return [...selected.values()];
@@ -354,6 +362,9 @@ export function registerMemoryGraphRoutes(
   }
 ): void {
   app.get("/api/admin/memory/graph/overview", async (request, reply) => {
+    if (request.user?.role !== "ADMIN" && request.user?.role !== "OPERATOR") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Memory graph overview requires administrator access.");
+    }
     requireMemoryGraph(options.config);
     const query = listMemoryGraphOverviewQuerySchema.parse(request.query);
     const snapshotData = query.month
@@ -385,12 +396,12 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges, query.limit);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
       .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
-      .slice(0, 6000);
+      .slice(0, Math.min(150_000, query.limit * 3));
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
       layoutVersion: snapshot.layoutVersion,
