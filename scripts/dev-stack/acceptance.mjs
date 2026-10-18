@@ -6,12 +6,14 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { locations, loadOwner, readJson } from './state.mjs';
-import { sameProcess, delay } from './processes.mjs';
+import { sameProcess } from './processes.mjs';
 import { browserProof, eventually } from './browser-proof.mjs';
 import { assertLoopbackPublications, readOwnedPortPublications, run, dockerEnvironment } from './resources.mjs';
 import { InteractiveTerminalProof, assertBrowserTerminal } from './terminal-proof.mjs';
 import { extractPins } from './state.mjs';
 import { verifyOpenCode } from './opencode-runtime.mjs';
+import { restorationCheckpoint } from './acceptance-restoration.mjs';
+import { queryReloadProof } from './reload-proof-channel.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url))), config = locations(root, process.env), owner = await loadOwner(config);
 const artifacts = process.env.SPACE_DEV_PROOF_DIR;
@@ -122,23 +124,44 @@ try {
     assert.equal(await browser.evaluate('performance.timeOrigin'), timeOrigin, 'CSS hot reload must not require navigation/reload');
     await browser.screenshot('web-hmr.png'); marker('real web CSS HMR without page navigation');
   } finally { await writeFile(css, originalCss); }
-  const apiSource = join(root, 'apps/api/src/server.ts'), originalApi = await readFile(apiSource), oldApi = await pid('api');
+  const restored = [];
+  const proofSupervisor = await readJson(config.supervisor);
+  const checkpoint = options => restorationCheckpoint({ observe: (request, remainingMs) => queryReloadProof(config, proofSupervisor, request, remainingMs), supervisor: proofSupervisor, nonce: owner.nonce, ready: async () => {
+    try { const response = await fetch(`${api}/readyz`, { signal: AbortSignal.timeout(3000) }); return response.ok && (await response.json()).ok === true; }
+    catch (error) { if (error instanceof TypeError || error.name === 'TimeoutError') return false; throw error; }
+  }, ...options });
+  const apiSource = join(root, 'apps/api/src/server.ts'), originalApi = await readFile(apiSource);
+  const apiInitial = await checkpoint({}), oldApi = apiInitial.children.find(item => item.name === 'api');
+  const changedApi = Buffer.concat([originalApi, Buffer.from(`\n// dev-stack reload proof ${canary}\n`)]);
+  const apiDeadline = Date.now() + 120000, remaining = deadline => Math.max(1, deadline - Date.now());
+  let apiCanary;
   try {
-    await writeFile(apiSource, Buffer.concat([originalApi, Buffer.from(`\n// dev-stack reload proof ${canary}\n`)]));
-    await eventually(async () => { const next = await pid('api'); return next && next.pid !== oldApi.pid && await sameProcess(next); }, 'API source restart');
-    await eventually(async () => (await (await fetch(`${api}/readyz`)).json()).ok === true, 'Ready after API restart'); marker('API source restart and readiness');
+    await writeFile(apiSource, changedApi);
+    await eventually(async () => { const next = await pid('api'); return next && next.pid !== oldApi.pid && await sameProcess(next); }, 'API source restart', remaining(apiDeadline));
+    await eventually(async () => (await (await fetch(`${api}/readyz`)).json()).ok === true, 'Ready after API restart', remaining(apiDeadline));
+    apiCanary = await checkpoint({ supervisor: apiInitial, before: apiInitial, changed: ['api'], until: apiDeadline, files: [{ name: 'API canary source', read: () => readFile(apiSource), expected: changedApi }] });
+    marker('API source restart and readiness');
   } finally { await writeFile(apiSource, originalApi); }
-  // Wait for the restoration-triggered API restart before testing a package rebuild.
-  await delay(1500);
-  const workerBefore = await pid('worker'), apiBefore = await pid('api');
+  const apiRestored = await checkpoint({ supervisor: apiInitial, before: apiCanary, changed: ['api'], files: [{ name: 'restored API source', read: () => readFile(apiSource), expected: originalApi, forbidden: canary }] });
+  restored.push({ phase: 'API restoration', ...apiRestored });
+  const workerBefore = apiRestored.children.find(item => item.name === 'worker'), apiBefore = apiRestored.children.find(item => item.name === 'api');
   const packageFile = join(root, 'packages/contracts/src/index.ts'), originalPackage = await readFile(packageFile);
+  // Capture original emitted bytes before the canary, not after a later rebuild.
+  const compiledPackage = join(root, 'packages/contracts/dist/index.js'), originalCompiled = await readFile(compiledPackage);
+  const changedPackage = Buffer.concat([originalPackage, Buffer.from(`\nexport const spaceDevStackProofCanary = ${JSON.stringify(canary)};\n`)]);
+  const packageDeadline = Date.now() + 300000;
+  let packageCanary;
   try {
-    await writeFile(packageFile, Buffer.concat([originalPackage, Buffer.from(`\nexport const spaceDevStackProofCanary = ${JSON.stringify(canary)};\n`)]));
-    await eventually(async () => { const w = await pid('worker'), p = await pid('api'); return w && p && w.pid !== workerBefore.pid && p.pid !== apiBefore.pid && await sameProcess(w) && await sameProcess(p); }, 'Rebuilt package picked up by API/worker', 300000);
-    await eventually(async () => (await (await fetch(`${api}/readyz`)).json()).ok === true, 'Ready after package rebuild'); marker('shared package rebuilt and API/worker restarted');
+    await writeFile(packageFile, changedPackage);
+    await eventually(async () => { const w = await pid('worker'), p = await pid('api'); return w && p && w.pid !== workerBefore.pid && p.pid !== apiBefore.pid && await sameProcess(w) && await sameProcess(p); }, 'Rebuilt package picked up by API/worker', remaining(packageDeadline));
+    await eventually(async () => (await (await fetch(`${api}/readyz`)).json()).ok === true, 'Ready after package rebuild', Math.min(120000, remaining(packageDeadline)));
     assert((await readFile(join(root, 'packages/contracts/dist/index.js'), 'utf8')).includes(canary), 'Changed shared package source must actually reach built output');
+    packageCanary = await checkpoint({ supervisor: apiInitial, before: apiRestored, changed: ['api', 'worker', 'cli-host'], timeout: 300000, until: packageDeadline, files: [{ name: 'shared canary source', read: () => readFile(packageFile), expected: changedPackage }, { name: 'shared canary output', read: () => readFile(compiledPackage), includes: canary }] });
   } finally { await writeFile(packageFile, originalPackage); }
-  await writeFile(join(artifacts, 'acceptance.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, checks, model_inference: false, real_operator_data: false }, null, 2) + '\n');
+  const packageRestored = await checkpoint({ supervisor: apiInitial, before: packageCanary, changed: ['api', 'worker', 'cli-host'], timeout: 300000, files: [{ name: 'restored API source', read: () => readFile(apiSource), expected: originalApi, forbidden: canary }, { name: 'restored shared source', read: () => readFile(packageFile), expected: originalPackage, forbidden: canary }, { name: 'restored shared output', read: () => readFile(compiledPackage), expected: originalCompiled, forbidden: canary }] });
+  restored.push({ phase: 'shared-package restoration', ...packageRestored });
+  marker('shared package rebuilt and API/worker restarted');
+  await writeFile(join(artifacts, 'acceptance.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, checks, restorations: restored, model_inference: false, real_operator_data: false }, null, 2) + '\n');
 } catch (error) {
   // Selected synthetic state only. Never serialize a session response, ticket,
   // cookie, websocket URL, environment or real provider/owner credentials.

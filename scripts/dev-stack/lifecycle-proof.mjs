@@ -67,7 +67,13 @@ async function waitReady(stack) {
 }
 async function processSnapshot(config) {
   const record = await readJson(config.supervisor), result = [];
-  for (const item of record.children) if (await sameProcess(item)) result.push(...await descendants(item));
+  for (const item of record.children) {
+    try { if (await sameProcess(item)) result.push(...await descendants(item)); }
+    catch (error) {
+      // Selected ownership context only; the strict guard remains fatal and is never retried.
+      throw new Error(`Owned snapshot ${String(item.name).slice(0, 32)} pid=${item.pid} expected=${String(item.identity).slice(0, 160)}: ${error.message}`, { cause: error });
+    }
+  }
   return result;
 }
 async function assertStopped(records) { assert.equal((await Promise.all(records.map(record => sameProcess(record)))).some(Boolean), false, 'An owned source/PTY process survived cleanup.'); }

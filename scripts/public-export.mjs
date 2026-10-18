@@ -93,6 +93,8 @@ const publicScripts = new Set([
   "scripts/dev-stack/capability-proof.mjs",
   "scripts/dev-stack/terminal-proof.mjs",
   "scripts/dev-stack/acceptance.mjs",
+  "scripts/dev-stack/acceptance-restoration.mjs",
+  "scripts/dev-stack/reload-proof-channel.mjs",
   "scripts/dev-stack/browser-proof.mjs",
   "scripts/dev-stack/lifecycle-proof.mjs",
   "scripts/tests/dev-stack.test.mjs",

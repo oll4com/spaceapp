@@ -933,3 +933,302 @@ test('source rebuild cancellation before during and after commands never permits
   await assert.rejects(buildSourceServices(async () => { if (++finished === sourceReloadBuildPlan.length) stopping = true; }, () => stopping).then(() => { launched = true; }), /cancelled before relaunch/);
   assert.equal(finished, sourceReloadBuildPlan.length); assert.equal(launched, false);
 });
+
+const { ReloadReceipt } = await import('../dev-stack/reload-debounce.mjs');
+const { reloadObservation, restorationCheckpoint } = await import('../dev-stack/acceptance-restoration.mjs');
+
+// Unit-only identities/readiness/bytes exercise the join, not a native platform proof.
+function restorationFixture() {
+  const nonce = 'unit-only-restoration-owner';
+  const receipt = (generation, revision = generation * 10) => ({ version: 1, revision, requested: generation, pending: null, queued: null, active: null, completed: generation, stopping: false });
+  const record = (generation, offset = generation * 10) => ({ nonce, pid: 90, identity: 'unit-only:supervisor', reload: receipt(generation), children: ['api', 'cli-host', 'web', 'worker'].map((name, index) => ({ name, pid: offset + index + 100, identity: 'darwin:Sun Oct 18 01:00:00 2026' })) });
+  const before = record(1);
+  let current = record(2), clock = 0, pauses = 0, readiness = 0, bytes = Buffer.from('original shared output');
+  const reply = (snapshot, request) => ({ version: 1, nonce, pid: before.pid, identity: before.identity, challenge: request.challenge, status: 'OK', snapshot: structuredClone(snapshot) });
+  const options = { nonce, supervisor: before, before, changed: ['api', 'worker', 'cli-host'], timeout: 300000, observe: async request => reply(current, request), live: async () => true, ready: async () => { readiness++; return true; }, files: [{ name: 'compiled shared output', read: async () => bytes, expected: Buffer.from(bytes), forbidden: 'unit-canary' }], now: () => clock, pause: async () => { pauses++; clock += 300000; } };
+  return { before, receipt, record, reply, options, get current() { return current; }, set current(value) { current = value; }, set bytes(value) { bytes = Buffer.from(value); }, get pauses() { return pauses; }, get readiness() { return readiness; } };
+}
+
+test('reload observations retain the exact debounce precedence and count every pending request', { timeout: 5000 }, async t => {
+  const receipt = new ReloadReceipt(), observations = [], calls = []; let notify;
+  const fired = new Promise(resolvePromise => { notify = resolvePromise; });
+  const changes = debounceSourceChanges((kind, generation) => { calls.push({ kind, generation }); receipt.started(kind, generation); notify(); }, state => { receipt.debounced(state); observations.push(receipt.snapshot()); });
+  t.after(() => changes.stop());
+  changes.change('packages'); changes.change('api');
+  assert.deepEqual(receipt.snapshot().pending, { generation: 2, kind: 'packages' });
+  assert.equal(receipt.snapshot().requested, 2); assert.equal(receipt.snapshot().completed, 0);
+  await fired;
+  assert.deepEqual(calls, [{ kind: 'packages', generation: 2 }]);
+  assert.equal(observations.at(-1).pending, null);
+  receipt.finished(2, true);
+  assert.equal(receipt.snapshot().completed, 2); assert.equal(receipt.snapshot().active, null);
+  changes.stop(); changes.change('packages');
+  assert.equal(receipt.snapshot().stopping, true); assert.equal(receipt.snapshot().requested, 2);
+  assert(observations.every((item, index) => index === 0 || item.revision > observations[index - 1].revision));
+});
+
+test('completing an active reload cannot certify pending or queued work and failures never complete it', () => {
+  const receipt = new ReloadReceipt();
+  receipt.debounced({ requested: 1, pending: null, stopped: false }); receipt.started('api', 1);
+  receipt.debounced({ requested: 2, pending: { kind: 'packages', generation: 2 }, stopped: false });
+  receipt.debounced({ requested: 2, pending: null, stopped: false }); receipt.enqueued(2);
+  receipt.finished(1, true);
+  assert.equal(receipt.snapshot().completed, 1); assert.equal(receipt.snapshot().requested, 2);
+  assert.deepEqual(receipt.snapshot().queued, { kind: 'packages', generation: 2 });
+  const queued = receipt.releaseQueued(); assert.equal(queued, 2);
+  assert.equal(receipt.snapshot().completed < receipt.snapshot().requested, true);
+  receipt.started('packages', queued); receipt.finished(queued, false);
+  assert.equal(receipt.snapshot().completed, 1);
+  receipt.stop(); assert.equal(receipt.snapshot().stopping, true);
+});
+
+test('the old indistinguishable ready/live/original-byte state cannot pass without a reload receipt', async () => {
+  const fixture = restorationFixture(); delete fixture.current.reload;
+  assert(fixture.current.children.every(item => item.pid !== fixture.before.children.find(old => old.name === item.name).pid));
+  await assert.rejects(restorationCheckpoint(fixture.options), /Missing or malformed reload receipt/);
+  assert.equal(fixture.readiness, 0);
+  assert(isPublicExportPath('scripts/dev-stack/acceptance-restoration.mjs'));
+});
+
+test('restoration waits through pending queued and active phases despite unchanged ready and original bytes', async () => {
+  const fixture = restorationFixture(), final = fixture.record(3), states = ['pending', 'queued', 'active'].map((phase, index) => ({ ...fixture.record(2), reload: { ...fixture.receipt(3, 30 + index), completed: 2, [phase]: { kind: 'packages', generation: 3 } } }));
+  final.reload.revision = 33;
+  fixture.current = states.shift();
+  fixture.options.pause = async () => { fixture.current = states.shift() || final; };
+  const joined = await restorationCheckpoint(fixture.options);
+  assert.equal(joined.reload.completed, 3); assert.equal(joined.reload.requested, 3);
+  assert.equal(fixture.readiness, 1); assert.deepEqual(joined.children, final.children);
+  assert.equal(joined.files[0].bytes, Buffer.byteLength('original shared output'));
+  assert.match(joined.files[0].sha256, /^[a-f0-9]{64}$/);
+});
+
+test('a request arriving between the two observations prevents a mixed-generation handoff', async () => {
+  const fixture = restorationFixture(), first = fixture.record(2), queued = { ...fixture.record(2), reload: { ...fixture.receipt(3, 31), completed: 2, queued: { kind: 'packages', generation: 3 } } }, final = fixture.record(3);
+  final.reload.revision = 32;
+  let reads = 0;
+  fixture.options.observe = async request => fixture.reply(++reads === 1 ? first : reads === 2 ? queued : final, request);
+  fixture.options.pause = async () => {};
+  const joined = await restorationCheckpoint(fixture.options);
+  assert.equal(reads, 4); assert.equal(fixture.readiness, 2); assert.equal(joined.reload.completed, 3);
+});
+
+test('same-second Darwin birth strings with changed verified PIDs are distinct restored identities', async () => {
+  const fixture = restorationFixture();
+  assert.equal(fixture.current.children[0].identity, fixture.before.children[0].identity);
+  const live = new Map([fixture.current, ...fixture.current.children].map(item => [item.pid, item.identity]));
+  fixture.options.live = item => sameProcess(item, async pid => live.get(pid) ?? null);
+  const joined = await restorationCheckpoint(fixture.options);
+  assert.notEqual(joined.children[0].pid, fixture.before.children[0].pid);
+  assert.equal(joined.children[0].identity, fixture.before.children[0].identity);
+});
+
+test('old ready responses cannot certify an unchanged API or an unreplaced shared service', async () => {
+  for (const name of ['api', 'worker', 'cli-host']) {
+    const fixture = restorationFixture(); fixture.current.children.find(item => item.name === name).pid = fixture.before.children.find(item => item.name === name).pid;
+    await assert.rejects(restorationCheckpoint(fixture.options), /existing 300s proof bound/);
+    assert.equal(fixture.readiness, 0); assert.equal(fixture.pauses, 1);
+  }
+  const fixture = restorationFixture(); fixture.current = fixture.record(1, 200);
+  await assert.rejects(restorationCheckpoint(fixture.options), /proof bound/);
+  assert.equal(fixture.readiness, 0, 'New PIDs without a completed later request are insufficient.');
+});
+
+test('original source and compiled bytes and a fresh ready response are all required', async () => {
+  for (const bytes of ['original shared output\n', 'original shared output unit-canary']) {
+    const fixture = restorationFixture(); fixture.bytes = bytes;
+    await assert.rejects(restorationCheckpoint(fixture.options), /proof bound/);
+    assert.equal(fixture.readiness, 1);
+  }
+  const forbidden = restorationFixture(); forbidden.bytes = 'unit-canary'; forbidden.options.files[0].expected = Buffer.from('unit-canary');
+  await assert.rejects(restorationCheckpoint(forbidden.options), /proof bound/);
+  const unavailable = restorationFixture(); unavailable.options.ready = async () => false;
+  await assert.rejects(restorationCheckpoint(unavailable.options), /proof bound/);
+  const restored = restorationFixture(); restored.bytes = 'unit-canary'; restored.options.pause = async () => { restored.bytes = 'original shared output'; };
+  assert.equal((await restorationCheckpoint(restored.options)).ready, true); assert.equal(restored.readiness, 2);
+});
+
+test('missing malformed decreasing and unversioned reload receipts cannot become proof', async () => {
+  for (const mutate of [value => { value.version = 0; }, value => { delete value.pending; }, value => { value.requested = NaN; }, value => { value.completed = 3; }, value => { value.queued = { kind: 'api', generation: 2 }; }, value => { value.active = { kind: 'packages', generation: 0 }; }]) {
+    const fixture = restorationFixture(); mutate(fixture.current.reload);
+    await assert.rejects(restorationCheckpoint(fixture.options), /receipt/);
+  }
+  const decreasing = restorationFixture(); decreasing.current.reload.revision = 9;
+  await assert.rejects(restorationCheckpoint(decreasing.options), /moved backwards/);
+  const unversioned = restorationFixture(); unversioned.current.reload.revision = unversioned.before.reload.revision;
+  await assert.rejects(restorationCheckpoint(unversioned.options), /without a new revision/);
+  assert.throws(() => reloadObservation(null), /receipt/);
+});
+
+test('foreign supervisor records stopping and dead or duplicate idle children fail without retry', async () => {
+  for (const mutate of [value => { value.nonce = 'foreign'; }, value => { value.pid++; }, value => { value.identity += ':changed'; }, value => { value.reload.stopping = true; }, value => { value.children.pop(); }, value => { value.children[1].pid = value.children[0].pid; }, value => { value.children[0].identity = null; }]) {
+    const fixture = restorationFixture(); mutate(fixture.current);
+    await assert.rejects(restorationCheckpoint(fixture.options)); assert.equal(fixture.pauses, 0);
+  }
+  const dead = restorationFixture(); dead.options.live = async item => item.pid === dead.current.pid;
+  await assert.rejects(restorationCheckpoint(dead.options), /child identity changed/); assert.equal(dead.readiness, 0); assert.equal(dead.pauses, 0);
+  const root = restorationFixture(); root.options.live = async () => false;
+  await assert.rejects(restorationCheckpoint(root.options), /unbound|supervisor identity changed/); assert.equal(root.pauses, 0);
+  const malformed = restorationFixture(), failure = new SyntaxError('unit-only incomplete private JSON'); malformed.options.observe = async () => { throw failure; };
+  await assert.rejects(restorationCheckpoint(malformed.options), error => error === failure);
+});
+
+test('an identity changing around fresh readiness or inside the same idle receipt stays fatal', async () => {
+  const fixture = restorationFixture(); let calls = 0;
+  fixture.options.live = async item => item.pid === fixture.current.pid || ++calls <= 4;
+  await assert.rejects(restorationCheckpoint(fixture.options), /child identity changed/); assert.equal(fixture.pauses, 0);
+  const mixed = restorationFixture(); let reads = 0;
+  mixed.options.observe = async request => { const value = structuredClone(mixed.current); if (++reads === 2) value.children[0].pid += 500; return mixed.reply(value, request); };
+  await assert.rejects(restorationCheckpoint(mixed.options), /same idle reload receipt/); assert.equal(mixed.pauses, 0);
+});
+
+test('the strict actual lifecycle snapshot still rejects root churn after a successful restoration join', async () => {
+  const source = await readFile(join(root, 'scripts/dev-stack/lifecycle-proof.mjs'), 'utf8');
+  const body = source.slice(source.indexOf('async function processSnapshot('), source.indexOf('async function assertStopped('));
+  assert(body.startsWith('async function processSnapshot('));
+  const fixture = restorationFixture(), joined = await restorationCheckpoint(fixture.options), first = joined.children[0];
+  let calls = 0, lists = 0;
+  const identity = async pid => pid === first.pid && ++calls > 1 ? 'unit-only:late-replacement' : joined.children.find(item => item.pid === pid)?.identity;
+  const snapshot = new Function('readJson', 'sameProcess', 'descendants', `return (${body});`)(async () => joined, item => sameProcess(item, identity), item => descendants(item, { identity, list: async () => { lists++; return { stdout: '' }; } }));
+  await assert.rejects(snapshot({ supervisor: 'unit-only-unused-path' }), /root changed before descendant collection/);
+  assert.equal(lists, 0, 'The guard rejects before adopting or collecting a replacement tree.');
+});
+
+test('the restoration helper cannot widen the original API or shared bounds or a remaining phase deadline', async () => {
+  const fixture = restorationFixture();
+  for (const timeout of [0, 150000, 300001, Infinity]) await assert.rejects(restorationCheckpoint({ ...fixture.options, timeout }), /boundary/);
+  await assert.rejects(restorationCheckpoint({ ...fixture.options, until: 0 }), /existing 300s proof bound/);
+  await assert.rejects(restorationCheckpoint({ ...fixture.options, until: NaN }), /deadline/);
+});
+
+const { observeReloadProof, openReloadProofChannel, parseReloadRequest, queryReloadProof, reserveReloadProofObservation } = await import('../dev-stack/reload-proof-channel.mjs');
+const { randomUUID: proofChallenge } = await import('node:crypto');
+
+test('an already known pending reload cannot pass through two stale disk reads while publication is held', async () => {
+  const fixture = restorationFixture(); let memory = fixture.current, persisted = structuredClone(memory), tail = Promise.resolve(), releaseWrite, releasePause, paused = false, completed = false, snapshots = 0;
+  fixture.options.observe = async request => {
+    const result = await observeReloadProof({ tail: () => tail, closed: () => false, snapshot: () => { snapshots++; return structuredClone(memory); } });
+    return { ...fixture.reply(null, request), ...result };
+  };
+  fixture.options.ready = async () => {
+    if (memory.reload.requested === 2) {
+      memory = { ...fixture.record(2), reload: { ...fixture.receipt(3, 31), completed: 2, pending: { kind: 'packages', generation: 3 } } };
+      tail = new Promise(resolvePromise => { releaseWrite = resolvePromise; }).then(() => { persisted = structuredClone(memory); });
+    }
+    return true;
+  };
+  fixture.options.pause = async () => { paused = true; await new Promise(resolvePromise => { releasePause = resolvePromise; }); };
+  const joining = restorationCheckpoint(fixture.options).then(value => { completed = true; return value; });
+  await new Promise(resolvePromise => setImmediate(resolvePromise));
+  assert.equal(persisted.reload.requested, 2); assert.equal(memory.reload.requested, 3);
+  assert.equal(snapshots, 1, 'The second request must wait for its captured pending publication.');
+  assert.equal(completed, false);
+  releaseWrite(); await new Promise(resolvePromise => setImmediate(resolvePromise));
+  assert.equal(paused, true); assert.equal(completed, false, 'Drained but pending RAM is BUSY, never idle disk generation2.');
+  memory = fixture.record(3); memory.reload.revision = 32; persisted = structuredClone(memory); tail = Promise.resolve();
+  releasePause();
+  const joined = await joining;
+  assert.equal(joined.reload.completed, 3); assert.equal(persisted.reload.completed, 3);
+  assert.equal(joined.proofRequests.length, 2); assert.notEqual(...joined.proofRequests);
+});
+
+test('a tail added during a request drain is BUSY and cannot publish an earlier snapshot', async () => {
+  let release, snapshots = 0;
+  const first = new Promise(resolvePromise => { release = resolvePromise; }); let tail = first;
+  const request = observeReloadProof({ tail: () => tail, closed: () => false, snapshot: () => { snapshots++; return restorationFixture().current; } });
+  tail = first.then(() => {}); release();
+  assert.deepEqual(await request, { status: 'BUSY', snapshot: null }); assert.equal(snapshots, 0);
+});
+
+test('publication rejection shutdown and malformed snapshots are fatal rather than BUSY', async () => {
+  const settled = Promise.resolve();
+  await assert.rejects(observeReloadProof({ tail: () => Promise.reject(new Error('unit publication error')), closed: () => false, snapshot: () => ({}) }), /WRITE_FAILED/);
+  await assert.rejects(observeReloadProof({ tail: () => Promise.resolve(), closed: () => true, snapshot: () => ({}) }), /STOPPING/);
+  let release, closed = false;
+  const tail = new Promise(resolvePromise => { release = resolvePromise; });
+  const pending = observeReloadProof({ tail: () => tail, closed: () => closed, snapshot: () => { throw new Error('Must not snapshot during shutdown'); } });
+  closed = true; release(); await assert.rejects(pending, /STOPPING/);
+  await assert.rejects(observeReloadProof({ tail: () => settled, closed: () => false, snapshot: () => ({ reload: {} }) }), /malformed reload receipt/);
+  const fixture = restorationFixture(); fixture.current.reload.stopping = true;
+  const resolved = Promise.resolve();
+  await assert.rejects(observeReloadProof({ tail: () => resolved, closed: () => false, snapshot: () => fixture.current }), /STOPPING/);
+});
+
+test('fresh request binding rejects replayed foreign or missing channel responses without a file fallback', async () => {
+  for (const mutate of [value => { value.challenge = proofChallenge(); }, value => { value.nonce = 'foreign'; }, value => { value.pid++; }, value => { value.identity = 'different'; }, value => { value.version = 0; }, value => { value.status = 'ERROR'; }, value => { value.status = 'BUSY'; }]) {
+    const fixture = restorationFixture(); fixture.options.observe = async request => { const value = fixture.reply(fixture.current, request); mutate(value); return value; };
+    await assert.rejects(restorationCheckpoint(fixture.options)); assert.equal(fixture.pauses, 0);
+  }
+  const replay = restorationFixture(); let first;
+  replay.options.observe = async request => first ||= replay.reply(replay.current, request);
+  await assert.rejects(restorationCheckpoint(replay.options), /stale or unbound/);
+  await assert.rejects(restorationCheckpoint({ ...restorationFixture().options, observe: undefined }), /no file-only fallback/);
+});
+
+test('request parsing enforces one bounded owned message with no supplied paths or unknown fields', () => {
+  const owner = { nonce: 'a'.repeat(32), pid: 90, identity: 'unit-only:supervisor' }, request = { version: 1, ...owner, challenge: proofChallenge() };
+  const encoded = value => Buffer.from(JSON.stringify(value) + '\n');
+  assert.deepEqual(parseReloadRequest(encoded(request), owner), request);
+  for (const value of [{ ...request, path: '/foreign' }, { ...request, nonce: 'foreign' }, { ...request, pid: 91 }, { ...request, identity: 'other' }, { ...request, challenge: 'not-a-fresh-uuid' }, { ...request, version: 2 }]) assert.throws(() => parseReloadRequest(encoded(value), owner), /REQUEST/);
+  for (const bytes of [Buffer.from('{}'), Buffer.concat([encoded(request), encoded(request)]), Buffer.from('x'.repeat(1025)), Buffer.from('{not-json}\n')]) assert.throws(() => parseReloadRequest(bytes, owner), /REQUEST/);
+  assert(isPublicExportPath('scripts/dev-stack/reload-proof-channel.mjs'));
+});
+
+test('a completed request cannot qualify after the unchanged overall proof deadline', async () => {
+  const fixture = restorationFixture(); let clock = 0;
+  fixture.options.now = () => clock; fixture.options.ready = async () => { clock = 300000; return true; };
+  await assert.rejects(restorationCheckpoint(fixture.options), /existing 300s proof bound/);
+});
+
+async function unixProofFixture(t, { allowReplaced = false } = {}) {
+  const state = await realpath(await mkdtemp(join(tmpdir(), 'space-reload-proof-')));
+  await chmod(state, 0o700); await mkdir(join(state, 'run'), { mode: 0o700 });
+  const owner = { nonce: 'b'.repeat(32), pid: process.pid, identity: await processIdentity(process.pid) };
+  const fixture = restorationFixture(), settled = Promise.resolve();
+  const channel = await openReloadProofChannel({ state }, owner, () => observeReloadProof({ tail: () => settled, closed: () => false, snapshot: () => ({ ...fixture.current, ...owner }) }));
+  t.after(async () => {
+    try { if (allowReplaced) await assert.rejects(channel.close(), /SOCKET_REPLACED/); else await channel.close(); }
+    finally { await rm(state, { recursive: true, force: true }); }
+  });
+  return { state, owner: { ...owner, proofSocket: channel.name }, channel };
+}
+
+test('real POSIX owned socket transports fresh observations and removes its own private path', { skip: process.platform === 'win32' }, async t => {
+  const { state, owner, channel } = await unixProofFixture(t), file = join(state, 'run', channel.name);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  const first = await queryReloadProof({ state }, owner, { challenge: proofChallenge() }, 3000), second = await queryReloadProof({ state }, owner, { challenge: proofChallenge() }, 3000);
+  assert.equal(first.status, 'OK'); assert.equal(first.snapshot.pid, process.pid); assert.notEqual(first.challenge, second.challenge);
+  await assert.rejects(queryReloadProof({ state }, { ...owner, nonce: 'c'.repeat(32) }, { challenge: proofChallenge() }, 3000));
+  await channel.close(); assert.equal(await stat(file).catch(error => error.code), 'ENOENT');
+});
+
+test('real POSIX channel shutdown destroys stalled clients without waiting for a request', { skip: process.platform === 'win32' }, async t => {
+  const { createConnection } = await import('node:net');
+  const { state, channel } = await unixProofFixture(t), socket = createConnection(join(state, 'run', channel.name));
+  socket.on('error', () => {}); await new Promise(resolvePromise => socket.once('connect', resolvePromise));
+  const closed = new Promise(resolvePromise => socket.once('close', resolvePromise));
+  channel.stopAdmission(); await channel.close(); await closed;
+  assert.equal(socket.destroyed, true);
+});
+
+test('real POSIX channel refuses linked directories and preserves a foreign replacement on cleanup', { skip: process.platform === 'win32' }, async t => {
+  const { unlink } = await import('node:fs/promises');
+  const { state, owner, channel } = await unixProofFixture(t, { allowReplaced: true }), file = join(state, 'run', channel.name);
+  await unlink(file); await writeFile(file, 'unit-only-foreign-replacement', { mode: 0o600, flag: 'wx' });
+  await assert.rejects(channel.close(), /SOCKET_REPLACED/);
+  assert.equal(await readFile(file, 'utf8'), 'unit-only-foreign-replacement');
+  // The failed close is deliberately retained for recovery and its handle is unref'd.
+  const target = join(state, 'linked-run'); await mkdir(target, { mode: 0o700 });
+  await rm(join(state, 'run'), { recursive: true, force: true }); await symlink(target, join(state, 'run'));
+  await assert.rejects(openReloadProofChannel({ state }, owner, async () => ({ status: 'BUSY', snapshot: null })), /DIRECTORY/);
+});
+
+test('three held publications plus four preaccepted clients can reserve only four observation slots', () => {
+  const held = new Set();
+  for (let index = 0; index < 3; index++) reserveReloadProofObservation(held, { unitOnly: `timed-out-but-still-pending-${index}` });
+  const preaccepted = Array.from({ length: 4 }, (_, index) => ({ unitOnly: `already-connected-${index}` }));
+  reserveReloadProofObservation(held, preaccepted[0]);
+  for (const socket of preaccepted.slice(1)) assert.throws(() => reserveReloadProofObservation(held, socket), /CAPACITY/);
+  assert.equal(held.size, 4);
+  held.delete(preaccepted[0]); reserveReloadProofObservation(held, preaccepted[1]);
+  assert.equal(held.size, 4, 'Completion releases only one slot for a later actual request.');
+});

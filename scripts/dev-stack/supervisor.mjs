@@ -11,7 +11,8 @@ import { verifyOpenCode } from './opencode-runtime.mjs';
 import { verifyPtyCapability } from './pty-capability.mjs';
 import { ReadinessEpoch } from './readiness.mjs';
 import { buildSourceServices } from './source-build.mjs';
-import { debounceSourceChanges } from './reload-debounce.mjs';
+import { debounceSourceChanges, ReloadReceipt } from './reload-debounce.mjs';
+import { observeReloadProof, openReloadProofChannel } from './reload-proof-channel.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const say = text => process.stdout.write(`[dev-stack] ${text}\n`);
@@ -56,7 +57,8 @@ export async function start(config, inherited = process.env) {
   if (JSON.stringify(owner.ports) !== JSON.stringify(config.ports)) throw new Error('Existing state has different ports. Reset it first or use its original SPACE_DEV_*_PORT values.');
   const old = await readJson(config.supervisor).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
   if (old) { if (old.nonce !== owner.nonce || await sameProcess(old) || (await Promise.all((old.children || []).map(x => sameProcess(x)))).some(Boolean)) throw new Error('A prior supervisor/child is still alive; use down before restarting.'); await unlink(config.supervisor); }
-  const record = { nonce: owner.nonce, pid: process.pid, identity: await processIdentity(process.pid), children: [] };
+  const reload = new ReloadReceipt();
+  const record = { nonce: owner.nonce, pid: process.pid, identity: await processIdentity(process.pid), children: [], reload: reload.snapshot() };
   await privateWrite(config.supervisor, JSON.stringify(record), { flag: 'wx' });
   const secret = await secrets(config), redactions = [secret.password, encodeURIComponent(secret.password), secret.session, secret.token];
   const env = serviceEnvironment(config, owner, secret, inherited), children = new Map(), watchers = [];
@@ -64,9 +66,10 @@ export async function start(config, inherited = process.env) {
   const readiness = new ReadinessEpoch();
   let stopping = false, restarting = false, queued = false, startupComplete = false, statusTimer, readyTimer, sourceChanges;
   const cancellation = new AbortController();
-  let activeCommand = Promise.resolve(), writeTail = Promise.resolve(), stopTail = Promise.resolve();
+  let activeCommand = Promise.resolve(), writeTail = Promise.resolve(), stopTail = Promise.resolve(), receiptClosed = false, proofChannel;
   const perform = fn => { activeCommand = fn(); return activeCommand; };
-  const recordChildren = () => { record.children = [...children.values()].map(x => x.record); const text = JSON.stringify(record); writeTail = writeTail.then(() => privateWrite(config.supervisor, text)); return writeTail; };
+  const recordChildren = () => { record.children = [...children.values()].map(x => x.record); record.reload = reload.snapshot(); const text = JSON.stringify(record); writeTail = writeTail.then(() => privateWrite(config.supervisor, text)); return writeTail; };
+  const publishReload = () => { if (!receiptClosed) void recordChildren().catch(() => { void shutdown(1); }); };
   const log = chunk => process.stdout.write(chunk);
   async function command(args, executable = 'npm') { return perform(() => run(executable, args, { cwd: config.root, env, secrets: redactions, output: log, signal: cancellation.signal })); }
   const stopChildren = (names = [...children.keys()]) => {
@@ -85,10 +88,12 @@ export async function start(config, inherited = process.env) {
   };
   async function shutdown(code = 0) {
     if (stopping) return; stopping = true;
+    proofChannel?.stopAdmission();
+    reload.stop(); publishReload();
     readiness.pause();
     cancellation.abort();
     sourceChanges?.stop(); clearInterval(statusTimer); clearInterval(readyTimer); for (const w of watchers) w.close();
-    try { await activeCommand.catch(() => {}); await launches.stop(); await stopChildren(); await removeOwnedDocker(config, owner, { output: log, secrets: redactions, diagnose: code !== 0 }); await writeTail; await unlink(config.supervisor); }
+    try { await activeCommand.catch(() => {}); await launches.stop(); await stopChildren(); await removeOwnedDocker(config, owner, { output: log, secrets: redactions, diagnose: code !== 0 }); receiptClosed = true; await writeTail; await proofChannel?.close(); await unlink(config.supervisor); }
     catch (error) { say(`Cleanup failed: ${error.message} Recovery state kept; retry down/reset.`); process.exitCode = 1; return; }
     say('All owned services stopped.'); process.exitCode = code;
   }
@@ -112,11 +117,13 @@ export async function start(config, inherited = process.env) {
     await launch('worker', ['apps/worker/dist/worker.js']);
     await launch('api', ['--import', 'tsx', 'apps/api/src/server.ts']);
   };
-  const rebuild = async kind => {
+  const rebuild = async (kind, generation) => {
     if (stopping) return;
-    if (restarting) { queued = true; return; }
+    if (restarting) { queued = true; reload.enqueued(generation); publishReload(); return; }
     restarting = true;
+    reload.started(kind, generation); publishReload();
     readiness.pause();
+    let rebuilt = false;
     try {
       const names = kind === 'api' ? ['api'] : ['api', 'worker', 'cli-host'];
       await stopChildren(names);
@@ -125,11 +132,22 @@ export async function start(config, inherited = process.env) {
       if (kind === 'api') await launch('api', ['--import', 'tsx', 'apps/api/src/server.ts']); else await sourceServices();
       if (stopping) return;
       readiness.start();
+      rebuilt = true;
       say(`${kind} source change rebuilt/restarted; waiting for readiness.`);
     } catch (error) { say(`Reload failed: ${error.message}`); await shutdown(1); }
-    finally { restarting = false; if (queued && !stopping) { queued = false; void rebuild('packages'); } }
+    finally { restarting = false; reload.finished(generation, rebuilt); publishReload(); if (queued && !stopping) { queued = false; const next = reload.releaseQueued(); publishReload(); void rebuild('packages', next); } }
   };
   try {
+    await launches.track(async () => {
+      proofChannel = await openReloadProofChannel(config, { nonce: record.nonce, pid: record.pid, identity: record.identity }, () => observeReloadProof({
+        tail: () => writeTail,
+        closed: () => stopping || receiptClosed,
+        snapshot: () => ({ nonce: record.nonce, pid: record.pid, identity: record.identity, reload: reload.snapshot(), children: [...children.values()].map(item => ({ ...item.record })) }),
+      }));
+      if (stopping) await proofChannel.close();
+      else { record.proofSocket = proofChannel.name; await recordChildren(); }
+    });
+    if (stopping) return;
     const pins = extractPins(await readFile(join(config.root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(config.root, 'Dockerfile'), 'utf8'));
     await privateWrite(config.compose, JSON.stringify(composeDocument(owner, pins, secret.password), null, 2) + '\n');
     await verifyPtyCapability(config.root, config.state, { inherited: env });
@@ -153,7 +171,7 @@ export async function start(config, inherited = process.env) {
     const tokenDisplay = inherited.CI || inherited.SPACE_DEV_REDACT_SETUP === 'true' ? '[redacted: private state file]' : secret.token || '[already consumed]';
     say(`One-time owner setup token: ${tokenDisplay}`);
     say(`State ${config.state}; down stops, reset removes only owned state. Browser/companion/root services are disabled. No provider account or inference is used.`);
-    sourceChanges = debounceSourceChanges(rebuild);
+    sourceChanges = debounceSourceChanges(rebuild, state => { reload.debounced(state); publishReload(); });
     for (const [dir, kind] of [['apps/api/src', 'api'], ['apps/worker/src', 'packages'], ['packages', 'packages']]) {
       watchers.push(watch(join(config.root, dir), { recursive: true }, (_event, file) => { if (file && !/(?:^|[\\/])(?:node_modules|dist|\.git)(?:[\\/]|$)/.test(file) && /\.(?:ts|tsx|js|mjs|json)$/.test(file)) sourceChanges.change(kind); }));
     }
