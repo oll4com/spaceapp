@@ -221,7 +221,21 @@ OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
 2026-10-16 the worker and both memory workers use the same exporter (services
 `space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
 one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+that span, with the activity type, outcome and attempt only. The workers also emit
+one INTERNAL span per workflow run (`workflow/<workflow type>`) through sandbox
+workflow interceptors and a sink that never fires during replay: a run's workflow
+span is parented to the same propagated span as its activity spans, a child
+workflow's span nests under its parent run's span (span ids are derived
+deterministically from Temporal run ids), a continue-as-new run starts a new root
+span carrying a link to the run it continues, and a background continuation's span
+links to the trace it continues. Workflow span attributes are allowlisted
+(`apps/worker/src/otlp-span-context.ts`): workflow id, run id, type, outcome,
+stable reason code/category and duration only. Spans may carry links, and an
+exporter may name its instrumentation scope independently of its service name;
+neither changes the payload for spans without links. An idle flush can no longer
+wedge the exporter: the drain is deferred to a microtask, so a flush on an empty
+queue never disables later flushes (regression-tested in
+`apps/api/tests/otlp-span-exporter.test.ts`).
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
@@ -233,9 +247,12 @@ that span, with the activity type, outcome and attempt only.
 - **Worker:** worker logs read the trace ID from the activity input. Internal
   room-action calls from the worker send a child `traceparent`, so the internal
   API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+- **Workflow definitions are unchanged.** Correlation is done in the API starter
+  (input/memo) and in interceptors: the activity interceptor above, plus the
+  workflow-run span interceptors, which add no workflow commands and emit spans
+  only through a sink registered with `callDuringReplay: false`, so replaying a
+  history emits no spans. The workflow bundle only gains the optional contract
+  field and the span interceptor module.
 
 ### Replay compatibility
 
@@ -273,6 +290,7 @@ Tests that prove these properties:
 | `packages/runtime/tests/metrics-registry.test.ts` | Unsafe label values never appear |
 | `apps/api/tests/observability-metrics.test.ts` | Secrets, prompts, paths and user IDs sent in URLs, headers and bodies never reach `/metrics` |
 | `apps/worker/tests/activity-observability.test.ts` | Prompts and thrown messages never reach worker logs or metrics |
+| `apps/worker/tests/otlp-span-context.test.ts` | Prompts, messages, paths and URLs never reach workflow span attributes (allowlist) |
 | `apps/api/tests/trace-correlation.test.ts` | The trace lookup omits messages and metadata |
 | `apps/api/tests/observability-fault-injection.test.ts` | Checks all of the above end to end |
 
@@ -291,6 +309,9 @@ No credential or transcript export was added.
 | `apps/api/src/__tests__/files-search-errors.test.ts` | `EMPTY_RESULT`/`OK` and each failure code |
 | `apps/api/tests/files-search-routes.test.ts` | The HTTP error envelope |
 | `apps/worker/tests/activity-observability.test.ts` | Interceptor records, outcomes, categories, metrics, loopback endpoint |
+| `apps/api/tests/otlp-span-exporter.test.ts` | Exporter payload shape, queue bounds, failure counting, idle-flush regression, span links, scope naming |
+| `apps/worker/tests/otlp-span-context.test.ts` | Run-id span derivation, span attribute allowlist, trace context extraction, workflow span sink (replay flag, sanitizing, link forwarding) |
+| `apps/worker/tests/otlp-spans-integration.test.ts` | A real workflow in a Temporal test environment against a fake collector: one trace, the workflow/activity span tree, the continue-as-new link, the allowlist, replay silence |
 | `apps/api/tests/observability-fault-injection.test.ts` | Four injected executor faults and one Temporal start failure, end to end |
 
 ## Not covered
@@ -337,7 +358,8 @@ No credential or transcript export was added.
   trace's workflows, joined by workflow id, with their status and error code, and
   names a failed run's code as the cause when no event carries one.
 - **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
-  spans and worker activity spans (the worker and both memory workers); the CLI
+  spans and worker activity spans (the worker and both memory workers), and the
+  workers' workflow-run spans; the CLI
   and Browser Hosts still join traces through log lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
