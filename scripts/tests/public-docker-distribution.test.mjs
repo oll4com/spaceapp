@@ -44,6 +44,46 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(installer, /Unsupported optional provider/);
   assert.doesNotMatch(dockerfile, /docker\.sock/);
   assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
+  assert.match(dockerfile, /prepare-container-target\.mjs/);
+  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/out\/core \.\//);
+  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/out\/browser \.\//);
+  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/out\/cli \.\//);
+});
+
+test("per-target dependency closures isolate core, browser, and CLI runtime packages", async () => {
+  const { resolveNodeModulesClosure, resolveTargetSpec } = await import(
+    "../prepare-container-target.mjs"
+  );
+  const lockfile = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
+
+  const cliClosure = new Set(resolveNodeModulesClosure({ target: "cli", lockfile, targetArch: "amd64" }));
+  assert.equal(cliClosure.has("node_modules/node-pty"), true);
+  assert.equal(cliClosure.has("node_modules/@temporalio/core-bridge"), false);
+  assert.equal(cliClosure.has("node_modules/pdfjs-dist"), false);
+  assert.equal(cliClosure.has("node_modules/fastify"), false);
+  assert.deepEqual(resolveTargetSpec("cli").workspaces, ["packages/cli-host"]);
+
+  const browserClosure = new Set(resolveNodeModulesClosure({ target: "browser", lockfile, targetArch: "amd64" }));
+  assert.equal(browserClosure.has("node_modules/pg"), true);
+  assert.equal(browserClosure.has("apps/api/node_modules/nanoid"), true);
+  assert.equal(browserClosure.has("packages/runtime/node_modules/nanoid"), true);
+  assert.equal(browserClosure.has("node_modules/zod"), true);
+  assert.equal(browserClosure.has("node_modules/node-pty"), false);
+  assert.equal(browserClosure.has("node_modules/@temporalio/core-bridge"), false);
+  assert.equal(browserClosure.has("node_modules/pdfjs-dist"), false);
+  assert.equal(browserClosure.has("node_modules/fastify"), false);
+
+  const coreClosureAmd64 = new Set(resolveNodeModulesClosure({ target: "core", lockfile, targetArch: "amd64" }));
+  const coreClosureArm64 = new Set(resolveNodeModulesClosure({ target: "core", lockfile, targetArch: "arm64" }));
+  assert.equal(coreClosureAmd64.has("node_modules/@temporalio/core-bridge"), true);
+  assert.equal(coreClosureAmd64.has("node_modules/fastify"), true);
+  assert.equal(coreClosureAmd64.has("node_modules/node-pty"), false);
+  assert.equal(coreClosureAmd64.has("node_modules/react"), false);
+  assert.equal(coreClosureAmd64.has("node_modules/sigma"), false);
+  assert.equal(coreClosureAmd64.has("node_modules/@napi-rs/canvas-linux-x64-gnu"), true);
+  assert.equal(coreClosureAmd64.has("node_modules/@napi-rs/canvas-linux-arm64-gnu"), false);
+  assert.equal(coreClosureArm64.has("node_modules/@napi-rs/canvas-linux-arm64-gnu"), true);
+  assert.equal(coreClosureArm64.has("node_modules/@napi-rs/canvas-linux-x64-gnu"), false);
 });
 
 test("public container images identify their repository and license for GHCR", async () => {

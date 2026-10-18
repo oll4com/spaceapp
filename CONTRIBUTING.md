@@ -71,6 +71,37 @@ exit, and check cleanup after both. Restore the intended behavior before
 submitting a change. Use the tests for the affected workspace as well; the
 offline smoke is not a substitute for them.
 
+## Per-service container verification
+
+The Docker build prepares separate runtime trees with
+`scripts/prepare-container-target.mjs`. Core includes the API, worker and web
+builds; browser retains the browser entrypoint's local API import graph and its
+shared runtime packages; CLI includes CLI host, agent skills and its PTY addon.
+The build-time TypeScript parser is not copied into runtime images. Runtime
+workspace links remain relative, and third-party license files are retained.
+
+Build and check each target on both supported architectures:
+
+```bash
+docker buildx build --platform linux/amd64 --target core --load -t spaceapp-local:core .
+node scripts/container-image-size-budget.mjs --target core --image spaceapp-local:core
+TARGET=core ARCH=amd64 IMAGE=spaceapp-local:core bash scripts/container-target-smoke.sh
+```
+
+Repeat for `browser` and `cli`, then `arm64` on a native builder or with QEMU.
+The container matrix runs these six combinations. Ceilings are 850 MiB for core,
+1350 MiB for browser and 1000 MiB for CLI, measured using `docker image inspect`
+uncompressed image size. The smoke script uses disposable PostgreSQL and tests
+core readiness, browser RPC and Chromium as UID 10001, and CLI socket, OpenCode
+and a native PTY. It removes its temporary containers and network on exit.
+
+These target probes do not replace the release security scan or the full
+`large` profile acceptance run on an actual Linux host with at least 8 CPUs.
+Record measured image sizes and that host's install/readiness, OpenCode pane,
+browser, owner-token, backup/restore and cleanup results before release. Existing
+launcher disk requirements remain conservative until real size measurements are
+available; do not lower them from dependency counts or filesystem sizes alone.
+
 ## Checks before a commit
 
 After `npm ci`, these commands work in this order, also on a fresh clone:

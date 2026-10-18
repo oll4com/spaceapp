@@ -10,6 +10,10 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/prepare-container-target.mjs"
+      - "scripts/container-target-smoke.sh"
+      - "scripts/container-image-size-budget.mjs"
+      - ".github/workflows/containers.yml"
   push:
     branches:
       - main
@@ -21,6 +25,10 @@ on:
       - "starter-memory/**"
       - "Dockerfile"
       - "package-lock.json"
+      - "scripts/prepare-container-target.mjs"
+      - "scripts/container-target-smoke.sh"
+      - "scripts/container-image-size-budget.mjs"
+      - ".github/workflows/containers.yml"
   workflow_dispatch:
 
 permissions:
@@ -71,3 +79,11 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check container target
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          IMAGE: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+        run: bash scripts/container-target-smoke.sh

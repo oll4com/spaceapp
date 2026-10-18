@@ -5,6 +5,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Prepare separate core, browser and CLI runtime trees with production dependency
+  closures and architecture-specific native binaries; enforce per-service image
+  ceilings and runtime probes in the container matrix.
+
 ## [1.1.6] - 2026-10-16
 
 Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry
