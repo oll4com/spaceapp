@@ -9,6 +9,9 @@ import {
   buildMemoryConsolidationWorkflowId,
   idSchema,
   listMemoryGraphOverviewQuerySchema,
+  MEMORY_GRAPH_OVERVIEW_DEFAULT_NODE_LIMIT,
+  MEMORY_GRAPH_OVERVIEW_MAX_NODE_LIMIT,
+  memoryGraphOverviewEdgeLimit,
   listMemoryGraphQuerySchema,
   listMemoryChangeSetsQuerySchema,
   listMemoryIssuesQuerySchema,
@@ -312,9 +315,14 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
   return digest(JSON.stringify({ snapshotRevision, stateRevisions }));
 }
 
-// Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
-export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
-  if (nodes.length <= 2000) return nodes;
+// Keep the default payload budget while retaining the taxonomy needed to interpret a large archive.
+export function selectOverviewNodes(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  limit = MEMORY_GRAPH_OVERVIEW_DEFAULT_NODE_LIMIT
+): MemoryGraphNode[] {
+  const cap = Math.max(0, Math.min(MEMORY_GRAPH_OVERVIEW_MAX_NODE_LIMIT, Math.floor(limit)));
+  if (nodes.length <= cap) return nodes;
   const members = new Map<string, Set<string>>();
   const explicit = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -324,22 +332,30 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     members.get(edge.target)!.add(edge.source);
     if (edge.origin === "EXPLICIT_TAG") explicit.add(edge.target);
   }
+  const topicCap = Math.min(160, cap);
+  const sourceCap = Math.min(120, Math.max(0, cap - topicCap));
   const topics = nodes.filter(node => members.has(node.id)).sort((a, b) =>
     Number(explicit.has(b.id)) - Number(explicit.has(a.id)) ||
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
-  ).slice(0, 160);
-  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
-  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
+  ).slice(0, topicCap);
+  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, sourceCap);
+  const selected = new Map<string, MemoryGraphNode>();
+  const add = (node: MemoryGraphNode | undefined) => {
+    if (!node || selected.size >= cap || selected.has(node.id)) return;
+    selected.set(node.id, node);
+  };
+  for (const node of sources) add(node);
+  for (const node of topics) add(node);
   // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
   for (const topic of topics) {
-    const first = [...members.get(topic.id)!].sort()[0];
-    if (first) selected.set(first, byId.get(first)!);
+    const first = [...(members.get(topic.id) ?? [])].sort()[0];
+    add(first ? byId.get(first) : undefined);
   }
   for (const node of nodes) {
-    if (selected.size >= 2000) break;
-    selected.set(node.id, node);
+    if (selected.size >= cap) break;
+    add(node);
   }
-  return [...selected.values()];
+  return [...selected.values()].slice(0, cap);
 }
 
 export function registerMemoryGraphRoutes(
@@ -385,12 +401,13 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
+    const nodeLimit = query.limit ?? MEMORY_GRAPH_OVERVIEW_DEFAULT_NODE_LIMIT;
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges, nodeLimit);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
       .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
-      .slice(0, 6000);
+      .slice(0, memoryGraphOverviewEdgeLimit(Math.max(1, selectedNodes.length)));
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
       layoutVersion: snapshot.layoutVersion,

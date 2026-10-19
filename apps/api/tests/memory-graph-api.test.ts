@@ -1545,4 +1545,102 @@ describe("Memory graph API", () => {
     ]));
     await app.close();
   });
+
+  it("keeps the overview admin route authenticated and rejects limits outside 1..50000", async () => {
+    const app = await memoryGraphApp(true);
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview" });
+    expect(unauthenticated.statusCode).toBe(401);
+    const tooHigh = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    const zero = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=0", headers: { cookie } });
+    expect(tooHigh.statusCode).toBe(422);
+    expect(zero.statusCode).toBe(422);
+    await app.close();
+  });
+
+  it("honors an explicit overview limit without exceeding nodes or edges", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2_500 }, (_, index) => ({
+      id: `memory:${String(index).padStart(4, "0")}`,
+      type: "MEMORY" as const,
+      label: index === 0 ? "Bearer super-secret-token" : `Memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.nodes.push({ id: "topic:important", type: "TOPIC", label: "Important", sourcePath: null, recordId: null });
+    graphSnapshot.edges = [
+      { id: "edge:tag", source: "memory:0001", target: "topic:important", type: "TAGGED_WITH", origin: "EXPLICIT_TAG", confidence: 1, evidence: "Explicit tag." },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: `edge:semantic-${index}`,
+        source: "memory:0002",
+        target: "memory:0003",
+        type: "SEMANTICALLY_RELATED" as const,
+        origin: "DETERMINISTIC_TFIDF" as const,
+        confidence: 0.4,
+        evidence: "Related memories."
+      }))
+    ];
+    graphSnapshot.summary = { ...graphSnapshot.summary, sourceCount: 1, nodeCount: graphSnapshot.nodes.length, edgeCount: graphSnapshot.edges.length, recordCount: 0 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const one = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=1", headers: { cookie } });
+    expect(one.statusCode).toBe(200);
+    expect(one.json().data.nodes).toHaveLength(1);
+
+    const pair = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=2", headers: { cookie } });
+    expect(pair.statusCode).toBe(200);
+    const pairIds = pair.json().data.nodes.map((node: { id: string }) => node.id);
+    expect(pairIds).toHaveLength(2);
+    expect(pairIds).toContain("topic:important");
+    expect(pairIds).toContain("memory:0001");
+    expect(pair.json().data.edges.length).toBeLessThanOrEqual(6);
+
+    const expanded = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=2500", headers: { cookie } });
+    expect(expanded.statusCode).toBe(200);
+    const expandedBody = expanded.json().data;
+    expect(expandedBody.nodes).toHaveLength(2500);
+    expect(expandedBody.truncated).toBe(true);
+    expect(expandedBody.nodes.some((node: { label: string }) => node.label.includes("super-secret-token"))).toBe(false);
+    expect(expandedBody.nodes.some((node: { label: string }) => node.label.includes("[REDACTED]"))).toBe(true);
+    expect(expandedBody.summary.sourceCount).toBeLessThanOrEqual(24);
+    await app.close();
+  });
+
+  it("caps overview edges at three per returned node when the archive is smaller than the requested limit", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 4 }, (_, index) => ({
+      id: `memory:${index}`,
+      type: "MEMORY" as const,
+      label: `Memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    const edges: MemoryGraphSnapshot["edges"] = [];
+    for (let source = 0; source < 4; source++) {
+      for (let target = 0; target < 4; target++) {
+        if (source === target) continue;
+        for (let copy = 0; copy < 3; copy++) {
+          edges.push({
+            id: `edge:${source}-${target}-${copy}`,
+            source: `memory:${source}`,
+            target: `memory:${target}`,
+            type: "SEMANTICALLY_RELATED" as const,
+            origin: "DETERMINISTIC_TFIDF" as const,
+            confidence: 0.4,
+            evidence: "Related memories."
+          });
+        }
+      }
+    }
+    graphSnapshot.edges = edges;
+    graphSnapshot.summary = { ...graphSnapshot.summary, sourceCount: 0, nodeCount: 4, edgeCount: edges.length, recordCount: 0 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data.nodes).toHaveLength(4);
+    expect(data.edges).toHaveLength(12);
+    expect(data.totalMatchingEdges).toBe(36);
+    expect(data.truncated).toBe(true);
+    await app.close();
+  });
 });

@@ -429,6 +429,20 @@ describe("Space deterministic demo store", () => {
     expect(unchangedChangeSet).toEqual(changeSet);
   });
 
+  it("generates a contract-valid synthetic memory graph of a requested size", async () => {
+    const store = new DemoStore();
+    const overview = await store.api.memoryGraphOverview({ syntheticNodes: 40, syntheticEdges: 60 });
+    expect(overview.data.nodes).toHaveLength(40);
+    expect(overview.data.edges).toHaveLength(60);
+    expect(overview.data.nodes[0]).toMatchObject({ id: "source:space.md", label: "space.md", type: "SOURCE" });
+    expect(overview.data.edges.some((edge) => edge.type === "TAGGED_WITH" && edge.origin === "EXPLICIT_TAG" && edge.confidence === 1 && edge.evidence)).toBe(true);
+    expect(memoryGraphOverviewPayloadSchema.parse(overview.data)).toEqual(overview.data);
+    const detail = await store.api.memoryGraphNode("memory:00000001");
+    expect(memoryGraphNodeDetailSchema.parse(detail)).toEqual(detail);
+    expect(detail.node.label).toContain("Memory");
+    await expect(store.api.memoryGraphNode("memory:missing")).rejects.toMatchObject({ status: 404 });
+  });
+
   it("keeps Links and Clipboard CRUD local, deterministic, and contract-valid", async () => {
     const store = new DemoStore();
 
