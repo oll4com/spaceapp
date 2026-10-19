@@ -329,17 +329,23 @@ test("Dockerfile builds per-service production dependency closures and exports h
   assert.match(coreStage, /COPY --from=deps-core --chown=spaceapp:spaceapp \/app\/node_modules \.\/node_modules/);
   assert.match(coreStage, /COPY --from=deps-core --chown=spaceapp:spaceapp \/app\/apps\/web\/dist \.\/apps\/web\/dist/);
   assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/agent-skills \.\/agent-skills/);
+  assert.match(coreStage, /HEALTHCHECK[\s\S]*http:\/\/127\.0\.0\.1:4911\/readyz/);
+  assert.match(coreStage, /ENTRYPOINT \["\/app\/deploy\/docker\/core-entrypoint\.sh"\]/);
 
   const browserStage =
     dockerfile.match(/FROM runtime-base AS browser([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   assert.match(browserStage, /COPY --from=deps-browser --chown=spaceapp:spaceapp \/app\/node_modules \.\/node_modules/);
   assert.match(browserStage, /COPY --from=deps-browser --chown=spaceapp:spaceapp \/app\/apps\/api \.\/apps\/api/);
   assert.doesNotMatch(browserStage, /\/app\/apps\/(?:worker|web)|\/app\/agent-skills/);
+  assert.match(browserStage, /HEALTHCHECK[\s\S]*SPACE_BROWSER_HOST_SOCKET[\s\S]*method:'health'/);
+  assert.match(browserStage, /ENTRYPOINT \["\/app\/deploy\/docker\/browser-entrypoint\.sh"\]/);
 
   const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   assert.match(cliStage, /COPY --from=deps-cli --chown=spaceapp:spaceapp \/app\/node_modules \.\/node_modules/);
   assert.match(cliStage, /COPY --from=deps-cli --chown=spaceapp:spaceapp \/app\/packages\/cli-host \.\/packages\/cli-host/);
   assert.doesNotMatch(cliStage, /\/app\/apps\//);
+  assert.match(cliStage, /HEALTHCHECK[\s\S]*SPACE_CLI_HOST_SOCKET[\s\S]*method:'ping'/);
+  assert.match(cliStage, /ENTRYPOINT \["\/app\/deploy\/docker\/cli-entrypoint\.sh"\]/);
 });
 
 test("container smoke check helper parses arguments, frames messages, and redacts credentials", async () => {

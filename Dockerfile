@@ -139,6 +139,8 @@ COPY --from=deps-browser --chown=spaceapp:spaceapp /app/packages/contracts ./pac
 COPY --from=deps-browser --chown=spaceapp:spaceapp /app/packages/db ./packages/db
 COPY --from=deps-browser --chown=spaceapp:spaceapp /app/packages/memory-graph ./packages/memory-graph
 COPY --from=deps-browser --chown=spaceapp:spaceapp /app/packages/runtime ./packages/runtime
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD ["node", "-e", "const s=require('node:net').createConnection(process.env.SPACE_BROWSER_HOST_SOCKET||'/run/space-browser-host/browser-host.sock');const p=Buffer.from(JSON.stringify({kind:'request',requestId:'healthcheck',method:'health',params:{}}));const f=Buffer.alloc(4+p.length);f.writeUInt32BE(p.length,0);p.copy(f,4);let b=Buffer.alloc(0);s.on('connect',()=>s.write(f));s.on('data',c=>{b=Buffer.concat([b,c]);if(b.length>=4&&b.length>=4+b.readUInt32BE(0)){try{const m=JSON.parse(b.subarray(4,4+b.readUInt32BE(0)).toString());s.destroy();process.exit(m.ok===true?0:1)}catch{process.exit(1)}}});s.on('error',()=>process.exit(1));s.on('close',()=>process.exit(1))"]
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 # CLI: the CLI host that runs the AI coding CLIs in PTYs. The image carries
@@ -170,5 +172,7 @@ COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 # /etc/AGENTS.md documents, so that path resolves to /etc in this image. Without it, the
 # Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts.
 RUN ln -s /etc /opt/spaceapp
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD ["node", "-e", "const s=require('node:net').createConnection(process.env.SPACE_CLI_HOST_SOCKET||'/run/space-codex-pane-host/pane-host.sock');const p=Buffer.from(JSON.stringify({kind:'request',requestId:'healthcheck',method:'ping',params:{}}));const f=Buffer.alloc(4+p.length);f.writeUInt32BE(p.length,0);p.copy(f,4);let b=Buffer.alloc(0);s.on('connect',()=>s.write(f));s.on('data',c=>{b=Buffer.concat([b,c]);if(b.length>=4&&b.length>=4+b.readUInt32BE(0)){try{const m=JSON.parse(b.subarray(4,4+b.readUInt32BE(0)).toString());s.destroy();process.exit(m.ok===true?0:1)}catch{process.exit(1)}}});s.on('error',()=>process.exit(1));s.on('close',()=>process.exit(1))"]
 ENTRYPOINT ["/app/deploy/docker/cli-entrypoint.sh"]
 

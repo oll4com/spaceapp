@@ -191,7 +191,9 @@ async function runCoreSmoke(image, env) {
     writeFileSync(join(secrets, "setup-token"), setupToken);
     try {
       sh(["docker", "rm", "-f", containerName]);
-    } catch {}
+    } catch {
+      // Container did not exist yet.
+    }
     sh([
       "docker",
       "run",
@@ -264,7 +266,9 @@ async function runCoreSmoke(image, env) {
   } finally {
     try {
       sh(["docker", "rm", "-f", containerName]);
-    } catch {}
+    } catch {
+      // Best-effort container cleanup.
+    }
     rmSync(secrets, { recursive: true, force: true });
   }
 }
@@ -285,7 +289,9 @@ async function runBrowserSmoke(image, env) {
     writeFileSync(join(secrets, "database-url"), databaseUrl);
     try {
       sh(["docker", "rm", "-f", containerName]);
-    } catch {}
+    } catch {
+      // Container did not exist yet.
+    }
     // Migrations first: the Browser Host opens the store when it starts.
     sh([
       "docker",
@@ -336,7 +342,9 @@ async function runBrowserSmoke(image, env) {
         sh(["docker", "exec", "-u", "spaceapp", containerName, "test", "-S", browserSocketPath]);
         socketUp = true;
         break;
-      } catch {}
+      } catch {
+        // Socket is not ready yet.
+      }
     }
     if (!socketUp) {
       const logs = redactSmokeText(readContainerLogs(containerName, 60), [databaseUrl]);
@@ -386,11 +394,15 @@ async function runBrowserSmoke(image, env) {
   } finally {
     try {
       sh(["docker", "rm", "-f", containerName]);
-    } catch {}
+    } catch {
+      // Best-effort container cleanup.
+    }
     rmSync(secrets, { recursive: true, force: true });
     try {
       rmSync(socketDir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // Best-effort socket directory cleanup.
+    }
   }
 }
 
@@ -407,7 +419,9 @@ async function runCliSmoke(image, env) {
   try {
     try {
       sh(["docker", "rm", "-f", containerName]);
-    } catch {}
+    } catch {
+      // Container did not exist yet.
+    }
     sh(["docker", "run", "-d", "--name", containerName, "-v", `${socketDir}:/run/space-codex-pane-host`, image]);
     const deadline = Date.now() + timeoutMs;
     let socketUp = false;
@@ -417,7 +431,9 @@ async function runCliSmoke(image, env) {
         sh(["docker", "exec", "-u", "spaceapp", containerName, "test", "-S", cliSocketPath]);
         socketUp = true;
         break;
-      } catch {}
+      } catch {
+        // Socket is not ready yet.
+      }
     }
     if (!socketUp) {
       const logs = readContainerLogs(containerName, 60);
@@ -447,10 +463,14 @@ async function runCliSmoke(image, env) {
   } finally {
     try {
       sh(["docker", "rm", "-f", containerName]);
-    } catch {}
+    } catch {
+      // Best-effort container cleanup.
+    }
     try {
       rmSync(socketDir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // Best-effort socket directory cleanup.
+    }
   }
 }
 
