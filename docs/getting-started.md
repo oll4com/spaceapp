@@ -53,6 +53,18 @@ its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
 
+## Rootless Podman (Linux & macOS)
+
+SpaceApp supports rootless Podman as an alternative container engine on Linux and macOS:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+- **Linux**: Requires Podman ≥ 5 with compose provider (`podman-compose` or `docker-compose` v2) and cgroup v2. All workspace bind mounts automatically apply SELinux `:z` volume flags, allowing seamless read-write access on SELinux enforcing distributions like Fedora and RHEL. If Docker is missing and Podman is present on Linux, the launcher offers Podman (or picks it with `--non-interactive`) instead of installing Docker.
+- **macOS**: Runs via `podman machine`. SpaceApp verifies that the VM has sufficient CPU cores, memory, and disk space for the chosen profile, and prints resize instructions (`podman machine set`) if resources need adjusting.
+- **Limits**: Container engines cannot be switched on an existing installation without reinstalling (Docker volumes are not shared with Podman). `--access host-root` is not supported with Podman.
+
 ## Windows 11 — Command Prompt
 
 Enable hardware virtualization and install Node.js 20.11 or newer. Open

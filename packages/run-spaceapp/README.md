@@ -62,6 +62,19 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+### Container Engine: Docker and Rootless Podman
+
+SpaceApp defaults to Docker (`--engine docker`). On Linux and macOS, you can also run SpaceApp on rootless Podman:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+- **Linux**: Requires Podman ≥ 5 with compose provider (`podman-compose` or `docker-compose` v2) and cgroup v2. Bind mounts for registered workspaces use SELinux `:z` volume flags for compatibility with SELinux enforcing hosts (e.g. Fedora, RHEL). If Docker is missing and Podman is present on Linux, the launcher offers Podman (or picks it with `--non-interactive`) instead of installing Docker.
+- **macOS**: Runs via `podman machine`. The launcher checks machine sizing against profile requirements and advises resize commands if resources are insufficient.
+- **Data Safety & Limits**: Switching container engines on an existing installation is blocked to protect persistent volumes. `--access host-root` is not supported on Podman.
+- **Diagnostics**: `spaceapp doctor` reports engine details, rootless status, cgroup version, and resource limits delegation. `spaceapp support-bundle` includes engine facts without secrets.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard lists what is sent
