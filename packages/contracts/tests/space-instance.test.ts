@@ -31,6 +31,15 @@ describe("space instance", () => {
     expect(sessionCookieNameFor("dev")).toBe("space_session_dev");
   });
 
+  it("isolates two source checkouts on different ports of the same host", () => {
+    const first = sessionCookieNameFor("dev", "first-checkout"), second = sessionCookieNameFor("dev", "second-checkout");
+    const cookieJar = new Map([[first, "first-session"], [second, "second-session"]]);
+    expect(cookieJar.size).toBe(2);
+    expect(cookieJar.get(first)).toBe("first-session");
+    expect(sessionCookieNameFor("stable", "first-checkout")).toBe("space_session");
+    expect(() => sessionCookieNameFor("dev", "bad; Path=/")).toThrow(/namespace/);
+  });
+
   it("runs every background job on stable and none on dev unless listed", () => {
     for (const job of instanceBackgroundJobs) {
       expect(instanceBackgroundJobEnabled({}, job)).toBe(true);

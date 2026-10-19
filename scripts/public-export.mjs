@@ -129,6 +129,13 @@ const publicScripts = new Set([
   "scripts/quality-known-limitations.mjs",
   "scripts/tests/quality-known-limitations.test.mjs",
   "scripts/contributor-smoke.mjs",
+  "scripts/dev-stack.mjs",
+  "scripts/dev-stack-config.mjs",
+  "scripts/dev-stack-process.mjs",
+  "scripts/dev-stack-service.mjs",
+  "scripts/dev-stack-opencode.mjs",
+  "scripts/dev-stack-acceptance.mjs",
+  "scripts/tests/public-dev-stack.test.mjs",
   "scripts/fixtures/offline-cli.mjs",
   "scripts/tests/contributor-smoke.test.mjs"
 ]);

@@ -29,7 +29,11 @@ export function resolveSpaceInstance(env: Env): SpaceInstance {
 }
 
 /** Browsers share cookies across ports of one host, so each instance needs its own session cookie. */
-export function sessionCookieNameFor(instance: SpaceInstance): string {
+export function sessionCookieNameFor(instance: SpaceInstance, devNamespace?: string): string {
+  if (instance === "dev" && devNamespace) {
+    if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(devNamespace)) throw new Error("The dev session cookie namespace must be 1-48 lowercase letters, digits, underscores or hyphens.");
+    return `${devSessionCookieName}_${devNamespace}`;
+  }
   return instance === "dev" ? devSessionCookieName : stableSessionCookieName;
 }
 
