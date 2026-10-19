@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 import { LivePane } from "../features/live-pane/LivePane.js";
-import { MemoryGraph3D } from "../features/memory-workspace/MemoryGraph3D.js";
+import { MemoryGraph3DStatic } from "../features/memory-workspace/MemoryGraph3DCanvas2D.js";
 import { createMemoryAtlas } from "../features/memory-workspace/memory-atlas.js";
 import { layoutMemoryNetwork3D } from "../features/memory-workspace/memory-3d.js";
 import { createShowcaseFixture } from "./showcase-fixture.js";
@@ -236,7 +236,7 @@ export function FeatureShowcase({ kind }: { kind: "voice" | "memory" }) {
               connections
             </span>
           </div>
-          <MemoryGraph3D
+          <MemoryGraph3DStatic
             nodes={graph.nodes}
             edges={graph.edges}
             positions={atlas.positions}
