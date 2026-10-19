@@ -1,3 +1,4 @@
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 import { Client, Connection } from "@temporalio/client";
 import {
   MEMORY_CONSOLIDATION_TASK_QUEUE,
@@ -16,6 +17,7 @@ export interface MemoryConsolidationStartResult {
 }
 
 interface WorkflowStartOptions {
+  memo?: Record<string, string>;
   args: [MemoryConsolidationWorkflowInput];
   taskQueue: typeof MEMORY_CONSOLIDATION_TASK_QUEUE;
   workflowId: string;
@@ -46,6 +48,7 @@ export async function scheduleMemoryConsolidation(
   try {
     const handle = await startWorkflow(MEMORY_CONSOLIDATION_WORKFLOW_TYPE, {
       args: [input],
+      ...(traceparentForTraceId(input.traceId) ? { memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }) } : {}),
       taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
