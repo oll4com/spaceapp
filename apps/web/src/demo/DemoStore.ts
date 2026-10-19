@@ -1,5 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
+import { DemoMemoryGraph, type DemoMemoryGraphQuery, type DemoMemoryGraphSize } from "./demo-memory-graph.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
@@ -21,7 +22,6 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
-  MemoryGraphNode,
   MemoryGraphPayload,
   Pane,
   Room,
@@ -137,19 +137,6 @@ function initialStreamingBotStatus(): StreamingBotStatus {
   };
 }
 
-type DemoMemoryGraphQuery = {
-  q?: string;
-  nodeType?: MemoryGraphNode["type"];
-  scope?: "SYSTEM" | "PROJECT" | "ROOM";
-  roomId?: string;
-  sourcePath?: string;
-  lifecycleStatus?: "ACTIVE" | "ARCHIVED";
-  month?: string;
-  relationMode?: "CLUSTERED" | "RELATIONS";
-  page?: number;
-  pageSize?: number;
-};
-
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
   const { beforeSnapshot: _before, afterSnapshot: _after, ...summary } = changeSet;
   return summary;
@@ -226,9 +213,11 @@ export class DemoStore {
   private mockServices = new MockServices(() => this.fixture);
   private readonly publicMock: boolean;
   private readonly initialFixture: DemoFixture;
+  private readonly syntheticMemoryGraph?: DemoMemoryGraph;
 
-  constructor(initialFixture?: DemoFixture) {
+  constructor(initialFixture?: DemoFixture, options: { memoryGraphNodes?: DemoMemoryGraphSize } = {}) {
     this.publicMock = initialFixture !== undefined;
+    if (!this.publicMock && options.memoryGraphNodes !== undefined) this.syntheticMemoryGraph = new DemoMemoryGraph(options.memoryGraphNodes);
     if (initialFixture) {
       this.fixture = structuredClone(initialFixture);
       this.mockServices = new MockServices(() => this.fixture);
@@ -1483,6 +1472,7 @@ export class DemoStore {
       }
       case "memoryGraph": {
         const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        if (this.syntheticMemoryGraph) return this.syntheticMemoryGraph.page(query);
         const graph = this.memoryGraph(query);
         const page = requestedPage(graph.nodes, query);
         const visibleIds = new Set(page.data.map((node) => node.id));
@@ -1496,8 +1486,16 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
-        return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        if (this.syntheticMemoryGraph) return this.syntheticMemoryGraph.overview((args[0] ?? {}) as DemoMemoryGraphQuery).then((data) => ({ data }));
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const graph = this.memoryGraph(query);
+        const limit = query.limit ?? 2000;
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50000) throw new RangeError("Graph limit must be between 1 and 50000.");
+        const nodes = graph.nodes.slice(0, limit);
+        const visibleIds = new Set(nodes.map((node) => node.id));
+        const edges = graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)).slice(0, limit * 3);
+        return Promise.resolve({ data: { ...graph, nodes, edges, totalMatchingNodes: graph.nodes.length,
+          totalMatchingEdges: graph.edges.length, truncated: nodes.length < graph.nodes.length || edges.length < graph.edges.length } });
       }
       case "memoryCalendar": {
         const query = (args[0] ?? {}) as { year?: number; month?: string; date?: string };
@@ -1574,7 +1572,7 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
-        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        const detail = this.syntheticMemoryGraph ? this.syntheticMemoryGraph.detail(roomId ?? "") : this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
       }

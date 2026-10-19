@@ -1,6 +1,46 @@
 import { describe, expect, it } from "vitest";
 import { layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
+import type { MemoryPoint3D } from "../src/features/memory-workspace/memory-3d.js";
+
+// Preserve the pre-optimization algorithm as a numerical compatibility oracle.
+function previousVolumeRatio(points: MemoryPoint3D[]): number {
+  if (points.length < 4) return 0;
+  const center = points.reduce((sum, p) => ({ x: sum.x + p.x / points.length, y: sum.y + p.y / points.length, z: sum.z + p.z / points.length }), { x: 0, y: 0, z: 0 });
+  let xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+  for (const p of points) {
+    const x = p.x - center.x, y = p.y - center.y, z = p.z - center.z;
+    xx += x * x; yy += y * y; zz += z * z; xy += x * y; xz += x * z; yz += y * z;
+  }
+  const determinant = xx * yy * zz + 2 * xy * xz * yz - xx * yz * yz - yy * xz * xz - zz * xy * xy;
+  return Math.max(0, determinant / Math.max(1e-12, ((xx + yy + zz) / 3) ** 3));
+}
+
+describe("3D volume ratio compatibility", () => {
+  const cases: Array<[string, MemoryPoint3D[]]> = [
+    ["empty geometry", []],
+    ["fewer than four points", [{ x: 1, y: 2, z: 3 }, { x: -4, y: 8, z: 2 }, { x: 0, y: 0, z: 0 }]],
+    ["isotropic nonplanar geometry", [
+      { x: 1, y: 1, z: 1 }, { x: 1, y: -1, z: -1 },
+      { x: -1, y: 1, z: -1 }, { x: -1, y: -1, z: 1 }
+    ]],
+    ["tilted planar geometry", Array.from({ length: 100 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10), z: i % 10 + Math.floor(i / 10) }))],
+    ["collinear geometry", Array.from({ length: 20 }, (_, i) => ({ x: i / 3, y: i / 7, z: -i / 9 }))],
+    ["coincident geometry", Array.from({ length: 12 }, () => ({ x: 5.5, y: -8.25, z: 12.75 }))],
+    ["translated unequal spread", Array.from({ length: 70 }, (_, i) => ({ x: 1e6 + Math.sin(i) * 0.7, y: -2e6 + Math.cos(i * 3) * 4, z: 3e6 + Math.sin(i * 7) * 13 }))],
+    ["50,000 streamed coordinates", Array.from({ length: 50000 }, (_, i) => ({ x: Math.sin(i * 0.17) * 200, y: Math.cos(i * 0.31) * 150, z: Math.sin(i * 0.53) * 180 }))]
+  ];
+
+  it.each(cases)("preserves the prior result for %s without mutating input", (_name, points) => {
+    const snapshot = structuredClone(points);
+    const map = new Map(points.map((point, index) => [String(index), point]));
+    const expected = previousVolumeRatio(points);
+    expect(memory3DVolumeRatio(points)).toBe(expected);
+    expect(memory3DVolumeRatio(map)).toBe(expected);
+    expect(points).toEqual(snapshot);
+    expect([...map.values()]).toEqual(snapshot);
+  });
+});
 
 describe("3D memory projection", () => {
   it("rotates all three axes through a full turn and returns to the same view", () => {
