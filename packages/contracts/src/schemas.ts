@@ -7223,8 +7223,8 @@ export const memoryGraphPayloadSchema = z.object({
 export const memoryGraphOverviewPayloadSchema = memoryGraphPayloadSchema
   .omit({ nodes: true, edges: true })
   .extend({
-    nodes: z.array(memoryGraphNodeSchema).max(2000),
-    edges: z.array(memoryGraphEdgeSchema).max(6000),
+    nodes: z.array(memoryGraphNodeSchema).max(50000),
+    edges: z.array(memoryGraphEdgeSchema).max(150000),
     totalMatchingNodes: z.number().int().min(0),
     totalMatchingEdges: z.number().int().min(0),
     truncated: z.boolean()
@@ -7250,12 +7250,18 @@ export const listMemoryGraphQuerySchema = paginationRequestSchema.extend({
   relationMode: z.enum(["CLUSTERED", "RELATIONS"]).default("RELATIONS")
 });
 
-export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema.omit({
-  page: true,
-  pageSize: true,
-  sortBy: true,
-  sortOrder: true
-});
+export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema
+  .omit({
+    page: true,
+    pageSize: true,
+    sortBy: true,
+    sortOrder: true
+  })
+  // Issue #62: the WebGL renderer handles large graphs, so callers may raise
+  // the overview node cap above the historical 2000.
+  .extend({
+    limit: z.coerce.number().int().min(200).max(50000).default(2000)
+  });
 
 export const memoryCalendarQuerySchema = z.object({
   year: z.coerce.number().int().min(2000).max(2100).optional(),
