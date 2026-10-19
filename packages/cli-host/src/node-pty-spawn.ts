@@ -1,5 +1,27 @@
-import { spawn } from "node-pty";
+import { createRequire } from "node:module";
 import type { CliHostSpawn } from "./types.js";
+
+const require = createRequire(import.meta.url);
+let cachedSpawn: typeof import("node-pty").spawn | null = null;
+
+/**
+ * Lazily resolves and caches the native `node-pty` `spawn` function so that
+ * importing `@space/cli-host` for client or framing utilities does not load
+ * the native addon at module evaluation time.
+ */
+function loadNodePtySpawn(): typeof import("node-pty").spawn {
+  if (!cachedSpawn) {
+    const nodePty = require("node-pty") as typeof import("node-pty") & {
+      default?: typeof import("node-pty");
+    };
+    const spawnFn = nodePty.spawn ?? nodePty.default?.spawn;
+    if (typeof spawnFn !== "function") {
+      throw new Error("node-pty did not export a spawn function.");
+    }
+    cachedSpawn = spawnFn;
+  }
+  return cachedSpawn;
+}
 
 /**
  * Disable the PTY interrupt characters (ISIG) for every CLI pane so that
@@ -9,7 +31,7 @@ import type { CliHostSpawn } from "./types.js";
  * and app-level exits (Ctrl-D, /exit) are unaffected.
  */
 export const spawnNodePty: CliHostSpawn = (spec) =>
-  spawn("/bin/sh", ["-c", '/usr/bin/stty -isig; exec "$@"', "space-cli-host", spec.command, ...spec.args], {
+  loadNodePtySpawn()("/bin/sh", ["-c", '/usr/bin/stty -isig; exec "$@"', "space-cli-host", spec.command, ...spec.args], {
     name: "xterm-256color",
     cols: spec.cols,
     rows: spec.rows,
