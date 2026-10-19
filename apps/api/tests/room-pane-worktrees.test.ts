@@ -1,12 +1,16 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { type AgentRuntimeRegistry, type RoomPaneBatchItem, type SpaceWorktree } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createRoomPaneCommands } from "../src/room-pane-commands.js";
 import { execGit, WorktreeError, WorktreeService } from "../src/worktrees/worktree-service.js";
 import { defaultWorktreeBaseBranch } from "../src/worktrees/default-base-branch.js";
+import * as gitTransport from "../src/group-writable-git.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -137,4 +141,113 @@ it("gives a T3 Code pane its own worktree of the room project, as for CLI panes"
     expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ repoPath, baseBranch: defaultWorktreeBaseBranch(repoPath), linkModules: true, branchName: undefined }));
   }
   expect(create).toHaveBeenCalledTimes(3);
+});
+
+function gate() {
+  let release!: () => void;
+  const ready = new Promise<void>(resolve => { release = resolve; });
+  return { ready, release };
+}
+
+// A held worktree registration exposes an incomplete sibling to any concurrent
+// enumeration, just as Git's existing-but-empty commondir reader fails closed.
+async function metadataFixture(failBranch?: string) {
+  const root = await scratchRoot();
+  const repo = join(root, "repo"), alias = join(root, "alias"), other = join(root, "other");
+  const common = join(repo, ".git"), commonAlias = join(root, "common-alias");
+  await Promise.all([mkdir(common, { recursive: true }), mkdir(alias), mkdir(join(other, ".git"), { recursive: true })]);
+  await symlink(common, commonAlias, process.platform === "win32" ? "junction" : "dir");
+  const commonDirs = new Map([[repo, common], [alias, commonAlias], [other, join(other, ".git")]]);
+  const services = ["first", "second", "other"].map(name => new WorktreeService(join(root, name)));
+  for (const service of services) vi.spyOn(service, "validateGitRepository").mockImplementation(async path => path);
+  const held = gate(), started = gate();
+  const active = new Set<string>(), addressed = new Set<string>(), collisions: string[] = [];
+  const calls: Array<{ root: string; args: string[] }> = [];
+  function reply(stdout: string, stderr = "", code = 0, wait = Promise.resolve(), done = () => {}) {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true
+    });
+    void wait.then(() => {
+      child.stdout.end(stdout); child.stderr.end(stderr); done(); child.emit("close", code);
+    });
+    return child as ChildProcessWithoutNullStreams;
+  }
+  vi.spyOn(gitTransport, "spawnGroupWritableGit").mockImplementation(args => {
+    const at = args.indexOf("-C"), directory = args[at + 1]!, command = args.slice(at + 2);
+    calls.push({ root: directory, args: command });
+    if (command[0] === "rev-parse" && command.includes("--git-common-dir")) {
+      addressed.add(directory);
+      return reply(`${commonDirs.get(directory)}\n`);
+    }
+    if (command[0] === "show-ref") return reply("", "", command.at(-1) === "refs/heads/main" ? 0 : 1);
+    if (command[0] !== "worktree") return reply(`${"a".repeat(40)}\n`);
+    const key = directory === alias ? resolve(common) : resolve(commonDirs.get(directory)!);
+    if (active.has(key)) {
+      collisions.push(command.join(" "));
+      return reply("", "fatal: failed to read .git/worktrees/publishing/commondir: empty metadata", 128);
+    }
+    if (command[1] !== "add") return reply("");
+    const branch = command[command.indexOf("-b") + 1];
+    active.add(key);
+    const wait = branch === "test/held" ? held.ready : Promise.resolve();
+    if (branch === "test/held") started.release();
+    return reply("", branch === failBranch ? "fixture add failure" : "", branch === failBranch ? 128 : 0,
+      wait, () => { active.delete(key); });
+  });
+  const create = (service: WorktreeService, path: string, branch: string, linkModules = false) =>
+    service.createWorktree({ repoPath: path, roomId: "room:metadata", branchName: branch, baseBranch: "main", linkModules });
+  return { repo, alias, other, services, held, started, addressed, collisions, calls, create };
+}
+
+it("protects shared Git metadata across service and common-directory aliases while other repositories overlap", async () => {
+  const f = await metadataFixture();
+  const [first, second, other] = f.services as [WorktreeService, WorktreeService, WorktreeService];
+  const pending = [f.create(first, f.repo, "test/held")];
+  await f.started.ready;
+  const errors: unknown[] = [];
+  pending.push(f.create(second, f.alias, "test/second"));
+  const listed = second.listWorktrees(f.alias).catch(error => { errors.push(error); return []; });
+  for (const work of pending) void work.catch(error => { errors.push(error); });
+  try {
+    await f.create(other, f.other, "test/other");
+    await expect.poll(() => f.addressed.has(f.alias) || f.collisions.length > 0).toBe(true);
+    expect(f.collisions).toEqual([]);
+  } finally {
+    f.held.release();
+    await Promise.allSettled([...pending, listed]);
+  }
+  expect(errors).toEqual([]);
+  expect((await pending[1]!).branch).toBe("test/second");
+});
+
+it("releases a failed metadata operation without replacing its error or poisoning the next creation", async () => {
+  const f = await metadataFixture("test/fail");
+  const [first, second] = f.services as [WorktreeService, WorktreeService, WorktreeService];
+  const results = await Promise.allSettled([
+    f.create(first, f.repo, "test/fail"), f.create(second, f.alias, "test/next")
+  ]);
+  expect(results[0]).toMatchObject({ status: "rejected", reason: { code: "WORKTREE_ADD_FAILED", message: "Failed to add worktree: fixture add failure" } });
+  expect(results[1]).toMatchObject({ status: "fulfilled", value: { branch: "test/next" } });
+  expect(f.collisions).toEqual([]);
+});
+
+it("releases shared metadata before slow module linking", async () => {
+  const f = await metadataFixture();
+  const [first, second] = f.services as [WorktreeService, WorktreeService, WorktreeService];
+  await mkdir(join(f.repo, "node_modules"));
+  const linking = gate(), entered = gate();
+  vi.spyOn(WorktreeService, "linkNodeModulesOverlay").mockImplementation(async () => {
+    entered.release(); await linking.ready;
+  });
+  const pending = f.create(first, f.repo, "test/linking", true);
+  await entered.ready;
+  let completed = false;
+  const next = f.create(second, f.alias, "test/next").then(value => { completed = true; return value; });
+  try {
+    await expect.poll(() => completed, { timeout: 2000 }).toBe(true);
+  } finally {
+    linking.release(); await Promise.allSettled([pending, next]);
+  }
+  await expect(next).resolves.toMatchObject({ branch: "test/next" });
+  await expect(pending).resolves.toMatchObject({ branch: "test/linking" });
 });

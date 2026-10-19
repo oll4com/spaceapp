@@ -7,6 +7,8 @@ Semantic Versioning.
 
 ### Fixed
 
+- Serialize Git worktree metadata operations for each repository during concurrent
+  pane setup.
 - Preserve package reload priority and recovery before Compose setup in the source
   development stack.
 - Validate isolated storage roots and preserve typed DOCX errors and MCP diagnostics
