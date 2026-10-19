@@ -1,6 +1,7 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
+import { generateSyntheticMemoryGraph } from "./synthetic-memory.js";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
   MaintenanceAutopilotStatus,
@@ -1496,7 +1497,29 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery & { limit?: number };
+        if (query.limit && query.limit > 2000) {
+          const synthetic = generateSyntheticMemoryGraph(query.limit);
+          let filteredNodes = synthetic.nodes;
+          let filteredEdges = synthetic.edges;
+          if (query.q) {
+            const needle = query.q.toLowerCase();
+            filteredNodes = filteredNodes.filter(n => n.label.toLowerCase().includes(needle));
+            const keepIds = new Set(filteredNodes.map(n => n.id));
+            filteredEdges = filteredEdges.filter(e => keepIds.has(e.source) && keepIds.has(e.target));
+          }
+          return Promise.resolve({
+            data: {
+              ...synthetic,
+              nodes: filteredNodes,
+              edges: filteredEdges,
+              totalMatchingNodes: filteredNodes.length,
+              totalMatchingEdges: filteredEdges.length,
+              truncated: false
+            }
+          });
+        }
+        const graph = this.memoryGraph(query);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {
