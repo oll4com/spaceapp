@@ -147,7 +147,9 @@ describe("useAppNotices", () => {
     act(() => {
       window.dispatchEvent(new CustomEvent("space-live-debug", { detail: { message: "Live failed", type: "error" } }));
     });
+    expect(vi.getTimerCount()).toBe(1);
     unmount();
+    expect(vi.getTimerCount()).toBe(0);
 
     // Vitest removes the browser globals after a file finishes. No notice callback may outlive its hook.
     const browserWindow = Object.getOwnPropertyDescriptor(globalThis, "window")!;
