@@ -4,16 +4,20 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// 1.1.3 raised core and browser (998.7 / 1670.6 MiB measured): the current
-// application adds production dependencies pdfjs-dist with @napi-rs/canvas
-// (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
-// js-tiktoken (22 MiB, Space Gateway token counting).
-// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
-// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// Per-service container images (Issue #64):
+// - core: ships API, Temporal worker, Web server, and DB migrations.
+//   Excludes CLI host, node-pty, agent skills, and foreign-platform native prebuilds.
+//   Ceiling: 850 MiB (previously 1100 MiB).
+// - browser: ships Browser Host with minimal runtime dependencies and Chromium.
+//   Excludes Temporal SDK, Canvas, PDF.js, Web, Worker, and CLI host.
+//   Ceiling: 1350 MiB (previously 1750 MiB).
+// - cli: ships CLI host, node-pty, and agent skills.
+//   Excludes all app services, Temporal SDK, Canvas, and PDF.js.
+//   Ceiling: 1000 MiB (previously 2800 MiB).
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 850 * mebibyte,
+  browser: 1350 * mebibyte,
+  cli: 1000 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
