@@ -22,6 +22,7 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  links?: ReadonlyArray<{ traceId: string; spanId: string }>;
 }
 
 export interface SpanExporterStats {
@@ -82,6 +83,8 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
           kind: span.kind ?? 2,
+          ...(span.links?.length ? { links: span.links.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId))
+            .map(link => ({ traceId: link.traceId, spanId: link.spanId })) } : {}),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
@@ -122,13 +125,12 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          while (queue.length) await flushOnce();
-        } finally {
-          inFlight = null;
-        }
-      })();
+      // Defer the drain until inFlight is assigned. An empty synchronous drain
+      // otherwise clears it before the assignment, permanently caching a
+      // resolved promise and stranding every span recorded after an idle tick.
+      inFlight = Promise.resolve().then(async () => {
+        while (queue.length) await flushOnce();
+      }).finally(() => { inFlight = null; });
     }
     return inFlight;
   };

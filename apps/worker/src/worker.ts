@@ -14,6 +14,7 @@ import { DEFAULT_TASK_QUEUE, DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPAC
 import { runTelegramNotificationCycle, TelegramNotificationLoop } from "./telegram-notification-runtime.js";
 import { StreamingBotLoop, createSpaceBotMemoryStore, runStreamingBotCycle } from "./streaming-bot-runtime.js";
 import { CHESS_MOVE_SOCKET, startChessMoveServer } from "./chess-cli-move.js";
+import { workflowTracingOptions } from "./workflow-tracing-worker.js";
 import { NOUS_TURN_MAX_BODY_BYTES, NousTurnInputError, runNousTurn, validateNousTurnInput } from "./nous-turn.js";
 
 assertDevInstanceIsolated(process.env, "worker");
@@ -37,6 +38,7 @@ if (temporalCoreMetricsBind) {
 
 const connection = await NativeConnection.connect({ address });
 const spans = otlpSpanExporterFromEnv(process.env, "space-worker");
+const tracing = workflowTracingOptions(spans);
 const worker = await Worker.create({
   connection,
   namespace,
@@ -45,7 +47,8 @@ const worker = await Worker.create({
   activities,
   // Structured, correlated activity records and worker metrics. Activity-side
   // only: the workflow sandbox and its replay behaviour are unchanged.
-  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+  sinks: tracing.sinks ?? {},
+  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })], workflowModules: tracing.workflowModules ?? [] }
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.

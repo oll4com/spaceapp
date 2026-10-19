@@ -39,6 +39,24 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Optional distributed tracing
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is a collector base URL. Set it in the API
+and each Temporal worker process to enable OTLP/HTTP JSON at `<base>/v1/traces`.
+Without a valid endpoint, span export and workflow tracing interceptors stay off;
+existing structured logs remain available. HTTP(S) URLs with credentials, query
+strings or fragments are rejected. Configure collector authentication or routing
+outside this lightweight exporter; do not put secrets in this setting.
+
+The API emits SERVER spans. `space-worker`, `space-memory-maintenance-worker`
+and `space-memory-mutation-worker` emit ended workflow spans and one child per
+activity attempt. Continue-as-new and background continuations carry span links.
+Only allowlisted IDs, types, outcomes, durations and error codes are sent. The
+shared exporter drops overflow from its bounded queue and times out each POST;
+collector availability cannot fail application work. Long-lived workflow parents
+appear when their run ends. See [observability](quality/observability.md#traces-w3c-trace-context)
+for replay behavior, limitations and a local Jaeger check.
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

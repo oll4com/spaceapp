@@ -96,7 +96,9 @@ export const requestTraceContexts = new TraceContextRegistry();
 
 /** traceparent for work started on behalf of this Space request id, if known. */
 export function traceparentForTraceId(traceId: string | null | undefined, registry = requestTraceContexts): string | null {
-  return childTraceparent(registry.lookup(traceId)?.traceparent ?? null);
+  // The workflow interceptor creates the next span. Propagate the actual API
+  // span here; allocating an unexported child ID creates a hole in the tree.
+  return registry.lookup(traceId)?.traceparent ?? null;
 }
 
 /** Adds the request's traceparent to a turn input unless it already has a valid one. */

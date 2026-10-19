@@ -47,9 +47,11 @@ describe("request trace context", () => {
     expect(registry.size).toBe(2);
     expect(registry.lookup("req:aaaaaaaaaaaa")).toBeNull();
 
-    registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
+    const serverSpan = createRequestTraceContext(inbound);
+    registry.remember("req:dddddddddddd", serverSpan);
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
     expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(parseTraceparent(filled.traceparent)?.parentId).toBe(serverSpan.spanId);
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });
