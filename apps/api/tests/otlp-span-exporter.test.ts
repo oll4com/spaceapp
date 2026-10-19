@@ -135,6 +135,18 @@ describe("OTLP span exporter", () => {
     expect(unreachable.stats()).toEqual({ exported: 0, dropped: 0, failed: 1 });
   });
 
+  it("stops draining after a failed batch", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false }));
+    const created = exporter(fetchImpl, { batchSize: 1 });
+    created.record(span({ spanId: "0000000000000001" }));
+    created.record(span({ spanId: "0000000000000002" }));
+    created.record(span({ spanId: "0000000000000003" }));
+    await created.close();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(created.stats()).toEqual({ exported: 0, dropped: 0, failed: 1 });
+  });
+
   it("ignores spans whose ids are not W3C trace and span ids", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl);

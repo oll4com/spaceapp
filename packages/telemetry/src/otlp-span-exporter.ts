@@ -111,9 +111,9 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
 
-  const flushOnce = async () => {
+  const flushOnce = async (): Promise<boolean> => {
     const batch = queue.splice(0, batchSize);
-    if (!batch.length) return;
+    if (!batch.length) return true;
     try {
       const response = await send(url, {
         method: "POST",
@@ -121,11 +121,15 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
         body: JSON.stringify(otlpTraceRequest(batch, options.serviceName, options.scopeName)),
         signal: AbortSignal.timeout(timeoutMs)
       });
-      if (response.ok) stats.exported += batch.length;
-      else stats.failed += batch.length;
+      if (response.ok) {
+        stats.exported += batch.length;
+        return true;
+      }
+      stats.failed += batch.length;
     } catch {
       stats.failed += batch.length;
     }
+    return false;
   };
   const flush = (): Promise<void> => {
     // An empty async loop would clear inFlight before its resolved promise is
@@ -134,7 +138,11 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     if (!inFlight) {
       inFlight = (async () => {
         try {
-          while (queue.length) await flushOnce();
+          // Bound shutdown when the collector is unavailable; the interval can
+          // retry remaining spans during normal operation.
+          while (queue.length) {
+            if (!await flushOnce()) break;
+          }
         } finally {
           inFlight = null;
         }

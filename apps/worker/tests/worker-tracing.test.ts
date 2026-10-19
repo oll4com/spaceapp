@@ -56,6 +56,8 @@ it("finishes activity work while export is pending and preserves failure codes",
     const firstBatch = JSON.parse(send.mock.calls[0]![1].body);
     expect(JSON.stringify(firstBatch)).not.toContain("PRIVATE");
     release({ ok: false });
+    await exporter.flush();
+    const retry = exporter.flush();
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
     const failed = JSON.parse(send.mock.calls[1]![1].body).resourceSpans[0].scopeSpans[0].spans[0];
     expect(failed.attributes).toEqual(expect.arrayContaining([
@@ -65,7 +67,7 @@ it("finishes activity work while export is pending and preserves failure codes",
     ]));
     expect(JSON.stringify(failed)).not.toMatch(/private|https:\/\//);
     release({ ok: false });
-    await exporter.flush();
+    await retry;
     expect(exporter.stats()).toEqual({ exported: 0, dropped: 1, failed: 2 });
   } finally { release?.({ ok: false }); await exporter.close(); }
 });
