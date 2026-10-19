@@ -313,8 +313,14 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
 }
 
 // Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
-export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
-  if (nodes.length <= 2000) return nodes;
+// `limit` is the caller's node budget: omitted it is the historical 2,000, and the 3D view can ask
+// for up to OVERVIEW_MAX_NODES (schema-enforced) to load the full graph instead of a sample.
+export const OVERVIEW_DEFAULT_NODE_LIMIT = 2000;
+export const OVERVIEW_MAX_NODE_LIMIT = 50000;
+export const OVERVIEW_EDGES_PER_NODE = 3;
+
+export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], limit: number = OVERVIEW_DEFAULT_NODE_LIMIT): MemoryGraphNode[] {
+  if (nodes.length <= limit) return nodes;
   const members = new Map<string, Set<string>>();
   const explicit = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -329,15 +335,27 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
   ).slice(0, 160);
   const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
-  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
-  // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
+  // Reservations are charged against the budget as they are taken. Previously every source and topic
+  // was inserted first and the fill loop only stopped once the map was already full, so a small
+  // `limit` was ignored: two source nodes came back for `limit=1`, and the response could exceed the
+  // caller's cap by up to the size of both reservations.
+  const selected = new Map<string, MemoryGraphNode>();
+  const add = (node: MemoryGraphNode | undefined): void => {
+    if (!node || selected.size >= limit) return;
+    selected.set(node.id, node);
+  };
+  for (const node of sources) add(node);
+  for (const node of topics) add(node);
+  // Give every *selected* topic a real visible neighbor, even for sparse explicit tags. Topics that
+  // did not fit the budget are skipped rather than dragging a neighbor in over the cap.
   for (const topic of topics) {
+    if (!selected.has(topic.id)) continue;
     const first = [...members.get(topic.id)!].sort()[0];
-    if (first) selected.set(first, byId.get(first)!);
+    if (first) add(byId.get(first));
   }
   for (const node of nodes) {
-    if (selected.size >= 2000) break;
-    selected.set(node.id, node);
+    if (selected.size >= limit) break;
+    add(node);
   }
   return [...selected.values()];
 }
@@ -385,12 +403,14 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
+    const nodeLimit = Math.min(query.limit ?? OVERVIEW_DEFAULT_NODE_LIMIT, OVERVIEW_MAX_NODE_LIMIT);
+    const edgeLimit = Math.min(nodeLimit * OVERVIEW_EDGES_PER_NODE, OVERVIEW_MAX_NODE_LIMIT * OVERVIEW_EDGES_PER_NODE);
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges, nodeLimit);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
       .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
-      .slice(0, 6000);
+      .slice(0, edgeLimit);
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
       layoutVersion: snapshot.layoutVersion,
