@@ -368,7 +368,7 @@ function HistoryView({ history }: { history: GatewayHeadroomHistory }) {
           </table></div>
         )}
       </section>
-      <p className="space-gateway-note">Retention: request logs are kept {history.retention.requestLogDays} days; daily savings are kept for good.</p>
+      <p className="space-gateway-note">Retention: request logs and daily savings are kept for good.</p>
     </>
   );
 }

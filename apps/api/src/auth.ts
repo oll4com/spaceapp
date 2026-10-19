@@ -211,9 +211,11 @@ export interface SessionRevocationPersistence {
   pruneExpired(nowMs: number): Promise<number>;
 }
 
+// A session token is exactly "<body>.<sig>". Revocation keys on the segment verifySession checks, so a
+// segment appended to a revoked token cannot produce another, unrevoked key (external review 2026-10-16).
 function tokenSignatureHash(token: string): string {
   const parts = token.split(".");
-  const sig = parts.length > 1 ? parts[parts.length - 1]! : token;
+  const sig = parts.length === 2 && parts[1] ? parts[1] : token;
   return createHash("sha256").update(sig).digest("hex");
 }
 
@@ -221,6 +223,11 @@ export class SessionRevocationStore {
   // Keyed by SHA-256 of the token signature, the same form that is persisted.
   private readonly revokedSignatures = new Map<string, number>();
   private readonly userRevocationEpochs = new Map<string, number>();
+  // Writes the database refused; retried on every cleanup tick and after a load (the upserts keep the maximum).
+  private readonly unsavedSignatures = new Map<string, number>();
+  private readonly unsavedUserEpochs = new Map<string, number>();
+  // False from the start of a load until it succeeds: every session is refused meanwhile (fail closed).
+  private loaded = true;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private persistence: SessionRevocationPersistence | null = null;
 
@@ -232,6 +239,7 @@ export class SessionRevocationStore {
   /** Loads persisted revocations so a restart does not re-validate logged-out sessions. */
   public async attachPersistence(persistence: SessionRevocationPersistence, nowMs = Date.now()): Promise<void> {
     this.persistence = persistence;
+    this.loaded = false;
     const persisted = await persistence.load(nowMs);
     for (const [hash, expiresAt] of persisted.signatures) {
       this.revokedSignatures.set(hash, Math.max(this.revokedSignatures.get(hash) ?? 0, expiresAt));
@@ -239,10 +247,18 @@ export class SessionRevocationStore {
     for (const [userId, epoch] of persisted.userEpochs) {
       this.userRevocationEpochs.set(userId, Math.max(this.userRevocationEpochs.get(userId) ?? 0, epoch));
     }
+    this.loaded = true;
+    await this.saveUnsaved();
   }
 
   public detachPersistence(): void {
     this.persistence = null;
+    this.loaded = true;
+  }
+
+  /** False while persisted revocations are configured but not loaded yet. */
+  public isReady(): boolean {
+    return this.loaded;
   }
 
   /** Revokes in memory at once; the returned promise settles when the revocation is durable. */
@@ -251,17 +267,43 @@ export class SessionRevocationStore {
     const hash = tokenSignatureHash(token);
     const ttl = expiryMs ?? (Date.now() + 400 * 24 * 60 * 60 * 1000);
     this.revokedSignatures.set(hash, ttl);
-    return this.persistence ? this.persistence.revokeSignature(hash, ttl) : Promise.resolve();
+    return this.saveSignature(hash, ttl);
   }
 
   public revokeUser(userId: string, epochMs = Date.now()): Promise<void> {
     if (!userId) return Promise.resolve();
     this.userRevocationEpochs.set(userId, Math.max(this.userRevocationEpochs.get(userId) ?? 0, epochMs));
-    return this.persistence ? this.persistence.revokeUser(userId, epochMs) : Promise.resolve();
+    return this.saveUserEpoch(userId, epochMs);
+  }
+
+  // A refused write stays queued and the caller still sees the error, so a logout is never reported saved early.
+  private saveSignature(hash: string, ttl: number): Promise<void> {
+    if (!this.persistence) return Promise.resolve();
+    return this.persistence.revokeSignature(hash, ttl).then(() => {
+      if ((this.unsavedSignatures.get(hash) ?? 0) <= ttl) this.unsavedSignatures.delete(hash);
+    }, (error: unknown) => {
+      this.unsavedSignatures.set(hash, Math.max(this.unsavedSignatures.get(hash) ?? 0, ttl));
+      throw error;
+    });
+  }
+
+  private saveUserEpoch(userId: string, epochMs: number): Promise<void> {
+    if (!this.persistence) return Promise.resolve();
+    return this.persistence.revokeUser(userId, epochMs).then(() => {
+      if ((this.unsavedUserEpochs.get(userId) ?? 0) <= epochMs) this.unsavedUserEpochs.delete(userId);
+    }, (error: unknown) => {
+      this.unsavedUserEpochs.set(userId, Math.max(this.unsavedUserEpochs.get(userId) ?? 0, epochMs));
+      throw error;
+    });
+  }
+
+  private async saveUnsaved(): Promise<void> {
+    for (const [hash, ttl] of [...this.unsavedSignatures]) await this.saveSignature(hash, ttl).catch(() => undefined);
+    for (const [userId, epoch] of [...this.unsavedUserEpochs]) await this.saveUserEpoch(userId, epoch).catch(() => undefined);
   }
 
   public isRevoked(token: string, userId?: string, issuedAtMs?: number): boolean {
-    if (!token) return true;
+    if (!token || !this.loaded) return true;
     const hash = tokenSignatureHash(token);
     const exp = this.revokedSignatures.get(hash);
     if (exp !== undefined) {
@@ -293,6 +335,10 @@ export class SessionRevocationStore {
     for (const [hash, exp] of this.revokedSignatures.entries()) {
       if (now > exp) this.revokedSignatures.delete(hash);
     }
+    for (const [hash, exp] of this.unsavedSignatures.entries()) {
+      if (now > exp) this.unsavedSignatures.delete(hash);
+    }
+    void this.saveUnsaved();
     void this.persistence?.pruneExpired(now).catch(() => undefined);
   }
 
@@ -302,8 +348,11 @@ export class SessionRevocationStore {
       this.cleanupTimer = null;
     }
     this.persistence = null;
+    this.loaded = true;
     this.revokedSignatures.clear();
     this.userRevocationEpochs.clear();
+    this.unsavedSignatures.clear();
+    this.unsavedUserEpochs.clear();
   }
 }
 
@@ -317,12 +366,13 @@ export function verifySession(
   if (!token || secret.length < 16) {
     return null;
   }
+  const segments = token.split(".");
   const store = revocationStore ?? defaultSessionRevocationStore;
-  if (store.isRevoked(token)) {
+  if (segments.length !== 2 || store.isRevoked(token)) {
     return null;
   }
 
-  const [body, sig] = token.split(".");
+  const [body, sig] = segments;
   if (!body || !sig) {
     return null;
   }
@@ -365,8 +415,9 @@ export function verifyOAuthState(token: string | undefined, secret: string): str
   if (!token || secret.length < 16) {
     return null;
   }
-  const [rawState, sig] = token.split(".");
-  if (!rawState || !sig) {
+  const segments = token.split(".");
+  const [rawState, sig] = segments;
+  if (segments.length !== 2 || !rawState || !sig) {
     return null;
   }
   const expected = createHmac("sha256", secret).update(`oauth-state:${rawState}`).digest("base64url");

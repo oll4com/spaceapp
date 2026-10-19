@@ -1,5 +1,8 @@
 import { execFile, spawn } from "./safe-child-process.js";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { SystemAnalyticsModel } from "@space/contracts";
 import { opencodeBenchResponseSchema } from "@space/contracts";
@@ -84,8 +87,42 @@ function extractVerboseModels(text: string): OpencodeVerboseModel[] {
   return models;
 }
 
+/** One OpenCode 2 /api/model entry in the v1 `models --verbose` shape this bench reads. */
+export function openCode2VerboseModel(model: Record<string, any>): OpencodeVerboseModel {
+  const flags = (kinds: unknown) => Object.fromEntries((Array.isArray(kinds) ? kinds : []).map((kind) => [kind, true]));
+  return {
+    id: model.id, providerID: model.providerID, name: model.name ?? model.id, family: model.family, status: model.status,
+    api: { id: model.modelID, url: model.settings?.baseURL, npm: model.package },
+    cost: Array.isArray(model.cost) ? model.cost[0] : undefined, limit: model.limit,
+    capabilities: { temperature: model.capabilities?.temperature, reasoning: (model.variants?.length ?? 0) > 0,
+      toolcall: model.capabilities?.tools, input: flags(model.capabilities?.input), output: flags(model.capabilities?.output) }
+  };
+}
+
+/**
+ * OpenCode 2 lists models through a standalone API call; its private server gets a scratch data directory so it never
+ * opens (or migrates) the owner's store, and reads only the owner's config.
+ */
+async function runOpenCode2Models(provider: string): Promise<OpencodeVerboseModel[]> {
+  const scratch = await mkdtemp(join(tmpdir(), "space-model-bench-"));
+  try {
+    const { stdout } = await execFileAsync(opencodeBin, ["api", "GET", "/api/model", "--standalone"], {
+      timeout: probeTimeoutMs, maxBuffer, cwd: scratch,
+      env: { ...childProcessEnv(), HOME: scratch, XDG_CONFIG_HOME: "/var/lib/spaceapp-user/.config", XDG_DATA_HOME: join(scratch, "data"),
+        XDG_STATE_HOME: join(scratch, "state"), XDG_CACHE_HOME: join(scratch, "cache"), TMPDIR: scratch }
+    });
+    const data = (JSON.parse(String(stdout)) as { data?: unknown }).data;
+    return (Array.isArray(data) ? data : []).filter((model) => model?.providerID === provider).map(openCode2VerboseModel);
+  } catch {
+    return [];
+  } finally {
+    await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function runOpencodeVerbose(provider: string): Promise<OpencodeVerboseModel[]> {
   try {
+    if (realpathSync(opencodeBin).includes("/node_modules/@opencode/cli/")) return runOpenCode2Models(provider);
     const { stdout } = await execFileAsync(opencodeBin, ["models", provider, "--verbose"], {
       timeout: probeTimeoutMs,
       maxBuffer,

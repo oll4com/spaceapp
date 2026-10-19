@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { eventSchema, MARKETING_CHANNEL_LABELS, type MarketingEvent, type MarketingRun, type Pane } from "@space/contracts";
 import { InMemoryMarketingCopilotRepository, PostgresMarketingCopilotRepository, type MarketingCopilotRepository } from "@space/db";
-import { makeSpaceId, SpaceConflictError, SpaceFeatureDisabledError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
+import { makeSpaceId, SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
+import { localArtifactFilePath } from "../artifact-storage.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import type { PaneBrowserAccountControl } from "../pane-browser-routes.js";
 import { GitControlError } from "../source-control/errors.js";
@@ -23,6 +24,8 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput">;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
+  /** Where room artifacts live (config.browserEvidenceArtifactRoot): captured post media are read from there. */
+  artifactRoot: string;
   /** The browser routes' account control (set once they register): bookmarks open through its openTab. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
   /** The instance jobs `marketing-copilot-scheduler` and `marketing-copilot-metrics` (stable; dev opts in). */
@@ -31,7 +34,7 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   log: { warn(details: unknown, message: string): void };
 }
 
-const KICKOFF = (runId: string) => `Marketing Copilot run ${runId} started in this pane. Read the space-marketing-copilot skill (SKILL.md and references/channels.md), then loop: call space_marketingcopilot space_marketing_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); ground every claim in space_marketing_facts, recall memory before drafting, ask for a review under Assist and on capped channels, publish only after space_marketing_publish_begin succeeds, and report the published URL with space_marketing_publish_done.`;
+const KICKOFF = (runId: string) => `Marketing Copilot run ${runId} started in this pane. Read the space-marketing-copilot skill (SKILL.md and references/channels.md), then loop: call space_marketingcopilot space_marketing_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); ground every claim in space_marketing_facts, recall memory before drafting, ask for a review under Assist and on capped channels, publish only after space_marketing_publish_begin succeeds, and report the published URL with space_marketing_publish_done. For a post's graphic ask the Design pane with space_design space_design_request (callback {kind:"MARKETING_POST", postId}): the delivery attaches it to the post.`;
 
 /** Which notification an event raises or resolves: the key pairs a request with the decision that ends it. */
 export function marketingNotificationFor(event: MarketingEvent): { action: "raise" | "resolve" | "published"; key: string } | null {
@@ -89,6 +92,16 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
       const accounts = deps.paneBrowserAccounts.current;
       if (!accounts) throw new SpaceFeatureDisabledError("BROWSER_ACCOUNTS_UNAVAILABLE", "Google account selection is unavailable on this runtime.");
       return accounts.openTab(owner, pane, bookmark.url, bookmark.profileId, traceId, actor);
+    },
+    resolveArtifactAsset: async (owner, artifactId) => {
+      const artifact = await Promise.resolve(store.getArtifact(artifactId)).catch(() => null);
+      const roomOwner = artifact?.roomId ? await deps.roomOwner(artifact.roomId) : null;
+      if (!artifact || artifact.deletedAt || !["IMAGE", "SCREENSHOT", "VIDEO"].includes(artifact.kind) || roomOwner !== owner) {
+        throw new SpaceNotFoundError(`Captured media ${artifactId} was not found in your rooms.`);
+      }
+      // A post keeps its media: neither the 7-day sweep nor deleting the Studio room (room_id becomes null) removes a pinned file.
+      await store.updateArtifactRetention(artifact.id, { pinnedAt: new Date().toISOString(), expiresAt: null });
+      return { path: localArtifactFilePath({ artifactRoot: deps.artifactRoot, artifact }), kind: artifact.kind === "VIDEO" ? "VIDEO" : "IMAGE" };
     },
     onEvent: (event) => {
       void (async () => {

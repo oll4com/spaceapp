@@ -105,6 +105,17 @@ export function parseUpstreamError(text: string, status: number): UpstreamFailur
   return { kind: classify(code, message, status), status, code, message, error: { message, resetsAt, resetsInSeconds }, body: text || null };
 }
 
+/** Records a failed attempt; the account to retry on when its rejected access token (HTTP 401) was refreshed. */
+export async function recordCodexFailure(pool: AccountPool, account: GatewayAccountRecord, failure: UpstreamFailure): Promise<GatewayAccountRecord | null> {
+  const code = failure.code in permanentFailureCodes ? failure.code : "token_invalidated";
+  if (failure.kind === "permanent" && failure.status === 401) return pool.refreshRejectedToken(account, code);
+  if (failure.kind === "rate_limit") await pool.markRateLimited(account, failure.error);
+  else if (failure.kind === "quota") await pool.markQuotaExceeded(account, failure.error);
+  else if (failure.kind === "permanent") await pool.markPermanentFailure(account, code);
+  else pool.markTransientError(account.id);
+  return null;
+}
+
 export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayRouteHelpers, options: CodexProxyOptions) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? Date.now;
@@ -118,16 +129,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
   const webSocketHealth = options.upstreamWebSocketHealth ?? new UpstreamWebSocketHealth(now);
   const openWebSocket = options.openWebSocket ?? openUpstreamWebSocket;
 
-  /** Records a failed attempt; the account to retry on when its rejected access token (HTTP 401) was refreshed. */
-  async function recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure): Promise<GatewayAccountRecord | null> {
-    const code = failure.code in permanentFailureCodes ? failure.code : "token_invalidated";
-    if (failure.kind === "permanent" && failure.status === 401) return options.pool.refreshRejectedToken(account, code);
-    if (failure.kind === "rate_limit") await options.pool.markRateLimited(account, failure.error);
-    else if (failure.kind === "quota") await options.pool.markQuotaExceeded(account, failure.error);
-    else if (failure.kind === "permanent") await options.pool.markPermanentFailure(account, code);
-    else options.pool.markTransientError(account.id);
-    return null;
-  }
+  const recordFailure = (account: GatewayAccountRecord, failure: UpstreamFailure) => recordCodexFailure(options.pool, account, failure);
 
   /** Passive usage from `x-codex-*` headers (an HTTP reply or a WebSocket handshake). */
   function recordPassiveUsage(accountId: string, headers: Headers) {

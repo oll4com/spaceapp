@@ -1,5 +1,6 @@
 import pg from "pg";
 import { nanoid } from "nanoid";
+import { createSpacePgPool } from "@space/db";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -12,7 +13,6 @@ import { encryptSecret, decryptSecret } from "./crypto.js";
 import { closeAdapterForConnection, getAdapterForConnection } from "./adapter-factory.js";
 import type { DatabaseAdapter } from "./types.js";
 
-const { Pool } = pg;
 
 let internalPool: pg.Pool | null = null;
 
@@ -26,12 +26,7 @@ export function getInternalDbPool(): pg.Pool {
   const originalUrl = resolveDatabaseUrl();
   // If in a network namespace where 54329 is not exposed directly on loopback, allow fallback
   const connectionString = originalUrl;
-  internalPool = new Pool({
-    connectionString,
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000
-  });
+  internalPool = createSpacePgPool(connectionString, { max: 10 });
 
   internalPool.on("error", (err) => {
     console.error("[DatabasesService] Internal PG pool error:", err);

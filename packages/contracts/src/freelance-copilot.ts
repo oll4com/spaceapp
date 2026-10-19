@@ -30,6 +30,11 @@ export const FREELANCE_CHANNEL_LOGIN_URLS: Record<FreelanceChannel, string> = {
 export const FREELANCE_CHANNEL_HOSTS: Record<FreelanceChannel, readonly string[]> = {
   UPWORK: ["upwork.com"], CONTRA: ["contra.com"], FIVERR: ["fiverr.com"], TOPTAL: ["toptal.com"], ARC: ["arc.dev"], BRAINTRUST: ["usebraintrust.com", "braintrust.com"]
 };
+/**
+ * Platforms whose account signs in only with "Continue with Google" on the pane's Google account (operator rule 2026-10-17):
+ * never the email/password form or the alias.
+ */
+export const FREELANCE_GOOGLE_SIGN_IN_CHANNELS: readonly FreelanceChannel[] = ["UPWORK"];
 /** The Plesk alias each platform account signs up with; all of them deliver into work@example.invalid. */
 export const FREELANCE_CHANNEL_ALIASES: Record<FreelanceChannel, string> = {
   UPWORK: "upwork@example.invalid", CONTRA: "contra@example.invalid", FIVERR: "fiverr@example.invalid", TOPTAL: "toptal@example.invalid", ARC: "arc@example.invalid", BRAINTRUST: "braintrust@example.invalid"

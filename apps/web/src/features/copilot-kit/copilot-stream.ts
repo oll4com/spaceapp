@@ -3,6 +3,7 @@ import { dispatchJobApplyLiveEvent } from "../job-apply-pane/live-events.js";
 import { dispatchMailCopilotLiveEvent } from "../mail-copilot-pane/live-events.js";
 import { dispatchMarketingCopilotLiveEvent } from "../marketing-copilot-pane/live-events.js";
 import { dispatchFreelanceCopilotLiveEvent } from "../freelance-copilot-pane/live-events.js";
+import { dispatchDesignLiveEvent } from "../design-pane/live-events.js";
 import type { PaneLiveEventDetail } from "./pane-live-events.js";
 
 /** Each copilot's server-stream event type and the window event its pane listens to. */
@@ -10,7 +11,8 @@ const COPILOT_STREAMS: ReadonlyArray<readonly [string, (detail: PaneLiveEventDet
   ["JOB_APPLY_UPDATED", dispatchJobApplyLiveEvent],
   ["MAIL_COPILOT_UPDATED", dispatchMailCopilotLiveEvent],
   ["MARKETING_COPILOT_UPDATED", dispatchMarketingCopilotLiveEvent],
-  ["FREELANCE_COPILOT_UPDATED", dispatchFreelanceCopilotLiveEvent]
+  ["FREELANCE_COPILOT_UPDATED", dispatchFreelanceCopilotLiveEvent],
+  ["DESIGN_UPDATED", dispatchDesignLiveEvent]
 ];
 
 /**

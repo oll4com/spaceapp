@@ -19,6 +19,7 @@ export function preloadDockModules(): void {
       import("../agent-files/AgentFilesDock.js"),
       import("../media-dock/MediaDock.js"),
       import("../shared-chat/SharedChatDock.js"),
+      import("../nous/NousDock.js"),
       import("../cli-dock/CliDock.js"),
       import("../agent-sessions/AgentSessionsDock.js"),
       import("../room-agent/RoomAgentDock.js"),

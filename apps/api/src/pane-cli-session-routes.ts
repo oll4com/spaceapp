@@ -23,7 +23,7 @@ import {
   makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown } from "./agent-bootstrap.js";
+import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
 import { claudeNativeSessionIdPattern, loadClaudeNativeTurns } from "./claude-native-turns.js";
@@ -230,6 +230,12 @@ async function writeCliWorkspaceBootstrap(
       buildFreelanceCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
+  } else if (input.paneMode === "DESIGN") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildDesignPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
   }
 }
 
@@ -273,11 +279,13 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
   cliAccountBalancer?: Pick<CliAccountBalancer, "pick" | "isAuto" | "setAuto">;
   /** A pending resume (reopened pane, new Job Copilot pane) finishes before a fresh session can start. */
   cliPaneReopener?: Pick<CliPaneReopener, "settled">;
+  /** Multi-user: true when the pane's CLI runs in its user's own container (cli-user-hosts.ts). */
+  onUserCliHost?: (paneId: string) => Promise<boolean>;
 }) {
   const { config, deletingCliAccountProfileKeys, cliAccountProfileKey, store, eventBus, codexCliModeDefaultsService,
     spaceAgentAdapter, cliRuntimeRegistryCache, cliTerminalManager, assertCliHttpMutationControl,
     cliRuntimeVisibility, resolveOpenCodeServerControl, resumePaneCliTask, spaceControl, assertRootAdmin,
-    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener } = options;
+    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener, onUserCliHost } = options;
   const paneCliSessionStartTails = new Map<string, Promise<void>>();
   function serializePaneCliSessionStart<T>(
     operation: (request: FastifyRequest) => Promise<T>
@@ -460,6 +468,13 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     if (config.publicDistribution && (!requestedCwd || requestedCwd === "/etc" || requestedCwd === "/opt/spaceapp")) {
       requestedCwd = publicRoomWorkspacePath(config.cliWorkspaceRoot, pane.roomId);
     }
+    // Multi-user: a user's own CLI container sees only its own /workspaces, never the folders this core makes (room
+    // and session folders), so the CLI starts in the workspace root unless the pane names one of the user's folders.
+    const onUserHost = await onUserCliHost?.(pane.id) === true;
+    if (onUserHost && (!requestedCwd || !pathInside(config.cliWorkspaceRoot, requestedCwd)
+      || requestedCwd === publicRoomWorkspacePath(config.cliWorkspaceRoot, pane.roomId))) {
+      requestedCwd = config.cliWorkspaceRoot;
+    }
     const directCodexParity = isCodexDirectParityRuntime(runtime.id);
     const directOperatorParity = isDirectOperatorParityRuntime(runtime.id);
     // Status reasons name the runtime that actually restarted (e.g. "Qoder CLI"), never a hard-coded fallback.
@@ -520,7 +535,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
       : input.modelId === undefined
         ? undefined
         : input.modelId ?? runtime.defaultModelId ?? null;
-    const requestedManagedWorkspace = directOperatorParity ? false : shouldUseManagedCliWorkspace(requestedCwd, config.cliWorkspaceRoot);
+    const requestedManagedWorkspace = directOperatorParity || onUserHost ? false : shouldUseManagedCliWorkspace(requestedCwd, config.cliWorkspaceRoot);
     const activeCodexReasoningEffort = active
       ? reasoningEffortSchema.safeParse(active.reasoningEffort).data
       : undefined;
@@ -624,7 +639,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
             sessionId: nextSessionId
           })
         : requestedCwd;
-    if (!reusableSession && sessionCwd) {
+    // This core's filesystem says nothing about a user's own container (multi-user), so it neither creates nor checks there.
+    if (!reusableSession && sessionCwd && !onUserHost) {
       try {
         if (!existsSync(sessionCwd) && await mayCreateCliSessionDirectory({
           cwd: sessionCwd, role: request.user?.role, projectsRoot: config.projectsRoot, installRoot: config.installRoot,

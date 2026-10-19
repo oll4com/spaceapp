@@ -41,6 +41,14 @@ SaaS control plane.
 - Host workspaces are not mounted until the owner runs
   `npx --yes run-spaceapp@latest workspace add`.
 - Containers do not receive the Docker socket.
+- The CLI container runs with `no-new-privileges`. Where the host allows
+  unprivileged user namespaces (Docker Desktop on Windows and macOS, most Linux
+  hosts), it also gets Docker's default seccomp profile plus user namespaces
+  (`seccomp-cli.json`) and no AppArmor profile, so Codex can sandbox each
+  command with bubblewrap; this gives the agent's code more kernel interfaces
+  than Docker's defaults. Where the host restricts them (Ubuntu 23.10 and later:
+  `kernel.apparmor_restrict_unprivileged_userns=1`) the sandbox could not run,
+  so the container keeps Docker's defaults and Codex asks before each command.
 - Telemetry is disabled by default.
 - Mutable owner memory is separate from the immutable generic starter memory.
 

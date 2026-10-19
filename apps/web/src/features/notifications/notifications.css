@@ -27,3 +27,8 @@
 .notification-item-time { color: var(--room-muted, #9aa3a0); font-size: 11px; }
 .notification-source-settings summary { cursor: pointer; font-weight: 600; }
 .notification-source-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 4px 0; }
+/* Nous's card for a pane holds the pane's other notifications (plan clipboard:8FfXWclYUfOH). */
+.notification-pane-more { grid-column: 1 / -1; justify-self: start; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--room-accent, #6db7aa); font: inherit; font-size: 11px; cursor: pointer; }
+.notification-pane-more:hover, .notification-pane-more:focus-visible { background: color-mix(in srgb, var(--room-accent, #6db7aa) 12%, transparent); }
+.notification-pane-children { grid-column: 1 / -1; margin: 0; padding: 0 0 0 12px; list-style: none; border-left: 2px solid color-mix(in srgb, var(--room-accent, #6db7aa) 35%, transparent); }
+.notification-pane-children .notification-item { border-bottom: 0; }

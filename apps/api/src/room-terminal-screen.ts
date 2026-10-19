@@ -48,10 +48,17 @@ export async function projectRoomTerminalScreen(chunks: string[], cols = 100, ro
 
 export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "UNKNOWN" {
   if (/select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to proceed/i.test(screen)) return "WAITING_FOR_INPUT";
-  if (/(?:ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|type (?:your )?message|send a message)/i.test(screen)) return "IDLE";
+  if (/(?:ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|send a message)/i.test(screen)) return "IDLE";
   const cleanScreen = screen.replace(/waiting for background terminal[^\n]*(?:esc(?:ape)? to interrupt|\/ps to view|\/stop to close)[^\n]*/gi, "");
+  // Qwen and Qoder keep their "Type your message" placeholder visible while a turn runs.
+  if (/type (?:your )?message/i.test(screen) && !/esc(?:ape)?\s+to\s+(?:interrupt|cancel)/i.test(cleanScreen)) return "IDLE";
   if (
-    /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel)|thinking[.…]|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[(·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to interrupt|running\s+(?:background\s+)?(?:command|task|subagent|process)[.…]?/i.test(cleanScreen) ||
+    // Oh My Pi's status line starts with a spinner and the elapsed time while it works (" ⠹ 7s > GPT-6 Sol >"), π when idle.
+    /^\s*[\u2800-\u28ff]\s+(?:\d+[hms]\s*)+>/m.test(cleanScreen) ||
+    // Claude Code's spinner ("✢ Nesting…", "· Simmering… 5s · thinking"), whose "esc to interrupt" a narrow pane cuts (stable
+    // 2026-10-17: Nous's prompts were refused as not ready instead of waiting for the turn); a finished turn reads "✻ Cooked for 13s".
+    /^\s*[\u273b\u273d\u2736\u2733\u2722\u00b7*\u25cf]\s*[A-Z][a-z]+ing\u2026/m.test(cleanScreen) ||
+    /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel|stop)|thinking[.…]|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[(·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to (?:interrupt|stop)|running\s+(?:background\s+)?(?:command|task|subagent|process)[.…]?/i.test(cleanScreen) ||
     /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im.test(cleanScreen)
   ) return "RUNNING";
   // Idle composers seen in tmux on 2026-10-14: a prompt inside a frame (Droid "│ > Try", Grok "│ ❯"),
@@ -175,9 +182,9 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
     return rail.match(/^(yolo|auto mode|don't ask|accept edits)\s+shift\+tab to /)?.[1] ?? (rail.startsWith("shift+tab to ") ? "default" : null);
   }
   if (runtimeId === "cli:droid") {
-    // Spec mode titles the composer box; the autonomy rail is always present.
+    // Spec mode titles the composer box; the autonomy rail is always present (narrow panes clip it to "Auto…").
     if (recent.some((line) => /^╭─+\s*spec\s*─/.test(line))) return "plan";
-    return recent.some((line) => /^auto \((?:off|low|medium|high)\)\s*·/.test(line)) ? "build" : null;
+    return recent.some((line) => /^auto(?: \((?:off|low|medium|high)\)\s*·|…)/.test(line)) ? "build" : null;
   }
   if (runtimeId === "cli:deepseek") {
     const match = text.match(/\[\s*(workspace|read-only|yolo|plan)\s*[·•]\s*ready/i);

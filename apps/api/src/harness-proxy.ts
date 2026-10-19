@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { SpaceApiConfig } from "./config.js";
+import { publishHarnessAgentTokens, type HarnessAgentTokenOptions } from "./harness-agent-tokens.js";
 import type {} from "./request-context.js";
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -79,6 +80,9 @@ const HARNESS_DEFAULT_WORKSPACE = "/opt/spaceapp/var/deepseek-harness/workspace"
 const HARNESS_IMMUTABLE_CACHE_CONTROL = "private, max-age=31536000, immutable";
 const HARNESS_FINGERPRINTED_ASSET_PATTERN = /-[A-Za-z0-9_-]{6,}\.[A-Za-z0-9]{1,8}$/;
 const HARNESS_REVISION_PATTERN = /^[a-f0-9]{8,64}$/i;
+// Every deploy restarts the Harness (about 5 s to listen); an open pane that reloads its plugins then must not crash.
+const HARNESS_RESTART_GRACE_MS = 15_000;
+const HARNESS_RESTART_RETRY_MS = 250;
 
 export function isHarnessRootHttpPath(rawUrl: string | undefined): boolean {
   const pathname = (rawUrl ?? "").split("?", 1)[0] ?? "";
@@ -313,8 +317,18 @@ function harnessPaneStorageBootstrap(sessionId: string): string {
   })();</script>`;
 }
 
-function harnessDebugBootstrap(sessionId: string): string {
+export function harnessDebugBootstrap(sessionId: string): string {
   return `<script data-space-harness-debug>(function(){
+    function escapeHtml(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, function(c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+    // Chromium reports a ResizeObserver whose callback resized observed elements as an ErrorEvent
+    // without an error object; the spec only defers those notifications to the next frame.
+    function isBenignErrorEvent(evt) {
+      return !evt.error && /ResizeObserver loop (completed with undelivered notifications|limit exceeded)/.test(String(evt.message || ""));
+    }
     const state = {
       paneSessionId: ${JSON.stringify(sessionId)},
       errors: [],
@@ -383,27 +397,27 @@ function harnessDebugBootstrap(sessionId: string): string {
         html += '<span style="background:#dc2626;color:#fff;font-size:9px;padding:2px 5px;border-radius:3px;font-weight:bold;">DEBUG ON</span>';
       }
       html += '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:' + (state.isRendered ? '#065f46;color:#34d399' : (isFatal || hasErrors ? '#7f1d1d;color:#f87171' : '#1e293b;color:#94a3b8')) + ';">' + (state.isRendered ? 'Ready' : (isFatal || hasErrors ? 'Load Issue' : 'Initializing')) + '</span>';
-      if (state.isRendered && !hasErrors) {
+      if (state.isRendered) {
         html += '<button id="space-harness-debug-collapse-btn" style="background:#334155;border:none;color:#cbd5e1;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:10px;">Minimize</button>';
       }
       html += '</div></div>';
-      html += '<div style="color:#94a3b8;font-size:11px;margin-bottom:6px;">Pane Session: <span style="color:#38bdf8;">' + state.paneSessionId + '</span></div>';
+      html += '<div style="color:#94a3b8;font-size:11px;margin-bottom:6px;">Pane Session: <span style="color:#38bdf8;">' + escapeHtml(state.paneSessionId) + '</span></div>';
       if (state.failedResources.length > 0) {
         html += '<div style="color:#f87171;font-weight:bold;margin-top:6px;">Failed Resources (' + state.failedResources.length + '):</div>';
         state.failedResources.forEach(function(r) {
-          html += '<div style="color:#fca5a5;word-break:break-all;margin-left:8px;">• ' + r + '</div>';
+          html += '<div style="color:#fca5a5;word-break:break-all;margin-left:8px;">• ' + escapeHtml(r) + '</div>';
         });
       }
       if (state.errors.length > 0) {
         html += '<div style="color:#ef4444;font-weight:bold;margin-top:6px;">Uncaught JavaScript Errors (' + state.errors.length + '):</div>';
         state.errors.forEach(function(e) {
-          html += '<div style="color:#fca5a5;word-break:break-all;margin-left:8px;margin-bottom:4px;">• ' + (e.message || e) + (e.stack ? '<pre style="font-size:10px;color:#cbd5e1;overflow-x:auto;margin:2px 0 0 0;padding:4px;background:#0f172a;border-radius:4px;">' + e.stack + '</pre>' : '') + '</div>';
+          html += '<div style="color:#fca5a5;word-break:break-all;margin-left:8px;margin-bottom:4px;">• ' + escapeHtml(e.message || e) + (e.stack ? '<pre style="font-size:10px;color:#cbd5e1;overflow-x:auto;margin:2px 0 0 0;padding:4px;background:#0f172a;border-radius:4px;">' + escapeHtml(e.stack) + '</pre>' : '') + '</div>';
         });
       }
       if (state.rejections.length > 0) {
         html += '<div style="color:#f97316;font-weight:bold;margin-top:6px;">Unhandled Rejections (' + state.rejections.length + '):</div>';
         state.rejections.forEach(function(r) {
-          html += '<div style="color:#fdba74;word-break:break-all;margin-left:8px;">• ' + (r.reason || r) + '</div>';
+          html += '<div style="color:#fdba74;word-break:break-all;margin-left:8px;">• ' + escapeHtml(r.reason || r) + '</div>';
         });
       }
       if (!state.isRendered && (isFatal || hasErrors) && state.errors.length === 0 && state.failedResources.length === 0) {
@@ -422,6 +436,7 @@ function harnessDebugBootstrap(sessionId: string): string {
         renderStatus(true);
         return;
       }
+      if (isBenignErrorEvent(evt)) return;
       state.errors.push({ message: evt.message || String(evt), stack: evt.error?.stack || "" });
       renderStatus(true);
     }, true);
@@ -842,7 +857,8 @@ function proxyToHarness(
   timeoutMs: number,
   extraHeaders?: Record<string, string | string[] | number | undefined>,
   body?: unknown,
-  paneSessionId?: string
+  paneSessionId?: string,
+  retryUntil = request.method === "GET" || request.method === "HEAD" ? Date.now() + HARNESS_RESTART_GRACE_MS : 0
 ): Promise<FastifyReply | void> {
   return new Promise<FastifyReply | void>((resolve) => {
     const isHtmlCandidate =
@@ -958,7 +974,13 @@ function proxyToHarness(
         resolve();
       }
     });
-    upstream.once("error", () => {
+    upstream.once("error", (err: NodeJS.ErrnoException) => {
+      // The namespace relay (socat) accepts and then drops the connection while the Harness is down: ECONNRESET.
+      if ((err.code === "ECONNREFUSED" || err.code === "ECONNRESET") && Date.now() < retryUntil) {
+        setTimeout(() => resolve(proxyToHarness(request, reply, target, pathname, timeoutMs, extraHeaders, body, paneSessionId, retryUntil)),
+          HARNESS_RESTART_RETRY_MS);
+        return;
+      }
       if (!reply.sent && !reply.raw.headersSent) {
         resolve(sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable."));
       } else {
@@ -1060,14 +1082,18 @@ function proxyHarnessUpgrade(
   upstream.end();
 }
 
+type HarnessPaneFields = { cwd?: string | null; roomId?: string; mode?: string; isClosed?: boolean;
+  taskMetadata?: { harnessSessionId?: string | null } | null };
 export interface HarnessStoreWorkspaceResolver {
-  getPane(id: string): Promise<{ cwd?: string | null; roomId?: string } | null> | { cwd?: string | null; roomId?: string } | null;
+  getPane(id: string): Promise<HarnessPaneFields | null> | HarnessPaneFields | null;
   getRoom(id: string): Promise<{ projectPath?: string | null } | null> | { projectPath?: string | null } | null;
 }
 
 export interface HarnessRouteOptions {
   /** Decides whether a raw WebSocket upgrade carries a valid Space session. */
   authorizeUpgrade?: (request: http.IncomingMessage) => boolean;
+  /** Publishes each loaded Harness pane's tool tokens for its harness session (harness-agent-tokens.ts). */
+  agentTokens?: HarnessAgentTokenOptions | null;
 }
 
 export function registerHarnessRoutes(
@@ -1155,11 +1181,12 @@ export function registerHarnessRoutes(
     }
 
     let workspacePath = HARNESS_DEFAULT_WORKSPACE;
+    let pane: HarnessPaneFields | null = null;
     const url = new URL(request.url, "http://space.local");
     const rawPaneId = url.searchParams.get("spacePane");
     if (rawPaneId && SPACE_PANE_ID_PATTERN.test(rawPaneId) && store) {
       try {
-        const pane = await store.getPane(rawPaneId);
+        pane = await store.getPane(rawPaneId);
         if (pane?.cwd && pane.cwd.startsWith("/") && pane.cwd !== "/etc") {
           workspacePath = pane.cwd;
         } else if (pane?.roomId) {
@@ -1175,6 +1202,13 @@ export function registerHarnessRoutes(
 
     try {
       const effectiveSessionId = await ensureHarnessPaneSession(target, paneSessionId, config.harnessProxyTimeoutMs, workspacePath);
+      // shortcut: tokens refresh when the pane (re)loads; a Harness pane left open over 12 hours needs a reload
+      // for its pane tools, upgrade to a periodic refresh if that bites.
+      if (options.agentTokens && rawPaneId && pane?.mode === "HARNESS" && !pane.isClosed && pane.roomId) {
+        await publishHarnessAgentTokens(options.agentTokens, { roomId: pane.roomId, paneId: rawPaneId,
+          boundSessionId: pane.taskMetadata?.harnessSessionId })
+          .catch((err) => app.log.warn({ err, paneId: rawPaneId }, "harness agent tokens were not published"));
+      }
       if (!reply.sent) {
         return await proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs, undefined, undefined, effectiveSessionId);
       }

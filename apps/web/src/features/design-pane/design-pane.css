@@ -1,0 +1,38 @@
+/* Design pane: the Studio inside the copilot kit's pane (bar, rail and controls come from copilot-pane.css). */
+.dz-main { overflow: auto; }
+.dz-studio { display: grid; gap: 12px; align-content: start; padding: 14px; }
+.dz-request-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border));
+  border-radius: 10px; background: color-mix(in srgb, var(--jc-accent) 8%, var(--jc-raised)); font-size: 13px; }
+.dz-studio-grid { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.dz-pane[data-layout="stacked"] .dz-studio-grid { grid-template-columns: minmax(0, 1fr); }
+.dz-controls textarea { resize: vertical; }
+.dz-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+.dz-row > .jc-field { flex: 1 1 120px; min-width: 0; }
+.dz-custom-size { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dz-preview-column { display: grid; gap: 10px; min-width: 0; }
+/* The preview keeps the format's exact aspect ratio; the image fills it without cropping. */
+.dz-preview { display: grid; place-items: center; width: 100%; max-height: 62vh; margin: 0; overflow: hidden; border: 1px solid var(--jc-border); border-radius: 10px;
+  background: repeating-conic-gradient(color-mix(in srgb, var(--jc-text) 6%, transparent) 0% 25%, transparent 0% 50%) 50% / 16px 16px; }
+.dz-preview img, .dz-preview video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.dz-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.dz-preview-actions .jc-muted { margin-right: auto; }
+.dz-also-make { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.dz-also-make .jc-field { flex: 1 1 220px; }
+.dz-also-make select[multiple] { min-height: 96px; }
+.dz-variants, .dz-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.dz-library-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+.dz-pane .dz-thumb { display: grid; place-items: center; width: 100%; aspect-ratio: 1; min-height: 0; padding: 2px; overflow: hidden; border: 1px solid var(--jc-border); border-radius: 8px;
+  background: var(--jc-raised); cursor: pointer; }
+.dz-pane .dz-thumb.selected { border-color: var(--jc-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--jc-accent) 35%, transparent); }
+.dz-pane .dz-thumb:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
+.dz-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.dz-thumb-video { color: var(--jc-muted); font-size: 12px; font-weight: 650; }
+.dz-library { display: grid; gap: 10px; padding: 12px; }
+.dz-library-item { display: grid; gap: 4px; min-width: 0; }
+.dz-library-actions { display: inline-flex; gap: 4px; }
+.dz-requests, .dz-brand-kits { display: grid; gap: 10px; padding: 12px; }
+.dz-brief { margin: 4px 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dz-swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.dz-swatch { width: 20px; height: 20px; border: 1px solid var(--jc-border); border-radius: 50%; }
+.dz-kit-form input[type="color"] { width: 100%; min-height: 32px; padding: 2px; }
+@media (prefers-reduced-motion: reduce) { .dz-pane .dz-thumb { transition: none; } }

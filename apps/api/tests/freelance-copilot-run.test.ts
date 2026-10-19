@@ -80,7 +80,8 @@ describe("freelance copilot run loop", () => {
       expect(started.json()).toMatchObject({ status: "RUNNING", kickoffSent: true, backlog: 1 });
       expect(kickoffs).toEqual([{ paneId: pane.id, runId: started.json().run.id }]);
       const state = (await app.inject({ method: "GET", url: `${cli}/state`, headers: agent })).json();
-      expect(state.channels.UPWORK).toMatchObject({ effectiveAutonomy: "FULL", alias: "upwork@example.invalid" });
+      expect(state.channels.UPWORK).toMatchObject({ effectiveAutonomy: "FULL", signIn: "GOOGLE", alias: null });
+      expect(state.channels.CONTRA).toMatchObject({ signIn: "EMAIL", alias: "contra@example.invalid" });
       expect(state.accounts.map((account: { channel: string }) => account.channel)).toEqual(["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST"]);
 
       const brief = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json();
@@ -112,6 +113,24 @@ describe("freelance copilot run loop", () => {
       const settings = (await app.inject({ method: "GET", url: `${paneUrl}/settings`, headers })).json().metadata;
       settings.settings.paused = true;
       expect((await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: settings })).json().metadata.settings.paused).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shares the operator's bookmarks with the agent, saved in the pane's own account", async () => {
+    const { app, pane, headers, agent, outsider } = await fixture();
+    try {
+      const saved = await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: agent, payload: { url: "https://www.upwork.com/freelancers/~01", title: "Upwork profile" } });
+      expect(saved.json().bookmark, saved.body).toMatchObject({ title: "Upwork profile", profileId: null, accountLabel: null });
+      // One list per owner: the Marketing Copilot's Bookmarks tab shows the same bookmark.
+      expect((await app.inject({ method: "GET", url: "/api/marketing-copilot/bookmarks", headers })).json().bookmarks).toEqual([expect.objectContaining({ id: saved.json().bookmark.id })]);
+      expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: agent })).json().bookmarks).toHaveLength(1);
+      expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: outsider })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `${cli}/bookmarks/mktbm:missing000/open`, headers: agent, payload: {} })).statusCode).toBe(404);
+      // The operator's Bookmarks tab opens it in a Freelance pane too: past the pane check, this runtime has no browser session.
+      const opened = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/marketing-copilot/bookmarks/${encodeURIComponent(saved.json().bookmark.id)}/open`, headers, payload: {} });
+      expect(opened.json().error.message, opened.body).toContain("Active browser session");
     } finally {
       await app.close();
     }

@@ -156,6 +156,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const { repository } = options;
   const starting = new Map<string, Promise<boolean>>();
+  const deciding = new Map<string, Promise<{ decision: MailCopilotReviewDecision["decision"]; sent: { messageId: string; threadId: string } | null }>>();
 
   async function record(owner: string, input: MailCopilotEventInput & MailEventContext & { type: MailCopilotEventType; status?: "PENDING" | "TAKEN" | "DONE" | null }): Promise<MailCopilotEvent> {
     const event = await repository.createEvent({
@@ -655,7 +656,11 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     async draft(owner: string, pane: Pane | null, input: MailComposeInput): Promise<{ draftId: string; messageId: string }> {
       await mailAccounts(owner, pane, input.account);
       const client = await clientFor(owner, input.account, "MAIL_ORGANIZE");
-      const raw = buildMime({ from: input.account, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text });
+      // A reply draft carries the threading headers too, or Gmail starts a new thread despite the threadId.
+      const original = input.inReplyToMessageId ? await client.message(input.inReplyToMessageId, "metadata").catch((error) => { throw gmailError(input.account, error); }) : null;
+      const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
+      const raw = buildMime({ from: input.account, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text,
+        inReplyTo: header(headers, "Message-ID") || null, references: header(headers, "References") || null });
       try {
         const draft = await client.createDraft(raw, input.threadId);
         return { draftId: draft.id, messageId: draft.messageId };
@@ -819,13 +824,14 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         payload: { questionId, question: input.question, options: input.options ?? [] } });
       return { questionId, answered: false as const };
     },
-    async answerQuestion(owner: string, pane: Pane, input: { questionId: string; answer: string }) {
+    /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
+    async answerQuestion(owner: string, pane: Pane, input: { questionId: string; answer: string }, by: "USER" | "NOUS" = "USER") {
       const events = await repository.listEvents(owner, { types: ["QUESTION"], limit: 300 });
       const question = events.find((event) => event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
       const memory = await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: String(question.payload.question).toLowerCase().slice(0, 300), text: input.answer, contactEmail: null,
-        domain: null, accountEmail: null, tags: ["question"], source: "USER", confidence: 0.9, pinned: false });
-      await record(owner, { paneId: pane.id, type: "ANSWERED", accountEmail: question.accountEmail, threadId: question.threadId, message: `You answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id } });
+        domain: null, accountEmail: null, tags: ["question"], source: by === "NOUS" ? "AGENT" : "USER", confidence: 0.9, pinned: false });
+      await record(owner, { paneId: pane.id, type: "ANSWERED", accountEmail: question.accountEmail, threadId: question.threadId, message: `${by === "NOUS" ? "Nous" : "You"} answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id, answeredBy: by } });
       return { memory };
     },
     async waitForAnswer(owner: string, input: { questionId: string; waitMs: number }) {
@@ -845,7 +851,22 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         message: `Review: ${input.summary}`, payload: { reviewId, draft: input.draft, reasoning: input.reasoning ?? null } });
       return { reviewId };
     },
+    /**
+     * One decision and one Gmail send per review (stable 2026-10-17: one approval went to Hetzner twice, 9 s apart): a decided
+     * review answers its recorded decision, and a decision already running is shared by the calls that arrive meanwhile.
+     * shortcut: the in-flight guard is per process; the API runs one, a second process would need a database claim.
+     */
     async decideReview(owner: string, pane: Pane, input: MailCopilotReviewDecision) {
+      const key = `${owner}\u0000${input.reviewId}`;
+      const running = deciding.get(key);
+      if (running) return running;
+      const decision = this.decideReviewOnce(owner, pane, input).finally(() => deciding.delete(key));
+      deciding.set(key, decision);
+      return decision;
+    },
+    async decideReviewOnce(owner: string, pane: Pane, input: MailCopilotReviewDecision) {
+      const decided = (await repository.listEvents(owner, { types: ["REVIEW_DECIDED"], limit: 300 })).find((event) => event.payload.reviewId === input.reviewId);
+      if (decided) return { decision: decided.payload.decision as MailCopilotReviewDecision["decision"], sent: (decided.payload.sent ?? null) as { messageId: string; threadId: string } | null };
       const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"], limit: 300 })).find((event) => event.payload.reviewId === input.reviewId);
       if (!review) throw new SpaceNotFoundError("The review was not found.");
       const draft = review.payload.draft as MailComposeInput;

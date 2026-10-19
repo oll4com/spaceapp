@@ -22,7 +22,9 @@ These lists are the allowlists in `scripts/space-media-capture.mjs`; nothing out
 | `ph-gallery` | 1270x760 | 1 | 1270x760 | desktop |
 | `yt-thumb` | 1280x720 | 1 | 1280x720 | desktop |
 
-`space_screenshot` (Space Control) takes the device presets only; `maxWidth`/`maxHeight` lower the scale to fit.
+`space_screenshot` (Space Control) takes the device presets plus `square`, `portrait` and `story`, or an `aspect`:
+`16:9` = `desktop-hd`, `1:1` = `square`, `4:5` = `portrait`, `9:16` = `story` (phone layout), `full` = `desktop`.
+`maxWidth`/`maxHeight` lower the scale to fit.
 
 ## Frames (`--frame`, with `--headline` up to 120 and `--subline` up to 200 characters)
 

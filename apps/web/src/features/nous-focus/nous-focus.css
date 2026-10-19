@@ -1,0 +1,43 @@
+/* Nous's "needs you" banner and the Back pill: fixed above the workspace, on the app's theme tokens. */
+.nous-focus-banner,
+.nous-focus-back {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: min(36rem, calc(100vw - 1.5rem));
+  padding: 0.45rem 0.55rem 0.45rem 0.75rem;
+  border: 1px solid var(--modern-accent, var(--room-accent, #61d2c3));
+  border-radius: 999px;
+  background: var(--modern-surface-raised, var(--room-surface-soft, #1b1d1f));
+  color: var(--modern-text, var(--room-text, #f4efe5));
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
+  font-size: 0.82rem;
+}
+.nous-focus-banner { top: 0.75rem; }
+.nous-focus-back { bottom: 1rem; padding: 0.3rem; }
+.nous-focus-banner > svg { flex: 0 0 auto; width: 1.1rem; height: 1.1rem; color: var(--modern-accent, var(--room-accent, #61d2c3)); }
+.nous-focus-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nous-focus-hold { color: var(--modern-muted, var(--room-muted, #a2a7ad)); }
+.nous-focus-banner button,
+.nous-focus-back button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--modern-border, var(--room-border, #343638));
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.nous-focus-banner button.nous-focus-go,
+.nous-focus-back button.nous-focus-go { border-color: var(--modern-accent, var(--room-accent, #61d2c3)); background: var(--modern-accent, var(--room-accent, #61d2c3)); color: var(--modern-on-accent, #071b19); }
+.nous-focus-back button svg { width: 1rem; height: 1rem; }
+.nous-focus-banner button:focus-visible,
+.nous-focus-back button:focus-visible { outline: 2px solid var(--modern-accent, var(--room-accent, #61d2c3)); outline-offset: 2px; }

@@ -10,7 +10,8 @@ import { CopilotRail, RAIL_TAB_ICONS, type CopilotRailTab, type CopilotRailTabDe
 import { FieldsTab } from "./FieldsTab.js";
 import { HandoffOverlay } from "./HandoffOverlay.js";
 import { HeldBrowserStrip } from "../copilot-kit/HandoffOverlay.js";
-import { browserVisible, layoutForWidth, resolveActiveTab, tabsForLayout, type JobCopilotLayout } from "./layout.js";
+import { browserVisible, resolveActiveTab, tabsForLayout } from "./layout.js";
+import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { MemoryTab } from "./MemoryTab.js";
 import { QueueTab } from "./QueueTab.js";
 import { SetupWizard } from "./SetupWizard.js";
@@ -65,21 +66,6 @@ function writeRailPreference(paneId: string, preference: RailPreference): void {
 
 const TAB_LABELS: Record<CopilotRailTab, string> = { browser: "Browser", activity: "Activity", queue: "Queue", fields: "Fields", memory: "Memory", setup: "Setup", terminal: "Terminal" };
 
-/** The pane's own width decides the layout (a narrow desktop pane stacks like a phone); SSR and jsdom start from the window. */
-function useLayout(ref: React.RefObject<HTMLDivElement | null>): JobCopilotLayout {
-  const [layout, setLayout] = useState<JobCopilotLayout>(() => layoutForWidth(typeof window === "undefined" ? 0 : window.innerWidth));
-  useEffect(() => {
-    const element = ref.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const apply = (width: number) => setLayout((current) => { const next = layoutForWidth(width); return next === current ? current : next; });
-    apply(element.getBoundingClientRect().width);
-    const observer = new ResizeObserver((entries) => { for (const entry of entries) apply(entry.contentRect.width); });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref]);
-  return layout;
-}
-
 /**
  * Job Copilot: full-bleed live browser, a command bar (agent, run state, counters) and a
  * collapsible, resizable rail with Queue, Setup and the agent terminal. The terminal element
@@ -89,7 +75,7 @@ function useLayout(ref: React.RefObject<HTMLDivElement | null>): JobCopilotLayou
 export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilotPaneProps) {
   const data = useJobApplyData(pane, isVisible);
   const paneRef = useRef<HTMLDivElement | null>(null);
-  const layout = useLayout(paneRef);
+  const layout = useCopilotLayout(paneRef);
   const [rail, setRail] = useState<RailPreference>(() => readRailPreference(pane.id));
   const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);

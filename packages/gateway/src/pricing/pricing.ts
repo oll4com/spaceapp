@@ -194,6 +194,23 @@ export function claudeCostUsd(usage: ClaudeCostUsage | null, model: string | nul
 }
 
 /**
+ * List cost of one token type of an Anthropic usage report cell (`usage_report/messages`), or null for an unknown model,
+ * an unpriced speed or another item. A `200k-1M` cell uses the model's long card.
+ */
+export function claudeReportCostUsd(model: string, item: string, tokens: number, cell: { longContext: boolean; fast: boolean }): number | null {
+  const price = anthropicPrice(model);
+  if (!price) return null;
+  const multiplier = cell.fast ? price.fast ?? null : 1;
+  if (multiplier === null) return null;
+  const card = cell.longContext && price.long ? price.long : price;
+  const cacheRead = card === price ? price.cacheRead ?? price.input * 0.1 : card.input * 0.1;
+  const rate = item === "uncached_input_tokens" ? card.input : item === "cache_read_input_tokens" ? cacheRead
+    : item === "cache_creation.ephemeral_5m_input_tokens" ? card.input * 1.25 : item === "cache_creation.ephemeral_1h_input_tokens" ? card.input * 2
+      : item === "output_tokens" ? card.output : null;
+  return rate === null ? null : (tokens * rate * multiplier) / 1e6;
+}
+
+/**
  * Gemini API Standard list prices per 1M tokens (ai.google.dev/gemini-api/docs/pricing, 2026-10-15; several double on
  * 2027-01-01). `long` is the card for prompts above 200k tokens.
  */
@@ -245,4 +262,27 @@ export function inputPrices(model: string | null, provider: string): { input: nu
   const found = priceForModel(model);
   if (!found) return null;
   return { input: found.price.input_per_1m, cachedInput: found.price.cached_input_per_1m ?? found.price.input_per_1m, cacheWrite: found.price.input_per_1m };
+}
+
+/**
+ * Image list prices (2026-10-18). Gemini API Standard, per output image by `imageSize`
+ * (ai.google.dev/gemini-api/docs/pricing); GPT Image per 1M tokens (developers.openai.com/api/docs/pricing), applied to
+ * the `tool_usage.image_gen` tokens a Codex image call reports. A size or model not listed stays unpriced (null).
+ */
+export const imagePrices: Record<string, { perImage: Partial<Record<string, number>> } | { textInput: number; imageInput: number; imageOutput: number }> = {
+  "gemini-3.1-flash-image": { perImage: { "512": 0.045, "1K": 0.067, "2K": 0.101, "4K": 0.151 } },
+  "gemini-3-pro-image": { perImage: { "1K": 0.134, "2K": 0.134, "4K": 0.24 } },
+  "gpt-image-2": { textInput: 5, imageInput: 8, imageOutput: 30 }
+};
+
+export interface ImageTokenUsage { textInputTokens: number; imageInputTokens: number; outputTokens: number }
+
+/** API-equivalent cost of one generated image: by size for Gemini, by tokens for GPT Image (`gpt-image-2-codex` is priced as gpt-image-2). */
+export function imageCostUsd(model: string, usage: { imageSize?: string | null; tokens?: ImageTokenUsage | null }): number | null {
+  const price = imagePrices[model.toLowerCase().replace(/-codex$/, "")];
+  if (!price) return null;
+  if ("perImage" in price) return price.perImage[usage.imageSize ?? "1K"] ?? null;
+  const tokens = usage.tokens;
+  if (!tokens) return null;
+  return (tokens.textInputTokens * price.textInput + tokens.imageInputTokens * price.imageInput + tokens.outputTokens * price.imageOutput) / 1e6;
 }

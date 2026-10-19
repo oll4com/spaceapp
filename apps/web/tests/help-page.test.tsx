@@ -112,7 +112,7 @@ describe("HelpPage", () => {
     expect(styles).toContain(".help-page {");
     expect(styles).toMatch(/\.help-page\s*\{[^}]*overflow-y:\s*auto/s);
     expect(styles).toContain(".help-navigation {");
-    expect(styles).toMatch(/@media \(max-width: 768px\)[\s\S]*\.help-layout/);
+    expect(styles).toMatch(/@media \(max-width: 767px\)[\s\S]*\.help-layout/);
   });
 
   it("renders an English, searchable guide with accessible navigation", () => {

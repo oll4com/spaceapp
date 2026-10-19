@@ -45,13 +45,16 @@ export interface NativeTaskResumeDependencies {
   writeGeminiPaneConversation: (paneId: string, conversationId: string) => Promise<void>;
   readOpenCodeNativeSessionId: (spaceSessionId: string) => Promise<string | null>;
   resolveReasonixNativeSessionRef: (input: { workspace: string; firstUserMessage: string | null }) => Promise<string | null>;
+  /** Dev shares stable's OpenCode server: its copied task refs and mapping files can name a stable pane's session. */
+  devInstance: boolean;
 }
 
 const defaultDependencies: NativeTaskResumeDependencies = {
   readGeminiPaneConversation: (paneId) => readGeminiPaneConversation(paneId),
   writeGeminiPaneConversation,
   readOpenCodeNativeSessionId: (spaceSessionId) => readOpenCodeNativeSessionId(spaceSessionId),
-  resolveReasonixNativeSessionRef: (input) => resolveReasonixNativeSessionRef(input)
+  resolveReasonixNativeSessionRef: (input) => resolveReasonixNativeSessionRef(input),
+  devInstance: process.env.SPACE_INSTANCE === "dev"
 };
 
 type Resolver = (context: NativeTaskResumeContext, dependencies: NativeTaskResumeDependencies) => Promise<NativeTaskResume | null>;
@@ -66,6 +69,7 @@ function matching(pattern: RegExp, value: string | null | undefined): string | n
 
 const resolvers: Readonly<Record<string, Resolver>> = {
   "cli:opencode": async ({ sourceTask }, dependencies) => {
+    if (dependencies.devInstance) return null;
     const ref = matching(opencodeNativeSessionIdPattern, sourceTask.revision.nativeTaskRef)
       ?? await dependencies.readOpenCodeNativeSessionId(sourceTask.session.sessionId);
     return ref ? { ...recorded(ref)!, auditMetadata: { opencodeNativeSessionId: ref } } : null;

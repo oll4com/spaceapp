@@ -111,11 +111,11 @@ describe("DocksSettingsCard", () => {
 
   it("moves a dock with the arrow keys and saves the order", () => {
     render(<DocksSettingsCard gitPluginsActive={true} isAdmin={false} />);
-    expect(dockRows().slice(0, 2)).toEqual(["rooms", "room-agent"]);
+    expect(dockRows().slice(0, 2)).toEqual(["rooms", "nous"]);
 
-    fireEvent.keyDown(screen.getByRole("button", { name: /^Move Room Agent dock/ }), { key: "ArrowUp" });
-    expect(dockRows().slice(0, 2)).toEqual(["room-agent", "rooms"]);
-    expect(readDockOrder(localStorage).slice(0, 2)).toEqual(["room-agent", "rooms"]);
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Move Nous dock/ }), { key: "ArrowUp" });
+    expect(dockRows().slice(0, 2)).toEqual(["nous", "rooms"]);
+    expect(readDockOrder(localStorage).slice(0, 2)).toEqual(["nous", "rooms"]);
     expect(dockRows()).not.toContain("streaming");
   });
 

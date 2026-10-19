@@ -5,11 +5,16 @@ import { z } from "zod";
  * delivered through the channels the user turned on (in-app badges and toasts, sound, browser desktop
  * notifications, Telegram) and kept in the Notification Center until read or acknowledged.
  */
-export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "ROOM_AGENT", "COUNCIL", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
+export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "ROOM_AGENT", "COUNCIL", "NOUS", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
 export const notificationSourceSchema = z.enum(NOTIFICATION_SOURCES);
 export type NotificationSource = z.infer<typeof notificationSourceSchema>;
+/**
+ * What only the operator's own hands can do: a CAPTCHA or browser handoff, a sign-in, a copilot's NEEDS_USER click. It reaches
+ * them at once in the app, on the desktop and on Telegram and never waits for Nous (operator rule 2026-10-17, plan clipboard:xEQOrVRQgeAn).
+ */
+export const needsOperatorHands = (source: NotificationSource, kind: string) => source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER/i.test(kind);
 export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
-  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", ROOM_AGENT: "Room Agent", COUNCIL: "Council", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
+  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
 };
 
 export const notificationSeveritySchema = z.enum(["INFO", "ATTENTION", "URGENT"]);
@@ -104,7 +109,8 @@ export type NotificationListQuery = z.infer<typeof notificationListQuerySchema>;
 export const notificationChannelOverridesSchema = z.object({
   inApp: z.boolean().optional(),
   desktop: z.boolean().optional(),
-  telegram: z.boolean().optional()
+  telegram: z.boolean().optional(),
+  push: z.boolean().optional()
 }).strict();
 export const notificationSettingsSchema = z.object({
   channels: z.object({
@@ -115,8 +121,10 @@ export const notificationSettingsSchema = z.object({
     /** Browser desktop notifications while Space is in the background (needs the browser's permission). */
     desktop: z.boolean().default(true),
     /** Telegram through the paired bot, for ATTENTION and URGENT notifications. */
-    telegram: z.boolean().default(true)
-  }).strict().default({ inApp: true, toast: true, sound: true, desktop: true, telegram: true }),
+    telegram: z.boolean().default(true),
+    /** Push (FCM) to the user's registered Android devices, for ATTENTION and URGENT notifications, also with the app closed. */
+    push: z.boolean().default(true)
+  }).strict().default({ inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true }),
   perSource: z.partialRecord(notificationSourceSchema, notificationChannelOverridesSchema).default({})
 }).strict();
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
@@ -127,7 +135,17 @@ export function resolveNotificationSettings(settings: NotificationSettings | nul
 }
 
 /** Whether one channel is on for a notification: the channel switch, then the source's own override. */
-export function notificationChannelEnabled(settings: NotificationSettings, source: NotificationSource, channel: "inApp" | "desktop" | "telegram"): boolean {
+export function notificationChannelEnabled(settings: NotificationSettings, source: NotificationSource, channel: "inApp" | "desktop" | "telegram" | "push"): boolean {
   const override = settings.perSource[source]?.[channel];
   return override ?? settings.channels[channel];
 }
+
+/** An Android device of the user that receives Space notifications as FCM pushes (registered by the app's page). */
+export const pushDeviceTokenSchema = z.string().regex(/^[A-Za-z0-9:_.-]{20,4096}$/);
+export const pushDeviceRegistrationSchema = z.object({
+  token: pushDeviceTokenSchema,
+  platform: z.literal("ANDROID").default("ANDROID"),
+  appVersion: z.string().trim().min(1).max(40).nullable().default(null)
+}).strict();
+export type PushDeviceRegistration = z.infer<typeof pushDeviceRegistrationSchema>;
+export const pushDeviceRemovalSchema = z.object({ token: pushDeviceTokenSchema }).strict();

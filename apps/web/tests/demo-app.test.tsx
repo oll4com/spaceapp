@@ -538,7 +538,7 @@ describe("Space public demo app", () => {
     expect(dialog.textContent).toContain("1 active Codex CLI session");
     expect(dialog.textContent).toContain("2 open Chat panes");
     // Closing open panes needs an explicit acknowledgement first (910450e67a).
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: /^(Close \d+ open panes? and stop their work|Stop \d+ active tasks?)$/ }));
+    fireEvent.click(within(dialog).getByRole("switch", { name: /^(Close \d+ open panes? and stop their work|Stop \d+ active tasks?)$/ }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Disable Codex CLI" }));
 
     await waitFor(() => expect(codexToggle.checked).toBe(false));

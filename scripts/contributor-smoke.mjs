@@ -55,6 +55,8 @@ export async function runContributorSmoke({ temporaryRoot = tmpdir(), fixturePat
     } while (Date.now() < deadline);
     throw new Error(`Offline smoke timed out: ${stage}.`);
   };
+  // Cleanup failures are thrown after the finally block, so a failed smoke keeps its own error.
+  const errors = [];
   try {
     if (Buffer.byteLength(socketPath) > 100) throw new Error("Set TMPDIR to a shorter owned directory for Unix sockets.");
     server = await createCliHostServer({ socketPath, registry });
@@ -96,7 +98,6 @@ export async function runContributorSmoke({ temporaryRoot = tmpdir(), fixturePat
       throw new Error("Offline task acceptance failed: duplicate suppression or continuation.");
     }
   } finally {
-    const errors = [];
     registry.terminateAll();
     if (childPid) {
       try { await waitFor(() => !alive(childPid), "owned process cleanup", false); }
@@ -107,8 +108,8 @@ export async function runContributorSmoke({ temporaryRoot = tmpdir(), fixturePat
     }
     try { await server?.close(); } catch (error) { errors.push(error); }
     try { await rm(root, { recursive: true, force: true }); } catch (error) { errors.push(error); }
-    if (errors.length) throw new AggregateError(errors, "Offline smoke cleanup failed.");
   }
+  if (errors.length) throw new AggregateError(errors, "Offline smoke cleanup failed.");
   return {
     mode: "SIMULATED_RUNTIME", transport: "REAL_PTY_UNIX_IPC", passed: true,
     completedTasks: 2, sameProcessAfterReconnect: true, duplicateInputSuppressed: true, cleaned: true

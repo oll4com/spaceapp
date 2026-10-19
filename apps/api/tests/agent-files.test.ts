@@ -28,9 +28,10 @@ function safeSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180) || "item";
 }
 
-function multipartFiles(parts: Array<{ filename: string; mimeType?: string; body: Buffer | string }>) {
+function multipartFiles(parts: Array<{ filename: string; mimeType?: string; body: Buffer | string }>, fields: Record<string, string> = {}) {
   const boundary = "space-agent-files-test-boundary";
-  const chunks: Buffer[] = [];
+  const chunks: Buffer[] = Object.entries(fields).map(([name, value]) =>
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
   for (const part of parts) {
     chunks.push(Buffer.from(
       `--${boundary}\r\n` +
@@ -325,6 +326,46 @@ describe("Agent Files API", () => {
     ]));
 
     await app.close();
+  });
+
+  it("publishes images and videos to the pane's room Media dock without a CLI control grant and refuses other files", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "space-agent-files-media-"));
+    temporaryRoots.push(artifactRoot);
+    const store = new InMemorySpaceStore();
+    const { room, pane, session } = createCliFixture(store);
+    const { app, config } = await createTestApp(store, artifactRoot);
+    const token = issueCliAgentFilesToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: session.sessionId })!;
+    const publish = (upload: ReturnType<typeof multipartFiles>) => app.inject({
+      method: "POST", url: "/api/cli/agent-files",
+      headers: { [cliAgentFilesTokenHeader]: token, "content-type": upload.contentType }, payload: upload.payload
+    });
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("png body")]);
+
+    const published = await publish(multipartFiles([
+      { filename: "shot.png", body: png },
+      { filename: "demo.mp4", body: "mp4 body" }
+    ], { collection: "media" }));
+    expect(published.statusCode).toBe(200);
+    const [image, video] = published.json().artifacts;
+    expect(image).toMatchObject({ roomId: room.id, paneId: pane.id, kind: "IMAGE", mimeType: "image/png",
+      metadata: { source: "CLI_AGENT", originalFilename: "shot.png", cliSessionId: session.sessionId } });
+    expect(video).toMatchObject({ kind: "VIDEO", mimeType: "video/mp4" });
+    const listed = (collection: "ROOM_MEDIA" | "AGENT_FILES") =>
+      store.listArtifacts({ roomId: room.id, collection, page: 1, pageSize: 25, sortOrder: "desc" }).map((artifact) => artifact.id);
+    expect(listed("ROOM_MEDIA").sort()).toEqual([image.id, video.id].sort());
+    expect(listed("AGENT_FILES")).toEqual([]);
+    expect(store.listAuditEvents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "room_media.publish", targetId: pane.id })
+    ]));
+
+    // A declared image type is not trusted: SVG or HTML would run as script from the API origin.
+    for (const part of [{ filename: "logo.svg", mimeType: "image/svg+xml", body: "<svg onload=alert(1)>" },
+      { filename: "page.png", mimeType: "image/png", body: "<html>" }, { filename: "notes.txt", body: "text" }]) {
+      const refused = await publish(multipartFiles([part], { collection: "media" }));
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error.code).toBe("UNSUPPORTED_MEDIA_TYPE");
+    }
+    expect(listed("ROOM_MEDIA")).toHaveLength(2);
   });
 
   it("lets an authenticated operator upload own files into Agent Files and rejects unauthenticated or empty uploads", async () => {

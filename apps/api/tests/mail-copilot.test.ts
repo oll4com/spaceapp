@@ -238,6 +238,11 @@ describe("mail copilot mailbox", () => {
     const draft = await app.inject({ method: "POST", url: "/api/mail-copilot/drafts", headers,
       payload: { paneId: pane.id, account: "me@gmail.com", to: ["x@y.com"], subject: "Hello", text: "Draft body" } });
     expect(draft.json()).toEqual({ draftId: "draft-1", messageId: "draft-msg-1" });
+    await app.inject({ method: "POST", url: "/api/mail-copilot/drafts", headers,
+      payload: { paneId: pane.id, account: "me@gmail.com", to: ["anna@acme.com"], subject: "Re: Invoice", text: "Draft reply", threadId: "t1", inReplyToMessageId: "m1" } });
+    const replyDraft = me.writes.filter((write) => write.path === "/drafts").at(-1)!.body as { message: { raw: string; threadId: string } };
+    expect(replyDraft.message.threadId).toBe("t1");
+    expect(Buffer.from(replyDraft.message.raw, "base64url").toString("utf8")).toContain("In-Reply-To: <m1@mail.example>\r\nReferences: <m1@mail.example>\r\n");
     expect((await app.inject({ method: "POST", url: "/api/mail-copilot/messages/send", headers, payload: { paneId: pane.id, account: "me@gmail.com", to: [], subject: "x", text: "y" } })).statusCode).toBe(422);
     expect((await app.inject({ method: "POST", url: "/api/mail-copilot/messages/send", headers, payload: { paneId: pane.id, account: "other@gmail.com", to: ["x@y.com"], subject: "x", text: "y" } })).statusCode).toBe(409);
     await app.close();

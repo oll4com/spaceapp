@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+export const fixtureComposerText = "SPACE_LOCAL_COMPOSER_PROOF μνήμη φωτογραφία ξανά";
+export const fixtureComposerImageName = "space-local-composer-proof.png";
 /** Unicode lexical tokenizer v1: words/numbers and each non-space punctuation.
  * These are fixture tokens, not any provider's tokens. No bytes/4 estimation.
  */
@@ -15,16 +17,18 @@ export function fixtureManifest() {
   }
   return {version:1,tokenizer:"space-fixture-unicode-lexical-v1",providerTokens:false,logicalLines:6000,tokens,bytes,digest:hash.digest("hex"),checkpoints,maxBytes:16*1024*1024,maxDurationMs:180000};
 }
-// The fixed process waits for the browser proof before producing output. No shell,
-// paths, prompts or executable input accepted; any other input is ignored.
+// The fixed process waits for the browser proof before producing output. No shell
+// or executable input is accepted. After rendering, one fixed composer probe can be
+// acknowledged by byte hash and consumption count; other input is ignored.
 export function fixtureProgram() {
   const manifest=fixtureManifest();
-  return `(${fixtureProcess.toString()})(${JSON.stringify(manifest)},${fixtureLine.toString()})`;
+  return `(${fixtureProcess.toString()})(${JSON.stringify(manifest)},${fixtureLine.toString()},${JSON.stringify(fixtureComposerText)},${JSON.stringify(fixtureComposerImageName)})`;
 }
-async function fixtureProcess(manifest,line) {
+async function fixtureProcess(manifest,line,composerText,composerImageName) {
   const {once}=await import('node:events');
+  const {createHash}=await import('node:crypto');
   process.stdin.setRawMode?.(true);process.stdin.resume();
-  let bytes=0,started=false,input='';
+  let bytes=0,started=false,input='',renderComplete=false,composerInput=Buffer.alloc(0),consumed=0;
   const limit=setTimeout(()=>process.exit(2),manifest.maxDurationMs); limit.unref();
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const write=async data=>{const b=Buffer.isBuffer(data)?data:Buffer.from(data);bytes+=b.length;if(bytes>manifest.maxBytes)process.exit(2);if(!process.stdout.write(b))await once(process.stdout,'drain');};
@@ -42,8 +46,57 @@ async function fixtureProcess(manifest,line) {
     await write('SRD:'+manifest.digest+'\r\n');
     await sleep(200);
     await write('\x1b[2J\x1b[HSPACE_RENDER_FINAL '+manifest.digest+'\r\nGreek: μνήμη CJK: 中文 emoji: 🙂 combining: é\r\nLiteral ANSI example: 38;2;255;0;0\r\nSPACE_RENDER_COMPLETE\r\n');
+    renderComplete=true;
   };
-  process.stdin.on('data',data=>{input=(input+data.toString()).slice(-128);if(!started&&input.includes('SPACE_RENDER_START')){started=true;void run().catch(()=>process.exit(2));}});
+  process.stdin.on('data',data=>{
+    input=(input+data.toString()).slice(-128);
+    if(!started&&/(?:^|\n)SPACE_LOCAL_COMPOSER_START\n/.test(input)){
+      started=true;renderComplete=true;
+      // Exercise the normal Codex input-readiness gate, including after reload.
+      void write('SPACE_LOCAL_COMPOSER_READY\r\n› ').catch(()=>process.exit(2));
+      // The fixed mode selector is control input, not part of the pasted draft.
+      return;
+    }
+    if(!started&&input.includes('SPACE_RENDER_START')){started=true;void run().catch(()=>process.exit(2));}
+    if(!renderComplete)return;
+    // Buffer bytes, not decoded chunks: the Greek paste may cross UTF-8 boundaries.
+    composerInput=Buffer.concat([composerInput,data]);
+    if(composerInput.length>8192){composerInput=Buffer.alloc(0);return;}
+    for(let end;(end=composerInput.indexOf(13))>=0;){
+      const raw=composerInput.subarray(0,end+1);composerInput=composerInput.subarray(end+1);
+      const value=raw.subarray(0,-1).toString('utf8'),prefix='\x1b[200~',suffix='\x1b[201~\x1b[200~'+composerText+'\x1b[201~';
+      if(!value.startsWith(prefix)||!value.endsWith(suffix))continue;
+      const path=value.slice(prefix.length,-suffix.length);
+      // The path is never opened, executed, or echoed. Only the fixed fixture
+      // photo reference and exact public Greek probe are acknowledged.
+      if(!path.startsWith('/')||!path.includes('/cli-uploads/')||!path.endsWith('-'+composerImageName)||path.length>1000||/[\x00-\x1f\x7f-\x9f]/.test(path))continue;
+      consumed++;
+      void write(`SPACE_LOCAL_COMPOSER_ACK ${consumed} ${raw.length} ${createHash('sha256').update(raw).digest('hex')}\r\n`).catch(()=>process.exit(2));
+    }
+  });
+}
+
+/** Replayed output may repeat an ACK; only the process's counter proves delivery. */
+export function createFixtureComposerVerifier() {
+  let tail='',consumptions=0,conflicts=0,invalid=0;
+  const acknowledgements=new Map();
+  return {
+    push(data) {
+      const text=tail+data,end=text.lastIndexOf('\n');
+      if(end<0){tail=text.slice(-4096);return;}
+      // The producer writes CRLF; a real PTY with ONLCR adds one more CR.
+      // Pipes may preserve CRLF or LF. Payload/count/hash validation stays exact.
+      for(const match of text.slice(0,end+1).matchAll(/SPACE_LOCAL_COMPOSER_ACK (\d+) (\d+) ([a-f0-9]{64})\r{0,2}\n/g)) {
+        const count=Number(match[1]),bytes=Number(match[2]),digest=match[3];
+        if(!Number.isSafeInteger(count)||count<1||count>16||bytes<1||bytes>8192){invalid++;continue;}
+        const previous=acknowledgements.get(count);
+        if(previous&&(previous.bytes!==bytes||previous.digest!==digest))conflicts++;
+        acknowledgements.set(count,{bytes,digest});consumptions=Math.max(consumptions,count);
+      }
+      tail=text.slice(end+1).slice(-4096);
+    },
+    result() {return {consumptions,consistent:!conflicts&&!invalid,conflicts,invalid,...(acknowledgements.get(consumptions)??{bytes:null,digest:null})};}
+  };
 }
 export function createFixtureStreamVerifier(manifest=fixtureManifest()) {
   let tail='',last=0,missing=0,duplicates=0,outOfOrder=0,digest=null,bytes=0,overflow=false;

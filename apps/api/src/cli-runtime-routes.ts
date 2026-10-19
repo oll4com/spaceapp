@@ -43,12 +43,16 @@ export function registerCliRuntimeRoutes(app: FastifyInstance, options: {
   assertDeepSeekHarnessIsolated: (pid: number) => Promise<void>;
   readDeepSeekHarnessMaintenanceStatus: () => Promise<HarnessMaintenanceStatus>;
   readCliVpnApplications: CliVpnApplicationsReader;
+  /** Multi-user: the registry whose sign-in states come from this user's own CLI container, or null. */
+  userRegistry?: (userId: string) => ReturnType<typeof createAgentRuntimeRegistryCache> | null;
 }) {
   const { config, store, cliRuntimeRegistryCache, cliVpnBroker, deepSeekHarnessServiceController,
     routeOptions: defaultRouteRateLimitOptions, assertCliVpnAvailable, runningDeepSeekHarnessPid,
-    assertDeepSeekHarnessIsolated, readDeepSeekHarnessMaintenanceStatus, readCliVpnApplications } = options;
+    assertDeepSeekHarnessIsolated, readDeepSeekHarnessMaintenanceStatus, readCliVpnApplications, userRegistry } = options;
   app.get("/api/cli/runtimes", defaultRouteRateLimitOptions, async (request) => {
-    const registry = await cliRuntimeRegistryCache.readStaleWhileRefreshing();
+    // A USER with an own CLI container sees whether their own keys and logins are ready, not the owner's.
+    const own = request.user?.role === "USER" ? userRegistry?.(request.user.id) : null;
+    const registry = await (own ?? cliRuntimeRegistryCache).readStaleWhileRefreshing();
     const settings = new Map((await store.listCliRuntimeSettings()).map((setting) => [setting.runtimeId, setting.enabled]));
     const visible = registry.data.filter((runtime) => {
       const toggleRuntimeId = cliToggleRuntimeIdSchema.safeParse(runtime.id);

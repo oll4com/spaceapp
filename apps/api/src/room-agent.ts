@@ -323,6 +323,8 @@ export function createRoomAgentService(options: {
   executeQuickCommand?(roomId: string, command: RoomQuickCommand, traceId: string, actor?: BrowserHostActorContext): Promise<RoomQuickActionResult>;
   /** The conversation: every message that is not a direct command becomes one streamed turn. */
   chat?: RoomAgentChat;
+  /** False for a room whose conversation would run on someone else's model accounts (MU-002). */
+  chatAllowed?: (roomId: string) => Promise<boolean>;
   /** Live pane activity for prompts and the dock; without it panes show UNKNOWN activity. */
   snapshotProvider?: RoomAgentSnapshotProvider;
   /** Room monitor switch and activity feed shown in the dock. */
@@ -744,8 +746,20 @@ export function createRoomAgentService(options: {
       : action;
     return `typed:${JSON.stringify({ catalogVersion: PANE_CATALOG_VERSION, action: canonical })}`;
   }
+  /**
+   * MU-008: a USER account's request never reaches the Room Agent. Its direct paths (mentions, control phrases, quick and
+   * typed commands) work through Space Control and room commands, which do not record a USER's pane ownership in a
+   * shared room, and its conversation runs on the room owner's models (MU-002). The operator's rooms are unchanged.
+   */
+  async function assertRoomAgentActor(actor?: BrowserHostActorContext) {
+    const userId = actor?.holderType === "OPERATOR" ? actor.holderId : null;
+    if (userId && (await store.getControlActor(userId))?.role === "USER") {
+      throw new SpaceFeatureDisabledError("ROOM_AGENT_UNAVAILABLE", "The Room Agent is not available for this account yet.");
+    }
+  }
   async function dispatchRequest(roomId: string, content: string, clientRequestId: string, traceId: string,
     actor?: BrowserHostActorContext, typedAction?: RoomCommand["action"], selectedBrowserPaneId?: string): Promise<RoomAgentSession> {
+    await assertRoomAgentActor(actor);
     const started = performance.now();
     const key = JSON.stringify([roomId, clientRequestId]);
     const digest = fingerprint(typedAction ? typedIntent(typedAction) : content, actor);
@@ -801,6 +815,9 @@ export function createRoomAgentService(options: {
     /** Everything else is conversation: the user row, a RUNNING answer row, then the turn streams in the background. */
     async function startChatTurn(): Promise<RoomAgentSession> {
       if (!options.chat) throw new SpaceConflictError("The Room Agent conversation is unavailable.");
+      if (options.chatAllowed && !await options.chatAllowed(roomId)) {
+        throw new SpaceFeatureDisabledError("ROOM_AGENT_CHAT_UNAVAILABLE", "The Room Agent conversation is not available for this account yet.");
+      }
       const turn = options.chat.begin(roomId);
       try {
         const { pane, session } = await ensureSession(roomId);

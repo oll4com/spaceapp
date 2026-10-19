@@ -5,12 +5,13 @@ import type { GatewayRepository } from "@space/db";
 import type { AccountPool, StoredCredentials } from "../accounts/account-pool.js";
 import type { CredentialCipher } from "../credential-cipher.js";
 import { CLAUDE_API_KEY_PATTERN, CLAUDE_API_KEY_PLAN, checkClaudeApiKey } from "../providers/claude/api-key.js";
+import { checkGoogleAiKey, GOOGLE_AI_KEY_PATTERN } from "../providers/google-ai/embeddings.js";
 import { checkPoolKey, keyPoolProviders, keyPoolSlugFor, type KeyPoolProvider } from "../providers/key-pools/key-pools.js";
 import { createAdminGuard, publicAccountSummary, type ProviderAccountActions } from "./codex-sign-in.js";
 
 /** A provider whose API keys become gateway accounts: the key's shape, its free check, and the plan it is filed under. */
 interface ApiKeyProviderEntry {
-  provider: Extract<GatewayProvider, "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE">;
+  provider: Extract<GatewayProvider, "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI">;
   label: string;
   keyPattern: RegExp;
   planType: string;
@@ -30,15 +31,21 @@ const claudeEntry: ApiKeyProviderEntry = {
   check: (apiKey, fetchImpl) => checkClaudeApiKey(apiKey, fetchImpl)
 };
 
+/** Google AI (Gemini API) keys serve the Gemini embedding models of `/v1/embeddings` (Space Memory). */
+export const googleAiEntry: ApiKeyProviderEntry = {
+  provider: "GOOGLE_AI", label: "Google AI", keyPattern: GOOGLE_AI_KEY_PATTERN, planType: "api", check: (apiKey, fetchImpl) => checkGoogleAiKey(apiKey, fetchImpl)
+};
+
 function entryFor(provider: unknown): ApiKeyProviderEntry | null {
   if (provider === "CLAUDE") return claudeEntry;
+  if (provider === "GOOGLE_AI") return googleAiEntry;
   const slug = typeof provider === "string" ? keyPoolSlugFor(provider as GatewayProvider) : null;
   return slug ? poolEntry(keyPoolProviders[slug]) : null;
 }
 
 /**
  * Provider API keys as gateway accounts: OpenAI (embeddings and its key pool), OpenRouter and DeepSeek (key pools),
- * and Claude (the per-token fallback behind the subscription accounts). The key is checked with the provider's
+ * Claude (the per-token fallback behind the subscription accounts) and Google AI (Gemini embeddings). The key is checked with the provider's
  * free check request, stored encrypted, and identified only by a hash prefix and its last four characters.
  */
 export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
@@ -52,7 +59,7 @@ export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
     const body = (request.body ?? {}) as { provider?: unknown; apiKey?: unknown; label?: unknown; sourceRef?: unknown };
     const entry = entryFor(body.provider);
     const pool = entry ? options.pools[entry.provider] : undefined;
-    if (!entry || !pool) return reply.code(422).send({ error: { code: "unsupported_provider", message: "API keys can be added for OpenAI, OpenRouter, DeepSeek and Claude." } });
+    if (!entry || !pool) return reply.code(422).send({ error: { code: "unsupported_provider", message: "API keys can be added for OpenAI, OpenRouter, DeepSeek, Claude and Google AI." } });
     const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
     if (!entry.keyPattern.test(apiKey)) return reply.code(422).send({ error: { code: "invalid_api_key", message: `This does not look like a ${entry.label} API key.` } });
     const cipher = options.cipher();
@@ -77,16 +84,17 @@ export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
 }
 
 /** Test (the provider's free check request) for API key accounts; there are no usage windows to refresh. */
-export function apiKeyAccountActions(options: { entry: KeyPoolProvider; pool: AccountPool; fetchImpl?: typeof fetch; now?: () => number }): ProviderAccountActions {
+export function apiKeyAccountActions(options: { entry: KeyPoolProvider | ApiKeyProviderEntry; pool: AccountPool; fetchImpl?: typeof fetch; now?: () => number }): ProviderAccountActions {
   const now = options.now ?? Date.now;
+  const entry = "check" in options.entry ? options.entry : poolEntry(options.entry);
   return {
     async test(account) {
       const startedAt = now();
       const credentials = await options.pool.credentials(account);
-      const check = await checkPoolKey(options.entry, credentials.accessToken, options.fetchImpl ?? fetch);
+      const check = await entry.check(credentials.accessToken, options.fetchImpl ?? fetch);
       if (check.ok) await options.pool.markSuccess(account.id);
       return { ok: check.ok, model: null, status: check.status || 502, latencyMs: now() - startedAt,
-        error: check.ok ? null : `${options.entry.label} answered HTTP ${check.status}` };
+        error: check.ok ? null : `${entry.label} answered HTTP ${check.status}` };
     },
     async refreshUsage() { /* API keys have no usage windows. */ }
   };

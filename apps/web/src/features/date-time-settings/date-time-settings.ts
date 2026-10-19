@@ -335,6 +335,43 @@ export function formatAppTime(
   }
 }
 
+/** The browser's own IANA zone (Settings → Date & time → Detect). */
+export function browserTimeZone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
+}
+
+/** Every IANA zone the browser knows, for the full list next to the presets. */
+export function allTimeZones(): string[] {
+  try { return (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.("timeZone") ?? []; } catch { return []; }
+}
+
+/** A zone's short label at that instant: the browser's (EEST, CET) or, where it gives only an offset, our list's (ICT for Asia/Bangkok). */
+export function timeZoneLabel(timeZone: string, date: Date = new Date()): string {
+  let name = "";
+  try {
+    name = new Intl.DateTimeFormat("en-GB", { timeZone, timeZoneName: "short" }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value ?? "";
+  } catch {
+    return timeZone;
+  }
+  if (!/^(GMT|UTC)[+-]/.test(name)) return name || timeZone;
+  const label = TIME_ZONE_GROUPS.flatMap((group) => group.options).find((option) => option.value === timeZone)?.label;
+  return label?.match(/[(,]\s*([A-Z]{2,5}), UTC/)?.[1] ?? name;
+}
+
+/**
+ * A time in the user's working time zone with its label, "19:00 ICT" (withDate: "17/10/2026 19:00 ICT"): the one helper the
+ * Tasks dock, the notifications and the Nous dock show times with (plan clipboard:ubQLgcTtQWA_).
+ */
+export function formatUserTime(value: Date | string | number | null | undefined, options: { withDate?: boolean } = {}, settings?: DateTimeSettings): string {
+  if (value === null || value === undefined) return "--";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  const active = settings ?? readDateTimeSettings();
+  const zone = active.timeZone && active.timeZone !== "system" ? active.timeZone : browserTimeZone();
+  const day = options.withDate ? `${formatAppDate(date, { day: "numeric", month: "short" }, active)} ` : "";
+  return `${day}${formatAppTime(date, { hour: "2-digit", minute: "2-digit" }, active)} ${timeZoneLabel(zone, date)}`;
+}
+
 export function formatAppDateTime(
   value: Date | string | number | null | undefined,
   options?: ({

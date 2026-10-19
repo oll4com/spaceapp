@@ -396,6 +396,27 @@ describe("Space control",()=>{
   expect(entry.isMinimized).toBe(true);
   expect(entry.isMaximized).toBe(false);
  });
+ it("inspect STATE counts a pane whose prompt has left the transcript tail as used", async () => {
+  const c = fixture();
+  const [fresh, prompted] = c.panes;
+  const append = (pane: { id: string }, sessionId: string, sequence: number, stream: "stdin" | "stdout", content: string) =>
+   c.store.appendPaneCliTranscriptChunk({ sessionId, paneId: pane.id, roomId: c.room.id, sequence, stream, content, byteLength: content.length });
+  for (const pane of [fresh!, prompted!]) {
+   const { sessionId } = c.store.createPaneCliSession({ paneId: pane.id, roomId: c.room.id, runtimeId: "cli:codex", providerId: "openai",
+    agentId: "codex", status: "RUNNING", modelId: "gpt-6-sol", reasoningEffort: "medium" });
+   if (pane !== prompted) continue;
+   // The prompt, then a long turn: retention keeps a session's newest 200 chunks, and the tail holds output only.
+   append(pane, sessionId, 0, "stdin", "Check this pane\r");
+   for (let sequence = 1; sequence <= 12; sequence++) append(pane, sessionId, sequence, "stdout", `step ${sequence}\n`);
+   const now = new Date().toISOString();
+   c.store.updatePane(pane.id, { taskMetadata: { taskKey: `cli:${sessionId}`, version: 1, description: "", steps: [], earlierWork: "",
+    source: "local", generationStatus: "pending", nativeSyncStatus: "unsupported", providerId: null, modelId: null, topics: [], updatedAt: now } });
+  }
+  const state = await c.service.inspect(actor, { roomId: c.room.id, section: "STATE" }) as { panes: Array<{ id: string; hasUserInput: boolean; isUnused: boolean }> };
+  const entry = (id: string) => state.panes.find((p) => p.id === id);
+  expect(entry(prompted!.id)).toMatchObject({ hasUserInput: true, isUnused: false });
+  expect(entry(fresh!.id)).toMatchObject({ hasUserInput: false, isUnused: true });
+ });
  it("inspect STATE enriches panes with verified model and account fields", async () => {
   const c = fixture();
   const pane = c.panes[0]!;
@@ -461,5 +482,10 @@ describe("Space control",()=>{
   expect(content[0].paneId).toBe(openPane.id);
   expect(content[0].closed).toBe(false);
   expect(content[0].text).toContain("Five tiny words");
+ });
+ it("space_test_mcp_tools counts the room's open panes from the STATE answer",async()=>{
+  const c=fixture();c.store.updatePane(c.panes[0]!.id,{isClosed:true,status:"CLOSED"});
+  const report=await c.service.testMcpTools(actor,c.room.id,{tools:["space_inspect:STATE"]}) as any;
+  expect(report.results[0]).toMatchObject({status:"PASS",details:{totalOpenPanes:2,paneCap:c.room.paneCap}});
  });
 });

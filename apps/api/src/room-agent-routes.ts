@@ -13,6 +13,7 @@ import type { RoomAgentService } from "./room-agent.js";
 import type { RoomAgentChat } from "./room-agent-chat.js";
 import { formatSseHeartbeat } from "./sse.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
+import { handsCountsIn, hasWaitingEvents, markSentToNous, roomsSentToNous, withoutNousRooms } from "./room-agent-event-routing.js";
 
 /**
  * Room Agent session, missions, messages, command acknowledgements, stop, control and transcript; the parent
@@ -30,6 +31,8 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
   monitor?: {
     repository: Pick<RoomAgentMonitorRepository, "listEvents" | "setMonitorEnabled" | "setAutopilotEnabled" | "monitorEnabled" | "getEvent" | "updateEvent" | "pendingCounts" | "latestPending">;
     forget(roomId: string): void;
+    /** While the owner's Nous works on their behalf the monitor events are its own (room-agent-event-routing.ts). */
+    sentToNous?(roomId: string): Promise<boolean>;
     changed(event: RoomAgentEvent): Promise<void>;
     /** Sends the operator's answer (or Escape to decline) to the question an event is about. */
     answer(event: RoomAgentEvent, input: { answer?: string; submit: boolean; decline: boolean }): Promise<void>;
@@ -37,9 +40,13 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
 }) {
   const { store, controlRepository, controlUser, roomAgentService, routeOptions: defaultRouteRateLimitOptions } = options;
   // Pause, resume and stop are operator controls; other viewers never see buttons the API would refuse.
-  const forViewer = (session: RoomAgentSession, user: AuthUser | null | undefined): RoomAgentSession =>
-    user?.role === "ADMIN" && !user.automationScope ? session
+  const forViewer = async (loaded: RoomAgentSession, user: AuthUser | null | undefined): Promise<RoomAgentSession> => {
+    const session = await withNous(loaded);
+    return user?.role === "ADMIN" && !user.automationScope ? session
       : { ...session, capabilities: { ...session.capabilities, canPause: false, canResume: false, canStop: false } };
+  };
+  const withNous = async (session: RoomAgentSession): Promise<RoomAgentSession> =>
+    hasWaitingEvents(session) && await options.monitor?.sentToNous?.(session.roomId) ? markSentToNous(session) : session;
   app.get("/api/rooms/:id/room-agent", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     return forViewer(await roomAgentService.load(params.id), request.user);
@@ -117,7 +124,7 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
       targetId: params.id,
       metadata: { sessionId: session.sessionId, queuedMissionCount: session.queuedMissionCount }
     });
-    return reply.code(202).send(forViewer(session, request.user));
+    return reply.code(202).send(await forViewer(session, request.user));
   });
   app.post("/api/rooms/:id/room-agent/commands/:clientRequestId/ack", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(z.object({ id: z.string().min(1), clientRequestId: z.string().min(1).max(200) }), request.params);
@@ -209,7 +216,9 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
     if (!options.monitor) return { rooms: {}, latest: [] };
     const listed = await store.listRooms(request.user?.role === "USER" ? request.user.id : undefined);
     const rooms = listed.map((room) => room.id);
-    const [counts, latest] = await Promise.all([options.monitor.repository.pendingCounts(rooms), options.monitor.repository.latestPending(rooms, 10)]);
+    const [allCounts, allLatest] = await Promise.all([options.monitor.repository.pendingCounts(rooms), options.monitor.repository.latestPending(rooms, 10)]);
+    const toNous = await roomsSentToNous(Object.keys(allCounts), options.monitor.sentToNous);
+    const { counts, latest } = withoutNousRooms(allCounts, allLatest, toNous, await handsCountsIn(toNous, (roomId, query) => options.monitor!.repository.listEvents(roomId, query)));
     // Live says which room an announcement comes from; the operator may be in another one.
     const roomNames = Object.fromEntries(listed.filter((room) => latest.some((event) => event.roomId === room.id)).map((room) => [room.id, room.name]));
     return { rooms: counts, latest, roomNames };

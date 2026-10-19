@@ -16,12 +16,16 @@ const THEMES: Array<[UiTheme, string]> = [
   ["codex", "Graphite"],
   ["motion", "Motion"],
   ["aurora", "Aurora"],
-  ["liquid-glass", "Liquid Glass"]
+  ["liquid-glass", "Liquid Glass"],
+  ["jarvis", "Jarvis"],
+  ["aira", "Aira"]
 ];
 const BACKGROUNDS: Array<[UiBackground, string, string]> = [
   ["spaceapp", "SpaceApp", "SpaceApp"],
   ["aurora", "Aurora", "Aurora"],
   ["liquid-glass", "Glass Planet", "Glass Planet"],
+  ["jarvis", "Jarvis HUD", "Jarvis HUD"],
+  ["aira", "Aira Core", "Aira Core"],
   ["none", "Theme default (no background)", "None"]
 ];
 
@@ -49,11 +53,11 @@ export function UiThemeSettingsCard({
 }) {
   const selectTheme = (theme: UiTheme) => {
     // Aurora is a full set: choosing it also brings its background and icon pack.
-    // Liquid Glass brings its Glass Planet wallpaper and keeps the icon pack.
+    // Liquid Glass, Jarvis and Aira bring their own background (same id) and keep the icon pack.
     onChange(theme === "aurora"
       ? { appearance: currentAppearance, background: "aurora", iconPack: "aurora", theme }
-      : theme === "liquid-glass"
-        ? { appearance: currentAppearance, background: "liquid-glass", iconPack: currentIconPack, theme }
+      : theme === "liquid-glass" || theme === "jarvis" || theme === "aira"
+        ? { appearance: currentAppearance, background: theme, iconPack: currentIconPack, theme }
         : { appearance: currentAppearance, background: currentBackground, iconPack: currentIconPack, theme });
   };
   const selectBackground = (background: UiBackground) =>
@@ -97,7 +101,7 @@ export function UiThemeSettingsCard({
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Color mode</strong>
-          <small>Modern and Liquid Glass support light and dark. Classic, Graphite, Motion and Aurora use dark colors.</small>
+          <small>Modern and Liquid Glass support light and dark. Classic, Graphite, Motion, Aurora, Jarvis and Aira use dark colors.</small>
         </span>
         <select
           aria-label="Modern color mode"
@@ -167,7 +171,7 @@ export function UiThemeSettingsCard({
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Background</strong>
-          <small>SpaceApp artwork, the animated Aurora sky, the Glass Planet wallpaper or clean theme default.</small>
+          <small>SpaceApp artwork, the animated Aurora sky, the Glass Planet wallpaper, the Jarvis HUD, the Aira Core or clean theme default.</small>
         </span>
         <select
           aria-label="Background"

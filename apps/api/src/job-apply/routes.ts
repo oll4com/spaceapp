@@ -77,6 +77,14 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
     return result;
   });
 
+  // Operator rule 2026-10-17: photo upload fields get the CV's photo (copied into the copilot's own files).
+  app.post("/api/job-apply/profile/photo-from-cv", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const { path: _path, ...photo } = await service.savePhotoFromCv(owner);
+    await deps.audit(request, "job_apply.profile.photo_from_cv", owner, { width: photo.width, height: photo.height, bytes: photo.bytes });
+    return { photo };
+  });
+
   app.put("/api/job-apply/mailbox", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
     const input = parseBody(jobApplyMailboxInputSchema, request.body ?? {});

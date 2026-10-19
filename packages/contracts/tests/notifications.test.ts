@@ -18,7 +18,7 @@ describe("Space notifications contracts", () => {
   });
 
   it("defaults every channel on, lets a source turn its own down, and lives in the user settings", () => {
-    expect(defaultNotificationSettings.channels).toEqual({ inApp: true, toast: true, sound: true, desktop: true, telegram: true });
+    expect(defaultNotificationSettings.channels).toEqual({ inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true });
     const settings = notificationSettingsSchema.parse({ channels: { desktop: false }, perSource: { MAIL_COPILOT: { telegram: false }, SYSTEM: { desktop: true } } });
     expect(notificationChannelEnabled(settings, "MAIL_COPILOT", "telegram")).toBe(false);
     expect(notificationChannelEnabled(settings, "JOB_COPILOT", "telegram")).toBe(true);

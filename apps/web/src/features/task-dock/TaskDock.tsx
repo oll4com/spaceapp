@@ -21,8 +21,7 @@ import {
   notifyTasksUpdated
 } from "./task-events.js";
 import {
-  formatAppDate,
-  formatAppTime,
+  formatUserTime,
   readDateTimeSettings,
   DATE_TIME_SETTINGS_UPDATED_EVENT
 } from "../date-time-settings/date-time-settings.js";
@@ -287,9 +286,7 @@ export function TaskDock({ canInsert, activePaneLabel, activeCliPaneId = null, o
     const done = item.status === "DONE" || item.status === "ARCHIVED";
     const due = dueAt(item);
     const group = done ? null : groupOf(item, now, timeZone);
-    const when = due === null ? null : group === "TODAY" || group === "TOMORROW"
-      ? formatAppTime(due, { hour: "2-digit", minute: "2-digit" })
-      : `${formatAppDate(due, { day: "numeric", month: "short" })} ${formatAppTime(due, { hour: "2-digit", minute: "2-digit" })}`;
+    const when = due === null ? null : formatUserTime(due, { withDate: group !== "TODAY" && group !== "TOMORROW" });
     const repeatText = repeatLabel(item);
     const expanded = expandedIds.has(item.id);
     const isLong = item.characterCount > 160;
@@ -380,7 +377,7 @@ export function TaskDock({ canInsert, activePaneLabel, activeCliPaneId = null, o
             </div>
             {repeat !== "NONE" ? (
               <span className="task-editor-hint">
-                {/^\d+$/.test(repeat) ? "Starts now. " : ""}Times in {timeZone}.{runIn ? " Space types the task into that CLI when it is due, only at an empty prompt." : ""}
+                {/^\d+$/.test(repeat) ? "Starts now. " : ""}Times in {timeZone}.{runIn ? " Space types the task into that CLI when it is due, only at an empty prompt; it does not track whether the CLI finishes it." : ""}
               </span>
             ) : null}
             <div className="dock-kit-editor-footer">

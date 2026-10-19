@@ -84,6 +84,8 @@ export interface SpaceApiConfig {
   cliMaxRunningSessions: number | null;
   cliRootEnabled: boolean;
   cliAdminHostSocketPath: string;
+  /** Multi-user: JSON map of user id to that user's pane host socket (cli-user-hosts.ts). */
+  cliHostSocketsFile: string | null;
   cliCodexDefaultModel: string | null;
   cliCodexDefaultReasoningEffort: string | null;
   cliRuntimeCommands: Record<CliRuntimeKey, string>;
@@ -110,6 +112,8 @@ export interface SpaceApiConfig {
   memoryEmbeddingDimensions: number;
   memoryEmbeddingBaseUrl: string;
   memoryEmbeddingKeyFile: string | null;
+  /** The Design pane's Space Gateway key (`space-admin-action design-key`): image models only, a daily cost cap. */
+  designGatewayKeyFile: string;
   memoryEmbeddingKeyName: string | null;
   memoryEmbeddingTimeoutMs: number;
   memoryGraphEnabled: boolean;
@@ -125,6 +129,8 @@ export interface SpaceApiConfig {
   voiceTranscriptionTimeoutMs: number;
   voiceTranscriptionMaxDurationMs: number;
   googleVoiceKeyFile: string | null;
+  /** Firebase service account key (JSON) for FCM pushes to the Android app; null keeps push off (dev). */
+  fcmServiceAccountFile: string | null;
   googleVoiceApiKey: string | null;
   googleVoiceBaseUrl: string;
   awsVoiceKeyFile: string | null;
@@ -257,7 +263,7 @@ function parseGatewayUrl(raw: string | undefined): string {
 }
 
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -332,6 +338,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     cliMaxRunningSessions: valid.SPACE_CLI_MAX_RUNNING_SESSIONS ?? null,
     cliRootEnabled: valid.SPACE_CLI_ROOT_ENABLED === "true",
     cliAdminHostSocketPath: valid.SPACE_CLI_ADMIN_HOST_SOCKET ?? "/run/space-admin-pane-host/pane-host.sock",
+    cliHostSocketsFile: env.SPACE_CLI_HOST_SOCKETS_FILE || null,
     cliCodexDefaultModel: env.SPACE_CLI_CODEX_DEFAULT_MODEL || null,
     cliCodexDefaultReasoningEffort: env.SPACE_CLI_CODEX_DEFAULT_REASONING_EFFORT || null,
     cliRuntimeCommands: configuredCliRuntimeCommands(env),
@@ -360,6 +367,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     memoryEmbeddingDimensions: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_DIMENSIONS, 1536), 4096),
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
+    designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || "/opt/spaceapp/secrets/space-design.key",
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,
     memoryEmbeddingTimeoutMs: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_TIMEOUT_MS, 10000), 30000),
     memoryGraphEnabled: env.SPACE_MEMORY_GRAPH_ENABLED === "true",
@@ -375,6 +383,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     voiceTranscriptionTimeoutMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_TIMEOUT_MS, 15000), 60000),
     voiceTranscriptionMaxDurationMs: Math.min(parsePositiveInt(env.SPACE_VOICE_TRANSCRIPTION_MAX_DURATION_MS, 60000), 5 * 60 * 1000),
     googleVoiceKeyFile: env.SPACE_GOOGLE_VOICE_KEY_FILE || env.SPACE_GEMINI_VOICE_KEY_FILE || null,
+    fcmServiceAccountFile: env.SPACE_FCM_SERVICE_ACCOUNT_FILE || null,
     googleVoiceApiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY || null,
     googleVoiceBaseUrl: env.SPACE_GOOGLE_VOICE_BASE_URL || "https://generativelanguage.googleapis.com",
     awsVoiceKeyFile: env.SPACE_AWS_VOICE_KEY_FILE || null,
@@ -407,7 +416,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserSessionsXvfbEnabled: env.SPACE_BROWSER_SESSIONS_XVFB_ENABLED !== "false",
     browserSessionsProfileRoot: env.SPACE_BROWSER_SESSIONS_PROFILE_ROOT || join(artifactRoot, "browser-profiles"),
     jobApplyRoot: env.SPACE_JOB_APPLY_ROOT || join(artifactRoot, "job-apply"),
-    browserSessionsDefaultUrl: env.SPACE_BROWSER_SESSIONS_DEFAULT_URL || "https://www.example.invalid/",
+    browserSessionsDefaultUrl: env.SPACE_BROWSER_SESSIONS_DEFAULT_URL || "https://www.google.com/",
     browserSessionsTokenTtlMs: Math.min(parsePositiveInt(env.SPACE_BROWSER_SESSIONS_TOKEN_TTL_MS, 60000), 5 * 60 * 1000),
     browserSessionsAudioEnabled: env.SPACE_BROWSER_SESSIONS_AUDIO_ENABLED !== "false",
     browserSessionsPulseServer: env.SPACE_BROWSER_SESSIONS_PULSE_SERVER || "unix:/run/pulse/native",

@@ -1,7 +1,8 @@
-import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { extractCvPhoto } from "./cv-photo.js";
 import {
   canTransitionJobApplication,
   fieldBecomesAnswerMemory,
@@ -231,8 +232,14 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
+const PHOTO_FILE = "photo.jpg";
+const PHOTO_META_FILE = "photo.json";
+const PHOTO_RULE = "Operator rule (2026-10-17): every form that asks for a photo gets the photo from the CV. Upload photo.path " +
+  "(space_job_profile_get or the task packet) with browser_file_upload; never stop or ask for a photo while photo.path is set.";
+
 export function createJobApplyService(options: JobApplyServiceOptions) {
   const now = options.now ?? (() => new Date().toISOString());
+  const ownerDirOf = (owner: string) => join(options.jobApplyRoot, owner.replace(/[^A-Za-z0-9_-]/g, "_"));
   const { repository, crypto } = options;
   const discovery = options.discovery ?? createDiscovery();
 
@@ -429,7 +436,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       }
       if (artifact.deletedAt) throw new SpaceNotFoundError(`Artifact ${artifactId} was deleted.`);
       const sourcePath = localArtifactFilePath({ artifactRoot: options.artifactRoot, artifact });
-      const ownerDir = join(options.jobApplyRoot, owner.replace(/[^A-Za-z0-9_-]/g, "_"));
+      const ownerDir = ownerDirOf(owner);
       await mkdir(join(ownerDir, "reads"), { recursive: true, mode: 0o750 });
       const filename = typeof artifact.metadata.originalFilename === "string" ? artifact.metadata.originalFilename : artifact.id;
       const result = await readAttachment(
@@ -454,6 +461,41 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         }
       }
       return { artifactId: record.cvArtifactId, path, text: record.cvText };
+    },
+    /**
+     * Operator rule 2026-10-17: every form that asks for a photo gets the photo of the CV. The CV's JPEG is copied
+     * byte for byte into the copilot's own files (never Agent Files), and a pinned FACT tells the agent not to ask.
+     */
+    async savePhotoFromCv(owner: string): Promise<{ path: string; width: number; height: number; bytes: number; sha256: string }> {
+      const record = await profileRecord(owner);
+      if (!record.cvArtifactId) throw new SpaceConflictError("Import a CV first: the photo is taken from the CV.");
+      const cvPath = await this.artifactPath(record.cvArtifactId);
+      if (!cvPath) throw new SpaceNotFoundError("The CV file is not available.");
+      const photo = extractCvPhoto(await readFile(cvPath));
+      if (!photo) throw new SpaceConflictError("The CV has no embedded JPEG photo.");
+      const dir = ownerDirOf(owner);
+      await mkdir(dir, { recursive: true, mode: 0o750 });
+      const sha256 = createHash("sha256").update(photo.bytes).digest("hex");
+      const meta = { source: "CV", cvArtifactId: record.cvArtifactId, width: photo.width, height: photo.height, bytes: photo.bytes.length, sha256, savedAt: now() };
+      for (const [name, content] of [[PHOTO_FILE, photo.bytes], [PHOTO_META_FILE, `${JSON.stringify(meta)}\n`]] as const) {
+        const temporary = join(dir, `${name}.${randomUUID()}`);
+        await writeFile(temporary, content, { mode: 0o640, flag: "wx" });
+        await rename(temporary, join(dir, name));
+      }
+      await repository.upsertMemoryByKey({ ownerUserId: owner, kind: "FACT", key: "photo", text: PHOTO_RULE, site: null, company: null,
+        tags: ["photo", "operator-rule"], source: "USER", confidence: 1, pinned: true });
+      return { path: join(dir, PHOTO_FILE), width: photo.width, height: photo.height, bytes: photo.bytes.length, sha256 };
+    },
+    /** The saved CV photo for photo upload fields, or null. */
+    async photo(owner: string): Promise<{ path: string; width: number; height: number } | null> {
+      const dir = ownerDirOf(owner);
+      try {
+        const meta = JSON.parse(await readFile(join(dir, PHOTO_META_FILE), "utf8")) as { width: number; height: number };
+        await stat(join(dir, PHOTO_FILE));
+        return { path: join(dir, PHOTO_FILE), width: meta.width, height: meta.height };
+      } catch {
+        return null;
+      }
     },
     async artifactPath(artifactId: string): Promise<string | null> {
       try {
@@ -1130,8 +1172,8 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     },
     /** Everything the agent needs for one posting: profile facts, CV path, scoped memories and the answer bank. */
     async taskPacket(owner: string, application: JobApplication, settings: JobApplyPaneMetadata["settings"], run: JobApplyRunRecord, remaining: number) {
-      const [profile, cv, memories, answers] = await Promise.all([
-        this.getProfile(owner), this.cvText(owner),
+      const [profile, cv, photo, memories, answers] = await Promise.all([
+        this.getProfile(owner), this.cvText(owner), this.photo(owner),
         this.listMemory(owner, { site: application.ats, company: application.company, limit: 20 }),
         this.listMemory(owner, { kinds: ["ANSWER"], site: application.ats, company: application.company, limit: 40 })
       ]);
@@ -1145,6 +1187,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         candidate: { ...facts, experience: experience.slice(0, 10), education: education.slice(0, 6), extra },
         cv: { artifactId: cv.artifactId, path: cv.path, chars: cv.text?.length ?? 0 },
         coverLetter: { artifactId: profile.coverLetterArtifactId, path: coverLetterPath },
+        photo,
         mailboxConnected: jobApplyMailboxConnected(profile),
         google: profile.google,
         googleAccounts: profile.googleAccounts,
@@ -1194,12 +1237,13 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         payload: { questionId, question: input.question, options: input.options ?? [], label: input.label ?? null, ...(parks ? { previousNotes: application.notes } : {}) } });
       return { questionId, answered: false as const };
     },
-    async answerQuestion(owner: string, applicationId: string, input: { questionId: string; answer: string }, context: JobApplyEventContext = {}) {
+    /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
+    async answerQuestion(owner: string, applicationId: string, input: { questionId: string; answer: string }, context: JobApplyEventContext = {}, by: "USER" | "NOUS" = "USER") {
       const events = await repository.listEvents(owner, { applicationId, types: ["QUESTION"], limit: 200 });
       const question = events.find((event) => event.type === "QUESTION" && event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
       // A question may run to 1000 characters; the memory key is the normalized question, which keeps 300 (as answerFor looks it up).
-      const memory = await this.rememberMemory(owner, { kind: "ANSWER", key: normalizeJobApplyKey(String(question.payload.question)), text: input.answer, source: "USER", tags: ["question"] });
+      const memory = await this.rememberMemory(owner, { kind: "ANSWER", key: normalizeJobApplyKey(String(question.payload.question)), text: input.answer, source: by === "NOUS" ? "AGENT" : "USER", tags: ["question"] });
       const application = await repository.getApplication(owner, applicationId);
       // The copilot gives up waiting after a while and moves on: a later answer sends the posting back to the queue.
       if (application?.status === "NEEDS_USER" && !await copilotOn(owner, applicationId, question.paneId ?? application.paneId)) {
@@ -1208,8 +1252,8 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         const earlier = await notesBeforeParking(owner, application);
         await repository.updateApplication(owner, applicationId, { status: "FILLING", ...(earlier !== undefined ? { notes: earlier } : {}) });
       }
-      await record(owner, { ...context, paneId: context.paneId ?? question.paneId ?? application?.paneId ?? null, applicationId, type: "ANSWERED", message: `You answered: ${input.answer.slice(0, 200)}`,
-        payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id } });
+      await record(owner, { ...context, paneId: context.paneId ?? question.paneId ?? application?.paneId ?? null, applicationId, type: "ANSWERED", message: `${by === "NOUS" ? "Nous" : "You"} answered: ${input.answer.slice(0, 200)}`,
+        payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id, answeredBy: by } });
       return { memory };
     },
     async waitForAnswer(owner: string, applicationId: string, input: { questionId: string; waitMs: number }) {

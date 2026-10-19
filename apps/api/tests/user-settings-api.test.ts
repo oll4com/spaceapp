@@ -170,4 +170,27 @@ describe("User settings API", () => {
     expect((await read()).jobCopilot ?? null).toBeNull();
     await app.close();
   });
+
+  // Zod 4 filled the group's defaults inside .partial(): a PATCH naming one field reset the rest (2026-10-17).
+  it.each([
+    ["dateTime", { timeZone: "Europe/Athens" }, { timeFormat: "12h" }],
+    ["voice", { insertMode: "replace" }, { enabled: false }],
+    ["livePane", { voiceOnly: true }, { showToolCalls: true }],
+    ["keyboardAutocorrect", { soundEnabled: false }, { enabled: false }]
+  ] as const)("a %s PATCH saves only the fields it sends", async (group, first, second) => {
+    const sessionSecret = "test-session-secret-with-enough-length";
+    const sessionToken = signSession({ id: "user:operator", email: "operator@example.com", role: "ADMIN" }, sessionSecret);
+    const app = await createApp({
+      store: new InMemorySpaceStore(),
+      auth: { sessionSecret, devLogin: false, secureCookies: false },
+      config: getApiConfig({ SPACE_ROOT_DIR: "/opt/spaceapp", SPACE_VAR_DIR: "/opt/spaceapp/var" })
+    });
+    const headers = { cookie: `${cookieName}=${sessionToken}`, [csrfHeaderName]: createCsrfToken(sessionToken, sessionSecret)! };
+    expect((await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { [group]: first } })).statusCode).toBe(200);
+    const saved = await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { [group]: second } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()[group]).toMatchObject({ ...first, ...second });
+    expect((await app.inject({ method: "GET", url: "/api/user-settings", headers })).json()[group]).toMatchObject({ ...first, ...second });
+    await app.close();
+  });
 });

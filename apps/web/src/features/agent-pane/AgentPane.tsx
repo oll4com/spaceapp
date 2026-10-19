@@ -1070,7 +1070,6 @@ export function AgentPane({
         setSessionUnavailable(true);
         publishSession(await api.agentSession(pane.id));
       }
-      setNotice("Request accepted. Its task is saved in its original conversation.");
       if (!clearDraft) {
         // A confirmed request is no longer a draft, whichever conversation is active now.
         composerSnapshotRef.current?.();

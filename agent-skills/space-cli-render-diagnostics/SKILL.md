@@ -40,11 +40,15 @@ node /opt/spaceapp/scripts/space-cli-render-audit.mjs --test-50k-stress
 node /opt/spaceapp/scripts/space-cli-render-audit.mjs --full
 # Codex + Gemini + OpenCode in one owned proof room:
 node /opt/spaceapp/scripts/space-cli-render-audit.mjs --full --runtime all
+# Local typing, photo persistence, hard reload and interrupted-send recovery only:
+node /opt/spaceapp/scripts/space-cli-render-audit.mjs --test-local-composer
 # Separate real AI run, never included implicitly in --full:
 node /opt/spaceapp/scripts/space-cli-render-audit.mjs --test-ai
 ```
 
 Synthetic profiles accept only `--runtime codex|gemini|opencode|all`; the default is Codex. `all` creates one owned AGENT_PROOF room with exactly three fixed panes/sessions in Codex, Gemini and OpenCode order. The AI profile remains Codex-only.
+
+`COMPOSER` (`--test-local-composer`) is also Codex-only and creates one owned synthetic fixture. It emits a fixed ready marker, without the long render stream or resize stress, and checks trusted local typing under 250 ms emulated API latency, exact photo bytes after cache-bypass reload, and a second reload while a confirmed send response is withheld. The process's byte hash and consumption counter must show exactly one delivery; restoring the saved recovery copy must never send. This profile reports render stress and Warm verification as NOT_RUN and cannot replace their gates.
 
 The runner creates one owned AGENT_PROOF room, real pane/session per selected runtime and fixed synthetic PTY process. It waits for browser attachment before emitting the stream. UI geometry changes must propagate through the normal app fit/resize path to backend PTY geometry. Unsupported requested dimensions are reported with actual measurements; 20×8 is a target, not a product minimum.
 

@@ -79,9 +79,11 @@ export interface SystemAnalyticsResourceBucket extends Omit<SystemAnalyticsResou
 
 export interface SystemAnalyticsRepository {
   upsertModelEvents(events: SystemAnalyticsModelEventRecord[]): Promise<void>;
+  /** Model events are token usage and are never deleted (operator rule 2026-10-18); a RUNNING turn not updated for 31 days is an orphan and only leaves the lists. */
   listModelEvents(since: string): Promise<SystemAnalyticsModelEventRecord[]>;
   insertResourceSamples(samples: SystemAnalyticsResourceSample[]): Promise<void>;
   listResourceBuckets(input: { since: string; resolutionSeconds: 10 | 60 | 900 }): Promise<SystemAnalyticsResourceBucket[]>;
+  /** Rolls up and sweeps resource buckets only; model events are never swept. */
   rollupAndSweep(at: string): Promise<void>;
   getBackfill(): Promise<SystemAnalyticsBackfill>;
   setBackfill(input: SystemAnalyticsBackfill): Promise<void>;
@@ -190,7 +192,8 @@ export class InMemorySystemAnalyticsRepository implements SystemAnalyticsReposit
   async listModelEvents(since: string): Promise<SystemAnalyticsModelEventRecord[]> {
     const sinceMs = Date.parse(since);
     return [...this.modelEvents.values()]
-      .filter((event) => Date.parse(event.endedAt ?? event.startedAt) >= sinceMs || event.status === "RUNNING")
+      .filter((event) => Date.parse(event.endedAt ?? event.startedAt) >= sinceMs
+        || (event.status === "RUNNING" && Date.parse(event.updatedAt) >= Date.now() - 31 * 24 * 60 * 60 * 1000))
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
       .map(clone);
   }
@@ -241,11 +244,6 @@ export class InMemorySystemAnalyticsRepository implements SystemAnalyticsReposit
       if (Date.parse(sample.sampledAt) >= cutoff) this.samples[write++] = sample;
     }
     this.samples.length = write;
-    for (const [key, event] of this.modelEvents) {
-      const activityExpired = Date.parse(event.endedAt ?? event.startedAt) < cutoff;
-      const runningUpdateExpired = event.status === "RUNNING" && Date.parse(event.updatedAt) < cutoff;
-      if ((event.status !== "RUNNING" && activityExpired) || runningUpdateExpired) this.modelEvents.delete(key);
-    }
   }
 
   async getBackfill(): Promise<SystemAnalyticsBackfill> {
@@ -411,7 +409,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
           ttft_ms AS "ttftMs", duration_ms AS "durationMs", updated_at AS "updatedAt", route, account_key AS "accountKey",
           cost_usd AS "costUsd", tokens_cache_read AS "tokensCacheRead", tokens_cache_write AS "tokensCacheWrite"
         FROM system_analytics_model_events
-        WHERE COALESCE(ended_at, started_at) >= $1 OR status = 'RUNNING'
+        WHERE COALESCE(ended_at, started_at) >= $1 OR (status = 'RUNNING' AND updated_at >= now() - interval '31 days')
         ORDER BY started_at ASC, event_key ASC
       `,
       [since]
@@ -556,12 +554,6 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 10 AND bucket_at < $1::timestamptz - interval '2 hours'`, [at]);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 60 AND bucket_at < $1::timestamptz - interval '48 hours'`, [at]);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 900 AND bucket_at < $1::timestamptz - interval '31 days'`, [at]);
-      await client.query(
-        `DELETE FROM system_analytics_model_events
-         WHERE (status <> 'RUNNING' AND COALESCE(ended_at, started_at) < $1::timestamptz - interval '31 days')
-            OR (status = 'RUNNING' AND updated_at < $1::timestamptz - interval '31 days')`,
-        [at]
-      );
       await client.query("COMMIT");
       // Advance only after a committed rollup; a failed run is retried from
       // the previous watermark by the next one.

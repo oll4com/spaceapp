@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-library/react";
 import { CliPlansMenu } from "../src/features/terminal-pane/CliPlansMenu.js";
 import { notifyClipboardUpdated } from "../src/features/clipboard-dock/clipboard-events.js";
+import { SPACE_OPEN_PLAN_PANE_EVENT } from "../src/features/clipboard-dock/plan-assignee.js";
 import { api } from "../src/api.js";
 import { installSpaceRuntime, type SpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
@@ -11,6 +12,7 @@ import type { ClipboardItem } from "@space/contracts";
 vi.mock("../src/api.js", () => ({
   api: {
     clipboardItems: vi.fn(),
+    rooms: vi.fn().mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 1 } }),
     updatePlanProgress: vi.fn().mockResolvedValue({}),
     setClipboardItemCompleted: vi.fn().mockResolvedValue({})
   }
@@ -459,22 +461,44 @@ describe("CliPlansMenu", () => {
     });
   });
 
+  it("opens the room and pane of a plan linked to another pane and closes the menu", async () => {
+    vi.mocked(api.clipboardItems).mockResolvedValue({
+      data: [{ ...mockPlans[1]!, id: "clipboard:theirs", title: "Theirs", roomId: "room:ops", paneId: "pane:other", paneTitle: "Other pane" }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
+    });
+    render(<CliPlansMenu pane={{ id: "pane:own", title: "Own" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Open plans/i }));
+    fireEvent.click(await within(screen.getByRole("list", { name: "Open plans list" })).findByText("Theirs"));
+    const opened = vi.fn();
+    window.addEventListener(SPACE_OPEN_PLAN_PANE_EVENT, opened);
+    fireEvent.click(screen.getByRole("button", { name: "Open pane" }));
+    window.removeEventListener(SPACE_OPEN_PLAN_PANE_EVENT, opened);
+    expect((opened.mock.calls[0]![0] as CustomEvent).detail).toEqual({ roomId: "room:ops", paneId: "pane:other" });
+    await waitFor(() => expect(screen.queryByRole("list", { name: "Open plans list" })).toBeNull());
+  });
+
   it("marks a plan done after confirming and detaches a plan linked to this pane", async () => {
     const pane = { id: "pane:own", title: "Own" };
     vi.mocked(api.clipboardItems).mockResolvedValue({
       data: [
         { ...mockPlans[0]!, id: "clipboard:mine", title: "Mine", paneId: "pane:own", executionStatus: "IN_PROGRESS", progressPercentage: 10 },
-        { ...mockPlans[1]!, id: "clipboard:theirs", title: "Theirs", paneId: "pane:other", paneTitle: "Other pane" }
+        { ...mockPlans[1]!, id: "clipboard:theirs", title: "Theirs", roomId: "room:ops", paneId: "pane:other", paneTitle: "Other pane" }
       ],
       pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
     });
+    vi.mocked(api.rooms).mockResolvedValueOnce({
+      data: [{ id: "room:ops", name: "Ops" }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
+    } as any);
     render(<CliPlansMenu pane={pane} active={true} disabled={false} onSelectPlan={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /Active plan: Mine/i }));
     fireEvent.click(await screen.findByRole("button", { name: /All plans/ }));
-    expect(screen.getByText("· Linked to Other pane")).toBeDefined();
+    expect(await screen.findByText("· Linked to Other pane · Room: Ops")).toBeDefined();
+    expect(screen.getByText("· Linked to this pane")).toBeDefined();
 
     fireEvent.click(within(screen.getByRole("list", { name: "Open plans list" })).getByText("Theirs"));
     expect(screen.queryByRole("button", { name: "Detach from pane" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open pane" }).getAttribute("title")).toBe("Open Other pane");
     fireEvent.click(screen.getByRole("button", { name: "Mark done" }));
     expect(api.setClipboardItemCompleted).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Confirm done" }));

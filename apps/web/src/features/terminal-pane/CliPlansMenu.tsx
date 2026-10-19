@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ClipboardList,
   Clock3,
+  ExternalLink,
   ListFilter,
   Loader2,
   RotateCw,
@@ -19,6 +20,7 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import { SPACE_CLIPBOARD_UPDATED_EVENT } from "../clipboard-dock/clipboard-events.js";
+import { canOpenPlanPane, openPlanPane, planAssignee, useRoomNames } from "../clipboard-dock/plan-assignee.js";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { ManagedPlanProgress } from "./ManagedPlanProgress.js";
@@ -483,6 +485,9 @@ export function CliPlansMenu({
   }, []);
 
   const open = Boolean(position && active && !disabled);
+
+  // Room names for the plans' "Linked to" line, read each time the list opens.
+  const roomNames = useRoomNames(open);
 
   const loadPlans = useCallback(async (fresh = false) => {
     if (typeof api?.clipboardItems !== "function") {
@@ -1127,7 +1132,7 @@ export function CliPlansMenu({
                     </div>
                     {previewPlan.paneId && previewPlan.paneId !== pane?.id ? (
                       <div className="terminal-plan-preview-note" role="note">
-                        Linked to another pane{previewPlan.paneTitle ? ` (${previewPlan.paneTitle})` : ""}. Sending it here links it to this pane.
+                        Linked to {planAssignee(previewPlan, pane?.id, roomNames)}. Sending it here links it to this pane.
                       </div>
                     ) : null}
                     <pre className="terminal-plan-preview-text" tabIndex={0}>{previewPlan.text}</pre>
@@ -1167,6 +1172,21 @@ export function CliPlansMenu({
                           }}
                         >
                           Insert without sending
+                        </button>
+                      ) : null}
+                      {previewPlan.paneId !== pane?.id && canOpenPlanPane(previewPlan) ? (
+                        <button
+                          type="button"
+                          className="terminal-plan-preview-button terminal-plan-open-pane"
+                          title={`Open ${previewPlan.paneTitle || "the pane that runs this plan"}`}
+                          onClick={() => {
+                            const plan = previewPlan;
+                            closeMenu();
+                            openPlanPane(plan);
+                          }}
+                        >
+                          <ExternalLink aria-hidden="true" />
+                          Open pane
                         </button>
                       ) : null}
                       <button
@@ -1779,6 +1799,7 @@ export function CliPlansMenu({
                           plan.executionStatus && plan.executionStatus !== "PLANNED";
                         const isThisPaneActive = Boolean(activePlan && activePlan.id === plan.id);
                         const stepsCount = Array.isArray(plan.steps) ? plan.steps.length : 0;
+                        const assignee = planAssignee(plan, pane?.id, roomNames);
 
                         return (
                           <div key={plan.id} role="listitem" className="terminal-plan-item-row">
@@ -1838,9 +1859,7 @@ export function CliPlansMenu({
                               {stepsCount > 0 && plan.progressPercentage === 0 ? (
                                 <span>· {stepsCount} stages</span>
                               ) : null}
-                              {plan.paneId && plan.paneId !== pane?.id ? (
-                                <span>· Linked to {plan.paneTitle || "another pane"}</span>
-                              ) : null}
+                              {assignee ? <span>· Linked to {assignee}</span> : null}
                             </div>
                             {snippet ? (
                               <div className="terminal-plan-item-snippet">{snippet}</div>

@@ -7,6 +7,7 @@ import { workerReadinessSchema } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { AppDiagnosticsService } from "./app-diagnostics.js";
 import type { AppVersionReader } from "./app-version.js";
+import { defaultSessionRevocationStore } from "./auth.js";
 import { browserHostReadiness, type BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import type { CliTerminalManager } from "./cli-terminal.js";
 import type { SpaceApiConfig } from "./config.js";
@@ -125,7 +126,9 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
     } else if (!config.browserSessionsEnabled) {
       browserHost = "DISABLED";
     }
-    const ok = database !== "UNAVAILABLE" && (config.workflowsEnabled === false || worker?.status === "RUNNING") && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
+    // Sessions are refused until the persisted logouts load (auth.ts, fail closed).
+    const sessionRevocations = defaultSessionRevocationStore.isReady() ? "RUNNING" : "UNAVAILABLE";
+    const ok = database !== "UNAVAILABLE" && sessionRevocations === "RUNNING" && (config.workflowsEnabled === false || worker?.status === "RUNNING") && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
       (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED");
     // Default responses stay 200 with an ok flag for existing consumers (web
     // proxy recovery, live guard). Orchestrators that only read status codes
@@ -138,6 +141,7 @@ export function registerHealthRoutes(app: FastifyInstance, options: {
         store: config.runtimeStore,
         runtimeStore: config.runtimeStore,
         database,
+        sessionRevocations,
         eventBus: "in-process",
         temporal: config.workflowsEnabled === false ? "disabled" : config.enableDummyTurns ? "enabled" : "disabled",
         worker: config.workflowsEnabled === false ? "disabled" : worker?.status,

@@ -24,6 +24,8 @@ const MIN_TERMINAL_FONT_SIZE = MIN_WORKSPACE_TEXT_SIZE;
 const MAX_TERMINAL_FONT_SIZE = MAX_WORKSPACE_TEXT_SIZE;
 const DEFAULT_TERMINAL_FONT_SIZE = 12;
 const TERMINAL_FONT_SIZE_STORAGE_KEY = "space.terminal.fontSize";
+// Touch devices (phones, tablets) keep their own workspace text size; desktops share the account's.
+const TOUCH_TERMINAL_FONT_SIZE_STORAGE_KEY = "space.terminal.fontSize.touch";
 const SESSION_DEBUG_IDS_STORAGE_KEY = "space.showSessionDebugIds";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
 const CLI_FLOATS_HIDDEN_STORAGE_KEY = "space.cliFloatsHidden";
@@ -44,9 +46,15 @@ const DEFAULT_PROJECT_PRESETS: ProjectPreset[] = [
   { label: "space2", path: "/opt/spaceapp/projects/space2" }
 ];
 
+function touchDeviceTextSize(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+}
+
 function readStoredTerminalFontSize(): number {
   if (typeof window === "undefined") return DEFAULT_TERMINAL_FONT_SIZE;
-  const storedValue = getSpaceRuntime().platform.localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY);
+  const storage = getSpaceRuntime().platform.localStorage;
+  // Until a touch device picks its own size it starts from the shared one.
+  const storedValue = (touchDeviceTextSize() ? storage.getItem(TOUCH_TERMINAL_FONT_SIZE_STORAGE_KEY) : null) ?? storage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY);
   if (!storedValue) return DEFAULT_TERMINAL_FONT_SIZE;
   const stored = Number(storedValue);
   if (!Number.isFinite(stored)) return DEFAULT_TERMINAL_FONT_SIZE;
@@ -257,7 +265,7 @@ export function useUserPreferences({ isAuthenticated, restoredDesktopOpen, uiThe
     if (typeof settings.roomTheme === "string" && roomThemes.some((t) => t.id === settings.roomTheme)) {
       setRoomTheme(settings.roomTheme as RoomTheme);
     }
-    if (typeof settings.terminalFontSize === "number") {
+    if (typeof settings.terminalFontSize === "number" && !touchDeviceTextSize()) {
       setTerminalFontSize(settings.terminalFontSize);
     }
     if (typeof settings.showSessionDebugIds === "boolean") {
@@ -470,6 +478,10 @@ export function useUserPreferenceWriteThrough(
 ): void {
   const runtime = getSpaceRuntime();
   useEffect(() => {
+    if (touchDeviceTextSize()) {
+      runtime.platform.localStorage.setItem(TOUCH_TERMINAL_FONT_SIZE_STORAGE_KEY, String(terminalFontSize));
+      return;
+    }
     runtime.platform.localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(terminalFontSize));
     if (isAuthenticated) {
       saveUserSettingDebounced("terminalFontSize", terminalFontSize);

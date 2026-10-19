@@ -174,6 +174,9 @@ npx --yes run-spaceapp@latest workspace add <path> # Register host folder for AI
 npx --yes run-spaceapp@latest workspace list       # List registered host folders
 npx --yes run-spaceapp@latest credentials list     # List provider names accepted by credentials set
 npx --yes run-spaceapp@latest credentials set <provider> # Set API key via masked input
+npx --yes run-spaceapp@latest user enable      # Turn team accounts on (invite people in Settings -> Users)
+npx --yes run-spaceapp@latest user add <user-id> # Give an invited user their own CLI container
+npx --yes run-spaceapp@latest user restore <user-id> # Put a user's CLI settings and memory back from a backup
 npx --yes run-spaceapp@latest uninstall      # Stop and remove containers (preserves data)
 ```
 

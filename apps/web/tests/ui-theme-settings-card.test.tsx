@@ -124,6 +124,19 @@ describe("UiThemeSettingsCard", () => {
     expect(onChange).toHaveBeenCalledWith({ appearance: "dark", background: "aurora", iconPack: "aurora", theme: "aurora" });
   });
 
+  it("brings the Jarvis HUD and Aira Core backgrounds with their themes, keeps the icon pack and stays dark", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<UiThemeSettingsCard currentAppearance="system" currentBackground="spaceapp" currentIconPack="space" currentTheme="modern" onChange={onChange} />);
+    fireEvent.change(screen.getByRole("combobox", { name: "Interface theme" }), { target: { value: "jarvis" } });
+    expect(onChange).toHaveBeenLastCalledWith({ appearance: "system", background: "jarvis", iconPack: "space", theme: "jarvis" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Interface theme" }), { target: { value: "aira" } });
+    expect(onChange).toHaveBeenLastCalledWith({ appearance: "system", background: "aira", iconPack: "space", theme: "aira" });
+    expect(screen.getByRole("option", { name: "Jarvis HUD" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Aira Core" })).toBeTruthy();
+    rerender(<UiThemeSettingsCard currentAppearance="system" currentBackground="aira" currentIconPack="space" currentTheme="aira" onChange={onChange} />);
+    expect((screen.getByRole("combobox", { name: "Modern color mode" }) as HTMLSelectElement).disabled).toBe(true);
+  });
+
   it("brings the Glass Planet wallpaper with Liquid Glass, keeps the icon pack and allows light and dark", () => {
     const onChange = vi.fn();
     const { rerender } = render(<UiThemeSettingsCard currentAppearance="system" currentBackground="spaceapp" currentIconPack="lucide" currentTheme="modern" onChange={onChange} />);
@@ -150,14 +163,14 @@ describe("UiThemeSettingsCard", () => {
     render(<UiThemeSettingsCard currentAppearance="dark" currentBackground="spaceapp" currentIconPack="lucide" currentTheme="modern" onChange={onChange} />);
     const themes = within(screen.getByRole("group", { name: "Theme previews" })).getAllByRole("button");
     expect(themes.map((tile) => [tile.textContent, tile.getAttribute("aria-pressed")])).toEqual([
-      ["Classic", "false"], ["Modern", "true"], ["Graphite", "false"], ["Motion", "false"], ["Aurora", "false"], ["Liquid Glass", "false"]
+      ["Classic", "false"], ["Modern", "true"], ["Graphite", "false"], ["Motion", "false"], ["Aurora", "false"], ["Liquid Glass", "false"], ["Jarvis", "false"], ["Aira", "false"]
     ]);
     fireEvent.click(themes[1]!);
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(themes[5]!);
     expect(onChange).toHaveBeenLastCalledWith({ appearance: "dark", background: "liquid-glass", iconPack: "lucide", theme: "liquid-glass" });
     const backgrounds = within(screen.getByRole("group", { name: "Background previews" })).getAllByRole("button");
-    expect(backgrounds.map((tile) => tile.textContent)).toEqual(["SpaceApp", "Aurora", "Glass Planet", "None"]);
+    expect(backgrounds.map((tile) => tile.textContent)).toEqual(["SpaceApp", "Aurora", "Glass Planet", "Jarvis HUD", "Aira Core", "None"]);
     fireEvent.click(backgrounds[2]!);
     expect(onChange).toHaveBeenLastCalledWith({ appearance: "dark", background: "liquid-glass", iconPack: "lucide", theme: "modern" });
   });

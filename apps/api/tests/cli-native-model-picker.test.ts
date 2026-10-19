@@ -67,7 +67,205 @@ describe("native CLI model acknowledgement", () => {
     expect(write.mock.calls).toEqual([["/model provider/model-2"], ["\r"], ["Model Two"], ["\u001bs"]]);
   });
 
+  it("filters Droid's selector, picks the level and confirms from the footer, never from an older acknowledgement", async () => {
+    const droid = { id: "custom:Claude-Opus-5.5-API-credits-0", displayName: "Claude Opus 5.5 API credits", isDefault: false,
+      defaultReasoningEffort: "high", supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      reasoningOptions: ["low", "medium", "high", "xhigh", "max"].map((reasoningEffort) => ({ reasoningEffort })) };
+    const footer = (model: string) => `● Model switched to Claude Opus 5.5 API credits\n Auto (Off) · all actio… ${model}\n│ >   │\n? for help`;
+    const selector = (filter: string, rows: string) => `│ Select Model For This Session │\n│ ◉ Main | ○ Spec │\n│ ${filter} │\n│ │\n${rows}\n  Type search   ↑↓ focus list   Enter select`;
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: footer("GPT-6.1 Sol (High)"), revision: 1 })
+      .mockResolvedValueOnce({ text: selector("Filter models...", "│ ● GPT-6.1 Sol (High) │\n│   Opus 5.5 │"), revision: 2 })
+      .mockResolvedValueOnce({ text: selector("Claude Opus 5.5 API credits", "│   Claude Opus 5.5 API credits │"), revision: 3 })
+      .mockResolvedValueOnce({ text: "│   Low │\n│   Medium │\n│ > High (current) │\n│   Extra high │\n│   Max │\n  Use ↑↓ to navigate, Enter to select", revision: 4 })
+      .mockResolvedValue({ text: footer("Claude Opus 5.5 API credits (Extra high)"), revision: 5 });
+    await switchNativeCliModel({ model: droid, effort: "xhigh", runtimeId: "cli:droid", read, write,
+      readUndimmed: async () => footer("GPT-6.1 Sol (High)"), assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(write.mock.calls).toEqual([["/model custom:Claude-Opus-5.5-API-credits-0"], ["\r"], ["Claude Opus 5.5 API credits"], ["\u001b[B\r"], ["\u001b[B\r"]]);
+    expect(nativeCliConfirmedReasoning(footer("Claude Opus 5.5 API credits (Extra high)"), "cli:droid", droid)).toBe("xhigh");
+    expect(nativeCliConfirmedReasoning(" Auto… Claude Opus 5.5 API credits (High)\n│ >    │", "cli:droid", droid)).toBe("high");
+  });
+
+  // Captured from droid 0.244.0 in tmux (2026-10-18).
+  const opus = { id: "custom:Claude-Opus-5.5-API-credits-0", displayName: "Claude Opus 5.5 API credits", isDefault: false,
+    defaultReasoningEffort: "high", supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    reasoningOptions: ["low", "medium", "high", "xhigh", "max"].map((reasoningEffort) => ({ reasoningEffort })) };
+  const droidIdle = (footer: string) => `●  Model switched to Claude Fable 5.1\n   API credits\n\n${footer}\n╭────────────────────────────────────────╮\n│ >                                      │\n╰────────────────────────────────────────╯\n? for help                  MCP ✓ | TMUX ⧉`;
+
+  it.each([" Auto… Claude Opus 5.5 API credits (High)", " Aut… Claude Opus 5.5 API credits (High)", " A… Claude Opus 5.5 API credits (High)",
+    " Auto (… Claude Opus 5.5 API credits (High)", " … Claude Opus 5.5 API credits (High)", "Claude Opus 5.5 API credits (High)",
+    " Auto (High) · allow all commands                          Claude Opus 5.5 API credits (High)"])("reads Droid's footer clipped to %s", (footer) => {
+    expect(nativeCliConfirmedModel(droidIdle(footer), [opus], "cli:droid")).toBe(opus.id);
+    expect(nativeCliConfirmedReasoning(droidIdle(footer), "cli:droid", opus)).toBe("high");
+  });
+
+  it("steps the current Droid model's level with Tab, which works in any pane size", async () => {
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: droidIdle(" Auto… Claude Opus 5.5 API credits (High)"), revision: 1 })
+      .mockResolvedValueOnce({ text: droidIdle("Claude Opus 5.5 API credits (Extra high)"), revision: 2 })
+      .mockResolvedValue({ text: droidIdle(" Auto … Claude Opus 5.5 API credits (Max)"), revision: 3 });
+    await switchNativeCliReasoning({ model: opus, effort: "max", runtimeId: "cli:droid", read, write,
+      assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(write.mock.calls).toEqual([["\t"], ["\t"]]);
+  });
+
+  it("moves to the requested row of Droid's filtered selector, whose matches keep the catalog's order", async () => {
+    const opus5 = { ...model, id: "claude-opus-5", displayName: "Opus 5" };
+    const selector = (rows: string[]) => ["│ Select Model For This Session          │", "│ ◉ Main | ○ Spec                        │", "│ Opus 5                                 │",
+      "│                                        │", ...rows.map((row) => `│ ${row.padEnd(39)}│`), "│ Multipliers represent cost in Standard │", "╰─is US-based────────────────────────────╯"].join("\n");
+    const run = async (rows: string[]) => {
+      const write = vi.fn(async () => undefined);
+      const read = vi.fn().mockResolvedValueOnce({ text: droidIdle(" Auto… Claude Opus 5.5 API credits (High)"), revision: 1 })
+        .mockResolvedValueOnce({ text: selector([]).replace("Opus 5    ", "Filter models..."), revision: 2 })
+        .mockResolvedValueOnce({ text: selector(rows), revision: 3 })
+        .mockResolvedValue({ text: droidIdle(" Auto… Opus 5"), revision: 4 });
+      await switchNativeCliModel({ model: opus5, runtimeId: "cli:droid", read, write, assertCurrent: async () => undefined, wait: async () => undefined });
+      return write.mock.calls.slice(3);
+    };
+    // The first ↓ focuses the current model's row, else the first match.
+    expect(await run([" Opus 5.5", " Opus 5.5 Fast Mode", " Opus 5", "●Claude Opus 5.5 API credits   ★"])).toEqual([["\u001b[B\u001b[A\r"]]);
+    expect(await run([" Opus 5.5", " Opus 5.5 Fast Mode", " Opus 5", " Opus 5 Fast Mode"])).toEqual([["\u001b[B\u001b[B\u001b[B\r"]]);
+  });
+
+  it("refuses a Droid model its selector does not draw in a short pane and closes the selector", async () => {
+    const short = "│ Select Model For This Session          │\n│ ◉ Main | ○ Spec                        │\n│ Claude Opus 5.5 API credits            │\n│                                        │\n│ Multipliers represent cost in Standard │\n╰─is US-based────────────────────────────╯";
+    const write = vi.fn(async () => undefined);
+    let revision = 1;
+    const read = vi.fn().mockResolvedValueOnce({ text: droidIdle(" A… Claude Fable 5.1 API credits (High)"), revision: 1 })
+      .mockImplementation(async () => ({ text: short, revision: ++revision }));
+    await expect(switchNativeCliModel({ model: opus, effort: "high", runtimeId: "cli:droid", read, write,
+      assertCurrent: async () => undefined, wait: async () => undefined })).rejects.toThrow(/does not show this model/);
+    expect(write.mock.calls.slice(2)).toEqual([["Claude Opus 5.5 API credits"], ["\u001b"], ["\u001b"], ["\u001b"]]);
+  });
+
+  it("reads Oh My Pi's right-aligned composer hint as an empty prompt but keeps a typed draft", async () => {
+    const screen = (composer: string) => ({ text: ` Connected to MCP server:\n space_dispatcher.\n\n π > ◑ GPT-6 Sol > 📁 …r-repro ▶─1%─┃1.1M─\n${composer}`, revision: 1 });
+    const control = (composer: string) => ({ runtimeId: "cli:omp", read: async () => screen(composer), write: vi.fn(async () => undefined),
+      assertCurrent: async () => undefined, wait: async () => undefined });
+    await expect(prepareNativeCliSettings(control("╰─            ⇧⇥ to change thinking effort"))).resolves.toBeTruthy();
+    await expect(prepareNativeCliSettings(control("╰─      ← to see 2 running agents"))).resolves.toBeTruthy();
+    await expect(prepareNativeCliSettings(control("╰─ hello"))).rejects.toThrow(/draft/);
+  });
+
+  it("does not open Droid's model menu while its turn runs", async () => {
+    const screen = { text: " ⠋ Executing...  (Press ESC to stop)\n Auto… Claude Opus 5.5 API credits (High)\n│ > Enter to steer · Ctrl+Enter to queue │", revision: 1 };
+    const write = vi.fn(async () => undefined);
+    await expect(prepareNativeCliSettings({ runtimeId: "cli:droid", read: async () => screen, write,
+      assertCurrent: async () => undefined, wait: async () => undefined })).rejects.toThrow(/Finish the current CLI turn/);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  // Captured from qodercli 1.1.58 in tmux (2026-10-18): /model <id> persists the profile default, the menu's `s` does not.
+  const qoderMenu = (field: string | null, rows: string[], warn = false) => [" > /model", " Model ·  Default (4)   New (13)   Custom (4)", "────", " Overview:",
+    "  · Current Model     : Claude Haiku 5.5 (API credits)", "  [+] Add custom model...", "────", `  ${field ?? "Press / to search models"}`, "────", "  Local endpoints (4)",
+    ...(rows.length ? rows : ["  No models in this group."]), ...(warn ? ["  ⚠ This model is currently unavailable and cannot be selected."] : []),
+    " Tab switch · Enter select · s session only · ←→ effort · space context · n add · d delete · r refresh · / search · Esc back"].join("\n");
+  const searching = (field: string) => qoderMenu(field, []).replace(/ Tab switch · Enter select[^\n]*$/, " Tab switch · Enter to list · Esc cancel search");
+  const qoderIdle = (name: string) => `──────\n >   Type your message or @path/to/file\n──────\n ${name} (space-gateway-claude) Model · ctx ░░░░ 0% · /etc`;
+  const fable = { ...model, id: "space-gateway-claude/claude-fable-5-1", displayName: "Claude Fable 5.1 (API credits)" };
+
+  it("lists Qoder's custom models by their -m id and switches one for this session only through its menu's search", async () => {
+    expect(nativeCliCatalogModels("/opt/spaceapp/bin/qoder-vscode-parity",
+      "Qwen3.8-Flash\tQwen3.8-Flash\nClaude Fable 5.1 (API credits) (space-gateway-claude/claude-fable-5-1)\tClaude Fable 5.1 (API credits) (space-gateway-claude/claude-fable-5-1)\n")
+      .map(({ id, displayName }) => [id, displayName])).toEqual([["Qwen3.8-Flash", "Qwen3.8-Flash"], [fable.id, fable.displayName]]);
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: qoderIdle("Claude Haiku 5.5 (API credits)"), revision: 1 })
+      .mockResolvedValueOnce({ text: qoderMenu(null, ["  ❯ Claude Haiku 5.5 (API credits) ✓      ■□□□□ Low      Anthropic"]), revision: 2 })
+      .mockResolvedValueOnce({ text: searching("Search models..."), revision: 3 })
+      .mockResolvedValueOnce({ text: searching(fable.displayName), revision: 4 })
+      // A 42-column pane cuts the row's name without "…".
+      .mockResolvedValueOnce({ text: qoderMenu(fable.displayName, ["  ❯ Claude Fable 5.    ← Low    Anthropic"]), revision: 5 })
+      .mockResolvedValue({ text: ` ● Model set to Claude Fable 5.1 (API credits) (this session only)\n${qoderIdle("Claude Fable 5.1 (API credits)")}`, revision: 6 });
+    await switchNativeCliModel({ model: fable, runtimeId: "cli:qoder", read, write, assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(write.mock.calls).toEqual([["/model"], ["\r"], ["/"], [fable.displayName], ["\r"], ["s"]]);
+  });
+
+  it("offers Qoder's effort levels for Space's Claude models and sets one for this session only", async () => {
+    const [qwen, claude] = nativeCliCatalogModels("/opt/spaceapp/bin/qoder-vscode-parity",
+      "Qwen3.8-Flash\tQwen3.8-Flash\nClaude Fable 5.1 (API credits) (space-gateway-claude/claude-fable-5-1)\tClaude Fable 5.1 (API credits) (space-gateway-claude/claude-fable-5-1)\n");
+    expect(qwen!.reasoningOptions).toEqual([]);
+    expect([claude!.defaultReasoningEffort, claude!.supportedReasoningEfforts]).toEqual(["auto", ["auto", "low", "medium", "high", "xhigh", "max"]]);
+    // Screens captured from qodercli 1.1.58 in tmux (2026-10-18).
+    const idle = (level: string) => qoderIdle("Claude Fable 5.1 (API credits)").replace("Model · ", `Model · ${level}`);
+    expect(nativeCliConfirmedReasoning(idle(""), "cli:qoder", claude)).toBe("auto");
+    expect(nativeCliConfirmedReasoning(idle("Extra High · "), "cli:qoder", claude)).toBe("xhigh");
+    expect(nativeCliConfirmedReasoning(" ● Reasoning effort set to default for Claude Fable 5.1 (API credits) (this session only)\n Claude Fable 5.1 (API credits) (space-…",
+      "cli:qoder", claude)).toBe("auto");
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: idle(""), revision: 1 })
+      .mockResolvedValue({ text: ` > /effort xhigh --session-only\n ● Reasoning effort set to xhigh for Claude Fable 5.1 (API credits) (this session only)\n${idle("Extra High · ")}`, revision: 2 });
+    await switchNativeCliReasoning({ model: claude!, effort: "xhigh", runtimeId: "cli:qoder", read, write, assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(write.mock.calls).toEqual([["/effort xhigh --session-only"], ["\r"]]);
+  });
+
+  it("searches Qoder's next tab when the current one does not list the model", async () => {
+    const qwen = { ...model, id: "Qwen3.8-Flash", displayName: "Qwen3.8-Flash" };
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: qoderIdle("Claude Haiku 5.5 (API credits)"), revision: 1 })
+      .mockResolvedValueOnce({ text: qoderMenu(null, ["  ❯ Claude Haiku 5.5 (API credits) ✓      ■□□□□ Low      Anthropic"]), revision: 2 })
+      .mockResolvedValueOnce({ text: searching("Search models..."), revision: 3 })
+      .mockResolvedValueOnce({ text: searching("Qwen3.8-Flash"), revision: 4 })
+      .mockResolvedValueOnce({ text: qoderMenu("Qwen3.8-Flash", []), revision: 5 })
+      .mockResolvedValueOnce({ text: qoderMenu(null, ["  ❯ Auto                     0.50x Credit"]), revision: 6 })
+      .mockResolvedValueOnce({ text: searching("Search models..."), revision: 7 })
+      // A narrow redraw can leave a rule's "─" in front of the search text.
+      .mockResolvedValueOnce({ text: searching("Qwen3.8-Flash").replace("  Qwen3.8-Flash", " ─Qwen3.8-Flash"), revision: 8 })
+      .mockResolvedValueOnce({ text: qoderMenu("Qwen3.8-Flash", ["  ❯ Qwen3.8-    ←      0.10x 0.00x Credit", "    lash    Medium"]), revision: 9 })
+      .mockResolvedValue({ text: ` ● Model set to Qwen3.8-Flash (this session only)\n──────\n >   Type your message or @path/to/file\n──────\n Qwen3.8-Flash Model · ctx ░░░░ 0% · /etc`, revision: 10 });
+    await switchNativeCliModel({ model: qwen, runtimeId: "cli:qoder", read, write, assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(write.mock.calls).toEqual([["/model"], ["\r"], ["/"], ["Qwen3.8-Flash"], ["\r"], ["\t"], ["/"], ["Qwen3.8-Flash"], ["\r"], ["s"]]);
+  });
+
+  it("reads Qoder's YOLO composer and does not take its session-only acknowledgement for the menu", async () => {
+    const yolo = (composer: string) => ({ text: ` > /model\n\n ● Model set to Claude Fable 5.1 (API credits) (this session only)\n\n                           ? for shortcuts\n──────\n YOLO Shift+Tab to Auto Mode\n──────\n ${composer}\n──────\n Claude Fable 5.1 (API credits) (space-…`, revision: 1 });
+    const control = (composer: string) => {
+      const write = vi.fn(async () => undefined);
+      return { write, input: { runtimeId: "cli:qoder", read: async () => yolo(composer), write, assertCurrent: async () => undefined, wait: async () => undefined } };
+    };
+    const empty = control("*   Type your message or @path/to/file");
+    await expect(prepareNativeCliSettings(empty.input)).resolves.toEqual(yolo("*   Type your message or @path/to/file"));
+    expect(empty.write).not.toHaveBeenCalled();
+    const draft = control("* hello world");
+    await expect(prepareNativeCliSettings(draft.input)).rejects.toThrow(/draft/);
+    expect(draft.write).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Qoder model the account cannot use and closes the menu", async () => {
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: qoderIdle("Claude Haiku 5.5 (API credits)"), revision: 1 })
+      .mockResolvedValueOnce({ text: qoderMenu(null, ["  ❯ Claude Haiku 5.5 (API credits) ✓      ■□□□□ Low      Anthropic"]), revision: 2 })
+      .mockResolvedValueOnce({ text: searching("Search models..."), revision: 3 })
+      .mockResolvedValueOnce({ text: searching(fable.displayName), revision: 4 })
+      .mockResolvedValue({ text: qoderMenu(fable.displayName, ["  ❯ Claude Fable 5.1 (API credits)      ■□□□□ Low      Anthropic"], true), revision: 5 });
+    await expect(switchNativeCliModel({ model: fable, runtimeId: "cli:qoder", read, write, assertCurrent: async () => undefined, wait: async () => undefined }))
+      .rejects.toThrow(/cannot use/);
+    expect(write.mock.calls).toEqual([["/model"], ["\r"], ["/"], [fable.displayName], ["\r"], ["\u001b"], ["\u001b"], ["\u001b"]]);
+  });
+
+  it("keeps the reasoning levels Droid's wrapper lists, so its picker can change them", () => {
+    expect(nativeCliCatalogModels("/opt/spaceapp/bin/droid-vscode-parity", [
+      "custom:Claude-Opus-5.5-API-credits-0\tClaude Opus 5.5 API credits\tlow,medium,high,xhigh,max\thigh",
+      "claude-fable-5.1\tFable 5.1\tnone,low,medium,high,xhigh,max\thigh", "auto\tAuto Model\tnone\tnone"].join("\n"))
+      .map(({ id, defaultReasoningEffort, reasoningOptions }) => [id, defaultReasoningEffort, reasoningOptions?.map((option) => option.reasoningEffort)]))
+      .toEqual([["custom:Claude-Opus-5.5-API-credits-0", "high", ["low", "medium", "high", "xhigh", "max"]],
+        ["claude-fable-5.1", "high", ["none", "low", "medium", "high", "xhigh", "max"]], ["auto", "none", []]]);
+  });
+
+  it("reads Droid's dim placeholder as an empty prompt but keeps a typed draft", async () => {
+    const screen = { text: '│ > Try "Fix all lint warnings" │\n Auto (Off) · all actions      GPT-6.1 Sol (High)', revision: 1 };
+    const control = (undimmed: string) => ({ runtimeId: "cli:droid", read: async () => screen, write: async () => undefined,
+      readUndimmed: async () => undimmed, assertCurrent: async () => undefined, wait: async () => undefined });
+    await expect(prepareNativeCliSettings(control("│ > T │"))).resolves.toEqual(screen);
+    await expect(prepareNativeCliSettings(control('│ > Try "Fix all lint warnings" │'))).rejects.toThrow(/draft/);
+  });
+
   it.each([
+    ["cli:droid", "custom:Claude-Haiku-5.5-API-credits-0", "Claude Haiku 5.5 API credits", " Auto (Off) · all ac… Claude Haiku 5.5 API credits (Medium)"],
+    ["cli:droid", "gpt-6-sol", "GPT-6.1 Sol", " Auto (High) · allow edits                    GPT-6.1 Sol (High)"],
+    ["cli:qoder", "space-gateway-claude/claude-opus-5-5", "Claude Opus 5.5 (API credits)", " Claude Opus 5.5 (API credits) (space-gateway-claude) Model · Extra High · ctx ░░░░ 0% · /etc"],
+    ["cli:qoder", "Qwen3.8-Flash", "Qwen3.8-Flash", " Qwen3.8-Flash Model · ctx ░░░░ 0% · /etc"],
+    // A 42-column pane (observed 2026-10-17) clips the autonomy part to "Auto…".
+    ["cli:droid", "custom:Claude-Opus-5.5-API-credits-0", "Claude Opus 5.5 API credits", " Auto… Claude Opus 5.5 API credits (High)\n╭──────╮\n│ >    │\n╰──────╯"],
     ["cli:gemini", "gemini-3.8-flash-high", "Gemini 3.8 Flash (High)", "⎿ Model set to Gemini 3.8 Flash (High)"],
     ["cli:kimi", "kimi-code/k3", "K3", "│ Model: K3 │"],
     ["cli:deepseek", "deepseek-flash/deepseek-v4-flash", "DeepSeek Flash", "MODEL deepseek-v4-flash   EFFORT auto"],

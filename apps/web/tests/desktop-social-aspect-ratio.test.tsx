@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DesktopWindowTitlebar } from "../src/features/desktop-titlebar/DesktopWindowTitlebar.js";
+import { registerLocalCliDraftReloadGuard } from "../src/features/terminal-pane/local-cli-draft.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -94,6 +95,17 @@ describe("DesktopWindowTitlebar Social Aspect Ratio & Window Recording", () => {
     await waitFor(() => {
       expect(mockBridge.capturePage).toHaveBeenCalled();
     });
+  });
+
+  it("checks unsaved drafts before the desktop Reload Window action", async () => {
+    const guard = vi.fn(() => false);
+    const unregister = registerLocalCliDraftReloadGuard(guard);
+    try {
+      render(<DesktopWindowTitlebar activeRoomName="Room 1" />);
+      fireEvent.click(await screen.findByRole("button", { name: /SpaceApp/i }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /Reload Window/i }));
+      await waitFor(() => expect(guard).toHaveBeenCalledOnce());
+    } finally { unregister(); }
   });
 
   it("enforces titlebar button height constraints to prevent overflow past titlebar or adjacent buttons", async () => {

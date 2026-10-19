@@ -228,6 +228,16 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     async openTab(userId, pane, url, profileId, traceId, actor) {
       if (!browserSessionManager.createPage) throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
       if (profileId === null || profileId === await effectivePaneProfileId(userId, pane)) return browserSessionManager.createPage(pane, url, true, traceId, actor);
+      // Freelance Copilot (operator 2026-10-18): a platform's sign-in lives in one account's Freelance profile, a Chrome with the
+      // platform routes, so the whole pane reopens there with the address instead of moving one tab into another account's Chrome.
+      if (pane.mode === "FREELANCE_COPILOT") {
+        if (!browserSessionManager.listPages) throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
+        const current = await store.getActivePaneBrowserSession(pane.id);
+        await accountControl.select(userId, pane, profileId, false, traceId, actor);
+        await accountControl.start(userId, pane, { viewport: current?.viewport ?? "desktop", targetUrl: url, streamMode: current?.streamMode ?? "AUTO",
+          includeInitialFrame: false, ownerAgentId: actor.holderType === "AGENT" ? actor.holderId : null }, traceId, actor);
+        return browserSessionManager.listPages(pane);
+      }
       // The host opens the URL straight in the other account's Chrome and closes the blank tab, so it never loads in the pane's account.
       const blank = (await browserSessionManager.createPage(pane, undefined, true, traceId, actor)).activePageId;
       if (!blank) throw new SpaceConflictError("The browser did not open a new tab.");
@@ -449,13 +459,15 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
-    const session = await getActiveBrowserSessionForPane(store, pane);
+    // Copilot panes poll this: no browser or no handoff is their normal state, so it answers null instead of a logged 404.
+    const session = await getActiveBrowserSessionForPane(store, pane).catch((error: unknown) => {
+      if (error instanceof SpaceNotFoundError) return null;
+      throw error;
+    });
+    if (!session) return browserHandoffRequestResponseSchema.parse({ handoff: null });
     const active = await store.getActiveBrowserHandoffRequest(session.sessionId);
     const handoff = active ?? (await store.listBrowserHandoffRequests(pane.roomId)).find((candidate) => candidate.sessionId === session.sessionId);
-    if (!handoff) {
-      throw new SpaceNotFoundError(`Browser handoff request for pane ${pane.id} was not found.`);
-    }
-    return browserHandoffRequestResponseSchema.parse({ handoff });
+    return browserHandoffRequestResponseSchema.parse({ handoff: handoff ?? null });
   });
   app.post("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);

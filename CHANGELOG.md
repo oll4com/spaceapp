@@ -17,11 +17,26 @@ Semantic Versioning.
 - A source development stack (`npm run dev:stack`) with isolated local state,
   service hot reload, and documented setup, stop, and reset commands.
 
-## [1.1.6] - 2026-10-16
+## [1.1.6] - 2026-10-18
 
-Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry
+Source: sanitized Space app @ f8803d5d96 (4595 files). Adds install telemetry
 for owners who opt in and the remaining fixes from the independent reviews of
 1.1.5; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Pilot rehearsal fixes and team accounts
+
+- Codex sandboxes each command in the CLI container (Docker's default seccomp
+  profile plus user namespaces, no AppArmor profile) on Docker Desktop and on
+  Linux hosts that allow unprivileged user namespaces. Ubuntu 23.10 and later
+  restrict them, so there the container keeps Docker's defaults and Codex still
+  asks before each command.
+- `restore` prints workspace paths in plain quotes (Windows paths no longer show
+  doubled backslashes).
+- Team accounts, off until the owner runs `user enable`: each invited user gets
+  a CLI container of their own (own keys, logins, Space Memory and workspaces),
+  `credentials set`, `workspace add` and `provider install` take `--user`, and
+  backups keep each user's CLI settings and Space Memory. See "Team accounts" in
+  `docs/operations.md`.
 
 ### Telemetry (only after the owner answers Yes)
 
@@ -40,7 +55,13 @@ for owners who opt in and the remaining fixes from the independent reviews of
 
 ### Security
 
-- WebSocket handshakes (VNC stream, shared chat) check the Origin.
+- A signed-out session token can no longer be reused: session tokens must have
+  exactly two segments, so a revoked token with an extra segment is refused.
+- Session revocations fail closed until the saved ones are loaded after a
+  restart, and sign-out reports an error when the revocation could not be saved.
+- WebSocket handshakes (VNC stream, shared chat, harness) check the Origin.
+- Stored database passwords need a full 16-byte authentication tag, and the
+  Admin Mode delete guard also compares real paths.
 - The app is sent with `frame-ancestors 'self'`, `object-src 'none'` and
   `X-Frame-Options: SAMEORIGIN`.
 - Every API child process, including the Space screenshot engine, starts

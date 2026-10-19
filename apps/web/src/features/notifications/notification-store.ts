@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { NotificationLink, NotificationsPending, NotificationStreamPayload, SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
+import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
 
 /**
  * The signed-in user's notifications in this tab: what waits (badge counts per room and pane), the newest
@@ -51,14 +52,24 @@ export function resetNotificationStore(userId: string | null): void {
   emit({ userId, loaded: false, pending: emptyPending, items: [], toasts: [] });
 }
 
+/** Nous's card for one pane (plan clipboard:8FfXWclYUfOH): what only the operator's hands can do there. */
+export function isNousPaneCard(notification: SpaceNotification): boolean {
+  return notification.source === "NOUS" && Boolean(notification.paneId && notification.roomId && notification.dedupeKey?.startsWith("nous:pane:"));
+}
+/** A card that alerts again (a new list) carries its alert time, so it is delivered once more under the same id. */
+function deliveryKey(notification: SpaceNotification): string {
+  const alertAt = notification.payload?.alertAt;
+  return typeof alertAt === "string" ? `${notification.id}@${alertAt}` : notification.id;
+}
+
 /** Reloads what waits and the newest records; new open records (after the first load) go to delivery. */
 export async function refreshNotifications(): Promise<void> {
   if (refreshing) return refreshing;
   refreshing = (async () => {
     try {
       const [pending, list] = await Promise.all([api.notificationsPending(), api.notifications({ status: "ALL", limit: 100 })]);
-      const fresh = state.loaded ? pending.latest.filter((item) => !seen.has(item.id)) : [];
-      for (const item of [...pending.latest, ...list.notifications]) seen.add(item.id);
+      const fresh = state.loaded ? pending.latest.filter((item) => !seen.has(deliveryKey(item))) : [];
+      for (const item of [...pending.latest, ...list.notifications]) seen.add(deliveryKey(item));
       emit({ ...state, loaded: true, pending, items: list.notifications });
       if (fresh.length) onNew?.(fresh);
     } catch {
@@ -81,7 +92,7 @@ export function ingestNotificationStreamPayload(payload: NotificationStreamPaylo
 export function notificationToastKey(notification: SpaceNotification): string { return notification.paneId ?? notification.id; }
 /** Shows the toast; a newer notification of the same pane replaces the one on screen instead of stacking. */
 export function pushNotificationToast(notification: SpaceNotification): void {
-  if (state.toasts.some((toast) => toast.notification.id === notification.id)) return;
+  if (state.toasts.some((toast) => deliveryKey(toast.notification) === deliveryKey(notification))) return;
   const key = notificationToastKey(notification);
   const others = state.toasts.filter((toast) => notificationToastKey(toast.notification) !== key);
   emit({ ...state, toasts: [...others, { id: notification.id, notification, shownAt: Date.now() }].slice(-3) });
@@ -105,8 +116,9 @@ export async function readAllNotifications(): Promise<void> {
   emit({ ...state, toasts: [] });
   await refreshNotifications();
 }
-/** Opens what the notification points at and marks it read. */
+/** Opens what the notification points at and marks it read; Nous's pane card takes the operator to the pane through Nous focus. */
 export function openNotification(notification: SpaceNotification): void {
-  navigator?.(notification.link, notification);
+  if (isNousPaneCard(notification)) requestNousFocus({ roomId: notification.roomId!, paneId: notification.paneId!, ownerUserId: null, immediate: true });
+  else navigator?.(notification.link, notification);
   void markNotificationRead(notification.id);
 }

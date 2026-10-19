@@ -27,12 +27,20 @@ export function gmailErrorDetail(body: Record<string, unknown>): { reason: strin
   return { reason: reason ?? null, message: typeof error?.message === "string" ? error.message.slice(0, 200) : null };
 }
 
+/** A per-user rate limit (403 or 429) or a missing grant (403 with a scope reason or none); null for anything else. */
+export function gmailRefusal(status: number, body: Record<string, unknown>): "RATE_LIMIT" | "SCOPE" | null {
+  const { reason } = gmailErrorDetail(body);
+  if (status === 429 || (status === 403 && reason && rateLimitReasons.has(reason))) return "RATE_LIMIT";
+  return status === 403 && (!reason || scopeReasons.has(reason)) ? "SCOPE" : null;
+}
+
 export function gmailErrorMessage(status: number, body: Record<string, unknown>): string {
   const { reason, message } = gmailErrorDetail(body);
   const detail = [reason, message].filter(Boolean).join(": ");
+  const refusal = gmailRefusal(status, body);
   if (status === 401) return "Google access to Gmail expired.";
-  if (status === 429 || (status === 403 && reason && rateLimitReasons.has(reason))) return `Gmail rate limit reached (${detail}); try again in a minute.`;
-  if (status === 403 && (!reason || scopeReasons.has(reason))) {
+  if (refusal === "RATE_LIMIT") return `Gmail rate limit reached (${detail}); try again in a minute.`;
+  if (refusal === "SCOPE") {
     return `Gmail refused the request: organizing mail needs the gmail.modify permission (Allow Gmail & Calendar again)${detail ? ` [${detail}]` : ""}.`;
   }
   return `Gmail request failed (${status})${detail ? `: ${detail}` : ""}.`;
@@ -51,9 +59,8 @@ function client(accessToken: string, fetchImpl: typeof fetch = fetch, retryDelay
       let body: Record<string, unknown> = {};
       try { body = (text ? JSON.parse(text) : {}) as Record<string, unknown>; } catch { body = {}; }
       if (response.ok) return body;
-      const { reason } = gmailErrorDetail(body);
       // One retry for a per-user rate limit: these clear within seconds (a triage pass just before can trip them).
-      if (attempt === 0 && (response.status === 429 || (response.status === 403 && reason && rateLimitReasons.has(reason)))) {
+      if (attempt === 0 && gmailRefusal(response.status, body) === "RATE_LIMIT") {
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         continue;
       }

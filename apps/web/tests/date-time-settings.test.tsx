@@ -7,7 +7,9 @@ import {
   formatAppDate,
   formatAppDateTime,
   formatAppTime,
+  formatUserTime,
   readDateTimeSettings,
+  timeZoneLabel,
   writeDateTimeSettings,
 } from "../src/features/date-time-settings/date-time-settings.js";
 import { DateTimeSettingsCard } from "../src/features/date-time-settings/DateTimeSettingsCard.js";
@@ -231,7 +233,7 @@ describe("DateTimeSettings", () => {
     it("renders with default selections (UTC, 24h, and DD/MM/YYYY)", () => {
       render(<DateTimeSettingsCard />);
 
-      const timezoneSelect = screen.getByLabelText("Time zone") as HTMLSelectElement;
+      const timezoneSelect = screen.getByLabelText("Working time zone") as HTMLSelectElement;
       const formatSelect = screen.getByLabelText("Time format") as HTMLSelectElement;
       const dateSelect = screen.getByLabelText("Date format") as HTMLSelectElement;
 
@@ -244,7 +246,7 @@ describe("DateTimeSettings", () => {
     it("updates timezone when selected and saves to storage", () => {
       render(<DateTimeSettingsCard />);
 
-      const timezoneSelect = screen.getByLabelText("Time zone") as HTMLSelectElement;
+      const timezoneSelect = screen.getByLabelText("Working time zone") as HTMLSelectElement;
       fireEvent.change(timezoneSelect, { target: { value: "Asia/Bangkok" } });
 
       expect(timezoneSelect.value).toBe("Asia/Bangkok");
@@ -274,6 +276,18 @@ describe("DateTimeSettings", () => {
       expect(saved.dateFormat).toBe("DD/MM/YY");
     });
 
+    it("detects the browser's working time zone and shows the local time with its label", () => {
+      render(<DateTimeSettingsCard />);
+      const browser = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const detect = screen.getByRole("button", { name: "Detect" });
+      if (browser !== "UTC") {
+        fireEvent.click(detect);
+        expect((screen.getByLabelText("Working time zone") as HTMLSelectElement).value).toBe(browser);
+      }
+      expect(readDateTimeSettings().timeZone).toBe(browser);
+      expect(screen.getByText(/^Every time in Space is shown in this zone.*Now: \d\d:\d\d /)).toBeTruthy();
+    });
+
     it("resets to defaults when reset button is clicked", () => {
       writeDateTimeSettings({ timeZone: "America/New_York", timeFormat: "12h", dateFormat: "MM/DD/YYYY" });
 
@@ -281,7 +295,7 @@ describe("DateTimeSettings", () => {
       const resetButton = screen.getByRole("button", { name: "Reset date and time settings to defaults" });
       fireEvent.click(resetButton);
 
-      const timezoneSelect = screen.getByLabelText("Time zone") as HTMLSelectElement;
+      const timezoneSelect = screen.getByLabelText("Working time zone") as HTMLSelectElement;
       const formatSelect = screen.getByLabelText("Time format") as HTMLSelectElement;
       const dateSelect = screen.getByLabelText("Date format") as HTMLSelectElement;
 
@@ -289,5 +303,14 @@ describe("DateTimeSettings", () => {
       expect(formatSelect.value).toBe("24h");
       expect(dateSelect.value).toBe("DD/MM/YYYY");
     });
+  });
+
+  it("labels a time with the user's working zone (19:00 ICT)", () => {
+    const at = "2026-10-17T12:00:00Z";
+    const bangkok = { timeZone: "Asia/Bangkok", timeFormat: "24h" as const, dateFormat: "DD/MM/YYYY" as const };
+    expect(formatUserTime(at, {}, bangkok)).toBe("19:00 ICT");
+    expect(formatUserTime(at, { withDate: true }, bangkok)).toBe("17/10/2026 19:00 ICT");
+    expect(timeZoneLabel("Europe/Athens", new Date(at))).toBe("EEST");
+    expect(formatUserTime(null)).toBe("--");
   });
 });

@@ -359,7 +359,7 @@
 .is-workspace .desktop-action-trailing:empty { display: none; }
 .is-workspace .desktop-menu-footer { padding: 10px 2px 0; }
 .is-workspace .desktop-menu-empty { padding: 12px; }
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .desktop-navigation-menu.is-workspace { padding: 10px; }
   .workspace-browser { display: flex; flex-direction: column; }
   .is-workspace .workspace-category-tabs { flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 8px 0; border-right: 0; border-bottom: 1px solid var(--room-border, #343638); }
@@ -383,7 +383,7 @@
 }
 
 /* Coarse pointers keep full touch targets within the compact menu spacing. */
-@media (pointer: coarse), (max-width: 768px) {
+@media (pointer: coarse), (max-width: 767px) {
   .desktop-navigation-menu .desktop-menu-action,
   .desktop-navigation-menu .cli-launcher-option { min-height: 44px; }
 }

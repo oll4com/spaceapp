@@ -79,9 +79,33 @@ describe("Antigravity helpers", () => {
     inspector.push(new TextEncoder().encode(`data: ${JSON.stringify({ error: { code: 429, message: "quota" } })}\n\n`));
     expect(inspector).toMatchObject({ outputStarted: false, errorStatus: 429 });
   });
+
+  it("reads usage from a non-stream generateContent JSON body (an image call), split across chunks", () => {
+    const inspector = new CodeAssistStreamInspector();
+    const body = JSON.stringify({ response: { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "QUJD" } }] }, finishReason: "STOP" }],
+      usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 1290 }, modelVersion: "gemini-3.1-flash-image" }, traceId: "t" }, null, 2);
+    const bytes = new TextEncoder().encode(body);
+    expect(inspector.push(bytes.slice(0, 40))).toBe(false);
+    expect(inspector.push(bytes.slice(40))).toBe(false);
+    expect(inspector.usage).toBeNull();
+    inspector.end();
+    expect(inspector).toMatchObject({ outputStarted: true, finished: true, model: "gemini-3.1-flash-image",
+      usage: { promptTokens: 9, cachedTokens: null, outputTokens: 1290, thoughtsTokens: null } });
+  });
 });
 
 describe("Antigravity proxy", () => {
+  it("logs the usage of a non-stream model call (agy's image call)", async () => {
+    const { post, logs, repository } = await setup(() => json({ response: { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "QUJD" } }] },
+      finishReason: "STOP" }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 1290 }, modelVersion: "gemini-3.1-flash-image" } }));
+    const response = await post("/v1internal:generateContent", generate("gemini-3.1-flash-image"));
+    expect(response.statusCode).toBe(200);
+    expect(response.json().response.candidates[0].content.parts[0].inlineData.data).toBe("QUJD");
+    await logs.flush();
+    expect(await repository.listRequestLogs({ limit: 5 })).toEqual([expect.objectContaining({ model: "gemini-3.1-flash-image", inputTokens: 9, outputTokens: 1290,
+      status: "success" })]);
+  });
+
   it("sends model calls to the least-used account of the model's quota group with that account's project", async () => {
     const { post, calls, logs, repository } = await setup(() => reply("SPACE_AGY_OK"));
     const response = await post("/v1internal:streamGenerateContent?alt=sse", generate());

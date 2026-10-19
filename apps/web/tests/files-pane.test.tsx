@@ -216,7 +216,7 @@ describe("FilesPane Component", () => {
     // Disk storage must have rules to hide on small screens / compact viewports
     expect(cssContent).toContain(".fm-sidebar-scroll-area");
     expect(cssContent).toContain(".fm-sidebar.is-compact .fm-sidebar-disk-section");
-    expect(cssContent).toContain("@media (max-width: 768px), (max-height: 600px)");
+    expect(cssContent).toContain("@media (max-width: 767px), (max-height: 600px)");
     expect(cssContent).toContain("@container filespane (max-width: 768px)");
   });
 });

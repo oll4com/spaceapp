@@ -3,16 +3,18 @@ import { NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, defaultNotificationSe
 import { api } from "../../api.js";
 import { DockNotice } from "../dock-kit/DockKit.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { desktopNotificationPermission, desktopNotificationsEnabled, nativeNotificationsAvailable, setDesktopNotifications } from "./desktop-notifications.js";
+import { desktopNotificationPermission, desktopNotificationsEnabled, nativeNotificationsAvailable, pushNotificationsEnabled, pushNotificationsSupported, setDesktopNotifications, setPushNotifications } from "./desktop-notifications.js";
 
 /**
  * Settings → Notifications: the "Show notifications" kill switch (every pop-up), then the channels every
- * notification source uses (in-app, toast, sound, desktop, Telegram) and per-source overrides.
+ * notification source uses (in-app, toast, sound, desktop, Telegram, push in the Android app) and per-source overrides.
  */
 export function NotificationSettingsCard({ suppressNotifications, onSuppressNotificationsChange }: { suppressNotifications: boolean; onSuppressNotificationsChange(suppressed: boolean): void }) {
   const [settings, setSettings] = useState<NotificationSettings | null>(null);
   const [desktop, setDesktop] = useState(desktopNotificationsEnabled);
   const [permission, setPermission] = useState(desktopNotificationPermission);
+  const [push, setPush] = useState(pushNotificationsEnabled);
+  const [pushAvailable, setPushAvailable] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -34,7 +36,7 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
     });
   }
   const channel = (key: keyof NotificationSettings["channels"], checked: boolean) => settings && save({ ...settings, channels: { ...settings.channels, [key]: checked } });
-  const perSource = (source: NotificationSource, key: "inApp" | "desktop" | "telegram", checked: boolean) => settings
+  const perSource = (source: NotificationSource, key: "inApp" | "desktop" | "telegram" | "push", checked: boolean) => settings
     && save({ ...settings, perSource: { ...settings.perSource, [source]: { ...settings.perSource[source], [key]: checked } } });
   const current = settings ?? defaultNotificationSettings;
 
@@ -56,6 +58,17 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
         onChange={(checked) => { void setDesktopNotifications(checked).then((on) => { setDesktop(on); setPermission(desktopNotificationPermission()); channel("desktop", checked); }); }} />
       <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-telegram" label="Telegram" detail="Notifications that need you also go to the paired Telegram bot (Settings → Telegram)."
         checked={current.channels.telegram} disabled={!settings} onChange={(checked) => channel("telegram", checked)} />
+      {pushNotificationsSupported() ? (
+        <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-push" label="Push notifications on this device"
+          detail={!pushAvailable ? "On, but this Space server has no push key yet: nothing is pushed until it has one."
+            : push ? "Notifications that need you arrive also while the app is closed; a tap opens them." : "Off on this device. Turning it on may ask the system for permission."}
+          checked={push} disabled={!settings}
+          onChange={(checked) => {
+            setError(null);
+            void setPushNotifications(checked, api).then((state) => { setPush(state.on); setPushAvailable(state.available); })
+              .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Push notifications could not be changed."));
+          }} />
+      ) : null}
       <details className="settings-flat-row notification-source-settings">
         <summary>Per source</summary>
         {NOTIFICATION_SOURCES.map((source) => (
@@ -64,6 +77,7 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
             <SpaceToggle compact label="In-app" checked={current.perSource[source]?.inApp ?? current.channels.inApp} disabled={!settings} onChange={(checked) => perSource(source, "inApp", checked)} />
             <SpaceToggle compact label="Desktop" checked={current.perSource[source]?.desktop ?? current.channels.desktop} disabled={!settings} onChange={(checked) => perSource(source, "desktop", checked)} />
             <SpaceToggle compact label="Telegram" checked={current.perSource[source]?.telegram ?? current.channels.telegram} disabled={!settings} onChange={(checked) => perSource(source, "telegram", checked)} />
+            {pushNotificationsSupported() ? <SpaceToggle compact label="Push" checked={current.perSource[source]?.push ?? current.channels.push} disabled={!settings} onChange={(checked) => perSource(source, "push", checked)} /> : null}
           </div>
         ))}
       </details>

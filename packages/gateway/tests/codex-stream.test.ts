@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexUpstreamHeaders } from "../src/providers/codex/headers.js";
-import { readCodexRateLimitHeaders, ResponseStreamInspector } from "../src/providers/codex/stream.js";
+import { readCodexRateLimitEvent, readCodexRateLimitHeaders, ResponseStreamInspector } from "../src/providers/codex/stream.js";
 
 const encoder = new TextEncoder();
 const event = (type: string, body: Record<string, unknown> = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...body })}\n\n`;
@@ -38,6 +38,13 @@ describe("Responses stream inspection", () => {
     const headers = new Headers({ "x-codex-primary-used-percent": "37.5", "x-codex-secondary-used-percent": "12", "x-codex-primary-reset-after-seconds": "600", "x-codex-secondary-window-minutes": "" });
     expect(readCodexRateLimitHeaders(headers)).toEqual({ primaryUsedPercent: 37.5, secondaryUsedPercent: 12, primaryResetAfterSeconds: 600,
       secondaryResetAfterSeconds: null, primaryWindowMinutes: null, secondaryWindowMinutes: null });
+    // A Prolite account (weekly window only) gets its missing window as 0 minutes, 0% and reset 0: read as absent.
+    const prolite = new Headers({ "x-codex-primary-used-percent": "39", "x-codex-primary-window-minutes": "10080", "x-codex-primary-reset-after-seconds": "600",
+      "x-codex-secondary-used-percent": "0", "x-codex-secondary-window-minutes": "0", "x-codex-secondary-reset-after-seconds": "0" });
+    expect(readCodexRateLimitHeaders(prolite)).toEqual({ primaryUsedPercent: 39, secondaryUsedPercent: null, primaryResetAfterSeconds: 600,
+      secondaryResetAfterSeconds: null, primaryWindowMinutes: 10080, secondaryWindowMinutes: null });
+    expect(readCodexRateLimitEvent({ rate_limits: { primary: { used_percent: 39, window_minutes: 10080 }, secondary: { used_percent: 0, window_minutes: 0, reset_at: 5 } } }, 0))
+      .toMatchObject({ primaryUsedPercent: 39, secondaryUsedPercent: null, secondaryResetAfterSeconds: null, secondaryWindowMinutes: null });
   });
 });
 

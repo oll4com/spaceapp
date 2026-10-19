@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { ownerWorkingTimeZone } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
@@ -66,6 +67,27 @@ describe("CLI task bridge", () => {
       const otherRoom = store.createRoom({ name: "Not mine" });
       const foreign = store.createPane({ roomId: otherRoom.id, title: "Other", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
       expect((await app.inject({ method: "POST", url: "/api/task-items", headers, payload: { title: "x", objective: "Type here.", paneId: foreign.id, schedule } })).statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("runs a schedule given without a zone in the owner's working time zone; stored tasks keep theirs", async () => {
+    const { app, store, pane, agent } = await fixture();
+    try {
+      const owner = store.getRoom(pane.roomId).ownerUserId!;
+      const athens = (await app.inject({ method: "POST", url: "/api/cli/task-items", headers: agent, payload: { title: "Old", objective: "Stored before.",
+        schedule: { recurrence: { kind: "DAILY", time: "09:00" }, timeZone: "Europe/Athens" } } })).json();
+      store.updateUserSettings(owner, { dateTime: { timeZone: "Asia/Bangkok" } });
+      expect((await app.inject({ method: "GET", url: "/api/cli/task-items", headers: agent })).json().timeZone).toBe("Asia/Bangkok");
+      const created = (await app.inject({ method: "POST", url: "/api/cli/task-items", headers: agent, payload: { title: "Call", objective: "Call back.",
+        schedule: { recurrence: { kind: "DAILY", time: "19:00" } } } })).json();
+      expect(created.schedule.timeZone).toBe("Asia/Bangkok");
+      expect(new Date(created.schedule.nextRunAt).getUTCHours()).toBe(12);
+      const moved = (await app.inject({ method: "PATCH", url: `/api/cli/task-items/${encodeURIComponent(athens.id)}`, headers: agent, payload: { status: "DONE" } })).json();
+      expect(moved.schedule.timeZone).toBe("Europe/Athens");
+      expect(ownerWorkingTimeZone({ dateTime: { timeZone: "system" } })).toBe("UTC");
+      expect(ownerWorkingTimeZone({ dateTime: { timeZone: "Mars/Olympus" } })).toBe("UTC");
     } finally {
       await app.close();
     }

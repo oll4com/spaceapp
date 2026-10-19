@@ -332,4 +332,22 @@ describe("useUserPreferenceWriteThrough", () => {
     ]);
     expect(updateUserSettings).toHaveBeenCalledWith({ roomTheme: "graphite" });
   });
+
+  it("a touch device keeps its own text size: never sent to the account, never replaced by the account's", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)", media: query }) as MediaQueryList);
+    try {
+      window.localStorage.setItem("space.terminal.fontSize", "15");
+      const values = { terminalFontSize: 10, showSessionDebugIds: false, cliDebugModeEnabled: false, isDesktopSideSurfaceOpen: true, roomTheme: "graphite" as RoomTheme };
+      renderHook(() => useUserPreferenceWriteThrough(values, true));
+      expect(window.localStorage.getItem("space.terminal.fontSize.touch")).toBe("10");
+      expect(window.localStorage.getItem("space.terminal.fontSize")).toBe("15");
+      expect(saveUserSettingDebounced.mock.calls.map(([key]) => key)).not.toContain("terminalFontSize");
+      const { result } = renderHook(() => useUserPreferences(context));
+      expect(result.current.terminalFontSize).toBe(10);
+      act(() => result.current.hydrate({ terminalFontSize: 18 } as never));
+      expect(result.current.terminalFontSize).toBe(10);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

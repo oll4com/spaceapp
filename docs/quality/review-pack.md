@@ -85,6 +85,6 @@ node scripts/temporal-replay-check.mjs --limit 50   # read-only replay of live T
 
 `KNOWN_LIMITATIONS.md` lists every open, partly fixed, accepted or product-decision finding. It is
 generated from `review-findings.json` (`resolution` field) by `scripts/quality-known-limitations.mjs`
-and checked by `npm run test:architecture`, so this pack, the README and the register cannot
-disagree. Reviews so far, with model, commit and rating, are recorded in `verification-results.json`
+and `npm run test:architecture` fails when it differs from the register. That check covers only
+`KNOWN_LIMITATIONS.md`: this pack and the README are kept in line by hand. Reviews so far, with model, commit and rating, are recorded in `verification-results.json`
 (`current.independentReview`), including the 2026-10-14 reviews of the v1.1.4 snapshot (`snapshotReviews`).

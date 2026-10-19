@@ -51,9 +51,13 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
   visibleCliRuntimeIds: () => Promise<string[]>;
   routeOptions: Pick<RouteShorthandOptions, "config">;
   assertRoomAccess: (roomId: string, user: AuthUser | null | undefined) => Promise<Room>;
+  /** SPACE_AGENT_PANE_ENABLED: without agent panes a room created without initialPaneCount starts empty. */
+  agentPaneEnabled: boolean;
+  /** Rooms shared with a USER (multi-user), listed after their own. */
+  sharedRooms?: (userId: string) => Promise<Room[]>;
 }) {
   const { store, activityLogService, cliRuntimeVisibility, readDashboardAgents,
-    visibleCliRuntimeIds, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess } = options;
+    visibleCliRuntimeIds, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, agentPaneEnabled, sharedRooms } = options;
   app.get("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
     const query = request.query as { all?: string; ownerUserId?: string } | undefined;
@@ -72,6 +76,7 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
         }
       }
     }
+    if (isUserRole && sharedRooms) rooms = [...rooms, ...await sharedRooms(request.user!.id)];
     const start = (page.page - 1) * page.pageSize;
     return {
       data: rooms.slice(start, start + page.pageSize),
@@ -119,7 +124,10 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
     });
   });
   app.post("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(createRoomInputSchema, request.body);
+    const parsed = parseBody(createRoomInputSchema, request.body);
+    // The contract default (4 agent panes) would open panes that cannot run on a public install (pilot F7).
+    const omitted = (request.body as { initialPaneCount?: unknown } | null | undefined)?.initialPaneCount === undefined;
+    const input = !agentPaneEnabled && omitted ? { ...parsed, initialPaneCount: 0 } : parsed;
     if (input.initialPaneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
     const existingRooms = await store.listRooms(request.user?.id ?? null);
     if (existingRooms.length >= MAX_ROOMS) {

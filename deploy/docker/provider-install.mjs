@@ -12,7 +12,7 @@ export const providers=Object.freeze({
   autohand:{package:'autohand-cli@0.9.3',bin:'autohand'},
   copilot:{package:'@github/copilot@1.0.78',bin:'copilot'},
   deepseek:{package:'run-deepseek-cli@0.1.1',bin:'deepseek-cli'},
-  claude:{package:'@anthropic-ai/claude-code@2.1.206',bin:'claude'}
+  claude:{package:'@anthropic-ai/claude-code@2.1.301',bin:'claude'}
 });
 const LOCK_STALE_MS=30*60*1000;
 function execute(command,args){return new Promise((resolve,reject)=>{const child=spawn(command,args,{stdio:'inherit'});child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(`Provider installation exited ${code}`)));});}

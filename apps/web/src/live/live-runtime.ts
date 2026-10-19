@@ -1,5 +1,6 @@
 import { api } from "../live-api.js";
 import type { PlatformGateway, SpaceRuntime } from "../runtime/SpaceRuntime.js";
+import { reloadAfterLocalCliDraftsSaved } from "../features/terminal-pane/local-cli-draft.js";
 
 function requiredStorage(kind: "localStorage" | "sessionStorage"): Storage {
   return window[kind];
@@ -28,7 +29,7 @@ const platform: PlatformGateway = {
   fetch: (input, init) => window.fetch(input, init),
   openLink: (url, target, features) => window.open(url, target, features),
   print: () => window.print(),
-  reloadPage: () => window.location.reload(),
+  reloadPage: () => { void reloadAfterLocalCliDraftsSaved(() => window.location.reload()); },
   getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
   createPeerConnection: (configuration) => new window.RTCPeerConnection(configuration),
   getDisplayMedia: (constraints) => {

@@ -9,7 +9,7 @@ set -eu
 : "${SPACE_MEMORY_ROOT:=/var/lib/spaceapp/memory}"
 : "${SPACE_STARTER_MEMORY_ROOT:=/opt/spaceapp/starter-memory}"
 : "${SPACE_MEMORY_GRAPH_ROOT:=/var/lib/spaceapp/memory-graph}"
-: "${SPACE_GEMINI_MEMORY_MONTHLY_PATH:=$SPACE_MEMORY_ROOT/gemini_history_monthly.md}"
+: "${SPACE_MEMORY_MONTHLY_PATH:=$SPACE_MEMORY_ROOT/space_memory_monthly.md}"
 : "${SPACE_TELEGRAM_SECRET_ROOT:=/var/lib/spaceapp/telegram}"
 : "${SPACE_TELEGRAM_OWNERSHIP_MANIFEST:=/var/lib/spaceapp/integrations/telegram/thread-ownership.json}"
 
@@ -36,7 +36,7 @@ install -d -o spaceapp -g spaceapp -m 0700 \
   /var/lib/spaceapp/artifacts \
   "$SPACE_MEMORY_ROOT" \
   "$SPACE_MEMORY_GRAPH_ROOT" \
-  "$(dirname "$SPACE_GEMINI_MEMORY_MONTHLY_PATH")" \
+  "$(dirname "$SPACE_MEMORY_MONTHLY_PATH")" \
   "$SPACE_TELEGRAM_SECRET_ROOT" \
   "$(dirname "$SPACE_TELEGRAM_OWNERSHIP_MANIFEST")" \
   /workspaces \
@@ -52,15 +52,16 @@ install -o spaceapp -g spaceapp -m 0400 \
 export SPACE_SETUP_TOKEN_FILE
 SPACE_SETUP_TOKEN_FILE="$SPACE_SETUP_TOKEN_RUNTIME_FILE"
 
-if [ ! -e "$SPACE_MEMORY_ROOT/gemini_history.md" ]; then
+sh deploy/docker/memory-names.sh "$SPACE_MEMORY_ROOT"
+if [ ! -e "$SPACE_MEMORY_ROOT/space_memory.md" ]; then
   install -o spaceapp -g spaceapp -m 0600 \
-    "$SPACE_STARTER_MEMORY_ROOT/gemini_history.md" \
-    "$SPACE_MEMORY_ROOT/gemini_history.md"
+    "$SPACE_STARTER_MEMORY_ROOT/space_memory.md" \
+    "$SPACE_MEMORY_ROOT/space_memory.md"
 fi
-if [ ! -e "$SPACE_GEMINI_MEMORY_MONTHLY_PATH" ]; then
+if [ ! -e "$SPACE_MEMORY_MONTHLY_PATH" ]; then
   install -o spaceapp -g spaceapp -m 0600 \
-    "$SPACE_STARTER_MEMORY_ROOT/gemini_history_monthly.md" \
-    "$SPACE_GEMINI_MEMORY_MONTHLY_PATH"
+    "$SPACE_STARTER_MEMORY_ROOT/space_memory_monthly.md" \
+    "$SPACE_MEMORY_MONTHLY_PATH"
 fi
 
 if [ ! -e "$SPACE_MEMORY_ROOT/installation-guide.md" ]; then

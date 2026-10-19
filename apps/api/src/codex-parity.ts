@@ -47,7 +47,11 @@ const maxEnvironmentCacheTtlMs = 60_000;
 // The cheaper LB usage HTTP read keeps the short environment cache above.
 const defaultWrapperProbeCacheTtlMs = 5 * 60_000;
 const trustedChatBootstrapContextPattern = /# AGENTS\.md instructions for\s|<environment_context(?:>|\s)/iu;
-const canonicalBootstrapDocPattern = /\/(?:etc\/docs\/gemini(?:_core)?\.md|etc\/AGENTS\.md|srv\/space\/AGENTS\.md)\b/iu;
+// Paths in these patterns are written plainly (not as \/ escapes) so the public export's path rewrite reaches them.
+const canonicalBootstrapDocPattern = new RegExp("(?:/opt/spaceapp/docs/gemini(?:_core)?\\.md|/etc/AGENTS\\.md|/opt/spaceapp/AGENTS\\.md)\\b", "iu");
+const artifactImagePath = "/opt/spaceapp/var/artifacts/";
+const chatTransportImagesPattern = new RegExp(`(?:\\n\\n<image name=\\[Image #\\d+\\] path="${artifactImagePath}[^"<>\\r\\n]+">\\s*</image>)+\\s*$`);
+const codexImageFailureLinePattern = new RegExp(`^<image name=\\[Image #\\d+\\] path="${artifactImagePath}[^"\\r\\n]+">$`);
 const bootstrapDocReferencePattern = /\b(?:gemini(?:_core)?\.md|AGENTS\.md)\b/iu;
 
 export interface CodexParityService {
@@ -581,7 +585,7 @@ function isTrustedBootstrapEnvelope(value: string): boolean {
 // Codex can append image references after Space's durable marker. Only remove
 // this exact transport suffix when its trusted marker is present immediately before it.
 function stripChatTransportImages(value: string): string {
-  const candidate = value.replace(/(?:\n\n<image name=\[Image #\d+\] path="\/srv\/space\/var\/artifacts\/[^"<>\r\n]+">\s*<\/image>)+\s*$/, "");
+  const candidate = value.replace(chatTransportImagesPattern, "");
   return candidate !== value && trailingDurableTurnMarker.test(candidate) ? candidate : value;
 }
 
@@ -692,7 +696,7 @@ function trustedImageSeedFromResponseItem(
     .filter((item) => stringValue(item?.type) === "input_text")
     .map((item) => typeof item?.text === "string" ? item.text : "");
   const hasCodexImageFailureEnvelope =
-    inputTexts.some((text) => /^<image name=\[Image #\d+\] path="\/srv\/space\/var\/artifacts\/[^"\r\n]+">$/.test(text)) &&
+    inputTexts.some((text) => codexImageFailureLinePattern.test(text)) &&
     inputTexts.includes("image content omitted because it could not be processed") &&
     inputTexts.includes("</image>");
   if (!turnId || (!hasNativeImage && !hasCodexImageFailureEnvelope)) return null;

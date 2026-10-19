@@ -35,10 +35,14 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
 
     const hostLower = parsed.hostname.toLowerCase().replace(/^www\./, "");
     const isYouTube = hostLower === "youtube.com" || hostLower === "m.youtube.com" || hostLower === "music.youtube.com" || hostLower === "youtu.be";
+    // The web app plays these in its YouTube pane (isYouTubeUrl in App.tsx), so youtube.com's frame headers do not apply; music.youtube.com opens in a frame.
+    const playsInYouTubePane = isYouTube && hostLower !== "music.youtube.com";
 
     if (isYouTube) {
-      canEmbed = true;
-      openMode = "EMBEDDED";
+      if (playsInYouTubePane) {
+        canEmbed = true;
+        openMode = "EMBEDDED";
+      }
 
       try {
         let canonicalTarget = parsed.toString();
@@ -73,8 +77,8 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
               return {
                 url: parsed.toString(),
                 title: clean,
-                openMode: "EMBEDDED",
-                canEmbed: true
+                openMode: playsInYouTubePane ? "EMBEDDED" : "NEW_TAB",
+                canEmbed: playsInYouTubePane
               };
             }
           }
@@ -95,7 +99,9 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
       const xFrameOptions = (response.headers.get("x-frame-options") || "").toLowerCase();
       const csp = (response.headers.get("content-security-policy") || "").toLowerCase();
 
-      if (xFrameOptions.includes("deny") || xFrameOptions.includes("sameorigin")) {
+      if (playsInYouTubePane) {
+        // Embedded through the YouTube pane, not a frame of this page.
+      } else if (xFrameOptions.includes("deny") || xFrameOptions.includes("sameorigin")) {
         canEmbed = false;
       } else if (csp.includes("frame-ancestors")) {
         const match = csp.match(/frame-ancestors\s+([^;]+)/);

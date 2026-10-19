@@ -79,6 +79,7 @@ export interface RoomToolbarActionsContext {
     addMailCopilotPane: () => Promise<void>;
     addMarketingCopilotPane: () => Promise<void>;
     addFreelanceCopilotPane: () => Promise<void>;
+    addDesignPane: () => Promise<void>;
     addLivePane: () => Promise<unknown>;
   };
   tools: {
@@ -129,7 +130,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
   } = context.popovers;
   const { cliFloatsHidden, toggleCliFloats, maskSensitiveData, toggleMaskSensitiveData, isRoomFocusMode, toggleRoomFocusMode, isRoomToolbarHidden, terminalFontSize } = context.preferences;
   const { activeRoom, selectedRoomId, panes, paneLayoutPending, setPaneLayoutError, activeRoomCategoryFilter, activeRoomCategoryColors, cycleRoomCategoryColor } = context.room;
-  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addLivePane } = context.create;
+  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addDesignPane, addLivePane } = context.create;
   const { desktopWidgets, openStickyNote, isBrowserFullscreen, captureRoomScreen, reloadRoomWindow } = context.tools;
   const { isSnipToolOpen, setIsSnipToolOpen } = context.tools.snip;
   const { toolbarVpnRoute, vpnCityPending, rotateVpnCityFromToolbar } = context.tools.vpn;
@@ -608,6 +609,29 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         disabled: !activeRoom || panes.length >= 16
       }]
     : []),
+  ...(!isPaneHidden("design")
+    ? [{
+        id: "add-design",
+        label: "Design",
+        title: "Add Design pane",
+        ariaLabel: "Add Design pane",
+        icon: modeIcons.DESIGN,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addDesignPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      }]
+    : []),
+  // The Vault is a dock, not a pane: Create opens it (never closes it) and adds nothing to the room.
+  {
+    id: "add-vault",
+    label: "Vault",
+    title: "Open the Vault",
+    ariaLabel: "Open the Vault",
+    icon: sideSurfaceMeta.vault.icon,
+    onClick: () => { if (!(isSideSurfaceOpen && activeSideSurface === "vault")) toggleSideSurface("vault"); }
+  },
   ...(!isPaneHidden("t3code")
     ? [{
         id: "add-t3code",

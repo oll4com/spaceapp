@@ -139,21 +139,6 @@
     "apps/api/src/cli-terminal.ts -> apps/api/src/cli-render-proof-fixture.ts",
     "apps/api/src/cli-terminal.ts -> apps/api/src/room-host-screen.ts",
     "apps/api/src/room-host-screen.ts -> apps/api/src/cli-terminal.ts",
-    "apps/api/src/source-control/adapters/azure.ts -> apps/api/src/source-control/adapters/base.ts",
-    "apps/api/src/source-control/adapters/base.ts -> apps/api/src/source-control/providers.ts",
-    "apps/api/src/source-control/adapters/bitbucket.ts -> apps/api/src/source-control/adapters/base.ts",
-    "apps/api/src/source-control/adapters/forge.ts -> apps/api/src/source-control/adapters/base.ts",
-    "apps/api/src/source-control/adapters/gitlab.ts -> apps/api/src/source-control/adapters/base.ts",
-    "apps/api/src/source-control/adapters/index.ts -> apps/api/src/source-control/adapters/azure.ts",
-    "apps/api/src/source-control/adapters/index.ts -> apps/api/src/source-control/adapters/bitbucket.ts",
-    "apps/api/src/source-control/adapters/index.ts -> apps/api/src/source-control/adapters/forge.ts",
-    "apps/api/src/source-control/adapters/index.ts -> apps/api/src/source-control/adapters/gitlab.ts",
-    "apps/api/src/source-control/adapters/index.ts -> apps/api/src/source-control/providers.ts",
-    "apps/api/src/source-control/git-credentials.ts -> apps/api/src/source-control/providers.ts",
-    "apps/api/src/source-control/providers.ts -> apps/api/src/source-control/adapters/index.ts",
-    "apps/api/src/source-control/providers.ts -> apps/api/src/source-control/git-credentials.ts",
-    "apps/api/src/space-control-settings.ts -> apps/api/src/space-control.ts",
-    "apps/api/src/space-control.ts -> apps/api/src/space-control-settings.ts",
     "apps/web/src/api.ts -> apps/web/src/live-api.ts",
     "apps/web/src/api.ts -> apps/web/src/runtime/SpaceRuntime.tsx",
     "apps/web/src/features/live-pane/live-history-sync.ts -> apps/web/src/features/live-pane/live-session.ts",
@@ -169,6 +154,6 @@
     "apps/web/src/runtime/SpaceRuntime.tsx -> apps/web/src/live-api.ts"
   ],
   "notes": [
-    "2026-10-11: 13 cycle edges among main's new source-control provider adapters (providers.ts, adapters/*, git-credentials.ts) were baselined while that feature is under active development by another session; tracked as ARCH-004."
+    "2026-10-11: 13 cycle edges among main's new source-control provider adapters (providers.ts, adapters/*, git-credentials.ts) were baselined while that feature is under active development by another session; tracked as ARCH-004. Fixed 2026-10-18: the transport moved to the leaf provider-transport.ts and ControlActor to space-control-settings.ts; those 15 edges left the baseline."
   ]
 }

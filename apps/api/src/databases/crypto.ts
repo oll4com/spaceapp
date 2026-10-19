@@ -43,7 +43,8 @@ export function decryptSecret(encryptedPayload: string | null | undefined): stri
   try {
     const parsed = JSON.parse(encryptedPayload) as { v?: number; iv: string; ciphertext: string; tag: string };
     const key = parsed.v === KEY_VERSION ? getEncryptionKey() : legacyEncryptionKey();
-    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"));
+    // A full 16-byte tag is required: GCM would otherwise accept a truncated one (external review 2026-10-16).
+    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"), { authTagLength: 16 });
     decipher.setAuthTag(Buffer.from(parsed.tag, "base64"));
     return decipher.update(Buffer.from(parsed.ciphertext, "base64")) + decipher.final("utf8");
   } catch {

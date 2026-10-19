@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import {
   gatewayAccountListSchema, gatewayApiKeyCreatedResponseSchema, gatewayApiKeyListSchema, gatewayRequestLogListSchema, gatewayRequestLogFacetsSchema,
   gatewayRequestLogSchema, gatewayCompressionStatsSchema, gatewayReportSchema, gatewaySettingsSchema, type GatewayCompressionStats, gatewayStatusSchema,
-  gatewayClaudeApiKeyUseSchema, type GatewayClaudeApiKeyUse,
+  gatewayClaudeApiKeyUseSchema, type GatewayClaudeApiKeyUse, gatewayAnthropicAdminStatusSchema, gatewayAnthropicBillingReportSchema,
+  type GatewayAnthropicAdminStatus, type GatewayAnthropicBillingReport,
   type GatewayReport, type GatewayReportRow, type GatewayAccount, type GatewayAccountDetail, type GatewayApiKey, type GatewayApiKeyCreateRequest,
   type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayDashboard, type GatewayDashboardRange, type GatewayHealth,
   type GatewayProvider, type GatewayRequestLog, type GatewayRequestLogFacets, type GatewayRequestLogFilter, type GatewayRequestLogList,
@@ -12,7 +13,7 @@ import {
 import type { z } from "zod";
 import type { GatewayAccountRecord, GatewayApiKeyRecord, GatewayRepository } from "@space/db";
 import { readFile } from "node:fs/promises";
-import { generateGatewayApiKey, lanAccessFromSettings } from "@space/gateway";
+import { anthropicAdminStatus, anthropicBillingReport, generateGatewayApiKey, lanAccessFromSettings } from "@space/gateway";
 import { discoverAntigravityProfiles, extractEmailFromIdToken, type AntigravityProfileLocation } from "../antigravity-usage-services.js";
 import {
   buildAccountDetail, buildApiKeyDetail, buildGatewayDashboard, defaultHealthProbes, GatewayHealthSampler, requestLogCsv, type GatewayHealthProbes
@@ -51,6 +52,10 @@ export interface GatewayAdminService {
   health(): Promise<GatewayHealth>;
   /** The Claude API key account and what went through it, for the "never used without reason" check. */
   claudeApiKeyUse(): Promise<GatewayClaudeApiKeyUse>;
+  /** The sealed Anthropic Admin API key's hint and last sync (never the key). */
+  anthropicAdminStatus(): Promise<GatewayAnthropicAdminStatus>;
+  /** The last `days` UTC days of Anthropic's bill next to the gateway's estimate. */
+  anthropicBilling(days: number): Promise<GatewayAnthropicBillingReport>;
   accountDetail(accountId: string): Promise<GatewayAccountDetail | null>;
   /** Pause or resume, alias and warm-up opt-in. */
   updateAccount(accountId: string, patch: GatewayAccountUpdate): Promise<GatewayAccount | null>;
@@ -73,7 +78,7 @@ export interface GatewayAdminService {
   importAntigravityProfile(profileId: string): Promise<{ status: number; body: unknown }>;
   /** Adds an OpenAI API key account: a pasted key, or the server's Space OpenAI key file. */
   /** OpenAI, OpenRouter or DeepSeek API keys (OpenAI may use this server's key). */
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
 }
 
 export class GatewayAccountNotFoundError extends Error {}
@@ -235,6 +240,14 @@ export function createGatewayAdminService(options: {
 
     async listAccounts() {
       return gatewayAccountListSchema.parse({ data: (await repository.listAccounts()).map(publicAccount) });
+    },
+
+    async anthropicAdminStatus() {
+      return gatewayAnthropicAdminStatusSchema.parse(anthropicAdminStatus(await repository.getAnthropicAdmin()));
+    },
+
+    async anthropicBilling(days) {
+      return gatewayAnthropicBillingReportSchema.parse(await anthropicBillingReport(repository, days, now().getTime()));
     },
 
     async claudeApiKeyUse() {

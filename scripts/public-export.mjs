@@ -313,6 +313,24 @@ export function applyPublicOverlay(path, text) {
   }
 
   if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
+  if (path === "apps/api/tests/optional-modules.test.ts") {
+    // 1.1.6 cut from f8803d5d96: the Design pane added a tenth optional module; the source fixes the count in 3f302e9713.
+    return text.replace('import { getApiConfig, parseOptionalModules } from "../src/config.js";', 'import { getApiConfig, optionalModuleIds, parseOptionalModules } from "../src/config.js";')
+      .replace("expect(parseOptionalModules(undefined, false).size).toBe(9);", "expect(parseOptionalModules(undefined, false).size).toBe(optionalModuleIds.length);")
+      .replace('expect(parseOptionalModules("all", true).size).toBe(9);', 'expect(parseOptionalModules("all", true).size).toBe(optionalModuleIds.length);');
+  }
+  if (path === "apps/api/tests/nous-attachments.test.ts") {
+    // 1.1.6 release run 39188998567: GitHub's Ubuntu ffmpeg 6.1 writes the 4x3 test PNG as 4x2, so the test takes fixed PNG bytes.
+    return text.replace(`// A 4x3 red PNG, and a one-second 64x48 MP4 made by the host's ffmpeg.
+const png = execFileSync("/usr/bin/ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=4x3", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"]);`,
+    `// A 4x3 red PNG (fixed bytes: ffmpeg 6 writes this size as 4x2), and a one-second 64x48 MP4 made by the host's ffmpeg.
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP4w8AARww4OQDyTwvRz8ovMQAAAABJRU5ErkJggg==", "base64");`);
+  }
+  if (path === "apps/api/tests/design-run.test.ts") {
+    // 1.1.6 release run 39188998567: two assets rendered in the same millisecond come back in either order.
+    return text.replace("expect(delivered.assets.map((asset) => [asset.artifactId, asset.width])).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).reverse());",
+      "expect(delivered.assets.map((asset) => [asset.artifactId, asset.width]).sort()).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).sort());");
+  }
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
   }

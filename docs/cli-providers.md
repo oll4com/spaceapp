@@ -45,7 +45,7 @@ volume:
 npx --yes run-spaceapp@latest provider install claude
 ```
 
-That command downloads `@anthropic-ai/claude-code@2.1.206` directly from npm
+That command downloads `@anthropic-ai/claude-code@2.1.301` directly from npm
 as an owner-initiated action. Use remains subject to Anthropic's current terms.
 
 DeepSeek support is **community/experimental**. `run-deepseek-cli` is not an

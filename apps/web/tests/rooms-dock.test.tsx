@@ -1,3 +1,4 @@
+import { roomActionFilter, roomRailVisibility } from "../src/features/rooms-dock/room-share-view.js";
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -127,15 +128,27 @@ describe("useRoomsDock", () => {
   });
 });
 
+describe("selectRoomEntries for multi-user accounts", () => {
+  // Operator-approved 2026-10-17: a USER's list from the API already holds only their own and shared rooms.
+  const rooms = [room("a", 0), room("b", 1, { ownerUserId: "user:other", name: "Shared by other" })];
+  const dock = { roomSearch: "", adminRoomFilterMode: "all", adminSelectedUserId: null } as unknown as Parameters<typeof selectRoomEntries>[0]["dock"];
+  const base = { rooms, selectedRoomId: "a", panes: [] as Pane[], roomRuntimes: {}, completions: {}, roomCliActivityCounts: {},
+    isAdminMode: false, userId: "user:me", dock, userEmailById: new Map<string, string>() };
+  it("shows a USER the rooms shared with them and keeps the owner filter for everyone else", () => {
+    expect(selectRoomEntries({ ...base, listsEveryRoom: true }).entries.map((entry) => entry.room.id)).toEqual(["a", "b"]);
+    expect(selectRoomEntries(base).entries.map((entry) => entry.room.id)).toEqual(["a"]);
+  });
+});
+
 describe("RoomsDockPanel", () => {
   afterEach(() => cleanup());
 
-  function Panel({ overrides, initialRooms, selectedRoomId = "a" }: { overrides?: Partial<RoomsDockPanelProps["actions"]>; initialRooms?: Room[]; selectedRoomId?: string }) {
+  function Panel({ overrides, initialRooms, selectedRoomId = "a", listsEveryRoom = false, presentationRoom = null }: { overrides?: Partial<RoomsDockPanelProps["actions"]>; initialRooms?: Room[]; selectedRoomId?: string; listsEveryRoom?: boolean; presentationRoom?: Room | null }) {
     const [rooms, setRooms] = useState(initialRooms ?? [room("a", 0), room("b", 1, { ownerUserId: "user:other", name: "Other" })]);
     const dock: RoomsDock = useRoomsDock({ rooms, setRooms, reportError: () => undefined, addNamedProjectPreset: () => undefined });
     const { entries, isRoomListFiltered } = selectRoomEntries({
       rooms, selectedRoomId, panes: [] as Pane[], roomRuntimes: {}, completions: {}, roomCliActivityCounts: {},
-      isAdminMode: false, userId: "user:me", dock, userEmailById: new Map()
+      isAdminMode: false, userId: "user:me", dock, userEmailById: new Map(), listsEveryRoom
     });
     return (
       <RoomsDockPanel
@@ -152,7 +165,7 @@ describe("RoomsDockPanel", () => {
           reportError: vi.fn(), roomDeleteConfirmDialog: null, movePaneToRoom: vi.fn(async () => undefined),
           ...overrides
         }}
-        composer={{ preparingRoomId: null, presentationPanes: [], presentationRoom: null, addRoomPanes: vi.fn(async () => undefined), openSettingsSurface: vi.fn() }}
+        composer={{ preparingRoomId: null, presentationPanes: [], presentationRoom, addRoomPanes: vi.fn(async () => undefined), openSettingsSurface: vi.fn() }}
       />
     );
   }
@@ -183,6 +196,22 @@ describe("RoomsDockPanel", () => {
     fireEvent.drop(target, { dataTransfer });
     expect(movePaneToRoom).toHaveBeenCalledWith("pane:1", "b");
     expect(target.classList.contains("is-drop-target")).toBe(false);
+  });
+
+  it("shows no write control in a room shared to view only (MU-007)", () => {
+    const shared = room("b", 1, { ownerUserId: "user:other", name: "Other", sharePermission: "VIEW" });
+    const { container } = render(<Panel initialRooms={[room("a", 0), shared]} listsEveryRoom presentationRoom={shared} />);
+    expect(screen.getByRole("button", { name: "Configure project for Room a" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Configure project for Other" })).toBeNull();
+    expect(container.querySelector(".room-pane-composer-slot")).toBeNull();
+    cleanup();
+    expect(render(<Panel presentationRoom={room("a", 0)} />).container.querySelector(".room-pane-composer-slot")).not.toBeNull();
+    const view = { ...shared }, collaborate = { ...shared, sharePermission: "COLLABORATE" as const };
+    const actions = ["add-cli", "create", "rename-room", "pane-layout", "sticky-note", "surface-rooms", "theme"].map((id) => ({ id }));
+    expect(actions.filter(roomActionFilter(view)).map((action) => action.id)).toEqual(["surface-rooms", "theme"]);
+    expect(actions.filter(roomActionFilter(collaborate))).toHaveLength(actions.length);
+    const rail = roomRailVisibility({ isVisible: (id: string) => id !== "music" }, view);
+    expect(["create", "layout", "sticky", "music", "docks"].filter((id) => rail.isVisible(id))).toEqual(["docks"]);
   });
 
   it("expands the project settings of a room", () => {

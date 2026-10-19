@@ -182,7 +182,7 @@ export async function openCodeServerFetch(
   timeoutMs = opencodeServerControlRequestTimeoutMs,
   fetchImpl: typeof fetch = fetch
 ): Promise<Response> {
-  return fetchImpl(`${openCodeServerBaseUrl(control.serverPort, control.serverHost)}${path}`, {
+  const response = await fetchImpl(`${openCodeServerBaseUrl(control.serverPort, control.serverHost)}${path}`, {
     ...init,
     headers: {
       ...(init.headers ?? {}),
@@ -190,10 +190,133 @@ export async function openCodeServerFetch(
     },
     signal: init.signal ?? AbortSignal.timeout(timeoutMs)
   });
+  // OpenCode 2 answers paths it does not serve (every v1 route) with its web UI and 200: treat that as not found.
+  if (response.ok && (response.headers.get("content-type") ?? "").includes("text/html")) {
+    await response.body?.cancel().catch(() => undefined);
+    return new Response(null, { status: 404, statusText: "OpenCode web UI" });
+  }
+  return response;
+}
+
+// OpenCode 2 (@opencode/cli) serves a new API under /api and accepts only this Basic auth user name.
+const openCodeV2Username = "opencode";
+const openCodeApiVersionTtlMs = 30_000;
+const openCodeApiVersions = new Map<string, { version: 1 | 2; checkedAt: number }>();
+
+export function openCodeV2Authorization(control: OpenCodeServerControl): string {
+  return `Basic ${Buffer.from(`${openCodeV2Username}:${control.serverPassword}`).toString("base64")}`;
+}
+
+async function openCodeV2Fetch(
+  control: OpenCodeServerControl,
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = opencodeServerControlRequestTimeoutMs
+): Promise<Response> {
+  return fetch(`${openCodeServerBaseUrl(control.serverPort, control.serverHost)}${path}`, {
+    ...init,
+    headers: { ...(init.headers ?? {}), authorization: openCodeV2Authorization(control) },
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs)
+  });
+}
+
+/**
+ * 2 when the server answers OpenCode 2's /api/info, 1 otherwise (a v1 server rejects the v2 user name or serves its
+ * web UI there). Cached per server for 30 s, so a server switched to another major is seen within that time.
+ */
+export async function openCodeServerApiVersion(control: OpenCodeServerControl): Promise<1 | 2> {
+  const key = `${control.serverHost ?? "127.0.0.1"}:${control.serverPort}`;
+  const cached = openCodeApiVersions.get(key);
+  if (cached && Date.now() - cached.checkedAt < openCodeApiVersionTtlMs) return cached.version;
+  // An unreachable server is not cached: the caller's own request reports that failure.
+  const response = await openCodeV2Fetch(control, "/api/info", {}, opencodeServerControlHealthTimeoutMs).catch(() => null);
+  if (!response) return 1;
+  const info = response.ok ? await response.json().catch(() => null) as { version?: unknown } | null : null;
+  const version = typeof info?.version === "string" && /^2\./.test(info.version) ? 2 : 1;
+  openCodeApiVersions.set(key, { version, checkedAt: Date.now() });
+  return version;
+}
+
+function openCodeLocationQuery(directory: string): string {
+  return `location%5Bdirectory%5D=${encodeURIComponent(directory)}`;
+}
+
+type JsonRecord = Record<string, unknown>;
+const jsonRecord = (value: unknown): JsonRecord => value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+
+/** OpenCode 2 messages (oldest first) in the v1 {info, parts} shape Space reads; an answer's parentID is the user turn before it. */
+export function openCodeV2MessagesAsV1(messages: unknown[]): Array<{ info: JsonRecord; parts: JsonRecord[] }> {
+  const result: Array<{ info: JsonRecord; parts: JsonRecord[] }> = [];
+  let parentID: unknown;
+  for (const message of messages.map(jsonRecord)) {
+    const time = jsonRecord(message.time);
+    if (message.type === "user") {
+      parentID = message.id;
+      const files = Array.isArray(message.files) ? message.files.map(jsonRecord) : [];
+      result.push({ info: { id: message.id, role: "user", time: { created: time.created } },
+        parts: [{ type: "text", text: message.text ?? "" }, ...files.map((file) => ({ type: "file", url: file.uri }))] });
+    } else if (message.type === "assistant") {
+      const model = jsonRecord(message.model), error = jsonRecord(message.error);
+      result.push({
+        info: { id: message.id, role: "assistant", parentID, time: { created: time.created, completed: time.completed },
+          modelID: model.id, providerID: model.providerID, variant: model.variant, mode: message.agent, finish: message.finish,
+          cost: message.cost, tokens: message.tokens,
+          ...(message.error ? { error: { name: error.type === "aborted" ? "MessageAbortedError" : String(error.type ?? "Error"), data: { message: error.message } } } : {}) },
+        parts: (Array.isArray(message.content) ? message.content : []).map(jsonRecord).map((content) => content.type === "tool"
+          ? { type: "tool", tool: content.name, callID: content.id, state: content.state }
+          : { type: content.type, text: content.text })
+      });
+    }
+  }
+  return result;
+}
+
+/** The session's last `limit` messages, oldest first, in the v1 {info, parts} shape on either server. */
+export async function fetchOpenCodeSessionMessages(
+  control: OpenCodeServerControl,
+  nativeSessionId: string,
+  limit: number
+): Promise<unknown[]> {
+  const id = encodeURIComponent(nativeSessionId);
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  const response = v2
+    ? await openCodeV2Fetch(control, `/api/session/${id}/message?limit=${limit}&order=desc`)
+    : await openCodeServerFetch(control, `/session/${id}/message?limit=${limit}`);
+  if (!response.ok) throw new Error(`OpenCode message list failed with HTTP ${response.status}.`);
+  const payload: unknown = await response.json();
+  if (!v2) return Array.isArray(payload) ? payload : [];
+  const data = jsonRecord(payload).data;
+  return openCodeV2MessagesAsV1(Array.isArray(data) ? [...data].reverse() : []);
+}
+
+/** Queues a user prompt without waiting for the turn; false when the server refused it. */
+export async function sendOpenCodePrompt(control: OpenCodeServerControl, nativeSessionId: string, text: string): Promise<boolean> {
+  const id = encodeURIComponent(nativeSessionId);
+  const headers = { "content-type": "application/json" };
+  const response = await openCodeServerApiVersion(control) === 2
+    ? await openCodeV2Fetch(control, `/api/session/${id}/prompt`, { method: "POST", headers, body: JSON.stringify({ text }) })
+    : await openCodeServerFetch(control, `/session/${id}/prompt_async`, { method: "POST", headers, body: JSON.stringify({ parts: [{ type: "text", text }] }) });
+  return response.ok;
+}
+
+/** Names of the visible primary agents (modes) the session can switch between. */
+export async function fetchOpenCodeAgentNames(control: OpenCodeServerControl, directory = control.directory ?? "/etc"): Promise<string[]> {
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  const response = v2 ? await openCodeV2Fetch(control, `/api/agent?${openCodeLocationQuery(directory)}`) : await openCodeServerFetch(control, "/agent");
+  if (!response.ok) return [];
+  const payload: unknown = await response.json().catch(() => null);
+  // OpenCode 2 names agents for display ("Build"); its id is the v1 name ("build").
+  const agents = (v2 ? jsonRecord(payload).data : payload) as Array<{ id?: string; name?: string; mode?: string; hidden?: boolean }> | undefined;
+  return Array.isArray(agents)
+    ? agents.flatMap((agent) => !agent.hidden && agent.mode !== "subagent" && (agent.id ?? agent.name) ? [(agent.id ?? agent.name)!] : [])
+    : [];
 }
 
 export async function openCodeServerIsHealthy(control: OpenCodeServerControl): Promise<boolean> {
   try {
+    if (await openCodeServerApiVersion(control) === 2) {
+      return (await openCodeV2Fetch(control, "/api/info", {}, opencodeServerControlHealthTimeoutMs)).ok;
+    }
     const response = await openCodeServerFetch(control, "/global/health", {}, opencodeServerControlHealthTimeoutMs);
     if (!response.ok) return false;
     const body = (await response.json()) as { healthy?: unknown };
@@ -232,8 +355,9 @@ export async function fetchOpenCodeSessionModels(
 ): Promise<OpenCodeModelDescriptor[]> {
   // The attached TUI resolves its configured catalog here. The v2 model list
   // can contain unconfigured entries without the native reasoning variants.
-  const configured = await openCodeServerFetch(control, `/config/providers?directory=${encodeURIComponent(directory)}`);
-  if (configured.ok) {
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  const configured = v2 ? null : await openCodeServerFetch(control, `/config/providers?directory=${encodeURIComponent(directory)}`);
+  if (configured?.ok) {
     const payload = await configured.json() as {providers?: Array<{id?: unknown; name?: string; models?: Record<string, {
       id?: string; name?: string; status?: string; variants?: Record<string, unknown>
     }>}>};
@@ -247,10 +371,12 @@ export async function fetchOpenCodeSessionModels(
       });
     });
     if (models.length) return models;
-  } else if (configured.status !== 404 && configured.status !== 405) {
+  } else if (configured && configured.status !== 404 && configured.status !== 405) {
     throw new Error(`OpenCode configured model catalog failed with HTTP ${configured.status}.`);
   }
-  const response = await openCodeServerFetch(control, "/api/model");
+  const response = v2
+    ? await openCodeV2Fetch(control, `/api/model?${openCodeLocationQuery(directory)}`)
+    : await openCodeServerFetch(control, "/api/model");
   if (!response.ok) {
     throw new Error(`OpenCode model catalog request failed with HTTP ${response.status}.`);
   }
@@ -287,8 +413,10 @@ export async function fetchOpenCodeCurrentModel(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<OpenCodeSessionModel | null> {
-  for (const prefix of ['/session/', '/api/session/']) {
-    const response = await openCodeServerFetch(control, `${prefix}${encodeURIComponent(nativeSessionId)}`);
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  for (const prefix of v2 ? ['/api/session/'] : ['/session/', '/api/session/']) {
+    const path = `${prefix}${encodeURIComponent(nativeSessionId)}`;
+    const response = v2 ? await openCodeV2Fetch(control, path) : await openCodeServerFetch(control, path);
     if (!response.ok) {
       if (response.status === 404 || response.status === 405) continue;
       return null;
@@ -314,9 +442,12 @@ export async function fetchOpenCodeSessionTitle(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<OpenCodeSessionTitleInfo | null> {
-  const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(nativeSessionId)}`);
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  const path = `${v2 ? "/api" : ""}/session/${encodeURIComponent(nativeSessionId)}`;
+  const response = v2 ? await openCodeV2Fetch(control, path) : await openCodeServerFetch(control, path);
   if (!response.ok) return null;
-  const session = (await response.json()) as { title?: unknown; time?: { updated?: unknown } };
+  const payload = (await response.json()) as { title?: unknown; time?: { updated?: unknown }; data?: unknown };
+  const session = (v2 ? jsonRecord(payload.data) : payload) as { title?: unknown; time?: { updated?: unknown } };
   const title = typeof session.title === "string" && session.title.length > 0 ? session.title : null;
   const updatedAt = typeof session.time?.updated === "number" ? session.time.updated : 0;
   if (!title) return null;
@@ -328,11 +459,10 @@ export async function updateOpenCodeSessionTitle(
   nativeSessionId: string,
   title: string
 ): Promise<void> {
-  const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(nativeSessionId)}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title })
-  });
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  const path = `${v2 ? "/api" : ""}/session/${encodeURIComponent(nativeSessionId)}`;
+  const init = { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) };
+  const response = v2 ? await openCodeV2Fetch(control, path, init) : await openCodeServerFetch(control, path, init);
   if (!response.ok) {
     throw new Error(`OpenCode session title update failed with HTTP ${response.status}.`);
   }
@@ -340,16 +470,26 @@ export async function updateOpenCodeSessionTitle(
 
 type OpenCodeSessionStatus = { type: "idle" } | { type: "retry"; attempt: number } | { type: "busy" };
 
-export async function fetchOpenCodeSessionIsTurnActive(
+/**
+ * true while a turn runs, false when idle, null when the server gave no status. Callers that start work
+ * (prompt injection, model switch, worker turns) must treat null as busy.
+ */
+export async function readOpenCodeSessionTurnActive(
   control: OpenCodeServerControl,
   nativeSessionId: string,
   directory?: string
-): Promise<boolean> {
+): Promise<boolean | null> {
   try {
+    if (await openCodeServerApiVersion(control) === 2) {
+      // OpenCode 2 lists only the sessions that are running.
+      const response = await openCodeV2Fetch(control, "/api/session/active");
+      if (!response.ok) return null;
+      return Object.hasOwn(jsonRecord(jsonRecord(await response.json()).data), nativeSessionId);
+    }
     const dir = directory ?? control.directory ?? "/etc";
     const path = `/session/status?directory=${encodeURIComponent(dir)}`;
     const response = await openCodeServerFetch(control, path);
-    if (!response.ok) return false;
+    if (!response.ok) return null;
     const statuses = (await response.json()) as Record<string, OpenCodeSessionStatus>;
     const status = statuses?.[nativeSessionId];
     if (status?.type === "busy" || status?.type === "retry") return true;
@@ -357,29 +497,40 @@ export async function fetchOpenCodeSessionIsTurnActive(
     // Fallback: if not found under specified directory, check without query parameter
     if (!statuses || !(nativeSessionId in statuses)) {
       const fallbackResponse = await openCodeServerFetch(control, "/session/status");
-      if (fallbackResponse.ok) {
-        const fallbackStatuses = (await fallbackResponse.json()) as Record<string, OpenCodeSessionStatus>;
-        const fbStatus = fallbackStatuses?.[nativeSessionId];
-        return fbStatus?.type === "busy" || fbStatus?.type === "retry";
-      }
+      if (!fallbackResponse.ok) return null;
+      const fallbackStatuses = (await fallbackResponse.json()) as Record<string, OpenCodeSessionStatus>;
+      const fbStatus = fallbackStatuses?.[nativeSessionId];
+      return fbStatus?.type === "busy" || fbStatus?.type === "retry";
     }
     return false;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Display-only busy flag: an unknown state reads as idle. Guards use readOpenCodeSessionTurnActive. */
+export async function fetchOpenCodeSessionIsTurnActive(
+  control: OpenCodeServerControl,
+  nativeSessionId: string,
+  directory?: string
+): Promise<boolean> {
+  return (await readOpenCodeSessionTurnActive(control, nativeSessionId, directory)) === true;
 }
 
 export async function abortOpenCodeSession(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<boolean> {
-  const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(nativeSessionId)}/abort`, {
-    method: "POST"
-  });
+  const v2 = await openCodeServerApiVersion(control) === 2;
+  const id = encodeURIComponent(nativeSessionId);
+  const response = v2
+    ? await openCodeV2Fetch(control, `/api/session/${id}/interrupt`, { method: "POST" })
+    : await openCodeServerFetch(control, `/session/${id}/abort`, { method: "POST" });
   if (!response.ok) {
     throw new Error(`OpenCode session abort failed with HTTP ${response.status}.`);
   }
-  return (await response.json()) === true;
+  const result: unknown = await response.json();
+  return v2 ? jsonRecord(result).interrupted === true : result === true;
 }
 
 export interface OpenCodeZeroTokenUnknownCompletion {
@@ -731,11 +882,11 @@ export async function switchOpenCodeSessionModel(
   if (namedVariant !== null && (namedVariant === "default" || (advertisedVariants ?? []).includes(namedVariant))) {
     model.variant = namedVariant;
   }
-  const response = await openCodeServerFetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/model`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model })
-  });
+  const path = `/api/session/${encodeURIComponent(nativeSessionId)}/model`;
+  const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model }) };
+  const response = await openCodeServerApiVersion(control) === 2
+    ? await openCodeV2Fetch(control, path, init)
+    : await openCodeServerFetch(control, path, init);
   if (!response.ok) {
     throw new Error(`OpenCode model switch failed with HTTP ${response.status}.`);
   }
@@ -838,21 +989,40 @@ export async function createOpenCodeSession(
   directory = "/etc"
 ): Promise<string | null> {
   try {
-    const response = await openCodeServerFetch(
-      control,
-      "/session",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ directory, title })
-      },
-      15_000
-    );
+    const v2 = await openCodeServerApiVersion(control) === 2;
+    const headers = { "content-type": "application/json" };
+    const response = v2
+      ? await openCodeV2Fetch(control, "/api/session", { method: "POST", headers, body: JSON.stringify({ title, location: { directory } }) }, 15_000)
+      : await openCodeServerFetch(control, "/session", { method: "POST", headers, body: JSON.stringify({ directory, title }) }, 15_000);
     if (!response.ok) return null;
-    const payload = (await response.json()) as { id?: unknown };
-    return typeof payload.id === "string" && payload.id.length > 0 ? payload.id : null;
+    const payload = (await response.json()) as { id?: unknown; data?: unknown };
+    const id = v2 ? jsonRecord(payload.data).id : payload.id;
+    if (typeof id !== "string" || id.length === 0) return null;
+    if (v2) await waitForOpenCodeV2Mcp(control, directory);
+    return id;
   } catch {
     return null;
+  }
+}
+
+/**
+ * OpenCode 2 connects a directory's MCP servers on first use, and a prompt sent before they connect runs without
+ * their tools (2.0.32). A TUI starts them when it opens; a session that only the API prompts waits here instead.
+ */
+async function waitForOpenCodeV2Mcp(control: OpenCodeServerControl, directory: string): Promise<void> {
+  // shortcut: a server with no MCP servers configured waits the whole 5 s once per new session; read /api/config if
+  // such servers become common.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await openCodeV2Fetch(control, `/api/mcp?${openCodeLocationQuery(directory)}`);
+      if (!response.ok) return;
+      const servers = jsonRecord(await response.json()).data;
+      if (Array.isArray(servers) && servers.length > 0
+        && servers.every((server) => jsonRecord(jsonRecord(server).status).status !== "pending")) return;
+    } catch {
+      return; // Best effort: the session exists, and a later prompt gets the tools.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
@@ -865,6 +1035,9 @@ export async function openCodeSessionExists(
 ): Promise<boolean> {
   if (!nativeSessionId) return false;
   try {
+    if (await openCodeServerApiVersion(control) === 2) {
+      return (await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}`, {}, opencodeServerControlHealthTimeoutMs)).ok;
+    }
     const response = await openCodeServerFetch(
       control,
       `/session/${encodeURIComponent(nativeSessionId)}`,

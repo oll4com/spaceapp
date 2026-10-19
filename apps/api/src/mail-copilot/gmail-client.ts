@@ -1,7 +1,8 @@
 import { GmailMailboxError } from "../job-apply/gmail-mailbox.js";
+import { gmailErrorMessage, gmailRefusal } from "../job-apply/gmail-organize.js";
 
 // The Gmail REST calls the mailbox needs, one client per (owner, account) access token. Every call is one
-// HTTPS request with a 20 s timeout; 429 and 5xx answers are retried a few times with backoff.
+// HTTPS request with a 20 s timeout; rate limits (429, or 403 with a rate-limit reason) and 5xx answers are retried a few times with backoff.
 const gmailApi = "https://gmail.googleapis.com/gmail/v1/users/me";
 const RETRIES = 3;
 
@@ -51,12 +52,11 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
       const text = await response.text();
       const body = (text ? JSON.parse(text) : {}) as GmailJson;
       if (response.ok) return body;
-      const reason = String((body.error as { message?: string } | undefined)?.message ?? "");
-      const retryable = response.status === 429 || response.status >= 500 || (response.status === 403 && /rate ?limit|quota/i.test(reason));
-      if (retryable && attempt < RETRIES) { await sleep(retryDelay * 2 ** attempt); continue; }
-      throw new GmailMailboxError(response.status, response.status === 401 ? "Google access to Gmail expired."
-        : response.status === 403 ? "Gmail refused the request: the mailbox needs full Gmail access (Allow full Gmail access in Setup → Accounts)."
-          : response.status === 404 ? "Gmail no longer has that message or thread." : `Gmail request failed (${response.status}).`);
+      const refusal = gmailRefusal(response.status, body);
+      if ((refusal === "RATE_LIMIT" || response.status >= 500) && attempt < RETRIES) { await sleep(retryDelay * 2 ** attempt); continue; }
+      // Only a scope refusal is a missing grant: Gmail answers its per-user rate limits with 403 too.
+      throw new GmailMailboxError(response.status, refusal === "SCOPE" ? "Gmail refused the request: the mailbox needs full Gmail access (Allow full Gmail access in Setup → Accounts)."
+        : response.status === 404 ? "Gmail no longer has that message or thread." : gmailErrorMessage(response.status, body));
     }
   }
   const labelIds = (change: { addLabelIds: string[]; removeLabelIds: string[] }) => ({ addLabelIds: change.addLabelIds, removeLabelIds: change.removeLabelIds });

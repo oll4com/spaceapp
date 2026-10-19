@@ -12,6 +12,7 @@ import {
 } from "./cli-browser-bridge.js";
 import type { SpaceApiConfig } from "./config.js";
 import { isT3AgentSessionId, t3AgentPrincipal } from "./t3code/agent-tokens.js";
+import { harnessAgentPrincipal, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
 
 // CLI sessions run in their own network namespaces, so the managed Chrome's
 // loopback DevTools port is reachable only from the API. This proxy pipes a
@@ -29,6 +30,8 @@ export const cliBrowserCdpCloseCodes = Object.freeze({
   PANE_NOT_FOUND: 4404,
   BROWSER_NOT_RUNNING: 4409,
   BROWSER_CONTROL_HELD: 4423,
+  // A Vault-protected browser (vault/protection.ts) has no automation endpoint.
+  VAULT_PROTECTED: 4424,
   ENDPOINT_UNAVAILABLE: 4502
 });
 export type CliBrowserCdpRefusal = keyof typeof cliBrowserCdpCloseCodes;
@@ -193,6 +196,11 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
       if (!await t3AgentPrincipal(options.store, claims)) {
         return { refused: "TOKEN_INVALID", reason: "The T3 Code pane for this browser bridge token is closed or was not found." };
       }
+    } else if (isHarnessAgentSessionId(claims.cliSessionId)) {
+      // A Harness agent acts for its open Harness pane (harness-agent-tokens.ts).
+      if (!await harnessAgentPrincipal(options.store, claims)) {
+        return { refused: "TOKEN_INVALID", reason: "The Harness pane for this browser bridge token is closed or was not found." };
+      }
     } else {
       const cliSession = await options.store.getPaneCliSession(claims.cliSessionId);
       // A moved pane keeps its running CLI session; the token then acts in the pane's current room.
@@ -219,6 +227,10 @@ export function createCliBrowserCdpProxy(options: CliBrowserCdpProxyOptions): Cl
       pane = await options.store.getPane(paneId);
     } catch {
       return { refused: "PANE_NOT_FOUND", reason: "Browser pane was not found." };
+    }
+    // A plain CLI pane (the wrapper sends its own id) drives the room's browser pane, the one space_browser_start uses.
+    if (pane.id === claims.paneId && !options.isBrowserPane(pane)) {
+      pane = (await options.store.listPanes(claims.roomId, false)).find((candidate) => candidate.mode === "BROWSER") ?? pane;
     }
     if (pane.roomId !== claims.roomId || pane.isClosed || !options.isBrowserPane(pane)) {
       return { refused: "PANE_NOT_FOUND", reason: "Browser pane was not found in the CLI session room." };

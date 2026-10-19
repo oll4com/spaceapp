@@ -57,7 +57,7 @@ function applyControlAppearance(input: Record<string, unknown>): { ok: boolean; 
   const appearance = input.appearance;
   const zoomLevel = input.zoomLevel;
   const terminalFontSize = input.terminalFontSize;
-  if (theme !== undefined && (theme !== "classic" && theme !== "modern" && theme !== "codex" && theme !== "motion" && theme !== "aurora" && theme !== "liquid-glass")) return { ok: false, evidence: { applied: false, reason: "Unsupported UI theme." } };
+  if (theme !== undefined && (theme !== "classic" && theme !== "modern" && theme !== "codex" && theme !== "motion" && theme !== "aurora" && theme !== "liquid-glass" && theme !== "jarvis" && theme !== "aira")) return { ok: false, evidence: { applied: false, reason: "Unsupported UI theme." } };
   if (appearance !== undefined && (appearance !== "system" && appearance !== "dark" && appearance !== "light")) return { ok: false, evidence: { applied: false, reason: "Unsupported color mode." } };
   if (zoomLevel !== undefined && (typeof zoomLevel !== "number" || zoomLevel < 50 || zoomLevel > 200)) return { ok: false, evidence: { applied: false, reason: "UI zoom must be between 50 and 200 percent." } };
   if (terminalFontSize !== undefined && (typeof terminalFontSize !== "number" || terminalFontSize < 8 || terminalFontSize > 32)) return { ok: false, evidence: { applied: false, reason: "Terminal font size must be between 8 and 32 pixels." } };

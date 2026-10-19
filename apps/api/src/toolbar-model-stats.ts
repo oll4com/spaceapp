@@ -208,14 +208,37 @@ export async function readOpenCodeModelRows(input: {
   windowMinutes: number;
   now: () => Date;
   stateRoot: string;
+  dbPath?: string;
 }): Promise<OpenCodeDbRow[]> {
   const validIds = input.nativeSessionIds.filter((id) => opencodeNativeSessionIdPattern.test(id));
   if (validIds.length === 0) return [];
-  const dbPath = await resolveOpenCodeDbPath(input.stateRoot);
+  const dbPath = input.dbPath ?? await resolveOpenCodeDbPath(input.stateRoot);
   if (!dbPath) return [];
   const windowMs = Math.max(1, input.windowMinutes) * 60_000;
   const sinceMs = input.now().getTime() - windowMs;
   const sessionClause = validIds.map(sqliteQuote).join(", ");
+  // shortcut: once OpenCode 2 has opened the store (session_v2) its tables are read, so messages a rolled-back
+  // OpenCode 1 writes later are not counted; read both if a rollback has to last.
+  const openCode2 = (await runSqliteJson(dbPath, "select 1 as found from sqlite_master where type = 'table' and name = 'session_v2';")).length > 0;
+  if (openCode2) {
+    // OpenCode 2 stores one message per step with its own times; emit the v1 step-start/text/step-finish rows from them.
+    return runSqliteJson<OpenCodeDbRow>(dbPath, [
+      "select m.session_id as sessionId, m.id as messageId,",
+      "json_extract(m.data, '$.model.id') as modelID, json_extract(m.data, '$.model.providerID') as providerID,",
+      "m.time_created as msgCreated,",
+      "json_extract(m.data, '$.tokens.input') as msgTokensIn, json_extract(m.data, '$.tokens.output') as msgTokensOut,",
+      "json_extract(m.data, '$.tokens.reasoning') as msgTokensReasoning,",
+      "k.partType as partType,",
+      "case k.partType when 'step-start' then json_extract(m.data, '$.time.created')",
+      "when 'step-finish' then json_extract(m.data, '$.time.completed')",
+      "else (select min(json_extract(c.value, '$.time.created')) from json_each(m.data, '$.content') c) end as partTime",
+      "from session_message m",
+      "cross join (select 'step-start' as partType union all select 'text' union all select 'step-finish') k",
+      `where m.type = 'assistant' and m.time_created >= ${sinceMs}`,
+      `and m.session_id in (${sessionClause})`,
+      "order by partTime asc;"
+    ].join(" "));
+  }
   const sql = [
     "select",
     "s.id as sessionId,",

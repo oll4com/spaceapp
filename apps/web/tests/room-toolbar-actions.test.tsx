@@ -43,7 +43,7 @@ function context(overrides: Partial<RoomToolbarActionsContext> = {}): RoomToolba
     create: {
       isCodexEnabled: true, cliPaneCreationPending: false, toggleChatLauncher: vi.fn(), toggleCliLauncher: vi.fn(), addRootAdminPane: vi.fn(async () => undefined),
       addPane: vi.fn(), addFilesPane: vi.fn(async () => undefined), addDatabasesPane: vi.fn(async () => undefined), addDemosPane: vi.fn(async () => undefined),
-      addT3CodePane: vi.fn(async () => undefined), addJobApplyPane: vi.fn(async () => undefined), addMailCopilotPane: vi.fn(async () => undefined), addMarketingCopilotPane: vi.fn(async () => undefined), addFreelanceCopilotPane: vi.fn(async () => undefined), addLivePane: vi.fn(async () => null)
+      addT3CodePane: vi.fn(async () => undefined), addJobApplyPane: vi.fn(async () => undefined), addMailCopilotPane: vi.fn(async () => undefined), addMarketingCopilotPane: vi.fn(async () => undefined), addFreelanceCopilotPane: vi.fn(async () => undefined), addDesignPane: vi.fn(async () => undefined), addLivePane: vi.fn(async () => null)
     },
     tools: {
       desktopWidgets: { isWidgetEnabled: () => false, toggleWidget: vi.fn() } as never, openStickyNote: vi.fn(), isBrowserFullscreen: false,
@@ -68,7 +68,7 @@ describe("buildRoomToolbarActions", () => {
 
   it("lists the default actions in order and leaves consolidated ones to the Workspace menu", () => {
     const ids = buildRoomToolbarActions(context()).map((action) => action.id);
-    expect(ids.slice(0, 5)).toEqual(["surface-rooms", "surface-notifications", "surface-room-agent", "surface-shared-chat", "surface-agent-files"]);
+    expect(ids.slice(0, 5)).toEqual(["surface-rooms", "surface-nous", "surface-notifications", "surface-room-agent", "surface-shared-chat"]);
     expect(ids).not.toContain("surface-media");
     expect(ids).not.toContain("surface-health");
     expect(ids).not.toContain("surface-streaming");

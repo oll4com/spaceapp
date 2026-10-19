@@ -53,8 +53,12 @@ export interface CliRuntimeDescriptor {
   paneModelLaunchEnv: boolean;
   /** Configured fallback; does not establish provider support or live discovery. Set to the
    * model the CLI starts on without a pane pick (its own catalog/config default, checked
-   * 2026-10-11), or null where its account/provider decides; never passed to it as a pick. */
+   * 2026-10-11), or null where its account/provider decides; never passed to it as a pick
+   * unless `launchesDefaultModel` is set. */
   defaultModelId: string | null;
+  /** Space owns this default: the wrapper gets it like any pane pick, so the CLI's own config
+   * default never decides which model a pane runs (Oh My Pi, operator decision 2026-10-18). */
+  launchesDefaultModel?: true;
   credentialVerifiedReason: string;
   loginBootstrapReason: string | null;
 }
@@ -461,7 +465,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
-    defaultModelId: "opencode-zen:big-pickle",
+    defaultModelId: "space-gateway-claude:claude-opus-5-5",
     credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
     loginBootstrapReason: null
   },
@@ -491,6 +495,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
     defaultModelId: "space-gateway/gpt-6-sol",
+    launchesDefaultModel: true,
     credentialVerifiedReason: "Oh My Pi CLI is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
   },

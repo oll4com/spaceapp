@@ -231,7 +231,7 @@
 @media (max-width: 360px) {
   .agents-dashboard .agents-dashboard-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-@media (max-width: 768px), (pointer: coarse) {
+@media (max-width: 767px), (pointer: coarse) {
   .agents-dashboard, .agents-dashboard.is-maximized {
     inset: 0 !important;
     width: 100vw !important;

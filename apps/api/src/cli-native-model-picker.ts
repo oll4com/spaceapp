@@ -1,7 +1,8 @@
-import type { PaneCliModelSettings } from "@space/contracts";
+import type { PaneCliModelSettings, PaneCliSession } from "@space/contracts";
 import { parseCliModelsTsv } from "./chat-providers.js";
 import { execFileInProcessGroup } from "./process-group-exec.js";
 import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
+import { loadOmpNativeModel, recordOmpNativeModel, type OmpModelStore } from "./omp-native-model.js";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
 
 type Model = PaneCliModelSettings["models"][number];
@@ -22,20 +23,24 @@ function nativeSettingsMenu(screen: string): boolean {
   // interaction at the bottom is active; old transcript menus need no Escape.
   // Claude's menu keeps its key hints when PgDn scrolls its title away.
   const lastPrompt = [...screen.matchAll(/^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*(.*)$/gm)].at(-1);
-  const menu = [...screen.matchAll(/Select (?:a )?model|Select thinking effort|Type to filter[\s\S]*?Tab to\s+edit|Edit\s+P\s*a\s*r\s*a\s*m\s*e\s*t\s*e\s*r\s*s[\s\S]*?Esc to go\s+back|Changes apply to this session only|Enter to set as default/gi)].at(-1);
+  // Qoder's menu hints "s session only" (wrapped in a narrow pane); its acknowledgement "(this session only)" is no menu.
+  const menu = [...screen.matchAll(/Select (?:a )?model|Select thinking effort|Type to filter[\s\S]*?Tab to\s+edit|Edit\s+P\s*a\s*r\s*a\s*m\s*e\s*t\s*e\s*r\s*s[\s\S]*?Esc to go\s+back|Changes apply to this session only|Enter to set as default|\bs session\s+only|Tab switch · Enter (?:select|to list)/gi)].at(-1);
   return Boolean(menu && (!lastPrompt || menu.index! + menu[0].length > lastPrompt.index! || /Select (?:a )?model|Select thinking effort/i.test(menu[0])));
 }
 
 function nativeApprovalOrTurn(screen: string): boolean {
-  return /esc(?:ape)?\s+to\s+interrupt|ctrl\+c to interrupt|allow (?:once|always)|approve this|do you want to proceed/i.test(screen);
+  return /esc(?:ape)?\s+to\s+(?:interrupt|stop)|ctrl\+c to interrupt|allow (?:once|always)|approve this|do you want to proceed/i.test(screen);
 }
 
 function nativePromptDraft(text: string, runtimeId: string): string | undefined {
   const promptLines = text.split('\n');
+  // omp right-aligns a key hint in its empty composer ("╰─            ⇧⇥ to change thinking effort"); a draft
+  // starts after one space. Qoder's YOLO composer is "*" instead of ">".
   const promptAt = runtimeId === 'cli:omp'
     ? promptLines.findLastIndex(line => /^\s*╰─\s*/u.test(line))
-    : promptLines.findLastIndex(line => /^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*/u.test(line));
-  let prompt = promptLines[promptAt]?.replace(/^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→|╰─)\s*/u, '').replace(/\s*[│┃]\s*$/, '').trim();
+    : promptLines.findLastIndex(line => (runtimeId === 'cli:qoder' ? /^\s*[>*]\s/u : /^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*/u).test(line));
+  if (runtimeId === 'cli:omp' && /^\s*╰─\s{2,}\S{1,8} to \S/u.test(promptLines[promptAt] ?? '')) return '';
+  let prompt = promptLines[promptAt]?.replace(/^\s*(?:[│┃]\s*[❯›>]|[❯›>*]|→|╰─)\s*/u, '').replace(/\s*[│┃]\s*$/, '').trim();
   if (runtimeId === 'cli:cursor' && prompt && !prompt.startsWith('/')) {
     for (const next of promptLines.slice(promptAt + 1, promptAt + 4)) {
       if (!/^\s+\S/.test(next) || /Run Everything|Ask Every Time|^[\s│┃╭╰─]*$/u.test(next)) break;
@@ -68,6 +73,11 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
   if (prompt && input.runtimeId === 'cli:claude' && input.readUndimmed) {
     prompt = nativePromptDraft(await input.readUndimmed(), input.runtimeId);
   }
+  if (prompt && input.runtimeId === 'cli:droid' && input.readUndimmed) {
+    // Droid draws its placeholder dim after the cursor cell, which shows the first letter in reverse video.
+    const undimmed = nativePromptDraft(await input.readUndimmed(), input.runtimeId);
+    prompt = undimmed && !(undimmed.length === 1 && prompt.length > 1 && prompt.startsWith(undimmed)) ? undimmed : undefined;
+  }
   // Escape can restore a previous settings command. A normal draft is never
   // cleared, even when a previous picker attempt failed.
   if (prompt && /^\/(?:model|effort|reasoning|thinking|switch)(?:\s|$)/.test(prompt)) {
@@ -76,7 +86,7 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
     'Ask me anything…', 'Try "explain this codebase"', 'Try "write a test for…"',
     'Try "refactor the auth module"', 'Try "/help" for commands',
     'Try "fix the lint errors"', 'Try "how does the config loader work?"'
-  ].some(placeholder => prompt.length >= 12 && placeholder.startsWith(prompt))) && !/^(?:Ask anything(?:\.{3}|…)?|Ask (?:Cursor|Codex) to do anything|Plan, search, build(?: anything)?|Type your message(?:\.{3}|…)?|Send a message(?:\.{3}|…)?|Try "\/help" for(?: commands)?|(?:Accept-edits|Plan|Default) mode: [^\n]*\.\.\.)$/i.test(prompt)) {
+  ].some(placeholder => prompt.length >= 12 && placeholder.startsWith(prompt))) && !/^(?:Ask anything(?:\.{3}|…)?|Ask (?:Cursor|Codex) to do anything|Plan, search, build(?: anything)?|Type your message(?: or @path\/to\/file)?(?:\.{3}|…)?|Send a message(?:\.{3}|…)?|Try "\/help" for(?: commands)?|(?:Accept-edits|Plan|Default) mode: [^\n]*\.\.\.)$/i.test(prompt)) {
     throw new SpaceConflictError('Send or clear the current CLI draft before changing model settings.');
   }
   return screen;
@@ -136,11 +146,19 @@ export function nativeCliReasoningLevels(commandPath: string, model: Model): str
   // Claude Code's /model menu offers these levels for every family (PTY-verified on 2.1.296).
   if (commandPath.endsWith('/claude-vscode-parity')) return [...CLAUDE_EFFORT_LEVELS];
   if (commandPath.endsWith('/omp-vscode-parity')) return model.supportedReasoningEfforts.filter(e => e !== 'none');
+  // Droid's wrapper lists each model's levels from its selector ("Off" is none); a model with Off alone has no level.
+  if (commandPath.endsWith('/droid-vscode-parity')) return model.supportedReasoningEfforts.some(e => e !== 'none') ? model.supportedReasoningEfforts : [];
+  // Qoder's /effort offers "auto" (its default) and the levels a model declares: Space's Claude provider declares these
+  // (qoderClaudeSettings); Qoder's own models keep theirs in its encrypted account catalog, so they get no picker.
+  if (commandPath.endsWith('/qoder-vscode-parity')) return model.id.startsWith('space-gateway-claude/') ? ['auto', ...CLAUDE_EFFORT_LEVELS] : [];
   return [];
 }
 
 export function nativeCliCatalogModels(commandPath: string, raw: string): Model[] {
-  const advertised = parseCliModelsTsv(raw);
+  // Qoder lists custom models as "Claude Opus 5.5 (API credits) (space-gateway-claude/claude-opus-5-5)": its -m takes
+  // the provider/model part and its footer and menu show the name.
+  const advertised = parseCliModelsTsv(commandPath.endsWith("/qoder-vscode-parity")
+    ? raw.replace(/^(.+) \(([\w.-]+\/[\w.:-]+)\)\t.*$/gm, "$2\t$1") : raw);
   const families = new Map<string, Model>();
   const isCursor = commandPath.endsWith("/cursor-vscode-parity");
   const isGemini = commandPath.endsWith("/gemini-vscode-parity");
@@ -223,8 +241,25 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
 export const nativeCliCatalogBufferBytes = 8 * 1024 * 1024;
 
 function nativeControlScreen(screen: string, runtimeId: string): string {
+  if (runtimeId === 'cli:droid') return droidFooterScreen(screen);
   // Reasonix draws a scrollbar at the right edge of every transcript row.
   return runtimeId === 'cli:deepseek' || runtimeId === 'cli:hermes' ? screen.replace(/[ \t]*[│┃█][ \t]*$/gm, '') : screen;
+}
+
+/** Droid's footer (autonomy · approvals, then the model and its reasoning level) and its level labels.
+ * Narrow panes clip the autonomy part to "Auto… Claude Opus 5.5 API credits (High)". */
+const droidFooter = /^(?:Auto|Spec|Plan)\b[^·…]*[·…]/;
+const droidEfforts: Record<string, string> = { off: 'none', low: 'low', medium: 'medium', high: 'high', 'extra high': 'xhigh', max: 'max' };
+
+/** Droid's footer is the line above its composer box. Narrow panes clip its autonomy part to "Aut…", "… " or nothing
+ * (PTY-verified on droid 0.244.0), so it is read as "Auto… <model> (<level>)". */
+function droidFooterScreen(screen: string): string {
+  const lines = screen.split('\n');
+  const box = lines.findLastIndex((line, index) => /^\s*╭─/u.test(line) && /^\s*│\s*>/u.test(lines[index + 1] ?? ''));
+  const footer = lines[box - 1]?.trim().split(/\s{2,}|…\s+/).filter(Boolean).at(-1);
+  if (box < 1 || !footer) return screen;
+  lines[box - 1] = `Auto… ${footer}`;
+  return lines.join('\n');
 }
 
 export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, model?: Model): string | null {
@@ -251,6 +286,17 @@ export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, m
       const value = line.match(/^(?:Set effort level to|Current effort level:|Effort level set to)\s*(auto|low|medium|high|xhigh|max)\b/i)?.[1]
         ?? line.match(/\bwith\s+(low|medium|high|xhigh|max)\s+effort\b/i)?.[1];
       if (value) return value.toLowerCase();
+    }
+    return null;
+  }
+  if (runtimeId === 'cli:qoder') {
+    // Footer "<model> Model · Extra High · ctx 0% · /etc" ("Model · ctx" on auto) and the /effort acknowledgement
+    // "Reasoning effort set to default for <model> (this session only)" (PTY-verified on qodercli 1.1.58).
+    const levels: Record<string, string> = { default: 'auto', disabled: 'none', 'disabled effort': 'none', 'extra high': 'xhigh' };
+    for (const line of screen.split(/\r?\n/).reverse()) {
+      const footer = line.match(/ Model · (?:(Low|Medium|High|Extra High|Max|Disabled Effort) · |ctx\b)/);
+      const value = footer ? footer[1] ?? 'default' : line.match(/Reasoning effort set to (default|disabled|low|medium|high|xhigh|max) for /)?.[1];
+      if (value) return levels[value.toLowerCase()] ?? value.toLowerCase();
     }
     return null;
   }
@@ -290,6 +336,7 @@ export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, m
       : runtimeId === 'cli:kimi' ? line.match(/(?:\bthinking:\s*|^Thinking set to\s+)(low|high|max)\b/i)?.[1]
       : runtimeId === 'cli:grok' ? line.match(/Grok [\d.]+\s*\((low|medium|high|xhigh)\)/i)?.[1]
       : runtimeId === 'cli:hermes' ? line.match(/^reasoning:\s*(none|minimal|low|medium|high|xhigh|max|ultra)\b/i)?.[1]
+      : runtimeId === 'cli:droid' && droidFooter.test(line) ? droidEfforts[line.match(/\((Off|Low|Medium|High|Extra high|Max)\)\s*$/i)?.[1]?.toLowerCase() ?? '']
       : runtimeId === 'cli:cursor' && /\s{2,}(?:Run Everything|Ask Every Time)\s*$/.test(line) ? line.match(/\b(Extra High|None|Low|Medium|High|Max)(?:\s+Fast)?\s{2,}/i)?.[1]?.replace(/extra high/i,'xhigh')
       : null;
     if (value) return value.toLowerCase();
@@ -305,7 +352,9 @@ async function applyNativeCliReasoning(input: {
   if (!input.model.supportedReasoningEfforts.includes(input.effort)) throw new SpaceConflictError('This reasoning level is not supported by the selected model.');
   if (input.effort === 'none' && input.model.reasoningOptions?.length === 0) return;
   if (input.runtimeId === 'cli:cursor' && input.model.reasoningOptions?.length) return switchCursorReasoning(input);
-  const prefix = ({'cli:deepseek':'/effort', 'cli:grok':'/effort', 'cli:claude':'/effort', 'cli:kimi':'/thinking', 'cli:hermes':'/reasoning'} as Record<string,string>)[input.runtimeId];
+  // Droid sets the level in its model selector, so a level-only change re-selects the current model.
+  if (input.runtimeId === 'cli:droid') return applyNativeCliModel(input);
+  const prefix = ({'cli:deepseek':'/effort', 'cli:grok':'/effort', 'cli:claude':'/effort', 'cli:qoder':'/effort', 'cli:kimi':'/thinking', 'cli:hermes':'/reasoning'} as Record<string,string>)[input.runtimeId];
   if (!prefix) {
     if (input.runtimeId === 'cli:omp') {
       const wait = input.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -340,7 +389,8 @@ async function applyNativeCliReasoning(input: {
   const before = await prepareNativeCliSettings(input);
   if (nativeCliConfirmedReasoning(before.text, input.runtimeId, input.model) === input.effort) return;
   if (/esc(?:ape)?\s+to\s+(?:interrupt|cancel)|ctrl\+c to interrupt|allow (?:once|always)|approve this|enter to (?:confirm|select)/i.test(before.text)) throw new SpaceConflictError('Finish the current CLI turn or dialog before changing reasoning.');
-  const command = input.runtimeId === 'cli:kimi' ? prefix : `${prefix} ${input.effort}`;
+  // Qoder's /effort without --session-only saves the profile default every Qoder pane shares.
+  const command = input.runtimeId === 'cli:kimi' ? prefix : `${prefix} ${input.effort}${input.runtimeId === 'cli:qoder' ? ' --session-only' : ''}`;
   await input.write(command + (input.runtimeId === 'cli:deepseek' ? ' ' : ''));
   await wait(250); await input.assertCurrent(); await input.write('\r');
   let submitted = false;
@@ -350,7 +400,7 @@ async function applyNativeCliReasoning(input: {
     const after = await input.read();
     if (after.revision === before.revision) continue;
     if ((!nativeSettingsMenu(after.text) || input.runtimeId !== 'cli:kimi') && nativeCliConfirmedReasoning(after.text, input.runtimeId, input.model) === input.effort) return;
-    if (/unknown command|invalid (?:effort|reasoning)|unsupported effort/i.test(after.text)) throw new SpaceConflictError('The CLI rejected this reasoning level.');
+    if (/unknown command|invalid (?:effort|reasoning)|unsupported effort|does not support reasoning effort/i.test(after.text)) throw new SpaceConflictError('The CLI rejected this reasoning level.');
     if (!submitted && input.runtimeId === 'cli:deepseek' && after.text.split('\n').some(l => l.trim() === `❯ ${command}`)) { await input.write('\r'); submitted = true; }
     if (!submitted && input.runtimeId === 'cli:kimi' && /Select thinking effort/.test(after.text)) {
       const selected = after.text.match(/\[\s*(Low|High|Max)\b/)?.[1]?.toLowerCase() ?? kimiSelection ?? (/\bLow\s+High\b/.test(after.text) ? 'max' : undefined);
@@ -504,7 +554,11 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
     }
     if (runtimeId === "cli:hermes" && /^[^│┃·]+\s*·\s*Nous Research/.test(line)) modelText ??= line.split(/\s*·\s*/)[0];
     if (runtimeId === "cli:deepseek") modelText ??= line.match(/\bMODEL\s+(.+?)\s+EFFORT\b/)?.[1];
+    // "Auto (Off) · all actions require approval      Opus 5.5 (High)"; narrow panes clip the middle with "… ".
+    if (runtimeId === "cli:droid" && droidFooter.test(line)) modelText ??= line.split(/\s{2,}|…\s*/).filter(Boolean).at(-1);
     if (runtimeId === "cli:cursor" && /\s{2,}(?:Run Everything|Ask Every Time)\s*$/.test(line)) modelText = line.split(/\s{2,}/)[0];
+    // "Claude Opus 5.5 (API credits) (space-gateway-claude) Model · Extra High · ctx 0% · /etc"
+    if (runtimeId === "cli:qoder") modelText ??= line.match(/^(.+?) Model · /)?.[1];
     if (runtimeId === "cli:copilot" && /open sidebar.*tab next tab/i.test(line)) modelText = line.split(/\s{2,}/).at(-1);
     if (runtimeId === "cli:grok") modelText ??= line.match(/(Grok [0-9.]+)\s*\([^)]*\)\s*·/)?.[1]
       ?? line.match(/^╰─+\s*(Grok [0-9.]+)\s*\(/)?.[1];
@@ -681,10 +735,12 @@ async function applyNativeCliModel(input: {
   if (input.runtimeId === "cli:claude") return applyClaudeSessionModel(input);
   const wait = input.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const before = await prepareNativeCliSettings(input);
+  let droidLevel: string | null = null;
   if (nativeCliConfirmedModel(before.text, [input.model], input.runtimeId) === input.model.id) {
-    if ((input.runtimeId === 'cli:omp' || input.runtimeId === 'cli:gemini') && input.effort && input.effort !== 'none') {
+    if ((input.runtimeId === 'cli:omp' || input.runtimeId === 'cli:gemini' || input.runtimeId === 'cli:droid') && input.effort && input.effort !== 'none') {
       const confirmedEffort = nativeCliConfirmedReasoning(before.text, input.runtimeId, input.model);
       if (confirmedEffort && confirmedEffort === input.effort) return;
+      if (input.runtimeId === 'cli:droid') droidLevel = confirmedEffort;
     } else {
       return;
     }
@@ -692,6 +748,8 @@ async function applyNativeCliModel(input: {
   if (/esc(?:ape)?\s+to\s+(?:interrupt|cancel)|ctrl\+c to interrupt|allow (?:once|always)|approve this|enter to (?:confirm|select)/i.test(before.text)) {
     throw new SpaceConflictError("Finish the current CLI turn or dialog before changing models.");
   }
+  if (droidLevel) return cycleDroidReasoning(input, droidLevel, wait);
+  if (input.runtimeId === "cli:qoder") return applyQoderSessionModel(input, before, wait);
   const hermesParts = input.runtimeId === "cli:hermes" ? input.model.id.split(/:(.*)/s) : null;
   let targetModel = input.model.id;
   if (input.runtimeId === "cli:cursor") {
@@ -708,6 +766,47 @@ async function applyNativeCliModel(input: {
       ? `/switch ${input.model.id}${input.effort && input.effort !== 'none' ? `:${input.effort}` : ''}`
       : `/model ${targetModel}${input.runtimeId === "cli:hermes" ? " --session" : ""}`;
   if (/[\u0000-\u001f\u007f]/.test(command)) throw new SpaceConflictError("The CLI model label contains unsupported control characters.");
+  // Droid opens its selector whatever /model names: filter it by the advertised name, move to the match's row, then
+  // to the requested level in the reasoning menu that follows ("> High (current)").
+  let droidStep = 'filter' as 'filter' | 'select' | 'effort' | 'done';
+  let droidListWaits = 0;
+  const droidSelectorStep = async (text: string): Promise<boolean> => {
+    if (droidStep === 'filter' && /Select Model For This Session/.test(text)) {
+      await input.assertCurrent(); await input.write(input.model.displayName); droidStep = 'select'; return true;
+    }
+    const rows = text.split(/\r?\n/).map((line) => line.replace(/^\s*│\s?|\s*│\s*$/g, '').trim());
+    if (droidStep === 'select' && /Select Model For This Session/.test(text)) {
+      // The matches below the filter field keep the catalog's order ("Opus 5" lists "Opus 5.5" first). The first ↓
+      // focuses the current model's row ("●Claude Opus 5.5 API credits   ★", wider "(High)  ★" or "(0.6x)") or else
+      // the first match, and Enter takes the focused row. A pane under ~24 rows draws no matches at all.
+      const field = rows.indexOf(input.model.displayName);
+      const after = field < 0 ? [] : rows.slice(field + 1);
+      const end = after.findIndex((row) => /^(?:Multipliers|╰)/u.test(row));
+      const matches = after.slice(0, end < 0 ? undefined : end).filter(Boolean);
+      const label = (row: string) => row.replace(/^[>●]\s*/u, '').split(/\s{2,}/)[0]!.replace(/\s*\((?:Off|Low|Medium|High|Extra high|Max)\)$/i, '');
+      const target = matches.findIndex((row) => label(row) === input.model.displayName);
+      if (target < 0) {
+        if (++droidListWaits > 8) throw new SpaceConflictError("Droid's model menu does not show this model. Enlarge the pane or choose another model.");
+        return true;
+      }
+      const steps = target - Math.max(0, matches.findIndex((row) => row.startsWith('●')));
+      await input.assertCurrent();
+      await input.write(`\u001b[B${(steps > 0 ? '\u001b[B' : '\u001b[A').repeat(Math.abs(steps))}\r`);
+      droidStep = input.model.reasoningOptions?.length ? 'effort' : 'done';
+      return true;
+    }
+    if ((droidStep === 'select' || droidStep === 'effort') && /Use ↑↓ to navigate/.test(text)) {
+      const levels = rows.map((row) => droidEfforts[row.replace(/^>\s*/, '').replace(/\s*\(current\)$/, '').toLowerCase()] ?? null);
+      const cursor = rows.findIndex((row, index) => row.startsWith('>') && levels[index] !== null);
+      const target = input.effort ? levels.indexOf(input.effort) : -1;
+      const steps = target < 0 || cursor < 0 ? 0 : target - cursor;
+      await input.assertCurrent();
+      await input.write((steps > 0 ? '\u001b[B' : '\u001b[A').repeat(Math.abs(steps)) + '\r');
+      droidStep = 'done';
+      return true;
+    }
+    return false;
+  };
   await input.write(command + (input.runtimeId === "cli:deepseek" ? " " : ""));
   await wait(250);
   await input.assertCurrent();
@@ -723,7 +822,13 @@ async function applyNativeCliModel(input: {
     // The preflight ruled out this model. Confirm the newly observed complete
     // screen: narrow acknowledgements can reuse an unchanged first line.
     const newLines = after.text.split(/\r?\n/).filter((line) => !before.text.split(/\r?\n/).includes(line)).join("\n");
-    if (nativeCliConfirmedModel(after.text, [input.model], input.runtimeId) === input.model.id) {
+    if (input.runtimeId === 'cli:droid') {
+      // Earlier "Model switched to" lines stay on screen: only the footer of a closed selector confirms.
+      if (droidStep === 'done' && !/Select Model For This Session|Use ↑↓ to navigate/.test(after.text)
+        && nativeCliConfirmedModel(after.text, [input.model], input.runtimeId) === input.model.id
+        && (!input.model.reasoningOptions?.length || !input.effort || input.effort === 'none'
+          || nativeCliConfirmedReasoning(after.text, input.runtimeId, input.model) === input.effort)) return;
+    } else if (nativeCliConfirmedModel(after.text, [input.model], input.runtimeId) === input.model.id) {
       if ((input.runtimeId === 'cli:omp' || input.runtimeId === 'cli:gemini') && input.effort && input.effort !== 'none') {
         const confirmedEffort = nativeCliConfirmedReasoning(after.text, input.runtimeId, input.model);
         if (confirmedEffort === input.effort || (!confirmedEffort && !/unknown|invalid|error/i.test(after.text) && !/╰─[^\n]*\/switch/i.test(after.text))) return;
@@ -742,6 +847,7 @@ async function applyNativeCliModel(input: {
     if (/unknown command|unrecognized command|invalid (?:slash command|model)|model (?:not found|unavailable)|error:\s*unknown model/i.test(newLines)) {
       throw new SpaceConflictError("The CLI rejected the model selection. Check its model menu.");
     }
+    if (input.runtimeId === 'cli:droid' && await droidSelectorStep(after.text)) continue;
     if (input.runtimeId === 'cli:kimi' && /Select a model/.test(after.text)) {
       if (!kimiFiltered) {
         await input.assertCurrent(); await input.write(input.model.displayName); kimiFiltered = true; continue;
@@ -781,6 +887,71 @@ async function applyNativeCliModel(input: {
   throw new SpaceConflictError("The CLI has not confirmed the model change. Check its terminal for a selection or confirmation dialog.");
 }
 
+/** Droid's Tab steps the current model's reasoning level (High → Extra high → Max → Low → Medium) in any pane size; its
+ * model selector draws no rows in a pane under ~24 rows (PTY-verified on droid 0.244.0). */
+async function cycleDroidReasoning(input: { model: Model; effort?: string; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>;
+  assertCurrent: () => Promise<void> }, level: string, wait: (ms: number) => Promise<void>): Promise<void> {
+  for (let press = 0; press < 7; press++) {
+    await input.assertCurrent(); await input.write('\t');
+    let next: string | null = level;
+    for (let attempt = 0; attempt < 8 && (next === level || !next); attempt++) {
+      await wait(250); await input.assertCurrent();
+      next = nativeCliConfirmedReasoning((await input.read()).text, 'cli:droid', input.model);
+    }
+    if (next === level || !next) break;
+    if (next === input.effort) return;
+    level = next;
+  }
+  throw new SpaceConflictError("Droid has not confirmed the reasoning level. Check its terminal.");
+}
+
+/**
+ * Qoder's `/model <id>` saves the profile's default ("Model set to … (persisted)"), shared by every pane; its menu's `s`
+ * switches this session only (PTY-verified on qodercli 1.1.58). The menu has Default/New/Custom tabs, a "❯" cursor and
+ * a warning under the cursor's row when the account cannot use that model. A narrow pane scrolls the tab header away,
+ * wraps the key hints and cuts names without "…" ("❯ Claude Fable 5.    ← Low"), so the menu's search ("/") narrows
+ * the tab to the requested name first; a tab without it says "No models in this group." and Tab moves on.
+ */
+async function applyQoderSessionModel(input: { model: Model; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>;
+  assertCurrent: () => Promise<void> }, before: Screen, wait: (ms: number) => Promise<void>): Promise<void> {
+  const name = input.model.displayName;
+  const label = (line: string) => line.replace(/^\s*❯\s*/u, "").split(/\s{2,}|\s+[✓◑←■]/u)[0]!.trim();
+  await input.write("/model"); await wait(250); await input.assertCurrent(); await input.write("\r");
+  // Each key is written once per step: a screen drawn before Qoder read the last key must not repeat it.
+  let acted = before.revision, tabs = 0, step = "list" as "list" | "search" | "typed" | "filtered" | "picked";
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await wait(250);
+    await input.assertCurrent();
+    const screen = await input.read();
+    if (screen.revision === acted) continue;
+    const listing = /Tab switch · Enter select/.test(screen.text);
+    const searching = /Tab switch · Enter to list/.test(screen.text);
+    if (step === "picked") {
+      if (!listing && !searching && nativeCliConfirmedModel(screen.text, [input.model], "cli:qoder") === input.model.id) return;
+      continue;
+    }
+    const lines = screen.text.split("\n");
+    // A narrow redraw can leave a rule's "─" in front of the search text.
+    const field = lines.findLastIndex((line) => line.replace(/^[\s─]+/u, "").trim() === name);
+    acted = screen.revision;
+    if (step === "list") {
+      if (listing) { await input.write("/"); step = "search"; }
+    } else if (step === "search") {
+      if (searching) { await input.write(name); step = "typed"; }
+    } else if (step === "typed") {
+      if (searching && field >= 0) { await input.write("\r"); step = "filtered"; }
+    } else if (listing && /No models in this group/.test(screen.text)) {
+      if (++tabs > 3) break;
+      await input.write("\t"); step = "list";
+    } else if (listing) {
+      const cursor = label(lines.slice(field + 1).find((line) => /^\s*❯/u.test(line)) ?? "");
+      if (field < 0 || cursor.length < 8 || !name.startsWith(cursor)) break;
+      if (/currently unavailable\s+and\s+cannot\s+be\s+selected/.test(screen.text)) throw new SpaceConflictError("This Qoder account cannot use the selected model.");
+      await input.write("s"); step = "picked";
+    }
+  }
+  throw new SpaceConflictError("Qoder has not confirmed the model change. Check its model menu.");
+}
 
 export async function switchNativeCliModel(input: Parameters<typeof applyNativeCliModel>[0]): Promise<void> {
   try { await applyNativeCliModel(input); }
@@ -790,4 +961,55 @@ export async function switchNativeCliModel(input: Parameters<typeof applyNativeC
 export async function switchNativeCliReasoning(input: Parameters<typeof applyNativeCliReasoning>[0]): Promise<void> {
   try { await applyNativeCliReasoning(input); }
   catch (error) { try { await cleanupNativeSettingsMenu(input); } catch {} throw error; }
+}
+
+/** The pane host's live root process of each CLI session. */
+export interface CliSessionProcesses {
+  activeSessionPids(sessions: readonly PaneCliSession[]): Promise<Map<string, number>>;
+}
+
+/**
+ * omp's own session record outranks the screen and the launch model: a switch made inside omp (/model, the model
+ * selector) and narrow panes whose status rail drops the model leave both behind. Only a model the catalog offers
+ * counts, with omp's thinking level when that model supports it. Every other CLI keeps its screen readback.
+ * `store` keeps the session and the pane on the model the read found.
+ */
+export async function withOmpSessionModel(
+  read: Promise<PaneCliModelSettings>,
+  session: PaneCliSession,
+  host: CliSessionProcesses,
+  store?: OmpModelStore
+): Promise<PaneCliModelSettings> {
+  const [settings, native] = await Promise.all([read, session.runtimeId === "cli:omp"
+    ? host.activeSessionPids([session]).then((pids) => loadOmpNativeModel(session, pids.get(session.sessionId) ?? null)).catch(() => null)
+    : null]);
+  const model = native && settings.models.find((entry) => entry.id === native.modelId);
+  const result = !native || !model ? settings : { ...settings, current: { modelId: model.id,
+    reasoningEffort: native.reasoningEffort && model.supportedReasoningEfforts.includes(native.reasoningEffort) ? native.reasoningEffort
+      : settings.current?.modelId === model.id ? settings.current.reasoningEffort : "unknown" } };
+  if (store && result.current) await recordOmpNativeModel(store, session, result.current).catch(() => undefined);
+  return result;
+}
+
+/**
+ * The model a Space Control inspection reports for a native-picker CLI pane. The inspection gives a pane 2.5 s and a
+ * cold catalog takes about that long (omp lists ~600 models in 2 s), so after `budgetMs` omp's own session record
+ * stands in; the read goes on, warms the catalog and records what it finds.
+ */
+export async function inspectedNativeModelId(
+  session: PaneCliSession,
+  read: (session: PaneCliSession) => Promise<PaneCliModelSettings>,
+  host: CliSessionProcesses,
+  budgetMs = 1_500
+): Promise<string | null> {
+  if (session.runtimeId !== "cli:omp" && session.runtimeId !== "cli:qoder") return null;
+  const settled = read(session).then((settings) => settings.current?.modelId ?? null, () => null);
+  let timer: NodeJS.Timeout | undefined;
+  const standIn = new Promise<string | null>((resolve) => {
+    timer = setTimeout(() => resolve(session.runtimeId === "cli:omp"
+      ? host.activeSessionPids([session]).then((pids) => loadOmpNativeModel(session, pids.get(session.sessionId) ?? null))
+        .then((native) => native?.modelId ?? null, () => null)
+      : null), budgetMs);
+  });
+  try { return await Promise.race([settled, standIn]); } finally { clearTimeout(timer); }
 }

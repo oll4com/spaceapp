@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { api } from "../../api.js";
-import { subscribeNativeNotificationOpen } from "./desktop-notifications.js";
+import { subscribeNativeNotificationOpen, subscribePushTokenRegistration } from "./desktop-notifications.js";
 import { deliverNotifications } from "./notification-delivery.js";
 import { ingestNotificationStreamPayload, openNotification, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator, type NotificationNavigator } from "./notification-store.js";
 import { notificationStreamPayloadSchema } from "@space/contracts";
@@ -41,10 +41,12 @@ export function useNotificationBootstrap(userId: string | null, navigate: Notifi
     const unsubscribeNative = subscribeNativeNotificationOpen((id) => {
       void api.notification(id).then(({ notification }) => { if (!cancelled) openNotification(notification); }).catch(() => undefined);
     });
+    const unsubscribePush = subscribePushTokenRegistration(api);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
       unsubscribeNative();
+      unsubscribePush();
       setNotificationDeliveryHandler(null);
       window.removeEventListener(NOTIFICATION_STREAM_EVENT, onStream);
       document.removeEventListener("visibilitychange", onVisible);
