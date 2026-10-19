@@ -1922,7 +1922,8 @@ describe("Space API native agent panes", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    const session = agentPaneSessionSchema.parse(response.json());
+    const responseBody = response.json();
+    const session = agentPaneSessionSchema.parse(responseBody);
     expect(session.toolOptions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1972,7 +1973,11 @@ describe("Space API native agent panes", () => {
         })
       ])
     );
-    expect(JSON.stringify(session)).not.toMatch(/raw-secret|profilePath|cdp|websocket|token/i);
+    // Public random IDs can contain "cdp"; inspect private keys and secret values instead.
+    const serializedResponse = JSON.stringify(responseBody);
+    expect(serializedResponse).not.toContain("raw-secret");
+    expect(serializedResponse).not.toContain("/opt/spaceapp/var/artifacts/browser-profiles/browser-1");
+    expect(serializedResponse).not.toMatch(/"[^"\n]*(?:profilePath|cdp|websocket|token)[^"\n]*"\s*:/i);
   });
 
   it("passes selected browser tools as metadata without injecting Space context into the Codex prompt", async () => {
