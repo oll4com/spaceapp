@@ -60,3 +60,56 @@ jobs:
       - name: Pack launcher candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run pack:dry-run -w run-spaceapp
+
+  dev-stack:
+    name: Full app from source (npm run dev:stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start the dev stack without a TTY
+        run: |
+          nohup npm run dev:stack > "$RUNNER_TEMP/dev-stack.log" 2>&1 < /dev/null &
+          echo "DEV_STACK_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Readiness, owner setup, an OpenCode pane and hot reload over HTTP
+        env:
+          SPACE_DEV_STACK_LOG: ${{ runner.temp }}/dev-stack.log
+        run: node scripts/dev-stack/ci-check.mjs
+
+      - name: A stopped worker is a clear failure
+        run: |
+          pkill -f "apps/worker/dist/worker.js"
+          timeout 60 tail --pid="$DEV_STACK_PID" -f /dev/null
+          grep -E "worker (exited unexpectedly|stopped polling Temporal)" "$RUNNER_TEMP/dev-stack.log"
+
+      - name: Stop and reset
+        if: always()
+        run: |
+          npm run dev:stack -- down
+          npm run dev:stack -- reset
+
+      - name: Nothing is left behind
+        run: |
+          test -z "$(docker ps -aq --filter label=com.docker.compose.project=spaceapp-devstack)"
+          test -z "$(docker volume ls -q --filter label=com.docker.compose.project=spaceapp-devstack)"
+          ! pgrep -f "scripts/dev-stack.mjs|tsx watch|vite --strictPort|cli-host/dist/main.js|apps/worker/dist/worker.js|vendor/opencode"
+          test ! -e .dev-stack
+          test -z "$(git status --porcelain)"
+
+      - name: Dev stack output
+        if: always()
+        run: cat "$RUNNER_TEMP/dev-stack.log" || true

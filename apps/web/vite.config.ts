@@ -17,6 +17,9 @@ export function manualChunkForModule(moduleId: string): string | undefined {
   return undefined;
 }
 
+// The production web server (server.mjs) reads the same variable; npm run dev:stack points it at its own API port.
+const apiOrigin = process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910";
+
 export default defineConfig({
   plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
   // The icon package ships as source; the alias keeps worktrees (which share live node_modules) resolving this checkout.
@@ -34,11 +37,14 @@ export default defineConfig({
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      // Terminal panes and live events use WebSockets under /api.
+      "/api": { target: apiOrigin, ws: true },
+      "/plugins": apiOrigin,
+      "/healthz": apiOrigin,
+      "/livez": apiOrigin,
+      "/readyz": apiOrigin,
+      "/version": apiOrigin,
+      "/logout": apiOrigin
     }
   },
   test: {
