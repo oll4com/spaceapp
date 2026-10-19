@@ -4,16 +4,14 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// 1.1.3 raised core and browser (998.7 / 1670.6 MiB measured): the current
-// application adds production dependencies pdfjs-dist with @napi-rs/canvas
-// (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
-// js-tiktoken (22 MiB, Space Gateway token counting).
-// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
-// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// 1.1.6 per-service image splitting lowers budgets for core, browser, and cli targets:
+// - core ships API, worker, web, migrations, and runtime scripts, pruning cli-host and unused multiplatform prebuilds (measured ~780-810 MiB, budget 850 MiB).
+// - browser ships browser-host and minimal headless Chromium runtime dependencies, pruning web, worker, pdfjs, and temporal (measured ~1150-1200 MiB, budget 1350 MiB).
+// - cli ships only cli-host and agent-skills, pruning monorepo web, api, and database dependencies (measured ~470-550 MiB, budget 1000 MiB).
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 850 * mebibyte,
+  browser: 1350 * mebibyte,
+  cli: 1000 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
