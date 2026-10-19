@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { defaultPayloadConverter } from "@temporalio/common";
 import { DOT_GOAL_SIGNAL, MEMORY_MUTATION_TASK_QUEUE } from "@space/contracts";
 import { createBountyTestEnv, createBountyWorker, eventually } from "./support/temporal-bounty.js";
 import { recordHistory } from "./support/temporal-history.js";
@@ -34,19 +35,29 @@ describe("production workflows in the real time-skipping sandbox", () => {
 
   it("dot timeout fires and an unfinished 300-step run continues as new", async () => {
     let steps = 0;
+    const goalIds: string[] = [];
     const taskQueue = `dot-timeout-${randomUUID()}`;
     const worker = await createBountyWorker(env, { taskQueue, activities: {
-      dotGoalStep: async () => ++steps <= 300 ? { state: "WAITING", runId: null, goalStatus: "ACTIVE" } : { state: "DONE", runId: null, goalStatus: "COMPLETE" },
+      dotGoalStep: async (goalId: string) => {
+        goalIds.push(goalId);
+        return ++steps <= 300 ? { state: "WAITING", runId: null, goalStatus: "ACTIVE" } : { state: "DONE", runId: null, goalStatus: "COMPLETE" };
+      },
     } });
     await worker.runUntil(async () => {
       const handle = await env.client.workflow.start("dotGoalWorkflow", startOptions(taskQueue, [{ goalId: "goal:continue" }]));
       expect(await handle.result()).toEqual({ goalStatus: "COMPLETE" });
       expect(steps).toBe(301);
+      expect(goalIds).toHaveLength(301);
+      expect(new Set(goalIds)).toEqual(new Set(["goal:continue"]));
       const first = env.client.workflow.getHandle(handle.workflowId, handle.firstExecutionRunId);
       const history = await first.fetchHistory();
       expect(history.events?.filter((event) => event.timerFiredEventAttributes)).toHaveLength(300);
       const continued = history.events?.find((event) => event.workflowExecutionContinuedAsNewEventAttributes);
       expect(continued?.workflowExecutionContinuedAsNewEventAttributes?.newExecutionRunId).toBeTruthy();
+      const continuedPayload = continued?.workflowExecutionContinuedAsNewEventAttributes?.input?.payloads?.[0];
+      expect(continuedPayload, "The next run must receive the original goalId").toBeDefined();
+      if (!continuedPayload) throw new Error("Missing dot continue-as-new input payload");
+      expect(defaultPayloadConverter.fromPayload(continuedPayload)).toEqual({ goalId: "goal:continue" });
       await recordHistory(first, "dotGoalWorkflow-timeout-continue");
     });
   }, 90_000);

@@ -13,6 +13,7 @@ const workflowTypes = [
   "memoryConsolidationWorkflow", "memoryMutationWorkflow"
 ];
 
+/** Load immutable history envelopes and restore protobuf fields for real replay. */
 async function readHistories(): Promise<Array<RecordedWorkflowHistory & { file: string }>> {
   const names = (await readdir(historyDirectory)).filter((name) => name.endsWith(".json")).sort();
   if (names.length === 0) throw new Error("No recorded histories. Run npm run temporal:record-histories -w @space/worker.");

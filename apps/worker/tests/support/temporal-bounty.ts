@@ -5,12 +5,14 @@ import { bundleWorkflowCode, Worker, type WorkerOptions } from "@temporalio/work
 /** The entry re-exports production workflows; it does not replace workflow APIs. */
 export const bountyWorkflowsPath = fileURLToPath(new URL("../fixtures/temporal-bounty-workflows.ts", import.meta.url));
 
+/** Start a real Temporal test server with virtual-time skipping enabled. */
 export function createBountyTestEnv(): Promise<TestWorkflowEnvironment> {
   return TestWorkflowEnvironment.createTimeSkipping();
 }
 
 let bundledWorkflows: ReturnType<typeof bundleWorkflowCode> | undefined;
 
+/** Create a worker on the test connection, reusing the production-workflow bundle. */
 export async function createBountyWorker(
   env: TestWorkflowEnvironment,
   options: Omit<WorkerOptions, "connection" | "workflowsPath">,

@@ -16,6 +16,7 @@ let env: TestWorkflowEnvironment;
 beforeEach(async () => { env = await createBountyTestEnv(); }, 120_000);
 afterEach(async () => { await env?.teardown(); });
 
+/** Bound activity/history synchronization in wall time without replacing workflow timers. */
 async function eventually(check: () => boolean | Promise<boolean>, timeoutMs = 25_000) {
   const until = Date.now() + timeoutMs;
   while (!await check()) {
@@ -29,7 +30,8 @@ const item = (index: number, roomId = "room:real") => roomAgentSupervisorQueueIt
     agentRunId: `agent_run:${index}`, permissionMode: null, collaborationMode: "default", traceId: `trace:real-${index}` }
 });
 
-async function scenario(input: unknown, activities: Record<string, (...args: any[]) => any>, verify: (handle: WorkflowHandle) => Promise<void>, legacy = false) {
+/** Run the production supervisor and always terminate its synthetic current execution chain. */
+async function scenario(input: unknown, activities: Record<string, (...args: any[]) => any>, verify: (handle: WorkflowHandle) => Promise<void>, legacy = false, skipTime = true) {
   const taskQueue = `supervisor-real-${randomUUID()}`;
   const worker = await createBountyWorker(env, {
     taskQueue, activities, maxHeartbeatThrottleInterval: "20 milliseconds", defaultHeartbeatThrottleInterval: "10 milliseconds",
@@ -46,7 +48,10 @@ async function scenario(input: unknown, activities: Record<string, (...args: any
     // The SDK unlocks automatic time skipping while result() is outstanding.
     // These supervisors are deliberately long lived: assertions observe their
     // activities/history, then terminate the synthetic run in finally.
-    const completion = handle.result().catch(() => undefined);
+    // Client-driven enqueue/stop scenarios need no long workflow timers. Keep
+    // their clock locked while a cold child starts; result() otherwise unlocks
+    // global skipping before that child has reached its activity boundary.
+    const completion = skipTime ? handle.result().catch(() => undefined) : undefined;
     try { await verify(handle); }
     finally {
       // Continue-as-new creates another run. Target the current chain head,
@@ -57,16 +62,23 @@ async function scenario(input: unknown, activities: Record<string, (...args: any
   });
 }
 
-async function continuedInput(handle: WorkflowHandle): Promise<any | null> {
+/** Fetch the original execution, even after the workflow handle follows continue-as-new. */
+async function firstRunHistory(handle: WorkflowHandle) {
   // A handle without runId may point to the new run after rollover. Inspect the
   // original execution, whose terminal event carries the next run's input.
   const firstRunId = (handle as WorkflowHandle & { firstExecutionRunId?: string }).firstExecutionRunId;
-  const history = await (firstRunId ? env.client.workflow.getHandle(handle.workflowId, firstRunId) : handle).fetchHistory();
+  return (firstRunId ? env.client.workflow.getHandle(handle.workflowId, firstRunId) : handle).fetchHistory();
+}
+
+/** Decode the actual first-run continue-as-new payload using the SDK payload converter. */
+async function continuedInput(handle: WorkflowHandle): Promise<any | null> {
+  const history = await firstRunHistory(handle);
   const event = history.events?.find(event => event.workflowExecutionContinuedAsNewEventAttributes);
   const payload = event?.workflowExecutionContinuedAsNewEventAttributes?.input?.payloads?.[0];
   return payload ? defaultPayloadConverter.fromPayload(payload) : null;
 }
 
+/** Stub activity boundaries around the existing in-memory continuation implementation. */
 function continuationDriver() {
   const c = continuationFixture();
   const childTurns: any[] = [];
@@ -204,7 +216,7 @@ describe("real sandbox supervisor continuation and signals", () => {
       expect(finished[0].statusReason).toBe("Stop test");
       if (!legacy) expect(discarded).toHaveLength(1);
       if (legacy) await recordHistory(handle, "roomAgentSupervisorWorkflow-pre-patch");
-    }, legacy);
+    }, legacy, false);
   }, 60_000);
 
   it.each([false, true])("rolls over after 250 real one-second polling timers with state intact (legacy=%s)", async legacy => {
@@ -220,6 +232,28 @@ describe("real sandbox supervisor continuation and signals", () => {
       let carried: any;
       await eventually(async () => { carried = await continuedInput(handle); return !!carried; });
       expect(polls).toBeGreaterThanOrEqual(250);
+      const events = (await firstRunHistory(handle)).events ?? [];
+      const timers = events.filter(event => event.timerStartedEventAttributes);
+      const fired = events.filter(event => event.timerFiredEventAttributes);
+      const pollActivity = legacy ? "settleRoomAgentBackgroundMission" : "prepareRoomAgentBackgroundContinuation";
+      const scheduled = events.filter(event => event.activityTaskScheduledEventAttributes?.activityType?.name === pollActivity);
+      expect(timers, "The original run must schedule 250 real polling timers").toHaveLength(250);
+      expect(fired, "All 250 polling timers must actually fire before rollover").toHaveLength(250);
+      expect(scheduled, "Each timer must drive one polling activity in the original run").toHaveLength(250);
+      const startedById = new Map(timers.map(event => [event.eventId?.toString(), event]));
+      for (const [index, event] of fired.entries()) {
+        const firedTimer = event.timerFiredEventAttributes!;
+        const started = startedById.get(firedTimer.startedEventId?.toString());
+        expect(started, `Polling timer ${index + 1} must refer to a recorded TIMER_STARTED`).toBeDefined();
+        const attributes = started?.timerStartedEventAttributes;
+        expect(attributes?.timerId).toBe(firedTimer.timerId);
+        expect(attributes?.startToFireTimeout?.seconds?.toString(), "Polling timeout must remain one second").toBe("1");
+        expect(attributes?.startToFireTimeout?.nanos ?? 0).toBe(0);
+        expect(Number(event.eventId?.toString())).toBeLessThan(Number(scheduled[index]!.eventId?.toString()));
+        if (index + 1 < fired.length) {
+          expect(Number(scheduled[index]!.eventId?.toString())).toBeLessThan(Number(fired[index + 1]!.eventId?.toString()));
+        }
+      }
       expect(carried.monitoringMissionIds).toEqual(["mission:real"]);
       expect(carried.pending).toEqual([]);
       expect(carried.processedCount).toBe(legacy ? 7 : 0);
