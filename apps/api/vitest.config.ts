@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@space/cli-host": resolve(__dirname, "../../packages/cli-host/src/index.ts"),
+      "@space/cli-host-client": resolve(__dirname, "../../packages/cli-host-client/src/index.ts"),
       "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
       "@space/gateway": resolve(__dirname, "../../packages/gateway/src/index.ts"),
       "@space/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),

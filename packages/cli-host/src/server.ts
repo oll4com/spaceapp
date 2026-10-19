@@ -3,8 +3,7 @@ import { chmod, mkdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { CliHostError, CliHostSessionRegistry } from "./session-registry.js";
-import { encodeLengthPrefixedJson, LengthPrefixedJsonDecoder } from "./framing.js";
-import type { CliHostAttachInput, CliHostEvent, CliHostIdentity } from "./types.js";
+import { encodeLengthPrefixedJson, LengthPrefixedJsonDecoder, type CliHostAttachInput, type CliHostEvent, type CliHostIdentity } from "@space/cli-host-client";
 
 type CliHostMethod = "inspect" | "attach" | "input" | "resize" | "detach" | "terminate" | "reapDetached" | "ping";
 

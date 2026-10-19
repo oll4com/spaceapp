@@ -6,7 +6,7 @@ import test from "node:test";
 const root = resolve(import.meta.dirname, "../..");
 
 async function workflow(name) {
-  return readFile(join(root, ".github", "workflows", name), "utf8");
+  return (await readFile(join(root, ".github", "workflows", name), "utf8")).replace(/\r\n/g, "\n");
 }
 
 test("CI creates and validates only the sanitized public candidate", async () => {
@@ -52,6 +52,11 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
   assert.match(containers, /push: false/);
+  assert.match(
+    containers,
+    /runs-on: \$\{\{ matrix\.arch == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/
+  );
+  assert.doesNotMatch(containers, /setup-qemu-action/);
 });
 
 test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {
@@ -62,6 +67,7 @@ test("launcher-only source and workflow changes cannot trigger the container mat
   assert.match(trigger, /push:[\s\S]*branches:[\s\S]*- main[\s\S]*paths:/);
   assert.match(trigger, /- "packages\/\*\*"/);
   assert.match(trigger, /- "!packages\/run-spaceapp\/\*\*"/);
+  assert.equal((trigger.match(/- "scripts\/create-runtime-bundles\.mjs"/g) || []).length, 2);
   assert.doesNotMatch(trigger, /\.github\/workflows\/containers\.yml/);
 });
 
@@ -73,6 +79,10 @@ test("container matrices load each image and enforce the public size budgets", a
     assert.match(content, /node scripts\/container-image-size-budget\.mjs/);
     assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
     assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
+    if (name === "containers.yml") {
+      assert.match(content, /Smoke test target startup/);
+      assert.match(content, /bash scripts\/container-image-smoke\.sh/);
+    }
   }
 });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import type { AgentRuntime } from "@space/contracts";
-import type { CliHostIdentity } from "@space/cli-host";
+import type { CliHostIdentity } from "@space/cli-host-client";
 import type { WebSocket } from "ws";
 import { CliTerminalManager, type CliHostGateway } from "../cli-terminal.js";
 import type { SpaceApiConfig } from "../config.js";

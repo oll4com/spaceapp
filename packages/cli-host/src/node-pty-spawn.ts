@@ -1,5 +1,5 @@
 import { spawn } from "node-pty";
-import type { CliHostSpawn } from "./types.js";
+import type { CliHostSpawn } from "@space/cli-host-client";
 
 /**
  * Disable the PTY interrupt characters (ISIG) for every CLI pane so that
