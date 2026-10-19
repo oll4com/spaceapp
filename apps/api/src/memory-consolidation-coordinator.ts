@@ -6,6 +6,7 @@ import {
   type MemoryConsolidationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 
 export { MEMORY_CONSOLIDATION_TASK_QUEUE, MEMORY_CONSOLIDATION_WORKFLOW_TYPE };
 
@@ -16,6 +17,7 @@ export interface MemoryConsolidationStartResult {
 }
 
 interface WorkflowStartOptions {
+  memo: Record<string, string>;
   args: [MemoryConsolidationWorkflowInput];
   taskQueue: typeof MEMORY_CONSOLIDATION_TASK_QUEUE;
   workflowId: string;
@@ -46,6 +48,7 @@ export async function scheduleMemoryConsolidation(
   try {
     const handle = await startWorkflow(MEMORY_CONSOLIDATION_WORKFLOW_TYPE, {
       args: [input],
+      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }),
       taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",

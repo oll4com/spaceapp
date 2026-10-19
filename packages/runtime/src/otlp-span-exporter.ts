@@ -1,11 +1,11 @@
 /**
- * Optional OTLP/HTTP (JSON) export of API server spans and worker activity spans. Off unless
+ * Optional OTLP/HTTP (JSON) export shared by the API and Temporal workers. Off unless
  * SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector base URL (spans go to
  * `<base>/v1/traces`). No dependency, no collector required: Space logs stay
  * joinable by W3C trace id without it.
  *
- * Spans carry only the method, route template, status code, service name and
- * Space request id; never URLs with parameters, headers, bodies or user data.
+ * Callers supply their own strict attribute allowlist. They never pass URLs
+ * with parameters, headers, bodies, prompts, error messages or other user data.
  * Export is best effort: a bounded queue drops (and counts) spans instead of
  * growing, each POST has a timeout, and a failing collector never affects a
  * request.
@@ -20,8 +20,9 @@ export interface ServerSpan {
   endTimeUnixNano: bigint;
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
-  kind?: number;
+  /** OTLP SpanKind. Defaults to SERVER for the existing API callers. */
+  kind?: 1 | 2 | 3 | 4 | 5;
+  links?: readonly { traceId: string; spanId: string }[];
 }
 
 export interface SpanExporterStats {
@@ -75,13 +76,15 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
     resourceSpans: [{
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
-        scope: { name: serviceName },
+        scope: { name: serviceName === "space-api" ? "space-api" : "space-temporal-worker" },
         spans: spans.map(span => ({
           traceId: span.traceId,
           spanId: span.spanId,
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
+          // SPAN_KIND_SERVER
           kind: span.kind ?? 2,
+          ...(span.links?.length ? { links: span.links.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId)) } : {}),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
@@ -121,6 +124,9 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     }
   };
   const flush = (): Promise<void> => {
+    // An empty async IIFE can finish its finally block before its promise is
+    // assigned, leaving inFlight permanently set after an idle timer tick.
+    if (!inFlight && queue.length === 0) return Promise.resolve();
     if (!inFlight) {
       inFlight = (async () => {
         try {

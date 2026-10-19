@@ -52,3 +52,27 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Optional API and worker tracing
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is a collector **base URL**, for example
+`http://127.0.0.1:4318`. Set it separately in the environment of the API, main
+Temporal worker, memory-maintenance worker, and memory-mutation worker. Each
+posts OTLP/HTTP JSON to `<base>/v1/traces` under its own service name. In containers,
+use a collector address reachable from that container; its loopback is not the
+host loopback. This setting is outside `SpaceApiConfig` and its registry.
+
+Export is off by default. Empty/invalid URLs or URLs with credentials, query
+parameters, or fragments disable it. No tracing SDK, provider credential, or
+paid backend is required. API spans parent workflow spans, which parent activity
+attempts and child workflows; continuations include span links. Only allowlisted
+identifiers, status/error codes, and durations are exported, never prompt/output
+text, paths, full URLs, or exception messages.
+
+The shared exporter bounds each queue at 4,096 spans, batches up to 256, flushes
+every 5 seconds, and times out each POST after 3 seconds. It drops/counts excess
+spans and counts failed batches. Collection never blocks workflow or activity
+execution. Workflow spans appear at completion, failure, cancellation or
+continue-as-new; an open supervisor has not emitted its final span yet.
+See [observability](quality/observability.md#traces-w3c-trace-context) for replay
+behavior, limits, and integration-test coverage.

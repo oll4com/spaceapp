@@ -53,6 +53,21 @@ describe("OTLP span export configuration", () => {
 });
 
 describe("OTLP span exporter", () => {
+  it("exports new spans after an empty idle flush and after a drained batch", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    await created.flush();
+    await created.flush();
+    created.record(span());
+    await created.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await created.flush();
+    created.record(span({ spanId: "1111111111111111" }));
+    await created.close();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(created.stats()).toEqual({ exported: 2, dropped: 0, failed: 0 });
+  });
+
   it("posts OTLP/HTTP JSON server spans with only route-level attributes", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl);
