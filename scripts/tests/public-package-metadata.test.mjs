@@ -28,9 +28,16 @@ const publicTestModules = [
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
   "trivy-report-summary.test.mjs",
-  "verify-export-provenance.test.mjs"
+  "verify-export-provenance.test.mjs",
+  "dev-stack.test.mjs"
 ];
 
+/**
+ * Lists `package.json` manifest paths for all workspace subdirectories under `directory`.
+ *
+ * @param {string} directory - Top-level workspace container directory (`apps` or `packages`).
+ * @returns {Promise<string[]>} Absolute `package.json` paths.
+ */
 async function packageFiles(directory) {
   const entries = await readdir(join(root, directory), { withFileTypes: true });
   return entries
