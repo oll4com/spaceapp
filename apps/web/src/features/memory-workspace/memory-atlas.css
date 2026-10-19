@@ -1,4 +1,6 @@
 /* Scoped to Memory: navigation, pane hosts and global themes retain their own rules. */
+/* The covered room stays mounted and inert; its toolbar is layered at 70. */
+.workspace-cover:has(#memory-atlas) { z-index: 71; }
 #memory-atlas.memory-workspace {
   --atlas-muted: #8298ac;
   --modern-surface: #070c13;
@@ -15,7 +17,8 @@
 }
 #memory-atlas .memory-atlas-header {
   display: grid;
-  grid-template-columns: 1fr minmax(220px, 460px) 1fr;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+  flex-shrink: 0;
   gap: 24px;
   padding: 17px 25px;
   background: #090f18;
@@ -41,9 +44,9 @@
 #memory-atlas .memory-search-input svg { width: 16px; height: 16px; color: #8199b0; flex-shrink: 0; }
 #memory-atlas .memory-search-input kbd { color: #73899e; font-size: 11px; border: 1px solid #304051; border-radius: 4px; padding: 1px 5px; }
 #memory-atlas .memory-search-input button { border: 0; background: transparent; padding: 4px; min-height: 30px; }
-#memory-atlas .memory-atlas-actions { display: flex; align-items: center; justify-self: end; gap: 8px; }
-#memory-atlas .memory-atlas-view-controls { display: flex; align-items: center; gap: 6px; }
-#memory-atlas .memory-atlas-view-controls button { display: inline-flex; gap: 6px; align-items: center; justify-content: center; height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid #263340; background: #101923; color: #d1e6f5; font-size: 12px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+#memory-atlas .memory-atlas-actions { display: flex; align-items: center; justify-self: end; gap: 8px; min-width: 0; }
+#memory-atlas .memory-atlas-view-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+#memory-atlas .memory-atlas-view-controls button { display: inline-flex; flex: 0 0 auto; white-space: nowrap; gap: 6px; align-items: center; justify-content: center; height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid #263340; background: #101923; color: #d1e6f5; font-size: 12px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
 #memory-atlas .memory-atlas-view-controls button:hover { background: #152230; border-color: #3b5066; }
 #memory-atlas .memory-atlas-view-controls button[aria-pressed="true"] { border-color: #5bbde0; background: #16384c; color: #bdeeff; }
 #memory-atlas .memory-atlas-close { background: #101923; border: 1px solid #263340; color: #b1c5d7; width: 36px; height: 36px; border-radius: 10px; }
@@ -111,6 +114,12 @@
 .memory-atlas-stale { top: auto; bottom: 50px; font-size: 10px; }
 .memory-atlas-stale svg { width: 12px; height: 12px; }
 .memory-atlas button:focus-visible, .memory-atlas summary:focus-visible { outline: 2px solid #8fd5f4; outline-offset: 3px; }
+/* Give controls a full row before their unbroken labels crowd the search field. */
+@media (max-width: 1200px) {
+  #memory-atlas .memory-atlas-header { grid-template-columns: auto minmax(0, 1fr); gap: 12px 24px; }
+  #memory-atlas .memory-workspace-search { grid-column: 2; grid-row: 1; }
+  #memory-atlas .memory-atlas-actions { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; }
+}
 @media (max-width: 1100px) {
   .memory-atlas-intro { top: 6%; }
   .memory-atlas-intro h3 { font-size: 29px; }
@@ -130,11 +139,13 @@
   .memory-atlas-topics ul { gap: 8px; }
 }
 @media (max-width: 700px) {
-  #memory-atlas .memory-atlas-header { grid-template-columns: 1fr auto; padding: 14px; gap: 12px; }
+  #memory-atlas .memory-atlas-header { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 12px; }
   #memory-atlas .memory-workspace-search { grid-column: 1 / -1; grid-row: 2; }
-  #memory-atlas .memory-atlas-actions { grid-column: 2; grid-row: 1; gap: 6px; }
+  #memory-atlas .memory-atlas-actions { grid-column: 1 / -1; grid-row: 3; justify-self: stretch; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 6px; }
+  #memory-atlas .memory-workspace-mode-selector { grid-column: 1; grid-row: 1; justify-self: start; }
+  #memory-atlas .memory-atlas-view-controls { grid-column: 1 / -1; grid-row: 2; }
   #memory-atlas .memory-atlas-view-controls button { padding: 0 8px; height: 32px; font-size: 11px; }
-  #memory-atlas .memory-atlas-close { width: 32px; height: 32px; }
+  #memory-atlas .memory-atlas-close { grid-column: 2; grid-row: 1; justify-self: end; width: 32px; height: 32px; }
   .memory-atlas-intro { top: 24px; left: 20px; max-width: calc(100% - 40px); }
   .memory-atlas-intro h3 { font-size: 27px; margin: 12px 0; }
   .memory-atlas-intro > p { display: none; }
@@ -175,6 +186,12 @@
 .memory-3d-surface { position: absolute; inset: 0 3% 55px 22%; }
 .memory-3d-surface canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline-offset: -3px; }
 .memory-3d-surface canvas:active { cursor: grabbing; }
+.memory-3d-surface canvas[hidden] { display: none; }
+.memory-3d-surface .memory-3d-labels { position: absolute; inset: 0; pointer-events: none; }
+.memory-3d-fallback { position: absolute; bottom: 12px; left: 24%; font-size: 11px; color: #95aec2; }
+.memory-3d-benchmark { position: absolute; z-index: 4; top: 8px; left: 24%; right: 12px; }
+.memory-3d-benchmark button { margin: 0 8px 4px 0; padding: 5px 10px; background: #162c3d; color: #c6dfed; border: 1px solid #385068; }
+.memory-3d-benchmark pre { max-height: 220px; overflow: auto; padding: 10px; background: #09111bea; font-size: 10px; }
 .memory-3d-hint { position: absolute; bottom: 26px; left: 0; right: 0; text-align: center; font-size: 10px; color: #95aec2; pointer-events: none; }
 #memory-atlas .memory-atlas-topics { max-height: min(38%, 320px); overflow: auto; scrollbar-width: thin; }
 @media (max-width: 700px) {
