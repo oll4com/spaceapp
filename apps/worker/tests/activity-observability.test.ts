@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { request } from "node:http";
-import { MetricsRegistry } from "@space/runtime";
+import { MetricsRegistry, type SpanExporter } from "@space/runtime";
 import {
   activityCorrelation,
   childTraceparent,
@@ -87,6 +87,56 @@ describe("observeActivityExecution", () => {
     expect(text).toContain('space_worker_activity_executions_total{activity_type="runCodexAppServerTurn",outcome="COMPLETED"} 1');
     expect(text).toContain('space_worker_activity_retries_total{activity_type="runCodexAppServerTurn"} 1');
     expect(text).toContain('space_worker_activity_schedule_to_start_seconds_count{activity_type="runCodexAppServerTurn"} 1');
+    expect(text).toContain('space_worker_activities_in_flight{activity_type="runCodexAppServerTurn"} 0');
+  });
+
+  it("lets onFinished own export when a legacy exporter is also supplied", async () => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const metrics = createWorkerMetrics(new MetricsRegistry());
+    const onFinished = vi.fn();
+    const record = vi.fn();
+    const spans: SpanExporter = {
+      record, flush: async () => undefined, close: async () => undefined,
+      stats: () => ({ exported: 0, dropped: 0, failed: 0 })
+    };
+    const result = { status: "COMPLETED" };
+    let clock = 1_000;
+    await expect(observeActivityExecution(info(), [{ traceparent }], async () => {
+      clock = 1_250;
+      return result;
+    }, { metrics, now: () => clock, onFinished, spans })).resolves.toBe(result);
+
+    expect(onFinished).toHaveBeenCalledExactlyOnceWith({
+      outcome: "COMPLETED", reasonCode: null, category: null,
+      startedAt: 1_000, endedAt: 1_250, durationMs: 250
+    });
+    expect(record).not.toHaveBeenCalled();
+    const text = metrics.registry.render();
+    expect(text).toContain('space_worker_activity_executions_total{activity_type="runCodexAppServerTurn",outcome="COMPLETED"} 1');
+    expect(text).toContain('space_worker_activities_in_flight{activity_type="runCodexAppServerTurn"} 0');
+  });
+
+  it.each(["success", "failure"] as const)("preserves the activity's %s when legacy span recording throws", async (outcome) => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const metrics = createWorkerMetrics(new MetricsRegistry());
+    const record = vi.fn(() => { throw new Error("legacy exporter unavailable"); });
+    const spans: SpanExporter = {
+      record, flush: async () => undefined, close: async () => undefined,
+      stats: () => ({ exported: 0, dropped: 0, failed: 0 })
+    };
+    const result = { status: "COMPLETED" };
+    const activityError = Object.assign(new Error("original activity error"), { code: "TOOL_UNAVAILABLE" });
+    const execution = observeActivityExecution(info(), [{ traceparent }], async () => {
+      if (outcome === "failure") throw activityError;
+      return result;
+    }, { metrics, now: () => 1_000, spans });
+
+    if (outcome === "failure") await expect(execution).rejects.toBe(activityError);
+    else await expect(execution).resolves.toBe(result);
+    expect(record).toHaveBeenCalledOnce();
+    const expectedOutcome = outcome === "failure" ? "FAILED" : "COMPLETED";
+    const text = metrics.registry.render();
+    expect(text).toContain(`space_worker_activity_executions_total{activity_type="runCodexAppServerTurn",outcome="${expectedOutcome}"} 1`);
     expect(text).toContain('space_worker_activities_in_flight{activity_type="runCodexAppServerTurn"} 0');
   });
 
@@ -182,11 +232,13 @@ describe("worker metrics endpoint", () => {
   });
 });
 
-it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+it("registers tracing interceptors and sinks on every Temporal worker, including both memory workers", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/const tracing = createWorkerTracing\(/);
+    expect(source, entry).toMatch(/interceptors: tracing\.interceptors/);
+    expect(source, entry).toMatch(/sinks: tracing\.sinks/);
   }
 });
 

@@ -87,6 +87,12 @@ export function categorizeFailureCode(code: string | null | undefined): FailureC
  */
 export const traceparentSchema = z.string().regex(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
 
+/** An actual exported span reference, suitable for durable continuation links. */
+export const traceSpanReferenceSchema = z.object({
+  traceId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/),
+  spanId: z.string().regex(/^(?!0{16}$)[0-9a-f]{16}$/)
+});
+
 export interface ParsedTraceparent {
   traceId: string;
   parentId: string;

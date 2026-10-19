@@ -39,6 +39,25 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Optional trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is the collector **base URL**, for example
+`http://127.0.0.1:4318`. Set it on the API and each worker process that should
+export: `space-worker`, `space-memory-maintenance-worker` and
+`space-memory-mutation-worker`. Every process posts OTLP/HTTP JSON to the base
+URL plus `/v1/traces`. An unset, empty or invalid URL disables export; credentials,
+query parameters and fragments are not accepted in the URL. Memory worker
+enablement remains controlled by its existing feature setting.
+
+The exporter is independent of the `SpaceApiConfig` registry. No collector is
+required to run SpaceApp, and no tracing SDK dependency is installed. A process
+buffers at most 4,096 spans, sends batches of 256 every 5 seconds and applies a
+3-second deadline to each POST. Full queues drop and count spans. Export failures
+cannot fail workflow or activity execution. Workflow spans appear on run
+completion; in-progress long-lived runs may have finished activity spans before
+their parent span arrives. See [observability](quality/observability.md#traces-w3c-trace-context)
+for propagation, replay behavior, continuation links and the privacy allowlist.
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

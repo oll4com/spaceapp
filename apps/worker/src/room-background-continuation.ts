@@ -3,6 +3,7 @@ import {
   buildRoomAgentSupervisorWorkflowId,
   roomAgentSupervisorQueueItemSchema,
   spaceAgentRoomActionRequestSchema,
+  traceSpanReferenceSchema,
   type RoomAgentActionRecord,
   type RoomAgentSupervisorQueueItem
 } from "@space/contracts";
@@ -122,6 +123,7 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const sourceTrace = traceSpanReferenceSchema.safeParse(source.roomAgentOutcome?.workflowTrace);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
@@ -130,7 +132,11 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`,
+    // Replace, rather than inherit, the predecessor link on every generation.
+    // Legacy turns without a recorded span remain unlinked instead of creating
+    // a dangling reference from an application run ID.
+    traceLink: sourceTrace.success ? sourceTrace.data : undefined
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({
