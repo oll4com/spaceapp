@@ -14,7 +14,8 @@ export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" 
       modelId: "gpt-5.6-sol", reasoningEffort: "high", agentSessionId: session.sessionId,
       agentRunId: `agent_run:${suffix}`, agentUserMessageId: `agent_msg:user-${suffix}`,
       agentAssistantMessageId: `agent_msg:assistant-${suffix}`, roomAgentMissionId: "mission:continuation",
-      traceId: `trace:continuation-${suffix}`, selectedToolIds: ["room:inspect", "room:open_types", "room:send"]
+      traceId: `trace:continuation-${suffix}`, traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      selectedToolIds: ["room:inspect", "room:open_types", "room:send"]
     } });
     return store.enqueueRoomAgentMission({ requestId: `request:${suffix}`, clientRequestId: `client-${suffix}`, content: prompt,
       supervisorWorkflowId: `room-supervisor:${room.id}`, childWorkflowId: buildCodexAppServerTurnWorkflowId(item.turn),

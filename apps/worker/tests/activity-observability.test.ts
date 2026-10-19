@@ -182,11 +182,13 @@ describe("worker metrics endpoint", () => {
   });
 });
 
-it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+it("registers activity and workflow observability on every Temporal worker, including both memory workers", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\]/);
+    expect(source, entry).toMatch(/workflowModules: \[workflowObservabilityModule\]/);
+    expect(source, entry).toMatch(/sinks: workflowObservabilitySinks\(spans\)/);
   }
 });
 
@@ -197,9 +199,12 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   let clock = 1_000;
   const info = { activityType: "runTurn", activityId: "1", attempt: 1, currentAttemptScheduledTimestampMs: 1_000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
   const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
-  await observeActivityExecution(info, [{ turn: { traceparent } }], async () => { clock += 250; return "ok"; }, { metrics, now: () => clock, spans: spans as never });
+  await observeActivityExecution(info, [{ turn: { traceparent, roomId: "room:act01", paneId: "pane:act01", roomAgentMissionId: "mission:act01" } }], async () => { clock += 250; return "ok"; }, { metrics, now: () => clock, spans: spans as never });
   await observeActivityExecution(info, [{ traceId: "req:no-w3c-parent" }], async () => "ok", { metrics, now: () => clock, spans: spans as never });
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+  expect(recorded[0].attributes as Record<string, unknown>).toMatchObject({
+    "space.room_id": "room:act01", "space.pane_id": "pane:act01", "space.mission_id": "mission:act01"
+  });
 });

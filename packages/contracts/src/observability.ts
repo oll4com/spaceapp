@@ -115,6 +115,12 @@ export function formatTraceparent(traceId: string, spanId: string, flags = "01")
   return `00-${traceId}-${spanId}-${flags}`;
 }
 
+/** A cross-trace OTLP span link, used by continuations that start a new trace. */
+export const spanLinkSchema = z.object({
+  traceId: z.string().regex(/^[0-9a-f]{32}$/),
+  spanId: z.string().regex(/^[0-9a-f]{16}$/)
+});
+
 /** The trace id of a valid traceparent, otherwise null. */
 export function traceIdFromTraceparent(value: unknown): string | null {
   return parseTraceparent(value)?.traceId ?? null;

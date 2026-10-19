@@ -11,6 +11,11 @@
  * request.
  */
 
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -22,6 +27,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** OTLP span links, used for continuations that start a new trace. */
+  links?: readonly SpanLink[];
 }
 
 export interface SpanExporterStats {
@@ -85,6 +92,9 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length
+            ? { links: span.links.map(link => ({ traceId: link.traceId, spanId: link.spanId })) }
+            : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
@@ -122,13 +132,18 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
+      const run = (async () => {
+        // Yield once so the assignment below happens before `finally` clears
+        // `inFlight`. Without it an empty flush settles synchronously, leaving
+        // a resolved promise cached forever and silently stopping export.
+        await Promise.resolve();
         try {
           while (queue.length) await flushOnce();
         } finally {
           inFlight = null;
         }
       })();
+      inFlight = run;
     }
     return inFlight;
   };
