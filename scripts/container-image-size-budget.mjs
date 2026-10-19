@@ -8,12 +8,14 @@ const mebibyte = 1024 * 1024;
 // application adds production dependencies pdfjs-dist with @napi-rs/canvas
 // (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
 // js-tiktoken (22 MiB, Space Gateway token counting).
-// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
-// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// 1.1.7 isolates dependencies per container image (Issue #64):
+// core ships only the API/worker/web runtime with pruned multi-arch prebuilds (<= 850 MiB);
+// browser ships browser-host with Chromium (<= 1350 MiB);
+// cli ships only cli-host and opencode tooling without temporal or server dependencies (<= 1000 MiB).
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 850 * mebibyte,
+  browser: 1350 * mebibyte,
+  cli: 1000 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
