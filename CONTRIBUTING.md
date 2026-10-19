@@ -105,3 +105,19 @@ attachment, room retention, control, readiness, polling or deployment.
 Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.
+
+## Temporal sandbox and replay tests
+
+`npm test -w @space/worker` runs the production workflows in the real Temporal
+time-skipping sandbox with synthetic activities, and checks the committed
+histories for replay compatibility. No Docker, database or AI provider account
+is required. The first run downloads Temporal's test-server executable; Apple
+silicon Macs require Rosetta for that executable.
+
+Ordinary tests never rewrite the history baseline. To create the initial
+corpus, use `npm run temporal:record-histories -w @space/worker -- --initial`.
+Subsequent recording is allowed only alongside a reviewed `patched()` change,
+using `--patch <id>` to add a generation while retaining the old histories.
+Never re-record or delete a history just to make a replay failure disappear.
+See [the fixture policy](apps/worker/tests/fixtures/workflow-histories/README.md)
+for the commands, safeguards and review requirements.
