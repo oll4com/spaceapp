@@ -335,7 +335,7 @@ describe("Codex CLI completion correlation", () => {
       submittedAt: "2026-07-14T10:00:00.000Z"
     });
     const started = { type: "turn_context", timestamp: "2026-07-14T10:00:01.000Z", payload: { turn_id: "turn:long" } };
-    return { store, room, started };
+    return { store, room, session, started };
   }
 
   it("keeps waiting on a terminal turn that runs for hours and still notifies its completion", async () => {
@@ -366,6 +366,32 @@ describe("Codex CLI completion correlation", () => {
     clock += 5 * 60_000;
     await expect(sweep()).resolves.toMatchObject({ completed: 1, failed: 0 });
     expect(store.listEvents(room.id).filter((event) => event.type === "TURN_COMPLETED")).toHaveLength(1);
+  });
+
+  it("stops waiting on a turn once its CLI exited, but still completes a turn the exited CLI finished", async () => {
+    const sweep = (store: InMemorySpaceStore, content: string, clock: string) => sweepCodexCliCompletions({
+      store,
+      workerId: "worker:exited",
+      codexHome: "/unused",
+      now: () => new Date(clock),
+      resolveRolloutPath: async () => ({ status: "READY", rolloutPath: "/owned/rollout.jsonl" }),
+      readRollout: async () => content
+    });
+    const stuck = longTurnFixture("Exited turn");
+    await expect(sweep(stuck.store, jsonl([stuck.started]), "2026-07-14T10:00:05.000Z")).resolves.toMatchObject({ deferred: 1, ignored: 0 });
+    stuck.store.updatePaneCliSession(stuck.session.sessionId, { status: "EXITED", isActive: false });
+    await expect(sweep(stuck.store, jsonl([stuck.started]), "2026-07-14T10:10:00.000Z")).resolves.toMatchObject({ claimed: 1, deferred: 0, ignored: 1 });
+    expect(stuck.store.listEvents(stuck.room.id).filter((event) => event.type === "TURN_FAILED")).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ safeErrorCode: "CODEX_CLI_SESSION_ENDED" }) })
+    ]);
+
+    const finished = longTurnFixture("Exited after finishing");
+    finished.store.updatePaneCliSession(finished.session.sessionId, { status: "EXITED", isActive: false });
+    await expect(sweep(finished.store, jsonl([finished.started, {
+      type: "event_msg",
+      timestamp: "2026-07-14T10:00:03.000Z",
+      payload: { type: "task_complete", turn_id: "turn:long", last_agent_message: "Done before exit" }
+    }]), "2026-07-14T10:00:05.000Z")).resolves.toMatchObject({ completed: 1, ignored: 0 });
   });
 
   it("backs off after the first hour and gives up on a turn only by its age", async () => {

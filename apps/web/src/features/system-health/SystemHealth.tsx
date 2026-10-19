@@ -2008,7 +2008,7 @@ export function SystemHealth({
     let wasKeyboardOpen = false;
 
     const checkState = () => {
-      const isMobile = window.innerWidth <= 768 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
+      const isMobile = window.innerWidth <= 767 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
       if (!isMobile) {
         wasKeyboardOpen = false;
         document.documentElement.removeAttribute("data-virtual-keyboard-open");
@@ -2028,7 +2028,7 @@ export function SystemHealth({
     };
 
     const handleFocus = (e: FocusEvent) => {
-      const isMobile = window.innerWidth <= 768 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
+      const isMobile = window.innerWidth <= 767 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
       if (!isMobile) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable || target.classList.contains("xterm-helper-textarea"))) {

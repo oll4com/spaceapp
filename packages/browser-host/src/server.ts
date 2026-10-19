@@ -31,7 +31,7 @@ function parseRequest(value: unknown): BrowserHostRequest {
   const methods: BrowserHostMethod[] = [
     "health", "startOrRestore", "getActive", "navigate", "setViewport", "setStreamMode", "action", "captureFrame", "stopPane",
     "stopRoom", "listPages", "createPage", "activatePage", "closePage", "acquireControl", "heartbeatControl", "releaseControl",
-    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "checkGoogleAccount", "adoptPaneGoogleProfile", "startFrameStream",
+    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "vaultTarget", "vaultFill", "checkGoogleAccount", "adoptPaneGoogleProfile", "startFrameStream",
     "stopFrameStream", "startAudioStream", "stopAudioStream"
   ];
   if (!methods.includes(value.method as BrowserHostMethod)) {

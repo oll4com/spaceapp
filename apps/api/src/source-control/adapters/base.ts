@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RepositoryPage, RepositoryProviderId } from "@space/contracts";
-import type { ProviderExchange, ProviderResponse, ProviderUrlPolicy } from "../providers.js";
+import type { ProviderExchange, ProviderResponse, ProviderUrlPolicy } from "../provider-transport.js";
 import { GitControlError } from "../errors.js";
 
 export function invalid(code = "PROVIDER_FAILED", message = "Provider returned an invalid response."): never { throw new GitControlError(code, message, 502); }

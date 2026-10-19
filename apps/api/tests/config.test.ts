@@ -274,7 +274,7 @@ describe("Space API config", () => {
     expect(defaults.browserSessionsEnabled).toBe(false);
     expect(defaults.browserSessionsChromePath).toBe("/usr/bin/google-chrome");
     expect(defaults.browserSessionsProfileRoot).toBe("/opt/spaceapp/var/artifacts/browser-profiles");
-    expect(defaults.browserSessionsDefaultUrl).toBe("https://www.example.invalid/");
+    expect(defaults.browserSessionsDefaultUrl).toBe("https://www.google.com/");
     expect(defaults.browserSessionsTokenTtlMs).toBe(60000);
     expect(defaults.browserToolBridgeEnabled).toBe(false);
     expect(defaults.browserHostTransport).toBe("in-process");
@@ -286,7 +286,7 @@ describe("Space API config", () => {
       SPACE_BROWSER_SESSIONS_ENABLED: "true",
       SPACE_BROWSER_SESSIONS_CHROME_PATH: "/usr/bin/google-chrome-stable",
       SPACE_BROWSER_SESSIONS_PROFILE_ROOT: "/opt/spaceapp/var/browser-profiles",
-      SPACE_BROWSER_SESSIONS_DEFAULT_URL: "https://www.example.invalid/",
+      SPACE_BROWSER_SESSIONS_DEFAULT_URL: "https://www.google.com/",
       SPACE_BROWSER_SESSIONS_TOKEN_TTL_MS: "999999",
       SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true",
       SPACE_BROWSER_HOST_TRANSPORT: "unix",
@@ -297,7 +297,7 @@ describe("Space API config", () => {
     expect(configured.browserSessionsEnabled).toBe(true);
     expect(configured.browserSessionsChromePath).toBe("/usr/bin/google-chrome-stable");
     expect(configured.browserSessionsProfileRoot).toBe("/opt/spaceapp/var/browser-profiles");
-    expect(configured.browserSessionsDefaultUrl).toBe("https://www.example.invalid/");
+    expect(configured.browserSessionsDefaultUrl).toBe("https://www.google.com/");
     expect(configured.browserSessionsTokenTtlMs).toBe(300000);
     expect(configured.browserToolBridgeEnabled).toBe(true);
     expect(configured.browserHostTransport).toBe("unix");

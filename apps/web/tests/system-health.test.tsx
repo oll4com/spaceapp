@@ -48,6 +48,8 @@ vi.mock("../src/api.js", () => ({
     toolbarApiProviderAccounts: mocks.apiProviderAccounts,
     toolbarCliSessions: mocks.sessions,
     codexEnvironment: mocks.environment,
+    // The Token usage page's Anthropic bill panel (2026-10-18): not configured, as in the demo.
+    gatewayAnthropicBilling: async () => ({ status: { configured: false, keyHint: null, savedAt: null, lastSyncAt: null, lastError: null, upstream: [] }, days: [] }),
   },
 }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({

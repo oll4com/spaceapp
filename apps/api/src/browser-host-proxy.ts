@@ -6,6 +6,7 @@ import {
   type BrowserHostHealth
 } from "@space/browser-host";
 import type { BrowserFrameToken, PaneBrowserSessionResponse } from "@space/contracts";
+import { vaultHostFillResultSchema, vaultHostTargetSchema } from "@space/contracts";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError, type BrowserControlHeldDetails } from "./browser-errors.js";
 import { createBrowserSessionManager, type BrowserSessionManager } from "./browser-sessions.js";
@@ -144,6 +145,9 @@ export function createBrowserHostProxy(options: {
     stopCapture(pane, jobId, traceId, context) { return hostCall(() => client.stopCapture(pane, jobId, traceId, context)); },
     cancelCapture(pane, jobId, traceId, context) { return hostCall(() => client.cancelCapture(pane, jobId, traceId, context)); },
     diagnostics(pane, includeNetwork, limit) { return hostCall(() => client.diagnostics(pane, includeNetwork, limit)); },
+    vaultTarget(pane) { return hostCall(async () => vaultHostTargetSchema.parse(await client.vaultTarget(pane))); },
+    // Only the fixed result shape crosses back from the host.
+    vaultFill(pane, request, traceId) { return hostCall(async () => vaultHostFillResultSchema.parse(await client.vaultFill(pane, request, traceId))); },
     adoptPaneGoogleProfile(source, context) { return hostCall(() => client.adoptPaneGoogleProfile(source, context)); },
     async checkGoogleAccount(identity, launch, context) {
       return normalizeGoogleBrowserCheckResult(await hostCall(() => client.checkGoogleAccount(identity, launch, context)));

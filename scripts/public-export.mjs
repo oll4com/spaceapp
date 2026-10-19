@@ -293,6 +293,12 @@ export function applyPublicOverlay(path, text) {
   }
 
   if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
+  if (path === "apps/api/tests/optional-modules.test.ts") {
+    // 1.1.6 cut from f8803d5d96: the Design pane added a tenth optional module; the source fixes the count in 3f302e9713.
+    return text.replace('import { getApiConfig, parseOptionalModules } from "../src/config.js";', 'import { getApiConfig, optionalModuleIds, parseOptionalModules } from "../src/config.js";')
+      .replace("expect(parseOptionalModules(undefined, false).size).toBe(9);", "expect(parseOptionalModules(undefined, false).size).toBe(optionalModuleIds.length);")
+      .replace('expect(parseOptionalModules("all", true).size).toBe(9);', 'expect(parseOptionalModules("all", true).size).toBe(optionalModuleIds.length);');
+  }
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
   }

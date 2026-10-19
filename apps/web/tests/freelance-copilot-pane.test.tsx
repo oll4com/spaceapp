@@ -31,7 +31,10 @@ const apiMock = vi.hoisted(() => ({
   freelanceMemory: vi.fn(),
   browserHandoff: vi.fn(),
   navigateBrowser: vi.fn(),
-  cliGlobalEgress: vi.fn()
+  cliGlobalEgress: vi.fn(),
+  marketingBookmarks: vi.fn(),
+  openMarketingBookmark: vi.fn(),
+  browserAccounts: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
@@ -91,8 +94,8 @@ describe("FreelanceCopilotPane", () => {
 
   it("is a copilot kind of its own with Leads first and the browser as a tab only when stacked", () => {
     expect(copilotKindForMode("FREELANCE_COPILOT")).toBe(FREELANCE_COPILOT_KIND);
-    expect(tabsForLayout("split")).toEqual(["leads", "platforms", "activity", "memory", "setup", "terminal"]);
-    expect(tabsForLayout("stacked")).toEqual(["browser", "leads", "platforms", "activity", "memory", "setup", "terminal"]);
+    expect(tabsForLayout("split")).toEqual(["leads", "platforms", "activity", "memory", "bookmarks", "setup", "terminal"]);
+    expect(tabsForLayout("stacked")).toEqual(["browser", "leads", "platforms", "activity", "memory", "bookmarks", "setup", "terminal"]);
     expect(resolveActiveTab("posts", "split")).toBe("leads");
   });
 
@@ -129,6 +132,25 @@ describe("FreelanceCopilotPane", () => {
     const titles = within(upwork).getAllByRole("link").map((link) => link.textContent);
     expect(titles).toEqual(["MCP server for Shopify", "Cheap scraping fix"]);
     expect(within(screen.getByRole("region", { name: "Fiverr" })).getByText("No jobs or proposals yet.")).toBeTruthy();
+  });
+
+  it("lists the operator's bookmarks and opens one in the pane browser", async () => {
+    apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [{ id: "mktbm:abc123", ownerUserId: "user:operator", title: "Upwork profile", url: "https://www.upwork.com/freelancers/~01", profileId: null, accountLabel: null, createdAt: at }] });
+    apiMock.openMarketingBookmark.mockResolvedValue({});
+    apiMock.browserAccounts.mockRejectedValue(new Error("unavailable"));
+    const actions: unknown[] = [];
+    const onAction = (event: Event) => actions.push((event as CustomEvent).detail);
+    window.addEventListener("space:browser-pane-action", onAction);
+    const { registerBrowserPaneEventTarget } = await import("../src/features/browser-pane/events.js");
+    const unregister = registerBrowserPaneEventTarget(pane.id);
+    render(<FreelanceCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Bookmarks/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Upwork profile" }));
+    await waitFor(() => expect(apiMock.openMarketingBookmark).toHaveBeenCalledWith(pane.id, "mktbm:abc123"));
+    // The browser refreshes its tab strip to show the new tab.
+    await waitFor(() => expect(actions).toEqual([expect.objectContaining({ paneId: pane.id, action: "tabs" })]));
+    unregister();
+    window.removeEventListener("space:browser-pane-action", onAction);
   });
 
   it("decides a message in review: approve, or approve the operator's edit", async () => {

@@ -171,7 +171,7 @@ describe("browser session navigation restore", () => {
   it("requires navigation for restored active sessions that still have no current URL", () => {
     expect(
       browserSessionNeedsNavigation({
-        targetUrl: "https://www.example.invalid/",
+        targetUrl: "https://www.google.com/",
         currentUrl: null,
         status: "READY"
       })
@@ -181,16 +181,16 @@ describe("browser session navigation restore", () => {
   it("requires navigation for starting and error sessions with a target URL", () => {
     expect(
       browserSessionNeedsNavigation({
-        targetUrl: "https://www.example.invalid/",
-        currentUrl: "https://www.example.invalid/",
+        targetUrl: "https://www.google.com/",
+        currentUrl: "https://www.google.com/",
         status: "STARTING"
       })
     ).toBe(true);
 
     expect(
       browserSessionNeedsNavigation({
-        targetUrl: "https://www.example.invalid/",
-        currentUrl: "https://www.example.invalid/",
+        targetUrl: "https://www.google.com/",
+        currentUrl: "https://www.google.com/",
         status: "ERROR"
       })
     ).toBe(true);
@@ -199,8 +199,8 @@ describe("browser session navigation restore", () => {
   it("does not navigate already loaded ready sessions or sessions without a target", () => {
     expect(
       browserSessionNeedsNavigation({
-        targetUrl: "https://www.example.invalid/",
-        currentUrl: "https://www.example.invalid/",
+        targetUrl: "https://www.google.com/",
+        currentUrl: "https://www.google.com/",
         status: "READY"
       })
     ).toBe(false);

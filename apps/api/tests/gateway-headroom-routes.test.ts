@@ -80,7 +80,7 @@ describe("Space Gateway Headroom views", () => {
     const { app } = await setup();
     for (const url of ["/api/admin/gateway/compression/session", "/api/admin/gateway/compression/lifetime", "/api/admin/gateway/compression/history",
       "/api/admin/gateway/compression/export"]) {
-      expect((await app.inject({ url, headers: authHeaders("USER") })).statusCode, url).toBe(403);
+      expect((await app.inject({ url, headers: authHeaders("USER") })).statusCode, url).toBe(404);
     }
   });
 

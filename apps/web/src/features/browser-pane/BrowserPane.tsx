@@ -1599,9 +1599,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         const next = await api.releaseBrowserControl(pane.id, { leaseId: controlLease.leaseId });
         setControlLease(next.lease);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Browser control release failed");
-        setPending(false);
-        return;
+        // 409: the lease already ended (the server's idle release or its expiry), so the agent has the browser again.
+        if (!(typeof err === "object" && err !== null && "status" in err && err.status === 409)) {
+          setError(err instanceof Error ? err.message : "Browser control release failed");
+          setPending(false);
+          return;
+        }
       }
       setPending(false);
     }
@@ -1613,7 +1616,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   }
   releaseControlRef.current = releaseControl;
 
-  /** Marketing Copilot: saves a tab's page with the Google account it is open in (its own, else the pane's) to the copilot's Bookmarks. */
+  /** Marketing and Freelance Copilot: saves a tab's page with the Google account it is open in (its own, else the pane's) to the copilot's Bookmarks. */
   async function saveTabToCopilotBookmarks(page: BrowserPageSummaryPayload) {
     setTabMenu(null);
     const paneAccount = googleAccounts ? effectiveAccountId(googleAccounts) : privatePaneProfileId;
@@ -2032,7 +2035,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             const selected = activePageId ? page.pageId === activePageId : page.isActive;
             return (
               <div key={page.pageId} data-browser-page-id={page.pageId} className={`browser-tab${selected ? " selected" : ""}`}
-                onContextMenu={pane.mode === "MARKETING_COPILOT" && !observerOnly && /^https?:\/\//i.test(page.url ?? "") ? (event) => {
+                onContextMenu={(pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT") && !observerOnly && /^https?:\/\//i.test(page.url ?? "") ? (event) => {
                   event.preventDefault();
                   setTabMenu({ page, x: event.clientX, y: event.clientY });
                 } : undefined}>

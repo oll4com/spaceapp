@@ -182,7 +182,7 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
         kind: "AGENT_PROOF"
       },
       request.requestIdForSpace,
-      profile === "STANDARD" && request.user ? (await store.upsertUser(request.user)).id : undefined
+      (profile === "STANDARD" || profile === "CLI_RENDER") && request.user ? (await store.upsertUser(request.user)).id : undefined
     );
     await activityLogService.recordRoomCreate({
       roomId: room.id,
@@ -324,9 +324,9 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
   });
   app.post("/api/proof-rooms/:id/cli-render/start", defaultRouteRateLimitOptions, async(request,reply)=>{
     if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","Render proof requires the full authenticated proof capability.");
-    parseBody(z.object({}).strict(),request.body??{});
+    const input=parseBody(z.object({mode:z.literal("COMPOSER").optional()}).strict(),request.body??{});
     const params=parseQuery(idParamSchema,request.params);
-    return startCliRenderProofFixture(store,params.id,config.cliHostSocketPath,options.cliHostClient);
+    return startCliRenderProofFixture(store,params.id,config.cliHostSocketPath,options.cliHostClient,input.mode);
   });
   app.get("/api/proof-rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);

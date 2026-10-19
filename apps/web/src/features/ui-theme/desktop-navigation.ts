@@ -17,6 +17,7 @@ export function desktopActionVisible(id: string, adminMode: boolean): boolean {
 export const desktopActionDescriptions: Record<string, string> = {
   "advanced-settings": "All installation settings, providers, connections, and diagnostics.",
   "surface-rooms": "Choose a room or organize your workspace.",
+  "surface-nous": "The mind of SpaceApp: one conversation over every room, pane, copilot and plan.",
   "surface-room-agent": "Ask an assistant to coordinate this room.",
   "surface-shared-chat": "Several models answer one question, review each other and agree on a Top 3.",
   "surface-media": "Images, recordings, and other media.",
@@ -25,8 +26,10 @@ export const desktopActionDescriptions: Record<string, string> = {
   "add-files": "Open the native file manager pane in this room.",
   "add-demos": "Open the Demo Projects pane: run a demo, preview it live and check its connections.",
   "add-empty-slots": "Add or remove empty positions in this room.",
+  "add-vault": "Open your encrypted Vault to add a login or generate a password.",
   "surface-clipboard": "Saved text, notes, and plans.",
   "surface-tasks": "Follow tasks and their progress.",
+  "surface-vault": "Your encrypted passwords, filled for you without agents ever seeing them.",
   "surface-links": "Bookmarks and browser connections.",
   "surface-settings": "Appearance, notifications, and preferences.",
   "surface-source-control": "Open projects, review changes and sync with your repository providers.",

@@ -518,7 +518,7 @@
 .live-status-dot.speaking { background: #d29922; }
 .live-status-dot.error { background: #f85149; }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .live-pane-root {
     flex-direction: column;
   }

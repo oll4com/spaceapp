@@ -212,6 +212,7 @@ test("initialization creates idempotent secrets with container-readable POSIX pe
 
   assert.equal(first.setupToken?.length > 30, true);
   assert.equal(second.setupToken, null);
+  assert.match(await readFile(join(root, "seccomp-cli.json"), "utf8"), /"unshare"/);
   assert.equal(
     await readFile(join(root, "secrets", "postgres-password"), "utf8"),
     passwordBefore

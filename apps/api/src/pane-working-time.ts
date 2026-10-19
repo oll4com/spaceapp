@@ -57,7 +57,10 @@ export interface PaneWorkingTimeResponse {
 
 const maxCachedPanes = 1024;
 
-/** Same formula the route always used: finished durations plus elapsed running time, capped at the pane age. */
+/**
+ * Finished durations only, capped at the pane age. The badge adds the running
+ * turn itself (screen timer), so counting it here showed it twice (10m vs 5m).
+ */
 export function paneWorkingTimeResponse(
   pane: Pick<Pane, "id" | "status" | "createdAt">,
   observation: PaneWorkingTimeObservation | null,
@@ -70,11 +73,8 @@ export function paneWorkingTimeResponse(
     state = observation.state;
     if (observation.state === "RUNNING") isWorking = true;
     for (const task of observation.tasks) {
-      if (typeof task.timing?.durationMs === "number" && task.timing.durationMs > 0) {
+      if (task.status !== "RUNNING" && typeof task.timing?.durationMs === "number" && task.timing.durationMs > 0) {
         cumulativeWorkingMs += task.timing.durationMs;
-      } else if (task.status === "RUNNING" && task.timing?.startedAt) {
-        const activeMs = Math.max(0, nowMs - Date.parse(task.timing.startedAt));
-        if (Number.isFinite(activeMs) && activeMs > 0) cumulativeWorkingMs += activeMs;
       }
     }
   }

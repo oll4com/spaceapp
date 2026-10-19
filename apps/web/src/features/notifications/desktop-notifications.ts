@@ -1,8 +1,12 @@
 // System notifications: one switch and one delivery path for every notification source. In a browser they are
 // the Notification API; inside the Android app or the Electron desktop app the shell shows a native notification
 // whose tap brings Space back and opens the record. Shown only while Space is in the background (the toast covers
-// the foreground).
+// the foreground). An Android app built with Firebase also gets FCM pushes with the app closed; both paths show a
+// record under the same system notification id, so a push and this page never show it twice.
+import type { PushDeviceRegistration } from "@space/contracts";
+
 const settingsKey = "space.notifications.desktop";
+const pushSettingsKey = "space.notifications.push";
 
 /** The Android shell's bridge (`SpaceNativeBridge` in MainActivity.java). */
 interface AndroidNotifier {
@@ -10,6 +14,9 @@ interface AndroidNotifier {
   notificationsAllowed(): boolean;
   requestNotificationPermission(): boolean;
   takePendingNotification(): string | null;
+  /** Firebase builds only: this device's FCM token ("" until Firebase issues one). */
+  pushToken?(): string;
+  appVersion?(): string;
 }
 /** The Electron preload bridge (`window.spaceDesktop`). */
 interface DesktopNotifier {
@@ -98,4 +105,47 @@ export function subscribeNativeNotificationOpen(handler: (id: string) => void): 
     try { return desktop.onNotificationOpen((id) => { if (id) handler(id); }); } catch { return () => undefined; }
   }
   return () => undefined;
+}
+
+/** True inside an Android app built with Firebase Messaging: Space pushes reach it also when it is closed. */
+export function pushNotificationsSupported(): boolean {
+  return typeof window !== "undefined" && typeof android()?.pushToken === "function";
+}
+/** Per device, off until the user turns it on. */
+export function pushNotificationsEnabled(): boolean {
+  try { return window.localStorage.getItem(pushSettingsKey) === "on"; } catch { return false; }
+}
+function pushDevice(): PushDeviceRegistration | null {
+  const app = android();
+  let token = "";
+  let appVersion: string | null = null;
+  try { token = app?.pushToken?.() ?? ""; appVersion = app?.appVersion?.() || null; } catch { token = ""; }
+  return token ? { token, platform: "ANDROID", appVersion } : null;
+}
+export interface PushDeviceClient {
+  registerPushDevice(device: PushDeviceRegistration): Promise<{ available: boolean }>;
+  removePushDevice(token: string): Promise<unknown>;
+}
+/** Registers this device's token (and asks the system for permission) or removes it; a failed call keeps the previous state. */
+export async function setPushNotifications(enabled: boolean, client: PushDeviceClient): Promise<{ on: boolean; available: boolean }> {
+  const device = pushDevice();
+  let available = true;
+  if (enabled) {
+    if (!device) throw new Error("This device has no push token yet; it needs Google Play services. Try again in a moment.");
+    const app = android();
+    if (app && !app.notificationsAllowed()) app.requestNotificationPermission();
+    available = (await client.registerPushDevice(device)).available;
+  } else if (device) {
+    await client.removePushDevice(device.token);
+  }
+  try { window.localStorage.setItem(pushSettingsKey, enabled ? "on" : "off"); } catch { /* private mode: not remembered */ }
+  return { on: enabled, available };
+}
+/** While push is on, keeps this device's token registered: at start and whenever Firebase issues a new one. */
+export function subscribePushTokenRegistration(client: Pick<PushDeviceClient, "registerPushDevice">): () => void {
+  if (!pushNotificationsSupported()) return () => undefined;
+  const sync = () => { const device = pushDevice(); if (device && pushNotificationsEnabled()) void client.registerPushDevice(device).catch(() => undefined); };
+  (window as unknown as { __spacePushToken?: () => void }).__spacePushToken = sync;
+  sync();
+  return () => { delete (window as unknown as { __spacePushToken?: () => void }).__spacePushToken; };
 }

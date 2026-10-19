@@ -17,6 +17,7 @@ import {
   browserToolActionResultSchema,
   paneBrowserSessionResponseSchema,
   type AcquireBrowserControlInput,
+  type FreelanceEgressRoute,
   type BrowserCaptureJob,
   type BrowserCaptureOptions,
   type BrowserCaptureSegment,
@@ -39,6 +40,9 @@ import {
   type PaneBrowserSession,
   type PaneBrowserSessionResponse
 } from "@space/contracts";
+import type { VaultHostFillResult, VaultHostTarget } from "@space/contracts";
+import { VAULT_BROKER_HOST_SOCKET_PATH, createSocketVaultBroker, sealedFillBroker } from "./vault/broker-client.js";
+import { readVaultTarget, runSealedFill, type SealedFillPage } from "./vault/sealed-fill.js";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
@@ -237,6 +241,8 @@ interface BrowserRuntime {
   pageProfiles: Map<string, string>;
   /** Serializes joining, switching and leaving account Chromes. */
   accountWork: Promise<unknown>;
+  /** Set by a Vault sealed fill: this page keeps no console or network entries from then on (ADR-012). */
+  vaultProtected?: boolean;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -350,6 +356,9 @@ export interface BrowserSessionManager {
   cancelCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   recoverCaptureJobs?(): Promise<{ failedSegments: number; requeuedJobs: string[] }>;
   diagnostics?(pane: Pane, includeNetwork: boolean, limit: number): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }>;
+  /** Vault sealed fill (ADR-012); only the Browser Host process implements them. */
+  vaultTarget?(pane: Pane): Promise<VaultHostTarget>;
+  vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult>;
   /** Verifies the account's profile with Google; launches it only when `launch` is true and no pane is using it. */
   checkGoogleAccount?(identity: GoogleAccountBrowserIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<GoogleAccountBrowserCheckResult>;
   /**
@@ -1387,6 +1396,16 @@ function windowsVirtualKeyCodeFor(key: string, code: string | undefined): number
   return 0;
 }
 
+/**
+ * The clock and languages of a Freelance route's exit country, so pages show the time and language the exit implies
+ * (English first: the operator's accounts are in English). Direct is this server's own zone.
+ * shortcut: Mullvad and Nord rotate cities, so they keep the server's zone; map them when a route pins one country.
+ */
+const egressLocales: Partial<Record<FreelanceEgressRoute, { timeZone: string; acceptLang: string }>> = {
+  thailand: { timeZone: "Asia/Bangkok", acceptLang: "en-US,en,th" },
+  greece: { timeZone: "Europe/Athens", acceptLang: "en-US,en,el" }
+};
+
 export function googleBrowserProfilePathFor(profileRoot: string, ownerUserId: string, accountId: string): string {
   if (!ownerUserId || !/^google_account:[A-Za-z0-9_-]+$/.test(accountId)) throw new SpaceConflictError("Invalid Google account profile identity.");
   const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -2031,14 +2050,6 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           { urlPattern: "https://*/*", requestStage: "Request" }
         ]
       }, cdpSessionId),
-      client.send("Page.addScriptToEvaluateOnNewDocument", {
-        source: [
-          "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });",
-          "Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });",
-          "Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });",
-          "window.chrome = window.chrome || { runtime: {} };"
-        ].join(" ")
-      }, cdpSessionId).catch(() => undefined),
       config.browserSessionsYouTubeAdBlockEnabled
         ? client.send("Page.addScriptToEvaluateOnNewDocument", { source: youTubeAdBlockScript() }, cdpSessionId).catch(() => undefined)
         : undefined
@@ -2152,21 +2163,26 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   }
 
   /**
-   * The Chrome flags of a Freelance Copilot pane's per-platform egress (its PAC, and WebRTC kept on the proxied
-   * routes), with a key that names them; null for every other pane and for an all-direct pane.
+   * The Chrome flags of a Freelance Copilot pane's per-platform egress (its PAC, WebRTC kept on the proxied routes, and
+   * the clock and languages of the pane's own route), with a key that names them; null for every other pane and for
+   * an all-direct pane. The PAC holds the pane's route, so a route change changes the key and relaunches Chrome.
    */
-  async function egressFor(paneId: string): Promise<{ args: string[]; key: string } | null> {
+  async function egressFor(paneId: string): Promise<{ args: string[]; env: Record<string, string>; key: string } | null> {
     const pane = await Promise.resolve(store.getPane(paneId)).catch(() => null);
     if (pane?.mode !== "FREELANCE_COPILOT") return null;
-    const pac = freelanceEgressPac(resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings);
+    const settings = resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings;
+    const pac = freelanceEgressPac(settings);
     if (!pac) return null;
+    const locale = egressLocales[settings.browserEgress];
     return {
-      args: [`--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pac).toString("base64")}`, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+      args: [`--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pac).toString("base64")}`, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ...(locale ? [`--accept-lang=${locale.acceptLang}`] : [])],
+      env: locale ? { TZ: locale.timeZone } : {},
       key: createHash("sha256").update(pac).digest("hex")
     };
   }
 
-  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; key: string } | null = null): Promise<BrowserProfileRuntime> {
+  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; env: Record<string, string>; key: string } | null = null): Promise<BrowserProfileRuntime> {
     await mkdir(session.profilePath, { recursive: true, mode: 0o700 });
     const viewport = viewportSizes[session.viewport];
     const audioEnv = config.browserSessionsAudioEnabled
@@ -2211,11 +2227,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
         "--disable-features=Vulkan",
-        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
         ...(egress?.args ?? []),
         "about:blank"
       ],
-      { env: { ...childProcessEnv(), HOME: session.profilePath, ...audioEnv, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
+      { env: { ...childProcessEnv(), HOME: session.profilePath, ...audioEnv, ...egress?.env, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
     );
     let client: CdpClient | undefined;
     try {
@@ -2591,6 +2606,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         }
         return;
       }
+      if (runtime.vaultProtected) return;
       if (event.method === "Runtime.consoleAPICalled" || event.method === "Runtime.exceptionThrown") {
         pushBounded(runtime.consoleEntries, normalizeConsoleEvent(event), 500);
         return;
@@ -3538,6 +3554,23 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return browserTimelineEventSummarySchema.array().parse([...consoleEvents, ...networkEvents].slice(-limit));
   }
 
+  // Vault sealed fill (ADR-012): the pane's own tab, also in a shared Chrome (the API fences the filled browser, protection.ts).
+  function vaultPage(pane: Pane, runtime: BrowserRuntime): SealedFillPage {
+    return { cdp: runtime.client, sessionId: runtime.cdpSessionId, targetId: runtime.targetId, paneId: pane.id };
+  }
+  // H2 Option A: the Browser Host talks to the broker over its own socket, never through the API.
+  const vaultBroker = sealedFillBroker(createSocketVaultBroker(VAULT_BROKER_HOST_SOCKET_PATH));
+  async function vaultTargetForPane(pane: Pane): Promise<VaultHostTarget> {
+    return readVaultTarget(vaultPage(pane, await ensureRuntime(await requireActiveSession(pane))));
+  }
+  async function vaultFillForPane(pane: Pane, request: unknown): Promise<VaultHostFillResult> {
+    const runtime = await ensureRuntime(await requireActiveSession(pane));
+    runtime.vaultProtected = true;
+    runtime.consoleEntries.length = 0;
+    runtime.networkEntries.length = 0;
+    return runSealedFill(vaultPage(pane, runtime), vaultBroker, request);
+  }
+
   async function diagnosticsForPane(pane: Pane, includeNetwork: boolean, limit: number) {
     const session = await requireActiveSession(pane);
     const runtime = await ensureRuntime(session);
@@ -3714,6 +3747,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return responseFor(await dispatchRuntimeInput(pane, input, context), false);
     },
     diagnostics: diagnosticsForPane,
+    vaultTarget: vaultTargetForPane,
+    vaultFill: (pane, request) => vaultFillForPane(pane, request),
     async adoptPaneGoogleProfile(source, context) {
       if (context && (context.holderType !== "OPERATOR" || context.holderId !== source.ownerUserId)) {
         throw new SpaceConflictError("Only the account owner can move a pane's Google sign-in.");

@@ -17,11 +17,13 @@ import {
   Hash,
   Keyboard,
   Mic,
+  Nous,
   Palette,
   PanelsTopLeft,
   Plug,
   Rocket,
   Handshake,
+  PenTool,
   Search,
   ServerCog,
   Sparkles,
@@ -51,7 +53,9 @@ import type { JobCopilotSettingsCard } from "../job-apply-pane/JobCopilotSetting
 import type { MailCopilotSettingsCard } from "../mail-copilot-pane/MailCopilotSettingsCard.js";
 import type { MarketingCopilotSettingsCard } from "../marketing-copilot-pane/MarketingCopilotSettingsCard.js";
 import type { FreelanceCopilotSettingsCard } from "../freelance-copilot-pane/FreelanceCopilotSettingsCard.js";
+import type { DesignSettingsCard } from "../design-pane/DesignSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
+import { NousSettingsCard } from "../nous/NousSettingsCard.js";
 
 // The Settings dock (and the Workspace "Advanced settings" page): a search field, then
 // sections grouped by what they change, each with plain-language help.
@@ -79,6 +83,7 @@ export interface AgentSettingsCards {
   MailCopilot: typeof MailCopilotSettingsCard;
   MarketingCopilot: typeof MarketingCopilotSettingsCard;
   FreelanceCopilot: typeof FreelanceCopilotSettingsCard;
+  Design: typeof DesignSettingsCard;
 }
 
 export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
@@ -183,7 +188,8 @@ export function AgentSettingsDock({
     JobCopilot: LazyJobCopilotSettingsCard,
     MailCopilot: LazyMailCopilotSettingsCard,
     MarketingCopilot: LazyMarketingCopilotSettingsCard,
-    FreelanceCopilot: LazyFreelanceCopilotSettingsCard
+    FreelanceCopilot: LazyFreelanceCopilotSettingsCard,
+    Design: LazyDesignSettingsCard
   } = cards;
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -331,6 +337,12 @@ export function AgentSettingsDock({
       </SettingsGroup>
 
       <SettingsGroup groupKey="assistants" title="Assistants & AI" description="How your AI helpers and agents work.">
+        {canManageInstallation ? <SettingsDisclosure sectionKey="nous" title="Nous" description="The mind of SpaceApp: work on your behalf, promote and approve Warm changes." scope="Your account" icon={Nous}
+          help="Work on my behalf turns Nous on: it answers panes and copilots in every room and brings you only releases, irreversible actions, third parties and direction. The next two let it promote dev to stable and approve Warm changes without asking you; the last one, on this device, lets it bring you to a pane that needs you. The Nous dock shows the same switches."
+          keywords="nous mind work on my behalf promote dev stable warm approve autonomy focus bring me panes">
+          <NousSettingsCard />
+        </SettingsDisclosure> : null}
+
         <SettingsDisclosure sectionKey="dots" title="Dots" description="Your six assistants: models, permissions and reminders." scope="Your account" icon={Bot}
           help="Dots are your built-in assistants. Choose which one opens first, which AI model it uses, how much it may do without asking you, and whether it may message you first."
           keywords="assistant model permissions email slack reminders">
@@ -359,6 +371,11 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
           help="Freelance Copilot finds clients on freelance platforms with an AI coding agent and the pane's browser. Choose that agent and its account once and every new Freelance Copilot pane, on every device, opens with it; turn on asking to pick each time."
           keywords="freelance copilot upwork contra fiverr toptal clients proposals agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyFreelanceCopilotSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="design" title="Design" description="The designer and account new Design panes open with." scope="Your account" icon={PenTool}
+          help="The Design pane makes graphics with an AI coding agent as its designer. Choose that agent and its account once and every new Design pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="design graphics banner social images studio designer agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDesignSettingsCard /></RecoverableSurface>
         </SettingsDisclosure>
 
         {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="The AI service new chats start with." scope="New sessions" icon={ServerCog}

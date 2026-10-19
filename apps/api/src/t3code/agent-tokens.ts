@@ -31,7 +31,7 @@ export interface T3AgentTokenOptions {
 }
 
 // <prefix>.<payload>.<signature>; the prefix itself contains a dot.
-const tokenExpiryMs = (token: string) => {
+export const tokenExpiryMs = (token: string) => {
   const parts = token.split(".");
   const payload = JSON.parse(Buffer.from(parts[parts.length - 2] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
   return typeof payload.exp === "number" ? payload.exp * 1000 : 0;

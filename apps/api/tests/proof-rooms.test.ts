@@ -12,8 +12,9 @@ import {
 } from "@space/cli-host";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { createApp, type CreateAppOptions } from "../src/app.js";
-import { createCsrfToken, signSession } from "../src/auth.js";
+import { createCsrfToken, signSession, signSessionWithTtl } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
+import { codexInputReady } from "../src/cli-terminal.js";
 
 const csrfHeaderName = "x-space-csrf-token";
 const testSessionSecret = "test-secret-with-enough-length";
@@ -40,7 +41,7 @@ function readyHostClient(options: {
 } = {}) {
   let attachCount = 0;
   const terminate = vi.fn(async () => true);
-  const input = vi.fn(async () => ({ accepted: true, acceptedAtMs: Date.now() }));
+  const input = vi.fn<NonNullable<CreateAppOptions["cliHostClient"]>["input"]>(async () => ({ accepted: true, acceptedAtMs: Date.now() }));
   const inspect = vi.fn(async (identity: CliHostIdentity) =>
     options.inspectSession?.(identity) ?? null
   );
@@ -249,12 +250,26 @@ describe("agent proof rooms API", () => {
 
   it("creates the fixed core-runtime render PTYs in one owned room and rejects arbitrary runtime overrides", async () => {
     const store=new InMemorySpaceStore(),host=readyHostClient();
-    const {app,cookie,csrfToken}=await authedApp({store,cliHostClient:host.client,config:await enabledProofConfig()});
+    const {app}=await authedApp({store,cliHostClient:host.client,config:await enabledProofConfig()});
+    const proofToken = signSessionWithTtl({ id: "user:operator-proof", email: "proof@space.test", role: "ADMIN" }, testSessionSecret, 180);
+    const cookie = `space_session=${proofToken}`, csrfToken = createCsrfToken(proofToken, testSessionSecret)!;
     try {
       const response=await app.inject({method:"POST",url:"/api/proof-rooms",headers:{cookie,[csrfHeaderName]:csrfToken},payload:{profile:"CLI_RENDER",paneCount:3,renderRuntime:"ALL"}});
       expect(response.statusCode).toBe(201);
       const record=proofRoomSchema.parse(response.json());
       expect(record.profile).toBe("CLI_RENDER");expect(record.renderRuntime).toBe("ALL");expect(record.panes).toHaveLength(3);expect(record.sessionIds).toHaveLength(3);
+      // The existing auth hook resolves the ephemeral broker principal. The
+      // fixture uses that exact authenticated owner; composer gates stay strict.
+      const authenticated = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } });
+      expect(authenticated.json().user.id).toBe("user:operator");
+      expect(record.room.ownerUserId).toBe(authenticated.json().user.id);
+      const receipt = await app.inject({ method: "GET", headers: { cookie },
+        url: `/api/panes/${encodeURIComponent(record.panes[0]!.id)}/cli/local-composer/submissions/00000000-0000-4000-8000-000000000001` });
+      expect(receipt.statusCode).toBe(200);
+      expect(receipt.json().status).toBe("NOT_FOUND");
+      const otherOwner = await app.inject({ method: "GET", headers: signedHeaders("ADMIN"),
+        url: `/api/panes/${encodeURIComponent(record.panes[0]!.id)}/cli/local-composer/submissions/00000000-0000-4000-8000-000000000001` });
+      expect(otherOwner.statusCode).toBe(404);
       expect(record.panes.map(pane=>pane.terminalRuntimeId)).toEqual(["cli:codex","cli:gemini","cli:opencode"]);
       expect(host.attach).toHaveBeenCalledTimes(3);
       for(const [index,call] of host.attach.mock.calls.entries()){
@@ -281,6 +296,71 @@ describe("agent proof rooms API", () => {
         headers: { cookie, [csrfHeaderName]: csrfToken }, payload: { paneCount: 0 } });
       expect(response.statusCode).toBe(201);
       expect(proofRoomSchema.parse(response.json()).room.ownerUserId).toBe("user:dev-operator");
+    } finally { await app.close(); }
+  });
+
+  it("makes the short composer fixture ready for normal Codex input without waiting for process age", async () => {
+    const fixtureUrl = new URL("../../../scripts/cli-render-fixture.mjs", import.meta.url);
+    // Import in native Node: Vitest rewrites functions before fixtureProgram serializes them.
+    const program = `const {fixtureProgram}=await import(${JSON.stringify(fixtureUrl.href)});eval(fixtureProgram());`;
+    const pty = await spawnNodePty({ command: process.execPath, args: ["--input-type=module", "-e", program],
+      cwd: process.cwd(), env: { TERM: "xterm-256color", LANG: "C.UTF-8" }, cols: 100, rows: 30 });
+    let output = "";
+    pty.onData(data => { output += data; });
+    const exited = new Promise<void>(resolve => pty.onExit(() => resolve()));
+    try {
+      await vi.waitFor(() => expect(output).toContain("SPACE_RENDER_READY"), { timeout: 2000 });
+      expect(codexInputReady(output)).toBe(false);
+      pty.write("SPACE_LOCAL_COMPOSER_START\n");
+      await vi.waitFor(() => expect(codexInputReady(output)).toBe(true), { timeout: 2000 });
+      expect(output).toContain("SPACE_LOCAL_COMPOSER_READY");
+      expect(output).not.toMatch(/SRM:\d{6}|SPACE_RENDER_FINAL|SPACE_RENDER_COMPLETE/);
+    } finally { pty.kill(); await exited; }
+  });
+
+  it("starts the fixed composer-only probe on one Codex fixture and rejects other modes and scopes", async () => {
+    const store = new InMemorySpaceStore(), host = readyHostClient();
+    const { app, cookie, csrfToken } = await authedApp({ store, cliHostClient: host.client, config: await enabledProofConfig() });
+    const headers = { cookie, [csrfHeaderName]: csrfToken };
+    const createFixture = async (renderRuntime: "CODEX" | "GEMINI" | "OPENCODE" | "ALL") => {
+      const response = await app.inject({ method: "POST", url: "/api/proof-rooms", headers,
+        payload: { profile: "CLI_RENDER", paneCount: renderRuntime === "ALL" ? 3 : 1, renderRuntime } });
+      expect(response.statusCode).toBe(201);
+      return proofRoomSchema.parse(response.json());
+    };
+    try {
+      const record = await createFixture("CODEX");
+      host.inspect.mockResolvedValue((await host.attach.mock.results[0]!.value).session);
+      const startUrl = `/api/proof-rooms/${encodeURIComponent(record.room.id)}/cli-render/start`;
+      for (const payload of [{ mode: "UNKNOWN" }, { mode: "COMPOSER", command: "arbitrary" }]) {
+        const rejected = await app.inject({ method: "POST", url: startUrl, headers, payload });
+        expect(rejected.statusCode).toBe(422);
+      }
+      const readonlyToken = signSessionWithTtl({ id: "user:proof-reader", email: "reader@space.test", role: "ADMIN", proofScope: "READ_ONLY" }, testSessionSecret, 180);
+      const readonly = await app.inject({ method: "POST", url: startUrl,
+        headers: { cookie: `space_session=${readonlyToken}`, [csrfHeaderName]: createCsrfToken(readonlyToken, testSessionSecret)! }, payload: { mode: "COMPOSER" } });
+      expect(readonly.statusCode).toBe(403);
+      expect(host.input).not.toHaveBeenCalled();
+      const started = await app.inject({ method: "POST", url: startUrl, headers, payload: { mode: "COMPOSER" } });
+      expect(started.statusCode).toBe(200);
+      expect(started.json().started).toBe(true);
+      expect(host.input.mock.calls[0]!.slice(2)).toEqual(["SPACE_LOCAL_COMPOSER_START\n", "hidden", `cli-render:composer:${record.sessionIds[0]}`]);
+      expect(host.attach.mock.calls[1]![0].spawn).toBeUndefined();
+      host.input.mockClear();
+      for (const runtime of ["GEMINI", "OPENCODE", "ALL"] as const) {
+        const other = await createFixture(runtime);
+        const rejected = await app.inject({ method: "POST", url: `/api/proof-rooms/${encodeURIComponent(other.room.id)}/cli-render/start`, headers, payload: { mode: "COMPOSER" } });
+        expect(rejected.statusCode).toBe(409);
+      }
+      const operator = store.createRoom({ name: "Operator workspace", initialPaneCount: 0 });
+      const operatorRejected = await app.inject({ method: "POST", url: `/api/proof-rooms/${encodeURIComponent(operator.id)}/cli-render/start`, headers, payload: { mode: "COMPOSER" } });
+      expect(operatorRejected.statusCode).toBe(409);
+      expect(host.input).not.toHaveBeenCalled();
+      // Default start keeps the existing fixed render marker and idempotency key.
+      const standard = await createFixture("CODEX");
+      const defaultStart = await app.inject({ method: "POST", url: `/api/proof-rooms/${encodeURIComponent(standard.room.id)}/cli-render/start`, headers, payload: {} });
+      expect(defaultStart.statusCode).toBe(200);
+      expect(host.input.mock.calls[0]!.slice(2)).toEqual(["SPACE_RENDER_START\n", "hidden", `cli-render:${standard.sessionIds[0]}`]);
     } finally { await app.close(); }
   });
 

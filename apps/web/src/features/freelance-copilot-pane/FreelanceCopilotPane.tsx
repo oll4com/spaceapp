@@ -9,11 +9,12 @@ import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { copilotRuntimeOptions } from "../copilot-kit/copilot-runtimes.js";
 import { RAIL_DEFAULT_WIDTH, RAIL_MAX_WIDTH, RAIL_MIN_WIDTH, readRailPreference, writeRailPreference, type RailPreference } from "../copilot-kit/rail-preference.js";
 import { useCopilotAgent } from "../copilot-kit/useCopilotAgent.js";
-import { Activity, Boxes, Brain, Globe, Settings, Terminal, Users } from "../ui-theme/app-icons.js";
+import { Activity, Bookmark, Boxes, Brain, Globe, Settings, Terminal, Users } from "../ui-theme/app-icons.js";
 import { ActivityTab } from "./ActivityTab.js";
 import { FreelanceCommandBar } from "./CommandBar.js";
 import { LeadsTab } from "./LeadsTab.js";
 import { MemoryTab } from "./MemoryTab.js";
+import { BookmarksTab } from "../marketing-copilot-pane/BookmarksTab.js";
 import { PlatformsTab } from "./PlatformsTab.js";
 import { SetupTab } from "./SetupTab.js";
 import { useFreelanceCopilotData } from "./useFreelanceCopilot.js";
@@ -31,10 +32,10 @@ export interface FreelanceCopilotPaneProps {
   browser: ReactNode;
 }
 
-export type FreelanceRailTab = "browser" | "leads" | "platforms" | "activity" | "memory" | "setup" | "terminal";
-const RAIL_TABS: readonly FreelanceRailTab[] = ["leads", "platforms", "activity", "memory", "setup", "terminal"];
-const TAB_LABELS: Record<FreelanceRailTab, string> = { browser: "Browser", leads: "Leads", platforms: "Platforms", activity: "Activity", memory: "Memory", setup: "Setup", terminal: "Terminal" };
-const TAB_ICONS = { browser: Globe, leads: Users, platforms: Boxes, activity: Activity, memory: Brain, setup: Settings, terminal: Terminal } as const;
+export type FreelanceRailTab = "browser" | "leads" | "platforms" | "activity" | "memory" | "bookmarks" | "setup" | "terminal";
+const RAIL_TABS: readonly FreelanceRailTab[] = ["leads", "platforms", "activity", "memory", "bookmarks", "setup", "terminal"];
+const TAB_LABELS: Record<FreelanceRailTab, string> = { browser: "Browser", leads: "Leads", platforms: "Platforms", activity: "Activity", memory: "Memory", bookmarks: "Bookmarks", setup: "Setup", terminal: "Terminal" };
+const TAB_ICONS = { browser: Globe, leads: Users, platforms: Boxes, activity: Activity, memory: Brain, bookmarks: Bookmark, setup: Settings, terminal: Terminal } as const;
 
 function railStorageKey(paneId: string): string {
   return `space:freelance-copilot:rail:${paneId}`;
@@ -178,6 +179,7 @@ export function FreelanceCopilotPane({ pane, isVisible, terminal, browser }: Fre
         <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
           {railOpen && activeTab === "leads" ? <LeadsTab paneId={pane.id} leads={data.leads} pending={pending} funnel={data.funnel} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "platforms" ? <PlatformsTab paneId={pane.id} leads={data.leads} funnel={data.funnel} onChanged={() => void data.refresh()} /> : null}
+          {railOpen && activeTab === "bookmarks" ? <BookmarksTab paneId={pane.id} onOpened={() => { if (layout === "stacked") selectTab("browser"); }} /> : null}
           {railOpen && activeTab === "activity" ? <ActivityTab paneId={pane.id} events={data.events} pending={pending} onChanged={() => void data.refresh()} onOpenLeads={() => selectTab("leads")} onOpenSetup={() => selectTab("setup")} /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
           {railOpen && activeTab === "setup" && data.settings ? (

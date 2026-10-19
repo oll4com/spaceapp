@@ -149,14 +149,16 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   }
 }
 
-export async function discardSupervisorTurn(item: RoomAgentSupervisorQueueItem, reason: string, store: SpaceStore) {
+// Without an errorCode the turn was superseded or stopped; with one it failed and keeps that cause.
+export async function discardSupervisorTurn(item: RoomAgentSupervisorQueueItem, reason: string, store: SpaceStore, errorCode?: string) {
   const record = await store.getRoomAgentTurn(item.missionId, item.turn.agentRunId);
   if (!record || !["QUEUED", "RUNNING"].includes(record.run.status)) return;
+  const status = errorCode ? "FAILED" : "INTERRUPTED";
   await store.updateSpaceAgentRun(record.run.runId, {
-    status: "INTERRUPTED", completedAt: new Date().toISOString(),
-    errorCode: "ROOM_AGENT_SUPERSEDED", errorMessage: reason.slice(0, 1000)
+    status, completedAt: new Date().toISOString(),
+    errorCode: errorCode ?? "ROOM_AGENT_SUPERSEDED", errorMessage: reason.slice(0, 1000)
   });
-  await store.updateSpaceAgentMessage(record.run.responseMessageId, { status: "INTERRUPTED", content: reason });
+  await store.updateSpaceAgentMessage(record.run.responseMessageId, { status, content: reason });
 }
 
 export async function supervisorTurnState(item: RoomAgentSupervisorQueueItem, store: SpaceStore): Promise<"READY" | "PAUSED" | "SKIP"> {
@@ -180,16 +182,18 @@ export async function supervisorTurnState(item: RoomAgentSupervisorQueueItem, st
 }
 
 export async function finishSupervisorTurn(input: {
-  item: RoomAgentSupervisorQueueItem; status: "COMPLETED" | "FAILED" | "INTERRUPTED"; statusReason: string;
+  item: RoomAgentSupervisorQueueItem; status: "COMPLETED" | "FAILED" | "INTERRUPTED"; statusReason: string; errorCode?: string;
 }, store: SpaceStore) {
   const mission = await store.getRoomAgentMission(input.item.turn.roomId, input.item.missionId);
   if (!mission || !activeStatuses.includes(mission.status)) return;
   const completedAt = new Date().toISOString();
+  const failure = input.errorCode ? { errorCode: input.errorCode } : {};
   await store.updateRoomAgentMission(mission.id, mission.status === "PAUSED" ? {
+    ...failure,
     currentPaneId: null, executionState: { ...mission.executionState,
       pendingCompletion: { status: input.status, statusReason: input.statusReason, completedAt } },
     statusReason: "Paused after the active turn finished; completion is checkpointed for Resume."
   } : {
-    status: input.status, statusReason: input.statusReason, completedAt, currentPaneId: null, lastProgressAt: completedAt
+    ...failure, status: input.status, statusReason: input.statusReason, completedAt, currentPaneId: null, lastProgressAt: completedAt
   }, undefined, { expectedRunId: input.item.turn.agentRunId!, expectedStatus: mission.status });
 }

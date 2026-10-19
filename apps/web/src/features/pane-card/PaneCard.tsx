@@ -352,6 +352,7 @@ export const PaneCard = memo(function PaneCard({
   onToggleColumnSpan,
   onSplit,
   isFullscreenLayout,
+  presizeInFullscreen = false,
   fullscreenIndex,
   fullscreenCount,
   onFullscreenNavigate,
@@ -429,6 +430,7 @@ export const PaneCard = memo(function PaneCard({
   onToggleColumnSpan: (pane: Pane) => Promise<void>;
   onSplit: (pane: Pane, direction: "horizontal" | "vertical") => void;
   isFullscreenLayout: boolean;
+  presizeInFullscreen?: boolean;
   fullscreenIndex: number;
   fullscreenCount: number;
   onFullscreenNavigate: (direction: "previous" | "next", fromPaneId?: string) => void;
@@ -2659,6 +2661,7 @@ export const PaneCard = memo(function PaneCard({
             isTarget={isTarget}
             isVisible={isTerminalOutputVisible}
             fullscreenLayout={isFullscreenLayout}
+            presizeInFullscreen={presizeInFullscreen}
             cliDebugModeEnabled={cliDebugModeEnabled}
             observerOnly={terminalObserverOnly}
             maxImagePreviews={cliImagePreviewLimit}
@@ -2740,6 +2743,7 @@ export const PaneCard = memo(function PaneCard({
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
                   fullscreenLayout={isFullscreenLayout}
+                  presizeInFullscreen={presizeInFullscreen}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}
@@ -2785,6 +2789,7 @@ export const PaneCard = memo(function PaneCard({
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
                   fullscreenLayout={isFullscreenLayout}
+                  presizeInFullscreen={presizeInFullscreen}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}
@@ -2830,6 +2835,7 @@ export const PaneCard = memo(function PaneCard({
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
                   fullscreenLayout={isFullscreenLayout}
+                  presizeInFullscreen={presizeInFullscreen}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}

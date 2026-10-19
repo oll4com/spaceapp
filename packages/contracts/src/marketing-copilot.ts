@@ -159,12 +159,21 @@ export type MarketingPostKind = z.infer<typeof marketingPostKindSchema>;
 export const MARKETING_POST_STATUSES = ["DRAFT", "IN_REVIEW", "APPROVED", "PUBLISHING", "PUBLISHED", "FAILED", "REJECTED"] as const;
 export const marketingPostStatusSchema = z.enum(MARKETING_POST_STATUSES);
 export type MarketingPostStatus = z.infer<typeof marketingPostStatusSchema>;
-/** A generated image or video the post carries: a pane-owned file, never an Agent File unless the operator asks. */
+/**
+ * A generated image or video the post carries: a pane-owned file, never an Agent File unless the operator asks. With
+ * `artifactId` it is a capture in the owner's room Media (space_screenshot): the server sets path and kind from it.
+ */
 export const marketingAssetSchema = z.object({
   path: z.string().trim().min(1).max(500),
   label: z.string().trim().min(1).max(200),
-  kind: z.enum(["IMAGE", "VIDEO", "FILE"])
+  kind: z.enum(["IMAGE", "VIDEO", "FILE"]),
+  artifactId: z.string().trim().min(1).max(200).optional()
 }).strict();
+export type MarketingAsset = z.infer<typeof marketingAssetSchema>;
+/** What the agent sends: a file with its kind, or just a captured artifact and a label. */
+export const marketingAssetInputSchema = z.union([marketingAssetSchema,
+  z.object({ artifactId: z.string().trim().min(1).max(200), label: z.string().trim().min(1).max(200) }).strict()]);
+export type MarketingAssetInput = z.infer<typeof marketingAssetInputSchema>;
 export const marketingPostSchema = z.object({
   id: marketingPostIdSchema,
   ownerUserId: z.string().min(1).max(200),
@@ -198,7 +207,7 @@ export const marketingPostCreateSchema = z.object({
   target: z.string().trim().min(1).max(300).nullable().optional(),
   title: z.string().trim().min(1).max(300).nullable().optional(),
   body: z.string().trim().min(1).max(40_000),
-  assets: z.array(marketingAssetSchema).max(10).default([]),
+  assets: z.array(marketingAssetInputSchema).max(10).default([]),
   scheduledAt: isoDateTime.nullable().optional()
 }).strict();
 export type MarketingPostCreate = z.infer<typeof marketingPostCreateSchema>;

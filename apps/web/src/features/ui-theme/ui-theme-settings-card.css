@@ -126,6 +126,20 @@
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6), 0 0 0 0.5px rgba(0, 0, 0, 0.5);
 }
 
+[data-theme-preview="jarvis"],
+[data-background-preview="jarvis"] {
+  --preview-surface: rgba(3, 12, 24, 0.86);
+  --preview-accent: #38c8ff;
+  background: url("/brand/jarvis-core.svg") center / 62% no-repeat, url("/brand/jarvis-hud.svg") center / cover no-repeat, #02060d;
+}
+
+[data-theme-preview="aira"],
+[data-background-preview="aira"] {
+  --preview-surface: rgba(15, 10, 28, 0.85);
+  --preview-accent: #e879f9;
+  background: url("/brand/aira-core.svg") center / 62% no-repeat, url("/brand/aira-field.svg") center / cover no-repeat, #07040f;
+}
+
 [data-background-preview="spaceapp"] {
   background: #0b0d10 url("/brand/spaceapp-bg-ascii-orbital-optimized.gif") center / 72% no-repeat;
 }

@@ -8,6 +8,7 @@ import {
   parseNativeTitleOutput,
   resolveNativeOpenCodeRuntime,
   parseNativeOpenCodeModels,
+  parseOpenCode2Models,
 } from "../src/task-title-opencode.js";
 import { mkdtemp, writeFile, rm, access, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -84,6 +85,23 @@ describe("native title usage boundary", () => {
     expect(openCodeRunRejectsPermissionRequests("2.0.0", help)).toBe(false);
     expect(openCodeRunRejectsPermissionRequests("1.19.0", help.replace(/default: false\]$/, "default: true]"))).toBe(false);
     expect(openCodeRunRejectsPermissionRequests("1.19.0", help.split("\n")[0]!)).toBe(false);
+    // OpenCode 2.0.31 `opencode --version` and `run --help`; a v2 run rejects requests unless --auto is passed.
+    const v2Help = "FLAGS\n  --standalone            Run with a private server instead of the background service\n  --auto                  Auto-approve permissions that are not explicitly denied\n";
+    expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help)).toBe(true);
+    expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help.replace(/  --auto.*\n/, ""))).toBe(false);
+    expect(openCodeRunRejectsPermissionRequests("opencode v3.0.0", v2Help)).toBe(false);
+  });
+  it("reads OpenCode 2's model API as the v1 catalog entries with the highest tier's cost", () => {
+    const output = JSON.stringify({ data: [
+      { id: "big-pickle", providerID: "opencode", name: "Big Pickle", status: "active", enabled: true, cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] },
+      { id: "tiered", providerID: "opencode", name: "Tiered", status: "active", cost: [{ input: 0, output: 0 }, { input: 1, output: 4 }] },
+      { id: "off", providerID: "opencode", enabled: false, cost: [{ input: 0, output: 0 }] },
+      { id: "kimi", providerID: "legacy", cost: [{ input: 0, output: 0 }] }
+    ] });
+    expect(parseOpenCode2Models(output)).toEqual({
+      "big-pickle": { id: "big-pickle", name: "Big Pickle", status: "active", cost: { input: 0, output: 0 } },
+      tiered: { id: "tiered", name: "Tiered", status: "active", cost: { input: 1, output: 4 } }
+    });
   });
   it("keeps every tool behind a permission request and attaches copies of the images", async () => {
     const root = await mkdtemp(join(tmpdir(), "title-attach-"));

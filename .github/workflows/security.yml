@@ -71,8 +71,8 @@ jobs:
 
       - run: npm ci
       - run: npm audit --audit-level=high
-      - name: Install ripgrep (the file search tests run the real rg)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      - name: Install ripgrep and ffmpeg (the file search tests run the real rg, the Nous attachment tests make media with ffmpeg)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
 
       - run: npm run test:public
       - run: npm run public:export:verify

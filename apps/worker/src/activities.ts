@@ -34,13 +34,16 @@ import {
 import { PostgresDotsRepository, PostgresSpaceStore } from "@space/db";
 import {
   fetchOpenCodeCurrentModel,
-  fetchOpenCodeSessionIsTurnActive,
   fetchOpenCodeSessionModels,
   openCodeServerBaseUrl,
+  openCodeServerApiVersion,
   openCodeServerIsHealthy,
   openCodeSpaceChatStateRoot,
+  openCodeV2Authorization,
+  openCodeV2MessagesAsV1,
   parseOpenCodeCompositeModelId,
   readOpenCodeServerControl,
+  readOpenCodeSessionTurnActive,
   switchOpenCodeSessionModel,
   type OpenCodeServerControl
 } from "@space/opencode-control";
@@ -339,6 +342,7 @@ export interface MarkRoomAgentMissionFinishedInput {
   roomId: string;
   status: "COMPLETED" | "FAILED" | "INTERRUPTED";
   statusReason: string;
+  errorCode?: string;
 }
 
 export interface MarkRoomAgentMissionContinuedInput {
@@ -379,8 +383,10 @@ export async function markRoomAgentMissionFinished(
   const mission = await store.getRoomAgentMission(input.roomId, input.missionId);
   if (!mission) throw new Error(`Room agent mission ${input.missionId} was not found.`);
   const completedAt = new Date().toISOString();
+  const failure = input.errorCode ? { errorCode: input.errorCode } : {};
   if (mission.status === "PAUSED") {
     return store.updateRoomAgentMission(input.missionId, {
+      ...failure,
       currentPaneId: null,
       lastProgressAt: completedAt,
       executionState: {
@@ -391,6 +397,7 @@ export async function markRoomAgentMissionFinished(
     });
   }
   return store.updateRoomAgentMission(input.missionId, {
+    ...failure,
     status: input.status,
     currentPaneId: null,
     completedAt,
@@ -519,8 +526,8 @@ export async function prepareRoomAgentBackgroundContinuation(input: Parameters<t
   return prepareBackgroundContinuation(input, requiredRoomAgentStore(storeOverride), limits.maxContinuations, limits.maxMissionTokens);
 }
 
-export async function discardRoomAgentSupervisorTurn(input: { item: import("@space/contracts").RoomAgentSupervisorQueueItem; reason: string }, storeOverride?: SpaceStore) {
-  return discardSupervisorTurn(input.item, input.reason, requiredRoomAgentStore(storeOverride));
+export async function discardRoomAgentSupervisorTurn(input: { item: import("@space/contracts").RoomAgentSupervisorQueueItem; reason: string; errorCode?: string }, storeOverride?: SpaceStore) {
+  return discardSupervisorTurn(input.item, input.reason, requiredRoomAgentStore(storeOverride), input.errorCode);
 }
 
 export async function checkRoomAgentSupervisorTurn(item: import("@space/contracts").RoomAgentSupervisorQueueItem, storeOverride?: SpaceStore) {
@@ -2098,7 +2105,7 @@ async function runCodexAppServerTurnImplementation(
       // They must not persist an operator STOP that prevents the next attempt.
       const retryingWorker = ["WORKER_SHUTDOWN", "TIMED_OUT"].includes(
         abortSignal.reason instanceof Error ? abortSignal.reason.message : String(abortSignal.reason));
-      if (!retryingWorker) await recordSpaceAgentRunInterrupted(parsed, "Room Agent turn was stopped by the operator.", options.completionStore);
+      if (!retryingWorker) await recordSpaceAgentRunInterrupted(parsed, "Stopped.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     if (isRetryableRoomActionBridgeError(error)) throw error;
@@ -2207,12 +2214,12 @@ async function runOpenCodeAgentTurnImplementation(
         options.completionStore
       );
     }
-    const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId);
-    if (busy) {
+    const busy = await readOpenCodeSessionTurnActive(control, control.nativeSessionId);
+    if (busy !== false) {
       return recordOpenCodeAgentTurnFailure(
         parsed,
-        "OPENCODE_SESSION_BUSY",
-        "The OpenCode session is already busy with another turn.",
+        busy ? "OPENCODE_SESSION_BUSY" : "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+        busy ? "The OpenCode session is already busy with another turn." : "The OpenCode session state could not be read.",
         {},
         options.completionStore
       );
@@ -2261,7 +2268,7 @@ async function runOpenCodeAgentTurnImplementation(
   } catch (error) {
     if (abortSignal?.aborted) {
       // Single attempt: unlike the Codex turn, no later attempt re-enters this turn.
-      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Room Agent turn was stopped by the operator.", options.completionStore);
+      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Stopped.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     const failure = classifyOpenCodeExecutorFailure(error);
@@ -2393,6 +2400,7 @@ export async function executeOpenCodeTurnPrompt(
   const signal = abortSignal
     ? AbortSignal.any([timeoutSignal, abortSignal])
     : timeoutSignal;
+  if (await openCodeServerApiVersion(control) === 2) return executeOpenCodeV2TurnPrompt(control, input, signal, fetchImpl);
   try {
     const response = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/message`, {
       method: "POST",
@@ -2418,6 +2426,37 @@ export async function executeOpenCodeTurnPrompt(
     } catch {
       // Preserve the original turn failure; abort is a bounded cleanup attempt.
     }
+    throw error;
+  }
+}
+
+/** OpenCode 2 has no blocking message call: pick the agent, queue the prompt, wait until the loop is idle, read the answer. */
+async function executeOpenCodeV2TurnPrompt(
+  control: OpenCodeServerControl,
+  input: DummyTurnInput,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch
+): Promise<{ text: string | null; usage: OpenCodeTurnUsage | null }> {
+  const baseUrl = openCodeServerBaseUrl(control.serverPort, control.serverHost);
+  const session = encodeURIComponent(control.nativeSessionId);
+  const authorization = openCodeV2Authorization(control);
+  const call = async (path: string, init: RequestInit = {}) => {
+    const response = await fetchImpl(`${baseUrl}${path}`, { ...init, headers: { authorization, "content-type": "application/json" }, signal });
+    if (!response.ok) throw new Error(`OpenCode ${path} failed with HTTP ${response.status}.`);
+    return response;
+  };
+  try {
+    await call(`/api/session/${session}/agent`, { method: "POST", body: JSON.stringify({ agent: input.collaborationMode === "plan" ? "plan" : "build" }) });
+    const prompt = (await (await call(`/api/session/${session}/prompt`, { method: "POST", body: JSON.stringify({ text: input.prompt }) })).json()) as { data?: { id?: unknown } };
+    await call(`/api/experimental/session/${session}/wait`, { method: "POST" });
+    const listed = (await (await call(`/api/session/${session}/message?limit=50&order=desc`)).json()) as { data?: unknown };
+    const answers = openCodeV2MessagesAsV1(Array.isArray(listed.data) ? [...listed.data].reverse() : [])
+      .filter((message) => message.info.role === "assistant" && message.info.parentID === prompt.data?.id);
+    const last = answers.at(-1);
+    return { text: last ? extractOpenCodeAssistantText(last.parts) : null, usage: last ? openCodeTurnUsage(last.info) : null };
+  } catch (error) {
+    await fetchImpl(`${baseUrl}/api/session/${session}/interrupt`, { method: "POST", headers: { authorization }, signal: AbortSignal.timeout(5_000) })
+      .catch(() => undefined); // Bounded cleanup; the turn failure is what gets reported.
     throw error;
   }
 }
@@ -2554,7 +2593,7 @@ async function runCliAgentTurnImplementation(
     });
   } catch (error) {
     if (abortSignal?.aborted) {
-      await recordSingleAttemptTurnAborted(parsed, abortSignal, "CLI chat turn was stopped by the operator.", options.completionStore);
+      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Stopped.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     const failureMessage = error instanceof Error ? error.message.slice(0, 500) : "The CLI chat turn failed.";

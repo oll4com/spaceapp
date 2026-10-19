@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { reloadAfterLocalCliDraftsSaved } from "../terminal-pane/local-cli-draft.js";
 import { DesktopDisplayControls } from "../desktop-screens/DesktopDisplayControls.js";
 import {
   Maximize2,
@@ -233,7 +234,7 @@ export function DesktopWindowTitlebar({
 
   const handleReloadWindow = () => {
     setIsAppMenuOpen(false);
-    window.location.reload();
+    void reloadAfterLocalCliDraftsSaved(() => window.location.reload());
   };
 
   const formatDuration = (totalSeconds: number): string => {

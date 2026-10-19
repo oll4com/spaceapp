@@ -80,7 +80,9 @@ async function json(response: Response, what: string): Promise<Record<string, un
     // An expired or revoked grant (Google ends test-mode grants after seven days) means the user must reconnect.
     const revokedGrant = response.status === 400 && body.error === "invalid_grant";
     const status = response.status === 401 || revokedGrant ? 401 : response.status === 403 ? 403 : response.status === 404 ? 404 : 502;
-    throw new ConnectorError(status, "CONNECTOR_PROVIDER_ERROR", `${what} failed (${response.status}).`);
+    // The provider's own reason (a rate limit, a missing scope) tells a 403 apart; these messages carry no tokens.
+    const detail = bounded((body.error as { message?: string } | undefined)?.message, 200)?.replace(/\.+$/, "");
+    throw new ConnectorError(status, "CONNECTOR_PROVIDER_ERROR", `${what} failed (${response.status})${detail ? `: ${detail}` : ""}.`);
   }
   return body;
 }

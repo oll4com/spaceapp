@@ -78,7 +78,8 @@ export function registerAdminUserRoutes(app: FastifyInstance, options: {
     if (!store.setUserDisabled || !await store.setUserDisabled(id, disabled, nowIso())) {
       return sendApiError(reply, 404, "USER_NOT_FOUND", "Target user was not found.");
     }
-    if (disabled) await revokeUserSessions?.(id);
+    // The disabled flag already refuses the user's sessions; an unsaved revocation stays queued for retry.
+    if (disabled) await revokeUserSessions?.(id).catch(() => undefined);
     await recordAudit(request, { action: disabled ? "user.disabled" : "user.enabled", targetType: "user", targetId: id, metadata: {} });
     return { id, disabled };
   });

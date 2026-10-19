@@ -47,7 +47,7 @@ function MailboxStep() {
   };
   return (
     <div className="jc-form">
-      <p className="jc-muted">Every platform account signs up with its own alias (upwork@, contra@, fiverr@, toptal@, arc@, braintrust@example.invalid); all of them deliver into one mailbox the copilot reads for codes, job alerts and client messages. The password is stored sealed on the server and never reaches the agent.</p>
+      <p className="jc-muted">Every platform account signs up with its own alias (contra@, fiverr@, toptal@, arc@, braintrust@example.invalid; Upwork signs in with Google); all of them deliver into one mailbox the copilot reads for codes, job alerts and client messages. The password is stored sealed on the server and never reaches the agent.</p>
       <p role="status">{status?.connected ? `Connected: ${status.config?.user} on ${status.config?.host}` : "Not connected."}</p>
       <form className="jc-form" onSubmit={connect}>
         <div className="jc-form-grid">
@@ -151,7 +151,7 @@ export function SetupTab({ pane, settings, runtimeOptions, switching, accountRev
 
       {step === "platforms" ? (
         <div className="jc-form">
-          <p className="jc-muted">Each platform leaves from a route of Settings → CLI VPN route (default: the pane's route, Thailand); a route that is down stops that platform's pages instead of leaving from this server. Where the copilot finds clients for oll4.com. One account per platform, signed up with the platform's alias. The copilot registers and keeps the profile up to date; identity checks, phone, payout, tax forms, CAPTCHAs and interviews come to you in this pane's browser.</p>
+          <p className="jc-muted">Each platform leaves from a route of Settings → CLI VPN route (default: the pane's route, Thailand); a route that is down stops that platform's pages instead of leaving from this server. Where the copilot finds clients for oll4.com. One account per platform, signed up with the platform's alias; Upwork signs in only with Continue with Google on this pane's Google account. The copilot registers and keeps the profile up to date; identity checks, phone, payout, tax forms, CAPTCHAs and interviews come to you in this pane's browser.</p>
           <ul className="mk-channels" aria-label="Platforms">
             {FREELANCE_CHANNELS.map((id) => {
               const channel = settings.settings.channels[id];

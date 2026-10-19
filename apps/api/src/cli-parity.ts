@@ -19,7 +19,9 @@ export const deepseekDirectParityRuntimeId = "cli:deepseek";
 export const deepseekDirectParityCommand = "deepseek-vscode-parity";
 export const codexDirectParityCwd = "/etc";
 export const codexDirectParityHome = "/var/lib/spaceapp-user";
-export const codexDirectParityCodexHome = "/var/lib/spaceapp-user/.codex";
+// The Codex home of the install the pane runs in: a public install's CLI container (SPACE_CODEX_HOME in its compose
+// file), so its turn state, plans and threads are found; stable and dev leave it unset.
+export const codexDirectParityCodexHome = process.env.SPACE_CODEX_HOME?.trim() || "/var/lib/spaceapp-user/.codex";
 export const codexDirectParityTmp = "/var/lib/spaceapp-user/.codex/tmp";
 export const claudeDirectParityRoot = "/var/lib/spaceapp-user/.codex/space-claude";
 export const claudeDirectParityTmp = `${claudeDirectParityRoot}/tmp`;

@@ -29,10 +29,16 @@ describe("Space agent bootstrap", () => {
     const webPrompt = buildSpaceAgentBootstrapPrompt({ channel: "WEB_CHAT" });
 
     expect(cliMarkdown).toContain("space-publish-file <absolute-path>");
+    expect(cliMarkdown).toContain("space-publish-file --media <absolute-path>");
     expect(cliMarkdown).toContain("ONLY create and publish an Agent File if the user EXPLICITLY requested");
     expect(cliMarkdown).toContain("Publish only final deliverables");
     expect(cliMarkdown).toContain("Never publish credentials, secrets, user inputs, temporary files, caches, logs, or whole source trees");
     expect(cliMarkdown).toContain("Confirm the command returned an Agent Files artifact id");
     expect(webPrompt).not.toContain("space-publish-file <absolute-path>");
+  });
+
+  it("tells CLI agents to report their progress to Nous (plan clipboard:ot6-jLKOWDNC)", () => {
+    expect(buildCliAgentBootstrapMarkdown()).toContain("node /opt/spaceapp/scripts/space-progress.mjs <started|progress|blocked|needs-decision|waiting|done|failed>");
+    expect(buildSpaceAgentBootstrapPrompt({ channel: "WEB_CHAT" })).not.toContain("space-progress.mjs");
   });
 });

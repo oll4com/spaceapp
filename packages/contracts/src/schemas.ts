@@ -7,6 +7,8 @@ import { cliAdapterContractSchema } from "./cli-adapter.js";
 import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
+import { nousSettingsSchema } from "./nous.js";
+import { patchSchema } from "./partial-update.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
 import { jobApplyPaneMetadataSchema, jobCopilotAccountProfileIdSchema } from "./job-apply.js";
@@ -14,6 +16,7 @@ import { copilotLaunchSettingsSchema } from "./copilot.js";
 import { mailCopilotPaneMetadataSchema } from "./mail-copilot.js";
 import { marketingCopilotPaneMetadataSchema } from "./marketing-copilot.js";
 import { freelanceCopilotPaneMetadataSchema } from "./freelance-copilot.js";
+import { designPaneMetadataSchema } from "./design.js";
 import { notificationSettingsSchema } from "./notifications.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
@@ -178,11 +181,15 @@ export const eventTypeSchema = z.enum([
   "MAIL_COPILOT_UPDATED",
   "MARKETING_COPILOT_UPDATED",
   "FREELANCE_COPILOT_UPDATED",
+  "DESIGN_UPDATED",
   "NOTIFICATION_CREATED",
-  "NOTIFICATION_UPDATED"
+  "NOTIFICATION_UPDATED",
+  "NOUS_FOCUS_REQUESTED"
 ]);
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
+
+export const roomSharePermissionSchema = z.enum(["VIEW", "COLLABORATE"]);
 
 export const roomSchema = z.object({
   id: idSchema,
@@ -198,7 +205,9 @@ export const roomSchema = z.object({
   archivedAt: isoDateTimeSchema.nullable(),
   paneCap: z.number().int().min(1).max(16),
   traceId: requestIdSchema,
-  ownerUserId: idSchema.nullable().optional()
+  ownerUserId: idSchema.nullable().optional(),
+  /** Only on a room shared with the caller (MU-007: the web hides write controls of a VIEW share). */
+  sharePermission: roomSharePermissionSchema.optional()
 });
 
 export const createRoomInputSchema = z.object({
@@ -439,6 +448,7 @@ export const paneSchema = z.object({
   mailCopilotMetadata: mailCopilotPaneMetadataSchema.nullable().optional(),
   marketingCopilotMetadata: marketingCopilotPaneMetadataSchema.nullable().optional(),
   freelanceCopilotMetadata: freelanceCopilotPaneMetadataSchema.nullable().optional(),
+  designMetadata: designPaneMetadataSchema.nullable().optional(),
   paneName: z.string().min(1).max(60).nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
@@ -529,12 +539,12 @@ export const createPaneInputSchema = z
     split: paneSplitSchema.optional()
   })
   .superRefine((input, context) => {
-    // Copilot panes (Job, Mail, Marketing) run their agent in a CLI session, so they carry a runtime too.
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT") {
+    // Copilot panes (Job, Mail, Marketing, Freelance) and Design panes run their agent in a CLI session, so they carry a runtime too.
+    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT mode."
+        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN mode."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -622,6 +632,14 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
       /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
       accountProfileId: jobCopilotAccountProfileIdSchema.optional()
     })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("DESIGN"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
+      /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
+      accountProfileId: jobCopilotAccountProfileIdSchema.optional()
+    })
     .strict()
 ]);
 
@@ -646,10 +664,15 @@ export const roomPanesResultSchema = z.object({
 const persistedTranscriptTokenPattern = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
 const persistedTranscriptLabeledSecretPattern =
   /\b(api[_-]?key|secret|token|password)\s*[:=]\s*([^\s,;]+)/gi;
+// Space Control tokens (space-control-token.ts) are self-identifying: prefix.payload.sig in base64url. Redact them by
+// shape so they vanish even when a CLI echoes the bare value or the SPACE_CONTROL_TOKEN= name (the _TOKEN= label has no
+// \b before "token", so the labeled pattern above misses it). Codex, Claude Code and Oh My Pi all carry this token.
+const persistedTranscriptControlTokenPattern = /\bspacecontrol\.v\d+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 export function redactPersistedTranscriptContent(value: string): string {
   return value
     .replaceAll("\0", "")
+    .replace(persistedTranscriptControlTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptLabeledSecretPattern, (match, label: string, secretValue: string) =>
       secretValue === "[REDACTED]" ? match : `${label}:[REDACTED]`
@@ -3434,7 +3457,7 @@ export const updateBrowserHandoffRequestInputSchema = z
   });
 
 export const browserHandoffRequestResponseSchema = z.object({
-  handoff: browserHandoffRequestSchema
+  handoff: browserHandoffRequestSchema.nullable()
 });
 
 export const browserTimelineEventTypeSchema = z.enum([
@@ -8731,12 +8754,15 @@ export type MarketingCopilotLaunchSettings = z.infer<typeof marketingCopilotLaun
 /** The same for Freelance Copilot panes (Settings → Freelance Copilot). */
 export const freelanceCopilotLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type FreelanceCopilotLaunchSettings = z.infer<typeof freelanceCopilotLaunchSettingsSchema>;
+/** The same for Design panes (Settings → Design); the designer defaults to Claude Code. */
+export const designLaunchSettingsSchema = copilotLaunchSettingsSchema;
+export type DesignLaunchSettings = z.infer<typeof designLaunchSettingsSchema>;
 
 export const userSettingsSchema = z.object({
-  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass"]).default("modern"),
+  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).default("modern"),
   modernAppearance: z.enum(["system", "light", "dark"]).default("system"),
   modernIconPack: z.enum(["lucide", "material-rounded", "motion", "aurora", "space"]).default("space"),
-  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).default("spaceapp"),
+  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "jarvis", "aira", "none"]).default("spaceapp"),
   // Liquid Glass material, iOS 27 style: 0 is ultra clear, 100 fully tinted.
   liquidGlassTint: z.number().int().min(0).max(100).default(50),
   roomTheme: z.string().default("graphite"),
@@ -8789,24 +8815,27 @@ export const userSettingsSchema = z.object({
   mailCopilot: mailCopilotLaunchSettingsSchema.nullable().optional(),
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
+  design: designLaunchSettingsSchema.nullable().optional(),
   /** Notification channels (in-app, toast, sound, desktop, Telegram) and per-source overrides. */
   notifications: notificationSettingsSchema.nullable().optional(),
+  /** Nous, the mind of SpaceApp: on or off and its hourly turn limit. */
+  nous: nousSettingsSchema.nullable().optional(),
   updatedAt: isoDateTimeSchema.optional()
 });
 
 export const defaultUserSettings = userSettingsSchema.parse({});
 
 export const updateUserSettingsInputSchema = z.object({
-  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass"]).optional(),
+  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).optional(),
   modernAppearance: z.enum(["system", "light", "dark"]).optional(),
   modernIconPack: z.enum(["lucide", "material-rounded", "motion", "aurora", "space"]).optional(),
-  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).optional(),
+  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "jarvis", "aira", "none"]).optional(),
   liquidGlassTint: z.number().int().min(0).max(100).optional(),
   roomTheme: z.string().optional(),
-  dateTime: dateTimeSettingsSchema.partial().optional(),
-  voice: voiceComposerSettingsSchema.partial().optional(),
-  keyboardAutocorrect: keyboardAutocorrectSettingsSchema.partial().optional(),
-  livePane: livePaneSettingsSchema.partial().optional(),
+  dateTime: patchSchema(dateTimeSettingsSchema).optional(),
+  voice: patchSchema(voiceComposerSettingsSchema).optional(),
+  keyboardAutocorrect: patchSchema(keyboardAutocorrectSettingsSchema).optional(),
+  livePane: patchSchema(livePaneSettingsSchema).optional(),
   promptVariables: z.array(promptVariableSchema).optional(),
   promptVariablesEnabled: z.boolean().optional(),
   promptVariablesAutoExpandOnSubmit: z.boolean().optional(),
@@ -8856,7 +8885,10 @@ export const updateUserSettingsInputSchema = z.object({
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   /** null forgets the default: the next Freelance Copilot pane asks again. */
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
-  notifications: notificationSettingsSchema.nullable().optional()
+  /** null forgets the default: the next Design pane asks again. */
+  design: designLaunchSettingsSchema.nullable().optional(),
+  notifications: notificationSettingsSchema.nullable().optional(),
+  nous: nousSettingsSchema.nullable().optional()
 }).strict();
 
 export const authMeSchema = z.object({
@@ -8916,6 +8948,25 @@ export const acceptUserInviteInputSchema = z.object({
 }).strict();
 export const setUserDisabledInputSchema = z.object({
   disabled: z.boolean()
+}).strict();
+// Room sharing (multi-user step 3, plan clipboard:evAaFYqrgDfd), only with SPACE_MULTI_USER_ENABLED=true: a room's
+// owner shares it with VIEW (read only) or COLLABORATE (own panes in the room); only a pane's owner types into it.
+export const roomShareSchema = z.object({
+  roomId: idSchema,
+  userId: idSchema,
+  permission: roomSharePermissionSchema,
+  createdBy: idSchema,
+  createdAt: isoDateTimeSchema
+}).strict();
+export const setRoomShareInputSchema = z.object({
+  permission: roomSharePermissionSchema
+}).strict();
+export const addRoomShareInputSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+  permission: roomSharePermissionSchema
+}).strict();
+export const roomShareListResponseSchema = z.object({
+  shares: z.array(roomShareSchema.extend({ email: z.string().email() }))
 }).strict();
 
 export const updateUserRoleInputSchema = z.object({
@@ -9395,14 +9446,24 @@ export type SetClipboardItemCompletedRequest = z.infer<typeof setClipboardItemCo
 export type UpdatePlanProgressRequest = z.infer<typeof updatePlanProgressRequestSchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
 
+const taskTimeZoneSchema = z.string().trim().min(1).max(80).refine(isValidTimeZone, "Use an IANA time zone such as Asia/Bangkok.");
 /** When a task runs: Space types its objective into its CLI pane at each occurrence (a task without a pane is a reminder). */
-export const taskScheduleInputSchema = z
-  .object({
-    recurrence: dotScheduleRecurrenceSchema,
-    timeZone: z.string().trim().min(1).max(80).refine(isValidTimeZone, "Use an IANA time zone such as Europe/Athens.")
-  })
-  .strict();
-export const taskScheduleSchema = taskScheduleInputSchema
+export const storedTaskScheduleSchema = z.object({ recurrence: dotScheduleRecurrenceSchema, timeZone: taskTimeZoneSchema }).strict();
+/** A schedule as given: without timeZone it runs in its owner's working time zone (resolved by the store). */
+export const taskScheduleInputSchema = storedTaskScheduleSchema.extend({ timeZone: taskTimeZoneSchema.optional() }).strict();
+/**
+ * The owner's working time zone: Settings → Date & time (operator request 2026-10-17, plan clipboard:ubQLgcTtQWA_).
+ * "system" means the browser's own clock, which the server cannot know, so it falls back to UTC like an invalid zone.
+ */
+export function ownerWorkingTimeZone(settings: { dateTime?: { timeZone?: string } } | null | undefined): string {
+  const zone = settings?.dateTime?.timeZone;
+  return zone && zone !== "system" && isValidTimeZone(zone) ? zone : "UTC";
+}
+/** The schedule with its zone: a schedule given without one takes the owner's working time zone; null and undefined pass. */
+export function resolveTaskScheduleZone(schedule: TaskScheduleInput | null | undefined, ownerZone: string): StoredTaskSchedule | null | undefined {
+  return schedule ? { recurrence: schedule.recurrence, timeZone: schedule.timeZone ?? ownerZone } : schedule;
+}
+export const taskScheduleSchema = storedTaskScheduleSchema
   .extend({
     nextRunAt: isoDateTimeSchema.nullable(),
     lastRunAt: isoDateTimeSchema.nullable(),
@@ -9494,7 +9555,7 @@ export const taskItemListResponseSchema = paginated(taskItemSchema);
  * its pending run, so saving a task again does not shift an interval.
  */
 export function taskScheduleNextRunAt(
-  schedule: TaskScheduleInput | null,
+  schedule: StoredTaskSchedule | null,
   status: TaskStatus,
   nowMs: number,
   stored: TaskSchedule | null = null
@@ -9508,6 +9569,7 @@ export function taskScheduleNextRunAt(
 
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskScheduleInput = z.infer<typeof taskScheduleInputSchema>;
+export type StoredTaskSchedule = z.infer<typeof storedTaskScheduleSchema>;
 export type TaskSchedule = z.infer<typeof taskScheduleSchema>;
 export type TaskSource = z.infer<typeof taskSourceSchema>;
 export type TaskItem = z.infer<typeof taskItemSchema>;
@@ -10222,6 +10284,9 @@ export type AuthUser = z.infer<typeof authUserSchema>;
 export type AdminUserItem = z.infer<typeof adminUserItemSchema>;
 export type UserInvite = z.infer<typeof userInviteSchema>;
 export type UserInviteRole = z.infer<typeof userInviteRoleSchema>;
+export type RoomShare = z.infer<typeof roomShareSchema>;
+export type RoomSharePermission = z.infer<typeof roomSharePermissionSchema>;
+export type RoomShareListResponse = z.infer<typeof roomShareListResponseSchema>;
 export type AdminUserListResponse = z.infer<typeof adminUserListResponseSchema>;
 export type UpdateUserRoleInput = z.infer<typeof updateUserRoleInputSchema>;
 export type AuthMe = z.infer<typeof authMeSchema>;

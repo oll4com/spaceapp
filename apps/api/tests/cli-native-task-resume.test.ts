@@ -28,6 +28,7 @@ function dependencies(overrides: Partial<NativeTaskResumeDependencies> = {}): Na
     writeGeminiPaneConversation: vi.fn(async () => undefined),
     readOpenCodeNativeSessionId: vi.fn(async () => null),
     resolveReasonixNativeSessionRef: vi.fn(async () => null),
+    devInstance: false,
     ...overrides
   };
 }
@@ -56,6 +57,12 @@ describe("native task-history resume registry", () => {
     expect((await resolveNativeTaskResume("cli:opencode", context("cli:opencode", "not-a-session"), deps))?.ref).toBe("ses_mapped1");
     expect(deps.readOpenCodeNativeSessionId).toHaveBeenCalledWith("cli_session:source01");
     expect(await resolveNativeTaskResume("cli:opencode", context("cli:opencode", null), dependencies())).toBeNull();
+  });
+
+  it("never resolves an OpenCode session on dev, whose copied tasks and mapping files can name a stable pane's", async () => {
+    const deps = dependencies({ devInstance: true, readOpenCodeNativeSessionId: vi.fn(async () => "ses_mapped1") });
+    expect(await resolveNativeTaskResume("cli:opencode", context("cli:opencode", "ses_recorded1"), deps)).toBeNull();
+    expect(deps.readOpenCodeNativeSessionId).not.toHaveBeenCalled();
   });
 
   it("steers Gemini through the pane conversation without recording a task reference", async () => {

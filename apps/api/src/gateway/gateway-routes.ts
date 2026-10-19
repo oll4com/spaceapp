@@ -2,7 +2,7 @@ import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import {
-  gatewayAccountUpdateRequestSchema, gatewayApiKeyCreateRequestSchema, gatewayApiKeyUpdateRequestSchema, gatewayDashboardRangeSchema, gatewayHistorySeriesSchema,
+  gatewayAccountUpdateRequestSchema, gatewayAnthropicAdminKeySaveRequestSchema, gatewayApiKeyCreateRequestSchema, gatewayApiKeyUpdateRequestSchema, gatewayDashboardRangeSchema, gatewayHistorySeriesSchema,
   gatewayLogStatusCategorySchema, gatewayProviderSchema, gatewayRequestLogFilterSchema, gatewaySettingsUpdateRequestSchema, type GatewayRequestLogFilter
 } from "@space/contracts";
 import type { AuditRecorder } from "../request-audit.js";
@@ -80,6 +80,40 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.get("/api/admin/gateway/claude-api-key", routeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     return service.claudeApiKeyUse();
+  });
+
+  // The operator's Anthropic Admin API key (operator request 2026-10-18): the gateway checks and seals it; answers and the
+  // audit carry its hint only.
+  app.get("/api/admin/gateway/anthropic-admin", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.anthropicAdminStatus();
+  });
+
+  app.put("/api/admin/gateway/anthropic-admin", writeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { adminKey } = gatewayAnthropicAdminKeySaveRequestSchema.parse(request.body);
+    const result = await service.gatewayAdmin("/__space-gateway/admin/anthropic-admin/save", { adminKey });
+    if (result.status === 200) await recordAudit(request, { action: "admin.gateway.anthropic-admin.save", targetType: "gateway_settings", targetId: "anthropic-admin",
+      metadata: { keyHint: `…${adminKey.slice(-4)}` } });
+    return relay(reply, result);
+  });
+
+  app.delete("/api/admin/gateway/anthropic-admin", writeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const result = await service.gatewayAdmin("/__space-gateway/admin/anthropic-admin/remove");
+    if (result.status === 200) await recordAudit(request, { action: "admin.gateway.anthropic-admin.remove", targetType: "gateway_settings", targetId: "anthropic-admin" });
+    return relay(reply, result);
+  });
+
+  app.post("/api/admin/gateway/anthropic-admin/sync", writeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return relay(reply, await service.gatewayAdmin("/__space-gateway/admin/anthropic-admin/sync"));
+  });
+
+  app.get("/api/admin/gateway/anthropic-billing", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { days } = z.object({ days: z.coerce.number().int().min(1).max(31).default(14) }).strict().parse(request.query);
+    return service.anthropicBilling(days);
   });
 
   app.get("/api/admin/gateway/dashboard", routeOptions, async (request, reply) => {
@@ -201,7 +235,7 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.post("/api/admin/gateway/api-key/add", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const input = z.object({
-      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK", "CLAUDE"]),
+      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK", "CLAUDE", "GOOGLE_AI"]),
       apiKey: z.string().trim().min(20).max(400).optional(),
       useSpaceKey: z.boolean().optional(),
       label: z.string().trim().min(1).max(80).optional()

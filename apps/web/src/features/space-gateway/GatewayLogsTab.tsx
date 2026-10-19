@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   GatewayAccount, GatewayApiKey, GatewayLogStatusCategory, GatewayProvider, GatewayRequestLog, GatewayRequestLogFacets, GatewayRequestLogFilter, GatewaySettings
 } from "@space/contracts";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 import { gatewayLogsCsvUrl } from "./gateway-log-query.js";
 import { accountName, formatCostPrecise, formatDateTime, formatMs, formatTokens, planLabel, providerLabel } from "./space-gateway-model.js";
@@ -35,11 +36,8 @@ function FilterMenu({ label, options, selected, onChange }: {
       <summary>{label}{selected.length ? ` (${selected.length})` : ""}</summary>
       <div className="gw-filter-menu" role="group" aria-label={label}>
         {options.length === 0 ? <span className="space-gateway-note">Nothing in this period.</span> : options.map((option) => (
-          <label key={option.value}>
-            <input type="checkbox" checked={selected.includes(option.value)}
-              onChange={(event) => onChange(event.target.checked ? [...selected, option.value] : selected.filter((value) => value !== option.value))} />
-            <span>{option.label}</span><small>{option.count.toLocaleString("en-US")}</small>
-          </label>
+          <SpaceToggle key={option.value} compact label={option.label} detail={option.count.toLocaleString("en-US")} checked={selected.includes(option.value)}
+            onChange={(checked) => onChange(checked ? [...selected, option.value] : selected.filter((value) => value !== option.value))} />
         ))}
       </div>
     </details>

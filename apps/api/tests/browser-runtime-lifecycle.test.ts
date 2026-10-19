@@ -47,13 +47,13 @@ async function fixture(mode: 'BROWSER' | 'YOUTUBE' | 'FREELANCE_COPILOT' = 'YOUT
     socket.send(JSON.stringify({ id, result, ...(sessionId ? { sessionId } : {}) }));
     if (method === 'Page.navigate') socket.send(JSON.stringify({ method: 'Page.loadEventFired', sessionId, params: {} }));
   }));
-  const children: Array<EventEmitter & { command: string; args: string[]; exitCode: number | null; signalCode: string | null; stdout: PassThrough; stderr: PassThrough; kill: (signal: string) => boolean }> = [];
+  const children: Array<EventEmitter & { command: string; args: string[]; env?: NodeJS.ProcessEnv; exitCode: number | null; signalCode: string | null; stdout: PassThrough; stderr: PassThrough; kill: (signal: string) => boolean }> = [];
   let releaseChrome: (() => void) | undefined;
   let holdChrome = false;
-  mocks.spawn.mockImplementation((command: string, args: string[] = []) => {
+  mocks.spawn.mockImplementation((command: string, args: string[] = [], options?: { env?: NodeJS.ProcessEnv }) => {
     const pid = 40_000 + children.length;
     if (command === '/fixture/Xvfb') mocks.xvfbPid = pid;
-    const child = Object.assign(new EventEmitter(), { command, args, pid, exitCode: null as number | null, signalCode: null as string | null, stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill(signal: string) { child.signalCode = signal; child.emit('exit', null, signal); return true; } });
+    const child = Object.assign(new EventEmitter(), { command, args, env: options?.env, pid, exitCode: null as number | null, signalCode: null as string | null, stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), kill(signal: string) { child.signalCode = signal; child.emit('exit', null, signal); return true; } });
     children.push(child);
     if (command === process.execPath) {
       const ready = () => child.stderr.write(`DevTools listening on ws://127.0.0.1:${port}/\n`);
@@ -144,12 +144,18 @@ describe('managed browser runtime lifecycle', () => {
       expect(pac).toContain('["upwork.com","SOCKS5 10.254.242.2:1080"]');
       expect(pac).toContain('return "SOCKS5 10.254.242.2:1080"');
       expect(args).toContain('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
+      // The clock and languages of the Thailand exit; Chrome reports its own user agent and navigator values.
+      expect(args).toContain('--accept-lang=en-US,en,th');
+      expect(freelance.children.find(child => child.command === process.execPath)?.env?.TZ).toBe('Asia/Bangkok');
+      expect(args.some(arg => arg.startsWith('--user-agent'))).toBe(false);
+      expect(freelance.scriptSources.some(source => source.includes('navigator'))).toBe(false);
     } finally { await freelance.cleanup(); }
     const plain = await fixture('BROWSER');
     try {
       await plain.manager.getActive(plain.pane);
       const args = plain.children.find(child => child.command === process.execPath)?.args ?? [];
-      expect(args.some(arg => arg.startsWith('--proxy-pac-url'))).toBe(false);
+      expect(args.some(arg => arg.startsWith('--proxy-pac-url') || arg.startsWith('--accept-lang'))).toBe(false);
+      expect(plain.children.find(child => child.command === process.execPath)?.env?.TZ).toBe(process.env.TZ);
     } finally { await plain.cleanup(); }
   });
   it('injects the YouTube ad-block document-start script by default', async () => {

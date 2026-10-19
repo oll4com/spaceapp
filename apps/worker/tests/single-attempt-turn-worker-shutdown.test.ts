@@ -17,7 +17,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(), spawn
 }));
 const control = vi.hoisted(() => ({
-  readOpenCodeServerControl: vi.fn(), openCodeServerIsHealthy: vi.fn(), fetchOpenCodeSessionIsTurnActive: vi.fn()
+  readOpenCodeServerControl: vi.fn(), openCodeServerIsHealthy: vi.fn(), readOpenCodeSessionTurnActive: vi.fn()
 }));
 vi.mock("@space/opencode-control", async (importOriginal) => ({
   ...await importOriginal<typeof import("@space/opencode-control")>(), ...control
@@ -28,7 +28,7 @@ beforeEach(() => {
   control.readOpenCodeServerControl.mockResolvedValue({ serverHost: "127.0.0.1", serverPort: 4999, serverUsername: "fixture",
     serverPassword: "fixture", nativeSessionId: "ses_fixture123" });
   control.openCodeServerIsHealthy.mockResolvedValue(true);
-  control.fetchOpenCodeSessionIsTurnActive.mockResolvedValue(false);
+  control.readOpenCodeSessionTurnActive.mockResolvedValue(false);
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -100,7 +100,7 @@ describe("single-attempt turns after a worker shutdown", () => {
     hangingProcess(() => controller.abort(new Error("CANCELLED")));
     await expect(runCliAgentTurn(input, { env: { SPACE_ENABLE_CLI_CHAT_TURNS: "true" }, completionStore: store, abortSignal: controller.signal }))
       .rejects.toThrow("CANCELLED");
-    expect(state().run).toMatchObject({ status: "INTERRUPTED", errorCode: "ROOM_AGENT_STOPPED", errorMessage: "CLI chat turn was stopped by the operator." });
+    expect(state().run).toMatchObject({ status: "INTERRUPTED", errorCode: "ROOM_AGENT_STOPPED", errorMessage: "Stopped." });
   });
 
   it("records an unknown OpenCode outcome after the prompt was sent and the worker shut down", async () => {

@@ -1,5 +1,6 @@
 import { Component, Suspense, type ReactNode } from "react";
 import { isStaleBuildLoadError } from "../entry-load-recovery.js";
+import { reloadAfterLocalCliDraftsSaved } from "./terminal-pane/local-cli-draft.js";
 
 /** Contain a page/dock failure without unmounting sibling pane runtimes. */
 export class SurfaceErrorBoundary extends Component<{
@@ -26,7 +27,7 @@ export class SurfaceErrorBoundary extends Component<{
         </pre>
       )}
       {!stale && <button type="button" onClick={() => this.setState({ error: null, failed: false })}>Try again</button>}
-      <button type="button" onClick={() => window.location.reload()}>Reload Space</button>
+      <button type="button" onClick={() => { void reloadAfterLocalCliDraftsSaved(() => window.location.reload()); }}>Reload Space</button>
     </section>;
   }
 }

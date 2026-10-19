@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, BrowserHandoffRequest, MarketingCampaign, MarketingCopilotPaneMetadata, MarketingEvent, MarketingPost, MarketingRunView, Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { withRefreshTimeout } from "../copilot-kit/refresh-timeout.js";
 import { subscribeMarketingCopilotLiveEvents } from "./live-events.js";
 
 export interface MarketingCopilotData {
@@ -39,14 +40,14 @@ export function useMarketingCopilotData(pane: Pane, enabled: boolean): Marketing
     if (inFlight.current) return inFlight.current;
     inFlight.current = (async () => {
       try {
-        const [settingsResponse, runResponse, eventsResponse, postsResponse, campaignsResponse, handoffResponse] = await Promise.all([
+        const [settingsResponse, runResponse, eventsResponse, postsResponse, campaignsResponse, handoffResponse] = await withRefreshTimeout(Promise.all([
           api.marketingCopilotSettings(pane.id),
           api.marketingCopilotRun(pane.id).catch(() => null),
           api.marketingEvents(pane.id).catch(() => null),
           api.marketingPosts().catch(() => null),
           api.marketingCampaigns().catch(() => null),
           api.browserHandoff(pane.id).catch(() => null)
-        ]);
+        ]), "Marketing Copilot");
         setSettings(settingsResponse.metadata);
         if (runResponse) setRun(runResponse);
         if (eventsResponse) setEvents(eventsResponse.events);

@@ -29,8 +29,8 @@ export async function getLatestRoomEvent(store: SpaceStore, roomId: string): Pro
 
 export class PaneClosedConflictError extends SpaceConflictError {}
 
-// Copilot panes own a CLI agent session (Job, Marketing and Freelance Copilot also a managed browser session).
-const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT"];
+// Copilot and Design panes own a CLI agent session (Job, Marketing and Freelance Copilot also a managed browser session).
+const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN"];
 
 export function isCliPane(pane: Pick<Pane, "mode">): boolean {
   return CLI_PANE_MODES.includes(pane.mode);
@@ -38,13 +38,14 @@ export function isCliPane(pane: Pick<Pane, "mode">): boolean {
 
 export function assertCliPaneCompatible(pane: Pane) {
   if (!isCliPane(pane)) {
-    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT panes.`);
+    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN panes.`);
   }
   if (pane.isClosed) {
     throw new PaneClosedConflictError(`Pane ${pane.id} is closed.`);
   }
 }
 
+// Never DESIGN: its pane has no browser in v1, and a browser would need the operator's guarded Browser Host restart.
 const BROWSER_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["BROWSER", "YOUTUBE", "JOB_APPLY", "MARKETING_COPILOT", "FREELANCE_COPILOT"];
 
 export function isBrowserPane(pane: Pick<Pane, "mode">): boolean {

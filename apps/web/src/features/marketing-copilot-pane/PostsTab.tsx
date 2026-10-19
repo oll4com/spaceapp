@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_LABELS, marketingWordingIssues, type MarketingCampaign, type MarketingPost, type MarketingPostStatus } from "@space/contracts";
+import { MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_DEFAULT_FORMAT, MARKETING_CHANNEL_LABELS, marketingWordingIssues, type MarketingCampaign, type MarketingPost, type MarketingPostStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { Check, ExternalLink, Rocket, RotateCcw, Send, Undo2, X } from "../ui-theme/app-icons.js";
+import { modeIcons } from "../pane-card/pane-mode-icons.js";
+
+const DesignIcon = modeIcons.DESIGN;
 
 /** The order the groups show in: what waits for the operator first. */
 const GROUPS: Array<{ status: MarketingPostStatus; label: string }> = [
@@ -45,6 +48,14 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
     }
   }
   const scheduledAt = schedule ? new Date(schedule).toISOString() : null;
+  // "Make graphic": the owner's Design pane makes the channel's graphic and the delivery attaches it to this post.
+  const graphicFormat = ["DRAFT", "IN_REVIEW", "APPROVED", "FAILED"].includes(post.status) ? MARKETING_CHANNEL_DEFAULT_FORMAT[post.channel] : null;
+  const [graphicNote, setGraphicNote] = useState<string | null>(null);
+  const makeGraphic = () => void run(async () => {
+    const brief = `A ${MARKETING_CHANNEL_LABELS[post.channel]} graphic for this post.${post.title ? `\nTitle: ${post.title}` : ""}\nPost: ${post.body}`.slice(0, 4000);
+    const created = await api.requestDesignFromPane(paneId, { brief, formatIds: [graphicFormat!], callback: { kind: "MARKETING_POST", postId: post.id } });
+    setGraphicNote(created.designPaneId ? "Sent to the Design pane; the graphic is attached here when it is delivered." : "Queued: open a Design pane to make the graphic.");
+  });
   return (
     <li className="mk-post" data-status={post.status.toLowerCase()}>
       <div className="mk-post-head">
@@ -89,6 +100,25 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
           </div>
         </>
       )}
+      {post.assets.length ? (
+        // What the copilot will upload with the post: captures play here; pane files show their kind.
+        <ul className="mk-assets" aria-label="Post media">
+          {post.assets.map((asset, index) => (
+            <li key={index}>
+              {asset.artifactId && asset.kind === "VIDEO" ? <video src={api.artifactFileUrl(asset.artifactId)} controls playsInline preload="metadata" aria-label={asset.label} />
+                : asset.artifactId && asset.kind === "IMAGE" ? <img src={api.artifactFileUrl(asset.artifactId)} alt={asset.label} loading="lazy" />
+                : <span className="jc-tag">{asset.kind.toLowerCase()}</span>}
+              <span className="jc-muted">{asset.label}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {graphicFormat ? (
+        <div className="jc-actions">
+          <button type="button" className="jc-button ghost" disabled={busy} onClick={makeGraphic} title="Ask the Design pane for this channel's graphic"><DesignIcon aria-hidden="true" /> Make graphic</button>
+          {graphicNote ? <span className="jc-muted" role="status">{graphicNote}</span> : null}
+        </div>
+      ) : null}
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
     </li>
   );

@@ -37,6 +37,10 @@ describe("job copilot layout", () => {
     expect(layoutForWidth(1440)).toBe("split");
     // No measurement yet (0) keeps the split layout rather than flashing a phone layout on desktop.
     expect(layoutForWidth(0)).toBe("split");
+    // Under 900px the split puts the rail under the browser: a short pane stacks instead of showing two slivers.
+    expect(layoutForWidth(700, 384)).toBe("stacked");
+    expect(layoutForWidth(700, 900)).toBe("split");
+    expect(layoutForWidth(1000, 384)).toBe("split");
   });
 
   it("offers the browser as the first tab only when stacked, and falls back to Activity for a tab the layout lacks", () => {

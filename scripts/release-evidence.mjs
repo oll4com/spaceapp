@@ -8,6 +8,14 @@ export function candidateDigest(root=process.cwd()) {
   const entries=execFileSync('git',['-C',root,'ls-files','-s','-z'],{encoding:'utf8'}).split('\0').filter(Boolean).filter(line=>!excluded.has(line.split('\t')[1]));
   return createHash('sha256').update(entries.sort().join('\0')).digest('hex');
 }
+// Operator decision efc30984 (2026-10-18), run-spaceapp 1.1.6 only: OpenCode Zen refused every free model from the
+// lab's address, so a platform's free-model first answer may be missing when release/acceptance.json names that decision
+// for it. Every other version, platform and check stays as strict as before.
+const zenFirstAnswerException={version:'1.1.6',decision:'efc30984'};
+function zenExceptionApplies(evidence,version,platform){
+  return version===zenFirstAnswerException.version&&evidence?.launcherVersion===zenFirstAnswerException.version&&Array.isArray(evidence?.knownExceptions)&&
+    evidence.knownExceptions.some(entry=>entry?.platform===platform&&entry?.scenario==='first-agent'&&entry?.decision===zenFirstAnswerException.decision);
+}
 export function validateEvidence(evidence,{digest,version,runtime,now=Date.now()}={}) {
   const failures=[];
   if(evidence?.schemaVersion!==1)failures.push('Missing supported evidence schema');
@@ -17,6 +25,7 @@ export function validateEvidence(evidence,{digest,version,runtime,now=Date.now()
   if(!Number.isFinite(age)||age<0||age>7*86400000)failures.push('Evidence must be at most seven days old');
   for(const platform of ['linux','windows','macos']) {
     for(const scenario of ['fresh-install','upgrade','repair','docker-stopped','first-agent','profiles']) {
+      if(scenario==='first-agent'&&zenExceptionApplies(evidence,version,platform))continue;
       const proof=evidence?.checks?.find(x=>x.platform===platform&&x.scenario===scenario);
       if(!proof||proof.pass!==true||proof.executed!==true||proof.exitCode!==0||proof.ready!==true||!proof.artifactSha256?.match(/^[a-f0-9]{64}$/)) {failures.push(`${platform}/${scenario}: missing real successful proof`);continue;}
       if(['upgrade','repair','docker-stopped'].includes(scenario)&&proof.dataPreserved!==true)failures.push(`${platform}/${scenario}: data preservation missing`);

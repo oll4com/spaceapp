@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "SPACE_DEV_LOGIN=true SPACE_SESSION_SECRET=dev-only-change-me tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "build:vault-broker": "esbuild src/vault-broker-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/space-vault-broker.mjs",
     "build": "tsc -p tsconfig.json && cp src/databases/sqlite-worker.py dist/databases/sqlite-worker.py && chmod +x dist/databases/sqlite-worker.py",
     "check": "tsc -p tsconfig.json --noEmit",
     "config:reference": "tsx src/config-reference.ts",

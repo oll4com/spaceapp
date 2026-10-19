@@ -5572,6 +5572,66 @@ body[data-color-mode="light"] .icon-action-manager {
 :root[data-ui-background="liquid-glass"][data-color-mode="light"] .room-runtime-stack::before {
   background-image: url("/brand/liquid-glass-planet-light.webp");
 }
+/* Jarvis HUD and Aira Core backgrounds (any theme): a static scene (::before: the core over a full-area field)
+   and one turning layer (::after) sized like the core, so motion stays a compositor rotate/scale. */
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack {
+  --space-core-size: min(900px, 90vmin);
+  --space-core-shift: 0px;
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack[data-has-empty-state="true"] {
+  --space-core-size: min(520px, 56vmin);
+  --space-core-shift: clamp(60px, 10vh, 100px);
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack::before {
+  opacity: 1;
+  filter: none;
+  transform: none;
+  will-change: auto;
+}
+:root[data-ui-background="jarvis"] .room-runtime-stack::before {
+  background:
+    url("/brand/jarvis-core.svg") center calc(50% - var(--space-core-shift)) / var(--space-core-size) no-repeat,
+    url("/brand/jarvis-hud.svg") center / cover no-repeat;
+}
+:root[data-ui-background="aira"] .room-runtime-stack::before {
+  background:
+    url("/brand/aira-core.svg") center calc(50% - var(--space-core-shift)) / var(--space-core-size) no-repeat,
+    url("/brand/aira-field.svg") center / cover no-repeat;
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(50% - var(--space-core-shift));
+  width: var(--space-core-size);
+  height: var(--space-core-size);
+  translate: -50% -50%;
+  background: url("/brand/jarvis-rings.svg") center / contain no-repeat;
+  pointer-events: none;
+  z-index: -1;
+  will-change: rotate, scale;
+  animation: space-core-spin 90s linear infinite;
+}
+:root[data-ui-background="aira"] .room-runtime-stack::after {
+  background-image: url("/brand/aira-orbits.svg");
+  animation: space-core-spin 120s linear infinite reverse, space-core-breathe 7s ease-in-out infinite alternate;
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"])[data-color-mode="light"] .room-runtime-stack::before,
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"])[data-color-mode="light"] .room-runtime-stack::after {
+  opacity: 0.5;
+}
+@keyframes space-core-spin {
+  to { rotate: 360deg; }
+}
+@keyframes space-core-breathe {
+  from { scale: 0.96; }
+  to { scale: 1.04; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack::after {
+    animation: none;
+  }
+}
 /* Aurora Neon icon pack (aurora-icons.tsx): soft glow, darker ink stops in light mode. */
 svg.space-aurora-icon {
   filter: drop-shadow(0 0 2.5px rgba(167, 139, 250, 0.45));
@@ -9851,20 +9911,6 @@ svg.space-aurora-icon {
   line-height: 1.5;
 }
 
-.cli-runtime-disable-confirm {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  line-height: 1.4;
-  cursor: pointer;
-}
-
-.cli-runtime-disable-confirm input {
-  margin: 0;
-  accent-color: #c9604d;
-}
-
 .cli-runtime-disable-actions {
   display: flex;
   flex-wrap: wrap;
@@ -11217,7 +11263,7 @@ svg.space-aurora-icon {
   color: #fff3f3;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .vscode-codex-home-top {
     flex-wrap: wrap;
   }
@@ -14236,6 +14282,17 @@ svg.space-aurora-icon {
   background: color-mix(in srgb, var(--room-accent, #6db7aa) 12%, transparent);
 }
 
+.terminal-plan-preview-button.terminal-plan-open-pane {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.terminal-plan-preview-button.terminal-plan-open-pane svg {
+  width: 13px;
+  height: 13px;
+}
+
 .terminal-plan-preview-button.is-primary {
   border-color: color-mix(in srgb, var(--room-accent, #6db7aa) 60%, transparent);
   background: color-mix(in srgb, var(--room-accent, #6db7aa) 22%, transparent);
@@ -15513,7 +15570,7 @@ svg.space-aurora-icon {
   cursor: pointer;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .quick-links-popover {
     top: auto;
     right: 0.5rem;
@@ -17345,7 +17402,7 @@ svg.space-aurora-icon {
 .clipboard-plan-progress-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 0.35rem;
   font-size: 0.7rem;
@@ -17396,7 +17453,12 @@ svg.space-aurora-icon {
   flex-shrink: 0;
 }
 
+/* Status and percentage on the left, the plan's model on the right. */
 .clipboard-plan-min-model {
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   font-size: 0.68rem;
   font-weight: 500;
   color: #e5c07b;
@@ -17404,18 +17466,13 @@ svg.space-aurora-icon {
   border: 1px solid rgba(229, 192, 123, 0.3);
   padding: 0.1rem 0.35rem;
   border-radius: 4px;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .clipboard-plan-agent {
-  font-size: 0.68rem;
-  color: #528bff;
-  background: rgba(82, 139, 255, 0.1);
-  padding: 0.1rem 0.3rem;
-  border-radius: 4px;
-  white-space: nowrap;
-  flex-shrink: 0;
+  color: var(--dock-text, #f4efe5);
+  font-weight: 600;
 }
 
 .clipboard-plan-progress-bar {
@@ -17435,6 +17492,64 @@ svg.space-aurora-icon {
 
 .clipboard-plan-progress-fill.is-completed {
   background: linear-gradient(90deg, #2ecc71, #a8ff78);
+}
+
+/* Card meta: the origin pane shortens first and the time stays whole; "Used N×" moves to the next line when short of room. */
+.clipboard-card .clipboard-meta-text {
+  display: flex;
+  flex: 1 1 10rem;
+}
+
+.clipboard-meta-origin {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clipboard-meta-time {
+  flex: 0 0 auto;
+  white-space: pre;
+}
+
+/* "Claude Code · Linked to Andy · Room: SpaceApp": the agent that took the plan and its room. */
+.clipboard-plan-assignee {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  color: var(--dock-muted, #a2a7ad);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.clipboard-plan-assignee svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-top: 0.1rem;
+  flex: 0 0 auto;
+  color: var(--dock-accent, #61d2c3);
+}
+
+/* The room is the point of this line, so it wraps instead of being cut. */
+.clipboard-plan-assignee span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* "Open pane" at the end of the line: the plan's room, then its pane with focus. */
+.clipboard-plan-assignee .clipboard-plan-open-pane {
+  width: 1.5rem;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  margin: -0.2rem 0 -0.2rem auto;
+  flex: 0 0 auto;
+}
+
+.clipboard-plan-assignee .clipboard-plan-open-pane svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-top: 0;
+  color: inherit;
 }
 
 .clipboard-plan-steps-list {
@@ -17463,7 +17578,16 @@ svg.space-aurora-icon {
 
 .clipboard-plan-step-item.is-completed {
   color: var(--room-text-muted, #7f8c8d);
+}
+
+.clipboard-plan-step-item.is-completed .clipboard-plan-step-title {
   text-decoration: line-through;
+}
+
+.clipboard-plan-steps-list .clipboard-plan-steps-more {
+  align-self: flex-start;
+  padding-left: calc(6px + 0.4rem);
+  font-size: 0.68rem;
 }
 
 .clipboard-plan-step-bullet {
@@ -17508,7 +17632,7 @@ svg.space-aurora-icon {
   border: 1px solid color-mix(in srgb, #e5c07b 40%, transparent);
   flex-shrink: 0;
   white-space: nowrap;
-  max-width: 140px;
+  max-width: 60%;
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.2;
@@ -17549,6 +17673,29 @@ svg.space-aurora-icon {
   max-height: none;
 }
 
+/* A long clip fades out where it is cut instead of ending mid-line. */
+.clipboard-card-text.is-clipped {
+  -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent);
+  mask-image: linear-gradient(to bottom, #000 62%, transparent);
+}
+
+/* A collapsed plan shows three lines of its prose in the interface font. */
+.clipboard-card-text.is-snippet {
+  max-height: none;
+  font-family: inherit;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.clipboard-card-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
 .clipboard-copied {
   position: absolute;
   top: 0.6rem;
@@ -17563,7 +17710,6 @@ svg.space-aurora-icon {
 }
 
 .clipboard-plan-min-model,
-.clipboard-plan-agent,
 .clipboard-plan-step-model {
   display: inline-flex;
   align-items: center;
@@ -17571,19 +17717,98 @@ svg.space-aurora-icon {
 }
 
 .clipboard-plan-min-model svg,
-.clipboard-plan-agent svg,
 .clipboard-plan-step-model svg {
   width: 0.8rem;
   height: 0.8rem;
   flex: 0 0 auto;
 }
 
-.clipboard-expand {
-  justify-self: start;
+/* Card actions: Expand on the left, the clip's actions on the right, on one line.
+   Narrow cards drop the Expand label, then the Complete label; the buttons keep their names. */
+.clipboard-card {
+  container-type: inline-size;
+}
+
+.clipboard-card-actions .clipboard-expand {
+  margin-right: auto;
+}
+
+.clipboard-card-actions .clipboard-complete.is-completed {
+  border-color: color-mix(in srgb, var(--dock-success, #65d8a3) 45%, transparent);
+  color: var(--dock-success, #65d8a3);
+}
+
+@container (max-width: 23rem) {
+  .clipboard-card-actions .clipboard-expand .clipboard-action-label {
+    display: none;
+  }
+
+  .clipboard-card-actions .clipboard-expand {
+    width: 1.85rem;
+    padding: 0;
+  }
+}
+
+@container (max-width: 20rem) {
+  .clipboard-card-actions .clipboard-complete .clipboard-action-label {
+    display: none;
+  }
+
+  .clipboard-card-actions .clipboard-complete {
+    width: 1.85rem;
+    padding: 0;
+  }
 }
 
 .clipboard-completed-toggle {
   font-size: 0.78rem;
+}
+
+/* One-line share of every plan that is completed, above the list. */
+.clipboard-plan-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--dock-border, #343638);
+  border-radius: var(--dock-radius-sm, 7px);
+  background: var(--dock-raised, #1b1d1f);
+  font-size: 0.72rem;
+}
+
+.clipboard-plan-stats-label,
+.clipboard-plan-stats-count {
+  color: var(--dock-muted, #a2a7ad);
+  white-space: nowrap;
+}
+
+.clipboard-plan-stats .clipboard-plan-progress-bar {
+  flex: 1 1 auto;
+  min-width: 2rem;
+}
+
+/* The selected source filter carries the red active frame and side pill of the rail's active icons. */
+.clipboard-dock .dock-kit-chip[aria-pressed="true"],
+.clipboard-dock .dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) {
+  position: relative;
+  border: 1.5px solid var(--active-icon-border, #ff4d5e);
+  background: var(--active-icon-background, rgba(92, 15, 28, 0.42));
+  color: #ffffff;
+  box-shadow: 0 2px 10px rgba(255, 77, 94, 0.28);
+}
+
+.clipboard-dock .dock-kit-chip[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--rail-active-pill, var(--active-icon-border, #ff4d5e));
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 
 .clipboard-drag-handle {
@@ -19254,7 +19479,7 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .space-shell,
   .workspace,
   .board,
@@ -19855,7 +20080,7 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .help-header {
     position: relative;
     width: 100%;
@@ -22821,7 +23046,9 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   border-color: #6e603e;
 }
 .room-agent-notice-icon { width: 17px; height: 17px; flex: 0 0 auto; margin-top: 3px; }
-.room-agent-notice-copy { min-width: 0; flex: 1 1 auto; display: grid; gap: 3px; }
+/* A narrow pane (a phone) moves the buttons under the text instead of cutting the title to "This task n…". */
+.codex-notification:has(> .room-agent-notice-copy) { flex-wrap: wrap; }
+.room-agent-notice-copy { min-width: 0; flex: 1 1 12rem; display: grid; gap: 3px; }
 .room-agent-notice-copy strong { font-weight: 600; color: var(--codex-text); }
 .room-agent-notice-copy span { overflow-wrap: anywhere; line-height: 1.5; }
 

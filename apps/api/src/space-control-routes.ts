@@ -96,6 +96,17 @@ export function sanitizeControlExecute(raw:unknown):unknown{
  }
  return copy;
 }
+/** A CLI token acts only in its own room: a tool that takes a room gets the token's room when the
+ * agent leaves it out, and a different room is refused. Tools without a room (the static tool catalog) pass. */
+export function cliRoomArguments(name:string,raw:unknown,cliRoom:string):unknown{
+ const schema=(controlToolSchemas as Record<string,{shape?:Record<string,unknown>}>)[name];
+ if(!schema?.shape||!("roomId" in schema.shape))return raw;
+ const args=raw===undefined?{}:raw!==null&&typeof raw==="object"&&!Array.isArray(raw)?raw as {roomId?:unknown}:null;
+ if(!args)throw new SpaceConflictError("CLI control grant is restricted to its own room.");
+ if(args.roomId===undefined)return {...args,roomId:cliRoom};
+ if(args.roomId!==cliRoom)throw new SpaceConflictError("CLI control grant is restricted to its own room.");
+ return args;
+}
 export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnType<typeof createSpaceControl>, options?:{cliRoom(request:FastifyRequest):string|null;resolveActor?(id:string,verifiedEmail?:string):Promise<ControlActor>}){
  const actor=async(request:FastifyRequest):Promise<ControlActor>=>{
   if(!request.user||(request.user.role!=="ADMIN"&&request.user.role!=="USER")||request.user.automationScope)throw new SpaceConflictError("An authenticated user is required for Space control.");
@@ -143,7 +154,7 @@ export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnTyp
    if(p.method==="initialize")result={protocolVersion:"2025-11-25",capabilities:{tools:{listChanged:false}},serverInfo:{name:"space-control",version:"1.0.0"}};
    else if(p.method==="ping")result={};
    else if(p.method==="tools/list")result={tools:toolList};
-   else if(p.method==="tools/call"){const args=z.object({name:z.string(),arguments:z.unknown().optional()}).parse(p.params);const cliRoom=options?.cliRoom(request);if(cliRoom && (args.arguments as {roomId?:string})?.roomId!==cliRoom)throw new SpaceConflictError("CLI control grant is restricted to its own room.");const data=await call(user,args.name,args.arguments??{});const structuredContent=data!==null&&typeof data==="object"&&!Array.isArray(data)?data:{data};result={content:[{type:"text",text:JSON.stringify(structuredContent)}],structuredContent,isError:["FAILED","PARTIAL","UNKNOWN","CANCELLED"].includes((data as {status?:string})?.status??"")};}
+   else if(p.method==="tools/call"){const args=z.object({name:z.string(),arguments:z.unknown().optional()}).parse(p.params);const cliRoom=options?.cliRoom(request);const callArguments=cliRoom?cliRoomArguments(args.name,args.arguments,cliRoom):args.arguments;const data=await call(user,args.name,callArguments??{});const structuredContent=data!==null&&typeof data==="object"&&!Array.isArray(data)?data:{data};result={content:[{type:"text",text:JSON.stringify(structuredContent)}],structuredContent,isError:["FAILED","PARTIAL","UNKNOWN","CANCELLED"].includes((data as {status?:string})?.status??"")};}
    else return {jsonrpc:"2.0",id:p.id,error:{code:-32601,message:"Method not found"}};
    return {jsonrpc:"2.0",id:p.id,result};
   }catch(error){return {jsonrpc:"2.0",id:p.id,error:{code:-32602,message:error instanceof SpaceConflictError?error.message:"Invalid Space control arguments."}};}

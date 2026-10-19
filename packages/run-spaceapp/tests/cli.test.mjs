@@ -1643,7 +1643,7 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
     "run", "--rm", "--no-deps", "--user", "10001:10001",
     "--entrypoint", "npm", "spaceapp-cli", "install",
     "--prefix", "/var/lib/spaceapp-cli/vendor/claude",
-    "--no-audit", "--no-fund", "@anthropic-ai/claude-code@2.1.206"
+    "--no-audit", "--no-fund", "@anthropic-ai/claude-code@2.1.301"
   ]);
   assert.match(stdout.value(), /Installing optional provider claude/);
   assert.equal(await run(["provider", "install", "gemini"], options), 0);

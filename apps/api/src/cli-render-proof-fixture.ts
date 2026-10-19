@@ -38,9 +38,10 @@ export async function createCliRenderProofFixture(store:SpaceStore,pane:Pane,tra
     }
   });
 }
-export async function startCliRenderProofFixture(store:SpaceStore,roomId:string,socketPath:string,host?:CliHostGateway) {
+export async function startCliRenderProofFixture(store:SpaceStore,roomId:string,socketPath:string,host?:CliHostGateway,mode?:"COMPOSER") {
   const room=await store.getRoom(roomId),panes=await store.listPanes(roomId);
   if(room.kind!=="AGENT_PROOF"||room.description!==cliRenderProofDescription||![1,3].includes(panes.length))throw new SpaceConflictError("CLI render fixture scope changed.");
+  if(mode==="COMPOSER"&&(panes.length!==1||panes[0]!.terminalRuntimeId!=="cli:codex"))throw new SpaceConflictError("Composer proof requires one fixed Codex fixture.");
   const sessions=await Promise.all(panes.map(pane=>store.getActivePaneCliSession(pane.id)));
   if(sessions.some((session,index)=>!session||session.status!=="RUNNING"||session.cwd!=="/tmp"||!isCliRenderProofRuntimeId(session.runtimeId)||session.runtimeId!==panes[index]!.terminalRuntimeId))throw new SpaceConflictError("CLI render fixture session unavailable.");
   return withHost(socketPath,host,async client=>{
@@ -48,7 +49,7 @@ export async function startCliRenderProofFixture(store:SpaceStore,roomId:string,
     for(const session of sessions) {
       if(!session||!await client.inspect(identity(session)))throw new SpaceConflictError("Fixture expired; it cannot be respawned by this control.");
       const attached=await client.attach({identity:identity(session),afterSequence:Number.MAX_SAFE_INTEGER});
-      try{await client.input(identity(session),attached.attachmentId,"SPACE_RENDER_START\n","hidden",`cli-render:${session.sessionId}`);started.push({sessionId:session.sessionId,runtimeId:session.runtimeId});}
+      try{await client.input(identity(session),attached.attachmentId,mode==="COMPOSER"?"SPACE_LOCAL_COMPOSER_START\n":"SPACE_RENDER_START\n","hidden",`cli-render:${mode==="COMPOSER"?"composer:":""}${session.sessionId}`);started.push({sessionId:session.sessionId,runtimeId:session.runtimeId});}
       finally{await client.detach(identity(session),attached.attachmentId);}
     }
     return {started:true,sessions:started};

@@ -118,6 +118,8 @@ import {
   Link as LucideLink,
   ListFilter as LucideListFilter,
   ListTodo as LucideListTodo,
+  Vault as LucideVault,
+  ShieldOff as LucideShieldOff,
   Loader2 as LucideLoader2,
   Lock as LucideLock,
   LogOut as LucideLogOut,
@@ -158,6 +160,7 @@ import {
   Briefcase as LucideBriefcase,
   Megaphone as LucideMegaphone,
   Handshake as LucideHandshake,
+  Gavel as LucideGavel,
   Blend as LucideBlend,
   MessagesSquare as LucideMessagesSquare,
   SquareCode as LucideSquareCode,
@@ -291,6 +294,16 @@ const SpaceCliFloats = spaceGlyph("CliFloats", "space-cli-floats", <>
   <path d="m6 11 3 2.5L6 16" />
   <rect x="13" y="7.5" width="5.5" height="3.5" rx="1" fill="currentColor" strokeWidth={1} />
 </>);
+// Nous, the mind of SpaceApp: a brain whose two halves hold a small 3D network of memory nodes (the nearest is the
+// largest), never Brain (memory) or BrainCircuit (the model).
+const SpaceNous = spaceGlyph("Nous", "space-nous", <>
+  <path d="M10.6 4.6C9.4 3.2 7.2 3.1 6.1 4.6C4.3 4.6 3.1 6.2 3.4 7.9C2.1 8.9 1.9 10.9 2.9 12.2C2.3 13.8 3.1 15.7 4.8 16.2C5.4 18.2 7.4 19.4 9.4 18.7C9.8 19 10.2 19.2 10.6 19.2Z" />
+  <path d="M13.4 4.6C14.6 3.2 16.8 3.1 17.9 4.6C19.7 4.6 20.9 6.2 20.6 7.9C21.9 8.9 22.1 10.9 21.1 12.2C21.7 13.8 20.9 15.7 19.2 16.2C18.6 18.2 16.6 19.4 14.6 18.7C14.2 19 13.8 19.2 13.4 19.2Z" />
+  <path d="M7.2 9.4H16.8L12 14.6Z" strokeWidth={1.25} />
+  <circle cx="7.2" cy="9.4" r="1.25" fill="currentColor" stroke="none" />
+  <circle cx="16.8" cy="9.4" r="1.25" fill="currentColor" stroke="none" />
+  <circle cx="12" cy="14.6" r="2" fill="currentColor" stroke="none" />
+</>);
 export const lucideIcons = {
   ArrowDown: LucideArrowDown,
   ArrowUpCircle: LucideArrowUpCircle,
@@ -311,6 +324,7 @@ export const lucideIcons = {
   Dumbbell: SpaceDumbbell,
   AgentFiles: SpaceAgentFiles,
   CliFloats: SpaceCliFloats,
+  Nous: SpaceNous,
   FileAudio: LucideFileAudio,
   FileCode: LucideFileCode,
   FileJson: LucideFileJson,
@@ -400,6 +414,8 @@ export const lucideIcons = {
   Link: LucideLink,
   ListFilter: LucideListFilter,
   ListTodo: LucideListTodo,
+  Vault: LucideVault,
+  ShieldOff: LucideShieldOff,
   Loader2: LucideLoader2,
   Lock: LucideLock,
   LogOut: LucideLogOut,
@@ -440,6 +456,7 @@ export const lucideIcons = {
   Briefcase: LucideBriefcase,
   Megaphone: LucideMegaphone,
   Handshake: LucideHandshake,
+  Gavel: LucideGavel,
   Blend: LucideBlend,
   MessagesSquare: LucideMessagesSquare,
   SquareCode: LucideSquareCode,
@@ -534,6 +551,7 @@ export const {
   Dumbbell,
   AgentFiles,
   CliFloats,
+  Nous,
   FileAudio,
   FileCode,
   FileJson,
@@ -624,6 +642,8 @@ export const {
   Link,
   ListFilter,
   ListTodo,
+  Vault,
+  ShieldOff,
   Loader2,
   Lock,
   LogOut,
@@ -664,6 +684,7 @@ export const {
   Briefcase,
   Megaphone,
   Handshake,
+  Gavel,
   Blend,
   MessagesSquare,
   SquareCode,

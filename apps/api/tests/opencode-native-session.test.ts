@@ -69,6 +69,18 @@ describe("OpenCode native session mapping", () => {
     await expect(readOpenCodeNativeSessionIdFromProcessTree(4101, procRoot)).resolves.toBe("ses_exactLegacyTask123");
   });
 
+  it("recovers the native task of an OpenCode 2 TUI, which connects with --server", async () => {
+    const procRoot = await mkdtemp(join(tmpdir(), "space-opencode-proc-v2-"));
+    roots.push(procRoot);
+    await mkdir(join(procRoot, "4301", "task", "4301"), { recursive: true });
+    // Command line recorded from OpenCode 2.0.31.
+    await writeFile(join(procRoot, "4301", "cmdline"),
+      Buffer.from("/opt/spaceapp/var/cli-versions/opencode/current/node_modules/.bin/opencode\0--server\0http://127.0.0.1:47047\0--session\0ses_v2Task123\0/etc\0"));
+    await writeFile(join(procRoot, "4301", "task", "4301", "children"), "");
+
+    await expect(readOpenCodeNativeSessionIdFromProcessTree(4301, procRoot)).resolves.toBe("ses_v2Task123");
+  });
+
   it("fails closed when a process tree contains multiple native OpenCode tasks", async () => {
     const procRoot = await mkdtemp(join(tmpdir(), "space-opencode-proc-ambiguous-"));
     roots.push(procRoot);

@@ -252,6 +252,69 @@
   margin-bottom: 0.85rem;
 }
 
+.user-management-invites {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.user-management-invite-form,
+.user-management-invite-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.user-management-invite-form input {
+  flex: 1;
+  min-width: 12rem;
+  padding: 0.4rem 0.65rem;
+  background: #191b1d;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 5px;
+  color: #f4efe5;
+  font-size: 0.8rem;
+}
+
+.user-management-invite-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(85, 140, 255, 0.35);
+  border-radius: 5px;
+  background: rgba(85, 140, 255, 0.08);
+  font-size: 0.78rem;
+}
+
+.user-management-invite-link code {
+  flex: 1 1 100%;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.user-management-invite-link .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.user-management-invite-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.user-management-invite-status {
+  flex: 1;
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.74rem;
+}
+
 /* Phones: full-screen dialog, each user as a card with labelled fields instead of a 5-column table. */
 @media (max-width: 767px) {
   .user-management-backdrop { padding: 0; }
@@ -268,4 +331,7 @@
   .user-management-table td[data-label] { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; }
   .user-management-table td[data-label]::before { content: attr(data-label); flex: 0 0 6.5rem; color: var(--room-muted, #a7a59e); font-size: 0.72rem; }
   .user-management-table .role-select { min-height: 2.75rem; font-size: 16px; }
+  .user-management-invite-form input,
+  .user-management-invite-form .role-select,
+  .user-management-invites .button { min-height: 2.75rem; font-size: 16px; }
 }

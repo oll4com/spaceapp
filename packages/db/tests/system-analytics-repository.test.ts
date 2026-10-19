@@ -60,7 +60,7 @@ describe("system analytics repositories", () => {
     ]);
   });
 
-  it("expires orphan RUNNING model events after the bounded retention window", async () => {
+  it("keeps every model event (token usage, operator rule 2026-10-18) and leaves orphan RUNNING turns out of the lists", async () => {
     const repository = new InMemorySystemAnalyticsRepository();
     await repository.upsertModelEvents([{
       eventKey: "codex:orphan:turn",
@@ -85,8 +85,14 @@ describe("system analytics repositories", () => {
       updatedAt: "2026-06-01T00:00:00.000Z"
     }]);
 
+    // Older than the 31 days the sweep used to keep.
+    await repository.upsertModelEvents([modelEvent("codex:old", { startedAt: "2026-07-01T00:00:00.000Z", endedAt: "2026-07-01T00:01:00.000Z" })]);
+
     await repository.rollupAndSweep(now);
-    await expect(repository.listModelEvents("2026-01-01T00:00:00.000Z")).resolves.toEqual([]);
+    await expect(repository.listModelEvents("2026-06-15T00:00:00.000Z")).resolves.toEqual([expect.objectContaining({ eventKey: "codex:old", tokensIn: 10 })]);
+    await expect(repository.listModelEvents("2026-01-01T00:00:00.000Z")).resolves.toEqual([
+      expect.objectContaining({ eventKey: "codex:orphan:turn", tokensIn: 1 }), expect.objectContaining({ eventKey: "codex:old" })
+    ]);
   });
 
   const modelEvent = (eventKey: string, extra: Partial<SystemAnalyticsModelEventRecord> = {}): SystemAnalyticsModelEventRecord => ({
@@ -150,7 +156,7 @@ describe("system analytics repositories", () => {
     expect(sql).toContain("resolution_seconds = 900");
     expect(sql).toContain("$1::integer");
     expect(sql).toContain("$2::integer");
-    expect(sql).toContain("status = 'RUNNING' AND updated_at");
+    expect(sql).not.toMatch(/DELETE FROM system_analytics_model_events/);
     expect(sql).toContain(") IS DISTINCT FROM (");
     expect(queries.at(-1)?.sql).toBe("COMMIT");
     expect(release).toHaveBeenCalledOnce();
@@ -222,7 +228,7 @@ describe("system analytics repositories", () => {
 
   it("advances the rollup watermark only after a committed rollup", async () => {
     let failSweep = false;
-    const { pool, rollupSinces, queries } = recordingPool((sql) => failSweep && sql.includes("DELETE FROM system_analytics_model_events"));
+    const { pool, rollupSinces, queries } = recordingPool((sql) => failSweep && sql.includes("resolution_seconds = 900 AND bucket_at <"));
     const repository = new PostgresSystemAnalyticsRepository(pool);
 
     await repository.rollupAndSweep("2026-08-11T08:00:09.000Z");

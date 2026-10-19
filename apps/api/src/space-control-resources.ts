@@ -2,7 +2,7 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { SpaceConflictError } from "@space/runtime";
-import type { ControlAction } from "@space/contracts";
+import type { ControlAction, Skill } from "@space/contracts";
 import { pluginsService } from "./plugins-service.js";
 
 // Only installed Space skill directories. No arbitrary path or file reads.
@@ -12,6 +12,17 @@ const skillRoots = [
   "/var/lib/spaceapp-cli/.codex/skills",
   "/var/lib/spaceapp-cli/.agents/skills"
 ];
+
+// space_inspect SKILLS: one page of metadata (the full list with every skill's text went over 5 MiB); skills.read returns a skill's text.
+export async function controlSkillsPage(registeredSkills: Skill[], input: { query?: string; offset: number; limit: number }) {
+  const q = input.query?.toLowerCase();
+  const page = <T>(items: T[]) => items.slice(input.offset, input.offset + input.limit);
+  const installed = ((await controlSkills()).skills ?? []).filter((skill) => !q || skill.name.includes(q));
+  const registered = registeredSkills.map((skill) => ({ id: skill.id, name: skill.displayName, description: skill.triggerDescription }))
+    .filter((skill) => !q || `${skill.id} ${skill.name} ${skill.description}`.toLowerCase().includes(q));
+  return { installed: { skills: page(installed), total: installed.length, source: "installed Space skills" },
+    registered: page(registered), registeredTotal: registered.length, offset: input.offset, limit: input.limit };
+}
 
 export async function controlSkills(name?: string) {
   const entries: Array<{ name: string; root: string }> = [];

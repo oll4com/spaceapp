@@ -22,6 +22,8 @@ export interface MemoryEmbeddingSmokeOptions {
 export interface CreateMemoryEmbeddingOptions {
   fetchImpl?: EmbeddingFetchLike;
   readFileImpl?: (path: string) => Promise<string>;
+  /** Space Gateway only: what the vector is for (Gemini embeds documents and queries differently; OpenAI ignores it). */
+  taskType?: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 }
 
 function parseMemoryEmbeddingProvider(provider: string): MemoryEmbeddingProvider | null {
@@ -407,7 +409,8 @@ export async function createMemoryEmbedding(
       body: JSON.stringify({
         model: config.memoryEmbeddingModel,
         input,
-        dimensions: config.memoryEmbeddingDimensions
+        dimensions: config.memoryEmbeddingDimensions,
+        ...(embeddingProvider === "codex-lb" && options.taskType ? { task_type: options.taskType } : {})
       }),
       signal: abort.signal
     });
@@ -464,7 +467,8 @@ export async function createMemoryEmbeddings(
       body: JSON.stringify({
         model: config.memoryEmbeddingModel,
         input,
-        dimensions: config.memoryEmbeddingDimensions
+        dimensions: config.memoryEmbeddingDimensions,
+        ...(embeddingProvider === "codex-lb" && options.taskType ? { task_type: options.taskType } : {})
       }),
       signal: abort.signal
     });

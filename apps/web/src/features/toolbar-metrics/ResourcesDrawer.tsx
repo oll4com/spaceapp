@@ -38,6 +38,8 @@ export function ResourcesDrawer({ children, onClose, triggerRef }: {
   closeRef.current = onClose;
   useEffect(() => {
     headingRef.current?.focus();
+    // Read at close on purpose: openResources(trigger) may point the ref at another button while the drawer is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     return () => { triggerRef.current?.focus(); };
   }, [triggerRef]);
   const source = triggerRef.current?.closest<HTMLElement>("[data-shell-mode]");

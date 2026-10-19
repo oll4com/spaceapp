@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { CliHostAttachInput, CliHostSessionSummary } from "@space/cli-host";
+import type { CliHostAttachInput, CliHostEventListener, CliHostSessionSummary } from "@space/cli-host";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
@@ -57,6 +57,16 @@ function httpControlHeaders(
   };
 }
 
+function deferred() {
+  let resolve = () => undefined;
+  let reject = (_error: Error) => undefined;
+  const promise = new Promise<void>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 async function waitForFrame(
   frames: TerminalFrame[],
   predicate: (frame: TerminalFrame) => boolean,
@@ -86,10 +96,13 @@ async function createHarness() {
   const terminate = vi.fn(async () => true);
   const detach = vi.fn(async () => true);
   let runningSession: CliHostSessionSummary | null = null;
+  let hostListener: CliHostEventListener | undefined;
+  let outputSequence = 0;
   const inspect = vi.fn(async (identity: CliHostAttachInput["identity"]) =>
     runningSession?.cliSessionId === identity.cliSessionId ? runningSession : null
   );
-  const attach = vi.fn(async (request: CliHostAttachInput) => {
+  const attach = vi.fn(async (request: CliHostAttachInput, listener?: CliHostEventListener) => {
+    hostListener = listener;
     runningSession = {
       ...request.identity,
       generationId: "00000000-0000-4000-8000-000000000043",
@@ -170,7 +183,18 @@ async function createHarness() {
     app,
     store,
     pane,
-    host: { attach, input, resize, detach, terminate },
+    host: {
+      attach, input, resize, detach, terminate,
+      emitOutput(data: string) {
+        hostListener?.({
+          type: "output",
+          generationId: runningSession!.generationId,
+          sequence: outputSequence++,
+          stream: "stdout",
+          data
+        });
+      }
+    },
     cleanup: async () => {
       try {
         await app.close();
@@ -215,6 +239,7 @@ async function connect(
     tabLineageId: string;
     pageClientId: string;
     clientMode?: "INTERACTIVE" | "OBSERVER";
+    leaseId?: string;
     initialCols?: number;
     initialRows?: number;
   }
@@ -230,6 +255,7 @@ async function connect(
     pageClientId: identity.pageClientId,
     clientMode: identity.clientMode ?? "INTERACTIVE"
   });
+  if (identity.leaseId) query.set("leaseId", identity.leaseId);
   if (identity.initialCols !== undefined) query.set("initialCols", String(identity.initialCols));
   if (identity.initialRows !== undefined) query.set("initialRows", String(identity.initialRows));
   const socket = await harness.app.injectWS(
@@ -250,6 +276,284 @@ async function connect(
 }
 
 describe("CLI terminal protocol-v2 control", () => {
+  it("delivers ordinary input in order while transcript persistence is delayed", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:delayed-input-persistence");
+    let releasePersistence = () => undefined;
+    const persistenceGate = new Promise<void>((resolve) => { releasePersistence = resolve; });
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId,
+        pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      const nextSequence = harness.store.listPaneCliTranscriptChunks(session.session.sessionId).at(-1)!.sequence + 1;
+      const append = harness.store.appendPaneCliTranscriptChunk.bind(harness.store);
+      const persist = vi.spyOn(harness.store, "appendPaneCliTranscriptChunk")
+        .mockImplementation((...args) => persistenceGate.then(() => append(...args)) as never);
+
+      for (const data of ["a", "b", "c"]) {
+        controller.socket.send(JSON.stringify({ type: "input", data, leaseId: ready.leaseId }));
+        if (data === "a") {
+          controller.socket.send(JSON.stringify({ type: "input", data: "unauthorized", leaseId: "cli_terminal_lease:stale" }));
+        }
+      }
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await waitForFrame(controller.frames, (frame) => frame.type === "pong");
+
+      expect(harness.host.input.mock.calls.map((call) => (call as unknown[])[2])).toEqual(["a", "b", "c"]);
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(controller.frames).toContainEqual(expect.objectContaining({ type: "control_denied", code: "CLI_CONTROL_REQUIRED" }));
+      expect(harness.store.listPaneCliTranscriptChunks(session.session.sessionId).filter((chunk) => chunk.stream === "stdin")).toEqual([]);
+
+      releasePersistence();
+      await vi.waitFor(() => {
+        const stdin = harness.store.listPaneCliTranscriptChunks(session.session.sessionId)
+          .filter((chunk) => chunk.stream === "stdin");
+        expect(stdin.map((chunk) => chunk.content)).toEqual(["a", "b", "c"]);
+        expect(stdin.map((chunk) => chunk.sequence)).toEqual([nextSequence, nextSequence + 1, nextSequence + 2]);
+      });
+      controller.socket.terminate();
+    } finally {
+      releasePersistence();
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps delayed host output and input transcripts in their accepted order", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:delayed-output-persistence");
+    const gate = deferred();
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      const append = harness.store.appendPaneCliHostOutputChunk.bind(harness.store);
+      vi.spyOn(harness.store, "appendPaneCliHostOutputChunk")
+        .mockImplementation((...args) => gate.promise.then(() => append(...args)) as never);
+      harness.host.emitOutput("before-input");
+      controller.socket.send(JSON.stringify({ type: "input", data: "a", leaseId: ready.leaseId }));
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await waitForFrame(controller.frames, (frame) => frame.type === "pong");
+      harness.host.emitOutput("between-inputs");
+      controller.socket.send(JSON.stringify({ type: "input", data: "b", leaseId: ready.leaseId }));
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await vi.waitFor(() => expect(controller.frames.filter((frame) => frame.type === "pong")).toHaveLength(2));
+      expect(harness.host.input.mock.calls.map((call) => (call as unknown[])[2])).toEqual(["a", "b"]);
+
+      gate.resolve();
+      await vi.waitFor(() => {
+        const transcript = harness.store.listPaneCliTranscriptChunks(session.session.sessionId)
+          .filter((chunk) => chunk.stream === "stdout" || chunk.stream === "stdin");
+        expect(transcript.map((chunk) => [chunk.stream, chunk.content])).toEqual([
+          ["stdout", "before-input"], ["stdin", "a"], ["stdout", "between-inputs"], ["stdin", "b"]
+        ]);
+        expect(new Set(transcript.map((chunk) => chunk.sequence)).size).toBe(transcript.length);
+      });
+      controller.socket.terminate();
+    } finally {
+      gate.resolve();
+      await harness.cleanup();
+    }
+  });
+
+  it.each(["submit", "interrupt"])("waits for earlier input persistence before %s", async (kind) => {
+    const harness = await createHarness();
+    const auth = authFor(`user:input-${kind}-barrier`);
+    const gate = deferred();
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      const append = harness.store.appendPaneCliTranscriptChunk.bind(harness.store);
+      vi.spyOn(harness.store, "appendPaneCliTranscriptChunk")
+        .mockImplementation((...args) => gate.promise.then(() => append(...args)) as never);
+      controller.socket.send(JSON.stringify({ type: "input", data: "draft", leaseId: ready.leaseId }));
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await waitForFrame(controller.frames, (frame) => frame.type === "pong");
+      const authorityRead = vi.spyOn(harness.store, "getActivePaneCliTerminalControlLease");
+      const deliveredAfterPersistence: string[][] = [];
+      const readPersistedInput = () => harness.store.listPaneCliTranscriptChunks(session.session.sessionId)
+        .filter((chunk) => chunk.stream === "stdin").map((chunk) => chunk.content);
+      if (kind === "submit") {
+        harness.host.input.mockImplementationOnce(async () => {
+          deliveredAfterPersistence.push(readPersistedInput());
+          return { accepted: true, acceptedAtMs: Date.now() };
+        });
+      } else {
+        harness.host.terminate.mockImplementationOnce(async () => {
+          deliveredAfterPersistence.push(readPersistedInput());
+          return true;
+        });
+      }
+      controller.socket.send(JSON.stringify({
+        ...(kind === "submit" ? { type: "input", data: "\r" } : { type: "interrupt" }),
+        leaseId: ready.leaseId
+      }));
+      await vi.waitFor(() => expect(authorityRead).toHaveBeenCalled());
+      expect(harness.host.input).toHaveBeenCalledTimes(1);
+      expect(harness.host.terminate).not.toHaveBeenCalled();
+
+      gate.resolve();
+      await vi.waitFor(() => expect(deliveredAfterPersistence).toEqual([["draft"]]));
+      controller.socket.terminate();
+    } finally {
+      gate.resolve();
+      await harness.cleanup();
+    }
+  });
+
+  it.each([
+    { limit: "frames", data: Array.from({ length: 65 }, () => "x"), accepted: 64, authorized: 65 },
+    { limit: "bytes", data: ["🔥".repeat(8 * 1024), "b".repeat(32 * 1024), "c"], accepted: 2, authorized: 3 },
+    { limit: "synchronously persisting oversized pastes", data: ["a".repeat(64 * 1024 + 1), "b"], accepted: 1, authorized: 1 }
+  ])("bounds input waiting for persistence by $limit", async ({ data, accepted, authorized }) => {
+    const harness = await createHarness();
+    const auth = authFor("user:input-backpressure");
+    const gate = deferred();
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      const append = harness.store.appendPaneCliTranscriptChunk.bind(harness.store);
+      vi.spyOn(harness.store, "appendPaneCliTranscriptChunk")
+        .mockImplementation((...args) => gate.promise.then(() => append(...args)) as never);
+      const authorityRead = vi.spyOn(harness.store, "getActivePaneCliTerminalControlLease");
+      for (const value of data) {
+        controller.socket.send(JSON.stringify({ type: "input", data: value, leaseId: ready.leaseId }));
+      }
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await vi.waitFor(() => expect(authorityRead).toHaveBeenCalledTimes(authorized));
+      expect(harness.host.input).toHaveBeenCalledTimes(accepted);
+      expect(controller.frames.some((frame) => frame.type === "pong")).toBe(false);
+
+      gate.resolve();
+      await waitForFrame(controller.frames, (frame) => frame.type === "pong");
+      expect(harness.host.input.mock.calls.map((call) => (call as unknown[])[2])).toEqual(data);
+      await vi.waitFor(() => expect(harness.store.listPaneCliTranscriptChunks(session.session.sessionId)
+        .filter((chunk) => chunk.stream === "stdin").map((chunk) => chunk.content).join("")).toBe(data.join("")));
+      controller.socket.terminate();
+    } finally {
+      gate.resolve();
+      await harness.cleanup();
+    }
+  });
+
+  it("finishes deferred input persistence before detaching and restoring a transcript sequence", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:input-detach-barrier");
+    const gate = deferred();
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      const append = harness.store.appendPaneCliTranscriptChunk.bind(harness.store);
+      vi.spyOn(harness.store, "appendPaneCliTranscriptChunk")
+        .mockImplementation((...args) => gate.promise.then(() => append(...args)) as never);
+      controller.socket.send(JSON.stringify({ type: "input", data: "before-refresh", leaseId: ready.leaseId }));
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await waitForFrame(controller.frames, (frame) => frame.type === "pong");
+      controller.socket.terminate();
+      await vi.waitFor(() => expect(harness.app.websocketServer.clients.size).toBe(0));
+      expect(harness.host.detach).not.toHaveBeenCalled();
+
+      gate.resolve();
+      await vi.waitFor(() => expect(harness.host.detach).toHaveBeenCalledTimes(1));
+      const reconnectSession = await issueSession(harness, auth, "GET");
+      const reconnected = await connect(harness, reconnectSession, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId, leaseId: ready.leaseId
+      });
+      const reconnectReady = await waitForFrame(reconnected.frames, (frame) => frame.type === "ready");
+      expect(reconnectReady.controlState).toBe("CONTROLLER");
+      reconnected.socket.send(JSON.stringify({ type: "input", data: "after-refresh", leaseId: reconnectReady.leaseId }));
+      reconnected.socket.send(JSON.stringify({ type: "ping" }));
+      await waitForFrame(reconnected.frames, (frame) => frame.type === "pong");
+      expect(reconnected.frames.filter((frame) => frame.type === "error")).toEqual([]);
+      await vi.waitFor(() => {
+        const stdin = harness.store.listPaneCliTranscriptChunks(session.session.sessionId)
+          .filter((chunk) => chunk.stream === "stdin");
+        expect(stdin.map((chunk) => chunk.content)).toEqual(["before-refresh", "after-refresh"]);
+        expect(new Set(stdin.map((chunk) => chunk.sequence)).size).toBe(2);
+      });
+      reconnected.socket.terminate();
+    } finally {
+      gate.resolve();
+      await harness.cleanup();
+    }
+  });
+
+  it("closes a failed persistence writer without leaking storage errors or delivering its queued input", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:input-persistence-failure");
+    const gate = deferred();
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      vi.spyOn(harness.store, "appendPaneCliTranscriptChunk")
+        .mockImplementationOnce(() => gate.promise as never);
+      for (let index = 0; index < 65; index += 1) {
+        controller.socket.send(JSON.stringify({ type: "input", data: "x", leaseId: ready.leaseId }));
+      }
+      await vi.waitFor(() => expect(harness.host.input).toHaveBeenCalledTimes(64));
+      gate.reject(new Error("storage failed; token=synthetic-private-storage-value"));
+      const error = await waitForFrame(controller.frames, (frame) => frame.type === "error");
+      expect(error.message).toBe("CLI terminal input could not be saved. Reconnect before sending more input.");
+      expect(JSON.stringify(controller.frames)).not.toContain("synthetic-private-storage-value");
+      await vi.waitFor(() => expect(controller.closeCode()).toBe(1008));
+      expect(harness.host.input).toHaveBeenCalledTimes(64);
+      // injectWS leaves the server's synthetic stream in CLOSING after the
+      // client has received the close frame; finish that fixture transport.
+      for (const socket of harness.app.websocketServer.clients) socket.terminate();
+      await vi.waitFor(() => expect(harness.host.detach).toHaveBeenCalledTimes(1));
+    } finally {
+      gate.resolve();
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps hidden input out of deferred transcripts and redacts visible secrets", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:input-persistence-redaction");
+    const gate = deferred();
+    try {
+      const session = await issueSession(harness, auth);
+      const controller = await connect(harness, session, auth, {
+        tabLineageId: firstTabLineageId, pageClientId: firstPageClientId
+      });
+      const ready = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      const append = harness.store.appendPaneCliTranscriptChunk.bind(harness.store);
+      vi.spyOn(harness.store, "appendPaneCliTranscriptChunk")
+        .mockImplementation((...args) => gate.promise.then(() => append(...args)) as never);
+      controller.socket.send(JSON.stringify({ type: "input", data: "token=synthetic-visible-value", leaseId: ready.leaseId }));
+      controller.socket.send(JSON.stringify({ type: "input", data: "synthetic-hidden-value", display: "hidden", leaseId: ready.leaseId }));
+      controller.socket.send(JSON.stringify({ type: "ping" }));
+      await waitForFrame(controller.frames, (frame) => frame.type === "pong");
+      expect(harness.host.input).toHaveBeenCalledTimes(2);
+      gate.resolve();
+      await vi.waitFor(() => {
+        const stdin = harness.store.listPaneCliTranscriptChunks(session.session.sessionId).filter((chunk) => chunk.stream === "stdin");
+        expect(stdin.map((chunk) => chunk.content)).toEqual(["token:[REDACTED]"]);
+        expect(JSON.stringify(stdin)).not.toContain("synthetic-");
+      });
+      controller.socket.terminate();
+    } finally {
+      gate.resolve();
+      await harness.cleanup();
+    }
+  });
+
   it("strips NUL bytes before writing Codex terminal input or persisting its transcript", async () => {
     const harness = await createHarness();
     const auth = authFor("user:nul-input");

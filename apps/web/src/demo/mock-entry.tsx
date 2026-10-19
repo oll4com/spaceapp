@@ -8,6 +8,8 @@ import "../features/ui-theme/codex-theme.css";
 import "../features/ui-theme/motion-theme.css";
 import "../features/ui-theme/aurora-theme.css";
 import "../features/ui-theme/liquid-glass-theme.css";
+import "../features/ui-theme/jarvis-theme.css";
+import "../features/ui-theme/aira-theme.css";
 import "./public-mock.css";
 
 async function mount() {

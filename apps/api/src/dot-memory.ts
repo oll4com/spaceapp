@@ -30,13 +30,13 @@ export interface DotMemoryServiceDeps {
   dots: Pick<DotsRepository, "get">;
   memories: DotMemoryRepository;
   /** An embedding when semantic memory is ready; null otherwise (text search still works). */
-  embed?(text: string): Promise<number[] | null>;
+  embed?(text: string, purpose?: "document" | "query"): Promise<number[] | null>;
   audit(request: FastifyRequest | null, action: string, metadata: Record<string, unknown>): Promise<void>;
 }
 type ToolOutcome = { status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string };
 
 export function createDotMemoryService(deps: DotMemoryServiceDeps) {
-  const embed = async (text: string) => deps.embed ? await deps.embed(text).catch(() => null) : null;
+  const embed = async (text: string, purpose: "document" | "query" = "document") => deps.embed ? await deps.embed(text, purpose).catch(() => null) : null;
   async function owned(owner: string, dotId: string) {
     if (!await deps.dots.get(owner, dotId)) throw new DotMemoryError(404, "DOT_NOT_FOUND", "Dot was not found.");
   }
@@ -90,7 +90,7 @@ export function createDotMemoryService(deps: DotMemoryServiceDeps) {
           const input = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(30).optional() }).strict().safeParse(args);
           if (!input.success) return blocked("dot_memory.recall needs a query.");
           const found = await deps.memories.recall(owner, session.dotId, await projectKey(owner, session.roomId),
-            { text: input.data.query, embedding: await embed(input.data.query) }, input.data.limit ?? 10);
+            { text: input.data.query, embedding: await embed(input.data.query, "query") }, input.data.limit ?? 10);
           return { status: "COMPLETED", result: { memories: found.map(({ memoryId, scope, text, source, updatedAt }) => ({ memoryId, scope, text, source, updatedAt })) } };
         }
         case "dot_memory.remember": {

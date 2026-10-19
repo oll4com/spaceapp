@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { isDeepStrictEqual } from "node:util";
-import type { ControlAction } from "@space/contracts";
+import type { AuthUser, ControlAction } from "@space/contracts";
 import type { ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
-import type { ControlActor } from "./space-control.js";
+
+/** Who runs a Space Control action; defined here so space-control.ts and this module do not import each other. */
+export interface ControlActor {id:string; role:AuthUser["role"]; dotId?:string}
 
 export type ResourceAction = Extract<ControlAction, { kind: "resource" }>;
 

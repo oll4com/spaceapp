@@ -45,7 +45,8 @@ describe("Configuration installation authorization", () => {
     { includeApiKeys: true }, { includeCredentials: true }, { includeApiKeys: true, includeCredentials: true }
   ])("rejects USER secret export before collecting any values: %j", async (payload) => {
     const response = await app!.inject({ method: "POST", url: "/api/configuration/export", headers: headers("USER"), payload });
-    expect(response.statusCode).toBe(403);
+    // A USER never reaches install-wide routes, with or without the multi-user flag (MU-001).
+    expect(response.statusCode).toBe(404);
     expect(exportBundle).not.toHaveBeenCalled();
     expect(response.body).not.toContain("synthetic-only");
   });
@@ -53,14 +54,16 @@ describe("Configuration installation authorization", () => {
   it.each(["replace", "merge"])("rejects USER %s import before any database or filesystem mutation", async (mode) => {
     const response = await app!.inject({ method: "POST", url: "/api/configuration/import", headers: headers("USER"),
       payload: { bundle, mode, targetUserId: "user:other", secretsDir: join(root, "secrets"), credentialsDir: join(root, "credentials") } });
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(404);
     expect(importBundle).not.toHaveBeenCalled();
   });
 
-  it("keeps ordinary USER exports scoped to the authenticated owner", async () => {
-    const response = await app!.inject({ method: "POST", url: "/api/configuration/export", headers: headers("USER"), payload: { userId: "user:other" } });
-    expect(response.statusCode).toBe(200);
-    expect(exportBundle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ userId: "user:config-user", includeApiKeys: false, includeCredentials: false }), { cliAuth: {} });
+  it("closes even an ordinary export to a USER: the bundle carries the installation's providers and CLI settings (MU-001)", async () => {
+    for (const [method, url] of [["POST", "/api/configuration/export"], ["GET", "/api/configuration/export"]] as const) {
+      const response = await app!.inject({ method, url, headers: headers("USER"), ...(method === "POST" ? { payload: { userId: "user:other" } } : {}) });
+      expect(response.statusCode, `${method} ${url}`).toBe(404);
+    }
+    expect(exportBundle).not.toHaveBeenCalled();
   });
 
   it.each(["ADMIN", "OPERATOR"] as const)("preserves authorized %s export/import and target selection", async (role) => {

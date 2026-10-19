@@ -36,6 +36,9 @@ case "$runtime_name" in
     export XDG_CACHE_HOME="$state_root/cache"
     export XDG_STATE_HOME="$state_root/state"
     export OPENCODE_API_KEY="$(cat "$credential_file" 2>/dev/null || true)"
+    # OpenCode reaches Anthropic and OpenAI with the keys set for Claude Code and Codex (credentials set claude|codex).
+    if [ -s "$credential_root/claude.key" ]; then export ANTHROPIC_API_KEY="$(cat "$credential_root/claude.key")"; fi
+    if [ -s "$credential_root/codex.key" ]; then export OPENAI_API_KEY="$(cat "$credential_root/codex.key")"; fi
     ;;
   qwen)
     command_name="qwen"

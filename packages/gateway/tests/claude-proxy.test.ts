@@ -247,6 +247,41 @@ describe("Claude proxy", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("drops thinking disabled for the models that reject it and keeps it for the rest", async () => {
+    const { post, calls } = await setup(() => streamResponse(messageStream("msg_ok")));
+    for (const model of ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-5-5"]) {
+      expect((await post({ model, max_tokens: 10, thinking: { type: "disabled" }, messages: [{ role: "user", content: "hi" }] })).statusCode).toBe(200);
+    }
+    expect(calls.map((call) => call.body.thinking)).toEqual([undefined, undefined, undefined, { type: "disabled" }]);
+  });
+
+  it("retries an edited history once on the same account with the stale thinking blocks dropped", async () => {
+    const bound = "messages.1.content.21: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, "
+      + "or set `thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\".";
+    const refuse = (message: string) => new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }),
+      { status: 400, headers: { "content-type": "application/json" } });
+    const { post, calls } = await setup((_token, body) => (body.thinking as { block_binding?: unknown } | undefined)?.block_binding ? streamResponse(messageStream("msg_ok")) : refuse(bound));
+    const response = await post({ model: "claude-opus-5-5", stream: true, max_tokens: 10, thinking: { type: "adaptive" }, messages: [{ role: "user", content: "hi" }] });
+    expect(response.body).toContain("msg_ok");
+    expect(calls.map((call) => call.token)).toEqual(["token-claude-a", "token-claude-a"]);
+    expect(calls[1]!.body.thinking).toEqual({ type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } });
+    expect(calls[1]!.headers["anthropic-beta"]).toBe("claude-code-20250219,oauth-2025-04-20,thinking-binding-controls-2026-08-01");
+
+    // Retried once only; thinking off, a client's own binding and a forged signature go back as they are.
+    const always = await setup(() => refuse(bound));
+    expect((await always.post({ model: "claude-opus-5-5", max_tokens: 10, messages: [] })).statusCode).toBe(400);
+    expect(always.calls).toHaveLength(2);
+    expect(always.calls[1]!.body.thinking).toEqual({ type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } });
+    for (const [model, thinking] of [["claude-haiku-5-5", { type: "disabled" }], ["claude-opus-5-5", { type: "adaptive", block_binding: { prefix_mismatch_behavior: "error" } }]] as const) {
+      const kept = await setup(() => refuse(bound));
+      expect((await kept.post({ model, max_tokens: 10, thinking, messages: [] })).statusCode).toBe(400);
+      expect(kept.calls).toHaveLength(1);
+    }
+    const forged = await setup(() => refuse("messages.1.content.0: Invalid `signature` in `thinking` block."));
+    expect((await forged.post({ model: "claude-opus-5-5", max_tokens: 10, messages: [] })).statusCode).toBe(400);
+    expect(forged.calls).toHaveLength(1);
+  });
+
   it("keeps a session on the same account for the prompt cache", async () => {
     const { post, calls } = await setup(() => streamResponse(messageStream("msg")));
     const session = { "x-claude-code-session-id": "5f2c1f9e-7a1b-4c1d-9e2f-0a1b2c3d4e5f" };

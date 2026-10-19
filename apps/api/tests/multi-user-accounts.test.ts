@@ -91,6 +91,25 @@ describe("multi-user accounts", () => {
     }
   }, APP_LIFECYCLE_TIMEOUT_MS);
 
+  it("a sign-in for an email without an account takes the password-check time too (no email enumeration)", async () => {
+    const { app, admin } = await harness(true);
+    try {
+      const { token } = (await app.inject({ method: "POST", url: "/api/admin/users/invites", headers: admin, payload: { email: "dev@example.com" } })).json() as { token: string };
+      expect((await app.inject({ method: "POST", url: "/api/auth/invites/accept", payload: { token, password } })).statusCode).toBe(200);
+      const timed = async (email: string) => {
+        const started = performance.now();
+        expect((await app.inject({ method: "POST", url: "/api/auth/login", payload: { email, password: "wrong password value" } })).statusCode).toBe(401);
+        return performance.now() - started;
+      };
+      await timed("nobody@example.com"); // the decoy hash is made once, on the first such sign-in
+      const known = Math.min(await timed("dev@example.com"), await timed("dev@example.com"));
+      const unknown = Math.min(await timed("nobody@example.com"), await timed("nobody@example.com"));
+      expect(unknown).toBeGreaterThan(known * 0.5);
+    } finally {
+      await app.close();
+    }
+  }, APP_LIFECYCLE_TIMEOUT_MS);
+
   it("a disabled account gets no session even after the flag is turned off", async () => {
     const { app, store, sessionFor } = await harness(false);
     try {

@@ -4,6 +4,7 @@ import { open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { IncrementalRolloutReader, type RolloutReducer } from "./codex-rollout-reader.js";
+import { codexStateDbMissing, findCodexRolloutByThreadId } from "./codex-sessions.js";
 import { codexTaskTimelineReducer, type NativeTaskExecution } from "./room-task-telemetry.js";
 
 const execFileAsync = promisify(execFile);
@@ -711,7 +712,11 @@ export async function findCurrentCodexCliTurnActivity(
         if (typeof oldestKey === "string") currentTurnRolloutPathCache.delete(oldestKey);
       }
     } catch {
-      return { status: "PENDING", turnId: null };
+      // A public install's API sees only Codex's sessions/: the rollout is found by its file name.
+      const found = await codexStateDbMissing(options.codexHome) ? await findCodexRolloutByThreadId(options.codexHome, options.threadId) : null;
+      if (!found) return { status: "PENDING", turnId: null };
+      rolloutPath = resolve(found);
+      currentTurnRolloutPathCache.set(cacheKey, rolloutPath);
     }
   }
   const codexHome = resolve(options.codexHome);

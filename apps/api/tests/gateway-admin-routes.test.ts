@@ -52,7 +52,8 @@ describe("Space Gateway admin routes", () => {
     const { app } = await setup();
     for (const role of ["USER", "OPERATOR"] as const) {
       const response = await app.inject({ url: "/api/admin/gateway/status", headers: authHeaders(role) });
-      expect(response.statusCode).toBe(403);
+      // A USER reaches only its own rooms' routes; everything else is not found (MU-001).
+      expect(response.statusCode).toBe(role === "USER" ? 404 : 403);
     }
     expect((await app.inject({ url: "/api/admin/gateway/status" })).statusCode).toBe(401);
   });
@@ -125,6 +126,22 @@ describe("Space Gateway admin routes", () => {
     expect(removed.json()).toEqual({ id: body.key.id, deleted: true });
     const actions = (await store.listAuditEvents?.({ limit: 20 }) ?? []).map((event: { action: string }) => event.action);
     expect(actions).toEqual(expect.arrayContaining(["admin.gateway.key.create", "admin.gateway.key.update", "admin.gateway.key.delete"]));
+  });
+
+  it("scopes a key to the Codex accounts with one enforced model, then rotates it in place (summary-tools-key)", async () => {
+    const { app, repository } = await setup();
+    const scope = { trafficClass: "BACKGROUND", allowedModels: ["gpt-5.6-luna"], enforcedModel: "gpt-5.6-luna", accountIds: [accountId] };
+    const created = await app.inject({ method: "POST", url: "/api/admin/gateway/keys", headers: authHeaders("ADMIN"), payload: { name: "space-summary-tools", ...scope } });
+    expect(created.statusCode).toBe(201);
+    const { key, plainKey } = created.json();
+    expect(key).toMatchObject({ name: "space-summary-tools", ...scope });
+    const patched = await app.inject({ method: "PATCH", url: `/api/admin/gateway/keys/${key.id}`, headers: authHeaders("ADMIN"), payload: { ...scope, isActive: true } });
+    expect(patched.json()).toMatchObject({ id: key.id, isActive: true, enforcedModel: "gpt-5.6-luna" });
+    const rotated = await app.inject({ method: "POST", url: `/api/admin/gateway/keys/${key.id}/regenerate`, headers: authHeaders("ADMIN"), payload: {} });
+    expect(rotated.json().key.id).toBe(key.id);
+    expect(rotated.json().plainKey).toMatch(/^sk-sgw-/);
+    expect(rotated.json().plainKey).not.toBe(plainKey);
+    expect(repository.keys.find((entry) => entry.id === key.id)!.keyHash).toBe(hashGatewayApiKey(rotated.json().plainKey));
   });
 
   it("rejects keys scoped to unknown accounts", async () => {
@@ -306,6 +323,50 @@ describe("Space Gateway admin routes", () => {
     expect(absent.statusCode).toBe(404);
     expect(absent.json()).toMatchObject({ error: { code: "space_key_missing" } });
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it("adds a pasted Google AI key for Space Memory embeddings, never the server's Live key", async () => {
+    const googleKey = `AIza${"g".repeat(35)}`;
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ status: "CONNECTED", account: { id: accountId, provider: "GOOGLE_AI", label: "Google AI API key …gggg" } })));
+    const { app } = await setup(fetchImpl as unknown as typeof fetch, "internal-secret");
+    const pasted = await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "GOOGLE_AI", apiKey: googleKey } });
+    expect(pasted.json()).toMatchObject({ status: "CONNECTED" });
+    expect(pasted.body).not.toContain("AIza");
+    expect(JSON.parse(String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ provider: "GOOGLE_AI", apiKey: googleKey });
+    // The Live pane's Google key is not for embeddings (operator decision 2026-10-18): there is no server key to reuse.
+    expect((await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "GOOGLE_AI", useSpaceKey: true } })).statusCode).toBe(422);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the Anthropic admin key to the gateway, audits only its hint and reports the bill (operator request 2026-10-18)", async () => {
+    const adminKey = `sk-ant-admin01-${"a".repeat(40)}`;
+    const status = { configured: true, keyHint: "…aaaa", savedAt: "2030-01-10T11:00:00.000Z", lastSyncAt: "2030-01-10T11:00:01.000Z", lastError: null, upstream: [] };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(status)));
+    const { app, repository, store } = await setup(fetchImpl as unknown as typeof fetch, "internal-secret");
+    expect((await app.inject({ url: "/api/admin/gateway/anthropic-admin", headers: authHeaders("ADMIN") })).json()).toEqual({ configured: false, keyHint: null,
+      savedAt: null, lastSyncAt: null, lastError: null, upstream: [] });
+    expect((await app.inject({ method: "PUT", url: "/api/admin/gateway/anthropic-admin", headers: authHeaders("OPERATOR"), payload: { adminKey } })).statusCode).toBe(403);
+    const rejected = await app.inject({ method: "PUT", url: "/api/admin/gateway/anthropic-admin", headers: authHeaders("ADMIN"), payload: { adminKey: "sk-ant-api03-nope" } });
+    expect(rejected.statusCode).toBe(422);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const saved = await app.inject({ method: "PUT", url: "/api/admin/gateway/anthropic-admin", headers: authHeaders("ADMIN"), payload: { adminKey } });
+    expect(saved.json()).toEqual(status);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:4920/__space-gateway/admin/anthropic-admin/save");
+    expect(JSON.parse(String(init.body))).toEqual({ adminKey });
+    const audit = JSON.stringify(await store.listAuditEvents({ limit: 20 }));
+    expect(audit).toContain("admin.gateway.anthropic-admin.save");
+    expect(audit).not.toContain(adminKey);
+
+    await repository.saveAnthropicAdminKey({ keyEncrypted: "v1.sealed", keyHint: "…aaaa", at: "2030-01-10T11:00:00.000Z" });
+    const read = await app.inject({ url: "/api/admin/gateway/anthropic-admin", headers: authHeaders("ADMIN") });
+    expect(read.json()).toMatchObject({ configured: true, keyHint: "…aaaa" });
+    expect(read.body).not.toContain("v1.sealed");
+    const billing = await app.inject({ url: "/api/admin/gateway/anthropic-billing?days=7", headers: authHeaders("ADMIN") });
+    expect(billing.json()).toMatchObject({ status: { configured: true }, days: [] });
+    expect((await app.inject({ url: "/api/admin/gateway/anthropic-billing?days=90", headers: authHeaders("ADMIN") })).statusCode).toBe(422);
+    expect((await app.inject({ method: "DELETE", url: "/api/admin/gateway/anthropic-admin", headers: authHeaders("ADMIN") })).statusCode).toBe(200);
+    expect((fetchImpl.mock.calls[1] as unknown as [string])[0]).toBe("http://127.0.0.1:4920/__space-gateway/admin/anthropic-admin/remove");
   });
 
   it("starts with Codex quotas from Space Gateway and closes cleanly", async () => {

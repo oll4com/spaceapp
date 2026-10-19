@@ -196,7 +196,7 @@ describe("YouTubePane", () => {
     apiMock.browserStatus.mockResolvedValue({
       enabled: true,
       statusReason: "Managed Chrome browser sessions are enabled.",
-      defaultUrl: "https://www.example.invalid/",
+      defaultUrl: "https://www.google.com/",
       checkedAt: "2026-07-06T00:00:00.000Z"
     });
     apiMock.browserSession.mockRejectedValue(new Error("not found"));

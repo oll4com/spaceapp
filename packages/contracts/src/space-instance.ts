@@ -63,7 +63,9 @@ export const instanceBackgroundJobs = [
   // Notifies the admins when an exhausted Codex account is usable again; one instance announces it.
   "codex-quota-reset-notify",
   // Token usage page: reads Claude Code transcripts through the sudo helper, which only stable has.
-  "token-usage-claude"
+  "token-usage-claude",
+  // Nous answers panes and copilots on its own from the monitor and the notifications; one instance acts for an owner.
+  "nous"
 ] as const;
 export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
 

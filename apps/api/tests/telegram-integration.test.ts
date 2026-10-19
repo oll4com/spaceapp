@@ -97,8 +97,8 @@ describe("Telegram integration API", () => {
         const auth = authHeaders(role);
         for (const mutation of mutations) {
           const response = await app.inject({ ...mutation, headers: { cookie: auth.cookie, "x-space-csrf-token": auth.csrf } });
-          expect(response.statusCode, `${role} ${mutation.url}`).toBe(403);
-          expect(response.json().error.code).toBe("ADMIN_REQUIRED");
+          expect(response.statusCode, `${role} ${mutation.url}`).toBe(role === "USER" ? 404 : 403);
+          expect(response.json().error.code).toBe(role === "USER" ? "NOT_FOUND" : "ADMIN_REQUIRED");
         }
       }
       await store.updateCliRuntimeSetting("cli:codex", { enabled: false, confirmationToken: "e".repeat(32) }, "user:admin");

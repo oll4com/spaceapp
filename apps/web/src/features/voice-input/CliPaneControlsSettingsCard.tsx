@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useOptionalVoiceInput, useVoiceInput } from "./VoiceInputProvider.js";
+import { useOptionalVoiceInput } from "./VoiceInputProvider.js";
 import { readVoiceComposerSettings, writeVoiceComposerSettings, type VoiceComposerSettings } from "../../voice-settings.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { CliShortcutVisibilitySettings } from "../terminal-pane/CliShortcutVisibilitySettings.js";
@@ -18,19 +18,8 @@ const buttons: Array<{ key: ButtonSetting; name: string; label: string; detail: 
 
 /** The buttons and menus shown over CLI panes; saved with the voice preferences they share. */
 export function CliPaneControlsSettingsCard() {
-  let voice: ReturnType<typeof useOptionalVoiceInput> = null;
-  try {
-    voice = useOptionalVoiceInput?.() ?? null;
-  } catch {
-    voice = null;
-  }
-  if (!voice) {
-    try {
-      voice = useVoiceInput?.() ?? null;
-    } catch {
-      voice = null;
-    }
-  }
+  // Outside the voice provider the card keeps its own copy of the saved settings.
+  const voice = useOptionalVoiceInput();
   const [localSettings, setLocalSettings] = useState(() => readVoiceComposerSettings());
   const settings = voice?.settings ?? localSettings;
 

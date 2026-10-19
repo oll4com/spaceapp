@@ -22,7 +22,7 @@ import {
 } from "../src/task-title-providers.js";
 import type { CodexParityService } from "../src/codex-parity.js";
 import type { NativeTaskTitles } from "../src/task-title-native.js";
-function fixture(nativeTitles?: Pick<NativeTaskTitles, "metadata">, extra: { artifactRoot?: string } = {}) {
+function fixture(nativeTitles?: Pick<NativeTaskTitles, "metadata">, extra: { artifactRoot?: string; summaryAllowed?: (paneId: string) => Promise<boolean> } = {}) {
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "Titles", paneCap: 12 });
   const pane = store.createPane({
@@ -102,6 +102,7 @@ function fixture(nativeTitles?: Pick<NativeTaskTitles, "metadata">, extra: { art
     nativeTitles,
     onError,
     artifactRoot: extra.artifactRoot,
+    summaryAllowed: extra.summaryAllowed,
   });
   return {
     store,
@@ -473,6 +474,18 @@ describe("task title coordinator", () => {
       (await f.repository.get("native:qwen:session-1"))?.resetNativeManual,
     ).toBe(false);
   });
+  it("never summarizes a pane whose summary would run on someone else's model accounts (MU-002)", async () => {
+    const summaryAllowed = vi.fn(async () => false);
+    const f = fixture(undefined, { summaryAllowed });
+    await f.service.observe(f.pane.id);
+    f.advance(6);
+    await f.service.tick();
+    expect(summaryAllowed).toHaveBeenCalledWith(f.pane.id);
+    expect(f.generate).not.toHaveBeenCalled();
+    // The pane keeps a clean local title.
+    expect(f.store.getPane(f.pane.id).title).not.toContain("Image");
+  });
+
   it("creates clean metadata and deduplicates identical requests without another call", async () => {
     const f = fixture();
     await f.service.observe(f.pane.id);

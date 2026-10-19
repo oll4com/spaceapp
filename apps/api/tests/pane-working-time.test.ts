@@ -43,7 +43,7 @@ function service(overrides: Partial<PaneWorkingTimeDeps<PaneWorkingTimeCliSessio
 }
 
 describe("pane working time", () => {
-  it("keeps the route's cumulative formula: durations, running elapsed time and the pane-age cap", () => {
+  it("counts finished durations only (the badge adds the running turn) and caps at the pane age", () => {
     const observation = {
       state: "RUNNING" as const,
       tasks: [
@@ -53,7 +53,7 @@ describe("pane working time", () => {
       ]
     };
     expect(paneWorkingTimeResponse(pane(), observation, startMs)).toEqual({
-      paneId: "pane:working1", cumulativeWorkingMs: 165_000, isWorking: true, state: "RUNNING"
+      paneId: "pane:working1", cumulativeWorkingMs: 120_000, isWorking: true, state: "RUNNING"
     });
     expect(paneWorkingTimeResponse(pane({ createdAt: new Date(startMs - 10_000).toISOString() }), observation, startMs).cumulativeWorkingMs).toBe(10_000);
     expect(paneWorkingTimeResponse(pane({ status: "RUNNING" }), null, startMs)).toEqual({
@@ -77,7 +77,7 @@ describe("pane working time", () => {
       latestCliSession: vi.fn(async () => session("cli:opencode")),
       openCodeTasks: vi.fn(async () => [task("oc", "RUNNING", { startedAt: new Date(startMs - 5_000).toISOString() })])
     });
-    await expect(opencode.workingTime.read(pane())).resolves.toMatchObject({ cumulativeWorkingMs: 5_000, state: "RUNNING", isWorking: true });
+    await expect(opencode.workingTime.read(pane())).resolves.toMatchObject({ cumulativeWorkingMs: 0, state: "RUNNING", isWorking: true });
 
     const gemini = service({
       latestCliSession: vi.fn(async () => session("cli:gemini")),
@@ -140,14 +140,14 @@ describe("pane working time", () => {
     await vi.waitFor(() => expect(resolveTasks).toBeTypeOf("function"));
     resolveTasks(running);
     await expect(Promise.all([first, second])).resolves.toEqual([
-      expect.objectContaining({ cumulativeWorkingMs: 10_000, state: "RUNNING" }),
-      expect.objectContaining({ cumulativeWorkingMs: 10_000, state: "RUNNING" })
+      expect.objectContaining({ cumulativeWorkingMs: 0, state: "RUNNING" }),
+      expect.objectContaining({ cumulativeWorkingMs: 0, state: "RUNNING" })
     ]);
     expect(deps.codexTasks).toHaveBeenCalledTimes(1);
 
-    // Within the TTL the cached timeline is reused, but running time still advances.
+    // Within the TTL the cached timeline is reused; the running turn is the badge's to count.
     advance(4_000);
-    await expect(workingTime.read(pane())).resolves.toMatchObject({ cumulativeWorkingMs: 14_000, state: "RUNNING" });
+    await expect(workingTime.read(pane())).resolves.toMatchObject({ cumulativeWorkingMs: 0, state: "RUNNING" });
     expect(deps.codexTasks).toHaveBeenCalledTimes(1);
 
     // The working -> idle transition shows up on the first poll after the

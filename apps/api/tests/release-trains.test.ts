@@ -47,12 +47,37 @@ describe("release trains", () => {
     await expect(changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).rejects.toThrow("Record the candidate");
     await expect(changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "c1537956b8" }), self(finn))).rejects.toThrow("Only the captain (Jack)");
     await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "c1537956b8" }), self(jack));
+    await changeReleaseTrain(repo, op({ op: "approve" }), { ...agent(null), operatorApproved: true });
     await changeReleaseTrain(repo, op({ op: "publishing" }), self(jack));
     await expect(changeReleaseTrain(repo, op({ op: "join", commit: "3707cca9af" }), self(finn))).rejects.toThrow("goes to the next release");
 
     await changeReleaseTrain(repo, op({ op: "published" }), self(jack));
     await changeReleaseTrain(repo, op({ op: "open", version: "1.1.6" }), agent(finn));
     expect(await listReleaseTrains(repo)).toEqual([expect.objectContaining({ version: "1.1.6", status: "OPEN", captain: finn, sourceSha: null, contributors: [] })]);
+  });
+
+  it("publishes only a candidate the operator approved through a Nous decision", async () => {
+    const repo = new InMemoryControlRepository();
+    await changeReleaseTrain(repo, op({ op: "open", version: "1.1.5" }), self(jack));
+    await expect(changeReleaseTrain(repo, op({ op: "approve" }), { ...agent(null), operatorApproved: true })).rejects.toThrow("Record the candidate");
+    await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "c1537956b8" }), self(jack));
+    // Neither the captain, nor the Room Agent, nor a pane approves: only the operator's yes in the Nous dock.
+    for (const by of [self(jack), agent(finn)]) await expect(changeReleaseTrain(repo, op({ op: "approve" }), by)).rejects.toThrow("Only the operator approves a release");
+    await expect(changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).rejects.toThrow("The operator has not approved run-spaceapp 1.1.5 at c1537956b8");
+    await changeReleaseTrain(repo, op({ op: "approve" }), { ...agent(null), operatorApproved: true });
+    expect((await releaseTrainLines(await listReleaseTrains(repo), async () => true)).join("\n")).toContain("candidate c1537956b8 (approved by the operator)");
+    // A new candidate voids the approval.
+    await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "d2648a67c9" }), self(jack));
+    await expect(changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).rejects.toThrow("has not approved");
+    await changeReleaseTrain(repo, op({ op: "approve" }), { ...agent(null), operatorApproved: true });
+    expect(await changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).toMatchObject({ status: "PUBLISHING", approvedSha: "d2648a67c9" });
+    await expect(changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).rejects.toThrow("already publishing");
+
+    // A train marked publishing before approvals existed (stable 1.1.6) reopens with a new candidate, so the operator can approve it.
+    const record = (await repo.get("release_train", "space", "run-spaceapp"))!;
+    const { approvedSha: _approved, ...legacy } = record.value as Record<string, unknown>;
+    await repo.write({ kind: "release_train", actorId: "space", key: "run-spaceapp", roomId: "room:release1", version: record.version, value: legacy }, record.version);
+    expect(await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).toMatchObject({ status: "OPEN", sourceSha: "e3759a78b0" });
   });
 
   it("serves panes of their own room through the ADMIN route, as the pane itself", async () => {

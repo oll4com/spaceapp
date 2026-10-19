@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { delimiter, extname, join } from "node:path";
 import { runNativeMetadataCommand } from "./task-title-native.js";
 import { taskTitleImagesMax } from "./task-title-images.js";
+import { runSqliteJson } from "./toolbar-model-stats.js";
+
+/** OpenCode 2 (`@opencode/cli`): a resolved binary under its package. */
+const isOpenCode2 = (command: string) => command.includes("/node_modules/@opencode/cli/");
 
 /**
  * OpenCode Zen serves its free tier only to requests that carry OpenCode's
@@ -64,6 +68,8 @@ const openCodeVersionByBinary = new Map<string, { identity: string; version: str
  * with a false default are not used, so an update cannot silently weaken it.
  */
 export function openCodeRunRejectsPermissionRequests(version: string, runHelp: string): boolean {
+  // OpenCode 2 auto-rejects permission requests in a non-interactive run unless --auto is given (verified on 2.0.31).
+  if (/^opencode v2\.\d+\.\d+$/.test(version)) return /^\s*--auto\s+Auto-approve permissions\b/m.test(runHelp);
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!match || match[1] !== "1" || Number(match[2]) < 19) return false;
   // yargs wraps an option's description onto continuation lines.
@@ -181,6 +187,19 @@ export function parseNativeOpenCodeModels(
   }
   return models;
 }
+/** OpenCode 2's /api/model as the v1 catalog entries readers use: id, name, status and the highest tier's cost. */
+export function parseOpenCode2Models(output: string): Record<string, unknown> {
+  let data: unknown = [];
+  try { data = (JSON.parse(output) as { data?: unknown }).data ?? []; } catch {}
+  const models: Record<string, unknown> = {};
+  for (const model of Array.isArray(data) ? data : []) {
+    if (model?.providerID !== "opencode" || model.enabled === false || !/^[A-Za-z0-9._-]{1,200}$/.test(model.id ?? "")) continue;
+    const tiers: Array<{ input?: number; output?: number }> = Array.isArray(model.cost) && model.cost.length ? model.cost : [{}];
+    const highest = (key: "input" | "output") => Math.max(...tiers.map((tier) => typeof tier?.[key] === "number" ? tier[key]! : Number.NaN));
+    models[model.id] = { id: model.id, name: model.name, status: model.status, cost: { input: highest("input"), output: highest("output") } };
+  }
+  return models;
+}
 type NativeOpenCodeCatalog = { providers: { id: string; models: Record<string, unknown> }[] };
 const nativeCatalogTtlMs = 15 * 60_000;
 const nativeCatalogs = new Map<string, { expires: number; value: Promise<NativeOpenCodeCatalog> }>();
@@ -200,9 +219,11 @@ export function nativeOpenCodeModelCatalog(command: string): Promise<NativeOpenC
 async function readNativeOpenCodeModelCatalog(command: string): Promise<NativeOpenCodeCatalog> {
   const root = await mkdtemp(join(tmpdir(), "space-title-catalog-"));
   try {
+    const v2 = isOpenCode2(command);
     const output = await runNativeMetadataCommand(
       command,
-      ["models", "opencode", "--verbose"],
+      // OpenCode 2 dropped `models --verbose`; its API lists the models as JSON.
+      v2 ? ["api", "GET", "/api/model", "--standalone"] : ["models", "opencode", "--verbose"],
       "",
       undefined,
       10000,
@@ -219,7 +240,7 @@ async function readNativeOpenCodeModelCatalog(command: string): Promise<NativeOp
     );
     return {
       providers: [
-        { id: "opencode", models: parseNativeOpenCodeModels(output) },
+        { id: "opencode", models: v2 ? parseOpenCode2Models(output) : parseNativeOpenCodeModels(output) },
       ],
     };
   } finally {
@@ -280,6 +301,7 @@ export async function generateNativeOpenCodeTitle(input: {
         input.command,
         [
           "run",
+          ...(isOpenCode2(input.command) ? ["--standalone"] : []),
           "--format",
           "json",
           "--model",
@@ -347,10 +369,26 @@ export async function generateNativeOpenCodeTitle(input: {
       if (input.signal.aborted) stop();
       else child.stdin.end(openCodeTitleRequestPreamble + input.prompt);
     });
-    return parseNativeTitleOutput(stdout, maxInputTokens);
+    return parseNativeTitleOutput(isOpenCode2(input.command) ? await withOpenCode2StepFinish(stdout, root) : stdout, maxInputTokens);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+/**
+ * An OpenCode 2 standalone run exits without printing its last step_finish (2.0.31, every run), which carries the
+ * cost and token proof. The run's private store holds the same numbers: append them as that event, from the one
+ * assistant message the run may have written; anything else leaves the output to fail the checks as before.
+ */
+async function withOpenCode2StepFinish(stdout: string, root: string): Promise<string> {
+  if (stdout.split("\n").some((line) => line.includes('"type":"step_finish"'))) return stdout;
+  const rows = await runSqliteJson<{ cost: unknown; tokens: unknown }>(join(root, "data", "opencode", "opencode.db"),
+    "select json_extract(data, '$.cost') as cost, json_extract(data, '$.tokens') as tokens from session_message where type = 'assistant';")
+    .catch(() => []);
+  if (rows.length !== 1) return stdout;
+  let tokens: unknown = null;
+  try { tokens = JSON.parse(String(rows[0]!.tokens)); } catch {}
+  return `${stdout.trimEnd()}\n${JSON.stringify({ type: "step_finish", part: { cost: rows[0]!.cost, tokens } })}\n`;
 }
 export function parseNativeTitleOutput(stdout: string, maxInputTokens = openCodeTitleMaxInputTokens): string {
   let text = "",

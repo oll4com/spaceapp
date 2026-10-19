@@ -97,11 +97,12 @@ describe("project ensure path policy", () => {
       return { cookie: `space_session=${session}`, "x-space-csrf-token": createCsrfToken(session, secret)! };
     };
     try {
+      // Projects live on the owner's disk, which a USER never reaches (MU-001).
       const denied = await app.inject({ method: "POST", url: "/api/projects/ensure", headers: headersFor("USER"), payload: { path: join(base, "user-elsewhere") } });
-      expect(denied.statusCode).toBe(403);
+      expect(denied.statusCode).toBe(404);
       expect(await exists(join(base, "user-elsewhere"))).toBe(false);
 
-      const named = await app.inject({ method: "POST", url: "/api/projects/ensure", headers: headersFor("USER"), payload: { name: "named-project" } });
+      const named = await app.inject({ method: "POST", url: "/api/projects/ensure", headers: headersFor("ADMIN"), payload: { name: "named-project" } });
       expect(named.statusCode).toBe(200);
       expect(named.json()).toMatchObject({ ok: true, path: join(projects, "named-project"), name: "named-project" });
       expect(await exists(join(projects, "named-project", ".git"))).toBe(true);

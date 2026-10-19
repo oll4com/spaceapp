@@ -1,12 +1,14 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  effectiveFreelanceAutonomy, freelanceChannelEgress, FREELANCE_CHANNEL_ALIASES, FREELANCE_CHANNEL_LOGIN_URLS, FREELANCE_CHANNELS, freelanceAccountUpdateSchema, freelanceChannelSchema, freelanceClientReadySchema,
+  effectiveFreelanceAutonomy, freelanceChannelEgress, FREELANCE_CHANNEL_ALIASES, FREELANCE_CHANNEL_LOGIN_URLS, FREELANCE_CHANNELS, FREELANCE_GOOGLE_SIGN_IN_CHANNELS, freelanceAccountUpdateSchema, freelanceChannelSchema, freelanceClientReadySchema,
   freelanceEventIdSchema, freelanceIncomingSchema, freelanceLeadCreateSchema, freelanceLeadIdSchema, freelanceLeadStatusSchema, freelanceLeadUpdateSchema, freelanceMemoryCreateSchema,
   freelanceMemoryIdSchema, freelanceMemoryQuerySchema, freelanceMessageCreateSchema, freelanceMessageIdSchema, freelanceMessageUpdateSchema, freelanceQuestionAskSchema, freelanceQuestionIdSchema,
   freelanceRuleProposalSchema, freelanceSendBeginSchema, freelanceSendDoneSchema, freelanceSendFailedSchema, type JobApplyCandidate, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
+import { registerBookmarkAgentRoutes } from "../marketing-copilot/agent-routes.js";
+import type { MarketingCopilotService } from "../marketing-copilot/service.js";
 import type { FreelanceCopilotService } from "./service.js";
 
 // Agent-facing routes of the Freelance Copilot pane, reached with the pane-scoped CLI bridge token. The owner is the
@@ -16,7 +18,7 @@ export const cliFreelanceCopilotPathPrefix = "/api/cli/freelance-copilot/";
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface FreelanceCopilotAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "getControlActor">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -24,6 +26,8 @@ export interface FreelanceCopilotAgentRouteDependencies {
   audit(request: FastifyRequest, action: string, targetId: string | null, metadata?: Record<string, unknown>): Promise<void>;
   /** The operator's Job Copilot profile (name, languages, experience) when Job Copilot is on. */
   candidate?(owner: string): Promise<JobApplyCandidate | null>;
+  /** The operator's bookmarks (Marketing Copilot's store, one list per owner) when Marketing Copilot is on. */
+  bookmarks?: Pick<MarketingCopilotService, "listBookmarks" | "createBookmark" | "openBookmark">;
 }
 
 const waitMs = z.number().int().min(0).max(120_000).default(60_000);
@@ -35,17 +39,17 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
   const { routeOptions, parseBody, parseQuery } = deps;
   const route = (path: string) => `${cliFreelanceCopilotPathPrefix}${path}`;
 
-  async function context(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string; pane: Pane } | null> {
+  async function context(request: FastifyRequest, reply: FastifyReply): Promise<{ owner: string; pane: Pane; cliSessionId: string } | null> {
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return null;
     const room = await deps.store.getRoom(bridge.claims.roomId);
     if (!room.ownerUserId) throw new SpaceConflictError("This room has no owner; open the Freelance Copilot pane from a signed-in operator account.");
     const pane = await deps.store.getPane(bridge.claims.paneId);
     if (pane.mode !== "FREELANCE_COPILOT") throw new SpaceConflictError("Freelance Copilot tools belong to the CLI session of a Freelance Copilot pane.");
-    return { owner: room.ownerUserId, pane };
+    return { owner: room.ownerUserId, pane, cliSessionId: bridge.claims.cliSessionId };
   }
   /** Registers an agent route: resolves the bridge, then hands the owner, the pane and the request to the handler. */
-  function handle(method: "get" | "post" | "patch", path: string, handler: (bridge: { owner: string; pane: Pane }, request: FastifyRequest) => Promise<unknown>) {
+  function handle(method: "get" | "post" | "patch", path: string, handler: (bridge: { owner: string; pane: Pane; cliSessionId: string }, request: FastifyRequest) => Promise<unknown>) {
     app[method](route(path), routeOptions, async (request, reply) => {
       const bridge = await context(request, reply);
       if (!bridge) return reply;
@@ -58,11 +62,13 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
     const settings = service.settingsOf(pane);
     return {
       paneId: pane.id, settings,
-      channels: Object.fromEntries(FREELANCE_CHANNELS.map((id) => [id, { ...settings.channels[id], effectiveAutonomy: effectiveFreelanceAutonomy(settings, id), egressRoute: freelanceChannelEgress(settings, id), alias: FREELANCE_CHANNEL_ALIASES[id], loginUrl: FREELANCE_CHANNEL_LOGIN_URLS[id] }])),
+      channels: Object.fromEntries(FREELANCE_CHANNELS.map((id) => [id, { ...settings.channels[id], effectiveAutonomy: effectiveFreelanceAutonomy(settings, id), egressRoute: freelanceChannelEgress(settings, id), loginUrl: FREELANCE_CHANNEL_LOGIN_URLS[id],
+        ...(FREELANCE_GOOGLE_SIGN_IN_CHANNELS.includes(id) ? { signIn: "GOOGLE", alias: null } : { signIn: "EMAIL", alias: FREELANCE_CHANNEL_ALIASES[id] }) }])),
       accounts: await service.listAccounts(owner), mailbox: await service.mailboxStatus(owner), run: await service.runView(owner, pane), funnel: await service.funnel(owner)
     };
   });
   handle("post", "next", async ({ owner, pane }, request) => service.nextItem(owner, pane, body(z.object({ waitMs }).strict(), request)));
+  if (deps.bookmarks) registerBookmarkAgentRoutes(handle, deps.bookmarks, deps, "freelance_copilot");
   handle("post", "report", async ({ owner, pane }, request) => service.reportItem(owner, pane, body(z.object({
     eventId: freelanceEventIdSchema, outcome: z.enum(["done", "needs_user", "skipped"]), summary: z.string().trim().min(1).max(1000), memoryIds: z.array(freelanceMemoryIdSchema).max(20).default([])
   }).strict(), request)));

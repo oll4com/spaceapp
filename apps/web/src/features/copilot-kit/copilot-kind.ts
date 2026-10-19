@@ -7,8 +7,8 @@ import type { CopilotLaunchSettings, Pane, UserSettings } from "@space/contracts
  * the contracts it loaded at start).
  */
 export interface CopilotKind {
-  id: "job" | "mail" | "marketing" | "freelance";
-  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT";
+  id: "job" | "mail" | "marketing" | "freelance" | "design";
+  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN";
   /** "Job Copilot", "Mail Copilot": the Create menu entry, dialog titles and notices. */
   label: string;
   /** The CLI recommended for this copilot (Claude Code: long, tool-heavy loops with native MCP and account profiles). */
@@ -23,11 +23,11 @@ export interface CopilotKind {
   /** Where the default agent is changed, named in notices ("Settings → Job Copilot"). */
   settingsPlace: string;
   /** The user-settings key holding the remembered agent. */
-  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot";
+  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design";
   /** Prefix of the settings card's form control names ("job-copilot"). */
   controlPrefix: string;
   /** The remembered launch of this kind in the user's settings. */
-  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot">): CopilotLaunchSettings | null;
+  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design">): CopilotLaunchSettings | null;
 }
 
 export const JOB_COPILOT_KIND: CopilotKind = {
@@ -90,7 +90,23 @@ export const FREELANCE_COPILOT_KIND: CopilotKind = {
   remembered: (settings) => settings.freelanceCopilot ?? null
 };
 
-export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND];
+/** The Design pane: a graphics studio whose designer runs in the pane's CLI (operator decision 2026-10-18: Claude Code). */
+export const DESIGN_KIND: CopilotKind = {
+  id: "design",
+  mode: "DESIGN",
+  label: "Design",
+  preferredRuntimeId: "cli:claude",
+  recommendedReason: "Recommended: native MCP, skills, image viewing",
+  agentDescription: "The AI coding CLI that designs graphics for you and for other agents and panes. Claude Code is recommended.",
+  launchHeading: "Choose the designer",
+  launchDescription: "The designer makes social graphics, banners and short motion in this pane: images through Space Gateway, templates for exact text, your brand kits. Claude Code is recommended; any ready CLI works.",
+  settingsPlace: "Settings → Design",
+  settingsKey: "design",
+  controlPrefix: "design",
+  remembered: (settings) => settings.design ?? null
+};
+
+export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND];
 
 export function copilotKindForMode(mode: Pane["mode"]): CopilotKind | null {
   return COPILOT_KINDS.find((kind) => kind.mode === mode) ?? null;

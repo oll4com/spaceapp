@@ -10,6 +10,11 @@ metadata:
 ## Overview
 Space Control MCP (`version: space-control-v1`) provides authoritative, safe, audited control over SpaceApp rooms, panes, CLI runtimes, layouts, media playback, clipboard, schedules, and agent watches. It bridges the SpaceApp backend, native CLI agents, and the real-time AI Voice assistant.
 
+### From a CLI pane
+- Codex, Claude Code, Oh My Pi, Hermes, Droid and Qoder panes reach it with the pane's `SPACE_CONTROL_TOKEN` (12 hours, valid only while that CLI session runs). Never print it: check it with `[ -n "$SPACE_CONTROL_TOKEN" ] && echo set`, never `env | grep`. If it was printed, restart the pane's CLI: the old token stops working at once.
+- `CONTROL_NOT_GRANTED` means the operator has not allowed CLI control in this room. Tell the operator to ask the room's Room Agent or Nous to allow CLI control (`access.cli`) and confirm; agents never grant it themselves.
+- The token works only in the pane's own room. A call without `roomId` targets that room; a call naming another room is refused ("CLI control grant is restricted to its own room.").
+
 ## Core MCP Tools Catalog
 
 ### 1. `space_capabilities`
@@ -30,7 +35,7 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
   - `CLIPBOARD`: Operator private clipboard entries (notes, plans, copied content).
   - `FILES`: Uploaded and published workspace files and documents.
   - `MEDIA`: Images, videos, and screenshots attached to the room.
-  - `SKILLS`: Installed and registered agent skills with markdown guides.
+  - `SKILLS`: Installed and registered agent skills, one page (offset, limit, query filter) of metadata; skills.read returns a skill's text.
   - `SETTINGS`: Complete sanitized app settings across CLI, providers, tools, task titles, plugins, voice, and appearance.
   - `ROOMS`: List of all user rooms with metadata and pane counts.
   - `SYSTEM_HEALTH`: Realtime health metrics, CPU/memory, active services, and API error rates.
@@ -59,8 +64,9 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 - **Parameters**: `roomId` (optional).
 
 ### 4. `space_screenshot`
-- **Purpose**: Captures the room as SpaceApp shows it, read-only as the caller (terminals attach as observers), for Vision AI analysis. The image is saved as a SCREENSHOT in the room's Media (7 days).
-- **Parameters**: `roomId`, `format` (jpeg/png/webp), `quality`, `maxWidth`, `maxHeight`, `viewport` (desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android; default desktop).
+- **Purpose**: A photo or an MP4 video of the room as SpaceApp shows it, read-only as the caller (terminals attach as observers), for vision analysis or social posts. Saved in the room's Media (7 days) as a SCREENSHOT or VIDEO artifact.
+- **Parameters**: `roomId`, `aspect` (16:9, 1:1, 4:5, 9:16 phone layout, full) or `viewport` (desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android, square, portrait, story; default desktop), `paneId`, `dock`, `settings`, `health`, `crop` (pane/dock, photos only), `format` (jpeg/png/webp), `quality`, `maxWidth`, `maxHeight`, `video` (`{steps:[{dock?,settings?,health?,dwellMs}]}`, at most 20 steps and 180 s).
+- **Video**: answers RUNNING with an `operationId`; poll `space_operations` (`operation: "get"`, `id`) until COMPLETED for the `artifactId` and the real `durationMs`. `skipped` lists docks or sections that could not be opened. Dots capture photos only.
 - **Engine**: `scripts/space-media-capture.mjs`, shared with the `space-media-studio` skill (social sizes, frames, theme previews, video).
 
 ### 5. `space_operations`

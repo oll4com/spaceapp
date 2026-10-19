@@ -28,6 +28,8 @@ export interface RoomAgentAutopilotOptions {
   /** The model's raw reply to a decision prompt, or null when no model answered. */
   complete(systemPrompt: string, content: string): Promise<string | null>;
   onEvent?(event: RoomAgentEvent): Promise<void> | void;
+  /** True leaves the event open for Nous, the mind of SpaceApp, when the owner turned it on (operator decision 2026-10-17). */
+  deferTo?(event: RoomAgentEvent): Promise<boolean>;
   now?: () => number;
   /** Most autonomous answers per room per hour before everything goes to the operator. */
   hourlyLimit?: number;
@@ -184,6 +186,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
 
   async function handle(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
     if (event.status !== "OPEN" || event.severity !== "ATTENTION" || inFlight.has(event.eventId)) return null;
+    if (await options.deferTo?.(event).catch(() => false)) return null;
     inFlight.add(event.eventId);
     try {
       return await decide(event);

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createTaskItemRequestSchema, idSchema, listTaskItemsQuerySchema, updateTaskItemInputSchema } from "@space/contracts";
+import { createTaskItemRequestSchema, idSchema, listTaskItemsQuerySchema, ownerWorkingTimeZone, updateTaskItemInputSchema } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { CliBridgeClaims } from "./mail-copilot/agent-routes.js";
 
@@ -11,7 +11,7 @@ export const cliTaskItemsPathPrefix = "/api/cli/task-items";
 const createSchema = createTaskItemRequestSchema.pick({ title: true, objective: true, schedule: true });
 
 export interface TaskAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane" | "listTaskItems" | "getTaskItem" | "upsertTaskItem" | "updateTaskItem">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "listTaskItems" | "getTaskItem" | "upsertTaskItem" | "updateTaskItem" | "getUserSettings">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -35,7 +35,8 @@ export function registerTaskAgentRoutes(app: FastifyInstance, deps: TaskAgentRou
     if (!bridge) return reply;
     const query = parseQuery(listTaskItemsQuerySchema, request.query ?? {});
     const result = await store.listTaskItems(bridge.owner, query);
-    return { items: result.items, total: result.total };
+    // The owner's working time zone: a schedule sent without one runs in it (space-task converts local --at times with it).
+    return { items: result.items, total: result.total, timeZone: ownerWorkingTimeZone(await store.getUserSettings(bridge.owner)) };
   });
 
   app.post(cliTaskItemsPathPrefix, routeOptions, async (request, reply) => {

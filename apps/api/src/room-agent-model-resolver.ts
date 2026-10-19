@@ -1,5 +1,5 @@
 import { spawn } from "./safe-child-process.js";
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import { readActiveFreeOpenCodeModel } from "./opencode-free-model.js";
 import { childProcessEnv } from "./child-process-env.js";
@@ -126,12 +126,22 @@ export function createCachedModelSelection(options: ResolveAdvancedMissionModelO
   };
 }
 
+/** OpenCode 2 (`@opencode/cli`) starts a per-user background service for `run` unless it gets --standalone. */
+export function openCodeRunModeArgs(searchPath = process.env.PATH ?? ""): string[] {
+  for (const dir of searchPath.split(path.delimiter).filter(Boolean)) {
+    try {
+      return realpathSync(path.join(dir, "opencode")).includes("/node_modules/@opencode/cli/") ? ["--standalone"] : [];
+    } catch {}
+  }
+  return [];
+}
+
 /** One answer from `opencode run` (text only, no tools). Null when it fails or does not answer in time. */
 export function runOpenCodeText(modelId: string, prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     let stdout = "";
     let settled = false;
-    const child = spawn("opencode", ["run", "--format", "json", "--model", modelId, prompt], {
+    const child = spawn("opencode", ["run", ...openCodeRunModeArgs(), "--format", "json", "--model", modelId, prompt], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...childProcessEnv(), LANG: "C.UTF-8" }
     });

@@ -32,7 +32,7 @@ export function CopilotRail<TTab extends string>({ tabs, active, collapsed, layo
           const selected = tab.id === active;
           return (
             <button key={tab.id} type="button" role="tab" id={`jc-tab-${tab.id}`} aria-selected={selected} aria-controls={`jc-panel-${tab.id}`}
-              className={`jc-rail-tab${selected ? " selected" : ""}`} title={!stacked && collapsed ? tab.label : undefined} onClick={() => onSelect(tab.id)}>
+              className={`jc-rail-tab${selected ? " selected" : ""}`} title={tab.label} onClick={() => onSelect(tab.id)}>
               <Icon aria-hidden="true" />
               <span className="jc-rail-tab-label">{tab.label}</span>
               {tab.badge ? <span className="jc-rail-badge" aria-label={`${tab.badge} items`}>{tab.badge}</span> : null}

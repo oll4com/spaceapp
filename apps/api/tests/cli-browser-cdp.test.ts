@@ -163,6 +163,20 @@ describe("CLI browser CDP proxy", () => {
     }
   });
 
+  it("sends a plain CLI pane to its room's browser pane", async () => {
+    const chrome = await fakeChrome();
+    const { app, store, room, token, cliPane, session } = await fixture(chrome.port);
+    try {
+      const browserPane = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+      const browser = store.createPaneBrowserSession({ paneId: browserPane.id, roomId: room.id, agentNumber: 2, profileId: "profile:test", profilePath: session.profilePath, viewport: "desktop" });
+      const status = await app.inject({ method: "GET", url: `${cliBrowserCdpStatusPath}?paneId=${encodeURIComponent(cliPane.id)}`, headers: { [cliBrowserBridgeTokenHeader]: token } });
+      expect(status.json()).toMatchObject({ ready: true, paneId: browserPane.id, sessionId: browser.sessionId });
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
   it("lets an open T3 Code pane drive its room's pane browser under its T3 principal", async () => {
     const chrome = await fakeChrome();
     const { app, store, config, room, jobPane, session } = await fixture(chrome.port);

@@ -107,6 +107,9 @@ describe('return to native Build', () => {
     await returnCliToBuildMode('cli:droid', control);
     expect(control.write.mock.calls).toEqual([['\x1b[Z']]);
   });
+  it('reads Droid Build mode in a narrow pane, where the rail reads "Auto…"', () => {
+    expect(cliBuildModeState('cli:droid', ' Auto… Claude Opus 5.5 API credits (High)\n╭──────╮\n│ >    │\n╰──────╯\n? for help')).toBe('build');
+  });
   it('does not act on prose, unknown mode or a changed session', async () => {
     expect(cliBuildModeState('cli:codex', 'I will use plan mode now.')).toBeNull();
     const control = target([codexPlan]);

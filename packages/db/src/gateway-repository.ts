@@ -2,7 +2,7 @@ import { gatewayCompressionProvidersSchema } from "@space/contracts";
 import type {
   GatewayAccount, GatewayAccountStatus, GatewayApiKey, GatewayApiKeyLimit, GatewayCompressionMode, GatewayLimitType,
   GatewayLimitWindow, GatewayOutputPolicy, GatewayProvider, GatewayReasoningEffort, GatewayRequestLog, GatewayRequestLogFacets,
-  GatewayRequestLogFilter, GatewaySettings, GatewaySettingsUpdateRequest, GatewayTrafficClass, GatewayUsageAggregate
+  GatewayRequestLogFilter, GatewaySettings, GatewaySettingsUpdateRequest, GatewayTrafficClass, GatewayUsageAggregate, GatewayAnthropicUpstreamKey
 } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 import {
@@ -91,6 +91,29 @@ export interface GatewayClaudeLogKey {
   outputTokens: number | null;
 }
 
+
+/** The sealed Anthropic Admin API key and its last sync. `keyEncrypted` never leaves the gateway. */
+export interface GatewayAnthropicAdminRecord {
+  keyEncrypted: string;
+  keyHint: string;
+  savedAt: string;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  upstream: GatewayAnthropicUpstreamKey[];
+}
+
+/** One UTC day and cell of the Anthropic reports: COST in cents, USAGE in tokens or web search requests. */
+export interface GatewayAnthropicUsageRow {
+  day: string;
+  source: "COST" | "USAGE";
+  workspaceId: string;
+  apiKeyId: string;
+  model: string;
+  contextWindow: string;
+  speed: string;
+  item: string;
+  value: number;
+}
 
 export interface GatewayApiKeyPatch {
   name?: string;
@@ -297,6 +320,17 @@ export interface GatewayRepository {
    * stamps last use. COST_USD limits count micro-dollars.
    */
   settleApiKeyUsage(keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number; model: string | null; at: string }): Promise<void>;
+  /** Sets a limit's counted value (model filter none) while its window is still the one `at` falls in. */
+  setApiKeyLimitValue(keyId: string, limit: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow }, value: number, at: string): Promise<void>;
+  getAnthropicAdmin(): Promise<GatewayAnthropicAdminRecord | null>;
+  /** Stores a new sealed key; the previous key's sync state goes with it. */
+  saveAnthropicAdminKey(input: { keyEncrypted: string; keyHint: string; at: string }): Promise<void>;
+  deleteAnthropicAdminKey(): Promise<boolean>;
+  /** A sync's outcome; `upstream` replaces the matched keys when given. */
+  recordAnthropicSync(result: { at: string; error: string | null; upstream?: GatewayAnthropicUpstreamKey[] }): Promise<void>;
+  /** Replaces every row from `fromDay` on (the reports restate recent days). */
+  replaceAnthropicUsage(fromDay: string, rows: GatewayAnthropicUsageRow[]): Promise<void>;
+  listAnthropicUsage(fromDay: string, toDay: string): Promise<GatewayAnthropicUsageRow[]>;
   insertRequestLogs(rows: GatewayRequestLogInsert[]): Promise<void>;
   /** Newest first; `filter` narrows by time, search text, accounts, keys, models, providers, statuses and clients. */
   listRequestLogs(query: GatewayRequestLogQuery): Promise<GatewayRequestLog[]>;
@@ -337,8 +371,6 @@ export interface GatewayRepository {
   compressionSignalsSince(since: string): Promise<GatewayCompressionSignalRow[]>;
   /** Daily savings rows between two UTC dates (inclusive); all days when omitted. */
   savingsDaily(range?: { from?: string; to?: string }): Promise<GatewaySavingsDailyRow[]>;
-  /** Deletes request logs older than the cutoff in bounded batches; returns rows removed. */
-  pruneRequestLogs(before: string, batchSize?: number): Promise<number>;
   speedDefaults(): Promise<GatewaySpeedDefaults>;
   /** Sets one model's default; "standard" removes the entry. */
   setSpeedDefault(modelId: string, tier: GatewaySpeedTier): Promise<GatewaySpeedDefaults>;
@@ -428,6 +460,13 @@ function compressionProvidersRecord(value: unknown): GatewaySettings["compressio
 
 const copyProviders = (providers: GatewaySettings["compressionProviders"]) =>
   Object.fromEntries(Object.entries(providers).map(([provider, entry]) => [provider, { ...entry }])) as GatewaySettings["compressionProviders"];
+
+function anthropicAdminRecord(row: Record<string, unknown>): GatewayAnthropicAdminRecord {
+  const iso = (value: unknown) => (value instanceof Date ? value.toISOString() : value ? String(value) : null);
+  return { keyEncrypted: String(row.key_encrypted), keyHint: String(row.key_hint), savedAt: iso(row.saved_at) ?? new Date(0).toISOString(),
+    lastSyncAt: iso(row.last_sync_at), lastError: row.last_error ? String(row.last_error) : null,
+    upstream: Array.isArray(row.upstream) ? (row.upstream as GatewayAnthropicUpstreamKey[]) : [] };
+}
 
 function settingsRecord(row: Record<string, unknown>): GatewaySettings {
   return {
@@ -903,6 +942,59 @@ export class PostgresGatewayRepository implements GatewayRepository {
     await this.pool.query(`UPDATE space_gateway_api_keys SET last_used_at=GREATEST(COALESCE(last_used_at, $2::timestamptz), $2::timestamptz) WHERE key_id=$1`, [keyId, usage.at]);
   }
 
+  async setApiKeyLimitValue(keyId: string, limit: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow }, value: number, at: string) {
+    await this.pool.query(`UPDATE space_gateway_api_key_limits SET current_value=$4 WHERE key_id=$1 AND limit_type=$2 AND limit_window=$3
+        AND model_filter IS NULL AND reset_at > $5::timestamptz`, [keyId, limit.limitType, limit.limitWindow, Math.max(0, Math.round(value)), at]);
+  }
+
+  async getAnthropicAdmin() {
+    const row = (await this.pool.query<Record<string, unknown>>(`SELECT * FROM space_gateway_anthropic_admin WHERE settings_id=1`)).rows[0];
+    return row ? anthropicAdminRecord(row) : null;
+  }
+
+  async saveAnthropicAdminKey(input: { keyEncrypted: string; keyHint: string; at: string }) {
+    await this.pool.query(`INSERT INTO space_gateway_anthropic_admin(settings_id,key_encrypted,key_hint,saved_at) VALUES (1,$1,$2,$3)
+      ON CONFLICT (settings_id) DO UPDATE SET key_encrypted=EXCLUDED.key_encrypted, key_hint=EXCLUDED.key_hint, saved_at=EXCLUDED.saved_at,
+        last_sync_at=NULL, last_error=NULL, upstream='[]'::jsonb`, [input.keyEncrypted, input.keyHint, input.at]);
+  }
+
+  async deleteAnthropicAdminKey() {
+    return (await this.pool.query(`DELETE FROM space_gateway_anthropic_admin WHERE settings_id=1 RETURNING settings_id`)).rows.length === 1;
+  }
+
+  async recordAnthropicSync(result: { at: string; error: string | null; upstream?: GatewayAnthropicUpstreamKey[] }) {
+    await this.pool.query(`UPDATE space_gateway_anthropic_admin SET last_sync_at=$1, last_error=$2, upstream=COALESCE($3::jsonb, upstream) WHERE settings_id=1`,
+      [result.at, result.error, result.upstream ? JSON.stringify(result.upstream) : null]);
+  }
+
+  async replaceAnthropicUsage(fromDay: string, rows: GatewayAnthropicUsageRow[]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`DELETE FROM space_gateway_anthropic_usage WHERE day >= $1::date`, [fromDay]);
+      if (rows.length) {
+        await client.query(`INSERT INTO space_gateway_anthropic_usage(day,source,workspace_id,api_key_id,model,context_window,speed,item,value)
+          SELECT * FROM unnest($1::date[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[],$8::text[],$9::float8[])`,
+          [rows.map((r) => r.day), rows.map((r) => r.source), rows.map((r) => r.workspaceId), rows.map((r) => r.apiKeyId), rows.map((r) => r.model),
+            rows.map((r) => r.contextWindow), rows.map((r) => r.speed), rows.map((r) => r.item), rows.map((r) => r.value)]);
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release?.();
+    }
+  }
+
+  async listAnthropicUsage(fromDay: string, toDay: string) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT to_char(day,'YYYY-MM-DD') AS day,source,workspace_id,api_key_id,model,context_window,speed,item,value
+      FROM space_gateway_anthropic_usage WHERE day BETWEEN $1::date AND $2::date ORDER BY day`, [fromDay, toDay])).rows;
+    return rows.map((row) => ({ day: String(row.day), source: row.source as GatewayAnthropicUsageRow["source"], workspaceId: String(row.workspace_id),
+      apiKeyId: String(row.api_key_id), model: String(row.model), contextWindow: String(row.context_window), speed: String(row.speed), item: String(row.item),
+      value: Number(row.value) }));
+  }
+
   async insertRequestLogs(rows: GatewayRequestLogInsert[]) {
     if (rows.length === 0) return;
     const columns = ["request_id", "requested_at", "provider", "account_id", "api_key_id", "model", "plan_type", "reasoning_effort",
@@ -1170,16 +1262,6 @@ export class PostgresGatewayRepository implements GatewayRepository {
     }));
   }
 
-  async pruneRequestLogs(before: string, batchSize = 5000) {
-    let removed = 0;
-    for (;;) {
-      const count = (await this.pool.query(`DELETE FROM space_gateway_request_logs WHERE id IN
-        (SELECT id FROM space_gateway_request_logs WHERE requested_at < $1 ORDER BY id LIMIT $2)`, [before, batchSize])).rowCount ?? 0;
-      removed += count;
-      if (count < batchSize) return removed;
-    }
-  }
-
   async speedDefaults() {
     const row = (await this.pool.query<Record<string, unknown>>(
       `INSERT INTO space_gateway_settings(settings_id) VALUES (1) ON CONFLICT (settings_id) DO UPDATE SET settings_id=1
@@ -1412,6 +1494,34 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     }
     key.lastUsedAt = usage.at;
   }
+  async setApiKeyLimitValue(keyId: string, target: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow }, value: number, at: string) {
+    for (const limit of this.keys.find((item) => item.id === keyId)?.limits ?? []) {
+      if (limit.limitType === target.limitType && limit.limitWindow === target.limitWindow && limit.modelFilter === null && !(limit.resetAt <= at)) {
+        limit.currentValue = Math.max(0, Math.round(value));
+      }
+    }
+  }
+  anthropicAdmin: GatewayAnthropicAdminRecord | null = null;
+  anthropicUsage: GatewayAnthropicUsageRow[] = [];
+  async getAnthropicAdmin() { return this.anthropicAdmin ? { ...this.anthropicAdmin, upstream: [...this.anthropicAdmin.upstream] } : null; }
+  async saveAnthropicAdminKey(input: { keyEncrypted: string; keyHint: string; at: string }) {
+    this.anthropicAdmin = { keyEncrypted: input.keyEncrypted, keyHint: input.keyHint, savedAt: input.at, lastSyncAt: null, lastError: null, upstream: [] };
+  }
+  async deleteAnthropicAdminKey() {
+    const had = this.anthropicAdmin !== null;
+    this.anthropicAdmin = null;
+    return had;
+  }
+  async recordAnthropicSync(result: { at: string; error: string | null; upstream?: GatewayAnthropicUpstreamKey[] }) {
+    if (!this.anthropicAdmin) return;
+    this.anthropicAdmin = { ...this.anthropicAdmin, lastSyncAt: result.at, lastError: result.error, upstream: result.upstream ?? this.anthropicAdmin.upstream };
+  }
+  async replaceAnthropicUsage(fromDay: string, rows: GatewayAnthropicUsageRow[]) {
+    this.anthropicUsage = [...this.anthropicUsage.filter((row) => row.day < fromDay), ...rows.map((row) => ({ ...row }))];
+  }
+  async listAnthropicUsage(fromDay: string, toDay: string) {
+    return this.anthropicUsage.filter((row) => row.day >= fromDay && row.day <= toDay).map((row) => ({ ...row }));
+  }
   async insertRequestLogs(rows: GatewayRequestLogInsert[]) {
     const groups = new Map<string, { key: ReturnType<typeof savingsDailyKey>; rows: GatewayRequestLogInsert[] }>();
     for (const row of rows.filter((item) => item.source !== "limit_warmup")) {
@@ -1616,12 +1726,6 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     return this.savings.filter((row) => (!range.from || row.day >= range.from) && (!range.to || row.day <= range.to)).map((row) => ({ ...row }))
       .sort((a, b) => a.day.localeCompare(b.day) || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)
         || a.client.localeCompare(b.client) || a.project.localeCompare(b.project));
-  }
-  async pruneRequestLogs(before: string) {
-    const kept = this.logs.filter((log) => log.requestedAt >= before);
-    const removed = this.logs.length - kept.length;
-    this.logs = kept;
-    return removed;
   }
   speed: GatewaySpeedDefaults = { models: {}, updatedAt: null };
   async speedDefaults() { return { models: { ...this.speed.models }, updatedAt: this.speed.updatedAt }; }

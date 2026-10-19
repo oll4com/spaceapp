@@ -17,6 +17,7 @@ import {
   DOT_GOAL_SIGNAL,
   ROOM_AGENT_ENQUEUE_SIGNAL,
   ROOM_AGENT_STOP_SIGNAL,
+  isSafeErrorCode,
   roomAgentSupervisorInputSchema,
   roomAgentSupervisorQueueItemSchema,
   roomAgentSupervisorStopSignalSchema,
@@ -232,7 +233,8 @@ async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorIn
             missionId: item.missionId,
             roomId: item.turn.roomId,
             status: isCancellation(error) ? "INTERRUPTED" : "FAILED",
-            statusReason: isCancellation(error) ? activeStopReason : "Room agent child workflow failed."
+            statusReason: isCancellation(error) ? activeStopReason : "Room agent child workflow failed.",
+            ...(isCancellation(error) ? {} : { errorCode: supervisorFailureCode(error) })
           })
         );
       } finally {
@@ -340,10 +342,11 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
       } catch (error) {
         await CancellationScope.nonCancellable(async () => {
           const reason = isCancellation(error) ? stopReason : "Room Agent supervisor turn failed.";
-          await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason });
+          const errorCode = isCancellation(error) ? undefined : supervisorFailureCode(error);
+          await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason, errorCode });
           if (!roomAgentMissionHasContinuation(pending, item.missionId)) {
             monitoring.delete(item.missionId);
-            await supervisorActivities.finishRoomAgentSupervisorTurn({ item, status: isCancellation(error) ? "INTERRUPTED" : "FAILED", statusReason: reason });
+            await supervisorActivities.finishRoomAgentSupervisorTurn({ item, status: errorCode ? "FAILED" : "INTERRUPTED", statusReason: reason, errorCode });
           }
         });
       } finally { active = null; scope = null; processedCount++; }
@@ -395,4 +398,16 @@ export async function roomAgentActionWorkflow(input: Parameters<typeof activitie
     }
     throw error;
   }
+}
+
+// The cause of a failed supervisor turn as a safe machine code, kept on the run and the mission: the deepest
+// ApplicationFailure type that is one, a Temporal timeout, or a generic code (external review 2026-10-16).
+function supervisorFailureCode(error: unknown): string {
+  let code = "ROOM_AGENT_SUPERVISOR_FAILED";
+  let failure = error as { name?: unknown; type?: unknown; cause?: unknown } | undefined;
+  for (let depth = 0; failure && depth < 8; depth++, failure = failure.cause as typeof failure) {
+    if (failure.name === "TimeoutFailure") code = "ROOM_AGENT_SUPERVISOR_TIMEOUT";
+    else if (isSafeErrorCode(failure.type)) code = failure.type;
+  }
+  return code;
 }

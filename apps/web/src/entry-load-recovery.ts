@@ -1,3 +1,5 @@
+import { reloadAfterLocalCliDraftsSaved } from "./features/terminal-pane/local-cli-draft.js";
+
 export const ENTRY_LOAD_RECOVERY_STORAGE_KEY = "space:entry-load-recovery-attempted";
 
 type EntryLoadRecoveryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -114,7 +116,7 @@ export function renderReloadFallback(rootElement: HTMLElement | null, reload: ()
     fontWeight: "700",
     padding: "0.75rem 1rem"
   });
-  button.addEventListener("click", reload);
+  button.addEventListener("click", () => { void reloadAfterLocalCliDraftsSaved(reload); });
 
   panel.append(message, button);
   root.replaceChildren(panel);
@@ -125,8 +127,16 @@ export function handleStaleBuildLoadError(error: unknown, options: EntryLoadReco
 
   const storage = options.storage ?? getDefaultStorage();
   const reload = options.reload ?? reloadPage;
-  if (!hasRecoveryAttemptBeenUsed(storage) && markRecoveryAttempt(storage)) {
-    reload();
+  if (!hasRecoveryAttemptBeenUsed(storage)) {
+    void reloadAfterLocalCliDraftsSaved(() => {
+      // A blocked draft must not consume the one automatic retry. Recheck here
+      // because another failure may have requested recovery while files saved.
+      if (hasRecoveryAttemptBeenUsed(storage) || !markRecoveryAttempt(storage)) {
+        renderReloadFallback(options.rootElement ?? null, reload);
+        return;
+      }
+      reload();
+    });
     return true;
   }
 

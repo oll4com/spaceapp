@@ -1,5 +1,6 @@
 import type { Pane, Room, RoomAgentEvent, RoomAgentEventKind, RoomAgentPaneActivity } from "@space/contracts";
 import type { RoomAgentMonitorRepository, RoomPaneActivityRecord } from "@space/db";
+import { SpaceNotFoundError } from "@space/runtime";
 import type { DashboardActivityDetail } from "./agents-dashboard.js";
 import { roomAgentSnapshotPane } from "./room-agent-snapshot.js";
 
@@ -85,6 +86,8 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
   let lastPrune = 0;
   let lastSweep = 0;
   let lastWarning = 0;
+
+  function forget(roomId: string) { known.delete(roomId); nextDue.delete(roomId); overlapDue.delete(roomId); overlapEvents.delete(roomId); }
 
   async function previousActivity(roomId: string) {
     let room = known.get(roomId);
@@ -172,7 +175,9 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
       await options.repository.savePaneActivity(changed);
       await options.onActivity?.(roomId);
     }
-    await syncOverlaps(roomId).catch((error) => options.log?.warn({ err: error, roomId }, "Room Agent monitor could not read the room's overlaps."));
+    await syncOverlaps(roomId).catch((error) => {
+      if (!(error instanceof SpaceNotFoundError)) options.log?.warn({ err: error, roomId }, "Room Agent monitor could not read the room's overlaps.");
+    });
     return busy ? ROOM_MONITOR_ACTIVE_MS : agents ? ROOM_MONITOR_QUIET_MS : ROOM_MONITOR_EMPTY_MS;
   }
 
@@ -182,6 +187,9 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
     try {
       const at = now();
       const [rooms, disabled] = await Promise.all([options.listRooms(), options.repository.disabledRooms()]);
+      // A deleted room (an Agent Proof room torn down) leaves no state behind.
+      const listed = new Set(rooms.map((room) => room.id));
+      for (const roomId of nextDue.keys()) if (!listed.has(roomId)) forget(roomId);
       for (const room of rooms) {
         if (room.archivedAt || room.kind === "CLI_RECOVERY" || disabled.has(room.id)) { known.delete(room.id); nextDue.delete(room.id); continue; }
         if ((nextDue.get(room.id) ?? 0) > at) continue;
@@ -189,6 +197,8 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
           nextDue.set(room.id, at + await scanRoom(room.id));
         } catch (error) {
           nextDue.set(room.id, at + ROOM_MONITOR_QUIET_MS);
+          // A room deleted while it was read is dropped on the next tick; only real failures warn.
+          if (error instanceof SpaceNotFoundError) continue;
           if (at - lastWarning > 60_000) { lastWarning = at; options.log?.warn({ err: error, roomId: room.id }, "Room Agent monitor could not read a room."); }
         }
       }
@@ -216,7 +226,7 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
     },
     stop() { if (timer) clearInterval(timer); timer = null; },
     /** A room switched off forgets its state, so switching it on does not replay old changes. */
-    forget(roomId: string) { known.delete(roomId); nextDue.delete(roomId); overlapDue.delete(roomId); overlapEvents.delete(roomId); }
+    forget,
   };
 }
 export type RoomAgentMonitor = ReturnType<typeof createRoomAgentMonitor>;

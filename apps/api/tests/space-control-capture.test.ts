@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-async function adapter(answer: (request: Record<string, unknown>) => unknown) {
+async function adapter(answer: (request: Record<string, unknown>) => unknown | Promise<unknown>) {
   const artifactRoot = await mkdtemp(join(tmpdir(), "space-control-capture-"));
   dirs.push(artifactRoot);
   const requests: Array<Record<string, unknown>> = [];
@@ -63,6 +63,40 @@ describe("Space Control screenshot capture", () => {
     await expect(first).resolves.toMatchObject({ artifactId: "artifact:shot-1" });
   });
 
+  it("records a video into the artifact directory it made and stores a room VIDEO artifact", async () => {
+    const mp4 = Buffer.from("000000186674797069736f6d", "hex");
+    const video = { steps: [{ dock: "tasks", dwellMs: 2000 }, { dwellMs: 3000 }] };
+    const { capture, requests, createArtifact, artifactRoot } = await adapter(async (request) => {
+      const file = join(String(request.outDir), "video-story.mp4");
+      await writeFile(file, mp4);
+      return { room: request.room, blockedWrites: 1, version: "abc1234", skipped: ["settings:appearance"],
+        files: [{ file, viewport: "story", bytes: mp4.length, sha256: "f".repeat(64), durationMs: 9400 }] };
+    });
+    const evidence = await capture({ id: "user:operator" }, "room:studio001", { viewport: "story", paneId: "pane:one", dock: "media", video });
+
+    const [request] = requests;
+    expect(request).toMatchObject({ room: "room:studio001", viewport: "story", pane: "pane:one", dock: "media", video });
+    expect(String(request!.outDir)).toMatch(new RegExp(`^${artifactRoot}/browser-evidence/space-control-[0-9a-f-]{36}$`));
+    // The session outlives the recording and its encoding.
+    expect(verifySession(String(request!.cookieValue), secret)).toMatchObject({ proofScope: "READ_ONLY" });
+    const input = createArtifact.mock.calls[0]![0] as { storageUri: string; metadata: Record<string, unknown> };
+    expect(input).toMatchObject({ roomId: "room:studio001", kind: "VIDEO", mimeType: "video/mp4", byteSize: mp4.length, sha256: "f".repeat(64),
+      metadata: { source: "SPACE_CONTROL_RECORDING", viewport: "story", durationMs: 9400 } });
+    expect(await readFile(join(artifactRoot, decodeURIComponent(input.storageUri.replace("space-artifact://", ""))))).toEqual(mp4);
+    expect(evidence).toMatchObject({ roomId: "room:studio001", authenticated: true, captureSource: "AUTHENTICATED_APP", artifactId: "artifact:shot-1",
+      kind: "VIDEO", format: "mp4", durationMs: 9400, skipped: ["settings:appearance"] });
+  });
+
+  it("removes a failed recording's directory", async () => {
+    const { capture, createArtifact, artifactRoot } = await adapter(async (request) => {
+      await writeFile(join(String(request.outDir), "partial.jpg"), "x");
+      throw new Error("ffmpeg failed");
+    });
+    await expect(capture({ id: "user:operator" }, "room:studio001", { video: { steps: [{ dwellMs: 1000 }] } })).rejects.toThrow(/ffmpeg failed/);
+    expect(createArtifact).not.toHaveBeenCalled();
+    expect(await readdir(join(artifactRoot, "browser-evidence"))).toEqual([]);
+  });
+
   it("is what space_screenshot uses, with its viewport", async () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Media Studio", initialPaneCount: 0, kind: "AGENT_PROOF" });
@@ -72,5 +106,40 @@ describe("Space Control screenshot capture", () => {
     const result = await service.screenshot({ id: "user:operator", role: "ADMIN" }, room.id, { format: "png", viewport: "tablet" });
     expect(result).toMatchObject({ status: "COMPLETED", evidence: { captureSource: "AUTHENTICATED_APP", viewport: "tablet" } });
     expect(requests[0]).toMatchObject({ room: room.id, viewport: "tablet" });
+  });
+
+  it("maps a social aspect, skips the room lock, answers a video with a RUNNING operation and refuses Dots a video", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Media Studio", initialPaneCount: 0, kind: "AGENT_PROOF" });
+    const repository = new InMemoryControlRepository();
+    // A capture is read-only: it never holds the room lock (a video runs for minutes).
+    repository.withLock = async () => { throw new Error("room lock taken"); };
+    let release!: () => void;
+    const { capture, requests } = await adapter((request) => request.video
+      ? new Promise((resolve) => { release = () => resolve({ room: request.room, files: [{ file: join(String(request.outDir), "video-story.mp4"), viewport: "story", bytes: 4, sha256: "a".repeat(64) }] }); })
+      : shotOf(request.room, String(request.viewport)));
+    const service = createSpaceControl({ store, repository, controller: {} as never, send: vi.fn(async () => ({ submitted: true })),
+      publish: vi.fn(async () => {}), captureScreenshot: capture } as never);
+    const actor = { id: "user:operator", role: "ADMIN" as const };
+
+    await expect(service.screenshot(actor, room.id, { format: "png", aspect: "4:5", dock: "media" } as never)).resolves.toMatchObject({ status: "COMPLETED" });
+    expect(requests[0]).toMatchObject({ viewport: "portrait", dock: "media" });
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const started = service.screenshot(actor, room.id, { aspect: "9:16", video: { steps: [{ dwellMs: 1000 }] } } as never);
+      await vi.advanceTimersByTimeAsync(6000);
+      const running = await started as { status: string; operationId: string };
+      expect(running).toMatchObject({ status: "RUNNING", operationId: expect.any(String) });
+      expect(requests[1]).toMatchObject({ viewport: "story" });
+      release();
+      await vi.waitFor(async () => expect(await service.operations(actor, room.id, running.operationId)).toMatchObject({ status: "COMPLETED" }));
+      const done = await service.operations(actor, room.id, running.operationId) as { results: Array<{ evidence: { result: Record<string, unknown> } }> };
+      expect(done.results[0]!.evidence.result).toMatchObject({ kind: "VIDEO", artifactId: "artifact:shot-1" });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await expect(service.screenshot({ ...actor, dotId: `dot:${"a".repeat(32)}` }, room.id, { video: { steps: [{ dwellMs: 1000 }] } } as never)).rejects.toThrow(/Dots capture stills only/);
   });
 });

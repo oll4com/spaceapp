@@ -35,12 +35,12 @@ const list = (raw: string | undefined) => raw ? raw.split(",").map((entry) => en
 export function registerMarketingCopilotRoutes(app: FastifyInstance, service: MarketingCopilotService, deps: MarketingCopilotRouteDependencies): void {
   const { routeOptions, parseBody, parseQuery } = deps;
 
-  async function paneOf(request: FastifyRequest): Promise<Pane> {
+  async function paneOf(request: FastifyRequest, modes: readonly Pane["mode"][] = ["MARKETING_COPILOT"]): Promise<Pane> {
     await deps.authenticatedOwner(request);
     const params = parseQuery(paneParamsSchema, request.params);
     const pane = await deps.store.getPane(params.id);
     await deps.assertPaneAccess(request, pane);
-    if (pane.mode !== "MARKETING_COPILOT") throw new SpaceConflictError("Settings belong to a Marketing Copilot pane.");
+    if (!modes.includes(pane.mode)) throw new SpaceConflictError("Settings belong to a Marketing Copilot pane.");
     return pane;
   }
 
@@ -187,7 +187,8 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
   });
   app.post("/api/panes/:id/marketing-copilot/bookmarks/:bookmarkId/open", routeOptions, async (request) => {
     const params = parseQuery(z.object({ id: paneParamsSchema.shape.id, bookmarkId: marketingBookmarkIdSchema }).strict(), request.params);
-    const pane = await paneOf(request);
+    // The Freelance Copilot shows the same bookmarks; its tabs always open in the pane's own account (openTab refuses others).
+    const pane = await paneOf(request, ["MARKETING_COPILOT", "FREELANCE_COPILOT"]);
     const opened = await service.openBookmark(await deps.authenticatedOwner(request), pane, params.bookmarkId, request.requestIdForSpace, operatorBrowserActor(request));
     await deps.audit(request, "marketing_copilot.bookmark.open", params.bookmarkId, { paneId: pane.id, profileId: opened.bookmark.profileId });
     return opened;

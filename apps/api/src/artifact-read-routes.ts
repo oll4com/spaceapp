@@ -13,14 +13,19 @@ const idParamSchema = z.object({ id: idSchema });
 /** Read-only artifact domain. Authentication and request/error policies remain
  * owned by the composition root; registration does not create service timers. */
 export function registerArtifactReadRoutes(app: FastifyInstance, options: {
-  store: Pick<SpaceStore, "listArtifacts" | "getArtifact">;
+  store: Pick<SpaceStore, "listArtifacts" | "getArtifact" | "listRooms">;
   artifactRoot: string;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
   const { store, artifactRoot, routeOptions } = options;
   app.get("/api/artifacts", routeOptions, async (request) => {
     const page = listArtifactsQuerySchema.parse(request.query);
-    const artifacts = await store.listArtifacts(page);
+    let artifacts = await store.listArtifacts(page);
+    // A USER lists only artifacts of their own rooms (a roomId or paneId in the query is checked centrally).
+    if (request.user?.role === "USER") {
+      const owned = new Set((await store.listRooms(request.user.id)).map((room) => room.id));
+      artifacts = artifacts.filter((artifact) => artifact.roomId !== null && owned.has(artifact.roomId));
+    }
     const start = (page.page - 1) * page.pageSize;
     return {
       data: artifacts.slice(start, start + page.pageSize),

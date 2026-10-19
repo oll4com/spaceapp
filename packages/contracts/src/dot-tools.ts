@@ -265,8 +265,10 @@ export function buildDotToolCatalog(context: DotToolCatalogContext): DotToolEntr
     add({ id, title, description: `${controlToolDescriptions[tool]} ${controlDetails[tool] ?? ""}`.trim().slice(0, 1000), source: "SPACE_CONTROL", risk,
       inputSchema: jsonSchema(controlToolSchemas[tool], tool === "space_execute" ? ["userExplicitlyAuthorized"] : []) });
   }
-  add({ id: "space.screenshot", title: "Space screenshot", description: controlToolDescriptions.space_screenshot, source: "SPACE_CONTROL",
-    risk: "READ", inputSchema: jsonSchema(controlToolSchemas.space_screenshot) });
+  // Dots capture stills only (operator decision 2026-10-17).
+  add({ id: "space.screenshot", title: "Space screenshot", source: "SPACE_CONTROL",
+    description: "Photo of the room as the Space App shows it (read-only), saved in the room's Media. aspect picks a social size (16:9, 1:1, 4:5, 9:16 mobile, full window), viewport a device size; paneId, dock, settings or health pick what is shown, crop cuts the shot to the pane or dock.",
+    risk: "READ", inputSchema: jsonSchema(controlToolSchemas.space_screenshot.omit({ video: true })) });
   for (const operation of controlResourceOperations) {
     const forbidden = (dotForbiddenResourceOperations as readonly string[]).includes(operation);
     add({ id: `resource.${operation}`, title: `Resource ${operation}`,
@@ -385,6 +387,13 @@ export function buildDotToolCatalog(context: DotToolCatalogContext): DotToolEntr
     description: "Ask to publish a file from your workspace to Agent Files as the next version of that deliverable. The user approves every publication; ask only when they want the file.",
     inputSchema: { type: "object", properties: { path: { type: "string", minLength: 1, maxLength: 500, description: "Path relative to your workspace." } },
       required: ["path"], additionalProperties: false } });
+  add({ id: "design.request", title: "Ask for a design", source: "SPACE_COMPUTER", risk: "WRITE",
+    description: "Ask the owner's Design pane for a graphic (a social post image, a banner, a thumbnail) at named formats such as x, linkedin-banner or story. The user approves every request; the designs come back as Media artifacts of their room.",
+    inputSchema: { type: "object", properties: {
+      brief: { type: "string", minLength: 1, maxLength: 4000, description: "What the graphic shows, the exact text it carries, its mood and purpose." },
+      formatIds: { type: "array", items: { type: "string", maxLength: 40 }, maxItems: 8, description: "Format ids (x, linkedin, linkedin-banner, story, square, og, yt-thumb …) or custom-<width>x<height>." },
+      engine: { type: "string", enum: ["NANO_BANANA", "NANO_BANANA_PRO", "GPT_IMAGE", "TEMPLATE", "MOTION"] }
+    }, required: ["brief"], additionalProperties: false } });
   for (const tool of browserTools) {
     const schema = actionSchema(browserToolActionInputSchema, tool.type);
     const properties = { targetPaneId: { type: "string", description: `Browser pane id. Defaults to your own browser from computer.browser; changing the user's other Browser panes needs their approval.${

@@ -27,7 +27,7 @@ export function LiveRailSession() {
   const { item: captionItem, visible: captionVisible } = useLiveCaption(state?.transcripts ?? []);
   const captionsAllowed = state?.enabled === true && !captionsDisabled && !conversationOpen;
   const [captionAnchor, setCaptionAnchor] = useState<{ right: number; top: number } | null>(null);
-  const [conversationPosition, setConversationPosition] = useState(() => ({ left: window.innerWidth <= 768 ? 8 : 280, top: window.innerWidth <= 768 ? 8 : 120 }));
+  const [conversationPosition, setConversationPosition] = useState(() => ({ left: window.innerWidth <= 767 ? 8 : 280, top: window.innerWidth <= 767 ? 8 : 120 }));
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsPosition, setStatsPosition] = useState({ left: 340, top: 140 });
   const conversationBodyRef = useRef<HTMLDivElement | null>(null);
