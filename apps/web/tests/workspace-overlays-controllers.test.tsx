@@ -141,6 +141,38 @@ describe("useAppNotices", () => {
     log.mockRestore();
   });
 
+  it("cancels live debug dismissal on unmount before browser teardown", () => {
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useAppNotices());
+    act(() => {
+      window.dispatchEvent(new CustomEvent("space-live-debug", { detail: { message: "Live failed", type: "error" } }));
+    });
+    unmount();
+
+    // Vitest removes the browser globals after a file finishes. No notice callback may outlive its hook.
+    const browserWindow = Object.getOwnPropertyDescriptor(globalThis, "window")!;
+    try {
+      Reflect.deleteProperty(globalThis, "window");
+      expect(() => vi.advanceTimersByTime(4_500)).not.toThrow();
+    } finally {
+      Object.defineProperty(globalThis, "window", browserWindow);
+    }
+  });
+
+  it("gives a replacement live debug toast its full dismissal delay", () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useAppNotices());
+    act(() => result.current.showLiveDebug("First failure", "error"));
+    act(() => vi.advanceTimersByTime(3_000));
+    act(() => result.current.showLiveDebug("Latest failure", "error"));
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(result.current.liveDebugToast?.message).toBe("Latest failure");
+    act(() => vi.advanceTimersByTime(2_999));
+    expect(result.current.liveDebugToast?.message).toBe("Latest failure");
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.liveDebugToast).toBeNull();
+  });
+
   it("keeps a dismissed storage warning dismissed for the tab until the server clears it", () => {
     const { result } = renderHook(() => useAppNotices());
     act(() => result.current.applyStorageWarning("Disk almost full"));
