@@ -4076,8 +4076,11 @@ describe("Space contracts", () => {
     expect(overview.totalMatchingNodes).toBe(1);
     expect(listMemoryGraphOverviewQuerySchema.parse({ nodeType: "MEMORY" })).toMatchObject({
       nodeType: "MEMORY",
+      limit: 2000,
       relationMode: "RELATIONS"
     });
+    expect(listMemoryGraphOverviewQuerySchema.parse({ limit: "50000" }).limit).toBe(50000);
+    expect(() => listMemoryGraphOverviewQuerySchema.parse({ limit: 50001 })).toThrow();
 
     expect(memoryCacheLinkSchema.parse({
       memoryRecordId: "memory:cache-record",

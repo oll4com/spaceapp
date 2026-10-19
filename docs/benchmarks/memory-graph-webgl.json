@@ -1,0 +1,149 @@
+{
+  "scope": "Synthetic graph, integrated AMD Radeon 610M laptop; earlier failed configuration retained",
+  "measurements": [
+    {
+      "nodes": 50000,
+      "edges": 150000,
+      "renderer": "ANGLE (AMD, AMD Radeon(TM) 610M (0x0000164E) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "viewport": [
+        1666,
+        697
+      ],
+      "dpr": 1,
+      "devicePixelRatio": 1.5,
+      "labelPixelRatio": 1.5,
+      "loadLongTasksMs": [],
+      "samples": 300,
+      "frameP95Ms": 36.59999999999127,
+      "frameMedianMs": 30.39999999999418,
+      "frameMaxMs": 48.70000000001164,
+      "drawCpuP95Ms": 3.299999952316284,
+      "pickingP95Ms": 0.10000002384185791,
+      "pickingMaxMs": 0.19999998807907104,
+      "benchmarkLongTasksMs": [],
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      "visibility": "visible",
+      "generatedAt": "2026-10-19T18:03:59.598Z"
+    },
+    {
+      "nodes": 50000,
+      "edges": 150000,
+      "renderer": "ANGLE (AMD, AMD Radeon(TM) 610M (0x0000164E) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "viewport": [
+        1666,
+        697
+      ],
+      "dpr": 1,
+      "devicePixelRatio": 1.5,
+      "labelPixelRatio": 1.5,
+      "loadLongTasksMs": [],
+      "samples": 300,
+      "frameP95Ms": 18.30000000000291,
+      "frameMedianMs": 12.19999999999709,
+      "frameMaxMs": 48.60000000000582,
+      "drawCpuP95Ms": 6.399999976158142,
+      "pickingP95Ms": 0.10000002384185791,
+      "pickingMaxMs": 0.20000004768371582,
+      "benchmarkLongTasksMs": [],
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      "visibility": "visible",
+      "generatedAt": "2026-10-19T18:10:52.686Z"
+    },
+    {
+      "nodes": 50000,
+      "edges": 150000,
+      "renderer": "ANGLE (AMD, AMD Radeon(TM) 610M (0x0000164E) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "viewport": [
+        1666,
+        697
+      ],
+      "dpr": 1,
+      "devicePixelRatio": 1.5,
+      "labelPixelRatio": 1.5,
+      "loadLongTasksMs": [],
+      "samples": 300,
+      "frameP95Ms": 18.300000000017462,
+      "frameMedianMs": 12.199999999982538,
+      "frameMaxMs": 30.400000000023283,
+      "drawCpuP95Ms": 5.799999952316284,
+      "pickingP95Ms": 0.10000002384185791,
+      "pickingMaxMs": 0.19999998807907104,
+      "benchmarkLongTasksMs": [],
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      "visibility": "visible",
+      "generatedAt": "2026-10-19T18:13:05.991Z"
+    },
+    {
+      "nodes": 2000,
+      "edges": 6000,
+      "renderer": "ANGLE (AMD, AMD Radeon(TM) 610M (0x0000164E) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "viewport": [
+        1666,
+        697
+      ],
+      "dpr": 1.5,
+      "devicePixelRatio": 1.5,
+      "labelPixelRatio": 1.5,
+      "loadLongTasksMs": [],
+      "samples": 300,
+      "frameP95Ms": 12.199999999953434,
+      "frameMedianMs": 6.099999999976717,
+      "frameMaxMs": 24.400000000023283,
+      "drawCpuP95Ms": 0.30000001192092896,
+      "pickingP95Ms": 0,
+      "pickingMaxMs": 0.10000002384185791,
+      "benchmarkLongTasksMs": [],
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      "visibility": "visible",
+      "generatedAt": "2026-10-19T18:24:10.703Z"
+    },
+    {
+      "nodes": 50000,
+      "edges": 150000,
+      "renderer": "ANGLE (AMD, AMD Radeon(TM) 610M (0x0000164E) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "viewport": [
+        1666,
+        697
+      ],
+      "dpr": 1,
+      "devicePixelRatio": 1.5,
+      "labelPixelRatio": 1.5,
+      "loadLongTasksMs": [],
+      "samples": 300,
+      "frameP95Ms": 24.29999999998836,
+      "frameMedianMs": 12.19999999999709,
+      "frameMaxMs": 30.5,
+      "drawCpuP95Ms": 3.199999988079071,
+      "pickingP95Ms": 0.10000002384185791,
+      "pickingMaxMs": 0.20000004768371582,
+      "benchmarkLongTasksMs": [],
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      "visibility": "visible",
+      "generatedAt": "2026-10-19T18:43:14.457Z"
+    },
+    {
+      "nodes": 2000,
+      "edges": 6000,
+      "renderer": "ANGLE (AMD, AMD Radeon(TM) 610M (0x0000164E) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "viewport": [
+        1666,
+        697
+      ],
+      "dpr": 1.5,
+      "devicePixelRatio": 1.5,
+      "labelPixelRatio": 1.5,
+      "loadLongTasksMs": [],
+      "samples": 300,
+      "frameP95Ms": 12.200000000011642,
+      "frameMedianMs": 6.100000000005821,
+      "frameMaxMs": 18.20000000001164,
+      "drawCpuP95Ms": 0.30000001192092896,
+      "pickingP95Ms": 0,
+      "pickingMaxMs": 0.09999996423721313,
+      "benchmarkLongTasksMs": [],
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      "visibility": "visible",
+      "generatedAt": "2026-10-19T18:44:12.272Z"
+    }
+  ]
+}

@@ -414,6 +414,42 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("loads 50k redacted nodes and 150k edges only on an explicit bounded request", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 50000 }, (_, i) => ({ id: `memory:${String(i).padStart(5, "0")}`, type: "MEMORY" as const, label: i === 0 ? "token=private-test-value" : `Memory ${i}`, sourcePath: null, recordId: null }));
+    graphSnapshot.edges = Array.from({ length: 150001 }, (_, i) => ({ id: `edge:${String(i).padStart(6, "0")}`, source: graphSnapshot.nodes[i % 49999]!.id, target: graphSnapshot.nodes[(i + 1) % 49999]!.id, type: "SEMANTICALLY_RELATED" as const, origin: "DETERMINISTIC_TFIDF" as const, confidence: 0.8, evidence: "token=private-edge-value" }));
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: 50000, edgeCount: 150001, sourceCount: 0 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    try {
+      const start = performance.now();
+      const expanded = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+      const elapsed = performance.now() - start;
+      expect(expanded.statusCode).toBe(200);
+      const data = expanded.json().data;
+      expect(data.nodes).toHaveLength(50000);
+      expect(data.edges).toHaveLength(150000);
+      expect(data.totalMatchingNodes).toBe(50000);
+      expect(data.truncated).toBe(true);
+      expect(expanded.body).not.toContain("private-test-value");
+      expect(expanded.body).not.toContain("private-edge-value");
+      console.info("MEMORY_GRAPH_50K_RESPONSE", JSON.stringify({ bytes: Buffer.byteLength(expanded.body), serverMs: Math.round(elapsed * 100) / 100 }));
+      const standard = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+      expect(standard.json().data.nodes).toHaveLength(2000);
+      expect(standard.json().data.edges.length).toBeLessThanOrEqual(6000);
+      for (const limit of ["0", "50001", "1.5", "invalid"]) {
+        const response = await app.inject({ method: "GET", url: `/api/admin/memory/graph/overview?limit=${limit}`, headers: { cookie } });
+        expect(response.statusCode).toBe(422);
+        expect(response.json().error.code).toBe("VALIDATION_ERROR");
+      }
+      expect((await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000" })).statusCode).toBe(401);
+      const member = signSession({ id: "user:member", email: "member@space.test", role: "USER" }, sessionSecret);
+      const refused = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie: `space_session=${member}` } });
+      // The existing owned-resource guard conceals operator-only endpoints.
+      expect(refused.statusCode).toBe(404);
+      expect(refused.json().error.code).toBe("NOT_FOUND");
+    } finally { await app.close(); }
+  });
+
   it("retains real tags and their neighbors when an archive exceeds the overview cap", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     graphSnapshot.nodes = Array.from({ length: 2200 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));

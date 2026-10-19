@@ -175,6 +175,11 @@
 .memory-3d-surface { position: absolute; inset: 0 3% 55px 22%; }
 .memory-3d-surface canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline-offset: -3px; }
 .memory-3d-surface canvas:active { cursor: grabbing; }
+.memory-3d-surface[hidden] { display: none; }
+.memory-3d-surface .memory-3d-labels { position: absolute; inset: 0; pointer-events: none; }
+.memory-3d-benchmark { position: absolute; right: 3%; bottom: 58px; z-index: 4; max-width: 500px; }
+.memory-3d-benchmark pre { max-height: 220px; overflow: auto; padding: 12px; background: #09111bf2; color: #c6dfed; font: 11px ui-monospace, monospace; }
+.memory-3d-fallback-status { position: absolute; bottom: 30px; left: 24%; padding: 6px 10px; background: #09111bf2; color: #c6dfed; z-index: 4; }
 .memory-3d-hint { position: absolute; bottom: 26px; left: 0; right: 0; text-align: center; font-size: 10px; color: #95aec2; pointer-events: none; }
 #memory-atlas .memory-atlas-topics { max-height: min(38%, 320px); overflow: auto; scrollbar-width: thin; }
 @media (max-width: 700px) {

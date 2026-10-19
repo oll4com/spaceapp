@@ -25,6 +25,10 @@ export default defineConfig({
     emptyOutDir: false,
     cssCodeSplit: true,
     rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        memoryGraphBenchmark: fileURLToPath(new URL("./memory-graph-benchmark.html", import.meta.url))
+      },
       output: {
         manualChunks: manualChunkForModule
       }

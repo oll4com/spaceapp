@@ -1,0 +1,9 @@
+body { margin: 0; background: #09111b; color: #c6dfed; font: 14px system-ui, sans-serif; }
+main { padding: 20px; }
+header { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 20px; margin: 0; }
+button, select { font: inherit; padding: 6px 12px; }
+.memory-graph-benchmark-view { position: relative; height: calc(100vh - 145px); min-height: 360px; border: 1px solid #354553; }
+.memory-graph-benchmark-view .memory-3d-surface { inset: 0; }
+.memory-graph-benchmark-view .memory-3d-benchmark { right: 10px; bottom: 30px; }
+.memory-graph-benchmark-view .memory-atlas-canvas { width: 100%; height: 100%; }

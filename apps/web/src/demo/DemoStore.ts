@@ -1,5 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
+import { createSyntheticMemoryGraph, syntheticMemoryNodeDetail } from "./demo-memory-graph.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
@@ -138,6 +139,7 @@ function initialStreamingBotStatus(): StreamingBotStatus {
 }
 
 type DemoMemoryGraphQuery = {
+  limit?: number;
   q?: string;
   nodeType?: MemoryGraphNode["type"];
   scope?: "SYSTEM" | "PROJECT" | "ROOM";
@@ -668,8 +670,7 @@ export class DemoStore {
     };
   }
 
-  private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+  private memoryGraph(query: DemoMemoryGraphQuery = {}, base = this.fixture.memoryWorkspace.graph): MemoryGraphPayload {
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
@@ -1496,7 +1497,9 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const requested = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const graph = this.memoryGraph(requested, requested.limit === undefined
+          ? this.fixture.memoryWorkspace.graph : createSyntheticMemoryGraph(requested.limit));
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {
@@ -1574,6 +1577,8 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        const synthetic = syntheticMemoryNodeDetail(roomId ?? "");
+        if (synthetic) return Promise.resolve(synthetic);
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));

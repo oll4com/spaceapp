@@ -2185,7 +2185,9 @@ describe("Space web shell", () => {
     await waitFor(() => expect(eventSources.some((source) => source.url === "/api/events/stream?replayLimit=200")).toBe(true));
     const handoffEventSource = eventSources.find((source) => source.url === "/api/events/stream?replayLimit=200")!;
 
-    handoffEventSource.emitSpaceEvent("BROWSER_HANDOFF_REQUESTED", {
+    // Finish the SSE handler's async room load and focus effects before the user
+    // selects a different pane. Observing the request/DOM alone can race those effects.
+    await act(async () => handoffEventSource.emitSpaceEvent("BROWSER_HANDOFF_REQUESTED", {
       id: "event:browser-handoff-requested",
       roomId: "room:live",
       paneId: "pane:browser-live",
@@ -2196,14 +2198,14 @@ describe("Space web shell", () => {
       message: "Browser session requires operator control.",
       payload: { handoffRequestId: "browser_handoff:requested", status: "REQUESTED" },
       createdAt: "2026-06-26T00:00:01.000Z"
-    });
+    }));
     await waitFor(() => expect(requests).toContain("GET /api/panes/pane%3Abrowser-live/browser/handoff"));
     await waitFor(() => expect(screen.getByRole("article", { name: "Verification Browser agent 2" }).classList.contains("is-target")).toBe(true));
 
     fireEvent.pointerDown(screen.getByRole("article", { name: "Planner agent 1" }));
     await waitFor(() => expect(screen.getByRole("article", { name: "Planner agent 1" }).classList.contains("is-target")).toBe(true));
     handoffStatus = "COMPLETED";
-    handoffEventSource.emitSpaceEvent("BROWSER_HANDOFF_REQUESTED", {
+    await act(async () => handoffEventSource.emitSpaceEvent("BROWSER_HANDOFF_REQUESTED", {
       id: "event:browser-handoff-completed-replay",
       roomId: "room:live",
       paneId: "pane:browser-live",
@@ -2214,7 +2216,7 @@ describe("Space web shell", () => {
       message: "Browser session requires operator control.",
       payload: { handoffRequestId: "browser_handoff:completed", status: "REQUESTED" },
       createdAt: "2026-06-26T00:00:02.000Z"
-    });
+    }));
     await waitFor(() => expect(requests.filter((request) => request === "GET /api/panes/pane%3Abrowser-live/browser/handoff")).toHaveLength(2));
     expect(screen.getByRole("article", { name: "Planner agent 1" }).classList.contains("is-target")).toBe(true);
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
+import { layoutMemoryNetwork3D, streamMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 
 describe("3D memory projection", () => {
@@ -58,5 +58,20 @@ describe("3D memory projection", () => {
     const plane = Array.from({ length: 100 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10), z: i % 10 + Math.floor(i / 10) }));
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
+  });
+  it("publishes an initial usable frame and deterministic immutable convergence frames", () => {
+    const { nodes, edges } = fixture();
+    const iterator = streamMemoryNetwork3D(nodes, edges);
+    const first = iterator.next();
+    expect(first.done).toBe(false);
+    if (first.done) throw new Error("Expected initial layout frame");
+    expect(first.value.step).toBe(0);
+    expect(first.value.positions.size).toBe(nodes.length);
+    const initial = [...first.value.positions].map(([id, p]) => [id, { ...p }]);
+    const frames = [...iterator];
+    expect(frames.at(-1)?.step).toBe(180);
+    expect([...first.value.positions]).toEqual(initial);
+    expect([...frames.at(-1)!.positions]).toEqual([...layoutMemoryNetwork3D([...nodes].reverse(), [...edges].reverse())]);
+    expect(frames[0]!.positions).not.toEqual(first.value.positions);
   });
 });

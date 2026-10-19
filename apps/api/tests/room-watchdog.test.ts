@@ -232,8 +232,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     await wedgedPromise;
 
     // Also test recording room event directly in store
-    const watchdogEvent: Event = {
-      id: "event:watchdog-test",
+    const watchdogEvent: Parameters<InMemorySpaceStore["recordRoomEvent"]>[0] = {
       roomId: room.id,
       paneId: pane.id,
       turnId: null,
@@ -249,13 +248,19 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         runtimeId: "cli:gemini",
         durationMs: 8000,
         killedAt: new Date().toISOString()
-      },
-      createdAt: new Date().toISOString()
+      }
     };
 
-    const recorded = await store.recordRoomEvent(watchdogEvent);
-    expect(recorded.type).toBe("ROOM_WATCHDOG_ALERT");
-    expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
+    // The store orders equal timestamps by ID, not insertion order. Make this
+    // event chronologically newer without depending on wall-clock granularity.
+    const latestTime = Date.parse(store.getLatestEvent(room.id)!.createdAt);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(latestTime + 1);
+    try {
+      const recorded = await store.recordRoomEvent(watchdogEvent);
+      expect(recorded.type).toBe("ROOM_WATCHDOG_ALERT");
+      expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
+    } finally { vi.useRealTimers(); }
   });
 
   it("gives queued operations their full execution window without queue-wait timer bleed", async () => {

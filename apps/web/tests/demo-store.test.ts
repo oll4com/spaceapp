@@ -429,6 +429,40 @@ describe("Space deterministic demo store", () => {
     expect(unchangedChangeSet).toEqual(changeSet);
   });
 
+  it("preserves overview filters and induced edges when a synthetic limit is requested", async () => {
+    const store = new DemoStore();
+    const query = { limit: 2000, nodeType: "MEMORY" as const, sourcePath: "/demo/memory/source-1.md", relationMode: "CLUSTERED" as const };
+    const { data } = await store.api.memoryGraphOverview(query);
+    expect(data.nodes).toHaveLength(119);
+    expect(data.nodes.every(node => node.type === "MEMORY" && node.sourcePath === query.sourcePath)).toBe(true);
+    const ids = new Set(data.nodes.map(node => node.id));
+    expect(data.edges.length).toBeGreaterThan(0);
+    expect(data.edges.every(edge => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
+    expect(data.filters).toMatchObject({ nodeType: query.nodeType, sourcePath: query.sourcePath, relationMode: query.relationMode });
+    expect(data.summary).toMatchObject({ nodeCount: 119, recordCount: 119, sourceCount: 1, edgeCount: data.edges.length });
+    expect(data.totalMatchingNodes).toBe(119);
+    expect(data.totalMatchingEdges).toBe(data.edges.length);
+    expect(memoryGraphOverviewPayloadSchema.parse(data)).toEqual(data);
+    const search = await store.api.memoryGraphOverview({ limit: 2000, q: "  sYnThEtIc MeMoRy 1999  " });
+    expect(search.data.nodes.map(node => node.id)).toEqual(["demo:graph:1999"]);
+    expect(search.data.edges).toEqual([]);
+    expect(search.data.filters.q).toBe("  sYnThEtIc MeMoRy 1999  ");
+  });
+
+  it.each([
+    { q: "not-in-synthetic-graph" }, { scope: "ROOM" as const }, { roomId: "room:absent" },
+    { lifecycleStatus: "ARCHIVED" as const }, { month: "2026-10" }, { sourcePath: "/absent.md" }
+  ])("does not invent synthetic matches for overview filter %o", async filter => {
+    const { data } = await new DemoStore().api.memoryGraphOverview({ limit: 2000, ...filter });
+    expect(data.nodes).toEqual([]);
+    expect(data.edges).toEqual([]);
+    expect(data.totalMatchingNodes).toBe(0);
+    expect(data.totalMatchingEdges).toBe(0);
+    expect(data.summary).toEqual({ nodeCount: 0, edgeCount: 0, sourceCount: 0, recordCount: 0, issueCount: 0 });
+    expect(data.filters).toMatchObject(filter);
+    expect(memoryGraphOverviewPayloadSchema.parse(data)).toEqual(data);
+  });
+
   it("keeps Links and Clipboard CRUD local, deterministic, and contract-valid", async () => {
     const store = new DemoStore();
 
