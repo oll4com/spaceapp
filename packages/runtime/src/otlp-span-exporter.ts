@@ -1,15 +1,30 @@
+import { allowlistSpanAttributes } from "./span-attributes.js";
+export { allowlistSpanAttributes, SPAN_ATTRIBUTE_ALLOWLIST } from "./span-attributes.js";
+
 /**
- * Optional OTLP/HTTP (JSON) export of API server spans and worker activity spans. Off unless
- * SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector base URL (spans go to
- * `<base>/v1/traces`). No dependency, no collector required: Space logs stay
- * joinable by W3C trace id without it.
+ * Optional OTLP/HTTP (JSON) export of API server spans and worker workflow and
+ * activity spans. Off unless SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector
+ * base URL (spans go to `<base>/v1/traces`). No dependency, no collector
+ * required: Space logs stay joinable by W3C trace id without it.
  *
- * Spans carry only the method, route template, status code, service name and
+ * API spans carry only the method, route template, status code, service name and
  * Space request id; never URLs with parameters, headers, bodies or user data.
+ * Worker spans pass their attributes through `allowlistSpanAttributes`:
+ * identifiers, types, attempts, outcomes, stable error codes and durations only.
  * Export is best effort: a bounded queue drops (and counts) spans instead of
  * growing, each POST has a timeout, and a failing collector never affects a
  * request.
  */
+
+/** OTLP span kind: INTERNAL 1, SERVER 2, CLIENT 3, PRODUCER 4, CONSUMER 5. */
+export type SpanKind = 1 | 2 | 3 | 4 | 5;
+
+/** A causal link to a span of another run or trace (continue-as-new, background continuation). */
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number | boolean>>;
+}
 
 export interface ServerSpan {
   traceId: string;
@@ -18,11 +33,15 @@ export interface ServerSpan {
   name: string;
   startTimeUnixNano: bigint;
   endTimeUnixNano: bigint;
-  attributes: Readonly<Record<string, string | number>>;
+  attributes: Readonly<Record<string, string | number | boolean>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
-  kind?: number;
+  /** OTLP span kind; SERVER (2) unless given. Worker workflows and activities use INTERNAL (1). */
+  kind?: SpanKind;
+  /** Links to the run or trace this span continues; omitted from the request when empty. */
+  links?: readonly SpanLink[];
 }
+
+export type ExportSpan = ServerSpan;
 
 export interface SpanExporterStats {
   exported: number;
@@ -66,8 +85,23 @@ export function otlpTracesUrl(value: string | undefined): string | null {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}/v1/traces`;
 }
 
-function attributeValue(value: string | number) {
+function attributeValue(value: string | number | boolean) {
+  if (typeof value === "boolean") return { boolValue: value };
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
+}
+
+function encodeAttributes(attributes: Readonly<Record<string, string | number | boolean>>) {
+  return Object.entries(attributes).map(([key, value]) => ({ key, value: attributeValue(value) }));
+}
+
+function encodeLinks(links: readonly SpanLink[] | undefined) {
+  return (links ?? [])
+    .filter(link => traceIdPattern.test(link.traceId) && !/^0+$/.test(link.traceId) && spanIdPattern.test(link.spanId) && !/^0+$/.test(link.spanId))
+    .map(link => ({
+      traceId: link.traceId,
+      spanId: link.spanId,
+      ...(Object.keys(allowlistSpanAttributes(link.attributes ?? {})).length ? { attributes: encodeAttributes(allowlistSpanAttributes(link.attributes ?? {})) } : {})
+    }));
 }
 
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string) {
@@ -76,18 +110,22 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
         scope: { name: serviceName },
-        spans: spans.map(span => ({
-          traceId: span.traceId,
-          spanId: span.spanId,
-          ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
-          name: span.name,
-          kind: span.kind ?? 2,
-          startTimeUnixNano: span.startTimeUnixNano.toString(),
-          endTimeUnixNano: span.endTimeUnixNano.toString(),
-          attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
-          // STATUS_CODE_ERROR or STATUS_CODE_UNSET
-          status: { code: span.error ? 2 : 0 }
-        }))
+        spans: spans.map(span => {
+          const links = encodeLinks(span.links);
+          return {
+            traceId: span.traceId,
+            spanId: span.spanId,
+            ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
+            name: span.name,
+            kind: span.kind ?? 2,
+            startTimeUnixNano: span.startTimeUnixNano.toString(),
+            endTimeUnixNano: span.endTimeUnixNano.toString(),
+            attributes: encodeAttributes(span.attributes),
+            ...(links.length ? { links } : {}),
+            // STATUS_CODE_ERROR or STATUS_CODE_UNSET
+            status: { code: span.error ? 2 : 0 }
+          };
+        })
       }]
     }]
   };
@@ -99,7 +137,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const send: FetchLike = options.fetch ?? ((target, init) => fetch(target, init));
   const batchSize = options.batchSize ?? 256;
   const maxQueue = options.maxQueue ?? 4096;
-  const timeoutMs = options.timeoutMs ?? 3000;
+  const timeoutMs = options.timeoutMs ?? 5000;
   const queue: ServerSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
@@ -121,15 +159,18 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     }
   };
   const flush = (): Promise<void> => {
-    if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          while (queue.length) await flushOnce();
-        } finally {
-          inFlight = null;
-        }
-      })();
-    }
+    if (inFlight) return inFlight;
+    // With an empty queue the loop below would finish synchronously and clear
+    // inFlight before it is assigned, leaving a settled promise that blocks
+    // every later flush.
+    if (!queue.length) return Promise.resolve();
+    inFlight = (async () => {
+      try {
+        while (queue.length) await flushOnce();
+      } finally {
+        inFlight = null;
+      }
+    })();
     return inFlight;
   };
   const timer = setInterval(() => void flush(), options.flushIntervalMs ?? 5000);

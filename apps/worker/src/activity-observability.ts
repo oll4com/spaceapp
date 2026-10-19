@@ -1,7 +1,8 @@
+import { allowlistSpanAttributes } from "./tracing/span-attributes.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
-import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import { defaultPayloadConverter, type ActivityExecuteInput, type ActivityInterceptorsFactory } from "@temporalio/worker";
 import {
   categorizeFailureCode,
   formatTraceparent,
@@ -10,7 +11,8 @@ import {
   traceIdFromTraceparent,
   type FailureCategory
 } from "@space/contracts";
-import type { SpanExporter } from "@space/runtime";
+import { type SpanExporter } from "@space/runtime";
+import { TRACEPARENT_HEADER } from "./workflow-tracing-headers.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -135,14 +137,40 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /**
+   * OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity
+   * attempt under the workflow span (`space-traceparent` header) or, without
+   * that header, under the traceparent in the activity input.
+   */
   spans?: SpanExporter | null;
+  /** The workflow span from the activity's `space-traceparent` header. */
+  parentTraceparent?: string | null;
 }
 
-function activityTraceparent(args: readonly unknown[]) {
+function activityTraceparent(args: readonly unknown[], header: string | null | undefined) {
+  const fromHeader = parseTraceparent(header);
+  if (fromHeader) return fromHeader;
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
+}
+
+/** The traceparent in a Temporal header, or null when absent or not a valid string payload. */
+export function traceparentFromHeaders(headers: ActivityExecuteInput["headers"] | undefined): string | null {
+  const payload = headers?.[TRACEPARENT_HEADER];
+  if (!payload) return null;
+  try {
+    const value: unknown = defaultPayloadConverter.fromPayload(payload);
+    return parseTraceparent(value) ? (value as string) : null;
+  } catch {
+    return null;
+  }
+}
+
+function randomSpanId(): string {
+  let spanId = randomBytes(8).toString("hex");
+  while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
+  return spanId;
 }
 
 export async function observeActivityExecution<T>(
@@ -194,19 +222,40 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
+    // Export never affects the activity: a full queue drops, a bad span is skipped.
+    try {
+      const parent = dependencies.spans ? activityTraceparent(args, dependencies.parentTraceparent) : null;
+      if (parent) {
+        dependencies.spans!.record({
+          traceId: parent.traceId,
+          spanId: randomSpanId(),
+          parentSpanId: parent.parentId,
+          name: `activity ${activityType}`,
+          startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+          endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+          attributes: allowlistSpanAttributes({
+            "temporal.activity.type": activityType,
+            "temporal.activity.id": info.activityId,
+            "temporal.activity.attempt": info.attempt,
+            "temporal.workflow.id": info.workflowExecution?.workflowId,
+            "temporal.workflow.run_id": info.workflowExecution?.runId,
+            "temporal.workflow.type": info.workflowType,
+            "space.outcome": outcome,
+            "error.code": reasonCode,
+            "space.error.category": category,
+            "space.duration_ms": durationMs,
+            "space.queue_ms": queueMs,
+            "space.trace_id": base.traceId,
+            "space.room_id": base.roomId,
+            "space.pane_id": base.paneId,
+            "space.mission_id": base.missionId,
+          }),
+          error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+          kind: 1
+        });
+      }
+    } catch {
+      // Tracing is best effort.
     }
   };
 
@@ -229,6 +278,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        parentTraceparent: dependencies.spans ? traceparentFromHeaders(input.headers) : null,
         cancelled: () => context.cancellationSignal.aborted
       })
     }

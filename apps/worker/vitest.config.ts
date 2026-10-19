@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
+      "@space/runtime/span-attributes": resolve(__dirname, "../../packages/runtime/src/span-attributes.ts"),
       "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
       "@space/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),
       "@space/opencode-control": resolve(__dirname, "../../packages/opencode-control/src/index.ts"),

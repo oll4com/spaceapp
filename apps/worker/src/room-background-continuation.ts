@@ -1,6 +1,9 @@
+import { randomBytes } from "node:crypto";
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
+  formatTraceparent,
+  parseTraceparent,
   roomAgentSupervisorQueueItemSchema,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
@@ -36,6 +39,15 @@ export function continuationEvidence(actions: RoomAgentActionRecord[], budget: n
     if (JSON.stringify(next).length <= budget) Object.assign(result, next);
   }
   return JSON.stringify(result);
+}
+
+/** Fresh random root W3C traceparent; never all-zero and never the excluded trace id. */
+export function freshRootTraceparent(excludedTraceId?: string): string {
+  let traceId: string;
+  let spanId: string;
+  do { traceId = randomBytes(16).toString("hex"); } while (/^0+$/.test(traceId) || traceId === excludedTraceId);
+  do { spanId = randomBytes(8).toString("hex"); } while (/^0+$/.test(spanId));
+  return formatTraceparent(traceId, spanId, "01");
 }
 
 const activeStatuses = ["QUEUED", "RUNNING", "PAUSED"];
@@ -122,10 +134,14 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const sourceTraceparent = parseTraceparent(source.queueItem.turn.traceparent);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
     roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    // Fresh root W3C context so logs and internal API calls stay joinable without a collector; the interceptor roots the workflow span on this trace id and only links the prior span.
+    traceparent: freshRootTraceparent(sourceTraceparent?.traceId),
+    continuationTraceparent: sourceTraceparent ? source.queueItem.turn.traceparent : undefined,
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
