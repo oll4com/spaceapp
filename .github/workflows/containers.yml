@@ -44,7 +44,7 @@ jobs:
           - amd64
           - arm64
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,5 +69,11 @@ jobs:
       - name: Enforce container size budget
         run: >-
           node scripts/container-image-size-budget.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Run container startup smoke check
+        run: >-
+          node deploy/docker/container-smoke-check.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
