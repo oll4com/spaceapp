@@ -6761,6 +6761,7 @@ export const dummyTurnInputSchema = z.object({
   roomAgentOperatorRequest: z.string().trim().min(1).max(4000).optional(),
   roomAgentContinuation: z.object({
     sourceRunId: idSchema,
+    sourceTraceparent: traceparentSchema.optional(),
     generation: z.number().int().min(1).max(16)
   }).optional(),
   agentUserMessageId: idSchema.optional(),

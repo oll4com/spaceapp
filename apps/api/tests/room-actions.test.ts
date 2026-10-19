@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { spaceAgentRoomActionBridgeRequestSchema } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createRoomActionExecutor, roomAgentExecutionScore } from "../src/room-actions.js";
+import { createRequestTraceContext, requestTraceContexts, withTurnTraceparent } from "../src/trace-context.js";
 
 function setupMission() {
   const store = new InMemorySpaceStore();
@@ -1354,7 +1355,13 @@ describe("Room action executor", () => {
       testChatSession(store, pane);
       return { runStatus: "IDLE", statusReason: "Ready." };
     });
-    const sendMessage = vi.fn(async ({ pane, content }) => submittedChatResponse(store, pane, content));
+    const context = createRequestTraceContext("00-11111111111111111111111111111111-2222222222222222-01");
+    requestTraceContexts.remember("req:isolated-readiness", context);
+    const startedTurns: { traceId: string; traceparent?: string }[] = [];
+    const sendMessage = vi.fn(async ({ pane, content, traceId }) => {
+      startedTurns.push(withTurnTraceparent({ traceId }));
+      return submittedChatResponse(store, pane, content);
+    });
     const options = {
       store,
       cliTerminalManager: {
@@ -1401,6 +1408,9 @@ describe("Room action executor", () => {
     expect(ensurePaneControlReady).toHaveBeenCalledTimes(1);
     expect(createOrRestoreSession).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(startedTurns).toHaveLength(2);
+    expect(startedTurns.every(turn => turn.traceparent === context.traceparent && turn.traceId.endsWith(":chat"))).toBe(true);
+    expect(new Set(startedTurns.map(turn => turn.traceId)).size).toBe(2);
     expect(store.listPanes(room.id)).toHaveLength(3);
     expect(store.listRoomAgentTaskRuns(mission.id)).toHaveLength(4);
   });

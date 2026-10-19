@@ -1,5 +1,5 @@
 /**
- * Optional OTLP/HTTP (JSON) export of API server spans and worker activity spans. Off unless
+ * Optional OTLP/HTTP (JSON) export of API, workflow and activity spans. Off unless
  * SPACE_OTEL_EXPORTER_OTLP_ENDPOINT names a collector base URL (spans go to
  * `<base>/v1/traces`). No dependency, no collector required: Space logs stay
  * joinable by W3C trace id without it.
@@ -11,7 +11,15 @@
  * request.
  */
 
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+}
+
 export interface ServerSpan {
+  /** Defaults to SERVER for backward compatibility with the API. */
+  kind?: 1 | 2;
+  links?: readonly SpanLink[];
   traceId: string;
   spanId: string;
   parentSpanId: string | null;
@@ -20,8 +28,6 @@ export interface ServerSpan {
   endTimeUnixNano: bigint;
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
-  kind?: number;
 }
 
 export interface SpanExporterStats {
@@ -81,7 +87,9 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           spanId: span.spanId,
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
+          // SPAN_KIND_SERVER
           kind: span.kind ?? 2,
+          ...(span.links?.length ? { links: span.links.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId)).map(link => ({ traceId: link.traceId, spanId: link.spanId })) } : {}),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
@@ -121,6 +129,9 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     }
   };
   const flush = (): Promise<void> => {
+    // An empty async IIFE resolves synchronously before assignment to inFlight.
+    // Do not retain that resolved promise and permanently disable later drains.
+    if (!queue.length) return inFlight ?? Promise.resolve();
     if (!inFlight) {
       inFlight = (async () => {
         try {

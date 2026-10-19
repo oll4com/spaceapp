@@ -7011,10 +7011,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     store, dots: dotsRepository, goals: dotGoalsRepository,
     workflow: options.dotGoalWorkflow ?? createDotGoalWorkflowCoordinator({ enabled: config.enableCodexTurns, address: config.temporalAddress,
       namespace: config.temporalNamespace, taskQueue: config.temporalTaskQueue }),
-    sendStep: async ({ paneId, sessionId, ownerUserId, content, requestKey }) => {
+    sendStep: async ({ paneId, sessionId, ownerUserId, content, requestKey, traceId }) => {
       const pane = await getPaneById(store, paneId);
       const result = await spaceAgentAdapter.sendMessage({ pane, sessionId, content, operatorUserId: ownerUserId, clientRequestId: requestKey,
-        traceId: makeSpaceId("trace") });
+        traceId: traceId ?? makeSpaceId("trace") });
       if (!result.submission) throw new SpaceConflictError(result.session.statusReason ?? "The Goal step could not start.");
       return { runId: result.submission.runId };
     },
