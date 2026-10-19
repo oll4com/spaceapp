@@ -36,7 +36,7 @@ import {
   type CliHostInputResult,
   type CliHostReapResult,
   type CliHostSessionSummary
-} from "@space/cli-host";
+} from "@space/cli-host/client";
 import {
   canStartAgentRuntimeLogin,
   cliToggleRuntimeIdSchema,
