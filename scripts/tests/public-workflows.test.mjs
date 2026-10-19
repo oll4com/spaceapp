@@ -5,6 +5,9 @@ import test from "node:test";
 
 const root = resolve(import.meta.dirname, "../..");
 
+/**
+ * Reads a GitHub Actions workflow file from `.github/workflows` as UTF-8 text.
+ */
 async function workflow(name) {
   return readFile(join(root, ".github", "workflows", name), "utf8");
 }
@@ -74,6 +77,13 @@ test("container matrices load each image and enforce the public size budgets", a
     assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
     assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
   }
+  const containers = await workflow("containers.yml");
+  assert.match(
+    containers,
+    /services:\s+postgres:\s+image: pgvector\/pgvector:0\.8\.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b/
+  );
+  assert.match(containers, /node deploy\/docker\/container-smoke-check\.mjs/);
+  assert.match(containers, /SMOKE_SKIP_CHROMIUM_LAUNCH: "\$\{\{ matrix\.arch == 'arm64' && runner\.arch == 'X64' \}\}"/);
 });
 
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
