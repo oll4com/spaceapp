@@ -1,3 +1,4 @@
+import { traceWorkflowScope } from "./workflow-trace-scope.js";
 import {
   CancellationScope,
   ChildWorkflowCancellationType,
@@ -196,52 +197,54 @@ async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorIn
       processedCount += 1;
     } else {
       const item = pending.shift()!;
-      activeMissionId = item.missionId;
-      activeStopReason = "Stopped by operator.";
-      activeScope = new CancellationScope({ cancellable: true });
-      await markRoomAgentMissionStarted({ missionId: item.missionId, roomId: item.turn.roomId, paneId: item.turn.paneId });
-      try {
-        const result = await activeScope.run(() =>
-          executeChild(codexAppServerTurnWorkflow, {
-            args: [item.turn],
-            workflowId: buildCodexAppServerTurnWorkflowId(item.turn),
-            cancellationType: ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED
-          })
-        );
-        const completion = roomAgentMissionCompletion(result);
-        if (result.roomAgentOutcome?.status === "VERIFIED" && result.roomAgentOutcome.pendingActionIds?.length) {
-          monitoring.add(item.missionId);
-          await markRoomAgentMissionContinued({ missionId: item.missionId, roomId: item.turn.roomId,
-            statusReason: "Pane work is running independently. Room Agent is ready for further commands." });
-        } else if (monitoring.has(item.missionId) || (completion.status === "COMPLETED" && roomAgentMissionHasContinuation(pending, item.missionId))) {
-          await markRoomAgentMissionContinued({
-            missionId: item.missionId,
-            roomId: item.turn.roomId,
-            statusReason: "The current turn completed; continuing the same goal with the next operator follow-up."
-          });
-        } else {
-          await markRoomAgentMissionFinished({
-            missionId: item.missionId,
-            roomId: item.turn.roomId,
-            status: completion.status,
-            statusReason: completion.statusReason
-          });
+      await traceWorkflowScope(item.turn, async () => {
+        activeMissionId = item.missionId;
+        activeStopReason = "Stopped by operator.";
+        activeScope = new CancellationScope({ cancellable: true });
+        await markRoomAgentMissionStarted({ missionId: item.missionId, roomId: item.turn.roomId, paneId: item.turn.paneId });
+        try {
+          const result = await activeScope.run(() =>
+            executeChild(codexAppServerTurnWorkflow, {
+              args: [item.turn],
+              workflowId: buildCodexAppServerTurnWorkflowId(item.turn),
+              cancellationType: ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED
+            })
+          );
+          const completion = roomAgentMissionCompletion(result);
+          if (result.roomAgentOutcome?.status === "VERIFIED" && result.roomAgentOutcome.pendingActionIds?.length) {
+            monitoring.add(item.missionId);
+            await markRoomAgentMissionContinued({ missionId: item.missionId, roomId: item.turn.roomId,
+              statusReason: "Pane work is running independently. Room Agent is ready for further commands." });
+          } else if (monitoring.has(item.missionId) || (completion.status === "COMPLETED" && roomAgentMissionHasContinuation(pending, item.missionId))) {
+            await markRoomAgentMissionContinued({
+              missionId: item.missionId,
+              roomId: item.turn.roomId,
+              statusReason: "The current turn completed; continuing the same goal with the next operator follow-up."
+            });
+          } else {
+            await markRoomAgentMissionFinished({
+              missionId: item.missionId,
+              roomId: item.turn.roomId,
+              status: completion.status,
+              statusReason: completion.statusReason
+            });
+          }
+        } catch (error) {
+          await CancellationScope.nonCancellable(() =>
+            markRoomAgentMissionFinished({
+              missionId: item.missionId,
+              roomId: item.turn.roomId,
+              status: isCancellation(error) ? "INTERRUPTED" : "FAILED",
+              statusReason: isCancellation(error) ? activeStopReason : "Room agent child workflow failed.",
+              ...(isCancellation(error) ? {} : { errorCode: supervisorFailureCode(error) })
+            })
+          );
+        } finally {
+          activeMissionId = null;
+          activeScope = null;
+          processedCount += 1;
         }
-      } catch (error) {
-        await CancellationScope.nonCancellable(() =>
-          markRoomAgentMissionFinished({
-            missionId: item.missionId,
-            roomId: item.turn.roomId,
-            status: isCancellation(error) ? "INTERRUPTED" : "FAILED",
-            statusReason: isCancellation(error) ? activeStopReason : "Room agent child workflow failed.",
-            ...(isCancellation(error) ? {} : { errorCode: supervisorFailureCode(error) })
-          })
-        );
-      } finally {
-        activeMissionId = null;
-        activeScope = null;
-        processedCount += 1;
-      }
+      });
     }
 
     if (processedCount >= 50) {
@@ -313,48 +316,50 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
       processedCount++;
     } else if (pending.length) {
       const item = pending.shift()!;
-      active = item;
-      scope = new CancellationScope({ cancellable: true });
-      stopReason = "Stopped by operator.";
-      let paused = false;
-      try {
-        await scope.run(async () => {
-          const state = await supervisorActivities.checkRoomAgentSupervisorTurn(item);
-          if (state === "PAUSED") { paused = true; return; }
-          if (state === "SKIP") {
-            await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason: "Turn is no longer active or was superseded." });
-            return;
-          }
-          const result = await executeChild(codexAppServerTurnWorkflow, {
-            args: [item.turn], workflowId: buildCodexAppServerTurnWorkflowId(item.turn),
-            cancellationType: ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED
+      await traceWorkflowScope(item.turn, async () => {
+        active = item;
+        scope = new CancellationScope({ cancellable: true });
+        stopReason = "Stopped by operator.";
+        let paused = false;
+        try {
+          await scope.run(async () => {
+            const state = await supervisorActivities.checkRoomAgentSupervisorTurn(item);
+            if (state === "PAUSED") { paused = true; return; }
+            if (state === "SKIP") {
+              await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason: "Turn is no longer active or was superseded." });
+              return;
+            }
+            const result = await executeChild(codexAppServerTurnWorkflow, {
+              args: [item.turn], workflowId: buildCodexAppServerTurnWorkflowId(item.turn),
+              cancellationType: ChildWorkflowCancellationType.WAIT_CANCELLATION_COMPLETED
+            });
+            const completion = roomAgentMissionCompletion(result);
+            if (result.roomAgentOutcome?.status === "VERIFIED" && result.roomAgentOutcome.pendingActionIds?.length) {
+              monitoring.add(item.missionId);
+            } else if (completion.status === "COMPLETED" && monitoring.has(item.missionId) && !item.turn.roomAgentContinuation) {
+              // A FIND/layout follow-up can finish while earlier pane tasks continue.
+            } else if (!roomAgentMissionHasContinuation(pending, item.missionId)) {
+              monitoring.delete(item.missionId);
+              await supervisorActivities.finishRoomAgentSupervisorTurn({ item, ...completion });
+            }
           });
-          const completion = roomAgentMissionCompletion(result);
-          if (result.roomAgentOutcome?.status === "VERIFIED" && result.roomAgentOutcome.pendingActionIds?.length) {
-            monitoring.add(item.missionId);
-          } else if (completion.status === "COMPLETED" && monitoring.has(item.missionId) && !item.turn.roomAgentContinuation) {
-            // A FIND/layout follow-up can finish while earlier pane tasks continue.
-          } else if (!roomAgentMissionHasContinuation(pending, item.missionId)) {
-            monitoring.delete(item.missionId);
-            await supervisorActivities.finishRoomAgentSupervisorTurn({ item, ...completion });
-          }
-        });
-      } catch (error) {
-        await CancellationScope.nonCancellable(async () => {
-          const reason = isCancellation(error) ? stopReason : "Room Agent supervisor turn failed.";
-          const errorCode = isCancellation(error) ? undefined : supervisorFailureCode(error);
-          await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason, errorCode });
-          if (!roomAgentMissionHasContinuation(pending, item.missionId)) {
-            monitoring.delete(item.missionId);
-            await supervisorActivities.finishRoomAgentSupervisorTurn({ item, status: errorCode ? "FAILED" : "INTERRUPTED", statusReason: reason, errorCode });
-          }
-        });
-      } finally { active = null; scope = null; processedCount++; }
-      if (paused) {
-        pending.push(item);
-        const revision = signalRevision;
-        await condition(() => interrupted.length > 0 || signalRevision !== revision, "1 second");
-      }
+        } catch (error) {
+          await CancellationScope.nonCancellable(async () => {
+            const reason = isCancellation(error) ? stopReason : "Room Agent supervisor turn failed.";
+            const errorCode = isCancellation(error) ? undefined : supervisorFailureCode(error);
+            await supervisorActivities.discardRoomAgentSupervisorTurn({ item, reason, errorCode });
+            if (!roomAgentMissionHasContinuation(pending, item.missionId)) {
+              monitoring.delete(item.missionId);
+              await supervisorActivities.finishRoomAgentSupervisorTurn({ item, status: errorCode ? "FAILED" : "INTERRUPTED", statusReason: reason, errorCode });
+            }
+          });
+        } finally { active = null; scope = null; processedCount++; }
+        if (paused) {
+          pending.push(item);
+          const revision = signalRevision;
+          await condition(() => interrupted.length > 0 || signalRevision !== revision, "1 second");
+        }
+      });
     } else if (monitoring.size) {
       await condition(() => pending.length > 0 || interrupted.length > 0, "1 second");
       if (!pending.length && !interrupted.length) for (const missionId of monitoring) {

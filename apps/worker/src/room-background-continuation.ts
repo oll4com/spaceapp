@@ -1,3 +1,5 @@
+import { currentActivityTraceparent } from "./activity-observability.js";
+import { parseParent, traceIdForRun } from "./trace-carrier.js";
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
@@ -122,10 +124,19 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const current = currentActivityTraceparent();
+  const currentParent = parseParent(current);
+  const sourceParent = parseParent(source.queueItem.turn.traceparent);
+  const sourceTraceparent = currentParent && (!sourceParent || sourceParent.traceId === currentParent.traceId)
+    ? current : source.queueItem.turn.traceparent;
+  const tracing = currentParent && parseParent(sourceTraceparent) ? {
+    w3cTraceId: traceIdForRun(input.continuationId), sourceTraceparent
+  } : null;
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
-    roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    roomAgentContinuation: { sourceRunId: source.run.runId, generation, ...tracing },
+    ...(tracing ? { traceparent: undefined } : {}),
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,

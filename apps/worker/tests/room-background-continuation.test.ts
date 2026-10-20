@@ -4,8 +4,23 @@ import { continuationEvidence, discardSupervisorTurn, finishSupervisorTurn, prep
 
 import { continuationFixture } from "./room-continuation-fixture.js";
 import { runCodexAppServerTurn } from "../src/activities.js";
+import { observeActivityExecution } from "../src/activity-observability.js";
+import { parseParent } from "../src/trace-carrier.js";
+import type { ServerSpan } from "@space/runtime";
 
 describe("durable background continuation", () => {
+  it("persists an independent W3C trace and its actual causal activity link, including after a lost reply", async () => {
+    const c = continuationFixture(), recorded: ServerSpan[] = [];
+    const spans = { record: (span: ServerSpan) => recorded.push(span), flush: async () => {}, close: async () => {}, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+    const prepared = await observeActivityExecution({ activityType: "prepareRoomAgentBackgroundContinuation", activityId: "1", attempt: 1, workflowType: "roomAgentSupervisorWorkflow", workflowExecution: { workflowId: "supervisor:1", runId: "run:1" }, currentAttemptScheduledTimestampMs: Date.now() },
+      [{ traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01` }], () => prepareBackgroundContinuation(c.input, c.store), { spans });
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceparent).toBeUndefined();
+    const carrier = prepared.item.turn.roomAgentContinuation!;
+    expect(carrier.w3cTraceId).toMatch(/^[0-9a-f]{32}$/); expect(carrier.w3cTraceId).not.toBe(recorded[0]!.traceId);
+    expect(parseParent(carrier.sourceTraceparent)).toMatchObject({ traceId: recorded[0]!.traceId, parentSpanId: recorded[0]!.spanId });
+    expect(await prepareBackgroundContinuation(c.input, c.store)).toEqual(prepared);
+  });
   it("includes the actual failure reason when resuming after a parsed background action", () => {
     const c = continuationFixture();
     const evidence = JSON.parse(continuationEvidence([{ ...c.action, status: "FAILED",

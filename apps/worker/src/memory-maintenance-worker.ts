@@ -9,6 +9,7 @@ import {
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workflowTracing } from "./workflow-tracing.js";
 
 const service = "space-memory-maintenance-worker";
 
@@ -22,6 +23,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
   try {
     const connection = await NativeConnection.connect({ address });
     const spans = otlpSpanExporterFromEnv(process.env, service);
+    const tracing = workflowTracing(spans);
     const worker = await Worker.create({
       connection,
       namespace,
@@ -29,7 +31,8 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })], workflowModules: tracing.workflowModules },
+      sinks: tracing.sinks
     });
     console.log(JSON.stringify({
       service,
@@ -39,8 +42,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       activityConcurrency: memoryMaintenanceWorkerOptions.maxConcurrentActivityTaskExecutions
     }));
-    await worker.run();
-    await spans?.close();
+    try { await worker.run(); } finally { await spans?.close(); }
   } catch (error) {
     console.error(JSON.stringify({
       service,

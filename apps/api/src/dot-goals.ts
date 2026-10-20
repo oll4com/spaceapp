@@ -1,3 +1,4 @@
+import { traceContextForRawRequest, workflowCorrelationMemo } from "./trace-context.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { Client, Connection, WorkflowExecutionAlreadyStartedError, WorkflowNotFoundError } from "@temporalio/client";
@@ -26,7 +27,7 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string): Promise<void>;
+  start(goalId: string, trace?: { traceId: string; traceparent: string }): Promise<void>;
   wake(goalId: string): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
   ensure?(goalId: string): Promise<boolean>;
@@ -38,7 +39,7 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string) {
+  start(goalId: string, trace?: { traceId: string; traceparent: string }) {
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
@@ -125,7 +126,10 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       if ((error as { code?: string }).code === "DOT_GOAL_OPEN") throw new DotGoalError(409, "DOT_GOAL_OPEN", "This conversation already has an open Goal.");
       throw error;
     }
-    try { await deps.workflow.start(goal.goalId); }
+    try {
+      if (request) await deps.workflow.start(goal.goalId, { traceId: request.requestIdForSpace ?? request.id, traceparent: traceContextForRawRequest(request.raw).traceparent });
+      else await deps.workflow.start(goal.goalId);
+    }
     catch {
       goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");

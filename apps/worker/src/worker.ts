@@ -7,6 +7,7 @@ import { TelegramDeliveryWorker, TelegramSecretStore, otlpSpanExporterFromEnv } 
 import { NativeConnection, Runtime, Worker } from "@temporalio/worker";
 import * as activities from "./activities.js";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workflowTracing } from "./workflow-tracing.js";
 import { resolveTemporalCoreMetricsBind, resolveWorkerMetricsListen, startWorkerMetricsServer } from "./worker-metrics.js";
 import { workerLog } from "./worker-log.js";
 import { sweepCodexCliCompletions } from "./codex-cli-completion.js";
@@ -37,15 +38,16 @@ if (temporalCoreMetricsBind) {
 
 const connection = await NativeConnection.connect({ address });
 const spans = otlpSpanExporterFromEnv(process.env, "space-worker");
+const tracing = workflowTracing(spans);
 const worker = await Worker.create({
   connection,
   namespace,
   taskQueue,
   workflowsPath,
   activities,
-  // Structured, correlated activity records and worker metrics. Activity-side
-  // only: the workflow sandbox and its replay behaviour are unchanged.
-  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+  // Activity metrics remain enabled; optional workflow export uses replay-safe sinks.
+  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })], workflowModules: tracing.workflowModules },
+  sinks: tracing.sinks
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.

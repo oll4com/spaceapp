@@ -215,27 +215,51 @@ Without the endpoint, every activity still writes `activity.started` and
 
 ## Traces (W3C trace context)
 
-The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
-SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
-2026-10-16 the worker and both memory workers use the same exporter (services
-`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
-- **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
-  An invalid or missing header gets a new trace ID. Every API log line carries
-  `w3cTraceId` (Fastify `childLoggerFactory`).
-- **Propagation into turns:** API turn starters and the Room Agent coordinator add
-  the request's `traceparent` to the turn input (an optional contract field) and
-  to the Temporal memo. A bounded in-memory map from request ID to trace context
-  (`apps/api/src/trace-context.ts`) does this without passing the request object
-  through every service.
-- **Worker:** worker logs read the trace ID from the activity input. Internal
-  room-action calls from the worker send a child `traceparent`, so the internal
-  API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+The trace context is local by default. Set `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT`
+to a plain HTTP(S) collector base URL to enable OTLP/HTTP JSON at `<base>/v1/traces`.
+The API and all three Temporal worker processes share the dependency-free,
+bounded exporter in `packages/runtime/src/otlp-span-exporter.ts`. The services are
+`space-api`, `space-worker`, `space-memory-maintenance-worker` and
+`space-memory-mutation-worker`. With the variable unset or invalid there is no
+workflow tracing hook, sink or network export; existing local logs and metrics
+continue unchanged.
+
+- **API:** one SERVER span continues valid inbound W3C context, or starts a new
+  trace. The context propagated into turn input/memo names that actual SERVER
+  span, rather than an unexported intermediate span.
+- **Workflows:** replay-safe interceptors propagate an INTERNAL workflow span
+  through Temporal headers to every activity attempt and child workflow.
+  Input/memo context is the fallback for workflows started by the API. Workflows
+  without a carrier derive a stable trace from their original run id.
+- **Long-lived supervisors:** a serial mission has its own completed workflow
+  span under its request's API context, including later requests. Child work and
+  supervisor activities execute under that mission span. The outer run span
+  closes when the supervisor closes or continues as new.
+- **Attempts and failures:** each activity attempt exports its type/id, workflow
+  id/run/type, attempt, outcome, duration and existing safe reason code/category.
+  Returned FAILED results, cancellation and thrown failures remain distinct.
+  No result body or exception message is exported.
+- **Continuations:** continue-as-new preserves trace continuity and links the
+  previous run. A background turn retains its separate `trace:bg-...` log id,
+  records an independent W3C trace and a causal source span in its existing
+  durable queue metadata, and exports the relationship as an OTLP span link.
+  Existing queued turns without these optional fields remain valid.
+- **Privacy and delivery:** attributes and links pass a central allowlist. Only
+  identifiers, type, attempt, outcome, stable code/category and durations leave
+  the process; prompts, outputs, URLs, paths, headers and error messages do not.
+  The queue drops/counts at its bound, each POST times out, and collector failures
+  never delay or fail workflow/activity work. Export is best effort, not a
+  durable exactly-once delivery mechanism.
+- **Determinism:** workflow code performs no export I/O and consumes none of the
+  application's seeded randomness for tracing. Sinks use `callDuringReplay:
+  false`; the integration suite runs real Temporal workflows against a fake
+  local HTTP collector and replays their histories, including a pre-tracing
+  history whose activity commands contain application UUIDs.
+
+Run `npm test -w @space/worker -- workflow-tracing.integration` for the real
+workflow/collector tests. The first run downloads the free Temporal CLI test
+server through `@temporalio/testing`; no Docker, database or AI provider is needed.
+The server and collector bind loopback and are torn down by the test.
 
 ### Replay compatibility
 
@@ -315,7 +339,9 @@ No credential or transcript export was added.
   continuation from the run it continues (`roomAgentContinuation.sourceRunId`,
   indexed by migration 0206, at most 50 generations and the row limit) and
   marks it with `continuationOf`. Its events and logs remain under its own
-  trace ID. Chat-pane sends from room actions use `<actionId>:chat`.
+  trace ID. Optional OTLP export now links the independent W3C trace to its
+  causal span; this does not change the database/log trace-id convention.
+  Chat-pane sends from room actions use `<actionId>:chat`.
 - **CLI terminal task IDs are not linked.** `cliTaskId` and `revisionId` are not
   tied to request IDs.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
@@ -337,7 +363,8 @@ No credential or transcript export was added.
   trace's workflows, joined by workflow id, with their status and error code, and
   names a failed run's code as the cause when no event carries one.
 - **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
-  spans and worker activity spans (the worker and both memory workers); the CLI
+  spans, workflow spans, child/continuation links and worker activity spans
+  (the worker and both memory workers); the CLI
   and Browser Hosts still join traces through log lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.

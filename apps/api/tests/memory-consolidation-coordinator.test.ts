@@ -1,3 +1,4 @@
+import { requestTraceContexts, createRequestTraceContext } from "../src/trace-context.js";
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_CONSOLIDATION_TASK_QUEUE,
@@ -42,4 +43,14 @@ describe("Memory consolidation coordinator", () => {
 
     expect(result).toEqual({ status: "ALREADY_SCHEDULED", workflowId, runId: null });
   });
+});
+
+it("parents API-started memory work to the actual exported request span", async () => {
+  const traceId = "req:otlp-consolidation";
+  const context = createRequestTraceContext(undefined);
+  requestTraceContexts.remember(traceId, context);
+  let memo: Record<string, string> | undefined;
+  const start = async (_type: string, options: { workflowId: string; memo?: Record<string, string> }) => { memo = options.memo; return { workflowId: options.workflowId }; };
+  await scheduleMemoryConsolidation({ runId: "memory_consolidation:trace", traceId }, "space-memory-consolidation:trace", start);
+  expect(memo).toMatchObject({ spaceTraceId: traceId, traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
 });

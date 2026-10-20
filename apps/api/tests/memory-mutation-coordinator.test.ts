@@ -1,3 +1,4 @@
+import { requestTraceContexts, createRequestTraceContext } from "../src/trace-context.js";
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_MUTATION_TASK_QUEUE,
@@ -81,4 +82,14 @@ describe("Memory mutation coordinator", () => {
     expect(second.workflowId).not.toBe(first.workflowId);
     expect(calls).toEqual([first.workflowId, first.workflowId, second.workflowId]);
   });
+});
+
+it("parents API-started memory work to the actual exported request span", async () => {
+  const traceId = "req:otlp-mutation";
+  const context = createRequestTraceContext(undefined);
+  requestTraceContexts.remember(traceId, context);
+  let memo: Record<string, string> | undefined;
+  const start = async (_type: string, options: { workflowId: string; memo?: Record<string, string> }) => { memo = options.memo; return { workflowId: options.workflowId }; };
+  await scheduleMemoryMutation({ changeSetId: "memory_change:trace", traceId }, start);
+  expect(memo).toMatchObject({ spaceTraceId: traceId, traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
 });

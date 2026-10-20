@@ -1,3 +1,5 @@
+import type { FastifyRequest } from "fastify";
+import { traceContextForRawRequest } from "../src/trace-context.js";
 import { describe, expect, it, vi } from "vitest";
 import { dotGoalStepPrompt, type DotGoal } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
@@ -194,4 +196,11 @@ it("writes a bounded, visible step prompt", () => {
     usage: { steps: 0, lastRunId: null, lastStepAt: null, consecutiveFailures: 0 }, steering: [] }, 1);
   expect(prompt.length).toBeLessThanOrEqual(7900);
   expect(prompt).toContain("Goal step 1 of at most 5.");
+});
+
+it("carries the creating API request's actual trace context into the Goal starter", async () => {
+  const { service, deps } = fixture();
+  const request = { id: "req:goal-trace", requestIdForSpace: "req:goal-trace", raw: { headers: {} } } as FastifyRequest;
+  const goal = await service.create("user:1", dotId, input, request);
+  expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, { traceId: request.requestIdForSpace, traceparent: traceContextForRawRequest(request.raw).traceparent });
 });

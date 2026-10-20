@@ -52,3 +52,22 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Optional OTLP tracing
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is a collector base URL, for example
+`http://127.0.0.1:4318`. Set it independently for the API, main worker,
+memory-maintenance worker and memory-mutation worker. They POST JSON to
+`<base>/v1/traces` through the same bounded best-effort exporter. Leave it unset
+to disable export and workflow hooks. Values with credentials, query strings,
+fragments or non-HTTP(S) schemes are ignored. No collector account or tracing SDK
+is required.
+
+Coverage includes API SERVER spans, workflow executions, child workflows, every
+activity attempt, safe failure code/category and causal continuation links.
+Long-lived supervisor missions receive individual request contexts and completed
+spans. Temporal replay exports no spans. The allowlist excludes prompts, model
+outputs, URLs, file paths and error messages. See
+[observability](quality/observability.md#traces-w3c-trace-context) for semantics,
+limits and the real local integration test. CLI/Browser Host span export remains
+outside this coverage.
