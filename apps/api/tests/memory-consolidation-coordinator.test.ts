@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 import {
   MEMORY_CONSOLIDATION_TASK_QUEUE,
   MEMORY_CONSOLIDATION_WORKFLOW_TYPE,
@@ -21,6 +22,7 @@ describe("Memory consolidation coordinator", () => {
       workflowType: MEMORY_CONSOLIDATION_WORKFLOW_TYPE,
       options: {
         args: [input],
+        memo: { spaceTraceId: input.traceId },
         taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
         workflowId,
         workflowIdReusePolicy: "REJECT_DUPLICATE",
@@ -41,5 +43,18 @@ describe("Memory consolidation coordinator", () => {
     );
 
     expect(result).toEqual({ status: "ALREADY_SCHEDULED", workflowId, runId: null });
+  });
+
+  it("propagates the recorded API span through memo without changing the strict workflow input", async () => {
+    const traceId = "req:consolidation-tracing";
+    const context = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    requestTraceContexts.remember(traceId, context);
+    const input = { runId: "memory_consolidation:trace-test", traceId };
+    let options: any;
+    await scheduleMemoryConsolidation(input, "memory-consolidation:trace-test", async (_, value) => {
+      options = value; return { workflowId: value.workflowId };
+    });
+    expect(options.args).toEqual([input]);
+    expect(options.memo).toEqual({ spaceTraceId: traceId, traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
   });
 });

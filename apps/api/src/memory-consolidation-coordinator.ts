@@ -6,6 +6,7 @@ import {
   type MemoryConsolidationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 
 export { MEMORY_CONSOLIDATION_TASK_QUEUE, MEMORY_CONSOLIDATION_WORKFLOW_TYPE };
 
@@ -21,6 +22,7 @@ interface WorkflowStartOptions {
   workflowId: string;
   workflowIdReusePolicy: "REJECT_DUPLICATE";
   workflowIdConflictPolicy: "USE_EXISTING";
+  memo?: Record<string, string>;
 }
 
 interface WorkflowStartHandle {
@@ -37,6 +39,7 @@ function isAlreadyStarted(error: unknown): boolean {
   return error instanceof Error && error.name === "WorkflowExecutionAlreadyStartedError";
 }
 
+/** Start a validated consolidation once, propagating request ancestry through memo and reusing existing executions. */
 export async function scheduleMemoryConsolidation(
   rawInput: MemoryConsolidationWorkflowInput,
   workflowId: string,
@@ -46,6 +49,7 @@ export async function scheduleMemoryConsolidation(
   try {
     const handle = await startWorkflow(MEMORY_CONSOLIDATION_WORKFLOW_TYPE, {
       args: [input],
+      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }),
       taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",

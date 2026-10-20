@@ -1,0 +1,59 @@
+name: Temporal tracing regression
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/temporal-tracing.yml'
+      - 'apps/worker/**'
+      - 'apps/api/src/trace-context.ts'
+      - 'apps/api/src/dot-goals.ts'
+      - 'apps/api/src/room-agent.ts'
+      - 'apps/api/src/memory-*-coordinator.ts'
+      - 'apps/api/tests/*coordinator.test.ts'
+      - 'packages/contracts/src/schemas.ts'
+      - 'packages/runtime/src/otlp-span-exporter.ts'
+      - 'packages/runtime/tests/otlp-links.test.ts'
+      - 'package-lock.json'
+  pull_request:
+    paths:
+      - 'apps/worker/**'
+      - 'apps/api/**'
+      - 'packages/contracts/**'
+      - 'packages/runtime/**'
+      - '.github/workflows/temporal-tracing.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-tracing-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    # Forks can exercise the public source directly. The separate release CI
+    # retains its private-source export-provenance gate.
+    if: github.event_name != 'push' || github.event.repository.fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install test prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check workspace types and architecture
+        run: npm run check
+      - name: Run the public workspace suites including real Temporal tracing
+        run: npm test
+      - name: Build the public workspace
+        run: npm run build

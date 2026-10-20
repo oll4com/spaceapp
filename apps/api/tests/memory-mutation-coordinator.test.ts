@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 import {
   MEMORY_MUTATION_TASK_QUEUE,
   MEMORY_MUTATION_WORKFLOW_TYPE,
@@ -27,6 +28,7 @@ describe("Memory mutation coordinator", () => {
         workflowType: MEMORY_MUTATION_WORKFLOW_TYPE,
         options: {
           args: [input],
+          memo: { spaceTraceId: input.traceId },
           taskQueue: MEMORY_MUTATION_TASK_QUEUE,
           workflowId: result.workflowId,
           workflowIdReusePolicy: "REJECT_DUPLICATE",
@@ -52,6 +54,19 @@ describe("Memory mutation coordinator", () => {
       workflowId: "space-memory-mutation:memory_change:approved",
       runId: null
     });
+  });
+
+  it("propagates the recorded API span through memo without changing the strict mutation input", async () => {
+    const traceId = "req:mutation-tracing";
+    const context = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    requestTraceContexts.remember(traceId, context);
+    const input = { changeSetId: "memory_change:trace-test", traceId };
+    let options: any;
+    await scheduleMemoryMutation(input, async (_, value) => {
+      options = value; return { workflowId: value.workflowId };
+    });
+    expect(options.args).toEqual([input]);
+    expect(options.memo).toEqual({ spaceTraceId: traceId, traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
   });
 
   it("starts a fresh retry-safe workflow for each reconciliation command identity", async () => {

@@ -73,7 +73,7 @@ describe("Dot Goals", () => {
     const { service, deps } = fixture();
     const goal = await service.create("user:1", dotId, input, null);
     expect(goal).toMatchObject({ status: "ACTIVE", budget: { maxSteps: 2, maxMinutes: 180 }, milestones: [{ id: "m1", title: "Draft" }, { id: "m2" }] });
-    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, undefined);
     await expect(service.create("user:1", dotId, input, null)).rejects.toMatchObject({ status: 409, code: "DOT_GOAL_OPEN" });
     await expect(service.create("user:2", dotId, input, null)).rejects.toBeInstanceOf(DotGoalError);
   });

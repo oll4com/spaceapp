@@ -186,6 +186,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
     }
   }
 
+  /** Start an action once, correlating its internal request with the originating mission in memo. */
   async enqueueAction(actionId: string, bridge: SpaceAgentRoomActionBridgeRequest, traceId: string): Promise<void> {
     const lease = await this.connect("roomAgentActionWorkflow");
     try {
@@ -213,6 +214,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
     } finally { await lease.close(); }
   }
 
+  /** Signal or start the room supervisor with the queued turn's original HTTP span ancestry. */
   async enqueue(rawItem: RoomAgentSupervisorQueueItem): Promise<{ workflowId: string; runId: string | null }> {
     const parsed = roomAgentSupervisorQueueItemSchema.parse(rawItem);
     // The queued turn carries the originating request's W3C trace context to
@@ -225,6 +227,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
         workflowId,
         taskQueue: this.options.taskQueue,
         args: [{ roomId: item.turn.roomId, pending: [], processedCount: 0 }],
+        memo: workflowCorrelationMemo({ traceId: item.turn.traceId, traceparent: item.turn.traceparent, missionId: item.missionId }),
         signal: ROOM_AGENT_ENQUEUE_SIGNAL,
         signalArgs: [item]
       });

@@ -1,7 +1,10 @@
+import { randomBytes } from "node:crypto";
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
   roomAgentSupervisorQueueItemSchema,
+  formatTraceparent,
+  parseTraceparent,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
   type RoomAgentSupervisorQueueItem
@@ -52,6 +55,10 @@ function recordedTokenUsage(executionState: Record<string, unknown>): MissionTok
     : null;
 }
 
+/**
+ * Prepare an idempotent continuation after the preceding turn and its actions settle.
+ * Enforce mission budgets and persist a fresh trace linked to the originating request.
+ */
 export async function prepareBackgroundContinuation(input: {
   roomId: string; missionId: string; continuationId: string;
 }, store: SpaceStore, maxContinuations = DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS,
@@ -130,7 +137,9 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`,
+    traceparent: formatTraceparent(randomBytes(16).toString("hex"), randomBytes(8).toString("hex")),
+    ...(parseTraceparent(source.queueItem.turn.traceparent) ? { traceLink: source.queueItem.turn.traceparent } : {})
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({

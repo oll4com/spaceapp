@@ -7,6 +7,7 @@ import {
   type MemoryMutationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 
 export { MEMORY_MUTATION_TASK_QUEUE, MEMORY_MUTATION_WORKFLOW_TYPE, buildMemoryMutationWorkflowId };
 
@@ -22,6 +23,7 @@ interface WorkflowStartOptions {
   workflowId: string;
   workflowIdReusePolicy: "REJECT_DUPLICATE";
   workflowIdConflictPolicy: "USE_EXISTING";
+  memo?: Record<string, string>;
 }
 
 interface WorkflowStartHandle {
@@ -38,6 +40,7 @@ function isAlreadyStarted(error: unknown): boolean {
   return error instanceof Error && error.name === "WorkflowExecutionAlreadyStartedError";
 }
 
+/** Schedule a validated change set under its stable workflow ID with request trace context in memo. */
 export async function scheduleMemoryMutation(
   rawInput: MemoryMutationWorkflowInput,
   startWorkflow: MemoryMutationWorkflowStarter,
@@ -48,6 +51,7 @@ export async function scheduleMemoryMutation(
   try {
     const handle = await startWorkflow(MEMORY_MUTATION_WORKFLOW_TYPE, {
       args: [input],
+      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }),
       taskQueue: MEMORY_MUTATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",

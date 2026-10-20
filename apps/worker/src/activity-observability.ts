@@ -13,6 +13,8 @@ import {
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { readTraceHeader, type TraceHeaders } from "./trace-propagation.js";
+import { workerSpanAttributes } from "./workflow-span.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -30,6 +32,7 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  traceparent?: string | null;
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
@@ -57,6 +60,10 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
 
 /** traceparent for an outbound call: same W3C trace, new span id; null if none. */
 export function childTraceparent(traceparent: string | null | undefined): string | null {
+  const active = observations.getStore()?.traceparent;
+  // The receiver creates a span. Name the recorded activity span as its
+  // parent, rather than allocating an unrecorded intermediate client span.
+  if (active) return active;
   const parsed = parseTraceparent(traceparent);
   if (!parsed) return null;
   let spanId = randomBytes(8).toString("hex");
@@ -137,6 +144,8 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** Workflow span context propagated via Temporal headers, including scalar/no-argument activities. */
+  headers?: TraceHeaders;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -145,6 +154,10 @@ function activityTraceparent(args: readonly unknown[]) {
   return parseTraceparent(found.traceparent);
 }
 
+/**
+ * Observe one activity attempt while preserving its return value or thrown failure.
+ * Temporal headers take precedence over argument context; exporter errors are isolated.
+ */
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],
@@ -173,6 +186,14 @@ export async function observeActivityExecution<T>(
   metrics.activitiesInFlight.inc(labels);
   workerLog("info", "activity.started", { ...base, queueMs });
   const observation: ActivityObservation = { reasonCode: null };
+  const parent = dependencies.spans ? parseTraceparent(readTraceHeader(dependencies.headers)) ?? activityTraceparent(args) : null;
+  let spanId: string | null = null;
+  try {
+    if (parent) {
+      spanId = randomBytes(8).toString("hex");
+      observation.traceparent = formatTraceparent(parent.traceId, spanId, parent.flags);
+    }
+  } catch { /* No tracing context is preferable to failing activity work. */ }
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
     const durationMs = Math.max(0, now() - startedAt);
@@ -194,19 +215,24 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
+    if (parent && spanId) {
+      try { dependencies.spans!.record({
         traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
+        spanId,
         parentSpanId: parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: workerSpanAttributes({ "space.activity_type": activityType, "space.activity_id": info.activityId,
+          "space.workflow_type": info.workflowType, "space.workflow_id": info.workflowExecution?.workflowId,
+          "space.run_id": info.workflowExecution?.runId, "space.outcome": outcome, "space.attempt": info.attempt,
+          "space.duration_ms": durationMs, "space.queue_ms": queueMs,
+          "space.trace_id": base.traceId, "space.room_id": base.roomId, "space.pane_id": base.paneId,
+          "space.mission_id": base.missionId,
+          ...(reasonCode ? { "space.reason_code": reasonCode, "space.category": category } : {}) }),
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
-      });
+      }); } catch { /* Export must never replace an activity result or failure. */ }
     }
   };
 
@@ -229,6 +255,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headers: input.headers,
         cancelled: () => context.cancellationSignal.aborted
       })
     }

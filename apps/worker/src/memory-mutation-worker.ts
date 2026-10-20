@@ -5,6 +5,7 @@ import { MEMORY_MUTATION_TASK_QUEUE, memoryMutationsEnabled, memoryMutationWorke
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workflowSpanSinks } from "./workflow-observability-worker.js";
 
 const service = "space-memory-mutation-worker";
 
@@ -22,7 +23,9 @@ if (!memoryMutationsEnabled(process.env)) {
     workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
     activities: { executePersistedMemoryChangeSet },
     ...memoryMutationWorkerOptions,
-    interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+    ...(spans ? { sinks: workflowSpanSinks(spans) } : {}),
+    interceptors: { activity: [createActivityObservabilityInterceptors({ spans })],
+      ...(spans ? { workflowModules: [fileURLToPath(new URL("./workflow-observability.js", import.meta.url))] } : {}) }
   });
   console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
   try {

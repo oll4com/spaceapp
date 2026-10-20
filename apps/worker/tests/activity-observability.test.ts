@@ -186,7 +186,10 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/interceptors:\s*\{\s*activity:\s*\[createActivityObservabilityInterceptors\(\{ spans \}\)\]/);
+    expect(source, entry).toContain("sinks: workflowSpanSinks(spans)");
+    expect(source, entry).toContain("workflowModules:");
+    expect(source, entry).toContain("./workflow-observability.js");
   }
 });
 

@@ -1,7 +1,8 @@
 import { buildCodexAppServerTurnWorkflowId, roomAgentSupervisorQueueItemSchema } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 
-export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" = "OPEN_TYPES") {
+/** Build a settled synthetic mission store with optional request ancestry for continuation tests. */
+export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" = "OPEN_TYPES", traceparent?: string) {
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "Continuation regression", initialPaneCount: 0 });
   const pane = store.getOrCreateRoomAgentPane(room.id);
@@ -14,7 +15,7 @@ export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" 
       modelId: "gpt-5.6-sol", reasoningEffort: "high", agentSessionId: session.sessionId,
       agentRunId: `agent_run:${suffix}`, agentUserMessageId: `agent_msg:user-${suffix}`,
       agentAssistantMessageId: `agent_msg:assistant-${suffix}`, roomAgentMissionId: "mission:continuation",
-      traceId: `trace:continuation-${suffix}`, selectedToolIds: ["room:inspect", "room:open_types", "room:send"]
+      traceId: `trace:continuation-${suffix}`, ...(traceparent ? { traceparent } : {}), selectedToolIds: ["room:inspect", "room:open_types", "room:send"]
     } });
     return store.enqueueRoomAgentMission({ requestId: `request:${suffix}`, clientRequestId: `client-${suffix}`, content: prompt,
       supervisorWorkflowId: `room-supervisor:${room.id}`, childWorkflowId: buildCodexAppServerTurnWorkflowId(item.turn),

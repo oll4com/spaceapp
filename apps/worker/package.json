@@ -26,6 +26,10 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/common": "1.24.0",
+    "@temporalio/proto": "1.24.0",
+    "@temporalio/testing": "1.24.0",
+    "fastify": "5.12.5",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },
