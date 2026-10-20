@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -102,6 +103,7 @@ const PROVIDERS = Object.freeze({
   experimental: Object.freeze(["deepseek"])
 });
 const ALL_PROVIDERS = new Set(Object.values(PROVIDERS).flat());
+export const SUPPORTED_ENGINES = Object.freeze(["docker", "podman"]);
 export const CLI_SETTINGS_FILES = Object.freeze([
   "claude/settings.json", "claude/.claude.json", "codex/config.toml", "opencode/config/opencode/opencode.json"
 ]);
@@ -117,6 +119,7 @@ const CONFIG_KEYS = new Set([
   "workspaces",
   "companionsEnabled",
   "optionalModules",
+  "engine",
   "installId",
   "users"
 ]);
@@ -297,13 +300,17 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  if (engine !== undefined && !SUPPORTED_ENGINES.includes(engine)) {
+    throw new Error("Container engine must be docker or podman.");
+  }
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -315,6 +322,7 @@ export function createDefaultConfig({
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
+    ...(engine !== undefined ? { engine } : {}),
     workspaces: []
   };
 }
@@ -355,6 +363,12 @@ export function validateConfig(config) {
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
+  }
+  if (config.engine !== undefined && !SUPPORTED_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Host-root access is not supported with the podman engine.");
   }
   if (config.optionalModules !== undefined && !OPTIONAL_MODULES_PATTERN.test(config.optionalModules)) {
     throw new Error("optionalModules must be all, none or a comma-separated list of module names.");
@@ -661,11 +675,13 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
+  const isPodman = config.engine === "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman ? ["        bind:", "          selinux: \"z\""] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -680,7 +696,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman ? ["        bind:", "          selinux: \"z\""] : [])
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -718,7 +735,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      SPACE_CLI_HOST_SOCKETS_FILE: /etc/spaceapp/cli-hosts.json",
     "    volumes:",
     ...(mounts.length > 0 ? mounts : []),
-    "      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro",
+    `      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro${isPodman ? ",z" : ""}`,
     ...users.map((user) => `      - spaceapp-cli-socket-${userSlug(user.id)}:/run/spaceapp-cli-users/${userSlug(user.id)}`),
     "  spaceapp-cli:",
     ...service,
@@ -774,6 +791,23 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
+  let engine = options.engine ?? (options.config?.engine);
+  if (!engine) {
+    try {
+      const raw = readFileSync(join(stateRoot, "config.json"), "utf8");
+      engine = JSON.parse(raw)?.engine;
+    } catch {}
+  }
+  if (!engine) {
+    try {
+      const raw = readFileSync(join(root, "config.json"), "utf8");
+      engine = JSON.parse(raw)?.engine;
+    } catch {}
+  }
+  engine = engine ?? "docker";
+  if (!SUPPORTED_ENGINES.includes(engine)) {
+    throw new Error(`Unsupported container engine "${engine}". Supported engines: ${SUPPORTED_ENGINES.join(", ")}`);
+  }
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
@@ -886,7 +920,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -926,7 +960,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -948,8 +983,15 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine: engine ?? "docker"
     });
+  }
+  const effectiveStoredEngine = config.engine ?? "docker";
+  if (engine !== undefined && effectiveStoredEngine !== engine) {
+    throw new Error(
+      `Switching container engine from "${effectiveStoredEngine}" to "${engine}" on an existing installation is refused because persistent volumes are not shared between engines. Use "${UNIVERSAL_COMMAND} backup" to export your data, reinstall with "--engine ${engine}", and then run "${UNIVERSAL_COMMAND} restore".`
+    );
   }
   if (config.version !== version) {
     config = {
@@ -967,6 +1009,11 @@ export async function prepareInstallation(root, {
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };
+  }
+  if (engine !== undefined) {
+    config = { ...config, engine };
+  } else if (!config.engine) {
+    config = { ...config, engine: "docker" };
   }
   validateConfig(config);
 
