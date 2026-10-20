@@ -13,6 +13,7 @@ const DOT_QUEUE = "space-dot-goals";
 const TURN_QUEUE = "space-turns";
 const MAINTENANCE_QUEUE = "space-memory-maintenance";
 const MUTATION_QUEUE = "space-memory-mutations";
+const SUPERVISOR_QUEUE = "space-room-supervisor";
 
 const WORKFLOWS = path.join(SRC, "workflows.ts");
 const MAINTENANCE = path.join(SRC, "memory-maintenance-workflows.ts");
@@ -46,12 +47,16 @@ async function withWorker(
 async function record(
   env: TestWorkflowEnvironment,
   file: string,
-  handle: { workflowId: string; result(): Promise<unknown> }
+  handle: { workflowId: string; result(): Promise<unknown> },
+  options: { cancelled?: boolean } = {}
 ) {
   // Read the history only after the run closed: reading it earlier returns the
   // first events of a still-open run, which replays trivially and would hide a
-  // determinism break.
-  const result = await handle.result();
+  // determinism break. A workflow that parks forever (the supervisor) is closed
+  // by cancelling it, and that rejection is the expected close, not a failure.
+  const result = options.cancelled
+    ? await handle.result().catch(() => undefined)
+    : await handle.result();
   const history = await env.client.workflow.getHandle(handle.workflowId).fetchHistory();
   if (!history.events?.length) throw new Error(`empty history for ${file}`);
   await mkdir(HISTORIES, { recursive: true });
@@ -161,6 +166,128 @@ export async function recordHistories(): Promise<string[]> {
         written.push("memoryMaintenanceWorkflow");
       }
     );
+
+    await withWorker(
+      env,
+      {
+        taskQueue: TURN_QUEUE,
+        workflowsPath: WORKFLOWS,
+        activities: {
+          runCodexAppServerTurn: async (input: { roomId: string; paneId: string }) => ({
+            workflowId: "wf:record:codex-turn",
+            roomId: input.roomId,
+            paneId: input.paneId,
+            traceId: "trace:record"
+          })
+        }
+      },
+      async () => {
+        const handle = await env.client.workflow.start("codexAppServerTurnWorkflow", {
+          args: [turn()],
+          taskQueue: TURN_QUEUE,
+          workflowId: "wf:record:codex-turn"
+        });
+        await record(env, "codexAppServerTurnWorkflow", handle);
+        written.push("codexAppServerTurnWorkflow");
+      }
+    );
+
+    await withWorker(
+      env,
+      {
+        taskQueue: TURN_QUEUE,
+        workflowsPath: WORKFLOWS,
+        activities: {
+          runRoomAgentBackgroundAction: async () => ({ actionId: "action:record", ran: true }),
+          failRoomAgentBackgroundAction: async () => undefined
+        }
+      },
+      async () => {
+        const handle = await env.client.workflow.start("roomAgentActionWorkflow", {
+          args: [{ bridge: { roomId: "room:record", missionId: "mission:record" }, actionId: "action:record", traceId: "trace:record" }],
+          taskQueue: TURN_QUEUE,
+          workflowId: "wf:record:room-action"
+        });
+        await record(env, "roomAgentActionWorkflow", handle);
+        written.push("roomAgentActionWorkflow");
+      }
+    );
+
+    await withWorker(
+      env,
+      {
+        taskQueue: MAINTENANCE_QUEUE,
+        workflowsPath: MAINTENANCE,
+        activities: {
+          prepareMemoryConsolidation: async () => ({ run: { runId: "run:record", status: "COMPLETED" }, changeSetId: null })
+        }
+      },
+      async () => {
+        const handle = await env.client.workflow.start("memoryConsolidationWorkflow", {
+          args: [{ runId: "run:record", traceId: "trace:record" }],
+          taskQueue: MAINTENANCE_QUEUE,
+          workflowId: "wf:record:consolidation"
+        });
+        await record(env, "memoryConsolidationWorkflow", handle);
+        written.push("memoryConsolidationWorkflow");
+      }
+    );
+
+    // The supervisor never returns; cancel it so the run closes and the history
+    // (which is what replay reads) is complete.
+    await withWorker(
+      env,
+      {
+        taskQueue: SUPERVISOR_QUEUE,
+        workflowsPath: WORKFLOWS,
+        activities: {
+          checkRoomAgentSupervisorTurn: async () => "SKIP",
+          discardRoomAgentSupervisorTurn: async () => undefined,
+          finishRoomAgentSupervisorTurn: async () => undefined,
+          prepareRoomAgentBackgroundContinuation: async () => ({ state: "DONE" })
+        }
+      },
+      async () => {
+        const pending = [{ missionId: "mission:record", turn: turn() }];
+        const handle = await env.client.workflow.start("roomAgentSupervisorWorkflow", {
+          args: [{ roomId: "room:record", pending, monitoringMissionIds: [], interrupted: [], processedCount: 0 }],
+          taskQueue: SUPERVISOR_QUEUE,
+          workflowId: "wf:record:supervisor"
+        });
+        await env.sleep("5 seconds");
+        await handle.cancel();
+        await record(env, "roomAgentSupervisorWorkflow", handle, { cancelled: true });
+        written.push("roomAgentSupervisorWorkflow");
+      }
+    );
+
+    await withWorker(
+      env,
+      {
+        taskQueue: SUPERVISOR_QUEUE,
+        workflowsPath: WORKFLOWS,
+        activities: {
+          settleRoomAgentBackgroundMission: async () => true,
+          markRoomAgentMissionStarted: async () => undefined,
+          markRoomAgentMissionFinished: async () => undefined,
+          markRoomAgentMissionContinued: async () => undefined,
+          prepareRoomAgentBackgroundContinuation: async () => ({ state: "DONE" })
+        }
+      },
+      async () => {
+        // Monitoring-only entry: the legacy branch then polls its boolean settle
+        // activity, which is the behaviour only this branch has.
+        const handle = await env.client.workflow.start("legacyRoomAgentSupervisorWorkflow", {
+          args: [{ roomId: "room:record", pending: [], monitoringMissionIds: ["mission:record"], interrupted: [], processedCount: 0 }],
+          taskQueue: SUPERVISOR_QUEUE,
+          workflowId: "wf:record:legacy-supervisor"
+        });
+        await env.sleep("5 seconds");
+        await handle.cancel();
+        await record(env, "legacyRoomAgentSupervisorWorkflow", handle, { cancelled: true });
+        written.push("legacyRoomAgentSupervisorWorkflow");
+      }
+    );
   } finally {
     await env.teardown();
   }
@@ -179,7 +306,7 @@ export async function replayHistories(): Promise<
   }
   const results: Array<{ file: string; workflowId: string; error?: string }> = [];
   const bundleFor = (file: string) =>
-    file.startsWith("memoryMaintenance") ? MAINTENANCE
+    file.startsWith("memoryMaintenance") || file.startsWith("memoryConsolidation") ? MAINTENANCE
       : file.startsWith("memoryMutation") ? MUTATION
         : WORKFLOWS;
 

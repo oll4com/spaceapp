@@ -8,8 +8,7 @@ recorded history must replay without a determinism violation.
 ## Record
 
 ```sh
-cd apps/worker
-node --experimental-strip-types --no-warnings tests/workflow-histories.mts --record
+npm run temporal:record-histories -w @space/worker
 ```
 
 This starts a time-skipping Temporal test environment, runs one instance of
@@ -33,6 +32,14 @@ workflow lives in its own module (as `memoryMaintenanceWorkflow` and
 `memoryMutationWorkflow` do), add the module to `bundleFor()` in
 `workflow-replay.test.ts` so the history is replayed against the bundle that
 worker actually ships.
+
+A workflow that never returns (the room supervisor parks in `condition()`) is
+closed by cancelling it before recording. `record()` then tolerates the
+cancellation rejection: the run is closed, which is all replay needs.
+
+Both supervisor branches are recorded. `legacyRoomAgentSupervisorWorkflow` is the
+pre-`room-background-continuation-v1` branch: a fresh execution always takes the
+patched branch, so only a history can pin it.
 
 ## Proving the gate still bites
 

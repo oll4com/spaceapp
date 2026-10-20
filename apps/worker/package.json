@@ -10,7 +10,8 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "temporal:record-histories": "node --experimental-strip-types tests/workflow-histories.mts --record"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",

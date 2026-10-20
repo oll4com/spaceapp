@@ -14,7 +14,7 @@ const MUTATION = path.join(SRC, "memory-mutation-workflows.ts");
 
 /** Each recorded file replays against the module its production worker ships. */
 function bundleFor(file: string): string {
-  if (file.startsWith("memoryMaintenance")) return MAINTENANCE;
+  if (file.startsWith("memoryMaintenance") || file.startsWith("memoryConsolidation")) return MAINTENANCE;
   if (file.startsWith("memoryMutation")) return MUTATION;
   return WORKFLOWS;
 }
@@ -52,12 +52,21 @@ async function replayOne(
 }
 
 describe("replay gate", () => {
-  it("has a recorded history for every workflow module under test", async () => {
+  it("has a recorded history for every workflow in scope", async () => {
     const files = (await readdir(HISTORIES)).filter((name) => name.endsWith(".json"));
-    expect(files).toContain("dotGoalWorkflow.json");
-    expect(files).toContain("dummyTurnWorkflow.json");
-    expect(files).toContain("memoryMutationWorkflow.json");
-    expect(files).toContain("memoryMaintenanceWorkflow.json");
+    // One per workflow in the issue's scope list, plus the pre-patch supervisor
+    // branch, which only a history can reach.
+    expect(files).toEqual(expect.arrayContaining([
+      "dotGoalWorkflow.json",
+      "dummyTurnWorkflow.json",
+      "codexAppServerTurnWorkflow.json",
+      "roomAgentActionWorkflow.json",
+      "roomAgentSupervisorWorkflow.json",
+      "legacyRoomAgentSupervisorWorkflow.json",
+      "memoryMaintenanceWorkflow.json",
+      "memoryConsolidationWorkflow.json",
+      "memoryMutationWorkflow.json"
+    ]));
   }, 30_000);
 
   it("replays every recorded history without a determinism violation", async () => {

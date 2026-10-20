@@ -249,6 +249,42 @@ describe("dotGoalWorkflow", () => {
     );
     expect(observed).toBe(3);
   }, 180_000);
+
+  it("continues as new while the goal is still unfinished, keeping the goal id", async () => {
+    // runDotGoalLoop gives up after its 300-iteration bound and returns a null
+    // status, which is the workflow's cue to continue as new rather than close.
+    let stepCalls = 0;
+    await withWorker(
+      {
+        taskQueue: DOT_QUEUE,
+        workflowsPath: WORKFLOWS,
+        activities: {
+          dotGoalStep: async () => {
+            stepCalls += 1;
+            // First run never settles; the carried run finishes, proving the
+            // goal id survived the continue-as-new boundary.
+            return stepCalls <= 300
+              ? { state: "WAITING", runId: null, goalStatus: "ACTIVE" }
+              : { state: "DONE", runId: null, goalStatus: "COMPLETED" };
+          },
+          dotGoalObserve: async () => ({ run: "COMPLETED", goalStatus: "COMPLETED" })
+        }
+      },
+      async () => {
+        const handle = await env.client.workflow.start("dotGoalWorkflow", {
+          args: [{ goalId: "goal:continue" }],
+          taskQueue: DOT_QUEUE,
+          workflowId: "wf:dot:continue"
+        });
+        const result = await handle.result();
+        expect(result).toEqual({ goalStatus: "COMPLETED" });
+      }
+    );
+    // Each run is bounded at 300 loop iterations. More than that means the
+    // workflow closed its first run with continueAsNew and the carried goal id
+    // resumed in a second run, which then finished.
+    expect(stepCalls).toBeGreaterThan(300);
+  }, 300_000);
 });
 
 describe("dummyTurnWorkflow", () => {

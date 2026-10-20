@@ -181,6 +181,42 @@ describe("roomAgentSupervisorWorkflow (real sandbox)", () => {
     expect(processed).toBeGreaterThanOrEqual(50);
   }, 300_000);
 
+  it("continues as new after 250 monitoring polls with the carried state intact", async () => {
+    let polls = 0;
+    await withWorker(
+      {
+        checkRoomAgentSupervisorTurn: async () => "SKIP",
+        finishRoomAgentSupervisorTurn: async () => undefined,
+        discardRoomAgentSupervisorTurn: async () => undefined,
+        // "WORKING" keeps the mission in the monitoring set, so the poll loop
+        // keeps running until the 250-poll bound trips continueAsNew.
+        prepareRoomAgentBackgroundContinuation: async () => {
+          polls += 1;
+          return { state: "WORKING" };
+        }
+      },
+      async () => {
+        const handle = await env.client.workflow.start("roomAgentSupervisorWorkflow", {
+          args: [
+            {
+              roomId: "room:supervisor",
+              pending: [],
+              monitoringMissionIds: ["mission:supervisor"],
+              interrupted: [],
+              processedCount: 0
+            }
+          ],
+          taskQueue: SUPERVISOR_QUEUE,
+          workflowId: "wf:supervisor:polls"
+        });
+        await env.sleep("600 seconds");
+        await handle.cancel();
+        await expect(handle.result()).rejects.toThrow();
+      }
+    );
+    expect(polls).toBeGreaterThanOrEqual(250);
+  }, 300_000);
+
   it("keeps the legacy branch reachable for histories that predate the patch", async () => {
     const calls: string[] = [];
     await withWorker(
@@ -214,5 +250,41 @@ describe("roomAgentSupervisorWorkflow (real sandbox)", () => {
     );
     // The legacy branch polls the boolean settle activity while monitoring.
     expect(calls).toContain("settle");
+  }, 300_000);
+
+  it("continues as new from the pre-patch branch after 250 monitoring polls", async () => {
+    let polls = 0;
+    await withWorker(
+      {
+        // false keeps the mission in the monitoring set so the legacy poll loop
+        // reaches its 250-poll bound, which is that branch's continueAsNew path.
+        settleRoomAgentBackgroundMission: async () => {
+          polls += 1;
+          return false;
+        },
+        markRoomAgentMissionStarted: async () => undefined,
+        markRoomAgentMissionFinished: async () => undefined,
+        markRoomAgentMissionContinued: async () => undefined
+      },
+      async () => {
+        const handle = await env.client.workflow.start("legacyRoomAgentSupervisorWorkflow", {
+          args: [
+            {
+              roomId: "room:supervisor",
+              pending: [],
+              monitoringMissionIds: ["mission:supervisor"],
+              interrupted: [],
+              processedCount: 0
+            }
+          ],
+          taskQueue: SUPERVISOR_QUEUE,
+          workflowId: "wf:supervisor:legacy-continue"
+        });
+        await env.sleep("600 seconds");
+        await handle.cancel();
+        await expect(handle.result()).rejects.toThrow();
+      }
+    );
+    expect(polls).toBeGreaterThanOrEqual(250);
   }, 300_000);
 });
