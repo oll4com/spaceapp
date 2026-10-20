@@ -1,10 +1,20 @@
 # Default gitleaks rules, minus documentation placeholders such as
-# DOUBAO_TTS_API_KEY=<your_api_key> in third-party skill guides (Security workflow, 1.1.4).
-# The generic rule captures the line after the placeholder as its "secret", so the match is checked.
+# DOUBAO_TTS_API_KEY=<your_api_key> in third-party skill guides (Security workflow, 1.1.4)
+# and test fixture / public OAuth / telemetry client constants (#211).
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Documentation placeholders, not credentials"
 regexTarget = "match"
 regexes = ['''^your_[a-z_]+>''']
+
+[[allowlists]]
+description = "Test fixtures, quality notes, and public client constants that trip generic-api-key (#211)"
+paths = [
+  '''apps/[^/]+/tests/.*''',
+  '''packages/[^/]+/tests/.*''',
+  '''docs/quality/.*''',
+  '''agent-skills/space-hyperframes/media-use/scripts/lib/telemetry\.mjs''',
+  '''packages/gateway/src/providers/claude/oauth\.ts''',
+]
