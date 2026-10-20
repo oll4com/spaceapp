@@ -7,6 +7,7 @@ import {
   type MemoryMutationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { workflowCorrelationMemo } from "./trace-context.js";
 
 export { MEMORY_MUTATION_TASK_QUEUE, MEMORY_MUTATION_WORKFLOW_TYPE, buildMemoryMutationWorkflowId };
 
@@ -22,6 +23,7 @@ interface WorkflowStartOptions {
   workflowId: string;
   workflowIdReusePolicy: "REJECT_DUPLICATE";
   workflowIdConflictPolicy: "USE_EXISTING";
+  memo?: Record<string, string>;
 }
 
 interface WorkflowStartHandle {
@@ -41,17 +43,20 @@ function isAlreadyStarted(error: unknown): boolean {
 export async function scheduleMemoryMutation(
   rawInput: MemoryMutationWorkflowInput,
   startWorkflow: MemoryMutationWorkflowStarter,
-  commandHash?: string
+  commandHash?: string,
+  traceparent?: string | null
 ): Promise<MemoryMutationStartResult> {
   const input = memoryMutationWorkflowInputSchema.parse(rawInput);
   const workflowId = buildMemoryMutationWorkflowId(input.changeSetId, commandHash);
+  const memo = traceparent ? workflowCorrelationMemo({ traceId: null, traceparent }) : null;
   try {
     const handle = await startWorkflow(MEMORY_MUTATION_WORKFLOW_TYPE, {
       args: [input],
       taskQueue: MEMORY_MUTATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
-      workflowIdConflictPolicy: "USE_EXISTING"
+      workflowIdConflictPolicy: "USE_EXISTING",
+      ...(memo ? { memo } : {})
     });
     return { status: "SCHEDULED", workflowId: handle.workflowId, runId: handle.firstExecutionRunId ?? null };
   } catch (error) {
@@ -61,7 +66,7 @@ export async function scheduleMemoryMutation(
 }
 
 export interface MemoryMutationCoordinator {
-  start(input: MemoryMutationWorkflowInput, commandHash?: string): Promise<MemoryMutationStartResult>;
+  start(input: MemoryMutationWorkflowInput, commandHash?: string, traceparent?: string | null): Promise<MemoryMutationStartResult>;
 }
 
 class DisabledMemoryMutationCoordinator implements MemoryMutationCoordinator {
@@ -76,14 +81,15 @@ class DisabledMemoryMutationCoordinator implements MemoryMutationCoordinator {
 class TemporalMemoryMutationCoordinator implements MemoryMutationCoordinator {
   constructor(private readonly options: { address: string; namespace: string }) {}
 
-  async start(input: MemoryMutationWorkflowInput, commandHash?: string): Promise<MemoryMutationStartResult> {
+  async start(input: MemoryMutationWorkflowInput, commandHash?: string, traceparent?: string | null): Promise<MemoryMutationStartResult> {
     const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
     try {
       const client = new Client({ connection, namespace: this.options.namespace });
       return await scheduleMemoryMutation(
         input,
         (workflowType, options) => client.workflow.start(workflowType, options),
-        commandHash
+        commandHash,
+        traceparent
       );
     } finally {
       await connection.close();

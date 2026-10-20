@@ -6,6 +6,7 @@ import {
   type MemoryConsolidationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { workflowCorrelationMemo } from "./trace-context.js";
 
 export { MEMORY_CONSOLIDATION_TASK_QUEUE, MEMORY_CONSOLIDATION_WORKFLOW_TYPE };
 
@@ -21,6 +22,7 @@ interface WorkflowStartOptions {
   workflowId: string;
   workflowIdReusePolicy: "REJECT_DUPLICATE";
   workflowIdConflictPolicy: "USE_EXISTING";
+  memo?: Record<string, string>;
 }
 
 interface WorkflowStartHandle {
@@ -40,16 +42,19 @@ function isAlreadyStarted(error: unknown): boolean {
 export async function scheduleMemoryConsolidation(
   rawInput: MemoryConsolidationWorkflowInput,
   workflowId: string,
-  startWorkflow: MemoryConsolidationWorkflowStarter
+  startWorkflow: MemoryConsolidationWorkflowStarter,
+  traceparent?: string | null
 ): Promise<MemoryConsolidationStartResult> {
   const input = memoryConsolidationWorkflowInputSchema.parse(rawInput);
+  const memo = traceparent ? workflowCorrelationMemo({ traceId: null, traceparent }) : null;
   try {
     const handle = await startWorkflow(MEMORY_CONSOLIDATION_WORKFLOW_TYPE, {
       args: [input],
       taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
-      workflowIdConflictPolicy: "USE_EXISTING"
+      workflowIdConflictPolicy: "USE_EXISTING",
+      ...(memo ? { memo } : {})
     });
     return {
       status: "SCHEDULED",
@@ -63,7 +68,7 @@ export async function scheduleMemoryConsolidation(
 }
 
 export interface MemoryConsolidationCoordinator {
-  start(input: MemoryConsolidationWorkflowInput, workflowId: string): Promise<MemoryConsolidationStartResult>;
+  start(input: MemoryConsolidationWorkflowInput, workflowId: string, traceparent?: string | null): Promise<MemoryConsolidationStartResult>;
 }
 
 class DisabledMemoryConsolidationCoordinator implements MemoryConsolidationCoordinator {
@@ -78,14 +83,15 @@ class DisabledMemoryConsolidationCoordinator implements MemoryConsolidationCoord
 class TemporalMemoryConsolidationCoordinator implements MemoryConsolidationCoordinator {
   constructor(private readonly options: { address: string; namespace: string }) {}
 
-  async start(input: MemoryConsolidationWorkflowInput, workflowId: string): Promise<MemoryConsolidationStartResult> {
+  async start(input: MemoryConsolidationWorkflowInput, workflowId: string, traceparent?: string | null): Promise<MemoryConsolidationStartResult> {
     const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
     try {
       const client = new Client({ connection, namespace: this.options.namespace });
       return await scheduleMemoryConsolidation(
         input,
         workflowId,
-        (workflowType, startOptions) => client.workflow.start(workflowType, startOptions)
+        (workflowType, startOptions) => client.workflow.start(workflowType, startOptions),
+        traceparent
       );
     } finally {
       await connection.close();

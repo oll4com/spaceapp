@@ -57,6 +57,7 @@ import {
   type MemoryMutationCoordinator
 } from "./memory-mutation-coordinator.js";
 import type { MemoryConsolidationCoordinator } from "./memory-consolidation-coordinator.js";
+import { traceContextForRawRequest } from "./trace-context.js";
 
 function requireMemoryGraph(config: SpaceApiConfig): void {
   if (!config.memoryGraphEnabled) {
@@ -833,7 +834,7 @@ function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string
       const schedule = await options.consolidationCoordinator.start({
         runId: run.id,
         traceId: request.requestIdForSpace
-      }, workflowId);
+      }, workflowId, traceContextForRawRequest(request.raw).traceparent);
       await options.recordAudit?.(request, {
         action: claim.created ? "memory.consolidation.created" : "memory.consolidation.retried",
         targetType: "memory_consolidation",
@@ -1055,7 +1056,7 @@ function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string
     const result = await options.mutationCoordinator.start({
       changeSetId: id,
       traceId: request.requestIdForSpace
-    }, workflowCommandHash);
+    }, workflowCommandHash, traceContextForRawRequest(request.raw).traceparent);
     await options.recordAudit?.(request, {
       action: claim.created ? action : retryAction,
       targetType: "memory_change_set",

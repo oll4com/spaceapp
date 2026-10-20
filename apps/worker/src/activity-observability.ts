@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
+import { defaultPayloadConverter } from "@temporalio/common";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import {
@@ -13,6 +14,7 @@ import {
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { TRACEPARENT_HEADER } from "./trace-headers.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -139,7 +141,22 @@ export interface ObserveActivityDependencies {
   spans?: SpanExporter | null;
 }
 
-function activityTraceparent(args: readonly unknown[]) {
+function headerTraceparent(headers: Record<string, unknown> | undefined): string | null {
+  const payload = headers?.[TRACEPARENT_HEADER];
+  if (!payload || typeof payload !== "object") return null;
+  try {
+    const value = defaultPayloadConverter.fromPayload(payload as never);
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function activityTraceparent(args: readonly unknown[], headers?: Record<string, unknown>) {
+  // A workflow-injected header names the workflow span; argument correlation is
+  // the fallback for activities started outside an observed workflow.
+  const fromHeader = parseTraceparent(headerTraceparent(headers));
+  if (fromHeader) return fromHeader;
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
@@ -149,7 +166,8 @@ export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],
   execute: () => Promise<T>,
-  dependencies: ObserveActivityDependencies = {}
+  dependencies: ObserveActivityDependencies = {},
+  headers: Record<string, unknown> = {}
 ): Promise<T> {
   const metrics = dependencies.metrics ?? workerMetrics;
   const now = dependencies.now ?? Date.now;
@@ -158,6 +176,7 @@ export async function observeActivityExecution<T>(
   const queueMs = Number.isFinite(info.currentAttemptScheduledTimestampMs)
     ? Math.max(0, startedAt - info.currentAttemptScheduledTimestampMs)
     : null;
+  const correlation = activityCorrelation(args);
   const base: Record<string, WorkerLogValue> = {
     activityType,
     activityId: info.activityId,
@@ -165,7 +184,7 @@ export async function observeActivityExecution<T>(
     workflowId: info.workflowExecution?.workflowId ?? null,
     temporalRunId: info.workflowExecution?.runId ?? null,
     attempt: info.attempt,
-    ...activityCorrelation(args)
+    ...correlation
   };
   const labels = { activity_type: activityType };
   if (info.attempt > 1) metrics.activityRetries.inc(labels);
@@ -194,8 +213,19 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans ? activityTraceparent(args, headers) : null;
     if (parent) {
+      const attributes: Record<string, string | number> = {
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.reason_code": reasonCode ?? "NONE",
+        "space.category": category ?? "NONE",
+        "space.duration_ms": durationMs
+      };
+      if (correlation.roomId) attributes["space.room_id"] = correlation.roomId;
+      if (correlation.paneId) attributes["space.pane_id"] = correlation.paneId;
+      if (correlation.missionId) attributes["space.mission_id"] = correlation.missionId;
       dependencies.spans!.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
@@ -203,7 +233,7 @@ export async function observeActivityExecution<T>(
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes,
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -230,7 +260,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
         cancelled: () => context.cancellationSignal.aborted
-      })
+      }, input.headers as Record<string, unknown>)
     }
   });
 }

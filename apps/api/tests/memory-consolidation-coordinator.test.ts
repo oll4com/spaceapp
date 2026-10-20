@@ -29,6 +29,23 @@ describe("Memory consolidation coordinator", () => {
     }]);
   });
 
+  it("propagates the request traceparent in the workflow memo", async () => {
+    const calls: Array<{ options: { memo?: Record<string, string> } }> = [];
+    const input = { runId: "memory_consolidation:run-3", traceId: "req:memory-consolidation" };
+    const workflowId = `space-memory-consolidation:${"c".repeat(64)}`;
+    const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    await scheduleMemoryConsolidation(input, workflowId, async (_workflowType, options) => {
+      calls.push({ options });
+      return { workflowId: options.workflowId };
+    }, traceparent);
+
+    expect(calls[0]?.options.memo).toEqual({
+      traceparent,
+      w3cTraceId: "4bf92f3577b34da6a3ce929d0e0e4736"
+    });
+  });
+
   it("maps duplicate starts to a stable idempotent result", async () => {
     const duplicate = new Error("already started");
     duplicate.name = "WorkflowExecutionAlreadyStartedError";

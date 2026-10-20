@@ -39,6 +39,22 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Observability export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is an optional base URL (for example
+`http://127.0.0.1:4318`). When set, the API and all three worker processes
+(`space-worker`, `space-memory-maintenance-worker`,
+`space-memory-mutation-worker`) POST OTLP/HTTP JSON spans to
+`<endpoint>/v1/traces`. It is off by default and needs no OpenTelemetry SDK. The
+exporter has a bounded queue with drop counters, a per-POST timeout and failure
+isolation, so a slow or unreachable collector never blocks API, workflow or
+activity work. Only allowlisted ids, types, attempts, statuses, stable error
+codes/categories and durations are sent; see
+[quality/observability.md](quality/observability.md#traces-w3c-trace-context).
+
+This variable is read by the worker entry points outside `SpaceApiConfig`, so it
+is not part of the bounded registry described above.
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

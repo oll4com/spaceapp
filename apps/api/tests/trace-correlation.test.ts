@@ -47,9 +47,14 @@ describe("request trace context", () => {
     expect(registry.size).toBe(2);
     expect(registry.lookup("req:aaaaaaaaaaaa")).toBeNull();
 
-    registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
+    const requestContext = createRequestTraceContext(inbound);
+    registry.remember("req:dddddddddddd", requestContext);
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
-    expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(parseTraceparent(filled.traceparent)).toEqual({
+      traceId: inboundTraceId,
+      parentId: requestContext.spanId,
+      flags: "01"
+    });
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });
@@ -222,8 +227,18 @@ describe("workflow starters", () => {
     };
 
     await coordinator.enqueue(item);
-    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[] }])[1];
-    expect(parseTraceparent(signalOptions.signalArgs[0]?.turn.traceparent)?.traceId).toBe(inboundTraceId);
+    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, {
+      signalArgs: RoomAgentSupervisorQueueItem[];
+      memo: Record<string, string>;
+    }])[1];
+    expect(parseTraceparent(signalOptions.signalArgs[0]?.turn.traceparent)).toMatchObject({
+      traceId: inboundTraceId,
+      parentId: requestTraceContexts.lookup("req:roomagent0001")?.spanId
+    });
+    expect(parseTraceparent(signalOptions.memo.traceparent)).toMatchObject({
+      traceId: inboundTraceId,
+      parentId: requestTraceContexts.lookup("req:roomagent0001")?.spanId
+    });
 
     requestTraceContexts.remember("req:internal0001", createRequestTraceContext(inbound));
     await coordinator.enqueueAction("room_agent_action:1", {

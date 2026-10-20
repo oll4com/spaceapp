@@ -36,6 +36,22 @@ describe("Memory mutation coordinator", () => {
     ]);
   });
 
+  it("propagates the request traceparent in the workflow memo", async () => {
+    const calls: Array<{ options: { memo?: Record<string, string> } }> = [];
+    const input = { changeSetId: "memory_change:memo", traceId: "req:mutation-memo" };
+    const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    await scheduleMemoryMutation(input, async (_workflowType, options) => {
+      calls.push({ options });
+      return { workflowId: options.workflowId };
+    }, undefined, traceparent);
+
+    expect(calls[0]?.options.memo).toEqual({
+      traceparent,
+      w3cTraceId: "4bf92f3577b34da6a3ce929d0e0e4736"
+    });
+  });
+
   it("turns duplicate workflow starts into an idempotent response", async () => {
     const duplicate = new Error("already started");
     duplicate.name = "WorkflowExecutionAlreadyStartedError";
