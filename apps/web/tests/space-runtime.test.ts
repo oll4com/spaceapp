@@ -2,9 +2,18 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createDemoRuntime } from "../src/demo/demo-runtime.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
-import { api, installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
+import { api, browserGateway, eventGateway, installSpaceRuntime, terminalGateway } from "../src/runtime/SpaceRuntime.js";
 
 describe("Space runtime API proxy", () => {
+  it("allows Fast Refresh object inspection before installing the runtime", () => {
+    expect(Object.prototype.toString.call(api)).toBe("[object SpaceApiClient]");
+    expect(Object.prototype.toString.call(eventGateway)).toBe("[object SpaceEventGateway]");
+    expect(Object.prototype.toString.call(terminalGateway)).toBe("[object SpaceTerminalGateway]");
+    expect(Object.prototype.toString.call(browserGateway)).toBe("[object SpaceBrowserGateway]");
+    expect(() => api.rooms).toThrow("SpaceRuntimeProvider is required");
+    expect(() => eventGateway.supported).toThrow("SpaceRuntimeProvider is required");
+  });
+
   it("keeps method identities stable while dispatching to the active runtime", async () => {
     const first = createDemoRuntime();
     const second = createDemoRuntime();

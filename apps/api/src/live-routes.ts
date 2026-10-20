@@ -202,7 +202,7 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
     // first arbitrary caller. An unassigned legacy file remains untouched.
     legacyOwnerId: auth.operatorEmail ? "user:operator" : auth.devLogin ? "user:dev-operator" : undefined,
     readLegacy: async () => {
-      if (!(store instanceof PostgresSpaceStore)) return null;
+      if (config.instance === "dev" || !(store instanceof PostgresSpaceStore)) return null;
       try { return await readFile("/opt/spaceapp/var/live-personal-memory.json", "utf8"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     }
@@ -232,14 +232,14 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
     repository: liveHistoryRepository, routeOptions: defaultRouteRateLimitOptions,
     assertAccess: (request, room) => assertRoomAccess(room, request.user!),
     readLegacy: async room => {
-      if (!(store instanceof PostgresSpaceStore) || !/^[a-zA-Z0-9:_-]+$/.test(room)) return null;
+      if (config.instance === "dev" || !(store instanceof PostgresSpaceStore) || !/^[a-zA-Z0-9:_-]+$/.test(room)) return null;
       try { return await readFile(join("/opt/spaceapp/var/live-voice-logs", `live-voice-${room}.jsonl`), "utf8"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     },
     audit: async (owner, room, event) => {
       if (!(store instanceof PostgresSpaceStore)) return;
       const key = createHash("sha256").update(JSON.stringify([owner, room])).digest("hex");
-      const directory = "/opt/spaceapp/var/live-voice-logs/owners";
+      const directory = join(process.env.SPACE_LIVE_VOICE_LOG_ROOT ?? "/opt/spaceapp/var/live-voice-logs", "owners");
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await appendFile(join(directory, `${key}.jsonl`), JSON.stringify({ ...event, ownerId: owner, roomId: room, recordedAt: nowIso() }) + "\n", { mode: 0o600 });
     }

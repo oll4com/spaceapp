@@ -548,9 +548,10 @@ export interface StoredPluginConnection {
 }
 
 export class PluginsService {
+  /** Keep source-stack plugin data local and leave installed CLI skill directories untouched in dev. */
   constructor(
-    private readonly storageDirectory = PLUGINS_DIR,
-    private readonly syncSkills = true,
+    private readonly storageDirectory = process.env.SPACE_PLUGINS_ROOT ?? PLUGINS_DIR,
+    private readonly syncSkills = process.env.SPACE_INSTANCE !== "dev",
     private readonly skillDirs: readonly string[] = SKILL_DIRS
   ) {}
   private get connectionsFile() { return join(this.storageDirectory, "connections.json"); }

@@ -29,6 +29,8 @@ export interface AuthConfig {
   operatorPasswordHash?: string;
   devLogin: boolean;
   secureCookies: boolean;
+  /** Disable installed credential discovery and OAuth configuration in isolated runtimes. */
+  googleAuthDisabled?: boolean;
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
@@ -50,10 +52,14 @@ export interface SessionPayload {
 export const cookieName = SESSION_COOKIE;
 export const csrfHeaderName = CSRF_HEADER;
 
+/**
+ * Resolve authentication settings, allowing isolated runtimes to disable installed Google credential-file discovery.
+ */
 export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
-  let googleClientId = env.SPACE_GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || undefined;
-  let googleClientSecret = env.SPACE_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || undefined;
-  if (!googleClientId) {
+  const googleAuthDisabled = env.SPACE_GOOGLE_AUTH_DISABLED === "true";
+  let googleClientId = googleAuthDisabled ? undefined : env.SPACE_GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || undefined;
+  let googleClientSecret = googleAuthDisabled ? undefined : env.SPACE_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || undefined;
+  if (!googleClientId && env.SPACE_GOOGLE_AUTH_DISABLED !== "true") {
     try {
       const candidates = ["/opt/spaceapp/secrets/google-oauth.json", "/var/lib/spaceapp/google-oauth.json"];
       for (const p of candidates) {
@@ -82,6 +88,7 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
     operatorPasswordHash: env.SPACE_OPERATOR_PASSWORD_HASH,
     devLogin: env.NODE_ENV !== "production" && env.SPACE_DEV_LOGIN === "true",
     secureCookies: env.NODE_ENV === "production",
+    googleAuthDisabled,
     googleClientId,
     googleClientSecret,
     googleRedirectUri: env.SPACE_GOOGLE_REDIRECT_URI || env.GOOGLE_REDIRECT_URI || undefined

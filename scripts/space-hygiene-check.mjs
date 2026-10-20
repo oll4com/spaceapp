@@ -28,10 +28,14 @@ function toPosix(path) {
   return path.split(sep).join("/");
 }
 
+/**
+ * Identify local runtime and credential paths, including every named dev stack, before staging or export.
+ */
 function isRuntimeOrSecretPath(path) {
   const normalized = toPosix(path);
   if (trackedRuntimeSourceAllowlist.has(normalized)) return false;
   return (
+    /(^|\/)\.dev-stack(?:-[^/]+)?(\/|$)/.test(normalized) ||
     /(^|\/)\.env($|\/)/.test(normalized) ||
     /(^|\/)\.env\.local$/.test(normalized) ||
     /(^|\/)\.env\..*\.local$/.test(normalized) ||

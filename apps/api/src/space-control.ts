@@ -1,6 +1,7 @@
 import { liveWatchedTask, liveWatchSubmission } from "./live-watch-identity.js";
 import { terminalRenderAuditEvidenceSchema, terminalRenderBatchSchema, terminalRenderFreshnessMs, type TerminalRenderObservation, type controlScreenshotViewports, controlCaptureAspects } from "@space/contracts";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { appendFileSync, promises as fsPromises } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
@@ -63,6 +64,11 @@ export function assertSecurityPolicy(spec: ControlAction): void {
     }
   }
 }
+/**
+ * Validate room/pane control actions against schemas and security policy before
+ * delegating integrations. Retain operation records and expose diagnostics
+ * through the supplied store, controller and publication callbacks.
+ */
 export function createSpaceControl(options:{store:SpaceStore;repository:ControlRepository;controller:RoomPaneController;
   phase?: 1 | 2;
   /** @deprecated Disconnected transient actions stay pending until an authenticated client is available. */
@@ -1642,6 +1648,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     };
   }
 
+  /**
+   * Collect selected control-tool probe results in the caller's actor context with bounded waits.
+   * Skipped proofs produce WARN rather than a success claim; failures are recorded best-effort
+   * in the configured incident directory and returned with a diagnostic handoff prompt.
+   */
   async function testMcpTools(actor: ControlActor, targetRoomId?: string, params?: { tools?: string[]; fast?: boolean }) {
     let effectiveRoomId = targetRoomId;
     if (!effectiveRoomId) {
@@ -1867,7 +1878,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           failedTools: failedTools.map(f => ({ tool: f.tool, error: f.error })),
           agentHandoffPrompt
         }) + "\n";
-        appendFileSync("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", line);
+        appendFileSync(join(process.env.SPACE_LIVE_VOICE_LOG_ROOT ?? "/opt/spaceapp/var/live-voice-logs", "debug-incidents.jsonl"), line);
       } catch {}
     }
 
@@ -1937,6 +1948,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     };
   }
 
+  /**
+   * Summarize room capacity, disabled runtimes and recent configured incident-log entries.
+   * Fall back to the first listed room when none is selected; return diagnostic advice
+   * without repairing state or interrupting running panes.
+   */
   async function runDebug(actor: ControlActor, targetRoomId?: string, opName?: string, paneId?: string, query?: string) {
     let effectiveRoomId = targetRoomId;
     if (!effectiveRoomId) {
@@ -1975,7 +1991,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
 
     let recentIncidents: any[] = [];
     try {
-      const content = await fsPromises.readFile("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", "utf8");
+      const content = await fsPromises.readFile(join(process.env.SPACE_LIVE_VOICE_LOG_ROOT ?? "/opt/spaceapp/var/live-voice-logs", "debug-incidents.jsonl"), "utf8");
       recentIncidents = content.trim().split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).slice(-5);
     } catch {}
 

@@ -1283,6 +1283,12 @@ function createDefaultActivityLogService(config: SpaceApiConfig, store: SpaceSto
 }
 
 
+
+/**
+ * Compose configured storage, injectable services, authentication and API routes.
+ * Register cleanup hooks for owned services; callers must close the returned,
+ * unlistened Fastify instance after injection tests or a server session.
+ */
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
   const config = options.config ?? getApiConfig(process.env);
@@ -1798,7 +1804,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     try { observability.observeWorkerReadiness(readiness); } catch { /* metrics never fail readiness */ }
     return readiness;
   };
-  const storageReadinessChecker = options.storageReadinessChecker ?? collectStorageReadiness;
+  const storageReadinessChecker = options.storageReadinessChecker ?? (() => collectStorageReadiness(config.installRoot));
   const spaceCapabilityInventoryCollector = options.spaceCapabilityInventoryCollector ?? collectDefaultSpaceCapabilityInventory;
   const spaceMemorySearcher = options.spaceMemorySearcher ?? ((q) => searchDefaultSpaceMemory(q, decisionsService));
   const canonicalMemory =
@@ -4357,9 +4363,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
         if(action.operation==="skills.read")return controlSkills(action.id);
         if(action.operation==="panes.open"){
+          /** Write pane-launch diagnostics to the configured instance root; logging is best effort. */
           const recordDebugIncident = async (incident: Record<string, unknown>) => {
             try {
-              const dir = "/opt/spaceapp/var/live-voice-logs";
+              const dir = process.env.SPACE_LIVE_VOICE_LOG_ROOT ?? "/opt/spaceapp/var/live-voice-logs";
               await mkdir(dir, { recursive: true });
               await appendFile(`${dir}/debug-incidents.jsonl`, JSON.stringify(incident) + "\n", "utf8");
             } catch (err) {

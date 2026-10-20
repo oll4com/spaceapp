@@ -5,6 +5,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Add an isolated `npm run dev:stack` source workflow with Docker dependencies,
+  owner setup, OpenCode terminal UI, hot reload, supervised lifecycle commands
+  and a disposable CI integration smoke check. Authenticate process groups again
+  before shutdown escalation and keep plugin storage and OAuth configuration
+  isolated from an installed instance. Refuse linked private state, bound partial
+  log lines without exposing generated secrets, and disable Vite dotenv loading
+  for the isolated stack. Clean up detached services on terminal hangup too,
+  with process identities stable across contributor locales and timezones.
+
 ## [1.1.6] - 2026-10-18
 
 Source: sanitized Space app @ f8803d5d96 (4595 files). Adds install telemetry

@@ -52,3 +52,5 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+.dev-stack/
+.dev-stack-*/

@@ -265,7 +265,7 @@ describe("ClipboardDock", () => {
     render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
 
     const stats = await screen.findByRole("group", { name: "Plan completion" });
-    expect(within(stats).getByText("3 / 4")).toBeTruthy();
+    expect(await within(stats).findByText("3 / 4")).toBeTruthy();
     expect(within(stats).getByText("75%")).toBeTruthy();
     expect(within(stats).getByRole("progressbar", { name: "Plans completed" }).getAttribute("aria-valuenow")).toBe("75");
     expect(mocks.clipboardItems).toHaveBeenCalledWith({ source: "PLAN", includeCompleted: false, page: 1, pageSize: 1 });

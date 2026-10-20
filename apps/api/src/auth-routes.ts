@@ -220,6 +220,9 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     if (!request.user || request.user.role !== "ADMIN") {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Configuring Google OAuth requires the ADMIN role.");
     }
+    if (auth.googleAuthDisabled) {
+      return sendApiError(reply, 503, "GOOGLE_AUTH_DISABLED", "Google OAuth configuration is disabled for this isolated runtime.");
+    }
     const body = (request.body ?? {}) as { clientId?: string; clientSecret?: string };
     const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
     const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";

@@ -59,11 +59,16 @@ describe("TelegramIntegrationCard", () => {
   it("keeps completion setup visible but OFF and blocks every mutation", async () => {
     const client = createClient(telegramStatus("DISCONNECTED"));
 
+    let finishLoad!: (status: TelegramIntegrationStatus) => void;
+    client.telegramIntegration.mockReturnValueOnce(new Promise<TelegramIntegrationStatus>((resolve) => { finishLoad = resolve; }));
     render(<TelegramIntegrationCard canManage client={client} isCodexEnabled={false} />);
 
     const card = await screen.findByLabelText("Telegram notifications");
+    // The section exists during loading. Resolve the request only after this
+    // synchronous turn so assertions must actually wait for the loaded controls.
+    queueMicrotask(() => finishLoad(telegramStatus("DISCONNECTED")));
     expect(within(card).getByText("OFF")).toBeTruthy();
-    expect((within(card).getByLabelText("Telegram bot token") as HTMLInputElement).disabled).toBe(true);
+    expect((await within(card).findByLabelText("Telegram bot token") as HTMLInputElement).disabled).toBe(true);
     expect((within(card).getByRole("button", { name: "Connect Telegram bot" }) as HTMLButtonElement).disabled).toBe(true);
     expect((within(card).getByRole("button", { name: "Telegram notification actions" }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(card).getByRole("link", { name: "Open BotFather" }).getAttribute("aria-disabled")).toBe("true");
@@ -96,7 +101,7 @@ describe("TelegramIntegrationCard", () => {
     render(<TelegramIntegrationCard canManage client={client} />);
 
     const card = await screen.findByLabelText("Telegram notifications");
-    expect(within(card).getByText("Disconnected")).toBeTruthy();
+    expect(await within(card).findByText("Disconnected")).toBeTruthy();
     expect(within(card).getByRole("link", { name: "Open BotFather" }).getAttribute("href")).toBe("https://t.me/BotFather");
     const tokenInput = within(card).getByLabelText("Telegram bot token") as HTMLInputElement;
     expect(tokenInput.type).toBe("password");
@@ -138,7 +143,7 @@ describe("TelegramIntegrationCard", () => {
     render(<TelegramIntegrationCard canManage={false} client={client} />);
 
     const card = await screen.findByLabelText("Telegram notifications");
-    expect(within(card).getByText("Error")).toBeTruthy();
+    expect(await within(card).findByText("Error")).toBeTruthy();
     expect(within(card).getByText("TELEGRAM_TOKEN_REJECTED")).toBeTruthy();
     expect(within(card).getByText("Admin access is required to change this integration.")).toBeTruthy();
     expect(within(card).queryByLabelText("Telegram bot token")).toBeNull();
@@ -172,6 +177,7 @@ describe("TelegramIntegrationCard", () => {
     render(<TelegramIntegrationCard canManage client={client} />);
 
     const card = await screen.findByLabelText("Telegram notifications");
+    await within(card).findByText("Connected");
     runTelegramAction("Reconnect bot");
     fireEvent.change(within(card).getByLabelText("Telegram bot token"), { target: { value: syntheticToken } });
     fireEvent.submit(within(card).getByRole("form", { name: "Connect Telegram bot" }));

@@ -18,6 +18,8 @@ export function manualChunkForModule(moduleId: string): string | undefined {
 }
 
 export default defineConfig({
+  // Source-stack services must not import an installed/provider account through checkout dotenv files.
+  envDir: process.env.SPACE_INSTANCE === "dev" ? false : undefined,
   plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
   // The icon package ships as source; the alias keeps worktrees (which share live node_modules) resolving this checkout.
   resolve: { alias: [{ find: /^@space\/icons$/, replacement: fileURLToPath(new URL("../../packages/icons/src/app-icons.tsx", import.meta.url)) }] },
@@ -34,11 +36,12 @@ export default defineConfig({
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      "/api": { target: process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910", ws: true },
+      "/plugins": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/healthz": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/livez": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/readyz": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/version": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910"
     }
   },
   test: {

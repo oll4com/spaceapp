@@ -250,7 +250,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         durationMs: 8000,
         killedAt: new Date().toISOString()
       },
-      createdAt: new Date().toISOString()
+      // Keep this recorded event after the seeded room/pane events even when
+      // setup fits in one wall-clock millisecond and IDs break timestamp ties.
+      createdAt: new Date(Date.parse(store.getLatestEvent(room.id)!.createdAt) + 1).toISOString()
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
