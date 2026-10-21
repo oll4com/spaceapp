@@ -43,8 +43,9 @@ const worker = await Worker.create({
   taskQueue,
   workflowsPath,
   activities,
-  // Structured, correlated activity records and worker metrics. Activity-side
-  // only: the workflow sandbox and its replay behaviour are unchanged.
+  // Structured activity records, worker metrics and OTLP workflow/activity spans.
+  // Keep the versioned workflow interceptor installed even when export is off:
+  // histories marked with space-workflow-trace-v1 depend on it for replay.
   ...workerTracingOptions(spans)
 });
 
