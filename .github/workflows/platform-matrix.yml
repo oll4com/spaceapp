@@ -57,3 +57,151 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+
+  rootless-podman:
+    name: Rootless Podman / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      SPACEAPP_HOME: /tmp/spaceapp-podman-ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+          cache: npm
+      # ubuntu-latest (24.04) currently ships Podman 4.9.3; Homebrew's Linux
+      # bottle supplies Podman 5+ without replacing the runner's apt packages.
+      - name: Install supported Podman and dependencies
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install podman
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          mkdir -p "$HOME/.local/bin"
+          curl --fail --location --silent --show-error \
+            https://github.com/docker/compose/releases/download/v2.38.2/docker-compose-linux-x86_64 \
+            --output "$HOME/.local/bin/docker-compose"
+          chmod 0755 "$HOME/.local/bin/docker-compose"
+          # Podman 6 needs netavark/aardvark 2; the runner's apt copies are 1.x.
+          for helper in netavark aardvark-dns; do
+            curl --fail --location --silent --show-error \
+              "https://github.com/containers/$helper/releases/download/v2.1.0/$helper.gz" \
+              | gzip -dc > "$HOME/.local/bin/$helper"
+            chmod 0755 "$HOME/.local/bin/$helper"
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # Ubuntu's /usr/bin/pasta is paired with Podman 4.9 and lacks the
+          # --map-guest-addr option used by the newer Homebrew Podman.
+          test -x "$(brew --prefix)/bin/pasta"
+          test -x "$(brew --prefix)/bin/crun"
+          test -x "$(brew --prefix)/bin/conmon"
+          mkdir -p "$HOME/.config/containers"
+          printf '[engine]\nhelper_binaries_dir = ["%s/.local/bin", "%s/bin", "/usr/libexec/podman", "/usr/lib/podman", "/usr/bin"]\nconmon_path = ["%s/bin/conmon"]\nruntime = "crun"\n[engine.runtimes]\ncrun = ["%s/bin/crun"]\n' "$HOME" "$(brew --prefix)" "$(brew --prefix)" "$(brew --prefix)" > "$HOME/.config/containers/containers.conf"
+          npm ci
+      - name: Start rootless Podman API socket
+        run: |
+          mkdir -p "$HOME/.config/systemd/user/podman.service.d"
+          printf '[Service]\nExecStart=\nExecStart=%s system service\n' "$(command -v podman)" > "$HOME/.config/systemd/user/podman.service.d/override.conf"
+          systemctl --user daemon-reload
+          systemctl --user enable --now podman.socket
+          podman --version
+          netavark --version
+          aardvark-dns --version
+          docker-compose version
+          podman info --format json | jq '{version: .version.Version, rootless: .host.security.rootless, cgroupVersion: .host.cgroupVersion, socket: .host.remoteSocket.path}'
+          podman info --format json | jq '{ociRuntime: .host.ociRuntime.path, conmon: .host.conmon.path}'
+      - name: Exercise rootless Podman lifecycle and purge
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            for attempt in $(seq 1 120); do
+              if curl --fail --silent http://127.0.0.1:4911/readyz | grep -q '"ok":true'; then return 0; fi
+              sleep 5
+            done
+            echo 'SpaceApp did not become ready on 127.0.0.1:4911' >&2
+            return 1
+          }
+          node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman --profile small --non-interactive --answers '{"confirm":true}' --no-open
+          wait_ready
+          readyz=$(curl --fail --silent http://127.0.0.1:4911/readyz)
+          printf '/readyz: %s\n' "$readyz"
+          printf '%s' "$readyz" | grep -q '"ok":true'
+          echo 'Checking status, logs, and doctor'
+          node packages/run-spaceapp/bin/spaceapp.mjs status
+          node packages/run-spaceapp/bin/spaceapp.mjs logs > /tmp/spaceapp-podman-logs.txt
+          test -s /tmp/spaceapp-podman-logs.txt
+          node packages/run-spaceapp/bin/spaceapp.mjs doctor
+          echo 'Stopping and restarting the stack'
+          node packages/run-spaceapp/bin/spaceapp.mjs down
+          node packages/run-spaceapp/bin/spaceapp.mjs up
+          wait_ready
+          echo 'Repairing the stack with doctor --fix'
+          node packages/run-spaceapp/bin/spaceapp.mjs doctor --fix --non-interactive --answers '{"confirm":true}'
+          wait_ready
+          echo 'Checking bundled OpenCode through provider install and installing an optional provider'
+          project=$(node --input-type=module -e 'import { composeProjectName } from "./packages/run-spaceapp/src/index.mjs"; console.log(composeProjectName(process.env.SPACEAPP_HOME))')
+          node packages/run-spaceapp/bin/spaceapp.mjs provider install opencode
+          node packages/run-spaceapp/bin/spaceapp.mjs provider install codex
+          mkdir -p /tmp/spaceapp-podman-rw /tmp/spaceapp-podman-ro
+          node packages/run-spaceapp/bin/spaceapp.mjs workspace add /tmp/spaceapp-podman-rw
+          node packages/run-spaceapp/bin/spaceapp.mjs workspace add /tmp/spaceapp-podman-ro --read-only
+          rw_target=$(jq -r '.workspaces[] | select(.hostPath == "/tmp/spaceapp-podman-rw") | .containerPath' "$SPACEAPP_HOME/config.json")
+          ro_target=$(jq -r '.workspaces[] | select(.hostPath == "/tmp/spaceapp-podman-ro") | .containerPath' "$SPACEAPP_HOME/config.json")
+          test "$rw_target" != null && test "$ro_target" != null
+          podman exec --user 10001:10001 "${project}-spaceapp-cli-1" sh -ec 'printf podman-owner-check > "$1/owner-check.txt"' sh "$rw_target"
+          test "$(cat /tmp/spaceapp-podman-rw/owner-check.txt)" = podman-owner-check
+          test "$(stat -c %u /tmp/spaceapp-podman-rw/owner-check.txt)" = "$(id -u)"
+          if podman exec --user 10001:10001 "${project}-spaceapp-cli-1" sh -ec 'touch "$1/must-not-write"' sh "$ro_target"; then
+            echo 'Read-only workspace unexpectedly allowed a write' >&2
+            exit 1
+          fi
+          test ! -e /tmp/spaceapp-podman-ro/must-not-write
+          echo 'Backing up and restoring the stack'
+          node packages/run-spaceapp/bin/spaceapp.mjs backup
+          printf 'RESTORE\n' | node packages/run-spaceapp/bin/spaceapp.mjs restore
+          wait_ready
+          echo 'Exercising the same-version update repair path'
+          node packages/run-spaceapp/bin/spaceapp.mjs update --non-interactive --answers '{"confirm":true,"action":"repair"}'
+          wait_ready
+          node packages/run-spaceapp/bin/spaceapp.mjs status
+          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}'
+          test -z "$(podman ps -a --filter "label=com.docker.compose.project=$project" -q)"
+          test -z "$(podman volume ls --format '{{.Name}}' | grep "^${project}_" || true)"
+          echo 'Testing the medium workflows profile'
+          export SPACEAPP_HOME=/tmp/spaceapp-podman-medium-ci
+          node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman --profile medium --non-interactive --answers '{"confirm":true}' --no-open
+          wait_ready
+          project=$(node --input-type=module -e 'import { composeProjectName } from "./packages/run-spaceapp/src/index.mjs"; console.log(composeProjectName(process.env.SPACEAPP_HOME))')
+          test "$(podman inspect "${project}-temporal-1" --format '{{.State.Running}}')" = true
+          node packages/run-spaceapp/bin/spaceapp.mjs status
+          node packages/run-spaceapp/bin/spaceapp.mjs doctor
+          node packages/run-spaceapp/bin/spaceapp.mjs down
+          node packages/run-spaceapp/bin/spaceapp.mjs up
+          wait_ready
+          node packages/run-spaceapp/bin/spaceapp.mjs doctor --fix --non-interactive --answers '{"confirm":true}'
+          wait_ready
+          node packages/run-spaceapp/bin/spaceapp.mjs backup
+          printf 'RESTORE\n' | node packages/run-spaceapp/bin/spaceapp.mjs restore
+          wait_ready
+          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}'
+          test -z "$(podman ps -a --filter "label=com.docker.compose.project=$project" -q)"
+          test -z "$(podman volume ls --format '{{.Name}}' | grep "^${project}_" || true)"
+          echo 'Testing a real 1.1.5 to 1.1.6 update and rollback'
+          export SPACEAPP_HOME=/tmp/spaceapp-podman-upgrade-ci
+          node --input-type=module -e 'import { run } from "./packages/run-spaceapp/src/cli.mjs"; process.exitCode = await run(["install", "--engine", "podman", "--profile", "small", "--non-interactive", "--answers", "{\"confirm\":true}", "--no-open"], { runtimeVersion: "1.1.5" });'
+          wait_ready
+          test "$(jq -r .version "$SPACEAPP_HOME/config.json")" = 1.1.5
+          node packages/run-spaceapp/bin/spaceapp.mjs update --non-interactive --answers '{"confirm":true}'
+          wait_ready
+          test "$(jq -r .version "$SPACEAPP_HOME/config.json")" = 1.1.6
+          test "$(jq -r .previousVersion "$SPACEAPP_HOME/config.json")" = 1.1.5
+          node packages/run-spaceapp/bin/spaceapp.mjs rollback --non-interactive --answers '{"confirm":true}'
+          wait_ready
+          test "$(jq -r .version "$SPACEAPP_HOME/config.json")" = 1.1.5
+          project=$(node --input-type=module -e 'import { composeProjectName } from "./packages/run-spaceapp/src/index.mjs"; console.log(composeProjectName(process.env.SPACEAPP_HOME))')
+          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}'
+          test -z "$(podman ps -a --filter "label=com.docker.compose.project=$project" -q)"
+          test -z "$(podman volume ls --format '{{.Name}}' | grep "^${project}_" || true)"

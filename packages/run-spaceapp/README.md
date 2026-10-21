@@ -1,6 +1,37 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for SpaceApp.
+Cross-platform Docker launcher for SpaceApp, with rootless Podman support on Linux and macOS.
+
+### Rootless Podman
+
+Use `install --engine podman --profile small` on Linux or macOS. Later commands
+reuse the engine recorded in `config.json`. Docker remains the default when it is
+available; when only Podman works, interactive install offers it and
+`--non-interactive` selects it. `--answers '{"engine":"podman", "confirm":true}'`
+also selects it. An existing installation cannot switch engines because Docker
+volumes are not visible to Podman: make a portable `backup`, uninstall, and
+restore into a new installation on the chosen engine.
+
+Podman 5 or newer and **docker-compose 2.20 or newer** are required. The launcher
+uses `podman compose` with `PODMAN_COMPOSE_PROVIDER=docker-compose`. Compose 2.20
+is needed for the template's optional `depends_on.required` condition. Other
+template features include profiles, file secrets, health dependencies, `init`,
+CPU/memory limits, shared socket volumes, `up --wait`, and `exec`/`run --user`.
+On Linux, use rootless Podman with cgroup v2, delegated `cpu` and `memory`
+controllers, and start the API socket with
+`systemctl --user enable --now podman.socket`. The launcher checks these before
+pulling images and does not install Podman. Install Podman and docker-compose
+with your distribution's package manager (DNF on Fedora/RHEL, Zypper on
+openSUSE, APT on Debian/Ubuntu). `--access host-root` is unsupported with
+Podman. Windows Podman is outside the supported scope.
+
+On SELinux hosts, Podman workspace binds use a shared `z` relabel and a
+`keep-id:uid=10001,gid=10001` user namespace so files created by agents retain
+the invoking user's ownership. Relabeling `$HOME` itself or system paths is
+refused; register a dedicated project directory. On macOS, start a Podman
+machine first. The launcher checks its CPU, memory, and disk size against the
+selected profile and prints an exact `podman machine stop && podman machine set
+... && podman machine start` command when it is too small.
 
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
