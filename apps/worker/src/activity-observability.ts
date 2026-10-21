@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { activitySpanTrace } from "./activity-trace-context.js";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
@@ -55,9 +56,11 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
 }
 
-/** traceparent for an outbound call: same W3C trace, new span id; null if none. */
+/** Outbound parent: the current activity span, or a legacy child context. */
 export function childTraceparent(traceparent: string | null | undefined): string | null {
   const parsed = parseTraceparent(traceparent);
+  const current = activitySpanTrace.getStore();
+  if (current) return formatTraceparent(current.traceId, current.spanId, parsed?.flags ?? "01");
   if (!parsed) return null;
   let spanId = randomBytes(8).toString("hex");
   while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
@@ -137,6 +140,7 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  onFinish?: (event: { startedAt: number; durationMs: number; outcome: ActivityOutcome; reasonCode: string | null }) => void;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -194,7 +198,8 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    try { dependencies.onFinish?.({ startedAt, durationMs, outcome, reasonCode }); } catch { /* telemetry cannot fail work */ }
+    const parent = dependencies.spans && !dependencies.onFinish ? activityTraceparent(args) : null;
     if (parent) {
       dependencies.spans!.record({
         traceId: parent.traceId,

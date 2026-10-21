@@ -1,5 +1,27 @@
 # API configuration reference
 
+## Optional distributed trace export
+
+Set `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` to the collector base URL on the API
+and each Temporal worker to export OTLP/HTTP JSON to `<base>/v1/traces`.
+Export is off when the variable is unset or invalid. The main worker and both
+memory workers use the same bounded exporter as the API; no tracing SDK is
+required. A full queue drops spans and counts them; each POST has a timeout.
+Collector failures do not change request, workflow, or activity results.
+
+The trace contains API SERVER spans, workflow-run spans, and one activity span
+per attempt. Child workflows inherit their parent's context through Temporal
+headers. Continue-as-new runs and durable Room Agent background continuations
+include links to the preceding workflow span when that reference is available.
+Legacy background outcomes without a stored reference cannot supply that link.
+The Space request ID remains distinct from the W3C trace ID.
+
+Worker attributes are allowlisted identifiers, types, attempts, outcomes,
+durations, and stable error codes/categories. Prompts, outputs, raw exception
+messages, paths and URLs are excluded. Workflow export uses host-side sinks
+with replay disabled. Keep the tracing interceptor installed when export is
+off so histories containing its version marker remain replay-compatible.
+
 For a first local contribution, follow [CONTRIBUTING](../CONTRIBUTING.md).
 Production installation and provider login belong to the supported installer;
 the API reference is for developers and operators reviewing advanced settings.

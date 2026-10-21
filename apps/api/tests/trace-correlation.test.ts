@@ -7,11 +7,14 @@ import { apiDomainMetrics } from "../src/api-metrics.js";
 import { TemporalCodexAppServerTurnStarter } from "../src/turns.js";
 import { TemporalRoomAgentWorkflowCoordinator } from "../src/room-agent.js";
 import type { TemporalClientFactory } from "../src/temporal-client.js";
+import { scheduleMemoryConsolidation } from "../src/memory-consolidation-coordinator.js";
+import { scheduleMemoryMutation } from "../src/memory-mutation-coordinator.js";
 import {
   TraceContextRegistry,
   childTraceparent,
   createRequestTraceContext,
   requestTraceContexts,
+  traceparentForTraceId,
   withTurnTraceparent,
   workflowCorrelationMemo
 } from "../src/trace-context.js";
@@ -21,6 +24,29 @@ const inboundParent = "00f067aa0ba902b7";
 const inbound = `00-${inboundTraceId}-${inboundParent}-01`;
 
 describe("request trace context", () => {
+  it("parents direct memory workflow starts to the originating API span", async () => {
+    const traceId = "req:memory-trace-test";
+    const context = createRequestTraceContext(inbound);
+    requestTraceContexts.remember(traceId, context);
+    const memos: Array<Record<string, string> | undefined> = [];
+    await scheduleMemoryConsolidation({ runId: "audit:trace", traceId }, "workflow:memory-trace", async (_type, options) => {
+      memos.push(options.memo);
+      return { workflowId: options.workflowId };
+    });
+    await scheduleMemoryMutation({ changeSetId: "change:trace", traceId }, async (_type, options) => {
+      memos.push(options.memo);
+      return { workflowId: options.workflowId };
+    });
+    expect(memos).toHaveLength(2);
+    for (const memo of memos) expect(memo).toMatchObject({ traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
+  });
+  it("propagates the actual exported API span, not an unexported intermediate", () => {
+    const registry = new TraceContextRegistry();
+    const context = createRequestTraceContext(inbound);
+    registry.remember("req:actual-span", context);
+    expect(traceparentForTraceId("req:actual-span", registry)).toBe(context.traceparent);
+    expect(traceparentForTraceId("req:missing-span", registry)).toBeNull();
+  });
   it("continues a valid inbound trace with a new span and generates one otherwise", () => {
     const continued = createRequestTraceContext(inbound);
     expect(continued).toMatchObject({ w3cTraceId: inboundTraceId, parentSpanId: inboundParent, inbound: true });

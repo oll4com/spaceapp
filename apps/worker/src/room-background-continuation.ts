@@ -2,6 +2,8 @@ import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
   roomAgentSupervisorQueueItemSchema,
+  workflowTraceReference,
+  formatTraceparent,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
   type RoomAgentSupervisorQueueItem
@@ -122,10 +124,14 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  // Persisted in the same completion transaction as the source outcome. A
+  // restarted worker can resolve the exact link without an in-memory registry.
+  const sourceTrace = workflowTraceReference(source.roomAgentOutcome?.workflowTrace);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
     roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    ...(sourceTrace ? { traceLink: sourceTrace, traceparent: formatTraceparent(sourceTrace.traceId, sourceTrace.spanId) } : { traceLink: undefined }),
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
