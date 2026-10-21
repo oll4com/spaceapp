@@ -17,6 +17,35 @@ the web proxy's recovery loop reads that field. A load balancer, orchestrator or
 check that looks only at the status code must call `/readyz?strict=1`, which returns 503
 while any required dependency is unavailable.
 
+## OTLP workflow and activity spans
+
+With `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` set on the API and workers, the API's
+actual SERVER span parents a workflow-run span. Workflow headers carry that
+span to each activity attempt and child workflow, including work routed to
+another worker. A later request handled by a long-lived Room Agent supervisor
+parents its own turn; it does not inherit the supervisor's original request.
+Both memory workers use this same tracing configuration.
+
+Workflow code emits structured events through a host-side Temporal sink with
+`callDuringReplay: false`. It performs no tracing I/O. Run and activity-attempt
+IDs are deterministic without consuming the application's workflow RNG. A
+version marker preserves replay of pre-instrumentation histories; the
+interceptor stays installed even when export is disabled.
+
+Continue-as-new carries an OTLP link to the preceding workflow span. Room
+Agent completion records also retain the parent workflow trace reference in
+their existing outcome payload, so a background continuation can link to that
+span after process restart or a lost activity reply. Old outcomes without
+the reference remain unlinked. Space's `trace:bg-*` request IDs are unchanged.
+
+Only allowlisted IDs, workflow/activity types, attempts, outcomes, durations
+and stable error codes/categories are exported. Prompts, model output, raw
+errors, paths and URLs are excluded. The shared bounded exporter drops and
+counts overflow and bounds each network request with a timeout. Delivery is
+best effort, not exactly once: workflow-task retry may repeat a stable span
+ID. Workflow spans finish when the run exits; an active supervisor has no
+completed span yet, while its activity attempts export independently.
+
 ## The shared ID
 
 **The Space request ID is the correlation ID.** It has the form
@@ -220,8 +249,8 @@ SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
 OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
 2026-10-16 the worker and both memory workers use the same exporter (services
 `space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+one INTERNAL span per workflow run and activity attempt, connected through
+Temporal headers, with allowlisted IDs, types, outcomes and failure codes.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
@@ -233,28 +262,19 @@ that span, with the activity type, outcome and attempt only.
 - **Worker:** worker logs read the trace ID from the activity input. Internal
   room-action calls from the worker send a child `traceparent`, so the internal
   API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+- **Workflow export:** a versioned interceptor propagates context and sends
+  completed spans through a replay-suppressed sink. Workflow code performs no
+  tracing I/O.
 
 ### Replay compatibility
 
-No file under `apps/worker/src` that the workflow bundle imports was changed
-(`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
-`dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base
-commit and for this change and compared after normalizing paths and webpack
-module numbers. The only differences are in `@space/contracts`:
-- the new `observability` module;
-- the optional `traceparent` turn-input field;
-- the optional file search and readiness fields.
-
-A history without `traceparent` parses exactly as before. Activity inputs are
-not part of Temporal's determinism check.
-
-The read-only live replay (`node scripts/temporal-replay-check.mjs --limit 30`)
-could not be run from the agent sandbox that made this change. Its network
-namespace has no route to the Temporal container (`172.18.0.5:7233`), and
-`127.0.0.1:7233` refuses connections. Run it before deploying this change.
+The `space-workflow-trace-v1` marker gates new workflow tracing commands.
+Histories from before instrumentation follow the original path without adding
+headers or consuming application randomness. Histories containing the marker
+keep the interceptor even when export is disabled. Tests replay histories from
+real disposable Temporal runs; these are not evidence of replaying an
+operator's production histories. Validate those through the normal deployment
+process before rollout.
 
 ## Redaction policy
 
@@ -336,8 +356,8 @@ No credential or transcript export was added.
   the lookup also returns the Space-native agent runs (`space_agent_runs`) of the
   trace's workflows, joined by workflow id, with their status and error code, and
   names a failed run's code as the cause when no event carries one.
-- **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
-  spans and worker activity spans (the worker and both memory workers); the CLI
+- **Hosts emit no spans.** The OTLP exporter sends API SERVER spans, workflow-run
+  spans and activity-attempt spans (the worker and both memory workers); the CLI
   and Browser Hosts still join traces through log lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.

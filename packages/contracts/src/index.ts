@@ -52,6 +52,7 @@ export * from "./nous.js";
 export * from "./nous-focus.js";
 export * from "./version.js";
 export * from "./observability.js";
+export * from "./workflow-trace.js";
 
 export * from "./managed-plan-execution.js";
 export * from "./dots.js";

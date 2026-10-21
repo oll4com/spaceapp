@@ -6746,6 +6746,11 @@ export const updateArtifactRetentionInputSchema = z
   })
   .refine((input) => Object.keys(input).length > 0, "Artifact retention update must include at least one field.");
 
+export const workflowTraceReferenceSchema = z.object({
+  traceId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/),
+  spanId: z.string().regex(/^(?!0{16}$)[0-9a-f]{16}$/)
+}).strict();
+
 export const dummyTurnInputSchema = z.object({
   roomId: idSchema,
   paneId: idSchema,
@@ -6774,6 +6779,7 @@ export const dummyTurnInputSchema = z.object({
   // Optional W3C trace context of the originating request (additive; see
   // docs/quality/observability.md). Never part of a workflow id.
   traceparent: traceparentSchema.optional(),
+  traceLink: workflowTraceReferenceSchema.optional(),
   // Space Dots Stage 3 (additive): a gateway-enabled native Chat turn.
   dotId: dotIdSchema.optional(),
   toolGateway: z.literal("space-dot-tools-v1").optional(),
@@ -6851,12 +6857,14 @@ export const dummyTurnResultSchema = z.object({
 export const roomAgentTurnOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("VERIFIED"),
+    workflowTrace: workflowTraceReferenceSchema.optional(),
     pendingActionIds: z.array(idSchema).max(64).optional(),
     executedActionCount: z.number().int().min(1).max(100),
     statusReason: z.string().min(1).max(1000)
   }),
   z.object({
     status: z.literal("UNVERIFIED"),
+    workflowTrace: workflowTraceReferenceSchema.optional(),
     executedActionCount: z.number().int().min(0).max(100),
     statusReason: z.string().min(1).max(1000)
   })

@@ -1,3 +1,4 @@
+import { activityWorkflowTrace } from "./activity-trace-context.js";
 import {
   buildCodexAppServerProcessEnv,
   codexTurnTokenUsage,
@@ -1635,7 +1636,7 @@ async function recordSpaceAgentRunCompleted(
       codexTurnId: followUp.turnId ?? turnId
     });
   }
-  const roomAgentOutcome: RoomAgentTurnOutcome | undefined = input.roomAgentMissionId
+  const rawRoomAgentOutcome: RoomAgentTurnOutcome | undefined = input.roomAgentMissionId
     ? roomAgentLoop?.outcome ?? (
         (roomAgentToolObservation?.executedActionCount ?? 0) === 0
           ? {
@@ -1650,6 +1651,8 @@ async function recordSpaceAgentRunCompleted(
             }
       )
     : undefined;
+  const workflowTrace = activityWorkflowTrace.getStore();
+  const roomAgentOutcome = rawRoomAgentOutcome && workflowTrace ? { ...rawRoomAgentOutcome, workflowTrace } : rawRoomAgentOutcome;
   const verified = !roomAgentOutcome || roomAgentOutcome.status === "VERIFIED";
   const completedAt = new Date().toISOString();
   if (verified) {

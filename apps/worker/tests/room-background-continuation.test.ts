@@ -6,6 +6,21 @@ import { continuationFixture } from "./room-continuation-fixture.js";
 import { runCodexAppServerTurn } from "../src/activities.js";
 
 describe("durable background continuation", () => {
+  it("links to the durable source workflow span and preserves the link on retry", async () => {
+    const c = continuationFixture();
+    const workflowTrace = { traceId: "11111111111111111111111111111111", spanId: "2222222222222222" };
+    c.store.completeSpaceAgentRun({ runId: c.initial.run.runId, sessionId: c.session.sessionId,
+      responseMessageId: c.initial.responseMessage.messageId, responseContent: "Allocated", finalResponse: "Allocated",
+      codexThreadId: null, codexTurnId: null, sourceType: "ROOM_AGENT", traceId: c.initial.queueItem.turn.traceId,
+      completedAt: new Date().toISOString(), roomAgentOutcome: { status: "VERIFIED", executedActionCount: 1,
+        pendingActionIds: [c.action.actionId], statusReason: "Actions pending", workflowTrace } });
+    const first = await prepareBackgroundContinuation(c.input, c.store);
+    expect(first.state).toBe("READY");
+    if (first.state !== "READY") throw Error("Missing continuation");
+    expect(first.item.turn.traceLink).toEqual(workflowTrace);
+    expect(first.item.turn.traceparent).toBe(`00-${workflowTrace.traceId}-${workflowTrace.spanId}-01`);
+    expect(await prepareBackgroundContinuation(c.input, c.store)).toEqual(first);
+  });
   it("includes the actual failure reason when resuming after a parsed background action", () => {
     const c = continuationFixture();
     const evidence = JSON.parse(continuationEvidence([{ ...c.action, status: "FAILED",
