@@ -1,5 +1,29 @@
 # API configuration reference
 
+## Optional API and worker span export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is unset by default. Set it to a plain
+HTTP(S) collector base URL, for example `http://127.0.0.1:4318`, on the API and
+each worker process. Spans are posted as OTLP/HTTP JSON to `<base>/v1/traces`.
+Credentials, query parameters and fragments in the endpoint are rejected.
+
+The API exports SERVER spans. The main worker, memory-maintenance worker and
+memory-mutation worker export INTERNAL workflow-run and activity-attempt
+spans, including retries and child workflows. API-started work continues the
+request's trace, while continue-as-new and background continuation spans carry
+links to their predecessor. Workflow replay exports no spans. CLI Host and
+Browser Host spans are outside this coverage.
+
+The shared exporter has a bounded queue, drop counters and per-request
+timeouts. Collection is best effort and cannot fail task execution. Attributes
+are limited to approved identifiers, types, attempts, status, stable failure
+codes/categories and durations; prompts, outputs, paths, URLs and exception
+messages are excluded. No collector or tracing SDK is required when disabled.
+See [observability](quality/observability.md#traces-w3c-trace-context) for tests
+and the remaining limitations.
+
+## Configuration inspection
+
 For a first local contribution, follow [CONTRIBUTING](../CONTRIBUTING.md).
 Production installation and provider login belong to the supported installer;
 the API reference is for developers and operators reviewing advanced settings.

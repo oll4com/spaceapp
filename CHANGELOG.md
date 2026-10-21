@@ -5,6 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Optional OTLP tracing now connects API requests to Temporal workflow runs,
+  child workflows and every activity attempt across all three workers, with
+  continuation links, replay suppression and allowlisted attributes (#61).
+
 ## [1.1.6] - 2026-10-18
 
 Source: sanitized Space app @ f8803d5d96 (4595 files). Adds install telemetry
