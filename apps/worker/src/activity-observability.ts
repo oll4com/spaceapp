@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import { defaultPayloadConverter } from "@temporalio/common";
 import {
   categorizeFailureCode,
   formatTraceparent,
@@ -137,6 +138,8 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** Parent WORKFLOW span propagated in Temporal activity headers. */
+  traceparent?: string | null;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -194,7 +197,9 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans
+      ? parseTraceparent(dependencies.traceparent) ?? activityTraceparent(args)
+      : null;
     if (parent) {
       dependencies.spans!.record({
         traceId: parent.traceId,
@@ -203,7 +208,11 @@ export async function observeActivityExecution<T>(
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: {
+          "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt,
+          ...(reasonCode && isSafeErrorCode(reasonCode) ? { "space.reason_code": reasonCode } : {}),
+          ...(category ? { "space.category": category } : {})
+        },
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -229,6 +238,14 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        traceparent: (() => {
+          const header = input.headers["space-otlp-traceparent"];
+          if (!header) return null;
+          try {
+            const value = defaultPayloadConverter.fromPayload(header);
+            return typeof value === "string" ? value : null;
+          } catch { return null; }
+        })(),
         cancelled: () => context.cancellationSignal.aborted
       })
     }

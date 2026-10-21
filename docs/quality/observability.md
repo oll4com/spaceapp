@@ -219,9 +219,14 @@ The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sen
 SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
 OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
 2026-10-16 the worker and both memory workers use the same exporter (services
-`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`).
+For executions entered with a valid W3C `traceparent`, the workflow OTLP
+interceptor now exports a replay-safe INTERNAL workflow span under the original
+API request, propagates the W3C context in Temporal headers
+to child workflows and activities, and exports each observed activity attempt
+under its workflow span, carrying allowlisted type, outcome, attempt and stable
+reason code/category (never prompt, output or error text). A continue-as-new run
+links to its preceding run, rather than requiring a separate trace lookup.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
@@ -233,13 +238,32 @@ that span, with the activity type, outcome and attempt only.
 - **Worker:** worker logs read the trace ID from the activity input. Internal
   room-action calls from the worker send a child `traceparent`, so the internal
   API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+- **Replay safety:** The workflow interceptor does not perform network I/O. It
+  calls a Temporal sink with `callDuringReplay: false`, so replaying existing
+  histories does not emit duplicate spans. OTLP HTTP requests stay in the
+  separate worker process. The exporter retains bounded queues and timeouts.
+
+`apps/worker/tests/workflow-otlp-bounty.test.ts` uses a real time-skipping
+Temporal server and a local HTTP collector, proving the API → workflow → child
+workflow → activity span tree, absence of prompt content, replay suppression
+and continue-as-new linkage without a Docker dependency.
+Long-lived Temporal-only supervisor roots with no originating W3C context now
+get an independent, deterministic trace ID derived from their workflow ID.
+Child workflows and activities inherit the span context via Temporal headers.
+Real integration tests prove the new root and descendants form one trace.
+
+Room Agent background continuations use a distinct application trace:bg-*
+identifier. When the previous turn carried W3C context, its optional
+roomAgentContinuation.sourceTraceparent is carried forward as an OTLP link
+to the prior trace context, without copying instructions or prompt text.
+Older persisted turns without W3C context have no valid upstream span to
+link, and this limitation is not hidden or guessed away. A real Temporal
+integration test covers a cross-trace link and prompt exclusion.
 
 ### Replay compatibility
 
-No file under `apps/worker/src` that the workflow bundle imports was changed
+The earlier baseline relied on the assumption that no file under `apps/worker/src`
+that the workflow bundle imports was changed
 (`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
 `dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base
 commit and for this change and compared after normalizing paths and webpack

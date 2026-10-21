@@ -182,11 +182,13 @@ describe("worker metrics endpoint", () => {
   });
 });
 
-it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+it("registers replay-safe workflow sinks and activity interceptors on all three Temporal workers", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toContain('activity: [createActivityObservabilityInterceptors({ spans })]');
+    expect(source, entry).toContain('workflowModules: [fileURLToPath(new URL("./workflow-otlp-interceptors.js", import.meta.url))]');
+    expect(source, entry).toContain('sinks: workflowOtlpSinks(spans)');
   }
 });
 

@@ -6761,7 +6761,10 @@ export const dummyTurnInputSchema = z.object({
   roomAgentOperatorRequest: z.string().trim().min(1).max(4000).optional(),
   roomAgentContinuation: z.object({
     sourceRunId: idSchema,
-    generation: z.number().int().min(1).max(16)
+    generation: z.number().int().min(1).max(16),
+    // Bounded, schema-validated reference to the W3C parent of the turn we
+    // continue, never an untrusted prompt, URL or provider message.
+    sourceTraceparent: traceparentSchema.optional()
   }).optional(),
   agentUserMessageId: idSchema.optional(),
   agentAssistantMessageId: idSchema.optional(),

@@ -22,6 +22,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** W3C span links for continue-as-new / background context transitions. */
+  links?: ReadonlyArray<{ traceId: string; spanId: string }>;
 }
 
 export interface SpanExporterStats {
@@ -85,6 +87,10 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length ? {
+            links: span.links.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId))
+              .map(link => ({ traceId: link.traceId, spanId: link.spanId }))
+          } : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
