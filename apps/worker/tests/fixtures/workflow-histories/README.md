@@ -10,13 +10,20 @@ and a separate supervisor history generated with the pre-patch continuation
 branch selected using the SDK's `patchActivationCallback`. This is a synthetic
 baseline of the legacy behavior, not a customer's historical execution.
 
-From the repository root, after installing the locked dependencies and building
-the internal packages:
+From the repository root, after installing the locked dependencies:
 
 ```sh
 npm run temporal:record-histories -w @space/worker
 npm run temporal:test -w @space/worker
 ```
+
+These commands and the default worker test command run `test:prepare` first.
+It builds the worker's internal dependencies in dependency order: contracts,
+streaming, opencode-control, memory-graph, codex-app-server, runtime and db.
+The Temporal workflow bundler resolves package exports outside Vitest's source
+aliases, and the full worker suite also imports the other workspace packages,
+so a clean checkout needs their emitted files. This does not build the web/API
+applications or require the full repository build.
 
 The record command runs the real `temporal-*.test.ts` integration suites, excluding
 the replay suite. Only explicit recording mode writes fixtures; normal tests read
