@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   statfs,
@@ -127,6 +128,7 @@ const CONFIG_KEYS = new Set([
   "port",
   "telemetry",
   "profile",
+  "engine",
   "accessMode",
   "workspaces",
   "companionsEnabled",
@@ -274,6 +276,7 @@ export async function inspectSystemResources(root) {
 }
 
 export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
+  const engineLabel = resources.engine === "podman" ? "Podman" : "Docker";
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
@@ -300,9 +303,9 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
       ok: freeDiskBytes >= minFreeDisk,
       detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
+    ...(resources.engineMemoryBytes > 0 ? [{ name: `${engineLabel} memory`, ok: resources.engineMemoryBytes >= engineMemoryBytes,
       detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
+    ...(resources.engineCpuCount > 0 ? [{ name: `${engineLabel} CPU`, ok: resources.engineCpuCount >= 4,
       detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
   ];
 }
@@ -363,6 +366,12 @@ export function validateConfig(config) {
   }
   if (!INSTALL_PROFILES.includes(config.profile)) {
     throw new Error("profile must be small, medium, large, light, or standard.");
+  }
+  if (config.engine !== undefined && !["docker", "podman"].includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Podman does not support --access host-root. Use --access isolated.");
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
@@ -539,6 +548,18 @@ export async function addWorkspace(config, hostPath, { readOnly = false, userId 
     throw new Error("Workspace path must be absolute.");
   }
   const absolutePath = resolve(hostPath);
+  if (config.engine === "podman") {
+    const canonicalPath = await realpath(absolutePath).catch((error) => {
+      if (error?.code === "ENOENT") throw new Error("Workspace path must be an existing directory.");
+      throw error;
+    });
+    const home = await realpath(homedir()).catch(() => resolve(homedir()));
+    const protectedTrees = ["/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var"];
+    const protectedRoots = ["/", "/home", "/media", "/mnt", "/opt", "/srv", "/tmp"];
+    if (canonicalPath === home || protectedRoots.includes(canonicalPath) || protectedTrees.some((path) => canonicalPath === path || canonicalPath.startsWith(`${path}/`))) {
+      throw new Error(`Podman SELinux relabeling is unsafe for ${canonicalPath}. Choose a dedicated workspace directory below your home, not $HOME itself or a system directory.`);
+    }
+  }
   const pathStat = await stat(absolutePath);
   if (!pathStat.isDirectory()) {
     throw new Error("Workspace path must be an existing directory.");
@@ -674,19 +695,25 @@ export async function userNamespacesUsable(platform = process.platform, read = (
 // mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
 const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
 
-export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
+export function renderWorkspaceCompose(config, { cliSandbox = false, root } = {}) {
   validateConfig(config);
+  const podman = config.engine === "podman";
+  const sandboxOptions = podman && root
+    ? ["    security_opt:", `      - seccomp=${join(root, "seccomp-cli.json")}`, "      - apparmor=unconfined"]
+    : CLI_SANDBOX_OPTIONS;
+  const bindOptions = podman ? ["        bind:", "          selinux: z"] : [];
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...bindOptions
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
   if (config.users === undefined) {
-    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
+    return ["services:", "  spaceapp-core:", ...(podman ? ["    userns_mode: keep-id:uid=10001,gid=10001", "    user: 0:0"] : []), ...service, "  spaceapp-cli:", ...(podman ? ["    userns_mode: keep-id:uid=10001,gid=10001", "    user: 0:0"] : []), ...service, ...(cliSandbox ? sandboxOptions : []), ...(podman ? ["  spaceapp-browser:", "    userns_mode: keep-id:uid=10001,gid=10001", "    user: 0:0"] : []), ""].join("\n");
   }
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
@@ -695,7 +722,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...bindOptions
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -704,10 +732,12 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       // The owner's pinned CLI image (runtime.env sets the digest; 1.1.7 review: a moved tag cannot change a user's).
       "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}",
       "    restart: unless-stopped",
+      ...(podman ? ["    userns_mode: keep-id:uid=10001,gid=10001"] : []),
+      ...(podman ? ["    user: 0:0"] : []),
       "    init: true",
       "    security_opt:",
       "      - no-new-privileges:true",
-      ...(cliSandbox ? CLI_SANDBOX_OPTIONS.slice(1) : []),
+      ...(cliSandbox ? sandboxOptions.slice(1) : []),
       `    mem_limit: "${user.memoryLimit ?? settings.cliMemoryLimit}"`,
       "    cpus: \"${SPACEAPP_CLI_CPU_LIMIT}\"",
       "    environment:",
@@ -729,6 +759,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   return [
     "services:",
     "  spaceapp-core:",
+    ...(podman ? ["    userns_mode: keep-id:uid=10001,gid=10001"] : []),
+    ...(podman ? ["    user: 0:0"] : []),
     "    environment:",
     '      SPACE_MULTI_USER_ENABLED: "true"',
     "      SPACE_CLI_HOST_SOCKETS_FILE: /etc/spaceapp/cli-hosts.json",
@@ -737,8 +769,11 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro",
     ...users.map((user) => `      - spaceapp-cli-socket-${userSlug(user.id)}:/run/spaceapp-cli-users/${userSlug(user.id)}`),
     "  spaceapp-cli:",
+    ...(podman ? ["    userns_mode: keep-id:uid=10001,gid=10001"] : []),
+    ...(podman ? ["    user: 0:0"] : []),
     ...service,
-    ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
+    ...(cliSandbox ? sandboxOptions : []),
+    ...(podman ? ["  spaceapp-browser:", "    userns_mode: keep-id:uid=10001,gid=10001", "    user: 0:0"] : []),
     ...userServices,
     ...(users.length > 0 ? ["volumes:"] : []),
     ...users.flatMap((user) => ["cli-state", "memory", "cli-socket", "workspaces"].map((kind) => `  spaceapp-${kind}-${userSlug(user.id)}: {}`)),
@@ -879,7 +914,9 @@ export function composeCommand(action, root, options = {}) {
   };
   if (action === "installProvider") {
     assertProvider(options.provider);
-    actions.installProvider = ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
+    actions.installProvider = options.engine === "podman" && options.provider === "opencode"
+      ? ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "sh", "-ec", "command -v opencode && opencode --version"]
+      : ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
   }
   let selected = actions[action];
   if (action === "restore") {
@@ -909,7 +946,11 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  const engine = options.engine ?? "docker";
+  if (!["docker", "podman"].includes(engine)) throw new Error("engine must be docker or podman.");
+  return engine === "podman"
+    ? { command: "podman", args: [...base, ...selected], env: { PODMAN_COMPOSE_PROVIDER: "docker-compose" } }
+    : { command: "docker", args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -973,7 +1014,7 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
     }
   }
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config, imageLock, recorded));
-  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable(), root }));
   // The core reads it as uid 10001 through a read-only bind mount.
   await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
   for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });
@@ -984,7 +1025,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -997,12 +1039,14 @@ export async function prepareInstallation(root, {
     ? undefined
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
   let config;
+  let existing = true;
   try {
     config = await loadConfig(root);
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
     }
+    existing = false;
     config = createDefaultConfig({
       version,
       profile: resolvedProfile ?? "light",
@@ -1010,6 +1054,10 @@ export async function prepareInstallation(root, {
       companionsEnabled
     });
   }
+  if (engine !== undefined && existing && engine !== (config.engine ?? "docker")) {
+    throw new Error("Cannot switch container engines on an existing installation: Docker volumes are not visible to Podman. Run backup, uninstall, then restore on the new engine.");
+  }
+  if (engine !== undefined) config = { ...config, engine };
   if (config.version !== version) {
     config = {
       ...config,

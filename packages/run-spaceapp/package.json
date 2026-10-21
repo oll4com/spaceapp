@@ -3,8 +3,8 @@
   "version": "1.1.8",
   "spaceappRuntimeVersion": "1.1.8",
   "spaceappHostRootRuntimeCompatible": true,
-  "description": "Cross-platform Docker launcher for the SpaceApp self-hosted agent workspace",
-  "license": "MIT",
+  "description": "Docker and rootless Podman launcher for the SpaceApp self-hosted agent workspace",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "spaceapp": "bin/spaceapp.mjs",
@@ -36,7 +36,7 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check bin/spaceapp.mjs && node --check src/package-info.mjs && node --check src/index.mjs && node --check src/cli.mjs && node --check src/storage.mjs && node --check src/telemetry.mjs && node --check src/prerequisites.mjs",
+    "check": "node --check bin/spaceapp.mjs && node --check src/package-info.mjs && node --check src/index.mjs && node --check src/cli.mjs && node --check src/engine.mjs && node --check src/storage.mjs && node --check src/telemetry.mjs && node --check src/prerequisites.mjs",
     "pack:dry-run": "npm pack --dry-run"
   },
   "repository": {
