@@ -41,7 +41,6 @@ test("workspace add and remove apply the mounts to the running core and CLI serv
   await chmod(folder, 0o755);
   assert.equal(await run(["workspace", "add", folder], options), 0);
   assert.deepEqual(calls.at(-1).slice(-4), ["up", "-d", "spaceapp-core", "spaceapp-cli"]);
-  // On a Windows runner the folder stays writable for everyone (no POSIX modes), so the Linux hint is rightly not needed there.
   if (process.platform !== "win32") {
     assert.match(stdout.value(), /uid 10001 and cannot write/);
     assert.match(stdout.value(), new RegExp(`setfacl -R -m u:10001:rwX .*${folder}`));
