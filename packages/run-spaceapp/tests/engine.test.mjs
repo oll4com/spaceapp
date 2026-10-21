@@ -78,8 +78,10 @@ test("rootless Podman info, socket, and cgroup delegation are checked before com
   assert.ok(calls.some((spec) => spec.args[0] === "compose" && spec.env.PODMAN_COMPOSE_PROVIDER === "docker-compose"));
   await assert.rejects(checkPodman({ execute, platform: "linux", profile: "small", uid: 1000, read: async () => "pids", inspectSocket }), /delegated/);
   await assert.rejects(checkPodman({ execute, platform: "linux", profile: "small", uid: 1000, read, inspectSocket: async () => null }), /socket is not listening/);
+  await assert.rejects(podmanFacts({ execute: async () => 127, platform: "linux", read: async () => 'ID="fedora"\n' }), /dnf install podman docker-compose-plugin.*Podman info is unavailable/);
   assert.equal(composeProviderSupported("Docker Compose version v2.19.0"), false);
   assert.equal(composeProviderSupported("Docker Compose version v2.20.0"), true);
+  assert.equal(composeProviderSupported("Docker Compose version v5.6.0"), true);
 });
 
 test("Podman workspace overrides use keep-id and shared SELinux relabeling for owner and multi-user containers", async () => {
@@ -205,6 +207,17 @@ test("macOS install preflight inspects the machine and rejects an undersized one
   };
   await assert.rejects(checkPodman({ execute, platform: "darwin", profile: "small" }),
     /podman machine stop && podman machine set --cpus 4 --memory 7168 --disk-size 7 && podman machine start/);
+  await assert.rejects(checkPodman({
+    execute: async (spec, io) => {
+      if (spec.args[0] === "machine") return 1;
+      io.stdout?.write(spec.args[0] === "info"
+        ? JSON.stringify({ version: { Version: "5.8.4" }, host: { cgroupVersion: "v2", security: { rootless: true }, remoteSocket: { path: "/tmp/podman.sock" } } })
+        : "Docker Compose version v2.20.0");
+      return 0;
+    },
+    platform: "darwin",
+    profile: "small"
+  }), /Run podman machine init && podman machine start/);
 });
 
 test("storage probes use the selected Podman engine and its JSON resource shape", async (t) => {

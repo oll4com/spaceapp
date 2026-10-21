@@ -117,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           wait_ready() {
-            for attempt in $(seq 1 120); do
+            for _ in $(seq 1 120); do
               if curl --fail --silent http://127.0.0.1:4911/readyz | grep -q '"ok":true'; then return 0; fi
               sleep 5
             done

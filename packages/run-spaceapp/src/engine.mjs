@@ -40,13 +40,18 @@ export function delegatedControllers(controllers) {
 
 export function composeProviderSupported(output) {
   const match = /Docker Compose version v?(\d+)\.(\d+)(?:\.(\d+))?/i.exec(output ?? "");
-  return Boolean(match && Number(match[1]) === 2 && Number(match[2]) >= 20);
+  if (!match) return false;
+  const major = Number(match[1]);
+  return major > 2 || (major === 2 && Number(match[2]) >= 20);
 }
 
 export async function podmanFacts({ execute, platform = process.platform, uid = process.getuid?.(), read = readFile }) {
   const raw = await captureProbe(execute, { command: "podman", args: ["info", "--format", "json"] });
   let info;
-  try { info = JSON.parse(raw); } catch {
+  try {
+    info = JSON.parse(raw ?? "");
+    if (!info || typeof info !== "object") throw new Error("invalid podman info");
+  } catch {
     const release = platform === "linux" ? await read("/etc/os-release", "utf8").catch(() => "") : "";
     throw new Error(`${podmanInstallHelp(platform, release)} Podman info is unavailable.`);
   }
@@ -99,7 +104,8 @@ export async function checkPodman({ execute, platform, profile, read = readFile,
   if (platform === "darwin") {
     const raw = await captureProbe(execute, { command: "podman", args: ["machine", "inspect", "--format", "json"] });
     let machine;
-    try { machine = JSON.parse(raw); } catch { throw new Error("Run podman machine init && podman machine start before installing SpaceApp."); }
+    try { machine = JSON.parse(raw ?? ""); } catch { machine = null; }
+    if (!machine || typeof machine !== "object") throw new Error("Run podman machine init && podman machine start before installing SpaceApp.");
     const resize = podmanMachineResize(machine, profile);
     if (resize) throw new Error(`Podman machine is too small for ${profile}. Resize it with: ${resize}`);
   }
