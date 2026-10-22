@@ -186,14 +186,15 @@ launcher.
 
 ### Podman Support (Rootless)
 
-SpaceApp supports rootless Podman as an alternative container engine on Linux:
+SpaceApp provides rootless Podman support as an alternative container engine on Linux (development / PR candidate for #63; requires local or branched installation prior to general package release):
 
 ```bash
-npx --yes run-spaceapp@latest install --engine podman
+node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman
 ```
 
-Requirements for Podman:
-- Podman >= 5.0 with `podman compose` provider configured.
-- Rootless user namespaces enabled (`subuid`/`subgid` configured).
-- Access mode must be `isolated` (host-root mode is rejected with Podman to preserve security boundaries).
-- To switch container engines on an existing installation, back up data, reinstall with `--engine <engine>`, and restore.
+Requirements & Security Policies for Podman:
+- **Engine**: Podman >= 5.0 with `podman compose` (or Compose plugin) configured and available on PATH.
+- **Rootless Namespaces**: Unprivileged user namespaces must be enabled (`subuid` and `subgid` allocated).
+- **Access Mode**: Podman installations require `--access isolated`. Host-root access (`--access host-root`) is strictly rejected with rootless Podman to prevent container-to-host privilege confusion.
+- **Volume Isolation & Engine Immutability**: Docker volumes and Podman rootless storage are completely separate. Existing Docker installations cannot be switched in-place to Podman without a backup and clean reinstall.
+- **SELinux**: On distributions with enforcing SELinux (e.g., Fedora, RHEL), shared workspace bind mounts automatically apply `:z` volume labeling.

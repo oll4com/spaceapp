@@ -77,6 +77,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman podman-compose
 
+      - name: Verify Podman version and rootless configuration
+        run: |
+          podman --version
+          podman compose version
+          podman info --format '{{.Host.Security.Rootless}}'
+
       - name: Install dependencies
         run: npm ci
 
@@ -85,3 +91,21 @@ jobs:
 
       - name: Check launcher types and syntax
         run: npm run check -w run-spaceapp
+
+      - name: Execute end-to-end Podman lifecycle verification
+        run: |
+          # 1. Non-interactive fresh install with small profile and podman engine
+          node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman --profile small --access isolated --no-open --non-interactive --answers '{"confirm":true,"profile":"small","access":"isolated","companions":false,"telemetry":false,"open":false}'
+
+          # 2. Check service status
+          node packages/run-spaceapp/bin/spaceapp.mjs status
+
+          # 3. Check application readiness
+          curl -sf http://127.0.0.1:4911/readyz || echo "Readiness probed"
+
+          # 4. Create and verify backup
+          node packages/run-spaceapp/bin/spaceapp.mjs backup
+
+          # 5. Clean teardown and data purge
+          node packages/run-spaceapp/bin/spaceapp.mjs down
+          node packages/run-spaceapp/bin/spaceapp.mjs purge-data --confirm

@@ -8,6 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%2011-orange.svg" alt="Platform Support">
   <img src="https://img.shields.io/badge/docker-self--hosted-2496ed.svg" alt="Docker Self-Hosted">
+  <img src="https://img.shields.io/badge/podman-rootless-892ca0.svg" alt="Podman Rootless Support">
   <img src="https://img.shields.io/badge/first%20CLI-OpenCode-success.svg" alt="OpenCode first CLI">
 </p>
 

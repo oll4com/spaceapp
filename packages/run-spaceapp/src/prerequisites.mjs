@@ -1200,3 +1200,52 @@ export async function podmanIsReady(execute) {
   }
   return true;
 }
+
+export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr } = {}) {
+  // 1. Podman binary and version check
+  let versionOutput = "";
+  try {
+    const code = await execute({ command: "podman", args: ["--version"] }, {
+      stdin: null,
+      stdout: (chunk) => { versionOutput += chunk.toString(); },
+      stderr: null
+    });
+    if (code !== 0) {
+      stderr?.write("Podman is not available on PATH or exited with non-zero status.\n");
+      return { ok: false, code: code || 1, reason: "podman_missing" };
+    }
+  } catch (err) {
+    stderr?.write(`Podman execution error: ${err.message}\n`);
+    return { ok: false, code: 1, reason: "podman_execution_error" };
+  }
+
+  // 2. Podman Compose provider check
+  try {
+    const composeCode = await execute({ command: "podman", args: ["compose", "version"] }, {
+      stdin: null, stdout: null, stderr: null
+    });
+    if (composeCode !== 0) {
+      stderr?.write("Podman Compose provider is not configured. Install podman-compose or compose plugin.\n");
+      return { ok: false, code: composeCode, reason: "podman_compose_missing" };
+    }
+  } catch (err) {
+    stderr?.write(`Podman compose error: ${err.message}\n`);
+    return { ok: false, code: 1, reason: "podman_compose_error" };
+  }
+
+  // 3. Podman info / rootless verification
+  try {
+    const infoCode = await execute({ command: "podman", args: ["info"] }, {
+      stdin: null, stdout: null, stderr: null
+    });
+    if (infoCode !== 0) {
+      stderr?.write("Podman system info probe failed.\n");
+      return { ok: false, code: infoCode, reason: "podman_info_failed" };
+    }
+  } catch (err) {
+    stderr?.write(`Podman info error: ${err.message}\n`);
+    return { ok: false, code: 1, reason: "podman_info_error" };
+  }
+
+  return { ok: true, code: 0 };
+}

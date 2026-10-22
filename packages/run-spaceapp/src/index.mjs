@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -680,13 +681,15 @@ export async function userNamespacesUsable(platform = process.platform, read = (
 // mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
 const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
 
-export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
+export function renderWorkspaceCompose(config, { cliSandbox = false, selinux = false } = {}) {
   validateConfig(config);
+  const selinuxOpt = selinux || (config.engine === "podman" && process.platform === "linux");
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(selinuxOpt ? ["        bind:", "          selinux: z"] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -701,7 +704,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(selinuxOpt ? ["        bind:", "          selinux: z"] : [])
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -796,7 +800,16 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
-  const engine = options.engine ?? (options.config?.engine || "docker");
+  let engine = options.engine ?? options.config?.engine;
+  if (!engine) {
+    try {
+      const cfgPath = join(stateRoot, "config.json");
+      const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
+      engine = raw.engine || "docker";
+    } catch {
+      engine = "docker";
+    }
+  }
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
@@ -1001,12 +1014,13 @@ export async function prepareInstallation(root, {
       previousVersion: config.version
     };
   }
+  const currentEngine = config.engine || "docker";
+  if (engine !== undefined && currentEngine !== engine) {
+    throw new Error(
+      `Switching container engines on an existing installation from ${currentEngine} to ${engine} is refused. Docker volumes and Podman volumes are distinct. Back up your installation, reinstall with --engine ${engine}, and restore.`
+    );
+  }
   if (engine !== undefined && config.engine !== engine) {
-    if (config.engine && config.engine !== engine) {
-      throw new Error(
-        `Switching container engines on an existing installation from ${config.engine} to ${engine} is refused. Docker volumes and Podman volumes are distinct. Back up your installation, reinstall with --engine ${engine}, and restore.`
-      );
-    }
     config = { ...config, engine };
   }
   if (resolvedProfile !== undefined) {

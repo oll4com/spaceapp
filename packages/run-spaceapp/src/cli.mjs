@@ -50,6 +50,7 @@ import {
 import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
   ensureDockerAvailable,
+  verifyPodmanPrerequisites,
   prepareDockerCliPath,
   windowsPowerShellArgs
 } from "./prerequisites.mjs";
@@ -746,7 +747,10 @@ async function installCommand(args, {
 
   stage = "docker";
   let prerequisiteResult = { code: 0, reexecuted: false };
-  if (result.config.engine !== "podman") {
+  if (result.config.engine === "podman") {
+    const podmanCheck = await verifyPodmanPrerequisites(execute, { stderr });
+    prerequisiteResult = { code: podmanCheck.code, reexecuted: false };
+  } else {
     prerequisiteResult = await ensureDocker({
       platform,
       arch,
@@ -1093,7 +1097,15 @@ async function planInteractiveSetup({
   }
 
   if (path === "fresh") {
-    let engineChoice = parsed.requestedEngine || "docker";
+    let engineChoice = parsed.requestedEngine;
+    if (!engineChoice) {
+      const answersEngine = stdin?._spaceappPromptController?.answers?.engine;
+      if (answersEngine === "podman" || answersEngine === "docker") {
+        engineChoice = answersEngine;
+      } else {
+        engineChoice = "docker";
+      }
+    }
 
     const profileChoice = await promptChoice(stdin, stdout, "Which installation profile?", [
       { label: `auto (${resolveProfileChoice("auto").resolved}; ${resources.cpuCount} CPUs, ${formatGibibytes(resources.totalMemoryBytes)} GiB RAM, ${formatGibibytes(resources.freeDiskBytes)} GiB free)`, value: "auto" },
@@ -2445,9 +2457,7 @@ async function doctor({
       { name: "Podman Compose", command: "podman", args: ["compose", "version"] },
       { name: "Podman Info", command: "podman", args: ["info"] }
     ]) {
-      const code = dockerReady
-        ? 0
-        : await execute(probe, { stdin, stdout: null, stderr: null });
+      const code = await execute(probe, { stdin, stdout: null, stderr: null });
       dockerResults.push({ ...probe, code });
     }
   } else {
@@ -2493,10 +2503,16 @@ async function doctor({
   for (const check of checks) {
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
   }
-  if (dockerCli.code !== 0 || dockerCompose.code !== 0) {
-    stderr.write(`${dockerInstallHelp(platform)}\n`);
-  } else if (dockerEngine.code !== 0) {
-    stderr.write(`${dockerEngineHelp(platform)}\n`);
+  if (targetEngine === "podman") {
+    if (dockerCli.code !== 0 || dockerCompose.code !== 0 || dockerEngine.code !== 0) {
+      stderr.write("Podman is required: ensure podman and podman-compose (or compose plugin) are installed and rootless namespaces are configured.\n");
+    }
+  } else {
+    if (dockerCli.code !== 0 || dockerCompose.code !== 0) {
+      stderr.write(`${dockerInstallHelp(platform)}\n`);
+    } else if (dockerEngine.code !== 0) {
+      stderr.write(`${dockerEngineHelp(platform)}\n`);
+    }
   }
   return checks.every((check) => check.ok) ? 0 : 1;
 }
