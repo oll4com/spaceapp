@@ -57,6 +57,21 @@ async function until(what, probe, timeoutMs, intervalMs = 1_000) {
 // ---------------------------------------------------------------------------------------------------------------
 // The dev stack process.
 
+// On GitHub Actions the one-time setup token of the throwaway stack is masked in the public job log, like a secret.
+let maskedToken = null;
+function maskSetupTokenInCi() {
+  if (process.env.GITHUB_ACTIONS !== "true") return;
+  try {
+    const token = readFileSync(join(stateDir, "secrets", "setup-token"), "utf8").trim();
+    if (token && token !== maskedToken) {
+      process.stdout.write(`::add-mask::${token}\n`);
+      maskedToken = token;
+    }
+  } catch {
+    // Not written yet; the dev stack writes it long before it prints the banner.
+  }
+}
+
 function startStack(label) {
   const child = spawn(process.execPath, [join(repoRoot, "scripts", "dev-stack.mjs")], {
     cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, SPACEAPP_DEV_QUIET: "1", NO_COLOR: "1" }
@@ -65,6 +80,7 @@ function startStack(label) {
   const onData = (chunk) => {
     const text = chunk.toString();
     stack.output += text;
+    maskSetupTokenInCi();
     for (const line of text.split(/\r?\n/)) if (line.trim()) process.stdout.write(`  | ${line}\n`);
   };
   child.stdout.on("data", onData);
