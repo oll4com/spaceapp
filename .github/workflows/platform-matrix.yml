@@ -101,11 +101,11 @@ jobs:
           node packages/run-spaceapp/bin/spaceapp.mjs status
 
           # 3. Check application readiness
-          curl -sf http://127.0.0.1:4911/readyz || echo "Readiness probed"
+          curl -sf http://127.0.0.1:4911/readyz | jq -e '.ok == true'
 
           # 4. Create and verify backup
           node packages/run-spaceapp/bin/spaceapp.mjs backup
 
           # 5. Clean teardown and data purge
           node packages/run-spaceapp/bin/spaceapp.mjs down
-          node packages/run-spaceapp/bin/spaceapp.mjs purge-data --confirm
+          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}'

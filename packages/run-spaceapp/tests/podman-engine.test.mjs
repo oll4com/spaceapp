@@ -109,7 +109,7 @@ test("composeCommand reads engine from existing config when options.engine is om
   assert.equal(cmd.command, "podman");
 });
 
-test("verifyPodmanPrerequisites checks binary, compose, and info", async () => {
+test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and info", async () => {
   const { verifyPodmanPrerequisites } = await import("../src/prerequisites.mjs");
   
   // Failing binary
@@ -124,11 +124,75 @@ test("verifyPodmanPrerequisites checks binary, compose, and info", async () => {
   assert.equal(res2.ok, false);
   assert.equal(res2.reason, "podman_compose_missing");
 
-  // Passing all
-  const passAll = async () => 0;
+  // Passing all with stream verification
+  const passAll = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
+      io.stdout.write(JSON.stringify({
+        host: {
+          security: { rootless: true },
+          cgroupVersion: "v2"
+        }
+      }));
+    }
+    return 0;
+  };
   const res3 = await verifyPodmanPrerequisites(passAll, { stderr: null });
   assert.equal(res3.ok, true);
   assert.equal(res3.code, 0);
+
+  // Unsupported major version (< 5)
+  const oldVersion = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 4.9.4\n");
+    }
+    return 0;
+  };
+  const res4 = await verifyPodmanPrerequisites(oldVersion, { stderr: null });
+  assert.equal(res4.ok, false);
+  assert.equal(res4.reason, "podman_version_unsupported");
+
+  // Rootful podman rejection
+  const rootful = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.0.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          security: { rootless: false },
+          cgroupVersion: "v2"
+        }
+      }));
+    }
+    return 0;
+  };
+  const res5 = await verifyPodmanPrerequisites(rootful, { stderr: null });
+  assert.equal(res5.ok, false);
+  assert.equal(res5.reason, "podman_not_rootless");
+
+  // cgroup v1 rejection
+  const cgroupV1 = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.0.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          security: { rootless: true },
+          cgroupVersion: "v1"
+        }
+      }));
+    }
+    return 0;
+  };
+  const res6 = await verifyPodmanPrerequisites(cgroupV1, { stderr: null });
+  assert.equal(res6.ok, false);
+  assert.equal(res6.reason, "podman_cgroup_unsupported");
 });
 
 test("renderWorkspaceCompose adds selinux z option when engine is podman", async () => {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -1202,17 +1202,33 @@ export async function podmanIsReady(execute) {
 }
 
 export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr } = {}) {
-  // 1. Podman binary and version check
+  // 1. Podman binary and version check (enforce podman >= 5.0)
   let versionOutput = "";
+  const versionStdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (versionOutput.length < 65536) {
+        versionOutput += chunk.toString();
+      }
+      done();
+    }
+  });
   try {
     const code = await execute({ command: "podman", args: ["--version"] }, {
       stdin: null,
-      stdout: (chunk) => { versionOutput += chunk.toString(); },
+      stdout: versionStdout,
       stderr: null
     });
     if (code !== 0) {
       stderr?.write("Podman is not available on PATH or exited with non-zero status.\n");
       return { ok: false, code: code || 1, reason: "podman_missing" };
+    }
+    const match = versionOutput.match(/(?:podman\s+version\s+|version\s+)?([0-9]+)\.([0-9]+)\.([0-9]+)/i);
+    if (match) {
+      const major = parseInt(match[1], 10);
+      if (major < 5) {
+        stderr?.write(`Podman version 5.0+ is required; detected version ${match[1]}.${match[2]}.${match[3]}.\n`);
+        return { ok: false, code: 1, reason: "podman_version_unsupported" };
+      }
     }
   } catch (err) {
     stderr?.write(`Podman execution error: ${err.message}\n`);
@@ -1234,13 +1250,44 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
   }
 
   // 3. Podman info / rootless verification
+  let infoOutput = "";
+  const infoStdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (infoOutput.length < 1048576) {
+        infoOutput += chunk.toString();
+      }
+      done();
+    }
+  });
   try {
-    const infoCode = await execute({ command: "podman", args: ["info"] }, {
-      stdin: null, stdout: null, stderr: null
+    const infoCode = await execute({ command: "podman", args: ["info", "--format", "{{json .}}"] }, {
+      stdin: null, stdout: infoStdout, stderr: null
     });
     if (infoCode !== 0) {
-      stderr?.write("Podman system info probe failed.\n");
-      return { ok: false, code: infoCode, reason: "podman_info_failed" };
+      // Fallback: try podman info without format
+      const fallbackCode = await execute({ command: "podman", args: ["info"] }, {
+        stdin: null, stdout: null, stderr: null
+      });
+      if (fallbackCode !== 0) {
+        stderr?.write("Podman system info probe failed.\n");
+        return { ok: false, code: fallbackCode, reason: "podman_info_failed" };
+      }
+    } else if (infoOutput.trim()) {
+      try {
+        const info = JSON.parse(infoOutput.trim());
+        if (info.host) {
+          if (info.host.security?.rootless === false) {
+            stderr?.write("Podman is running as root. SpaceApp requires rootless Podman execution.\n");
+            return { ok: false, code: 1, reason: "podman_not_rootless" };
+          }
+          if (info.host.cgroupVersion && info.host.cgroupVersion !== "v2") {
+            stderr?.write(`Podman cgroup version is ${info.host.cgroupVersion}. SpaceApp requires cgroup v2.\n`);
+            return { ok: false, code: 1, reason: "podman_cgroup_unsupported" };
+          }
+        }
+      } catch {
+        // Output was not valid JSON, but podman info exited 0
+      }
     }
   } catch (err) {
     stderr?.write(`Podman info error: ${err.message}\n`);
