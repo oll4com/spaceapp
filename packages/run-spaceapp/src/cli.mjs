@@ -51,7 +51,6 @@ import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
   ensureDockerAvailable,
   dockerIsReady,
-  podmanIsReady,
   verifyPodmanPrerequisites,
   prepareDockerCliPath,
   windowsPowerShellArgs
@@ -67,6 +66,9 @@ import {
   installFunnelFacts,
   isInstallPingAllowed
 } from "./telemetry.mjs";
+import { createLocalImagesExecutor } from "./local-images.mjs";
+import { rootlessStatus } from "./engine-diagnostics.mjs";
+import { selectAutomaticEngine } from "./engine-selection.mjs";
 
 const APPLICATION_READY_WAIT_MINUTES = 10;
 const APPLICATION_READY_WAIT_MS = APPLICATION_READY_WAIT_MINUTES * 60 * 1_000;
@@ -340,18 +342,7 @@ export async function run(argv, {
     return 0;
   }
   if (globalFlags.localImages) {
-    const originalExecute = execute;
-    execute = async (spec, io) => {
-      if (spec.command === "docker" && spec.args?.includes("compose")) {
-        if (spec.args.at(-1) === "pull") {
-          stdout.write("Local images only: skipping registry downloads; missing images will fail startup.\n");
-          return 0;
-        }
-        const index = spec.args.indexOf("up");
-        if (index !== -1) spec = {...spec, args: [...spec.args.slice(0,index+1), "--pull", "never", ...spec.args.slice(index+1)]};
-      }
-      return originalExecute(spec, io);
-    };
+    execute = createLocalImagesExecutor(execute, stdout);
   }
   if (command !== "install") {
     await prepareDockerPath({ platform, env });
@@ -1110,14 +1101,8 @@ async function planInteractiveSetup({
 
   if (path === "fresh") {
     let engineChoice = parsed.requestedEngine;
-    if (!engineChoice) {
-      if (answersEngine === "podman" || answersEngine === "docker") {
-        engineChoice = answersEngine;
-      } else {
-        const dockerReady = typeof execute === "function" && await dockerIsReady(execute).catch(() => false);
-        const podmanReady = platform !== "win32" && typeof execute === "function" && await podmanIsReady(execute).catch(() => false);
-        engineChoice = !dockerReady && podmanReady ? "podman" : "docker";
-      }
+    if (!engineChoice && (answersEngine === "podman" || answersEngine === "docker")) {
+      engineChoice = answersEngine;
     }
 
     const profileChoice = await promptChoice(stdin, stdout, "Which installation profile?", [
@@ -1151,6 +1136,15 @@ async function planInteractiveSetup({
     const openBrowserChoice = await promptYesNo(stdin, stdout, "Open the web application when installation completes?", { defaultYes: !parsed.noOpen, answerKey: "open" });
 
     const { resolved } = resolveProfileChoice(profileChoice);
+    if (!engineChoice) {
+      engineChoice = await selectAutomaticEngine({
+        execute,
+        platform,
+        profile: resolved,
+        dockerIsReady,
+        verifyPodmanPrerequisites
+      });
+    }
     const approved = await finalConfirmation(stdin, stdout, [
       `Installation root: ${root}`,
       `Runtime image version: not installed -> ${runtimeVersion}`,
@@ -2252,7 +2246,7 @@ async function supportBundleCommand({
             const raw = JSON.parse(probeOut.trim());
             bundle.engineDiagnostics = {
               engine: targetEngine,
-              rootless: raw.host?.security?.rootless ?? raw.SecurityOptions?.includes("rootless") ?? null,
+              rootless: rootlessStatus(raw),
               cgroupVersion: raw.host?.cgroupVersion ?? raw.CgroupVersion ?? null,
               cpus: raw.host?.cpus ?? raw.NCPU ?? null,
               memTotal: raw.host?.memTotal ?? raw.MemTotal ?? null
@@ -2341,7 +2335,7 @@ async function factoryResetCommand({
     await rm(join(root, "compose.yml"), { force: true });
   } catch {}
 
-  const result = await initializeInstallation(root, { version: runtimeVersion });
+  const result = await initializeInstallation(root, { version: runtimeVersion, engine: config.engine ?? "docker" });
   stdout.write(`SpaceApp factory reset complete. Clean installation initialized at ${root}\n`);
   if (result.setupToken) {
     stdout.write(`One-time setup token: ${result.setupToken}\n`);

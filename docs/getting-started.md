@@ -45,7 +45,7 @@ automatically, and continues in the same command.
 On Linux distributions where Docker is unavailable or rootless containers are required (e.g., Fedora, RHEL, or user environments without root privileges), SpaceApp supports rootless Podman:
 
 - Requires Podman >= 5.0 and `podman-compose` provider installed.
-- Pass `--engine podman` to the launcher during fresh installation:
+- Until a general package release explicitly includes Podman support, use a local checkout of a branch containing this support and run from the repository root:
   ```bash
   node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman
   ```
