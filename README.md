@@ -246,6 +246,11 @@ The launcher selects the largest profile that fits the available CPU, RAM, and f
 | `medium` | Standard Dev PC | Small stack + `temporal` (background workers & automated workflows) | 4 CPUs, 11 GiB RAM, 8 GiB disk |
 | `large` | Workstations / Servers | Medium stack + `spaceapp-browser` (Chromium browser sessions in a separate service) | 8 CPUs, 15 GiB RAM, 11 GiB disk |
 
+Image-size budgets cover the container layers only. The fresh-install disk
+minimums above also leave room for database data, workspaces and installation
+headroom; smaller service images do not remove that need. Upgrades estimate
+additional image space separately and account for layers already cached.
+
 ---
 
 ## ❓ Frequently Asked Questions & Troubleshooting

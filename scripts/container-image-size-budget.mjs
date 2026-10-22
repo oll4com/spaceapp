@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
-// 1.1.3 raised core and browser (998.7 / 1670.6 MiB measured): the current
-// application adds production dependencies pdfjs-dist with @napi-rs/canvas
-// (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
-// js-tiktoken (22 MiB, Space Gateway token counting).
-// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
-// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
+// Per-entrypoint deploy closures, 2026-10-22; unpacked layer totals in MiB:
+// linux/amd64: core 658.0, browser 1131.0, cli 679.8.
+// linux/arm64: core 686.5, browser 1160.9, cli 711.6.
+// Both architectures must pass these ceilings and the real-process smoke checks.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1100 * mebibyte,
-  browser: 1750 * mebibyte,
-  cli: 2800 * mebibyte
+  core: 750 * mebibyte,
+  browser: 1250 * mebibyte,
+  cli: 750 * mebibyte
 });
 
 export function evaluateContainerImageSize({ target, sizeBytes }) {
@@ -45,12 +44,31 @@ function formatMebibytes(bytes) {
 }
 
 export function inspectContainerImageSize(image) {
-  const output = execFileSync(
-    "docker",
-    ["image", "inspect", "--format", "{{.Size}}", image],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }
-  ).trim();
-  return Number(output);
+  const container = `spaceapp-size-${randomUUID()}`;
+  const options = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] };
+  // A cross-platform image can be loaded but not unpacked in containerd, in
+  // which case even history reports content sizes. Creating (never starting)
+  // a disposable container forces unpacking without executing image code.
+  execFileSync("docker", ["create", "--pull=never", "--name", container, "--entrypoint", "/bin/true", image], options);
+  try {
+    const output = execFileSync("docker", ["image", "history", "--human=false", "--format", "{{.Size}}", image], options).trim();
+    return parseContainerImageSizeHistory(output);
+  } finally {
+    execFileSync("docker", ["rm", "--volumes", container], options);
+  }
+}
+
+// Older containerd-backed Docker versions report compressed content in image
+// inspect's Size. History with --human=false gives integer unpacked layer sizes,
+// including overwritten bytes in earlier layers, on both image stores.
+export function parseContainerImageSizeHistory(output) {
+  const rows = output.trim().split(/\r?\n/);
+  if (rows.some((row) => !/^\d+$/.test(row))) {
+    throw new Error("Docker image history did not return integer layer sizes");
+  }
+  const total = rows.reduce((sum, row) => sum + Number(row), 0);
+  if (!Number.isSafeInteger(total)) throw new Error("Docker layer sizes exceed a safe integer");
+  return total;
 }
 
 export function runContainerImageSizeBudget(args = process.argv.slice(2)) {

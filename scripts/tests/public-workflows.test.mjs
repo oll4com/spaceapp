@@ -47,7 +47,7 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(platform, /- os: windows-latest\s+node: "24"/);
   assert.equal([...platform.matchAll(/- os: windows-latest/g)].length, 2);
   for (const target of ["core", "browser", "cli"]) {
-    assert.match(containers, new RegExp(`- ${target}`));
+    assert.match(containers, new RegExp(`target: ${target}`));
   }
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
@@ -62,7 +62,8 @@ test("launcher-only source and workflow changes cannot trigger the container mat
   assert.match(trigger, /push:[\s\S]*branches:[\s\S]*- main[\s\S]*paths:/);
   assert.match(trigger, /- "packages\/\*\*"/);
   assert.match(trigger, /- "!packages\/run-spaceapp\/\*\*"/);
-  assert.doesNotMatch(trigger, /\.github\/workflows\/containers\.yml/);
+  assert.match(trigger, /\.github\/workflows\/containers\.yml/);
+  assert.match(trigger, /scripts\/container-\*\.mjs/);
 });
 
 test("container matrices load each image and enforce the public size budgets", async () => {
@@ -71,8 +72,14 @@ test("container matrices load each image and enforce the public size budgets", a
 
     assert.match(content, /load: true/);
     assert.match(content, /node scripts\/container-image-size-budget\.mjs/);
-    assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
-    assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
+    if (name === "containers.yml") {
+      assert.match(content, /for target in core cli browser/);
+      assert.match(content, /node scripts\/container-runtime-smoke\.mjs spaceapp-ci "\$\{\{ matrix\.arch \}\}"/);
+      assert.match(content, /--image "spaceapp-ci:\$target-\$\{\{ matrix\.arch \}\}"/);
+    } else {
+      assert.match(content, /--target "\$\{\{ matrix\.target \}\}"/);
+      assert.match(content, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
+    }
   }
 });
 
