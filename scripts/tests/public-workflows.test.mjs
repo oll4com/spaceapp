@@ -226,7 +226,7 @@ test("release is manual-only on main and publishes only approved sanitized artif
 });
 
 test("workflow actions use full commit SHA pins with version comments", async () => {
-  for (const name of ["ci.yml", "platform-matrix.yml", "containers.yml", "security.yml", "release.yml"]) {
+  for (const name of ["ci.yml", "platform-matrix.yml", "containers.yml", "security.yml", "release.yml", "dev-stack.yml"]) {
     const content = await workflow(name);
     assert.doesNotMatch(content, /pull_request_target:/);
     for (const reference of content.matchAll(/uses:\s+([^@\s]+)@([0-9a-f]{40})(?:\s+#\s+([^\s]+))?/g)) {
