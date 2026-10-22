@@ -10,7 +10,8 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "temporal:record-histories": "tsx tests/support/record-workflow-histories.ts"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -26,6 +27,7 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/testing": "1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },

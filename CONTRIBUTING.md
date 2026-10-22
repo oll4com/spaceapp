@@ -102,6 +102,21 @@ results and known failures are indexed there in `docs/quality/README.md`, and
 its `AGENTS.md` describes the guidance to read before changing session
 attachment, room retention, control, readiness, polling or deployment.
 
+## Temporal workflow replay histories
+
+Temporal workflows in `apps/worker/src/` are tested against a real time-skipping
+test server and gated for replay determinism against recorded JSON histories in
+`apps/worker/tests/fixtures/workflow-histories/`. Never re-record histories to
+make a failing replay test pass: gate control-flow, timer, activity or
+child-workflow changes with `patched()` from `@temporalio/workflow`, keep
+existing pre-patch fixtures intact, and only run:
+
+```sh
+npm run temporal:record-histories -w @space/worker
+```
+
+together with a `patched()` change or a newly added workflow.
+
 Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.
