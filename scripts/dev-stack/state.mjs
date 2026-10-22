@@ -65,8 +65,8 @@ export function extractPins(composeSource, dockerfile) {
     if (!pin) throw new Error(`No canonical digest pin for ${service}.`);
     return pin;
   };
-  const opencode = dockerfile.match(/\bopencode-ai@([0-9]+\.[0-9]+\.[0-9]+)\b/)?.[1];
-  if (!opencode) throw new Error('No pinned opencode-ai version in Dockerfile.');
+  const opencode = dockerfile.match(/@opencode\/cli@([0-9]+\.[0-9]+\.[0-9]+)\b/)?.[1];
+  if (!opencode) throw new Error('No pinned @opencode/cli version in Dockerfile.');
   return { postgres: image('postgres'), temporal: image('temporal'), opencode };
 }
 export function composeDocument(owner, pins, password) {

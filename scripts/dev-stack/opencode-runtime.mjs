@@ -14,7 +14,7 @@ const invokeVersion = async (file, args, options) => (await execute(file, args, 
 // its postinstall/network fallback: select the already-installed native package.
 export function nativePackage(platform = process.platform, arch = process.arch) {
   if (!['linux', 'darwin'].includes(platform) || !['x64', 'arm64'].includes(arch)) throw new Error('Unsupported pinned OpenCode platform.');
-  return `opencode-${platform}-${arch}${arch === 'x64' ? '-baseline' : ''}`;
+  return `@opencode/cli-${platform}-${arch}${arch === 'x64' ? '-baseline' : ''}`;
 }
 export async function confinedFile(root, file) {
   const absolute = resolve(root), target = resolve(file), rel = relative(absolute, target);
@@ -40,9 +40,9 @@ export function opencodeEnvironment(state, inherited = {}) {
 export async function resolveOpenCode(state, version, { platform = process.platform, arch = process.arch } = {}) {
   assert.match(version, /^\d+\.\d+\.\d+$/);
   const modules = join(state, 'cli', 'vendor', 'opencode', 'node_modules');
-  const coreFile = await confinedFile(state, join(modules, 'opencode-ai', 'package.json'));
+  const coreFile = await confinedFile(state, join(modules, '@opencode/cli', 'package.json'));
   const core = JSON.parse(await readFile(coreFile, 'utf8')), name = nativePackage(platform, arch);
-  if (core.name !== 'opencode-ai' || core.version !== version || core.optionalDependencies?.[name] !== version) throw new Error('Pinned OpenCode core/native dependency mismatch.');
+  if (core.name !== '@opencode/cli' || core.version !== version || core.optionalDependencies?.[name] !== version) throw new Error('Pinned OpenCode core/native dependency mismatch.');
   const packageFile = await confinedFile(state, join(modules, name, 'package.json'));
   const selected = JSON.parse(await readFile(packageFile, 'utf8'));
   if (selected.name !== name || selected.version !== version) throw new Error('Pinned OpenCode native package mismatch.');

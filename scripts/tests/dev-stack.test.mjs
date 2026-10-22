@@ -83,10 +83,12 @@ test('pins are derived from the canonical image/version sources', () => {
   assert.match(pins.postgres, /^pgvector\/pgvector:.*@sha256:[a-f0-9]{64}$/);
   assert.match(pins.temporal, /^temporalio\/auto-setup:.*@sha256:[a-f0-9]{64}$/);
   assert.match(pins.opencode, /^\d+\.\d+\.\d+$/);
-  assert.throws(() => extractPins('  postgres:\n    image: postgres:latest\n', 'opencode-ai@1.2.3'), /digest/);
+  assert.throws(() => extractPins('  postgres:\n    image: postgres:latest\n', '@opencode/cli@1.2.3'), /digest/);
   const sample = `services:\n  postgres:\n    image: postgres:test@sha256:${'a'.repeat(64)}\n  temporal:\n    image: temporal:test@sha256:${'b'.repeat(64)}\n`;
-  assert.equal(extractPins(sample, 'opencode-ai@2.3.4').opencode, '2.3.4');
-  assert.equal(extractPins(sample, 'opencode-ai@2.3.4').postgres, `postgres:test@sha256:${'a'.repeat(64)}`);
+  assert.equal(extractPins(sample, '@opencode/cli@2.3.4').opencode, '2.3.4');
+  assert.throws(() => extractPins(sample, 'opencode-ai@2.3.4'), /No pinned @opencode\/cli/);
+  assert.throws(() => extractPins(sample, '@opencode/cli@latest'), /No pinned @opencode\/cli/);
+  assert.equal(extractPins(sample, '@opencode/cli@2.3.4').postgres, `postgres:test@sha256:${'a'.repeat(64)}`);
 });
 test('ports are isolated, distinct and explicitly configurable', () => {
   assert.equal(locations(root).ports.api, 4810);
@@ -455,9 +457,9 @@ test('a missing executable rejects promptly instead of leaving an identity wait'
 async function nativeFixture(t, platform = 'linux', arch = 'x64') {
   const config = await sandbox(t); await initialize(config);
   const name = nativePackage(platform, arch), modules = join(config.state, 'cli/vendor/opencode/node_modules');
-  const core = join(modules, 'opencode-ai/package.json'), selected = join(modules, name, 'package.json'), executable = join(modules, name, 'bin/opencode');
-  await mkdir(join(modules, 'opencode-ai'), { recursive: true }); await mkdir(join(modules, name, 'bin'), { recursive: true });
-  await writeFile(core, JSON.stringify({ name: 'opencode-ai', version: pins.opencode, optionalDependencies: { [name]: pins.opencode } }));
+  const core = join(modules, '@opencode/cli/package.json'), selected = join(modules, name, 'package.json'), executable = join(modules, name, 'bin/opencode');
+  await mkdir(join(modules, '@opencode/cli'), { recursive: true }); await mkdir(join(modules, name, 'bin'), { recursive: true });
+  await writeFile(core, JSON.stringify({ name: '@opencode/cli', version: pins.opencode, optionalDependencies: { [name]: pins.opencode } }));
   await writeFile(selected, JSON.stringify({ name, version: pins.opencode }));
   await writeFile(executable, `#!/bin/sh\nif [ "$1" = '--version' ]; then printf '%s\\n' '${pins.opencode}'; else printf '%s\\n' "$PWD" "$HOME"; fi\n`); await chmod(executable, 0o700);
   return { config, core, selected, executable, name };
@@ -466,7 +468,10 @@ test('native OpenCode resolves the exact confined optional binary rather than th
   const fixture = await nativeFixture(t);
   const native = await resolveOpenCode(fixture.config.state, pins.opencode, { platform: 'linux', arch: 'x64' });
   assert.equal(native.executable, fixture.executable); assert.equal(native.package, fixture.name); assert.match(native.sha256, /^[a-f0-9]{64}$/);
-  assert.equal(nativePackage('darwin', 'x64'), 'opencode-darwin-x64-baseline');
+  assert.equal(nativePackage('darwin', 'x64'), '@opencode/cli-darwin-x64-baseline');
+  assert.equal(nativePackage('linux', 'x64'), '@opencode/cli-linux-x64-baseline');
+  assert.equal(nativePackage('linux', 'arm64'), '@opencode/cli-linux-arm64');
+  assert.equal(nativePackage('darwin', 'arm64'), '@opencode/cli-darwin-arm64');
   assert.throws(() => nativePackage('win32', 'x64'), /Unsupported/);
   assert.throws(() => nativePackage('linux', 'unknown'), /Unsupported/);
 });

@@ -30,7 +30,7 @@ try {
   await verifyCliHostPtyCapability(root, config.state, { inherited: env, evidence: join(artifacts, 'early-cli-host-pty-capability.json') });
   const pins = extractPins(await readFile(join(root, 'packages/run-spaceapp/templates/compose.yml'), 'utf8'), await readFile(join(root, 'Dockerfile'), 'utf8'));
   proof.expectedVersion = pins.opencode; proof.stage = 'install-private-pinned-package';
-  await run('npm', ['install', '--prefix', join(config.state, 'cli/vendor/opencode'), '--ignore-scripts', '--no-audit', '--no-fund', `opencode-ai@${pins.opencode}`], { cwd: root, env, output: text => process.stdout.write(text) });
+  await run('npm', ['install', '--prefix', join(config.state, 'cli/vendor/opencode'), '--ignore-scripts', '--no-audit', '--no-fund', `@opencode/cli@${pins.opencode}`], { cwd: root, env, output: text => process.stdout.write(text) });
   await verifyOpenCode(config.state, pins.opencode, { inherited: env, observe: async value => Object.assign(proof, value) });
   console.log('[dev-stack-capability] PASS actual browser keyboard, pinned native --version and real zero-provider printf PTY');
 } catch (error) { proof.error ??= { name: error.name, code: error.code ?? null, signal: error.signal ?? null }; throw error;

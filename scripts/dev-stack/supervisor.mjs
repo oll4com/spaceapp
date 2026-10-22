@@ -156,8 +156,8 @@ export async function start(config, inherited = process.env) {
     await perform(() => compose(config, owner, ['up', '-d', '--wait', '--wait-timeout', '240'], { output: log, secrets: redactions, timeout: 420000, signal: cancellation.signal }));
     await command(['run', 'build']);
     const vendor = join(config.state, 'cli/vendor/opencode');
-    const installed = await readJson(join(vendor, 'node_modules/opencode-ai/package.json')).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
-    if (installed?.version !== pins.opencode) await command(['install', '--prefix', vendor, '--ignore-scripts', '--no-audit', '--no-fund', `opencode-ai@${pins.opencode}`]);
+    const installed = await readJson(join(vendor, 'node_modules/@opencode/cli/package.json')).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+    if (installed?.version !== pins.opencode) await command(['install', '--prefix', vendor, '--ignore-scripts', '--no-audit', '--no-fund', `@opencode/cli@${pins.opencode}`]);
     await verifyOpenCode(config.state, pins.opencode, { inherited: env });
     await privateWrite(join(config.state, 'cli/opencode-version'), pins.opencode);
     const wrapper = join(config.state, 'cli/bin/opencode-vscode-parity');
