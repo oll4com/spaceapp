@@ -141,13 +141,18 @@ jobs:
           ')
           echo "Verifying cleanup for project: $PROJECT_NAME"
 
-          LEFTOVER_CONTAINERS=$(podman ps -a --filter "label=io.podman.compose.project=$PROJECT_NAME" -q; podman ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" -q | sort -u)
+          # Query both podman-compose and docker-compose label namespaces with individual exit code verification
+          CONTAINERS1=$(podman ps -a --filter "label=io.podman.compose.project=$PROJECT_NAME" -q) || exit 1
+          CONTAINERS2=$(podman ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" -q) || exit 1
+          LEFTOVER_CONTAINERS=$(printf "%s\n%s\n" "$CONTAINERS1" "$CONTAINERS2" | sed '/^$/d' | sort -u)
           if [ -n "$LEFTOVER_CONTAINERS" ]; then
             echo "ERROR: Residual containers found for project $PROJECT_NAME: $LEFTOVER_CONTAINERS"
             exit 1
           fi
 
-          LEFTOVER_VOLUMES=$(podman volume ls --filter "label=io.podman.compose.project=$PROJECT_NAME" -q; podman volume ls --filter "label=com.docker.compose.project=$PROJECT_NAME" -q | sort -u)
+          VOLUMES1=$(podman volume ls --filter "label=io.podman.compose.project=$PROJECT_NAME" -q) || exit 1
+          VOLUMES2=$(podman volume ls --filter "label=com.docker.compose.project=$PROJECT_NAME" -q) || exit 1
+          LEFTOVER_VOLUMES=$(printf "%s\n%s\n" "$VOLUMES1" "$VOLUMES2" | sed '/^$/d' | sort -u)
           if [ -n "$LEFTOVER_VOLUMES" ]; then
             echo "ERROR: Residual volumes found for project $PROJECT_NAME: $LEFTOVER_VOLUMES"
             exit 1

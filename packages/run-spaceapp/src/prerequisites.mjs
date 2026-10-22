@@ -655,7 +655,7 @@ async function dockerCliAndComposeAreAvailable(execute) {
   return true;
 }
 
-async function dockerIsReady(execute) {
+export async function dockerIsReady(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] },
@@ -1337,21 +1337,55 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
         return { ok: false, code: 1, reason: "podman_machine_insufficient_memory" };
       }
 
-      const freeDisk = info.store?.graphStatus?.["Disk Available"] || info.store?.diskFree;
+      // Check disk capacity via podman machine inspect (or info store fallback)
       let diskBytes = null;
-      if (typeof freeDisk === "number") {
-        diskBytes = freeDisk;
-      } else if (typeof freeDisk === "string") {
-        const m = freeDisk.match(/^([0-9.]+)\s*([A-Za-z]+)?/);
-        if (m) {
-          const val = parseFloat(m[1]);
-          const unit = (m[2] || "").toLowerCase();
-          if (unit.startsWith("g") || unit.startsWith("gb")) diskBytes = val * (1024 ** 3);
-          else if (unit.startsWith("m") || unit.startsWith("mb")) diskBytes = val * (1024 ** 2);
-          else if (unit.startsWith("t") || unit.startsWith("tb")) diskBytes = val * (1024 ** 4);
-          else diskBytes = val;
+      let machineOutput = "";
+      const machineStdout = new Writable({
+        write(chunk, _encoding, done) {
+          if (machineOutput.length < 65536) machineOutput += chunk.toString();
+          done();
+        }
+      });
+      try {
+        const mCode = await execute({ command: "podman", args: ["machine", "inspect", "--format", "{{json .}}"] }, {
+          stdin: null, stdout: machineStdout, stderr: null
+        });
+        if (mCode === 0 && machineOutput.trim()) {
+          try {
+            const mInfo = JSON.parse(machineOutput.trim());
+            const item = Array.isArray(mInfo) ? mInfo[0] : mInfo;
+            const sz = item?.DiskSize || item?.Resources?.DiskSize;
+            if (typeof sz === "number") diskBytes = sz;
+            else if (typeof sz === "string") {
+              const num = parseFloat(sz);
+              if (Number.isFinite(num)) {
+                if (/tb?/i.test(sz)) diskBytes = num * (1024 ** 4);
+                else if (/gb?/i.test(sz)) diskBytes = num * (1024 ** 3);
+                else if (/mb?/i.test(sz)) diskBytes = num * (1024 ** 2);
+                else diskBytes = num;
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+
+      if (diskBytes === null || diskBytes <= 0) {
+        const freeDisk = info.store?.graphStatus?.["Disk Available"] || info.store?.diskFree;
+        if (typeof freeDisk === "number") {
+          diskBytes = freeDisk;
+        } else if (typeof freeDisk === "string") {
+          const m = freeDisk.match(/^([0-9.]+)\s*([A-Za-z]+)?/);
+          if (m) {
+            const val = parseFloat(m[1]);
+            const unit = (m[2] || "").toLowerCase();
+            if (unit.startsWith("g") || unit.startsWith("gb")) diskBytes = val * (1024 ** 3);
+            else if (unit.startsWith("m") || unit.startsWith("mb")) diskBytes = val * (1024 ** 2);
+            else if (unit.startsWith("t") || unit.startsWith("tb")) diskBytes = val * (1024 ** 4);
+            else diskBytes = val;
+          }
         }
       }
+
       if (diskBytes === null || diskBytes <= 0) {
         stderr?.write("Podman machine disk capacity could not be determined. SpaceApp requires verified disk resources.\n");
         return { ok: false, code: 1, reason: "podman_machine_missing_disk" };

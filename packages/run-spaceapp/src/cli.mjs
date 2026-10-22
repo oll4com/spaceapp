@@ -50,6 +50,8 @@ import {
 import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
   ensureDockerAvailable,
+  dockerIsReady,
+  podmanIsReady,
   verifyPodmanPrerequisites,
   prepareDockerCliPath,
   windowsPowerShellArgs
@@ -2212,9 +2214,33 @@ async function supportBundleCommand({
           }
         : null
     },
+    engineDiagnostics: {},
     services: {},
     health: {}
   };
+
+  if (config) {
+    const targetEngine = config.engine ?? "docker";
+    if (typeof execute === "function") {
+      try {
+        let probeOut = "";
+        const probeStdout = new Writable({ write(c, _, d) { if (probeOut.length < 65536) probeOut += c.toString(); d(); } });
+        const code = await execute({ command: targetEngine, args: ["info", "--format", "{{json .}}"] }, { stdin: null, stdout: probeStdout, stderr: null });
+        if (code === 0 && probeOut.trim()) {
+          try {
+            const raw = JSON.parse(probeOut.trim());
+            bundle.engineDiagnostics = {
+              engine: targetEngine,
+              rootless: raw.host?.security?.rootless ?? raw.SecurityOptions?.includes("rootless") ?? null,
+              cgroupVersion: raw.host?.cgroupVersion ?? raw.CgroupVersion ?? null,
+              cpus: raw.host?.cpus ?? raw.NCPU ?? null,
+              memTotal: raw.host?.memTotal ?? raw.MemTotal ?? null
+            };
+          } catch {}
+        }
+      } catch {}
+    }
+  }
 
   if (config) {
     const url = `http://${config.bindHost}:${config.port}`;
