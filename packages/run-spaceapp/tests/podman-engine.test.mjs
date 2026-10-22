@@ -139,6 +139,10 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
       io.stdout.write("podman version 5.1.0\n");
     }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
     if (spec.args?.[0] === "info" && io?.stdout) {
       assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
       io.stdout.write(JSON.stringify({
@@ -170,6 +174,9 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.0.0\n");
     }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
         host: {
@@ -188,6 +195,9 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   const cgroupV1 = async (spec, io) => {
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.0.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -219,6 +229,9 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.1.0\n");
     }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write("Error: cannot connect to podman socket\n");
     }
@@ -232,6 +245,9 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   const missingRootless = async (spec, io) => {
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -252,6 +268,9 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.1.0\n");
     }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
         host: {
@@ -271,6 +290,9 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.1.0\n");
     }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
     if (spec.args?.[0] === "info") {
       return 1;
     }
@@ -280,23 +302,100 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   assert.equal(resCase5.ok, false);
   assert.equal(resCase5.reason, "podman_info_failed");
 
-  // macOS Podman machine validation
+  // macOS Podman machine validation (success with guest Linux VM, rootless, cgroup v2, sufficient resources)
   const macPass = async (spec, io) => {
     if (spec.args?.[0] === "--version" && io?.stdout) {
       io.stdout.write("podman version 5.1.0\n");
     }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
         host: {
-          os: "darwin"
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          cpus: 4,
+          memTotal: 8 * 1024 ** 3
         }
       }));
     }
     return 0;
   };
-  const resMac = await verifyPodmanPrerequisites(macPass, { stderr: null, platform: "darwin" });
+  const resMac = await verifyPodmanPrerequisites(macPass, { stderr: null, platform: "darwin", requestedProfile: "small" });
   assert.equal(resMac.ok, true);
   assert.equal(resMac.code, 0);
+
+  // macOS negative 1: host.os=darwin without rootless info
+  const macNoRootless = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "darwin"
+          // security.rootless missing
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacNeg1 = await verifyPodmanPrerequisites(macNoRootless, { stderr: null, platform: "darwin" });
+  assert.equal(resMacNeg1.ok, false);
+  assert.equal(resMacNeg1.reason, "podman_not_rootless");
+
+  // macOS negative 2: host.os=linux in machine but rootless=false and cgroupVersion=v1
+  const macRootfulCgroupV1 = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: false },
+          cgroupVersion: "v1"
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacNeg2 = await verifyPodmanPrerequisites(macRootfulCgroupV1, { stderr: null, platform: "darwin" });
+  assert.equal(resMacNeg2.ok, false);
+  assert.equal(resMacNeg2.reason, "podman_not_rootless");
+
+  // macOS negative 3: insufficient CPU in Podman machine
+  const macLowCpu = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          cpus: 2, // requires 4
+          memTotal: 8 * 1024 ** 3
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacNeg3 = await verifyPodmanPrerequisites(macLowCpu, { stderr: null, platform: "darwin", requestedProfile: "small" });
+  assert.equal(resMacNeg3.ok, false);
+  assert.equal(resMacNeg3.reason, "podman_machine_insufficient_cpus");
 });
 
 test("renderWorkspaceCompose adds selinux z option when engine is podman", async () => {

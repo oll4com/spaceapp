@@ -10,6 +10,7 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -1201,7 +1202,7 @@ export async function podmanIsReady(execute) {
   return true;
 }
 
-export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr, platform = process.platform } = {}) {
+export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr, platform = process.platform, requestedProfile = "small" } = {}) {
   // 1. Podman binary and version check (enforce podman >= 5.0, fail-closed on unparsable/invalid version)
   let versionOutput = "";
   const versionStdout = new Writable({
@@ -1237,7 +1238,7 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
     return { ok: false, code: 1, reason: "podman_execution_error" };
   }
 
-  // 2. Podman Compose provider check
+  // 2. Podman Compose provider check (enforce provider presence and valid output)
   let composeOutput = "";
   const composeStdout = new Writable({
     write(chunk, _encoding, done) {
@@ -1254,6 +1255,10 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
     if (composeCode !== 0) {
       stderr?.write("Podman Compose provider is not configured. Install podman-compose or compose plugin.\n");
       return { ok: false, code: composeCode, reason: "podman_compose_missing" };
+    }
+    if (!composeOutput.trim()) {
+      stderr?.write("Podman Compose provider returned empty version response.\n");
+      return { ok: false, code: 1, reason: "podman_compose_empty" };
     }
   } catch (err) {
     stderr?.write(`Podman compose error: ${err.message}\n`);
@@ -1296,21 +1301,31 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
       return { ok: false, code: 1, reason: "podman_info_missing_host" };
     }
 
+    // Both Linux and macOS guest must run rootless
+    if (info.host.security?.rootless !== true) {
+      stderr?.write("Podman is not running rootless. SpaceApp requires rootless Podman execution.\n");
+      return { ok: false, code: 1, reason: "podman_not_rootless" };
+    }
+
+    // Both Linux host and macOS Podman machine guest must provide cgroup v2
+    if (info.host.cgroupVersion !== "v2") {
+      stderr?.write(`Podman cgroup version is "${info.host.cgroupVersion}". SpaceApp requires cgroup v2.\n`);
+      return { ok: false, code: 1, reason: "podman_cgroup_unsupported" };
+    }
+
     if (platform === "darwin") {
-      // macOS uses Podman machine (VM guest runs rootless Linux)
-      if (info.host.os !== "linux" && info.host.os !== "darwin") {
-        stderr?.write(`Unexpected Podman host OS on macOS: ${info.host.os}\n`);
-        return { ok: false, code: 1, reason: "podman_machine_invalid_os" };
+      // macOS uses Podman machine VM: verify machine guest sizing
+      const req = PROFILE_REQUIREMENTS[requestedProfile] || PROFILE_REQUIREMENTS.small;
+      const cpus = info.host.cpus || info.host.nproc || 0;
+      const mem = info.host.memTotal || 0;
+      if (cpus > 0 && cpus < req.cpuCount) {
+        stderr?.write(`Podman machine has ${cpus} CPUs; ${req.cpuCount} CPUs required for ${requestedProfile} profile. Run: podman machine stop && podman machine set --cpus ${req.cpuCount} && podman machine start\n`);
+        return { ok: false, code: 1, reason: "podman_machine_insufficient_cpus" };
       }
-    } else {
-      // Linux: verify rootless === true and cgroupVersion === "v2" strictly
-      if (info.host.security?.rootless !== true) {
-        stderr?.write("Podman is not running rootless. SpaceApp requires rootless Podman execution.\n");
-        return { ok: false, code: 1, reason: "podman_not_rootless" };
-      }
-      if (info.host.cgroupVersion !== "v2") {
-        stderr?.write(`Podman cgroup version is "${info.host.cgroupVersion}". SpaceApp requires cgroup v2.\n`);
-        return { ok: false, code: 1, reason: "podman_cgroup_unsupported" };
+      if (mem > 0 && mem < req.memoryBytes * 0.9) {
+        const gib = Math.round(req.memoryBytes / (1024 ** 3));
+        stderr?.write(`Podman machine memory is insufficient for ${requestedProfile} profile (${gib} GiB required). Run: podman machine stop && podman machine set --memory ${gib * 1024} && podman machine start\n`);
+        return { ok: false, code: 1, reason: "podman_machine_insufficient_memory" };
       }
     }
   } catch (err) {

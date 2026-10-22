@@ -748,7 +748,7 @@ async function installCommand(args, {
   stage = "docker";
   let prerequisiteResult = { code: 0, reexecuted: false };
   if (result.config.engine === "podman") {
-    const podmanCheck = await verifyPodmanPrerequisites(execute, { stderr, platform });
+    const podmanCheck = await verifyPodmanPrerequisites(execute, { stderr, platform, requestedProfile: profile });
     prerequisiteResult = { code: podmanCheck.code, reexecuted: false };
   } else {
     prerequisiteResult = await ensureDocker({
