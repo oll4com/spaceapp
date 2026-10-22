@@ -1238,7 +1238,7 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
     return { ok: false, code: 1, reason: "podman_execution_error" };
   }
 
-  // 2. Podman Compose provider check (enforce provider presence and valid output)
+  // 2. Podman Compose provider check (enforce provider presence, name and version)
   let composeOutput = "";
   const composeStdout = new Writable({
     write(chunk, _encoding, done) {
@@ -1256,9 +1256,30 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
       stderr?.write("Podman Compose provider is not configured. Install podman-compose or compose plugin.\n");
       return { ok: false, code: composeCode, reason: "podman_compose_missing" };
     }
-    if (!composeOutput.trim()) {
+    const trimmedCompose = composeOutput.trim();
+    if (!trimmedCompose) {
       stderr?.write("Podman Compose provider returned empty version response.\n");
       return { ok: false, code: 1, reason: "podman_compose_empty" };
+    }
+
+    const podmanProvider = trimmedCompose.match(/^podman-compose(?:\s+version)?\s+v?(\d+)\.(\d+)\.(\d+)(?:\b|$)/i);
+    const dockerProvider = trimmedCompose.match(/^docker compose version\s+v?(\d+)\.(\d+)\.(\d+)(?:\b|$)/i);
+    if (!podmanProvider && !dockerProvider) {
+      stderr?.write(`Unknown or unparseable Podman Compose provider response: "${trimmedCompose}".\n`);
+      return { ok: false, code: 1, reason: "podman_compose_provider_unsupported" };
+    }
+    const provider = podmanProvider || dockerProvider;
+    const [major, minor, patch] = provider.slice(1).map(Number);
+    const supported = podmanProvider
+      ? major > 1 || (major === 1 && minor >= 6)
+      : major >= 2;
+    if (!supported) {
+      const name = podmanProvider ? "podman-compose" : "Docker Compose";
+      const minimum = podmanProvider ? "1.6.0" : "2.0.0";
+      stderr?.write(`${name} version >= ${minimum} is required; detected ${major}.${minor}.${patch}.\n`);
+      return { ok: false, code: 1, reason: podmanProvider
+        ? "podman_compose_unsupported_version"
+        : "docker_compose_unsupported_version" };
     }
   } catch (err) {
     stderr?.write(`Podman compose error: ${err.message}\n`);

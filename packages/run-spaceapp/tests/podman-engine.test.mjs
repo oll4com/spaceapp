@@ -141,7 +141,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
       assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       assert.equal(typeof io.stdout.write, "function", "stdout must be a stream");
@@ -175,7 +175,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.0.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -197,7 +197,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.0.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -230,7 +230,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write("Error: cannot connect to podman socket\n");
@@ -247,7 +247,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -269,7 +269,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -291,7 +291,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info") {
       return 1;
@@ -308,7 +308,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -338,7 +338,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -360,7 +360,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -383,7 +383,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -413,7 +413,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -442,7 +442,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -471,7 +471,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "info" && io?.stdout) {
       io.stdout.write(JSON.stringify({
@@ -501,7 +501,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "machine" && spec.args?.[1] === "inspect" && io?.stdout) {
       io.stdout.write(JSON.stringify([{
@@ -533,7 +533,7 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
       io.stdout.write("podman version 5.1.0\n");
     }
     if (spec.args?.[0] === "compose" && io?.stdout) {
-      io.stdout.write("podman-compose version 1.2.0\n");
+      io.stdout.write("podman-compose version 1.6.0\n");
     }
     if (spec.args?.[0] === "machine" && spec.args?.[1] === "inspect" && io?.stdout) {
       io.stdout.write(JSON.stringify([{
@@ -569,73 +569,85 @@ test("renderWorkspaceCompose adds selinux z option when engine is podman", async
   assert.match(yml, /selinux: z/);
 });
 
-test("planInteractiveSetup auto selects podman when docker is absent and podman is ready", async () => {
+test("fresh install with engine omitted selects Docker when only Docker is available", async () => {
+  assert.equal((await installWithDetectedEngines({ docker: true, podman: false })).engine, "docker");
+});
+
+test("fresh install with engine omitted selects Podman when only Podman is available", async () => {
+  assert.equal((await installWithDetectedEngines({ docker: false, podman: true })).engine, "podman");
+});
+
+test("fresh install with engine omitted prefers Docker when both engines are available", async () => {
+  assert.equal((await installWithDetectedEngines({ docker: true, podman: true })).engine, "docker");
+});
+
+test("fresh install with engine omitted enters Docker setup when neither engine is available", async () => {
+  const result = await installWithDetectedEngines({ docker: false, podman: false });
+  assert.equal(result.engine, "docker");
+  assert.equal(result.dockerSetupCalled, true);
+});
+
+async function installWithDetectedEngines({ docker, podman }) {
   const { run } = await import("../src/cli.mjs");
   const { Readable, Writable } = await import("node:stream");
-  const root = await mkdtemp(join(tmpdir(), "spaceapp-auto-podman-"));
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-auto-engine-"));
+  let dockerSetupCalled = false;
+  let dockerNowReady = docker;
   const execute = async (spec, io) => {
-    if (spec.command === "docker") {
-      return 1; // docker unavailable
-    }
+    if (spec.command === "docker" && ["--version", "info"].includes(spec.args?.[0])) return dockerNowReady ? 0 : 1;
+    if (spec.command === "docker" && spec.args?.[0] === "compose") return dockerNowReady ? 0 : 1;
     if (spec.command === "podman") {
-      if (spec.args?.[0] === "--version" && io?.stdout) {
-        io.stdout.write("podman version 5.1.0\n");
-        return 0;
-      }
-      if (spec.args?.[0] === "compose" && io?.stdout) {
-        io.stdout.write("podman-compose version 1.2.0\n");
-        return 0;
-      }
-      if (spec.args?.[0] === "info" && io?.stdout) {
-        io.stdout.write(JSON.stringify({
-          host: {
-            security: { rootless: true },
-            cgroupVersion: "v2",
-            cpus: 4,
-            memTotal: 8 * 1024 ** 3
-          }
-        }));
-        return 0;
-      }
-      return 0;
+      if (!podman && spec.args?.[0] !== "info") return 1;
+      if (spec.args?.[0] === "--version" && io?.stdout) io.stdout.write("podman version 5.1.0\n");
+      if (spec.args?.[0] === "compose" && io?.stdout) io.stdout.write("podman-compose version 1.6.0\n");
+      if (spec.args?.[0] === "info" && io?.stdout) io.stdout.write(JSON.stringify({
+        host: { security: { rootless: true }, cgroupVersion: "v2", cpus: 4, memTotal: 8 * 1024 ** 3 }
+      }));
     }
     return 0;
   };
-
-  const inspectResources = async () => ({
-    freeDiskBytes: 50 * 1024 ** 3,
-    totalMemoryBytes: 8 * 1024 ** 3,
-    cpuCount: 4
-  });
-
-  const answers = JSON.stringify({
-    confirm: true,
-    engine: "auto",
-    profile: "small",
-    access: "isolated",
-    companions: false,
-    telemetry: false,
-    open: false
-  });
-
+  const answers = JSON.stringify({ confirm: true, profile: "small", access: "isolated", companions: false, telemetry: false, open: false });
   const code = await run(["install", "--non-interactive", "--answers", answers], {
-    env: { SPACEAPP_HOME: root, SPACEAPP_TELEMETRY: "0" },
-    platform: "linux",
-    stdin: Readable.from([]),
-    stdout: new Writable({ write: (_c, _e, cb) => cb() }),
-    stderr: new Writable({ write: (_c, _e, cb) => cb() }),
-    execute,
-    inspectResources,
-    ensureDocker: async () => ({ code: 0 }),
-    prepareDockerPath: async () => {},
-    sleep: async () => {},
-    request: async (url) => ({
-      ok: true,
-      status: 200,
-      json: async () => url.endsWith("/readyz") ? { ok: true } : { setupRequired: false, expiresAt: null }
-    })
+    env: { SPACEAPP_HOME: root, SPACEAPP_TELEMETRY: "0" }, platform: "linux",
+    stdin: Readable.from([]), stdout: new Writable({ write: (_c, _e, cb) => cb() }), stderr: new Writable({ write: (_c, _e, cb) => cb() }),
+    execute, inspectResources: async () => ({ freeDiskBytes: 50 * 1024 ** 3, totalMemoryBytes: 8 * 1024 ** 3, cpuCount: 4 }),
+    ensureDocker: async () => { dockerSetupCalled = true; dockerNowReady = true; return { code: 0 }; },
+    prepareDockerPath: async () => {}, sleep: async () => {},
+    request: async (url) => ({ ok: true, status: 200, json: async () => url.endsWith("/readyz") ? { ok: true } : { setupRequired: false, expiresAt: null } })
   });
   assert.equal(code, 0);
-  const cfg = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  assert.equal(cfg.engine, "podman");
+  const config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  return { engine: config.engine, dockerSetupCalled };
+}
+
+test("verifyPodmanPrerequisites rejects podman-compose 1.2.0", async () => {
+  const { verifyPodmanPrerequisites } = await import("../src/prerequisites.mjs");
+  const result = await verifyComposeProvider("podman-compose version 1.2.0", verifyPodmanPrerequisites);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "podman_compose_unsupported_version");
 });
+
+test("verifyPodmanPrerequisites rejects podman-compose 1.5.0", async () => {
+  const { verifyPodmanPrerequisites } = await import("../src/prerequisites.mjs");
+  const result = await verifyComposeProvider("podman-compose version 1.5.0", verifyPodmanPrerequisites);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "podman_compose_unsupported_version");
+});
+
+test("verifyPodmanPrerequisites accepts podman-compose 1.6.0", async () => {
+  const { verifyPodmanPrerequisites } = await import("../src/prerequisites.mjs");
+  const result = await verifyComposeProvider("podman-compose version 1.6.0", verifyPodmanPrerequisites);
+  assert.equal(result.ok, true);
+});
+
+async function verifyComposeProvider(response, verify) {
+  const execute = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) io.stdout.write("podman version 5.1.0\n");
+    if (spec.args?.[0] === "compose" && io?.stdout) io.stdout.write(`${response}\n`);
+    if (spec.args?.[0] === "info" && io?.stdout) io.stdout.write(JSON.stringify({
+      host: { security: { rootless: true }, cgroupVersion: "v2" }
+    }));
+    return 0;
+  };
+  return verify(execute, { stderr: null });
+}

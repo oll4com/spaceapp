@@ -635,7 +635,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
     }
   };
 
-  assert.equal(await run(["install", "--profile", "auto", "--no-open"], options), 0);
+  assert.equal(await run(["install", "--profile", "auto", "--engine", "docker", "--no-open"], options), 0);
   assert.equal((JSON.parse(await readFile(join(root, "config.json"), "utf8"))).profile, "small");
   assert.match(stdout.value(), /Selected profile: small.*7\.7 GiB/i);
   assert.match(stdout.value(), /SpaceApp is ready at http:\/\/127\.0\.0\.1:4911/);
@@ -727,7 +727,7 @@ test("host-root install is rejected on non-Linux hosts before Docker or installa
     };
 
     await assert.rejects(
-      () => run(["install", "--access", "host-root", "--no-open"], {
+      () => run(["install", "--access", "host-root", "--engine", "docker", "--no-open"], {
         env: { SPACEAPP_HOME: root },
         platform,
         stdout: capture().stream,
@@ -847,7 +847,7 @@ test("the matching x64 candidate enables Linux host-root through the normal inst
     execute: 0
   };
 
-  assert.equal(await run(["install", "--access", "host-root", "--no-open"], {
+  assert.equal(await run(["install", "--access", "host-root", "--engine", "docker", "--no-open"], {
     env: { SPACEAPP_HOME: root },
     platform: "linux",
     stdout: capture().stream,
@@ -1458,7 +1458,7 @@ test("macOS authorization failure stops the install before SpaceApp image pulls"
   const stderr = capture();
   const calls = [];
 
-  assert.equal(await run(["install", "--no-open"], {
+  assert.equal(await run(["install", "--engine", "docker", "--no-open"], {
     env: { SPACEAPP_HOME: root, USER: "space-user", PATH: "/usr/bin:/bin" },
     platform: "darwin",
     arch: "x64",
