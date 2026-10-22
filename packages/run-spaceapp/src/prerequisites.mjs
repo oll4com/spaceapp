@@ -1314,18 +1314,52 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
     }
 
     if (platform === "darwin") {
-      // macOS uses Podman machine VM: verify machine guest sizing
+      // macOS uses Podman machine VM: verify machine guest sizing (fail-closed if missing)
       const req = PROFILE_REQUIREMENTS[requestedProfile] || PROFILE_REQUIREMENTS.small;
-      const cpus = info.host.cpus || info.host.nproc || 0;
-      const mem = info.host.memTotal || 0;
-      if (cpus > 0 && cpus < req.cpuCount) {
+      const cpus = info.host.cpus || info.host.nproc;
+      if (typeof cpus !== "number" || cpus <= 0) {
+        stderr?.write("Podman machine CPU count could not be determined. SpaceApp requires verified CPU resources.\n");
+        return { ok: false, code: 1, reason: "podman_machine_missing_cpus" };
+      }
+      if (cpus < req.cpuCount) {
         stderr?.write(`Podman machine has ${cpus} CPUs; ${req.cpuCount} CPUs required for ${requestedProfile} profile. Run: podman machine stop && podman machine set --cpus ${req.cpuCount} && podman machine start\n`);
         return { ok: false, code: 1, reason: "podman_machine_insufficient_cpus" };
       }
-      if (mem > 0 && mem < req.memoryBytes * 0.9) {
+
+      const mem = info.host.memTotal;
+      if (typeof mem !== "number" || mem <= 0) {
+        stderr?.write("Podman machine memory could not be determined. SpaceApp requires verified memory resources.\n");
+        return { ok: false, code: 1, reason: "podman_machine_missing_memory" };
+      }
+      if (mem < req.memoryBytes * 0.9) {
         const gib = Math.round(req.memoryBytes / (1024 ** 3));
         stderr?.write(`Podman machine memory is insufficient for ${requestedProfile} profile (${gib} GiB required). Run: podman machine stop && podman machine set --memory ${gib * 1024} && podman machine start\n`);
         return { ok: false, code: 1, reason: "podman_machine_insufficient_memory" };
+      }
+
+      const freeDisk = info.store?.graphStatus?.["Disk Available"] || info.store?.diskFree;
+      let diskBytes = null;
+      if (typeof freeDisk === "number") {
+        diskBytes = freeDisk;
+      } else if (typeof freeDisk === "string") {
+        const m = freeDisk.match(/^([0-9.]+)\s*([A-Za-z]+)?/);
+        if (m) {
+          const val = parseFloat(m[1]);
+          const unit = (m[2] || "").toLowerCase();
+          if (unit.startsWith("g") || unit.startsWith("gb")) diskBytes = val * (1024 ** 3);
+          else if (unit.startsWith("m") || unit.startsWith("mb")) diskBytes = val * (1024 ** 2);
+          else if (unit.startsWith("t") || unit.startsWith("tb")) diskBytes = val * (1024 ** 4);
+          else diskBytes = val;
+        }
+      }
+      if (diskBytes === null || diskBytes <= 0) {
+        stderr?.write("Podman machine disk capacity could not be determined. SpaceApp requires verified disk resources.\n");
+        return { ok: false, code: 1, reason: "podman_machine_missing_disk" };
+      }
+      if (diskBytes < req.freshDiskBytes * 0.9) {
+        const gib = Math.round(req.freshDiskBytes / (1024 ** 3));
+        stderr?.write(`Podman machine disk is insufficient for ${requestedProfile} profile (${gib} GiB required). Run: podman machine stop && podman machine set --disk-size ${gib + 10} && podman machine start\n`);
+        return { ok: false, code: 1, reason: "podman_machine_insufficient_disk" };
       }
     }
   } catch (err) {

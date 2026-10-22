@@ -134,23 +134,20 @@ jobs:
           node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}'
 
           # 6. Verify zero residual SpaceApp containers, pods, or volumes
-          # Resolve project name
-          SPACEAPP_DIR="${SPACEAPP_HOME:-$HOME/.spaceapp}"
-          PROJECT_NAME=$(node -e '
-            const { createHash } = require("crypto");
-            const { resolve } = require("path");
-            const dir = process.argv[1];
-            console.log("spaceapp-" + createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 12));
-          ' "$SPACEAPP_DIR")
+          # Resolve project name using launcher runtime authority
+          PROJECT_NAME=$(node --input-type=module -e '
+            const { resolveSpaceAppHome, composeProjectName } = await import("./packages/run-spaceapp/src/index.mjs");
+            console.log(composeProjectName(resolveSpaceAppHome()));
+          ')
           echo "Verifying cleanup for project: $PROJECT_NAME"
 
-          LEFTOVER_CONTAINERS=$(podman ps -a --filter "label=io.podman.compose.project=$PROJECT_NAME" --filter "label=com.docker.compose.project=$PROJECT_NAME" -q)
+          LEFTOVER_CONTAINERS=$(podman ps -a --filter "label=io.podman.compose.project=$PROJECT_NAME" -q; podman ps -a --filter "label=com.docker.compose.project=$PROJECT_NAME" -q | sort -u)
           if [ -n "$LEFTOVER_CONTAINERS" ]; then
             echo "ERROR: Residual containers found for project $PROJECT_NAME: $LEFTOVER_CONTAINERS"
             exit 1
           fi
 
-          LEFTOVER_VOLUMES=$(podman volume ls --filter "label=io.podman.compose.project=$PROJECT_NAME" --filter "label=com.docker.compose.project=$PROJECT_NAME" -q)
+          LEFTOVER_VOLUMES=$(podman volume ls --filter "label=io.podman.compose.project=$PROJECT_NAME" -q; podman volume ls --filter "label=com.docker.compose.project=$PROJECT_NAME" -q | sort -u)
           if [ -n "$LEFTOVER_VOLUMES" ]; then
             echo "ERROR: Residual volumes found for project $PROJECT_NAME: $LEFTOVER_VOLUMES"
             exit 1

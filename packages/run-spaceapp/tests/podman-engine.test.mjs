@@ -318,6 +318,11 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
           cgroupVersion: "v2",
           cpus: 4,
           memTotal: 8 * 1024 ** 3
+        },
+        store: {
+          graphStatus: {
+            "Disk Available": "25GB"
+          }
         }
       }));
     }
@@ -388,6 +393,11 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
           cgroupVersion: "v2",
           cpus: 2, // requires 4
           memTotal: 8 * 1024 ** 3
+        },
+        store: {
+          graphStatus: {
+            "Disk Available": "25GB"
+          }
         }
       }));
     }
@@ -396,6 +406,94 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   const resMacNeg3 = await verifyPodmanPrerequisites(macLowCpu, { stderr: null, platform: "darwin", requestedProfile: "small" });
   assert.equal(resMacNeg3.ok, false);
   assert.equal(resMacNeg3.reason, "podman_machine_insufficient_cpus");
+
+  // macOS negative 4: missing CPU information
+  const macMissingCpu = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          memTotal: 8 * 1024 ** 3
+        },
+        store: {
+          graphStatus: {
+            "Disk Available": "25GB"
+          }
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacNeg4 = await verifyPodmanPrerequisites(macMissingCpu, { stderr: null, platform: "darwin", requestedProfile: "small" });
+  assert.equal(resMacNeg4.ok, false);
+  assert.equal(resMacNeg4.reason, "podman_machine_missing_cpus");
+
+  // macOS negative 5: missing memory information
+  const macMissingMem = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          cpus: 4
+        },
+        store: {
+          graphStatus: {
+            "Disk Available": "25GB"
+          }
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacNeg5 = await verifyPodmanPrerequisites(macMissingMem, { stderr: null, platform: "darwin", requestedProfile: "small" });
+  assert.equal(resMacNeg5.ok, false);
+  assert.equal(resMacNeg5.reason, "podman_machine_missing_memory");
+
+  // macOS negative 6: missing or insufficient disk capacity
+  const macLowDisk = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          cpus: 4,
+          memTotal: 8 * 1024 ** 3
+        },
+        store: {
+          graphStatus: {
+            "Disk Available": "2GB" // requires 6.5GB
+          }
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacNeg6 = await verifyPodmanPrerequisites(macLowDisk, { stderr: null, platform: "darwin", requestedProfile: "small" });
+  assert.equal(resMacNeg6.ok, false);
+  assert.equal(resMacNeg6.reason, "podman_machine_insufficient_disk");
 });
 
 test("renderWorkspaceCompose adds selinux z option when engine is podman", async () => {
