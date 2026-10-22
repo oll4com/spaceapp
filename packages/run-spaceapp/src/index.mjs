@@ -120,6 +120,7 @@ const CONFIG_KEYS = new Set([
   "schemaVersion",
   "version",
   "previousVersion",
+  "engine",
   "bindHost",
   "port",
   "telemetry",
@@ -306,6 +307,7 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
 
 export function createDefaultConfig({
   version,
+  engine,
   profile = "light",
   accessMode = "isolated",
   companionsEnabled = false
@@ -319,6 +321,7 @@ export function createDefaultConfig({
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
     previousVersion: null,
+    ...(engine !== undefined ? { engine } : {}),
     bindHost: "127.0.0.1",
     port: 4911,
     telemetry: false,
@@ -348,6 +351,9 @@ export function validateConfig(config) {
   assertVersion(config.version);
   if (config.previousVersion !== null) {
     assertVersion(config.previousVersion);
+  }
+  if (config.engine !== undefined && config.engine !== "docker" && config.engine !== "podman") {
+    throw new Error("engine must be docker or podman.");
   }
   if (config.bindHost !== "127.0.0.1" && config.bindHost !== "0.0.0.0") {
     throw new Error("bindHost must be 127.0.0.1 or 0.0.0.0.");
@@ -787,6 +793,7 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
+  const engine = options.engine ?? (options.config?.engine || "docker");
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
@@ -905,7 +912,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -954,6 +961,7 @@ export async function writeRuntimeFiles(root, config) {
 
 export async function prepareInstallation(root, {
   version,
+  engine,
   profile,
   accessMode,
   companionsEnabled
@@ -977,6 +985,7 @@ export async function prepareInstallation(root, {
     }
     config = createDefaultConfig({
       version,
+      engine,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
       companionsEnabled
@@ -988,6 +997,14 @@ export async function prepareInstallation(root, {
       version,
       previousVersion: config.version
     };
+  }
+  if (engine !== undefined && config.engine !== engine) {
+    if (config.engine && config.engine !== engine) {
+      throw new Error(
+        `Switching container engines on an existing installation from ${config.engine} to ${engine} is refused. Docker volumes and Podman volumes are distinct. Back up your installation, reinstall with --engine ${engine}, and restore.`
+      );
+    }
+    config = { ...config, engine };
   }
   if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };

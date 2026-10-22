@@ -78,6 +78,7 @@ const trustedCommands = new Set([
   "docker",
   "hdiutil",
   "open",
+  "podman",
   "powershell.exe",
   "sg",
   "shutdown.exe",
@@ -427,7 +428,7 @@ export async function run(argv, {
 
   if (["up", "down", "status", "logs"].includes(command)) {
     assertNoArgs(args, command);
-    return runtimeExecute(composeCommand(command, root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    return runtimeExecute(composeCommand(command, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, engine: config.engine }), { stdin, stdout, stderr });
   }
   if (command === "open") {
     assertNoArgs(args, "open");
@@ -654,6 +655,7 @@ async function installCommand(args, {
   const {
     requestedProfile,
     requestedAccessMode,
+    requestedEngine,
     noOpen,
     companionsEnabled,
     telemetryEnabled,
@@ -683,6 +685,7 @@ async function installCommand(args, {
   }
   const result = await prepareInstallation(root, {
     version: runtimeVersion,
+    engine: requestedEngine,
     profile,
     accessMode,
     ...(companionsEnabled ? { companionsEnabled } : {})
@@ -742,16 +745,19 @@ async function installCommand(args, {
   }
 
   stage = "docker";
-  const prerequisiteResult = await ensureDocker({
-    platform,
-    arch,
-    env,
-    stdin,
-    stdout,
-    stderr,
-    execute,
-    installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
-  });
+  let prerequisiteResult = { code: 0, reexecuted: false };
+  if (result.config.engine !== "podman") {
+    prerequisiteResult = await ensureDocker({
+      platform,
+      arch,
+      env,
+      stdin,
+      stdout,
+      stderr,
+      execute,
+      installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
+    });
+  }
   if (prerequisiteResult.reexecuted) {
     return prerequisiteResult.code;
   }
@@ -1070,7 +1076,7 @@ async function planInteractiveSetup({
     return { resolved, display: choice === "auto" ? `auto (${resolved})` : resolved };
   };
 
-  if (continuation) {
+    if (continuation) {
     await consumeRunOnceContinuation(root);
     stdout.write("Continuing the approved unattended SpaceApp setup plan.\n");
     await applyApprovedConfigRepairs(root, rawExisting);
@@ -1078,6 +1084,7 @@ async function planInteractiveSetup({
     return {
       requestedProfile: actions.profile ?? "auto",
       requestedAccessMode: actions.accessMode,
+      requestedEngine: actions.engine ?? parsed.requestedEngine,
       noOpen: actions.noOpen !== false,
       companionsEnabled: actions.companionsEnabled ?? false,
       telemetryEnabled: actions.telemetry ?? false,
@@ -1086,6 +1093,8 @@ async function planInteractiveSetup({
   }
 
   if (path === "fresh") {
+    let engineChoice = parsed.requestedEngine || "docker";
+
     const profileChoice = await promptChoice(stdin, stdout, "Which installation profile?", [
       { label: `auto (${resolveProfileChoice("auto").resolved}; ${resources.cpuCount} CPUs, ${formatGibibytes(resources.totalMemoryBytes)} GiB RAM, ${formatGibibytes(resources.freeDiskBytes)} GiB free)`, value: "auto" },
       { label: "small (SpaceApp + OpenCode; no background workflows or managed browser)", value: "small" },
@@ -1120,6 +1129,7 @@ async function planInteractiveSetup({
     const approved = await finalConfirmation(stdin, stdout, [
       `Installation root: ${root}`,
       `Runtime image version: not installed -> ${runtimeVersion}`,
+      ...(engineChoice === "podman" ? [`Container engine: ${engineChoice}`] : []),
       `Profile: ${profileChoice === "auto" ? `auto (${resolved})` : profileChoice}`,
       `Access mode: ${accessChoice}`,
       `Companions: ${companionsChoice ? "enabled" : "disabled"}`,
@@ -1133,6 +1143,7 @@ async function planInteractiveSetup({
     }
     if (platform === "win32") {
       await offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, {
+        engine: engineChoice,
         profile: profileChoice,
         accessMode: accessChoice,
         companionsEnabled: companionsChoice,
@@ -1142,6 +1153,7 @@ async function planInteractiveSetup({
       });
     }
     return {
+      requestedEngine: engineChoice,
       requestedProfile: profileChoice,
       requestedAccessMode: accessChoice,
       noOpen: !openBrowserChoice,
@@ -1692,6 +1704,7 @@ async function restoreRuntimeAfterFailedInstall({
 function parseInstallArgs(args) {
   let requestedProfile = "auto";
   let requestedAccessMode;
+  let requestedEngine;
   let noOpen = false;
   let companionsEnabled = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -1702,6 +1715,15 @@ function parseInstallArgs(args) {
     }
     if (argument === "--with-companions" && !companionsEnabled) {
       companionsEnabled = true;
+      continue;
+    }
+    if (argument === "--engine" && index + 1 < args.length) {
+      requestedEngine = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--engine=")) {
+      requestedEngine = argument.slice("--engine=".length);
       continue;
     }
     if (argument === "--profile" && index + 1 < args.length) {
@@ -1723,7 +1745,7 @@ function parseInstallArgs(args) {
       continue;
     }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--engine docker|podman] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
   if (
@@ -1731,13 +1753,17 @@ function parseInstallArgs(args) {
     (
       requestedAccessMode !== undefined &&
       !["isolated", "host-root"].includes(requestedAccessMode)
+    ) ||
+    (
+      requestedEngine !== undefined &&
+      !["docker", "podman"].includes(requestedEngine)
     )
   ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--engine docker|podman] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
-  return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled };
+  return { requestedProfile, requestedAccessMode, requestedEngine, noOpen, companionsEnabled };
 }
 
 async function loadExistingInstallation(root) {
@@ -2409,16 +2435,32 @@ async function doctor({
     ...resourceChecks.filter((check) => !storagePlan || check.name !== "Free disk"),
     ...(storagePlan ? storageChecks(storagePlan, detectedResources) : [])
   ];
+  const existingConfig = await loadConfig(root).catch(() => null);
+  const targetEngine = existingConfig?.engine ?? "docker";
+
   const dockerResults = [];
-  for (const probe of [
-    { name: "Docker CLI", command: "docker", args: ["--version"] },
-    { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
-    { name: "Docker Engine", command: "docker", args: ["info"] }
-  ]) {
-    const code = dockerReady
-      ? 0
-      : await execute(probe, { stdin, stdout: null, stderr: null });
-    dockerResults.push({ ...probe, code });
+  if (targetEngine === "podman") {
+    for (const probe of [
+      { name: "Podman CLI", command: "podman", args: ["--version"] },
+      { name: "Podman Compose", command: "podman", args: ["compose", "version"] },
+      { name: "Podman Info", command: "podman", args: ["info"] }
+    ]) {
+      const code = dockerReady
+        ? 0
+        : await execute(probe, { stdin, stdout: null, stderr: null });
+      dockerResults.push({ ...probe, code });
+    }
+  } else {
+    for (const probe of [
+      { name: "Docker CLI", command: "docker", args: ["--version"] },
+      { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
+      { name: "Docker Engine", command: "docker", args: ["info"] }
+    ]) {
+      const code = dockerReady
+        ? 0
+        : await execute(probe, { stdin, stdout: null, stderr: null });
+      dockerResults.push({ ...probe, code });
+    }
   }
   const [dockerCli, dockerCompose, dockerEngine] = dockerResults;
   checks.push({
@@ -2633,6 +2675,7 @@ function spawnTrustedCommand(spec, options) {
     case "docker": return spawn("docker", args, options);
     case "hdiutil": return spawn("hdiutil", args, options);
     case "open": return spawn("open", args, options);
+    case "podman": return spawn("podman", args, options);
     case "powershell.exe":
       return spawn("powershell.exe", windowsPowerShellArgs(spec.operation), options);
     case "sg": return spawn("sg", args, options);
