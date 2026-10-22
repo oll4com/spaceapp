@@ -494,6 +494,71 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   const resMacNeg6 = await verifyPodmanPrerequisites(macLowDisk, { stderr: null, platform: "darwin", requestedProfile: "small" });
   assert.equal(resMacNeg6.ok, false);
   assert.equal(resMacNeg6.reason, "podman_machine_insufficient_disk");
+
+  // macOS positive: podman machine inspect with numeric DiskSize in GiB (e.g. 100 or 8 GiB)
+  const macInspectDiskPass = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "machine" && spec.args?.[1] === "inspect" && io?.stdout) {
+      io.stdout.write(JSON.stringify([{
+        Resources: {
+          DiskSize: 100 // 100 GiB reported as numeric
+        }
+      }]));
+      return 0;
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          cpus: 4,
+          memTotal: 8 * 1024 ** 3
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacInspectPass = await verifyPodmanPrerequisites(macInspectDiskPass, { stderr: null, platform: "darwin", requestedProfile: "small" });
+  assert.equal(resMacInspectPass.ok, true);
+
+  // macOS negative: podman machine inspect with numeric DiskSize 2 GiB (insufficient for small profile requiring 6.5 GiB)
+  const macInspectDiskLow = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "compose" && io?.stdout) {
+      io.stdout.write("podman-compose version 1.2.0\n");
+    }
+    if (spec.args?.[0] === "machine" && spec.args?.[1] === "inspect" && io?.stdout) {
+      io.stdout.write(JSON.stringify([{
+        Resources: {
+          DiskSize: 2 // 2 GiB
+        }
+      }]));
+      return 0;
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "linux",
+          security: { rootless: true },
+          cgroupVersion: "v2",
+          cpus: 4,
+          memTotal: 8 * 1024 ** 3
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMacInspectLow = await verifyPodmanPrerequisites(macInspectDiskLow, { stderr: null, platform: "darwin", requestedProfile: "small" });
+  assert.equal(resMacInspectLow.ok, false);
+  assert.equal(resMacInspectLow.reason, "podman_machine_insufficient_disk");
 });
 
 test("renderWorkspaceCompose adds selinux z option when engine is podman", async () => {
@@ -502,4 +567,75 @@ test("renderWorkspaceCompose adds selinux z option when engine is podman", async
   cfg.workspaces = [{ hostPath: "/home/user/code", containerPath: "/workspaces/code", readOnly: false, id: "code-12345678" }];
   const yml = renderWorkspaceCompose(cfg, { selinux: true });
   assert.match(yml, /selinux: z/);
+});
+
+test("planInteractiveSetup auto selects podman when docker is absent and podman is ready", async () => {
+  const { run } = await import("../src/cli.mjs");
+  const { Readable, Writable } = await import("node:stream");
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-auto-podman-"));
+  const execute = async (spec, io) => {
+    if (spec.command === "docker") {
+      return 1; // docker unavailable
+    }
+    if (spec.command === "podman") {
+      if (spec.args?.[0] === "--version" && io?.stdout) {
+        io.stdout.write("podman version 5.1.0\n");
+        return 0;
+      }
+      if (spec.args?.[0] === "compose" && io?.stdout) {
+        io.stdout.write("podman-compose version 1.2.0\n");
+        return 0;
+      }
+      if (spec.args?.[0] === "info" && io?.stdout) {
+        io.stdout.write(JSON.stringify({
+          host: {
+            security: { rootless: true },
+            cgroupVersion: "v2",
+            cpus: 4,
+            memTotal: 8 * 1024 ** 3
+          }
+        }));
+        return 0;
+      }
+      return 0;
+    }
+    return 0;
+  };
+
+  const inspectResources = async () => ({
+    freeDiskBytes: 50 * 1024 ** 3,
+    totalMemoryBytes: 8 * 1024 ** 3,
+    cpuCount: 4
+  });
+
+  const answers = JSON.stringify({
+    confirm: true,
+    engine: "auto",
+    profile: "small",
+    access: "isolated",
+    companions: false,
+    telemetry: false,
+    open: false
+  });
+
+  const code = await run(["install", "--non-interactive", "--answers", answers], {
+    env: { SPACEAPP_HOME: root, SPACEAPP_TELEMETRY: "0" },
+    platform: "linux",
+    stdin: Readable.from([]),
+    stdout: new Writable({ write: (_c, _e, cb) => cb() }),
+    stderr: new Writable({ write: (_c, _e, cb) => cb() }),
+    execute,
+    inspectResources,
+    ensureDocker: async () => ({ code: 0 }),
+    prepareDockerPath: async () => {},
+    sleep: async () => {},
+    request: async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => url.endsWith("/readyz") ? { ok: true } : { setupRequired: false, expiresAt: null }
+    })
+  });
+  assert.equal(code, 0);
+  const cfg = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.equal(cfg.engine, "podman");
 });

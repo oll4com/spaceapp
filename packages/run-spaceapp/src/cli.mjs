@@ -1104,6 +1104,10 @@ async function planInteractiveSetup({
       const answersEngine = stdin?._spaceappPromptController?.answers?.engine;
       if (answersEngine === "podman" || answersEngine === "docker") {
         engineChoice = answersEngine;
+      } else if (answersEngine === "auto") {
+        const dockerReady = typeof execute === "function" && await dockerIsReady(execute).catch(() => false);
+        const podmanReady = typeof execute === "function" && await podmanIsReady(execute).catch(() => false);
+        engineChoice = !dockerReady && podmanReady ? "podman" : "docker";
       } else {
         engineChoice = "docker";
       }

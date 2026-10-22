@@ -1355,14 +1355,16 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
             const mInfo = JSON.parse(machineOutput.trim());
             const item = Array.isArray(mInfo) ? mInfo[0] : mInfo;
             const sz = item?.DiskSize || item?.Resources?.DiskSize;
-            if (typeof sz === "number") diskBytes = sz;
-            else if (typeof sz === "string") {
+            if (typeof sz === "number") {
+              // Podman machine inspect reports DiskSize in GiB
+              diskBytes = sz * (1024 ** 3);
+            } else if (typeof sz === "string") {
               const num = parseFloat(sz);
               if (Number.isFinite(num)) {
                 if (/tb?/i.test(sz)) diskBytes = num * (1024 ** 4);
                 else if (/gb?/i.test(sz)) diskBytes = num * (1024 ** 3);
                 else if (/mb?/i.test(sz)) diskBytes = num * (1024 ** 2);
-                else diskBytes = num;
+                else diskBytes = num * (1024 ** 3); // bare number defaults to GiB
               }
             }
           } catch {}
