@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -87,7 +87,6 @@ export function buildCliClosure(root, targetDir, targetArch) {
   rmSync(targetDir, { recursive: true, force: true });
   mkdirSync(targetDir, { recursive: true });
 
-  // Root files
   cpSync(join(root, "package.json"), join(targetDir, "package.json"));
   for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {
     const src = join(root, file);
@@ -97,14 +96,12 @@ export function buildCliClosure(root, targetDir, targetArch) {
     cpSync(join(root, "THIRD_PARTY_LICENSES"), join(targetDir, "THIRD_PARTY_LICENSES"), { recursive: true });
   }
 
-  // Workspaces: packages/cli-host
   const cliHostSrc = join(root, "packages", "cli-host");
   const cliHostDst = join(targetDir, "packages", "cli-host");
   mkdirSync(cliHostDst, { recursive: true });
   cpSync(join(cliHostSrc, "package.json"), join(cliHostDst, "package.json"));
   cpSync(join(cliHostSrc, "dist"), join(cliHostDst, "dist"), { recursive: true });
 
-  // Common assets
   if (existsSync(join(root, "agent-skills"))) {
     cpSync(join(root, "agent-skills"), join(targetDir, "agent-skills"), { recursive: true });
   }
@@ -112,7 +109,6 @@ export function buildCliClosure(root, targetDir, targetArch) {
     cpSync(join(root, "deploy", "docker"), join(targetDir, "deploy", "docker"), { recursive: true });
   }
 
-  // Node modules: node-pty and its dependencies
   const nmDst = join(targetDir, "node_modules");
   mkdirSync(nmDst, { recursive: true });
 
@@ -121,7 +117,6 @@ export function buildCliClosure(root, targetDir, targetArch) {
     const nodePtyDst = join(nmDst, "node-pty");
     cpSync(nodePtySrc, nodePtyDst, { recursive: true });
 
-    // Prune prebuilds in node-pty: keep only the targeted linux architecture
     const prebuildsDir = join(nodePtyDst, "prebuilds");
     if (existsSync(prebuildsDir)) {
       const neededPrebuild = targetArch === "arm64" ? "linux-arm64" : "linux-x64";
@@ -138,7 +133,6 @@ export function buildCliClosure(root, targetDir, targetArch) {
     cpSync(addonApiSrc, join(nmDst, "node-addon-api"), { recursive: true });
   }
 
-  // Workspace symlink/copy: @space/cli-host
   const spaceDst = join(nmDst, "@space");
   mkdirSync(spaceDst, { recursive: true });
   cpSync(join(cliHostDst), join(spaceDst, "cli-host"), { recursive: true });
@@ -155,7 +149,6 @@ export function buildBrowserClosure(root, targetDir) {
   rmSync(targetDir, { recursive: true, force: true });
   mkdirSync(targetDir, { recursive: true });
 
-  // Root files
   cpSync(join(root, "package.json"), join(targetDir, "package.json"));
   for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {
     const src = join(root, file);
@@ -165,14 +158,12 @@ export function buildBrowserClosure(root, targetDir) {
     cpSync(join(root, "THIRD_PARTY_LICENSES"), join(targetDir, "THIRD_PARTY_LICENSES"), { recursive: true });
   }
 
-  // Workspace: apps/api
   const apiSrc = join(root, "apps", "api");
   const apiDst = join(targetDir, "apps", "api");
   mkdirSync(apiDst, { recursive: true });
   cpSync(join(apiSrc, "package.json"), join(apiDst, "package.json"));
   cpSync(join(apiSrc, "dist"), join(apiDst, "dist"), { recursive: true });
 
-  // Workspaces: packages
   const browserPackages = ["browser-host", "contracts", "db", "runtime", "memory-graph"];
   for (const pkg of browserPackages) {
     const pkgSrc = join(root, "packages", pkg);
@@ -187,12 +178,10 @@ export function buildBrowserClosure(root, targetDir) {
     }
   }
 
-  // Deploy scripts
   if (existsSync(join(root, "deploy", "docker"))) {
     cpSync(join(root, "deploy", "docker"), join(targetDir, "deploy", "docker"), { recursive: true });
   }
 
-  // Node modules: resolve minimal closure
   const nmDst = join(targetDir, "node_modules");
   mkdirSync(nmDst, { recursive: true });
 
@@ -216,7 +205,6 @@ export function buildBrowserClosure(root, targetDir) {
     }
   }
 
-  // Workspace packages in node_modules/@space
   const spaceDst = join(nmDst, "@space");
   mkdirSync(spaceDst, { recursive: true });
   for (const pkg of browserPackages) {
@@ -236,7 +224,6 @@ export function buildCoreClosure(root, targetDir, targetArch) {
   rmSync(targetDir, { recursive: true, force: true });
   mkdirSync(targetDir, { recursive: true });
 
-  // Root files
   cpSync(join(root, "package.json"), join(targetDir, "package.json"));
   for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {
     const src = join(root, file);
@@ -246,7 +233,6 @@ export function buildCoreClosure(root, targetDir, targetArch) {
     cpSync(join(root, "THIRD_PARTY_LICENSES"), join(targetDir, "THIRD_PARTY_LICENSES"), { recursive: true });
   }
 
-  // Scripts
   const scriptsDst = join(targetDir, "scripts");
   mkdirSync(scriptsDst, { recursive: true });
   for (const script of [
@@ -259,7 +245,6 @@ export function buildCoreClosure(root, targetDir, targetArch) {
     if (existsSync(src)) cpSync(src, join(scriptsDst, script));
   }
 
-  // Apps: api, worker, web
   for (const app of ["api", "worker", "web"]) {
     const appSrc = join(root, "apps", app);
     if (!existsSync(appSrc)) continue;
@@ -288,7 +273,6 @@ export function buildCoreClosure(root, targetDir, targetArch) {
     }
   }
 
-  // Packages: only packages core services actually run
   const corePackages = [
     "cli-host",
     "codex-app-server",
@@ -318,45 +302,97 @@ export function buildCoreClosure(root, targetDir, targetArch) {
     }
   }
 
-  // Deploy scripts
   if (existsSync(join(root, "deploy", "docker"))) {
     cpSync(join(root, "deploy", "docker"), join(targetDir, "deploy", "docker"), { recursive: true });
   }
 
-  // Node modules: copy all production node_modules except node-pty and unneeded prebuilds
   const srcNm = join(root, "node_modules");
   const dstNm = join(targetDir, "node_modules");
   mkdirSync(dstNm, { recursive: true });
 
-  if (existsSync(srcNm)) {
-    const entries = readdirSync(srcNm);
-    for (const entry of entries) {
-      if (entry === "node-pty") continue; // Exclude node-pty from core
+  const coreRootDeps = [
+    "@ai-sdk/gateway",
+    "@codemirror/lang-sql",
+    "@fastify/compress",
+    "@fastify/cookie",
+    "@fastify/helmet",
+    "@fastify/multipart",
+    "@fastify/rate-limit",
+    "@fastify/websocket",
+    "@formkit/auto-animate",
+    "@noble/hashes",
+    "@novnc/novnc",
+    "@t3-oss/env-core",
+    "@tanstack/react-table",
+    "@tanstack/react-virtual",
+    "@temporalio/activity",
+    "@temporalio/client",
+    "@temporalio/worker",
+    "@temporalio/workflow",
+    "@types/react",
+    "@types/react-dom",
+    "@uiw/react-codemirror",
+    "@xmldom/xmldom",
+    "@xterm/addon-fit",
+    "@xterm/headless",
+    "@xterm/xterm",
+    "cube-motion",
+    "fastify",
+    "graphology",
+    "imapflow",
+    "jszip",
+    "mammoth",
+    "motion",
+    "mysql2",
+    "nanoid",
+    "pdfjs-dist",
+    "pg",
+    "react",
+    "react-dom",
+    "react-markdown",
+    "remark-gfm",
+    "sanitize-html",
+    "sigma",
+    "undici",
+    "zod"
+  ];
 
-      const entrySrc = join(srcNm, entry);
-      const entryDst = join(dstNm, entry);
-      cpSync(entrySrc, entryDst, { recursive: true });
+  const closure = resolveDependencyClosure(srcNm, coreRootDeps);
+  for (const dep of closure) {
+    if (dep === "node-pty") continue;
+    const s = join(srcNm, dep);
+    if (existsSync(s)) {
+      const d = join(dstNm, dep);
+      mkdirSync(dirname(d), { recursive: true });
+      cpSync(s, d, { recursive: true });
     }
+  }
 
-    // Prune foreign native prebuilds from core
-    const foreignArch = targetArch === "arm64" ? "x64" : "arm64";
-    const coreBridgeDir = join(dstNm, "@temporalio", "core-bridge");
-    if (existsSync(coreBridgeDir)) {
-      const releases = readdirSync(coreBridgeDir);
-      for (const f of releases) {
-        if (f.includes(foreignArch) || f.includes("darwin") || f.includes("win32")) {
-          rmSync(join(coreBridgeDir, f), { recursive: true, force: true });
-        }
+  // Preserve core workspace symlinks in node_modules/@space
+  const spaceDst = join(dstNm, "@space");
+  mkdirSync(spaceDst, { recursive: true });
+  for (const pkg of corePackages) {
+    cpSync(join(targetDir, "packages", pkg), join(spaceDst, pkg), { recursive: true });
+  }
+
+  // Prune foreign native prebuilds from core
+  const foreignArch = targetArch === "arm64" ? "x64" : "arm64";
+  const coreBridgeDir = join(dstNm, "@temporalio", "core-bridge");
+  if (existsSync(coreBridgeDir)) {
+    const releases = readdirSync(coreBridgeDir);
+    for (const f of releases) {
+      if (f.includes(foreignArch) || f.includes("darwin") || f.includes("win32")) {
+        rmSync(join(coreBridgeDir, f), { recursive: true, force: true });
       }
     }
+  }
 
-    const canvasDir = join(dstNm, "@napi-rs", "canvas");
-    if (existsSync(canvasDir)) {
-      const canvasEntries = readdirSync(canvasDir);
-      for (const f of canvasEntries) {
-        if (f.includes(foreignArch) || f.includes("darwin") || f.includes("win32")) {
-          rmSync(join(canvasDir, f), { recursive: true, force: true });
-        }
+  const canvasDir = join(dstNm, "@napi-rs", "canvas");
+  if (existsSync(canvasDir)) {
+    const canvasEntries = readdirSync(canvasDir);
+    for (const f of canvasEntries) {
+      if (f.includes(foreignArch) || f.includes("darwin") || f.includes("win32")) {
+        rmSync(join(canvasDir, f), { recursive: true, force: true });
       }
     }
   }
