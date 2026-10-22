@@ -111,7 +111,7 @@ test("composeCommand reads engine from existing config when options.engine is om
 
 test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and info", async () => {
   const { verifyPodmanPrerequisites } = await import("../src/prerequisites.mjs");
-  
+
   // Failing binary
   const failBinary = async (spec) => spec.command === "podman" && spec.args[0] === "--version" ? 1 : 0;
   const res1 = await verifyPodmanPrerequisites(failBinary, { stderr: null });
