@@ -253,9 +253,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         paneTitle: pane.title,
         runtimeId: "cli:gemini",
         durationMs: 8000,
-        killedAt: new Date().toISOString()
+        killedAt: new Date(Date.now() + 1_000).toISOString()
       },
-      createdAt: new Date().toISOString()
+      createdAt: new Date(Date.now() + 1_000).toISOString()
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);

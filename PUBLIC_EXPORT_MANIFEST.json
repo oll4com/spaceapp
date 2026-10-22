@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "7619ef952387dba2480afecdb1ae332a0dc489ff",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 395,
   "files": [
     {
       "path": ".gitignore",
@@ -4766,8 +4766,8 @@
     {
       "path": "agent-skills/space-hyperframes/media-use/scripts/lib/telemetry.mjs",
       "sourceObjectId": "182e3505b5f3fd0ba0c795c8c79746f23013874e",
-      "sha256": "292ca36e91189e69d36b197311a345664a3a407b4e3fdb91f8044190649961cd",
-      "size": 7332
+      "sha256": "89c66be331b2b2e17b33c61dcb20f803ce606591cb731f1c46b05f599e1ac6bc",
+      "size": 7350
     },
     {
       "path": "agent-skills/space-hyperframes/media-use/scripts/lib/telemetry.test.mjs",
@@ -13820,8 +13820,8 @@
     {
       "path": "apps/api/tests/room-watchdog.test.ts",
       "sourceObjectId": "4046b1095658d1d4d5f89d3da069df7b1036e181",
-      "sha256": "e3829aeb9c4fddf071ded06a23a424dcd042061830c5cdf400e7b7a9aac73e06",
-      "size": 16377
+      "sha256": "53c162617ded1f81ba1dfdde565fc0e6a3a2a0a6bac7a6ba8e9f63734bc808ee",
+      "size": 16413
     },
     {
       "path": "apps/api/tests/room-work.test.ts",
@@ -26036,8 +26036,8 @@
     {
       "path": "packages/gateway/src/providers/claude/oauth.ts",
       "sourceObjectId": "c98be704eb5359334bebf57eb21f148c60135e50",
-      "sha256": "287c3fdd7c67afd93b6e8efbe8ffbd55cc7780d5bedc89328fe7fbc2800c6a17",
-      "size": 6513
+      "sha256": "e56b881fc3c3f410aab2808b7b1b8456246e160695eba722955a8b6dc4b7592d",
+      "size": 6531
     },
     {
       "path": "packages/gateway/src/providers/claude/stream.ts",
