@@ -2,16 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   containerImageSizeBudgets,
-  evaluateContainerImageSize
+  evaluateContainerImageSize,
+  parseContainerImageSizeHistory
 } from "../container-image-size-budget.mjs";
 
 const mebibyte = 1024 * 1024;
 
+test("size measurement sums unpacked history layers including zero-byte metadata", () => {
+  assert.equal(parseContainerImageSizeHistory("0\r\n1048576\r\n2097152\r\n"), 3 * mebibyte);
+  for (const output of ["", "1.5MB", "-1", "1\nNaN", "9007199254740992"]) {
+    assert.throws(() => parseContainerImageSizeHistory(output));
+  }
+});
+
 test("public container size budgets preserve the lightweight release ceilings", () => {
   assert.deepEqual(containerImageSizeBudgets, {
-    core: 1100 * mebibyte,
-    browser: 1750 * mebibyte,
-    cli: 2800 * mebibyte
+    core: 750 * mebibyte,
+    browser: 1250 * mebibyte,
+    cli: 750 * mebibyte
   });
 });
 

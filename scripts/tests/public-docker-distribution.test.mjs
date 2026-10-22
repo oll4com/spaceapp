@@ -38,14 +38,20 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   );
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
-  assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
   assert.match(dockerfile, /@opencode\/cli@2\.0\.32/);
   assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
   const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   assert.match(installer, /@openai\/codex@0\.145\.0/);
   assert.match(installer, /Unsupported optional provider/);
   assert.doesNotMatch(dockerfile, /docker\.sock/);
-  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
+  const deployScript = await readFile(join(root, "scripts/container-deploy.mjs"), "utf8");
+  assert.match(deployScript, /rotate-owner-setup-token\.mjs/);
+  for (const asset of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES"]) {
+    assert.ok(deployScript.includes(`"${asset}"`), `deploy closure retains ${asset}`);
+  }
+  for (const target of ["core", "browser", "cli"]) {
+    assert.ok(dockerfile.includes(`COPY --from=build --chown=spaceapp:spaceapp /deploy/${target}/ ./`));
+  }
 });
 
 test("public container images identify their repository and license for GHCR", async () => {

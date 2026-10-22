@@ -13,6 +13,7 @@ const globalFollowUpCommand =
 const publicTestModules = [
   "publish-npm-candidate.test.mjs",
   "container-image-size-budget.test.mjs",
+  "container-deploy.test.mjs",
   "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",
   "published-container-verification.test.mjs",
@@ -278,7 +279,11 @@ test("every THIRD_PARTY_LICENSES file the code names ships in the tree, the imag
   assert.ok(named.size >= 3, [...named].join(", "));
   for (const name of named) assert.ok(shipped.has(name), `THIRD_PARTY_LICENSES/${name} is named in the code but missing`);
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
-  assert.match(dockerfile, /^COPY --from=build --chown=spaceapp:spaceapp \/app\/THIRD_PARTY_LICENSES \.\/THIRD_PARTY_LICENSES$/m);
+  const deployScript = await readFile(join(root, "scripts/container-deploy.mjs"), "utf8");
+  assert.match(deployScript, /"THIRD_PARTY_LICENSES"/);
+  for (const target of ["core", "browser", "cli"]) {
+    assert.ok(dockerfile.includes(`COPY --from=build --chown=spaceapp:spaceapp /deploy/${target}/ ./`));
+  }
   const notices = await readFile(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
   for (const name of shipped) assert.match(notices, new RegExp(`THIRD_PARTY_LICENSES/${name.replace(".", "\\.")}`), name);
 });
