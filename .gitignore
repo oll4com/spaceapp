@@ -52,3 +52,6 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# npm run dev:stack: secrets, logs, OpenCode and runtime state of the from-source stack.
+.dev-stack/

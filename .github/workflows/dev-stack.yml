@@ -1,0 +1,128 @@
+name: Dev stack
+
+# npm run dev:stack (CONTRIBUTING.md, "Run the full app from source"): start the whole app from source and run the
+# acceptance checks of scripts/dev-stack-e2e.mjs against it on Linux, macOS (Colima) and Windows (WSL2).
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack*.mjs"
+      - "scripts/tests/dev-stack.test.mjs"
+      - "apps/web/vite.config.ts"
+      - "packages/run-spaceapp/templates/compose.yml"
+      - "deploy/docker/opencode-shared-server.mjs"
+      - "Dockerfile"
+      - ".github/workflows/dev-stack.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/dev-stack*.mjs"
+      - "apps/web/vite.config.ts"
+      - "packages/run-spaceapp/templates/compose.yml"
+      - "deploy/docker/opencode-shared-server.mjs"
+      - "Dockerfile"
+      - ".github/workflows/dev-stack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-stack-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Dev stack / Linux (Docker Engine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: docker version && docker compose version
+      - run: npm ci
+      - run: node --test scripts/tests/dev-stack.test.mjs
+      - name: npm run dev:stack end to end
+        run: node scripts/dev-stack-e2e.mjs
+
+  macos:
+    name: Dev stack / macOS (Colima)
+    # Colima needs hardware virtualization, which the Intel macOS runners have and the arm64 ones lack.
+    runs-on: macos-15-intel
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install Docker (Colima)
+        run: |
+          brew install colima docker docker-compose
+          mkdir -p "$HOME/.docker/cli-plugins"
+          ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" "$HOME/.docker/cli-plugins/docker-compose"
+          colima start --cpu 3 --memory 8 --disk 40
+          docker version && docker compose version
+
+      - run: npm ci
+      - run: node --test scripts/tests/dev-stack.test.mjs
+      - name: npm run dev:stack end to end
+        env:
+          SPACEAPP_DEV_E2E_START_TIMEOUT_MS: "1800000"
+        run: node scripts/dev-stack-e2e.mjs
+
+  wsl2:
+    name: Dev stack / Windows (WSL2, Ubuntu 24.04)
+    runs-on: windows-2025
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    steps:
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          additional-packages: ca-certificates curl git xz-utils build-essential python3 docker.io docker-compose-v2
+
+      - name: WSL version and kernel
+        shell: pwsh
+        run: wsl --version; wsl --list --verbose
+
+      - name: Start Docker Engine inside WSL2
+        run: |
+          uname -a
+          (dockerd > /tmp/dockerd.log 2>&1 &)
+          for i in $(seq 60); do docker info > /dev/null 2>&1 && break; sleep 1; done
+          docker version && docker compose version
+
+      - name: Node.js inside WSL2, and the checkout on the Linux file system
+        run: |
+          git init -q "$HOME/spaceapp" && cd "$HOME/spaceapp"
+          git fetch -q --depth 1 "https://github.com/${{ github.repository }}" "${{ github.sha }}"
+          git checkout -q FETCH_HEAD
+          node_version="$(cat .nvmrc)"
+          curl -fsSL "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-x64.tar.xz" | tar -xJ -C "$HOME"
+          echo "$HOME/node-v${node_version}-linux-x64/bin" > "$HOME/node-path"
+
+      - name: npm ci
+        run: cd "$HOME/spaceapp" && PATH="$(cat "$HOME/node-path"):$PATH" npm ci
+
+      - name: npm run dev:stack end to end
+        run: |
+          cd "$HOME/spaceapp"
+          export PATH="$(cat "$HOME/node-path"):$PATH"
+          node --test scripts/tests/dev-stack.test.mjs
+          SPACEAPP_DEV_E2E_START_TIMEOUT_MS=1800000 node scripts/dev-stack-e2e.mjs
