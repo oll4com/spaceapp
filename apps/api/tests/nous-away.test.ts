@@ -6,6 +6,7 @@ import { awayGrantCovers, createNousAway } from "../src/nous/away.js";
 import { createNousService, type NousRunner } from "../src/nous/service.js";
 import { createNousTools, type NousToolOutcome } from "../src/nous/tools.js";
 import { registerNous } from "../src/nous/wiring.js";
+import { configureQueueOperatorGrants, takePaneQueueGrant } from "../src/queue-operator-grants.js";
 
 // Nous Away mode (operator request 2026-10-17, plan clipboard:B7eTUHTJYg3X).
 const owner = "user:operator";
@@ -131,6 +132,10 @@ describe("Nous Away mode: the grant", () => {
       const [, approved, ...asked] = results;
       expect(approved).toMatchObject({ ok: true, display: expect.stringMatching(/^Approved by the away grant/) });
       expect(f.execute).toHaveBeenCalledWith("send_to_pane", { panes: [f.andy.id], text: VERIFIED_PROMOTE }, expect.anything());
+      // The pane's space-queue promote finds the operator grant the server held for it (hardening step 5), once.
+      configureQueueOperatorGrants("test-secret-with-enough-length");
+      expect(takePaneQueueGrant(f.andy.id, "promote")).toMatch(/^[\w-]+\.[\w-]+$/);
+      expect(takePaneQueueGrant(f.andy.id, "promote")).toBeNull();
       const decisions = await f.wiring.service.decisions(owner);
       const record = decisions.find((decision) => decision.title === `Promote: ${VERIFIED_PROMOTE}`)!;
       expect(record).toMatchObject({ status: "APPROVED", outcome: `Sent to Andy in Main.` });

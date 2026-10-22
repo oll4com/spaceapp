@@ -8,7 +8,7 @@ import { StickyStore } from "../../accounts/sticky-store.js";
 import { requestOrigin } from "../../client-detect.js";
 import { gatewayError, gatewayErrors, type GatewayErrorEnvelope } from "../../errors.js";
 import { checkKeyLimits, PolicyRejection } from "../../policy.js";
-import { costUsd, imageCostUsd, type ImageTokenUsage } from "../../pricing/pricing.js";
+import { costUsd, geminiCostUsd, imageCostUsd, type ImageTokenUsage } from "../../pricing/pricing.js";
 import { readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount } from "../../router/balancer.js";
@@ -27,10 +27,20 @@ import { CODEX_UPSTREAM_BASE_URL } from "../codex/usage.js";
  * models (Nano Banana) on the Antigravity pool through Code Assist `generateContent`, GPT Image on the Codex pool through
  * the Responses `image_generation` tool. One image per request; the key's model allowlist and limits apply, the cost
  * settles against the key (its daily COST_USD cap), and every call is a request log row.
+ * `POST /gemini/v1/generate` (YouTube summary, 2026-10-20) is Gemini text on the same Antigravity pool, the same way: a prompt
+ * and optionally a public YouTube video the model watches, plain text back.
  */
 /** `gpt-image` is the Design pane's id for GPT Image (DESIGN_ENGINE_MODELS); `gpt-image-2` names the model the tool runs. */
 export const IMAGE_MODELS = { "gemini-3.1-flash-image": "ANTIGRAVITY", "gemini-3-pro-image": "ANTIGRAVITY", "gpt-image": "CODEX", "gpt-image-2": "CODEX" } as const;
 export type ImageModel = keyof typeof IMAGE_MODELS;
+/**
+ * The upstream names tried, in order, for a public model when Code Assist answers 404 NOT_FOUND (Google renames image models:
+ * `gemini-3-pro-image` answered 404 on 2026-10-19). The first that works is remembered per gateway worker; keys, limits,
+ * logs and prices keep the public name.
+ */
+export const IMAGE_UPSTREAM_CANDIDATES: Partial<Record<ImageModel, readonly string[]>> = {
+  "gemini-3-pro-image": ["gemini-3-pro-image", "gemini-3-pro-image-preview", "gemini-3.1-pro-image", "gemini-3.1-pro-image-preview", "nano-banana-pro-preview"]
+};
 /** The Codex model that carries the image tool call: the cheapest the Codex accounts serve. */
 export const CODEX_IMAGE_CARRIER_MODEL = "gpt-5.6-luna";
 const ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
@@ -50,10 +60,19 @@ const imageRequestSchema = z.object({
 }).strict();
 type ImageRequest = z.infer<typeof imageRequestSchema>;
 
+const textRequestSchema = z.object({
+  model: z.string().regex(/^gemini-[a-z0-9.-]{1,60}$/, "a Gemini model"),
+  prompt: z.string().trim().min(1).max(8000),
+  videoUrl: z.string().regex(/^https:\/\/www\.youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}$/, "a YouTube watch URL").optional()
+}).strict();
+type TextRequest = z.infer<typeof textRequestSchema>;
+
 interface GeneratedImage { mimeType: string; base64: string }
 interface Usage { inputTokens: number | null; cachedInputTokens: number | null; outputTokens: number | null }
-type Attempt = { ok: true; account: GatewayAccountRecord; image: GeneratedImage; text: string | null; usage: Usage | null; costUsd: number | null }
-  | { ok: false; account: GatewayAccountRecord | null; status: number; error: GatewayErrorEnvelope | string };
+type Failure = { ok: false; account: GatewayAccountRecord | null; status: number; error: GatewayErrorEnvelope | string };
+/** `reply` is the client's JSON answer. */
+type Attempt = { ok: true; account: GatewayAccountRecord; reply: Record<string, unknown>; usage: Usage | null; costUsd: number | null } | Failure;
+type Job = { model: string; provider: "ANTIGRAVITY" | "CODEX"; run: (settings: GatewaySettings, scope: Set<string> | null) => Promise<Attempt> };
 
 export interface ImageRouteOptions {
   antigravityPool: AccountPool;
@@ -126,9 +145,18 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     return new Set(scope ? (await pool.accounts()).filter((account) => !scope.has(account.id)).map((account) => account.id) : []);
   }
 
-  async function gemini(input: ImageRequest, settings: GatewaySettings, scope: Set<string> | null): Promise<Attempt> {
+  /** Public image model → the upstream name that last worked. */
+  const workingUpstream = new Map<string, string>();
+
+  /**
+   * One Code Assist `generateContent` on the least-used Antigravity account in scope, moving on as each failure allows.
+   * `names` are the upstream model names tried in order on the same account when Code Assist answers 404 NOT_FOUND.
+   */
+  async function codeAssist(names: readonly string[], request: Record<string, unknown>, settings: GatewaySettings, scope: Set<string> | null, requestIdPrefix: string)
+    : Promise<{ ok: true; account: GatewayAccountRecord; response: Record<string, unknown> | null; name: string } | Failure> {
     const tried = await outOfScope(options.antigravityPool, scope);
-    let last: Attempt | null = null;
+    let nameIndex = 0;
+    let last: Failure | null = null;
     let retryWith: GatewayAccountRecord | null | undefined;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const account = retryWith ?? await antigravity.pick("gemini", tried, null, settings);
@@ -139,12 +167,11 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
       let upstream: Response;
       try {
         const credentials = await options.antigravityPool.credentials(account);
-        // The shape of Antigravity's own image call, so the pooled sign-in is used as agy uses it.
+        // The shape of Antigravity's own model call, so the pooled sign-in is used as agy uses it.
         upstream = await fetchImpl(codeAssistUrl, { method: "POST", signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
           headers: { authorization: `Bearer ${credentials.accessToken}`, "content-type": "application/json", "user-agent": "antigravity" },
-          body: JSON.stringify({ model: input.model, project: credentials.upstreamAccountId, requestId: `img-${randomUUID()}`, userAgent: "antigravity", requestType: "agent",
-            request: { contents: [{ role: "user", parts: [...input.referenceImages.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } })), { text: input.prompt }] }],
-              generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: input.aspectRatio, ...(input.imageSize ? { imageSize: input.imageSize } : {}) } } } }) });
+          body: JSON.stringify({ model: names[nameIndex], project: credentials.upstreamAccountId, requestId: `${requestIdPrefix}-${randomUUID()}`, userAgent: "antigravity",
+            requestType: "agent", request }) });
       } catch {
         options.antigravityPool.markTransientError(account.id);
         last = { ok: false, account, status: 502, error: gatewayError("upstream_unavailable", "Code Assist is unreachable.") };
@@ -153,31 +180,79 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
       const text = await readBounded(upstream, MAX_UPSTREAM_BYTES);
       if (!upstream.ok) {
         last = { ok: false, account, status: upstream.status, error: text };
+        // An unknown model name: the same account tries the next upstream name (no account is penalised).
+        if (upstream.status === 404 && text.includes("NOT_FOUND") && nameIndex + 1 < names.length) {
+          app.log.info({ model: names[0], from: names[nameIndex], to: names[nameIndex + 1] }, "image upstream model fallback");
+          nameIndex += 1;
+          retryWith = account;
+          continue;
+        }
         const outcome = await antigravity.recordFailure(account, "gemini", upstream.status, text);
         retryWith = outcome.retryWith;
         if (outcome.failover) continue;
         break;
       }
       let response: Record<string, unknown> | null = null;
-      try { const body = obj(JSON.parse(text)); response = obj(body?.response) ?? body; } catch { /* reported below */ }
-      const candidate = obj((Array.isArray(response?.candidates) ? response.candidates : [])[0]);
-      const parts = (Array.isArray(obj(candidate?.content)?.parts) ? obj(candidate?.content)!.parts as unknown[] : []).map(obj);
-      const inline = parts.map((part) => obj(part?.inlineData)).find((data) => typeof data?.data === "string" && data.data);
-      const said = parts.map((part) => (typeof part?.text === "string" ? part.text : "")).join("").trim() || null;
+      try { const body = obj(JSON.parse(text)); response = obj(body?.response) ?? body; } catch { /* reported by the caller */ }
       void options.antigravityPool.touch(account.id, new Date().toISOString()).catch(() => undefined);
-      const usage = readGeminiUsage(response);
-      const logged = usage ? { inputTokens: usage.promptTokens, cachedInputTokens: usage.cachedTokens, outputTokens: usage.outputTokens } : null;
-      if (!inline) {
-        // A refusal (safety, recitation) is about the prompt, not the account: no other account is tried.
-        const reason = typeof candidate?.finishReason === "string" ? candidate.finishReason : "NO_IMAGE";
-        return { ok: false, account, status: 422, error: gatewayError("image_not_generated", `The model returned no image (${reason})${said ? `: ${said.slice(0, 300)}` : "."}`, "invalid_request_error") };
-      }
-      void options.antigravityPool.markSuccess(account.id).catch(() => undefined);
-      // shortcut: the per-image list price only (the prompt's input tokens cost under $0.001), upgrade if prompts grow large.
-      return { ok: true, account, image: { mimeType: String(inline.mimeType ?? "image/png"), base64: String(inline.data) }, text: said, usage: logged,
-        costUsd: imageCostUsd(input.model, { imageSize: input.imageSize ?? "1K" }) };
+      return { ok: true, account, response, name: names[nameIndex]! };
     }
     return last ?? { ok: false, account: null, status: 503, error: gatewayErrors.noAccounts() };
+  }
+
+  /** The first candidate's finish reason and parts. */
+  function firstCandidate(response: Record<string, unknown> | null) {
+    const candidate = obj((Array.isArray(response?.candidates) ? response.candidates : [])[0]);
+    const parts = (Array.isArray(obj(candidate?.content)?.parts) ? obj(candidate?.content)!.parts as unknown[] : []).map(obj);
+    return { reason: typeof candidate?.finishReason === "string" ? candidate.finishReason : null, parts };
+  }
+
+  const loggedUsage = (response: Record<string, unknown> | null) => {
+    const usage = readGeminiUsage(response);
+    return { usage, logged: usage ? { inputTokens: usage.promptTokens, cachedInputTokens: usage.cachedTokens, outputTokens: usage.outputTokens } : null };
+  };
+
+  async function gemini(input: ImageRequest, settings: GatewaySettings, scope: Set<string> | null): Promise<Attempt> {
+    const candidates = IMAGE_UPSTREAM_CANDIDATES[input.model as ImageModel] ?? [input.model];
+    const remembered = workingUpstream.get(input.model);
+    const names = remembered ? [remembered, ...candidates.filter((name) => name !== remembered)] : [...candidates];
+    const result = await codeAssist(names, {
+      contents: [{ role: "user", parts: [...input.referenceImages.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } })), { text: input.prompt }] }],
+      generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: input.aspectRatio, ...(input.imageSize ? { imageSize: input.imageSize } : {}) } }
+    }, settings, scope, "img");
+    if (!result.ok) return result;
+    const { account, response, name } = result;
+    const { reason, parts } = firstCandidate(response);
+    const inline = parts.map((part) => obj(part?.inlineData)).find((data) => typeof data?.data === "string" && data.data);
+    const said = parts.map((part) => (typeof part?.text === "string" ? part.text : "")).join("").trim() || null;
+    const { logged } = loggedUsage(response);
+    if (!inline) {
+      // A refusal (safety, recitation) is about the prompt, not the account: no other account is tried.
+      return { ok: false, account, status: 422, error: gatewayError("image_not_generated", `The model returned no image (${reason ?? "NO_IMAGE"})${said ? `: ${said.slice(0, 300)}` : "."}`, "invalid_request_error") };
+    }
+    void options.antigravityPool.markSuccess(account.id).catch(() => undefined);
+    if (name !== remembered && (remembered || name !== names[0])) app.log.info({ model: input.model, upstream: name }, "image upstream model remembered");
+    workingUpstream.set(input.model, name);
+    // shortcut: the per-image list price only (the prompt's input tokens cost under $0.001), upgrade if prompts grow large.
+    return { ok: true, account, reply: { images: [{ mimeType: String(inline.mimeType ?? "image/png"), base64: String(inline.data) }], model: input.model, ...(said ? { text: said } : {}) },
+      usage: logged, costUsd: imageCostUsd(input.model, { imageSize: input.imageSize ?? "1K" }) };
+  }
+
+  async function geminiText(input: TextRequest, settings: GatewaySettings, scope: Set<string> | null): Promise<Attempt> {
+    const result = await codeAssist([input.model], {
+      contents: [{ role: "user", parts: [...(input.videoUrl ? [{ fileData: { fileUri: input.videoUrl, mimeType: "video/mp4" } }] : []), { text: input.prompt }] }],
+      // Low media resolution: about 100 tokens a second of video instead of 300, so long videos fit; the soundtrack carries most of a summary.
+      ...(input.videoUrl ? { generationConfig: { mediaResolution: "MEDIA_RESOLUTION_LOW" } } : {})
+    }, settings, scope, "text");
+    if (!result.ok) return result;
+    const { account, response } = result;
+    const { reason, parts } = firstCandidate(response);
+    const text = parts.filter((part) => part?.thought !== true).map((part) => (typeof part?.text === "string" ? part.text : "")).join("").trim();
+    const { usage, logged } = loggedUsage(response);
+    // Like a refused image: the answer is about the prompt or the video, so no other account is tried.
+    if (!text) return { ok: false, account, status: 422, error: gatewayError("text_not_generated", `The model returned no text (${reason ?? "NO_TEXT"}).`, "invalid_request_error") };
+    void options.antigravityPool.markSuccess(account.id).catch(() => undefined);
+    return { ok: true, account, reply: { text, model: input.model }, usage: logged, costUsd: geminiCostUsd(usage, input.model) };
   }
 
   async function pickCodex(settings: GatewaySettings, tried: Set<string>) {
@@ -233,32 +308,29 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
       const toolCost = imageCostUsd(toolModel, { tokens: toolUsage });
       // The carrier model's own tokens count too when it has a price; an unpriced image tool leaves the whole call unpriced.
       const cost = toolCost === null ? null : toolCost + (costUsd(carrierUsage, CODEX_IMAGE_CARRIER_MODEL, null) ?? 0);
-      return { ok: true, account, image, text: revisedPrompt, costUsd: cost,
+      return { ok: true, account, reply: { images: [image], model: input.model, ...(revisedPrompt ? { text: revisedPrompt } : {}) }, costUsd: cost,
         usage: toolUsage ? { inputTokens: toolUsage.textInputTokens + toolUsage.imageInputTokens, cachedInputTokens: null, outputTokens: toolUsage.outputTokens } : null };
     }
     return last ?? { ok: false, account: null, status: 503, error: gatewayErrors.noAccounts() };
   }
 
-  async function generate(request: FastifyRequest, reply: FastifyReply) {
+  const invalid = (kind: string, error: z.ZodError) => {
+    const issue = error.issues[0];
+    return gatewayError("invalid_request", `Invalid ${kind} request: ${issue?.path.join(".") || "body"} ${issue?.message ?? ""}`.trim(), "invalid_request_error");
+  };
+
+  /** The key's checks, the call, its request log row and the key's usage, for a request `prepare` turned into a job. */
+  async function serve(request: FastifyRequest, reply: FastifyReply, prepare: (body: Record<string, unknown>) => Job | GatewayErrorEnvelope) {
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
-    const parsed = imageRequestSchema.safeParse({ ...(obj(request.body) ?? {}), ...(key.enforcedModel ? { model: key.enforcedModel } : {}) });
-    if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      return reply.code(400).send(gatewayError("invalid_request", `Invalid image request: ${issue?.path.join(".") || "body"} ${issue?.message ?? ""}`.trim(), "invalid_request_error"));
-    }
-    const input = parsed.data;
-    const provider = IMAGE_MODELS[input.model as ImageModel];
-    if (!provider) {
-      return reply.code(400).send(gatewayError("model_not_supported", `'${input.model}' is not an image model. Use one of: ${Object.keys(IMAGE_MODELS).join(", ")}.`,
-        "invalid_request_error"));
-    }
+    const job = prepare({ ...(obj(request.body) ?? {}), ...(key.enforcedModel ? { model: key.enforcedModel } : {}) });
+    if ("error" in job) return reply.code(400).send(job);
     try {
-      if (key.allowedModels.length > 0 && !key.allowedModels.includes(input.model)) {
-        throw new PolicyRejection(403, gatewayError("model_not_allowed", `This API key does not have access to model '${input.model}'`, "invalid_request_error"));
+      if (key.allowedModels.length > 0 && !key.allowedModels.includes(job.model)) {
+        throw new PolicyRejection(403, gatewayError("model_not_allowed", `This API key does not have access to model '${job.model}'`, "invalid_request_error"));
       }
-      checkKeyLimits(key, input.model, new Date(startedAt).toISOString());
+      checkKeyLimits(key, job.model, new Date(startedAt).toISOString());
     } catch (error) {
       if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(error.envelope);
       throw error;
@@ -266,10 +338,10 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     const settings = await options.settings();
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
     const requestId = `req_${randomUUID().replace(/-/g, "")}`;
-    const result = provider === "ANTIGRAVITY" ? await gemini(input, settings, scope) : await codex(input, settings, scope);
+    const result = await job.run(settings, scope);
     const errorText = result.ok ? null : typeof result.error === "string" ? result.error : result.error.error.message;
     options.logs.add({
-      requestId, requestedAt: new Date(startedAt).toISOString(), provider, accountId: result.account?.id ?? null, apiKeyId: key.id, model: input.model,
+      requestId, requestedAt: new Date(startedAt).toISOString(), provider: job.provider, accountId: result.account?.id ?? null, apiKeyId: key.id, model: job.model,
       reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status: result.ok ? "success" : "error",
       errorCode: result.ok ? null : typeof result.error === "string" ? `http_${result.status}` : result.error.error.code,
       errorMessage: errorText ? errorText.slice(0, 500) : null, latencyMs: now() - startedAt, firstTokenMs: null,
@@ -283,10 +355,26 @@ export function registerImageRoutes(app: FastifyInstance, helpers: GatewayRouteH
     }
     if (options.settleKeyUsage) {
       void options.settleKeyUsage(key.id, { inputTokens: result.usage?.inputTokens ?? 0, outputTokens: result.usage?.outputTokens ?? 0,
-        costMicros: Math.round((result.costUsd ?? 0) * 1e6), model: input.model, at: new Date(startedAt).toISOString() }).catch(() => undefined);
+        costMicros: Math.round((result.costUsd ?? 0) * 1e6), model: job.model, at: new Date(startedAt).toISOString() }).catch(() => undefined);
     }
-    return reply.header("x-request-id", requestId).send({ images: [result.image], model: input.model, ...(result.text ? { text: result.text } : {}) });
+    return reply.header("x-request-id", requestId).send(result.reply);
   }
 
-  app.post("/images/v1/generate", { bodyLimit: 48 * 1024 * 1024 }, generate);
+  app.post("/images/v1/generate", { bodyLimit: 48 * 1024 * 1024 }, (request, reply) => serve(request, reply, (body) => {
+    const parsed = imageRequestSchema.safeParse(body);
+    if (!parsed.success) return invalid("image", parsed.error);
+    const input = parsed.data;
+    const provider = IMAGE_MODELS[input.model as ImageModel];
+    if (!provider) {
+      return gatewayError("model_not_supported", `'${input.model}' is not an image model. Use one of: ${Object.keys(IMAGE_MODELS).join(", ")}.`, "invalid_request_error");
+    }
+    return { model: input.model, provider, run: (settings, scope) => (provider === "ANTIGRAVITY" ? gemini(input, settings, scope) : codex(input, settings, scope)) };
+  }));
+  app.post("/gemini/v1/generate", (request, reply) => serve(request, reply, (body) => {
+    const parsed = textRequestSchema.safeParse(body);
+    if (!parsed.success) return invalid("text", parsed.error);
+    const input = parsed.data;
+    if (Object.hasOwn(IMAGE_MODELS, input.model)) return gatewayError("model_not_supported", `'${input.model}' is an image model; use /images/v1/generate.`, "invalid_request_error");
+    return { model: input.model, provider: "ANTIGRAVITY", run: (settings, scope) => geminiText(input, settings, scope) };
+  }));
 }

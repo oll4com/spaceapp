@@ -39,7 +39,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
   assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
-  assert.match(dockerfile, /opencode-ai@1\.18\.4/);
+  assert.match(dockerfile, /@opencode\/cli@2\.0\.32/);
   assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
   const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   assert.match(installer, /@openai\/codex@0\.145\.0/);
@@ -57,7 +57,7 @@ test("public container images identify their repository and license for GHCR", a
   );
   assert.match(
     dockerfile,
-    /^LABEL org\.opencontainers\.image\.licenses=BUSL-1\.1$/m
+    /^LABEL org\.opencontainers\.image\.licenses=MIT$/m
   );
 });
 
@@ -68,7 +68,7 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
 
   assert.match(
     normalizedCliStage,
-    /RUN apt-get update[\s\S]*npm install[\s\S]*opencode-ai@1\.18\.4[\s\S]*&& npm cache clean --force/
+    /RUN apt-get update[\s\S]*npm install[\s\S]*@opencode\/cli@2\.0\.32[\s\S]*&& npm cache clean --force/
   );
   // Pilot F18: agents check their work with python3; the apt lists leave in the same layer.
   assert.match(normalizedCliStage, /apt-get install -y --no-install-recommends python3-minimal\s+&& rm -rf \/var\/lib\/apt\/lists\/\*/);
@@ -230,6 +230,35 @@ test("an OpenCode pane still starts when the first-run free-model check fails; c
   const smoke = wrapper.match(/credential-smoke\)[\s\S]*?;;/)?.[0] || "";
   assert.match(smoke, /^\s+node \/app\/deploy\/docker\/opencode-first-run\.mjs$/m);
   assert.match(wrapper, /^set -euo pipefail$/m);
+});
+
+test("core never runs OpenCode itself", async () => {
+  // 1.1.7 (decision B): CLIs live only in the CLI container; core asks its credential agent instead.
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const stages = Object.fromEntries(dockerfile.split(/^(?=FROM )/m).map((stage) => [stage.match(/^FROM \S+ AS (\S+)/)?.[1], stage]));
+  assert.match(stages.cli, /@opencode\/cli@/);
+  for (const name of ["build", "runtime-base", "core", "browser"]) assert.doesNotMatch(stages[name], /@opencode\/cli|opencode-ai/, name);
+
+  const src = join(root, "apps", "api", "src");
+  const read = (name) => readFile(join(src, name), "utf8");
+  // The only places that start OpenCode or a wrapper's credential-smoke or credential-observation in the API process.
+  const direct = /spawn\("opencode"|"\/usr\/local\/bin\/opencode"|\["credential-smoke"\]|\[definition\.credentialObservationAction\]/;
+  const found = execFileSync("grep", ["-rlE", direct.source, "--include=*.ts", "--exclude-dir=__tests__", src], { encoding: "utf8" })
+    .trim().split("\n").map((path) => path.slice(src.length + 1)).sort();
+  assert.deepEqual(found, ["cli-runtimes.ts", "cli-terminal.ts", "opencode-model-bench.ts", "room-agent-model-resolver.ts"]);
+  // Each one takes the public credential host's path when there is one.
+  const app = await read("app.ts");
+  assert.match(app, /const publicCredentialHost = createPublicCredentialHost\(config\);\n  const runOpenCode = publicCredentialHost\?\.openCodeText \?\? runOpenCodeText;/);
+  assert.match(app, /new CliTerminalManager\(\{[^}]*?credentialHost: publicCredentialHost,/);
+  assert.match(app, /checkCredential: \(runtime\) => checkCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
+  assert.match(app, /observeCredential: \(runtime\) => observeCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
+  assert.match(app, /new OpencodeModelBenchService\(\{\n    execVerbose: publicCredentialHost\n      \? \(provider\) => publicCredentialHost\.openCodeModels\(provider\)/);
+  assert.match(app, /createOpenCodeTextModel\(\{ run: runOpenCode \}\)/);
+  assert.match(app, /completeRoomAgentPrompt\(\{[^}]*runOpenCode \}\)/);
+  assert.doesNotMatch(app, /createOpenCodeTextModel\(\)|checkCliRuntimeCredential\(runtime\)|observeCliRuntimeCredential\(runtime\)/);
+  assert.match(await read("cli-terminal.ts"), /this\.options\.credentialHost\n\s+\? await this\.options\.credentialHost\.execute\(runtime\.detectedCommandPath, \["credential-smoke"\]/);
+  assert.match(await read("room-agent.ts"), /runOpenCode = runOpenCodeText \} = input;/);
+  assert.doesNotMatch(await read("room-agent.ts"), /await runOpenCodeText\(/);
 });
 
 test("public CLI wrapper isolates provider state and supports protected DeepSeek setup", async () => {

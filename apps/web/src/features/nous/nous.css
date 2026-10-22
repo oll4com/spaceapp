@@ -27,7 +27,13 @@
 
 /* The views take one full row; a narrow dock (four views no longer fit) shows them as a 2×2 grid. Labels ellipsize only as a last resort. */
 .nous-dock > .nous-toolbar { padding-inline: 0.5rem; container-type: inline-size; }
-@container (max-width: 22rem) { .nous-toolbar .dock-kit-chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Six views: a narrow dock (a 360-412 px phone) shows them as two rows of three instead of clipping each name. */
+/* A column is never narrower than its label (the docked desktop view is about 300 px); too narrow even for that, two a row. */
+@container (max-width: 36rem) {
+  .nous-toolbar .dock-kit-chips { display: grid; grid-template-columns: repeat(3, minmax(max-content, 1fr)); }
+  .nous-toolbar .dock-kit-chips .dock-kit-chip { padding-inline: 0.25rem; }
+}
+@container (max-width: 18rem) { .nous-toolbar .dock-kit-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .nous-toolbar .dock-kit-chips { flex-wrap: nowrap; gap: 0.25rem; }
 .nous-toolbar .dock-kit-chip { display: block; flex: 1 1 auto; min-width: 0; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; text-align: center; line-height: calc(1.75rem - 2px); }
 .nous-toolbar .dock-kit-chip:has(> .dock-kit-chip-count) { flex-shrink: 0; }
@@ -97,6 +103,7 @@
 .nous-messages,
 .nous-decisions,
 .nous-overview,
+.nous-quotas,
 .nous-plan-view {
   flex: 1 1 auto;
   min-height: 0;
@@ -201,16 +208,17 @@
   .nous-brain { filter: none; }
 }
 
-/* Fullscreen fills the whole SpaceApp window (operator request 2026-10-17); Escape or the button leaves it. */
+/* Fullscreen fills the whole SpaceApp window (operator request 2026-10-17); Escape or the button leaves it.
+   It starts below the desktop title bar, which would otherwise cover its top (headings and the exit button). */
 .dock-panel.nous-dock.is-fullscreen {
   position: fixed;
-  inset: 0;
+  inset: max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) 0 0 0;
   z-index: 90;
   padding: 1rem;
   background: var(--dock-surface);
 }
 /* A readable column on wide screens: the scroll areas keep the full width (scrollbar at the edge), the text stays about 76ch. */
-.dock-panel.nous-dock.is-fullscreen :is(.nous-messages, .nous-decisions, .nous-overview, .nous-plan-view, .nous-composer, .nous-files.is-pending) {
+.dock-panel.nous-dock.is-fullscreen :is(.nous-messages, .nous-decisions, .nous-overview, .nous-quotas, .nous-plan-view, .nous-composer, .nous-files.is-pending) {
   padding-inline: max(0.5rem, calc((100% - 76ch) / 2));
 }
 
@@ -360,7 +368,7 @@
   background: var(--dock-surface);
 }
 .nous-workspace ::selection { background: color-mix(in srgb, var(--dock-accent) 32%, transparent); }
-.nous-workspace :is(.nous-rail, .nous-board, .nous-messages, .nous-decisions, .nous-overview, .nous-plan-view) {
+.nous-workspace :is(.nous-rail, .nous-board, .nous-messages, .nous-decisions, .nous-overview, .nous-quotas, .nous-plan-view) {
   scrollbar-width: thin;
   scrollbar-color: var(--dock-border-strong) transparent;
 }
@@ -594,7 +602,16 @@
 .nous-live-counts dd { margin: 0; font-size: 1rem; font-weight: 650; color: var(--dock-text); font-variant-numeric: tabular-nums; }
 .nous-live-counts > .is-attention dd { color: var(--dock-warning); }
 .nous-live-plans { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
-.nous-live-plans li { display: grid; grid-template-columns: minmax(0, 1fr) 4.5rem 2.6rem; align-items: center; gap: 0.4rem; font-size: 0.74rem; }
+.nous-live-plans li:has(> .nous-live-plan-open) { display: block; }
+.nous-live-plans :is(li, .nous-live-plan-open) { display: grid; grid-template-columns: 0.45rem minmax(0, 1fr) 4.5rem 2.6rem; align-items: center; gap: 0.4rem; font-size: 0.74rem; }
+/* Plans whose pane is working now (plan clipboard:RXqSSUQSdwJK): a second bar colour plus a dot with its own label, never colour alone. */
+.nous-live-plans li.is-active .nous-progress span { background: var(--dock-success); }
+.nous-live-dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; }
+.nous-live-dot.is-active { display: inline-block; background: var(--dock-success); }
+.nous-live[data-motion="on"] .nous-live-plans .nous-live-dot.is-active { animation: nous-live-pulse 1.6s ease-in-out infinite; }
+@keyframes nous-live-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .nous-live .nous-live-dot.is-active { animation: none; } }
+.nous-live-plans-legend { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-size: 0.7rem; color: var(--dock-muted); }
 .nous-live-plan-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dock-text); }
 .nous-live-plan-percent { text-align: right; color: var(--dock-muted); font-variant-numeric: tabular-nums; }
 .nous-live-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.35rem; }
@@ -627,18 +644,84 @@
 @media (max-width: 760px) {
   .dock-panel.nous-dock.nous-workspace { grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "tools" "rail" "stage"; }
 }
-/* Panes cards (plan clipboard:MAongwnxq9Ro): one per open pane, due ones first and marked. */
-.nous-panes { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.5rem; overflow-y: auto; padding-block: 0.25rem; }
-.nous-pane-card { display: grid; gap: 0.25rem; padding: 0.6rem 0.7rem; border: 1px solid var(--dock-border); border-radius: 10px; background: var(--dock-raised); color: var(--dock-text); font: inherit; text-align: left; cursor: pointer; }
-.nous-pane-card:hover { border-color: var(--dock-border-strong); background: var(--dock-soft); }
-.nous-pane-card:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
-.nous-pane-card.is-overdue { border-color: var(--dock-danger, #e5484d); }
-.nous-pane-card-head { display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
-.nous-pane-card-head strong { font-size: 0.86rem; }
-.nous-pane-badge { margin-left: auto; padding: 0 0.4rem; border-radius: 999px; background: var(--dock-warning-soft); color: var(--dock-warning); font-size: 0.68rem; font-weight: 600; }
-.nous-pane-card-state, .nous-pane-card-note { font-size: 0.76rem; color: var(--dock-muted); overflow-wrap: anywhere; }
-.nous-pane-card-report { font-size: 0.76rem; color: var(--dock-text); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.nous-pane-card-times { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 0.72rem; color: var(--dock-muted); font-variant-numeric: tabular-nums; }
-.nous-pane-card-times .is-overdue { color: var(--dock-danger, #e5484d); font-weight: 600; }
+/* Pane board (plan clipboard:Y9cgKVHFaHrr): rooms with their panes, one live line each, the operator's items and a reply box. */
+.nous-pane-board { flex: 1 1 auto; display: flex; flex-direction: column; gap: 0.6rem; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0.25rem 0.5rem 0.75rem; container-type: inline-size; }
+.nous-pane-board-tools { display: flex; align-items: center; gap: 0.4rem; }
+.nous-pane-board-tools .dock-kit-chips { flex: 1 1 auto; flex-wrap: wrap; }
+.nous-pane-board-rooms { flex-wrap: wrap; }
+.nous-pane-board-paused { padding-inline: 0.1rem; }
+.nous-board-room { display: grid; gap: 0.4rem; }
+.nous-board-room-head { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.2rem; border: 0; border-bottom: 1px solid var(--dock-border); background: none; color: var(--dock-text); font: inherit; cursor: pointer; text-align: left; }
+.nous-board-room-chevron { display: inline-flex; }
+.nous-board-room-chevron svg { width: 1rem; height: 1rem; color: var(--dock-muted); }
+.nous-board-room-head:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-board-panes { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.nous-board-pane { display: grid; gap: 0.35rem; min-width: 0; padding: 0.6rem 0.7rem; border: 1px solid var(--dock-border); border-radius: 10px; background: var(--dock-raised); color: var(--dock-text); }
+.nous-board-pane.needs-me { border-color: var(--dock-warning); }
+.nous-board-pane-head { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; min-width: 0; }
+.nous-board-pane-icon { width: 1rem; height: 1rem; flex: 0 0 auto; color: var(--dock-muted); }
+.nous-board-pane-name { font-size: 0.88rem; }
+.nous-board-state { padding: 0 0.45rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.68rem; font-weight: 600; line-height: 1.5; }
+.nous-board-state.is-working { color: var(--dock-accent); background: var(--dock-accent-soft); }
+.nous-board-state.is-waiting { color: var(--dock-warning); background: var(--dock-warning-soft); }
+.nous-board-state.is-done { color: var(--dock-success); }
+.nous-board-model { font-size: 0.7rem; }
+.nous-board-pane-plan { min-width: 0; max-width: 100%; overflow: hidden; color: var(--dock-muted); font-size: 0.72rem; white-space: nowrap; text-overflow: ellipsis; }
+.nous-board-go { margin-left: auto; }
+.nous-board-line { display: flex; align-items: baseline; gap: 0.45rem; margin: 0; font-size: 0.82rem; line-height: 1.45; min-width: 0; }
+.nous-board-line-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nous-board-line-time { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.nous-waits { flex: 0 0 auto; padding: 0 0.45rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted); font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
+.nous-waits.is-operator { border-color: var(--dock-warning); background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-waits.is-date, .nous-waits.is-promote { border-color: var(--dock-accent); color: var(--dock-accent); }
+.nous-waits.is-third_party { border-color: var(--dock-border-strong); color: var(--dock-text); }
+.nous-waits.is-none { border-color: transparent; background: var(--dock-soft); }
+.nous-board-detail { padding-left: 0.1rem; }
+.nous-board-check { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.25rem 0.75rem; font-variant-numeric: tabular-nums; }
+.nous-board-check .is-overdue { color: var(--dock-danger, #e5484d); font-weight: 600; }
+.nous-pane-badge { padding: 0 0.4rem; border-radius: 999px; background: var(--dock-warning-soft); color: var(--dock-warning); font-size: 0.68rem; font-weight: 600; }
+.nous-board-items { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
+.nous-board-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.45rem; width: 100%; padding: 0.35rem 0.5rem; border: 1px solid var(--dock-border); border-radius: 8px; background: var(--dock-soft); color: var(--dock-text); font: inherit; font-size: 0.78rem; text-align: left; overflow-wrap: anywhere; }
+button.nous-board-item { cursor: pointer; }
+button.nous-board-item:hover { border-color: var(--dock-border-strong); }
+.nous-board-item.is-card { border-color: var(--dock-warning); }
+.nous-board-item > strong { color: var(--dock-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.nous-board-item-body { flex-basis: 100%; color: var(--dock-muted); white-space: pre-line; }
+.nous-board-item .dock-kit-button { margin-left: auto; }
+.nous-board-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.nous-board-prompt-question { flex-basis: 100%; font-size: 0.8rem; overflow-wrap: anywhere; }
+.nous-board-reply { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.nous-board-reply .dock-kit-chips { flex-basis: 100%; flex-wrap: wrap; }
+.nous-board-reply input { flex: 1 1 10rem; min-width: 0; height: 2rem; padding: 0 0.6rem; border: 1px solid var(--dock-border); border-radius: 8px; background: var(--dock-surface); color: var(--dock-text); font: inherit; font-size: 0.8rem; }
+.nous-board-reply input:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 0; }
+.nous-board-result { margin: 0; font-size: 0.74rem; }
+.nous-board-result.is-success { color: var(--dock-success); }
+.nous-board-result.is-error { color: var(--dock-danger, #e5484d); }
+/* Wide (full screen): the line, the items and the reply sit side by side under the pane's head. */
+@container (min-width: 56rem) {
+  .nous-board-pane { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); column-gap: 1rem; }
+  .nous-board-pane > .nous-board-pane-head { grid-column: 1 / -1; }
+  .nous-board-pane > :is(.nous-board-line, .nous-board-detail, .nous-board-check) { grid-column: 1; }
+  .nous-board-pane > :is(.nous-board-items, .nous-board-prompt, .nous-board-reply, .nous-board-result) { grid-column: 2; }
+}
+/* Full screen on the Panes view: the board takes the stage and the right column. */
+@media (min-width: 1280px) {
+  .dock-panel.nous-dock.nous-workspace.is-pane-board { grid-template-columns: 18rem minmax(0, 1fr) auto; grid-template-areas: "rail stage tools" "rail stage tools"; }
+  .nous-workspace.is-pane-board .nous-board { display: none; }
+}
 .nous-launcher { flex-wrap: wrap; }
-.nous-launcher-hint { flex-basis: 100%; margin: 0; font-size: 0.72rem; }
+
+/* The Plans tab (plan clipboard:7PiQv4Cnq0C2): Live's rows as buttons that open the plan, a finger's height each. */
+.nous-live-plan-open { width: 100%; min-height: 2.5rem; padding: 0.3rem 0.35rem; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.nous-live-plan-open:hover { background: var(--dock-soft); }
+.nous-live-plan-open:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: -2px; }
+/* The Tokens tab is Resources → Accounts & quotas: like there, the list grows with the dock and the provider chips scroll sideways. */
+.nous-quotas .toolbar-metric-list { max-height: none; overflow: visible; }
+.nous-quotas .toolbar-metric-provider-tabs { overflow-x: auto; scrollbar-width: none; }
+.nous-quotas .toolbar-metric-tab-btn { flex: 1 0 auto; white-space: nowrap; }
+/* Narrower than Resources (the ~300 px docked desktop view): the four status filters go two a row and the email · plan line wraps. */
+.nous-quotas { container-type: inline-size; }
+@container (max-width: 20rem) {
+  .nous-quotas .account-availability-filter { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .nous-quotas .account-quota-meta small { white-space: normal; overflow-wrap: anywhere; }
+}

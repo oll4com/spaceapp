@@ -16,5 +16,5 @@
   "peerDependencies": {
     "react": "^19.3.0"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

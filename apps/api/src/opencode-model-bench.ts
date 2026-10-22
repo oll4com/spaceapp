@@ -1,6 +1,5 @@
 import { execFile, spawn } from "./safe-child-process.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -17,8 +16,11 @@ const benchCacheMs = 30_000;
 const networkProbeTimeoutMs = 5_000;
 const chatProbeTimeoutMs = 25_000;
 const complexProbeTimeoutMs = 35_000;
+// The bench lists only these providers' models, so it reads only their events: all 7 days of every runtime
+// (stable 2026-10-19: 225k rows, mostly anthropic) filled dev's 512 MB heap 10 s after each start.
+export const benchProviderIds = ["opencode", "opencode-go", "openrouter"] as const;
 
-interface OpencodeVerboseModel {
+export interface OpencodeVerboseModel {
   id: string;
   providerID: string;
   name: string;
@@ -53,41 +55,7 @@ function safeLower(value: string): string {
   return value.toLocaleLowerCase();
 }
 
-function extractVerboseModels(text: string): OpencodeVerboseModel[] {
-  const models: OpencodeVerboseModel[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escape = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escape) escape = false;
-      else if (ch === "\\") escape = true;
-      else if (ch === '"') inString = false;
-      continue;
-    } else {
-      if (ch === '"') { inString = true; continue; }
-      if (ch === "{") {
-        if (depth === 0) start = i;
-        depth++;
-      } else if (ch === "}") {
-        depth--;
-        if (depth === 0 && start !== -1) {
-          const slice = text.slice(start, i + 1);
-          try {
-            const obj = JSON.parse(slice) as OpencodeVerboseModel;
-            if (obj && typeof (obj as any).id === "string" && typeof (obj as any).providerID === "string") models.push(obj);
-          } catch { /* ignore */ }
-          start = -1;
-        } else if (depth < 0) { depth = 0; start = -1; }
-      }
-    }
-  }
-  return models;
-}
-
-/** One OpenCode 2 /api/model entry in the v1 `models --verbose` shape this bench reads. */
+/** One OpenCode 2 /api/model entry in the model shape this bench reads. */
 export function openCode2VerboseModel(model: Record<string, any>): OpencodeVerboseModel {
   const flags = (kinds: unknown) => Object.fromEntries((Array.isArray(kinds) ? kinds : []).map((kind) => [kind, true]));
   return {
@@ -97,6 +65,12 @@ export function openCode2VerboseModel(model: Record<string, any>): OpencodeVerbo
     capabilities: { temperature: model.capabilities?.temperature, reasoning: (model.variants?.length ?? 0) > 0,
       toolcall: model.capabilities?.tools, input: flags(model.capabilities?.input), output: flags(model.capabilities?.output) }
   };
+}
+
+/** One provider's models in an OpenCode 2 `/api/model` answer. */
+export function openCode2Models(stdout: string, provider: string): OpencodeVerboseModel[] {
+  const data = (JSON.parse(stdout) as { data?: unknown }).data;
+  return (Array.isArray(data) ? data : []).filter((model) => model?.providerID === provider).map(openCode2VerboseModel);
 }
 
 /**
@@ -111,8 +85,7 @@ async function runOpenCode2Models(provider: string): Promise<OpencodeVerboseMode
       env: { ...childProcessEnv(), HOME: scratch, XDG_CONFIG_HOME: "/var/lib/spaceapp-user/.config", XDG_DATA_HOME: join(scratch, "data"),
         XDG_STATE_HOME: join(scratch, "state"), XDG_CACHE_HOME: join(scratch, "cache"), TMPDIR: scratch }
     });
-    const data = (JSON.parse(String(stdout)) as { data?: unknown }).data;
-    return (Array.isArray(data) ? data : []).filter((model) => model?.providerID === provider).map(openCode2VerboseModel);
+    return openCode2Models(String(stdout), provider);
   } catch {
     return [];
   } finally {
@@ -121,24 +94,8 @@ async function runOpenCode2Models(provider: string): Promise<OpencodeVerboseMode
 }
 
 async function runOpencodeVerbose(provider: string): Promise<OpencodeVerboseModel[]> {
-  try {
-    if (realpathSync(opencodeBin).includes("/node_modules/@opencode/cli/")) return runOpenCode2Models(provider);
-    const { stdout } = await execFileAsync(opencodeBin, ["models", provider, "--verbose"], {
-      timeout: probeTimeoutMs,
-      maxBuffer,
-      env: { ...childProcessEnv(), HOME: "/var/lib/spaceapp-user" }
-    });
-    const text = String(stdout);
-    const models = extractVerboseModels(text);
-    if (models.length > 0) return models;
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      if (Array.isArray(parsed)) return parsed as OpencodeVerboseModel[];
-    } catch { /* ignore */ }
-    return models;
-  } catch {
-    return [];
-  }
+  // OpenCode 2 only (OpenCode 1's `models --verbose` was retired with it, plan clipboard:kJ1BIeylJRLG).
+  return runOpenCode2Models(provider).catch(() => []);
 }
 
 async function probeProviderLatency(baseUrl: string, tokenPath: string | null): Promise<{ ok: boolean; latencyMs: number | null }> {
@@ -330,7 +287,7 @@ export class OpencodeModelBenchService {
     // quick historical lookup for context
     let hist: SystemAnalyticsModel | null = null;
     try {
-      const events = await this.repository.listModelEvents(this.sinceIso("7d"));
+      const events = await this.repository.listModelEvents(this.sinceIso("7d"), benchProviderIds);
       const agg = this.aggregateHistorical(events);
       hist = agg.find((m) => m.providerId === providerId && m.modelId === modelId) ?? null;
     } catch { /* ignore */ }
@@ -365,7 +322,7 @@ export class OpencodeModelBenchService {
     // Historical aggregates from system analytics (last 7d by default to capture speed)
     let historical: SystemAnalyticsModel[] = [];
     try {
-      const events = await this.repository.listModelEvents(since);
+      const events = await this.repository.listModelEvents(since, benchProviderIds);
       // aggregate similar to system-analytics but we just need mapping by provider+model
       historical = this.aggregateHistorical(events);
     } catch {

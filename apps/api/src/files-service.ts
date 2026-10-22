@@ -220,6 +220,9 @@ export function assertAccessAllowed(
   return { resolvedPath, isAdmin: false };
 }
 
+// localeCompare with options builds a collator per call: 50k names took ~5 s and blocked the API.
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 export async function listDirectory(options: {
   targetPath?: string;
   showHidden?: boolean;
@@ -278,7 +281,7 @@ export async function listDirectory(options: {
     entries.sort((a, b) => {
       if (a.isDirectory && !b.isDirectory) return -1;
       if (!a.isDirectory && b.isDirectory) return 1;
-      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      return nameCollator.compare(a.name, b.name);
     });
 
     const parentPath = resolvedPath === "/" ? null : path.dirname(resolvedPath);

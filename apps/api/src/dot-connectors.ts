@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
@@ -31,27 +32,61 @@ export class ConnectorError extends Error {
   constructor(readonly status: 400 | 401 | 403 | 404 | 409 | 502 | 503, readonly code: string, message: string) { super(message); }
 }
 
-export interface ConnectorCrypto { seal(plain: string): string; open(sealed: string): string }
-/** AES-256-GCM with a key derived from the server secret; a sealed value is `v1.<iv>.<tag>.<ciphertext>`. */
-export function createConnectorCrypto(secret: string): ConnectorCrypto {
-  const key = Buffer.from(hkdfSync("sha256", Buffer.from(secret, "utf8"), Buffer.from("space-connectors"), Buffer.from("connector-tokens-v1"), 32));
+/**
+ * Sealed connector secrets (OAuth tokens, copilot mailbox passwords). `context` names the record and purpose
+ * (`connectorSealContext`) and is bound as AES-GCM associated data, so a value copied to another record never opens.
+ */
+export interface ConnectorCrypto { seal(plain: string, context: string): string; open(sealed: string, context: string): string }
+
+/** The record and purpose a sealed value belongs to: `<purpose>|<owner>|<record parts>`. */
+export const connectorSealContext = (purpose: "connector-refresh" | "connector-access" | "freelance-mailbox" | "job-apply-mailbox", owner: string, ...record: string[]) =>
+  [purpose, owner, ...record].join("|");
+
+/** The dedicated connector key file (hardening plan step 9): null when it is missing or shorter than 32 characters. */
+export function readConnectorKey(path: string | null): string | null {
+  if (!path) return null;
+  try { const key = readFileSync(path, "utf8").trim(); return key.length >= 32 ? key : null; } catch { return null; }
+}
+
+const deriveKey = (secret: string, info: string) => Buffer.from(hkdfSync("sha256", Buffer.from(secret, "utf8"), Buffer.from("space-connectors"), Buffer.from(info), 32));
+const tokenInvalid = () => new ConnectorError(409, "CONNECTOR_TOKEN_INVALID", "Reconnect this account.");
+function openGcm(key: Buffer, iv: string, tag: string, body: string, aad: string | null): string {
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
+  if (aad !== null) decipher.setAAD(Buffer.from(aad, "utf8"));
+  decipher.setAuthTag(Buffer.from(tag, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(body, "base64url")), decipher.final()]).toString("utf8");
+}
+
+/**
+ * AES-256-GCM. New values are `v2.<iv>.<tag>.<ciphertext>` under the dedicated connector key with the record's context
+ * as associated data; without that key nothing new is sealed (no fallback to the session secret). Values sealed before
+ * (`v1`, no associated data, key from SPACE_CONNECTOR_SECRET or the session secret) still open with `legacySecrets` and
+ * are sealed again as v2 on their next write.
+ */
+export function createConnectorCrypto(options: { key: string | null; legacySecrets: Array<string | null | undefined> }): ConnectorCrypto {
+  const key = options.key ? deriveKey(options.key, "connector-secrets-v2") : null;
+  const legacy = [...new Set(options.legacySecrets.filter((secret): secret is string => Boolean(secret && secret.length >= 16)))].map((secret) => deriveKey(secret, "connector-tokens-v1"));
   return {
-    seal(plain) {
+    seal(plain, context) {
+      if (!key) throw new ConnectorError(503, "CONNECTOR_KEY_MISSING", "Space's connector key is not set up on this server; ask the operator.");
       const iv = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", key, iv);
+      cipher.setAAD(Buffer.from(context, "utf8"));
       const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
-      return ["v1", iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), body.toString("base64url")].join(".");
+      return ["v2", iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), body.toString("base64url")].join(".");
     },
-    open(sealed) {
-      const [version, iv, tag, body] = sealed.split(".");
-      if (version !== "v1" || !iv || !tag || !body) throw new ConnectorError(409, "CONNECTOR_TOKEN_INVALID", "Reconnect this account.");
-      try {
-        const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
-        decipher.setAuthTag(Buffer.from(tag, "base64url"));
-        return Buffer.concat([decipher.update(Buffer.from(body, "base64url")), decipher.final()]).toString("utf8");
-      } catch {
-        throw new ConnectorError(409, "CONNECTOR_TOKEN_INVALID", "Reconnect this account.");
+    open(sealed, context) {
+      const [version, iv, tag, body, extra] = sealed.split(".");
+      if (!iv || !tag || !body || extra !== undefined) throw tokenInvalid();
+      if (version === "v2" && key) {
+        try { return openGcm(key, iv, tag, body, context); } catch { throw tokenInvalid(); }
       }
+      if (version === "v1") {
+        for (const legacyKey of legacy) {
+          try { return openGcm(legacyKey, iv, tag, body, null); } catch { /* the next legacy secret */ }
+        }
+      }
+      throw tokenInvalid();
     }
   };
 }
@@ -351,36 +386,43 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       throw new ConnectorError(400, "CONNECTOR_WRONG_ACCOUNT", `This link is for ${input.email}, but Google signed in ${tokens.email}. Choose ${input.email} and try again.`);
     }
     if (!tokens.refreshToken) throw new ConnectorError(400, "CONNECTOR_NO_OFFLINE_ACCESS", "The provider did not grant offline access. Remove Space's access in your account settings and connect again.");
+    const email = tokens.email.toLowerCase();
     const account = await deps.accounts.upsert({ ownerUserId: owner, provider, email: tokens.email, scopes: tokens.scopes,
-      refreshTokenEncrypted: deps.crypto.seal(tokens.refreshToken), accessTokenEncrypted: deps.crypto.seal(tokens.accessToken), accessExpiresAt: tokens.expiresAt });
+      refreshTokenEncrypted: deps.crypto.seal(tokens.refreshToken, connectorSealContext("connector-refresh", owner, provider, email)),
+      accessTokenEncrypted: deps.crypto.seal(tokens.accessToken, connectorSealContext("connector-access", owner, provider, email)), accessExpiresAt: tokens.expiresAt });
     await deps.audit(request, "connector.connect", { accountId: account.accountId, provider, capabilities: connectorCapabilities(provider, tokens.scopes) });
     return summary(account);
   }
   async function disconnect(owner: string, accountId: string, request: FastifyRequest | null) {
     const account = await deps.accounts.get(owner, accountId);
     if (!account) throw new ConnectorError(404, "CONNECTOR_NOT_FOUND", "Account was not found.");
-    await client(account.provider)?.revoke(deps.crypto.open(account.refreshTokenEncrypted)).catch(() => undefined);
+    await client(account.provider)?.revoke(deps.crypto.open(account.refreshTokenEncrypted, tokenContext(account, "connector-refresh"))).catch(() => undefined);
     await deps.accounts.delete(owner, accountId);
     await deps.audit(request, "connector.disconnect", { accountId, provider: account.provider });
   }
+  const tokenContext = (account: Pick<ConnectorAccountRecord, "ownerUserId" | "provider" | "email">, purpose: "connector-refresh" | "connector-access") =>
+    connectorSealContext(purpose, account.ownerUserId, account.provider, account.email.toLowerCase());
   /** A valid access token, refreshed when it expires within a minute. */
   async function accessToken(account: ConnectorAccountRecord): Promise<string> {
     if (account.accessTokenEncrypted && account.accessExpiresAt && Date.parse(account.accessExpiresAt) - now() > 60_000) {
-      return deps.crypto.open(account.accessTokenEncrypted);
+      return deps.crypto.open(account.accessTokenEncrypted, tokenContext(account, "connector-access"));
     }
     const api = client(account.provider);
     if (!api) throw new ConnectorError(503, "CONNECTOR_UNAVAILABLE", "This provider is not configured.");
-    const refreshed = await api.refresh(deps.crypto.open(account.refreshTokenEncrypted)).catch((error: unknown) => {
+    const refreshed = await api.refresh(deps.crypto.open(account.refreshTokenEncrypted, tokenContext(account, "connector-refresh"))).catch((error: unknown) => {
       if (error instanceof ConnectorError && (error.status === 401 || error.status === 403)) {
         throw new ConnectorError(409, "CONNECTOR_RECONNECT", `Access to ${account.email} expired or was revoked. Reconnect it in the Tools view.`);
       }
       throw error instanceof ConnectorError && error.status === 502
         ? new ConnectorError(502, "CONNECTOR_PROVIDER_UNAVAILABLE", `${account.provider === "GOOGLE" ? "Google" : "Microsoft"} did not respond. Try again shortly.`) : error;
     });
-    await deps.accounts.saveAccessToken(account.accountId, deps.crypto.seal(refreshed.accessToken), refreshed.expiresAt);
-    if (refreshed.refreshToken) {
+    await deps.accounts.saveAccessToken(account.accountId, deps.crypto.seal(refreshed.accessToken, tokenContext(account, "connector-access")), refreshed.expiresAt);
+    // A refresh token still sealed as v1 is sealed again as v2 now (the provider sends a new one only sometimes).
+    const refreshToken = refreshed.refreshToken ?? (account.refreshTokenEncrypted.startsWith("v1.") ? deps.crypto.open(account.refreshTokenEncrypted, tokenContext(account, "connector-refresh")) : null);
+    if (refreshToken) {
       await deps.accounts.upsert({ ownerUserId: account.ownerUserId, provider: account.provider, email: account.email, scopes: refreshed.scopes.length ? refreshed.scopes : account.scopes,
-        refreshTokenEncrypted: deps.crypto.seal(refreshed.refreshToken), accessTokenEncrypted: deps.crypto.seal(refreshed.accessToken), accessExpiresAt: refreshed.expiresAt });
+        refreshTokenEncrypted: deps.crypto.seal(refreshToken, tokenContext(account, "connector-refresh")),
+        accessTokenEncrypted: deps.crypto.seal(refreshed.accessToken, tokenContext(account, "connector-access")), accessExpiresAt: refreshed.expiresAt });
     }
     return refreshed.accessToken;
   }
@@ -480,7 +522,7 @@ export interface ConnectorOAuthStateTools {
   verify(token: string | undefined): string | null;
   sessionHash(request: FastifyRequest): string;
   redirectUri(request: FastifyRequest, provider: ConnectorProvider): string;
-  secureCookies: boolean;
+  secureCookies: boolean | "auto";
 }
 export function registerConnectorRoutes(app: FastifyInstance, service: ConnectorService | null, options: {
   routeOptions: RouteShorthandOptions;

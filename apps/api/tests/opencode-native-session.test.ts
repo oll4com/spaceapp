@@ -53,7 +53,7 @@ describe("OpenCode native session mapping", () => {
     await expect(readOpenCodeNativeSessionId("cli_session:missing", stateRoot)).resolves.toBeNull();
   });
 
-  it("recovers one exact native OpenCode task from a legacy live process tree", async () => {
+  it("ignores a retired OpenCode 1 attach process", async () => {
     const procRoot = await mkdtemp(join(tmpdir(), "space-opencode-proc-"));
     roots.push(procRoot);
     await mkdir(join(procRoot, "4101", "task", "4101"), { recursive: true });
@@ -66,7 +66,7 @@ describe("OpenCode native session mapping", () => {
     );
     await writeFile(join(procRoot, "4102", "task", "4102", "children"), "");
 
-    await expect(readOpenCodeNativeSessionIdFromProcessTree(4101, procRoot)).resolves.toBe("ses_exactLegacyTask123");
+    await expect(readOpenCodeNativeSessionIdFromProcessTree(4101, procRoot)).resolves.toBeNull();
   });
 
   it("recovers the native task of an OpenCode 2 TUI, which connects with --server", async () => {

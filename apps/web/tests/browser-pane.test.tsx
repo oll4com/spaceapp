@@ -1004,6 +1004,14 @@ describe("BrowserPane", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^second@example\.com/ }));
   }
 
+  it("names the room and the agent pane driving the browser in the frame's corner (operator 2026-10-20)", async () => {
+    const { before } = tabFixture();
+    apiMock.browserPages.mockResolvedValue({ ...before, agent: { paneId: "pane:codex", title: "Codex 2", roomId: "room:main", roomName: "Main" } });
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    const label = await screen.findByText("Main · Codex 2");
+    expect(label.getAttribute("title")).toBe("Handled by Codex 2 in room Main");
+  });
+
   it.each(["BROWSER", "MARKETING_COPILOT"] as const)("changes the account of the %s pane's tab in view in place; the other tabs keep the pane's", async (mode) => {
     const { before } = tabFixture();
     twoAccounts();

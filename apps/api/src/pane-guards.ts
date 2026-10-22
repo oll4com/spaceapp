@@ -29,8 +29,8 @@ export async function getLatestRoomEvent(store: SpaceStore, roomId: string): Pro
 
 export class PaneClosedConflictError extends SpaceConflictError {}
 
-// Copilot and Design panes own a CLI agent session (Job, Marketing and Freelance Copilot also a managed browser session).
-const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN"];
+// Copilot, Design and App Studio panes own a CLI agent session (Job, Marketing and Freelance Copilot also a managed browser session).
+const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO"];
 
 export function isCliPane(pane: Pick<Pane, "mode">): boolean {
   return CLI_PANE_MODES.includes(pane.mode);

@@ -68,12 +68,13 @@ import {
   type SpaceStore
 } from "@space/runtime";
 import type { SpaceApiConfig } from "./config.js";
+import type { CredentialHost } from "./cli-auth-transfer.js";
 import {
   cliAgentFilesApiBaseUrl,
   cliAgentFilesEnabled,
   issueCliAgentFilesToken
 } from "./cli-agent-files.js";
-import { cliBrowserBridgeApiBaseUrl, cliBrowserBridgeEnabled, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
+import { agentTokenSecret, cliBrowserBridgeApiBaseUrl, cliBrowserBridgeEnabled, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import {
   codexDirectParityCodexHome,
   codexDirectParityCwd,
@@ -627,6 +628,8 @@ export interface CliLoginVerificationEvidence {
 export interface CliTerminalManagerOptions {
   store: SpaceStore;
   config: SpaceApiConfig;
+  /** Public installs: runs credential-smoke in the CLI container (cli-auth-transfer.ts). */
+  credentialHost?: Pick<CredentialHost, "execute"> | null;
   discoverRuntimes: () => Promise<AgentRuntimeRegistry>;
   discoverRuntimesForAttach?: () => Promise<AgentRuntimeRegistry>;
   findCodexThreadId?: CodexThreadFinder;
@@ -1059,7 +1062,7 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
   // Space Control for CLI panes: Codex (phase one), Claude Code (operator decision 2026-10-14), Oh My Pi, Hermes, Droid and Qoder (operator requests 2026-10-17).
-  const controlToken=["cli:codex","cli:claude","cli:omp","cli:hermes","cli:droid","cli:qoder"].includes(context.runtimeId ?? "")?issueControlToken(config.internalApiToken,context):null;
+  const controlToken=["cli:codex","cli:claude","cli:omp","cli:hermes","cli:droid","cli:qoder"].includes(context.runtimeId ?? "")?issueControlToken(agentTokenSecret(config),context):null;
   if(controlToken){env.SPACE_CONTROL_TOKEN=controlToken;env.SPACE_CONTROL_ENDPOINT=`${cliAgentFilesApiBaseUrl(config)}/api/cli/control/mcp`;}
   const cliAgentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
   if (cliAgentFilesToken) {
@@ -1619,13 +1622,17 @@ export class CliTerminalManager {
     const descriptor = findCliRuntimeDescriptor(runtime.id);
     if (!descriptor?.credentialSmokeMarker || !runtime.detectedCommandPath) return false;
     try {
-      const launch = buildCliProcessLaunch(this.options.config, runtime, ["credential-smoke"]);
-      const { stdout } = await execFileAsync(launch.command, launch.args, {
-        encoding: "utf8",
+      const execOptions = {
+        encoding: "utf8" as const,
         env: this.controlledCredentialActionEnvironment(descriptor.environment),
         timeout: cliCredentialSmokeTimeoutMs,
         maxBuffer: 1_024
-      });
+      };
+      const launch = buildCliProcessLaunch(this.options.config, runtime, ["credential-smoke"]);
+      // Public installs: the CLIs and their logins live in the CLI container, not here.
+      const { stdout } = this.options.credentialHost
+        ? await this.options.credentialHost.execute(runtime.detectedCommandPath, ["credential-smoke"], execOptions)
+        : await execFileAsync(launch.command, launch.args, execOptions);
       return stdout === `${descriptor.credentialSmokeMarker}\n` || stdout === `${descriptor.credentialSmokeMarker}\r\n`;
     } catch {
       return false;
@@ -1881,6 +1888,7 @@ export class CliTerminalManager {
     initialRows?: number;
     userId: string;
     proofScope?: "READ_ONLY";
+    proofSession?: boolean;
     requestId: string;
   }) {
     const connectionPromise = this.openConnection(socket, {
@@ -2032,7 +2040,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -2259,11 +2267,11 @@ export class CliTerminalManager {
     };
     let managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
     activateTransport(managed);
-    const roomPromptPaste = isCodexDirectParityRuntime(managed.runtimeId) && turnMarker !== null &&
-      data.includes(`<space-room-action marker="${turnMarker}">`);
+    const roomPromptPaste = turnMarker !== null && data.includes(`<space-room-action marker="${turnMarker}">`);
     // Codex treats a raw multiline burst and the immediately following Enter
-    // as one paste. Delimit the Room Agent prompt explicitly, then let its
-    // paste buffer settle before acknowledging content to the submit phase.
+    // as one paste, and Claude Code can keep it as an unsent draft. Delimit the
+    // Room Agent prompt explicitly, then let its paste buffer settle before
+    // acknowledging content to the submit phase.
     const sanitizedData = sanitizeCliTerminalInput(managed.runtimeId, data);
     const terminalData = roomPromptPaste ? `\u001b[200~${sanitizedData}\u001b[201~` : sanitizedData;
     if (data.length > 0 && terminalData.length === 0) {
@@ -2615,6 +2623,7 @@ export class CliTerminalManager {
       initialRows?: number;
       userId: string;
       proofScope?: "READ_ONLY";
+      proofSession?: boolean;
       requestId: string;
       connectionOrder: number;
     }
@@ -2634,7 +2643,10 @@ export class CliTerminalManager {
 
     // In a shared room a user who does not own the pane attaches like a read-only proof: no input, no control, never
     // starts the owner's CLI (operator-approved 2026-10-16).
-    const proofScope = input.proofScope ?? (await this.options.observeOnly?.(pane, input.userId) ? "READ_ONLY" as const : undefined);
+    // A proof session (user:operator-proof) controls only in an Agent Proof room; in an operator room it observes and
+    // never resizes the operator's PTY (security addendum clipboard:tmmVA6-ezGzD, Nous Warm approval 2026-10-19).
+    const proofObserver = input.proofSession === true && (await this.options.store.getRoom(pane.roomId))?.kind !== "AGENT_PROOF";
+    const proofScope = input.proofScope ?? (proofObserver || await this.options.observeOnly?.(pane, input.userId) ? "READ_ONLY" as const : undefined);
     const readOnlyObserver = proofScope === "READ_ONLY";
     const runtime = readOnlyObserver
       ? activeCliSessionObserverRuntime(this.options.config, session.runtimeId)

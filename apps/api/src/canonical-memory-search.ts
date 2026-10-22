@@ -8,6 +8,10 @@ export function canonicalEmbeddingHash(entry: MemoryEntry): string {
   return createHash("sha256").update(JSON.stringify([entry.title, entry.body, entry.provenance, entry.scope, entry.roomId])).digest("hex");
 }
 
+// Cosine below which a hit is noise. bge-m3 puts unrelated memories near 0.43 (90% under 0.51) and a memory's own title at
+// 0.59-0.76 (measured on 60 real memories, 2026-10-20); OpenAI's text-embedding-3 vectors spread lower.
+const minimumSimilarity = (model: string) => (model === "bge-m3" ? 0.55 : 0.4);
+
 export class CanonicalMemorySearch {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private pending: Promise<{ total: number; updated: number }> | null = null;
@@ -67,7 +71,7 @@ export class CanonicalMemorySearch {
     const current = new Map(all.map(e => [e.id, e]));
     const semantic = hits.flatMap(hit => {
       const entry = current.get(hit.id);
-      return entry && hit.similarity >= 0.4 && canonicalEmbeddingHash(entry) === hit.inputHash ? [entry] : [];
+      return entry && hit.similarity >= minimumSimilarity(this.options.model) && canonicalEmbeddingHash(entry) === hit.inputHash ? [entry] : [];
     });
     // The canonical reader ranks full source bodies before selecting a bounded
     // evidence window. Searching the list projection would miss late evidence.

@@ -3,6 +3,7 @@ import { eventSchema, MARKETING_CHANNEL_LABELS, type MarketingEvent, type Market
 import { InMemoryMarketingCopilotRepository, PostgresMarketingCopilotRepository, type MarketingCopilotRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { localArtifactFilePath } from "../artifact-storage.js";
+import { submitCliPrompt } from "../cli-prompt-submit.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import type { PaneBrowserAccountControl } from "../pane-browser-routes.js";
 import { GitControlError } from "../source-control/errors.js";
@@ -21,7 +22,7 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   repository?: MarketingCopilotRepository;
   /** Tests replace the CLI kickoff of a run. */
   kickoff?: (pane: Pane, run: MarketingRun) => Promise<void>;
-  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput">;
+  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed">;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
   /** Where room artifacts live (config.browserEvidenceArtifactRoot): captured post media are read from there. */
@@ -130,9 +131,7 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
     if (!session) throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
     const traceId = `marketing-copilot:${run.id}`;
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await terminal.sendInput(session.sessionId, KICKOFF(run.id), traceId, null, `${traceId}:kickoff`);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      await terminal.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:kickoff-submit`);
+      await submitCliPrompt(terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:kickoff`);
     });
   });
   registerMarketingCopilotRoutes(app, service, { ...deps, kickoff });

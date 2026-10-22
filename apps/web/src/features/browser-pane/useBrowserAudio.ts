@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { browserStreamWebSocketServerMessageSchema } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { browserReconnectDelayMs } from "./browser-reconnect.js";
 
 type AudioState = "idle" | "connecting" | "playing" | "blocked";
 type Listener = { paneId: string; sessionId: string; update: (state: AudioState) => void };
@@ -15,6 +16,7 @@ let gain: GainNode | null = null;
 let unsubscribeVolume: (() => void) | null = null;
 let generation = 0;
 let retry: number | null = null;
+let failures = 0;
 let nextTime = 0;
 let sampleRate = 48000;
 let channels = 2;
@@ -45,6 +47,7 @@ function stop() {
   context = null;
   nextTime = 0;
   owner = null;
+  failures = 0;
   window.removeEventListener("pointerdown", unlock);
   window.removeEventListener("keydown", unlock);
 }
@@ -55,7 +58,7 @@ async function connect(listener: Listener) {
   const reconnect = () => {
     if (current !== generation || retry !== null || listeners.size === 0) return;
     publish("connecting");
-    retry = window.setTimeout(() => { retry = null; void connect(listener); }, 2000);
+    retry = window.setTimeout(() => { retry = null; void connect(listener); }, browserReconnectDelayMs(failures++, 2000));
   };
   try {
     const ticket = await api.browserAudioStreamTicket(listener.paneId);
@@ -72,6 +75,7 @@ async function connect(listener: Listener) {
         try {
           const message = browserStreamWebSocketServerMessageSchema.parse(JSON.parse(event.data));
           if (message.type !== "audioReady" || message.paneId !== listener.paneId || message.sessionId !== listener.sessionId) return;
+          failures = 0;
           sampleRate = message.sampleRate;
           channels = message.channels;
           if (!context) {

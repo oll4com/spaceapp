@@ -23,6 +23,12 @@ export const NOUS_PERSONA = [
   "Save what was decided to Space Memory (space_memory_save) and recall before deciding again. When the operator answers one of your open decisions in the chat, withdraw it (space_withdraw_decision) and act on their answer.",
   "The operator talks only to you. Your goals: bring every open plan to 100%, finish the small tasks given to agents, keep every pane unblocked, coordinate work that collides, and ship one release per product when all its work is done.",
   "Answer the small questions yourself: a pane waiting for a choice, a copilot asking a fact, which pane takes which step, which model a step needs. Read the pane first; decide like a senior engineer who knows the plans. Never ask the operator a small question.",
+  // Operator corrections 2026-10-20 (plan clipboard:bTm-5PGrt9po U1, U3).
+  "Answer the operator first: when the turn context lists \"Operator messages to answer\", your final message answers every one of them, oldest first. When the work will take more than a few tool calls, call space_reply_now first with the short answer (what you will do), then do the work; the final message says how it ended.",
+  "The world's \"Operator facts and rules\" are the operator's own words and win over a pane's conclusion, a note or your own reading. Before you relay a pane's \"this cannot be done\" or \"we do not qualify\", check it against them and Space Memory, and correct the pane first.",
+  "Never leave a third-party contact (a question to a vendor, a program, support) to the operator: have a pane draft it at once, then bring one EXTERNAL decision with the send action, or put the ready text on the pane's card when only their own sign-in can send it. Text to third parties never questions our own eligibility, never shares internal doubts and never offers to change the company setup.",
+  "When a premise changes (a fact, a rule, a decision), sweep everything it touches in the same turn: every open plan, every pane working on it, the files they wrote and the memories that state the old premise (save the new one superseding them). Never present the obvious consequence as an extra step for later.",
+  "When you hand an operator request to a pane, quote their own words (translated if needed) next to your reading of it, so the pane builds what they asked.",
   "Bring to the operator only critical decisions, with space_ask_operator and the exact action to run on their yes: RELEASE (promote to stable, hotfix, version bump, npm or GitHub release, publishing a release train), DESTRUCTIVE (deleting data, rooms or branches, anything irreversible), EXTERNAL (anything that reaches third parties or costs money: copilot reviews, posts, emails, proposals, payments, approving copilot rules or campaigns), DIRECTION (product direction, choosing between two different solutions, changing a plan's scope). One decision per question; never repeat an open one. When the answer needs an action only the operator may run, ask one yes/no decision carrying the exact action of the option you recommend (alternatives in the body), never which option first and approval after.",
   "Submitting finished work to the dev merge queue is routine (every pane does it when its task is done). Promoting dev to stable is the operator's, unless the world shows \"May promote dev to stable ON\": then promote finished work yourself, batched, at most once every two hours unless a fix is urgent, by sending a pane exactly \"space-queue promote\" and nothing else, and never ask the operator for that promote.",
   "Plans: the world lists every open plan with its pane and next step. A plan without a pane gets one: open a CLI pane in the room that fits and send it \"Implement the following plan … Plan ID: <id>\" with the plan's steps, at the plan's minimum model. When a pane finishes, read it, record the plan's progress (space_plan_update) and send the next step. Keep the note \"plan-map\" current: which plans depend on or block which, and which touch the same files; give each shared file one owner pane and tell the other to wait for the owner's merge-queue ticket.",
@@ -32,12 +38,14 @@ export const NOUS_PERSONA = [
   "Agent test rooms (AGENT_PROOF) belong to other agents' tests: leave them alone unless the operator asks.",
   "The world shows the server's load (CALM, BUSY, OVERLOADED). While it is BUSY or OVERLOADED, open no new panes and send new work (plan steps, next tasks) with when \"calm\": it waits and goes once the server allows (priority \"light\" for small reads, \"urgent\" only for what cannot wait). Answers to a waiting prompt, stops and closes go at once (operator request).",
   "Close the notifications you handled with space_resolve_notification so the operator's list keeps only what is theirs.",
+  "Helpers (space_subagents): when several independent reads or pane checks can run at once (a sweep over many panes, reading reports, files or mail, research, preparing plans and briefs), give them to up to 5 helpers in one call, each with a short title and complete instructions; never use them for one quick action. Answer the operator first. You keep the decisions, the operator's cards, memory and notes, the outcome and the final answer; helpers report back briefly, and you act on their reports. A call answers within 45 s; helpers still RUNNING then report through space_subagents {runId} while you go on with other work.",
   "Before your final message in every turn that answered the operator, call space_nous_outcome once: how each of their requests ended (SELF, HELPER with the tool you lacked, OPERATOR, PENDING; correction when they corrected you or repeated a request). When the operator corrects you, save the lesson in your note \"lessons\".",
   "Never forget a pane: every open pane needs a check. Read the panes the world lists under \"Panes not checked\", then record each with space_pane_checked (verdict, one line, next check). A pane the operator opened for their own tests is OPERATOR_TEST: drive it, never close it until they confirm.",
   "Panes report to you: Space records each CLI pane's last answer when its turn ends, its question and options when it waits, and a heartbeat every 10 minutes while it works; agents add started, blocked, needs-decision and done themselves. The world's pane lines show the newest report. Read a pane's reports with space_pane_reports before reading its screen, and never ask a pane to repeat or summarise what its reports already say.",
   "When the operator asks how much you have improved, call space_nous_progress and answer with its percentage, points and baseline date.",
   "What only the operator's hands can do (sign-in, password, CAPTCHA, a click bot protection blocks, a document or an answer only they have) goes on ONE card per pane with space_notify_operator, in English, the whole list for that pane each time; resolve the card when nothing is left there. Never list these in your answer: say only how many panes wait for them. Decisions stay space_ask_operator.",
   "Before you tell the operator that something waits for them, check it against the world now (open decisions, notifications, your cards): notes and logs go stale.",
+  "The world's first line is the operator's local time. During their night (quiet hours) never expect them at a computer: hand requests (cards, focus, handoffs) wait for the morning batch on their own, so keep the work ready, move on with what needs no hands, and say in the morning what waits.",
   "Write to the operator in their language (Greek when they write Greek), short and plain: what you did, what waits for them. If nothing needs doing, say so in one line. Name rooms and panes by their names, never ids.",
   // Claude Code returns only the last message; on stable a full status written before space_nous_outcome was lost (2026-10-17).
   "Only your final message, written after your last tool call, reaches the operator; text you write before a tool call is lost. Put the whole answer there; never write \"see above\"."
@@ -54,7 +62,7 @@ export interface NousLimits {
 const defaultLimits: NousLimits = { turnMs: 20 * 60_000, inboxDebounceMs: 3 * 60_000, historyMessages: 150, modelPauseMs: 10 * 60_000 };
 const HOUR_MS = 3_600_000;
 const TURN_PROMPT: Record<TurnReason, string> = {
-  OPERATOR: "Answer the operator's newest message above; act first where you can.",
+  OPERATOR: "Answer every operator message listed under \"Operator messages to answer\", each one, oldest first; act first where you can.",
   INBOX: "Handle the newest inbox above: answer what waits, move the plans on, close the notifications you handled. Nothing to do: say so in one line.",
   DECISION: "The operator answered one of your decisions (above). Carry on from it.",
   HEARTBEAT: "Heartbeat: look over the plans and the panes; move on what stalled. Nothing to do: say so in one line."
@@ -84,6 +92,8 @@ export interface NousServiceDeps {
   autonomous?: boolean;
   /** Away mode (plan clipboard:B7eTUHTJYg3X); without it the operator is always here. */
   away?: NousAwayControl;
+  /** The operator's working time zone, for the times of their messages to answer (default UTC). */
+  timeZone?(owner: string): Promise<string>;
   log?: { warn(details: Record<string, unknown>, message: string): void };
   now?: () => number;
   limits?: Partial<NousLimits>;
@@ -92,7 +102,7 @@ export interface NousServiceDeps {
 type TurnReason = "OPERATOR" | "INBOX" | "DECISION" | "HEARTBEAT";
 type TurnFactsDraft = Pick<NousTurnFacts, "tools" | "planPoints" | "outcomes">;
 interface OwnerRuntime {
-  running: { turnId: string; startedAt: string; reason: TurnReason; controller: AbortController; facts: TurnFactsDraft; turn: NousAwayTurn } | null;
+  running: { turnId: string; startedAt: string; reason: TurnReason; controller: AbortController; facts: TurnFactsDraft; turn: NousAwayTurn; signal?: AbortSignal } | null;
   /** The away log to brief from, set when the operator's message ended Away; the next operator turn carries it. */
   briefing: string | null;
   /** An operator message or a decision answer arrived during a turn; it starts the next one. */
@@ -128,6 +138,25 @@ export function nousHistory(messages: NousMessage[], budget = 40_000): string {
   let first = lines.length;
   while (first > 0 && used + lines[first - 1]!.length <= budget) { used += lines[first - 1]!.length; first -= 1; }
   return lines.slice(first).join("\n\n");
+}
+
+/**
+ * The operator's messages that still need an answer (plan clipboard:bTm-5PGrt9po U1; stable 2026-10-20: a turn answered an
+ * older message twice and skipped the two newest). An operator turn's final answer covers what the operator wrote before
+ * that turn began; interim replies (space_reply_now) and inbox or heartbeat answers cover nothing.
+ */
+export function operatorMessagesToAnswer(messages: NousMessage[]): NousMessage[] {
+  const covering = messages.filter((message) => message.kind === "ANSWER" && message.meta?.interim !== true
+    && (message.meta?.reason === undefined || message.meta.reason === "OPERATOR")).at(-1);
+  const since = !covering ? "" : typeof covering.meta?.startedAt === "string" ? covering.meta.startedAt : covering.createdAt;
+  return messages.filter((message) => message.kind === "OPERATOR" && message.createdAt > since);
+}
+
+export function renderOperatorMessages(messages: NousMessage[], timeZone: string): string {
+  if (!messages.length) return "";
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" });
+  return [`# Operator messages to answer (oldest first; your final message answers each one)`,
+    ...messages.map((message, index) => `${index + 1}. ${time.format(new Date(message.createdAt))}: ${clip(message.content, 2_000)}`)].join("\n");
 }
 
 export function createNousService(deps: NousServiceDeps) {
@@ -166,6 +195,7 @@ export function createNousService(deps: NousServiceDeps) {
     entry.running = { turnId, startedAt, reason, controller, facts, turn };
     if (reason === "INBOX" || reason === "HEARTBEAT") entry.turns.push(now());
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(limits.turnMs)]);
+    entry.running.signal = signal;
     const briefing = reason === "OPERATOR" ? entry.briefing : null;
     if (briefing) entry.briefing = null;
     try {
@@ -177,9 +207,10 @@ export function createNousService(deps: NousServiceDeps) {
       const world = await deps.world(owner);
       // The operator's language last, nearest the answer: on stable inbox turns full of English pane text answered in English (2026-10-17).
       const language = (await deps.repository.listNotes(owner)).find((note) => note.key === "operator-language")?.text;
+      const toAnswer = renderOperatorMessages(operatorMessagesToAnswer(messages), deps.timeZone ? await deps.timeZone(owner).catch(() => "UTC") : "UTC");
       const prompt = [history ? `# Conversation so far\n${history}` : "# Conversation so far\n(none yet)", world.text,
         away ? renderAwayContext(away) : "",
-        briefing ? `# While the operator was away (your away log)\n${briefing}` : "", "---",
+        briefing ? `# While the operator was away (your away log)\n${briefing}` : "", toAnswer, "---",
         briefing ? `${TURN_PROMPT.OPERATOR} They are back: start with a short briefing from your away log: what is done, what still runs, what waits for them, the decisions you held.` : TURN_PROMPT[reason],
         language ?? ""]
         .filter(Boolean).join("\n\n");
@@ -188,7 +219,8 @@ export function createNousService(deps: NousServiceDeps) {
       // Away (plan clipboard:B7eTUHTJYg3X): a turn the operator did not start writes its reply to the away log, not the chat.
       const quiet = away && (reason === "INBOX" || reason === "HEARTBEAT")
         && await deps.away!.log(owner, reason, messages.filter((message) => message.kind === "INBOX").at(-1)?.content ?? reason, result.text.trim() || "Done.").catch(() => false);
-      if (!quiet) await addMessage(owner, turnId, "ANSWER", "DONE", result.text.trim() || "Done.");
+      // reason and startedAt tell the next turn which operator messages this answer covered (operatorMessagesToAnswer).
+      if (!quiet) await addMessage(owner, turnId, "ANSWER", "DONE", result.text.trim() || "Done.", { reason, startedAt });
       entry.lastError = null;
       entry.pausedUntil = 0;
       await deps.notifications.resolve(owner, "nous:paused").catch(() => {});
@@ -272,9 +304,17 @@ export function createNousService(deps: NousServiceDeps) {
     /** Whether this turn is the owner's running one: Nous's MCP token is good only while its turn runs. */
     turnRunning: (owner: string, turnId: string) => runtimes.get(owner)?.running?.turnId === turnId,
 
+    /** The running turn's deadline and abort signal, for its helpers (space_subagents); null once it ended. */
+    turnContext(owner: string, turnId: string): { deadline: number; signal: AbortSignal } | null {
+      const running = runtimes.get(owner)?.running;
+      return running?.turnId === turnId && running.signal ? { deadline: Date.parse(running.startedAt) + limits.turnMs, signal: running.signal } : null;
+    },
+
     /** A tool call from the running turn's Claude Code (over MCP), recorded as a tool row. */
-    async callTool(owner: string, turnId: string, name: string, args: Record<string, unknown>, callId: string) {
-      const row = await addMessage(owner, turnId, "TOOL", "RUNNING", nousToolLabel(name, args), { name });
+    /** `helper`: a call from one of the turn's helpers (space_subagents), recorded under the turn with the helper's id. */
+    async callTool(owner: string, turnId: string, name: string, args: Record<string, unknown>, callId: string, helper?: { subagentId: string; title: string }) {
+      const audit = helper ? { name, subagentId: helper.subagentId, parentTurnId: turnId } : { name };
+      const row = await addMessage(owner, turnId, "TOOL", "RUNNING", `${helper ? `${helper.title}: ` : ""}${nousToolLabel(name, args)}`, audit);
       const turn = runtimes.get(owner)?.running?.turnId === turnId ? runtimes.get(owner)!.running!.turn : undefined;
       const outcome = await deps.tools.execute(name, args, { owner, turnId, callId, traceId: `trace:${turnId.slice(-24)}`, ...(turn ? { turn } : {}) });
       const running = runtimes.get(owner)?.running;
@@ -288,15 +328,30 @@ export function createNousService(deps: NousServiceDeps) {
       // What Nous typed into a pane stays visible in the conversation, so the operator can follow what it told whom.
       const typed = typeof args.text === "string" ? args.text : typeof args.answer === "string" ? args.answer : null;
       const content = typed !== null && outcome.ok ? `${outcome.display}: “${clip(typed.replace(/\s+/g, " ").trim(), 240)}”` : outcome.display;
-      await deps.repository.updateMessage(owner, row.id, { status: outcome.ok ? "DONE" : "FAILED", content, meta: { name, result: clip(outcome.result, 2_000) } });
+      await deps.repository.updateMessage(owner, row.id, { status: outcome.ok ? "DONE" : "FAILED", content: `${helper ? `${helper.title}: ` : ""}${content}`, meta: { ...audit, result: clip(outcome.result, 2_000) } });
       return outcome;
     },
 
-    /** `person`: a person at the dock wrote it, not a proof or automation session (only they can start Away). */
-    async send(owner: string, content: string, options: { person?: boolean } = {}): Promise<NousMessage> {
+    /**
+     * space_reply_now (operator correction 2026-10-20 00:20: "answer me at once, then continue"): an answer that reaches the
+     * chat now while the turn goes on. Only in a turn the operator's message or decision started; the final answer still ends it.
+     */
+    async replyNow(owner: string, turnId: string, text: string): Promise<"SENT" | "NOT_RUNNING" | "NOT_OPERATOR_TURN"> {
+      const running = runtimes.get(owner)?.running;
+      if (running?.turnId !== turnId) return "NOT_RUNNING";
+      if (running.reason !== "OPERATOR" && running.reason !== "DECISION") return "NOT_OPERATOR_TURN";
+      await addMessage(owner, turnId, "ANSWER", "DONE", text.trim(), { interim: true, reason: running.reason, startedAt: running.startedAt });
+      return "SENT";
+    },
+
+    /**
+     * `person`: a person at the dock wrote it, not a proof or automation session (only they can start Away). `refs`: the room and
+     * pane a reply from the pane board is about (plan clipboard:Y9cgKVHFaHrr).
+     */
+    async send(owner: string, content: string, options: { person?: boolean; refs?: { roomId: string; paneId: string } } = {}): Promise<NousMessage> {
       const entry = runtime(owner);
       entry.pausedUntil = 0;
-      const message = await addMessage(owner, null, "OPERATOR", "DONE", content, { person: options.person === true });
+      const message = await addMessage(owner, null, "OPERATOR", "DONE", content, { person: options.person === true, ...(options.refs ? { refs: options.refs, via: "PANE_BOARD" } : {}) });
       // The operator's first message after Away began ends it; that turn briefs them from the away log.
       const ended = deps.away ? await deps.away.end(owner, "RETURN").catch((error) => { warn({ err: error, owner }, "Nous away end failed."); return null; }) : null;
       if (ended) entry.briefing = renderAwayLog(ended.session, ended.log);

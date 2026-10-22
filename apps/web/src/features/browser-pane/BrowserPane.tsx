@@ -1,3 +1,4 @@
+import { browserReconnectDelayMs } from "./browser-reconnect.js";
 import { usePanePolling } from "../../use-pane-polling.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
@@ -205,6 +206,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
   const [url, setUrl] = useState("");
   const [handoff, setHandoff] = useState(false);
+  const [browserAgent, setBrowserAgent] = useState<BrowserPageListPayload["agent"]>(null);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccounts | null>(null);
   const [googleAccountMenuOpen, setGoogleAccountMenuOpen] = useState(false);
   const googleAccountPickerRef = useRef<HTMLDivElement | null>(null);
@@ -797,7 +799,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
     const scheduleReconnect = () => {
       if (disposed || reconnectTimer !== null) return;
-      const delayMs = Math.min(2_000, 250 * (2 ** Math.min(reconnectAttempt, 3)));
+      const delayMs = browserReconnectDelayMs(reconnectAttempt, 250);
       reconnectAttempt += 1;
       updateBrowserStreamTelemetry("reconnecting");
       setError((current) => current ?? browserStreamReconnectMessage);
@@ -1160,6 +1162,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     if (next.sessionId !== pageSessionIdRef.current) return;
     pageRequestRef.current += 1;
     pageListRef.current = next;
+    setBrowserAgent(next.agent ?? null);
     setPages(next.pages);
     setActivePageId(next.activePageId);
     const active = next.pages.find((page) => page.pageId === next.activePageId);
@@ -2497,6 +2500,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             <div className="browser-frame-empty" role="status">
               {pending ? <Loader2 aria-hidden="true" /> : emptyBrowser || session?.status === "CLOSED" ? <span>No open tabs. Use + to open a new tab.</span> : <MousePointer2 aria-hidden="true" />}
             </div>
+          ) : null}
+          {browserAgent && browserAgent.paneId !== pane.id && !handoff && !emptyBrowser && session?.status !== "CLOSED" ? (
+            <span className="browser-agent-label" title={`Handled by ${browserAgent.title} in room ${browserAgent.roomName}`}>
+              {browserAgent.roomName} · {browserAgent.title}
+            </span>
           ) : null}
           {selectedFrameIndex !== null ? <span className="browser-frame-paused">Frame {selectedFrameIndex + 1} / {canvasHistoryLength}</span> : null}
         </div>

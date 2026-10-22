@@ -19,6 +19,8 @@ export interface RoomPaneObservation {
   modes?: string[]; commands?: string[]; text?: string;
   /** Identifies the question on screen; pass it back as expectedPromptFingerprint when answering. */
   promptFingerprint?: string;
+  /** The CLI stopped at its account's usage limit (cliUsageLimited); nothing is typed into it until that changes. */
+  usageLimited?: boolean;
   configuredModelId?: string | null;
   effectiveModelId?: string | null;
   modelVerificationStatus?: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";

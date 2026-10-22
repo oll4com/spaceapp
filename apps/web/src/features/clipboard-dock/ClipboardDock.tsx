@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardItem, ClipboardSource, PlanStep } from "@space/contracts";
 import { clipboardTextMaxCharacters } from "@space/contracts";
 import { api } from "../../api.js";
+import { loadPlanCompletion, PlanCompletionBar } from "./PlanCompletionBar.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
   SPACE_CLIPBOARD_ITEM_MIME,
@@ -194,11 +195,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
       pageSize: 100
     };
     try {
-      // Every plan, whatever the filter: completed = all plans − open plans (counts only).
-      const planCounts = Promise.all([
-        api.clipboardItems({ source: "PLAN", includeCompleted: true, page: 1, pageSize: 1 }),
-        api.clipboardItems({ source: "PLAN", includeCompleted: false, page: 1, pageSize: 1 })
-      ]);
+      const planCounts = loadPlanCompletion();
       let visible: ClipboardItem[];
       let total: number;
       if (sourceFilter === "NOTES") {
@@ -221,8 +218,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
         visible = payload.data;
         total = payload.pagination.totalItems;
       }
-      const [allPlans, openPlans] = await planCounts;
-      const plans = { total: allPlans.pagination.totalItems, completed: allPlans.pagination.totalItems - openPlans.pagination.totalItems };
+      const plans = await planCounts;
       setItems(visible);
       setTotalItems(total);
       setPlanStats(plans);
@@ -396,19 +392,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
           )
         ) : null}
 
-        {planStats.total ? (() => {
-          const percent = Math.round((planStats.completed / planStats.total) * 100);
-          return (
-            <div className="clipboard-plan-stats" role="group" aria-label="Plan completion">
-              <span className="clipboard-plan-stats-label">Plans completed</span>
-              <div className="clipboard-plan-progress-bar" role="progressbar" aria-label="Plans completed" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
-                <div className={`clipboard-plan-progress-fill${percent === 100 ? " is-completed" : ""}`} style={{ width: `${percent}%` }} />
-              </div>
-              <span className="clipboard-plan-stats-count">{planStats.completed} / {planStats.total}</span>
-              <span className="clipboard-plan-pct">{percent}%</span>
-            </div>
-          );
-        })() : null}
+        <PlanCompletionBar {...planStats} />
 
         <div className="clipboard-list dock-kit-list" role="list" aria-label="Clipboard items" hidden={!items.length}>
           {items.map((item) => {

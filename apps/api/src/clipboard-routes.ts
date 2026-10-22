@@ -1,14 +1,14 @@
 import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { idSchema, listClipboardItemsQuerySchema, clipboardItemListResponseSchema, createClipboardItemRequestSchema, setClipboardItemCompletedRequestSchema, updatePlanProgressRequestSchema } from "@space/contracts";
+import { idSchema, listClipboardItemsQuerySchema, clipboardItemListResponseSchema, createClipboardItemRequestSchema, setClipboardItemCompletedRequestSchema, updatePlanProgressRequestSchema, updateClipboardNoteTextRequestSchema } from "@space/contracts";
 import { type SpaceStore } from "@space/runtime";
 
 const idParamSchema = z.object({ id: idSchema });
 
 /** Owner-scoped domain. Authentication, CSRF, rate limiting and errors are installed by the composition root. */
 export function registerClipboardRoutes(app: FastifyInstance, options: {
-  store: Pick<SpaceStore, "upsertUser" | "listClipboardItems" | "upsertClipboardItem" | "deleteClipboardItem" | "setClipboardItemCompleted" | "updateClipboardItemProgress" | "clearClipboardItems">;
+  store: Pick<SpaceStore, "upsertUser" | "listClipboardItems" | "upsertClipboardItem" | "deleteClipboardItem" | "setClipboardItemCompleted" | "updateClipboardItemProgress" | "updateClipboardNoteText" | "clearClipboardItems">;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
   const { store, routeOptions } = options;
@@ -46,6 +46,14 @@ export function registerClipboardRoutes(app: FastifyInstance, options: {
     const input = setClipboardItemCompletedRequestSchema.parse(request.body);
     const owner = await store.upsertUser(request.user!);
     return store.setClipboardItemCompleted(owner.id, params.id, input.completed);
+  });
+
+  // A note's edit keeps the same record (id, source, room, pane, created time) instead of saving a new one and deleting the old.
+  app.patch("/api/clipboard-items/:id/text", routeOptions, async (request) => {
+    const params = idParamSchema.parse(request.params);
+    const input = updateClipboardNoteTextRequestSchema.parse(request.body);
+    const owner = await store.upsertUser(request.user!);
+    return store.updateClipboardNoteText(owner.id, params.id, input.text);
   });
 
   app.patch("/api/clipboard-items/:id/progress", routeOptions, async (request) => {

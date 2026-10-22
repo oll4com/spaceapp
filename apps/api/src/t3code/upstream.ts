@@ -5,29 +5,37 @@ import { t3CodeRuntimeVersionSchema } from "@space/contracts";
 import { T3_GATEWAY_SOCKET, T3GatewayError } from "./gateway-policy.js";
 import type { T3PaneScope } from "./access.js";
 
-const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
-const descriptor = z.object({ environmentId: id, serverVersion: z.string().min(1).max(64) });
+// T3 0.1.0's own threads carry colons (thread:project:<id>:<id>, <command>:fork); user threads are UUIDs.
+const id = z.string().regex(/^[A-Za-z0-9_:-]{1,200}$/);
+const descriptor = z.object({ environmentId: id, serverVersion: z.string().min(1).max(64), orchestrationProtocolVersion: z.number().int().min(1).max(99).optional() });
 const shell = z.object({
   projects: z.array(z.object({ id, title: z.string(), workspaceRoot: z.string().min(1).max(4096) })).max(100_000),
   threads: z.array(z.object({ id, projectId: id })).max(500_000)
 });
 export type T3Shell = z.infer<typeof shell>;
 const sessions = z.object({
-  threads: z.array(z.object({ session: z.object({ status: z.string().max(32), activeTurnId: z.string().max(128).nullable().optional() }).nullable().optional() })).max(500_000)
+  // T3 0.0.45 marks a running thread with its provider session, T3 0.1.0 with activeRunId.
+  threads: z.array(z.object({ session: z.object({ status: z.string().max(32), activeTurnId: z.string().max(128).nullable().optional() }).nullable().optional(),
+    activeRunId: z.string().max(128).nullable().optional() })).max(500_000)
 });
+// T3 0.1.0 (orchestration protocol 2) requires this header on its orchestration reads; 0.0.45 (protocol 1) has none.
+export const T3_ORCHESTRATION_PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 // The bridge needs only the verified identity, never pane or room content.
 export type T3UpstreamIdentity = Pick<T3PaneScope, "userId" | "paneId" | "sessionId">;
 
 // Private fixed transport. No browser-selected URL, shell command or host.
 export class T3Upstream {
+  // The orchestration protocol of the running T3, from its environment descriptor. Kept for a minute, so a T3 reinstall
+  // (0.0.45 <-> 0.1.0) is noticed without asking the descriptor before every call.
+  private protocolCache: { value: number; expires: number } | null = null;
   constructor(private readonly socketPath = T3_GATEWAY_SOCKET, private readonly timeoutMs = 10_000) {}
-  private json(scope: T3UpstreamIdentity, path: string, command?: object): Promise<unknown> {
+  private json(scope: T3UpstreamIdentity, path: string, command?: object, extraHeaders: Record<string, string> = {}): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const body = command === undefined ? undefined : Buffer.from(JSON.stringify(command));
       const fail = () => reject(new T3GatewayError(502, "T3_UPSTREAM_UNAVAILABLE"));
       const req = request({ socketPath: this.socketPath, path, method: body ? "POST" : "GET", headers: {
         "x-space-user-id": scope.userId, "x-space-pane-id": scope.paneId, "x-space-session-id": scope.sessionId,
-        accept: "application/json", ...(body ? { "content-type": "application/json", "content-length": body.length } : {})
+        accept: "application/json", ...extraHeaders, ...(body ? { "content-type": "application/json", "content-length": body.length } : {})
       } }, res => {
         const chunks: Buffer[] = []; let size = 0;
         res.on("data", chunk => { size += chunk.length; if (size > 8 * 1024 * 1024) req.destroy(); else chunks.push(chunk); });
@@ -46,22 +54,36 @@ export class T3Upstream {
   async descriptor(scope: T3UpstreamIdentity) {
     const result = descriptor.safeParse(await this.json(scope, "/.well-known/t3/environment"));
     if (!result.success) throw new T3GatewayError(502, "T3_UPSTREAM_INVALID");
+    this.protocolCache = { value: result.data.orchestrationProtocolVersion ?? 1, expires: Date.now() + 60_000 };
     return result.data;
   }
+  async protocol(scope: T3UpstreamIdentity): Promise<number> {
+    if (this.protocolCache && this.protocolCache.expires > Date.now()) return this.protocolCache.value;
+    return (await this.descriptor(scope)).orchestrationProtocolVersion ?? 1;
+  }
+  private async orchestrationHeaders(scope: T3UpstreamIdentity): Promise<Record<string, string>> {
+    const version = await this.protocol(scope);
+    return version >= 2 ? { [T3_ORCHESTRATION_PROTOCOL_HEADER]: String(version) } : {};
+  }
   async shell(scope: T3UpstreamIdentity): Promise<T3Shell> {
-    const result = shell.safeParse(await this.json(scope, "/api/orchestration/shell"));
+    const result = shell.safeParse(await this.json(scope, "/api/orchestration/shell", undefined, await this.orchestrationHeaders(scope)));
     if (!result.success) throw new T3GatewayError(502, "T3_UPSTREAM_INVALID");
     return result.data;
   }
   // Threads whose provider session is starting or running a turn.
   async activeRuns(scope: T3UpstreamIdentity): Promise<number> {
-    const result = sessions.safeParse(await this.json(scope, "/api/orchestration/shell"));
+    const result = sessions.safeParse(await this.json(scope, "/api/orchestration/shell", undefined, await this.orchestrationHeaders(scope)));
     if (!result.success) throw new T3GatewayError(502, "T3_UPSTREAM_INVALID");
-    return result.data.threads.filter(t => t.session && (["starting", "running"].includes(t.session.status) || Boolean(t.session.activeTurnId))).length;
+    return result.data.threads.filter(t => Boolean(t.activeRunId) ||
+      Boolean(t.session && (["starting", "running"].includes(t.session.status) || Boolean(t.session.activeTurnId)))).length;
   }
   async createProject(scope: T3PaneScope, command: { type: "project.create"; commandId: string; projectId: string; title: string;
     workspaceRoot: string; createWorkspaceRootIfMissing: boolean; createdAt: string }) {
-    await this.json(scope, "/api/orchestration/dispatch", command);
+    // T3 0.1.0 replaced the orchestration dispatch route with project mutations (no createdAt).
+    if (await this.protocol(scope) >= 2) {
+      const { createdAt: _createdAt, ...mutation } = command;
+      await this.json(scope, "/api/projects/mutate", mutation);
+    } else await this.json(scope, "/api/orchestration/dispatch", command);
   }
   async workspace(scope: T3PaneScope, candidate: string, allowMissing = false) {
     const result = z.object({ path: z.string().min(1).max(4096).startsWith("/") }).safeParse(await this.json(scope, "/__space/workspace/validate", { path: candidate, ...(allowMissing ? { allowMissing: true } : {}) }));

@@ -172,4 +172,14 @@ describe("Nous attachments", () => {
     const left = (await Promise.all(day.map((name) => readdir(join(root, "nous-uploads", "user_operator", name))))).flat();
     expect(left).toEqual([]);
   });
+
+  it("sweeps only files never sent: a sent file stays with its conversation (Record Retention Invariant)", async () => {
+    const files = new InMemoryNousAttachmentRepository();
+    const file = (id: string) => files.add({ id, ownerUserId: owner, kind: "FILE", filename: "a.txt", mimeType: "text/plain", byteSize: 3, sha256: "a".repeat(64), storagePath: `/tmp/${id}`, meta: {} });
+    const sent = await file(files.newId());
+    const unsent = await file(files.newId());
+    await files.link(owner, "nous_msg:old", [sent.id]);
+    expect((await files.removeUnsent("2999-01-01T00:00:00.000Z")).map((row) => row.id)).toEqual([unsent.id]);
+    expect(await files.get(owner, sent.id)).not.toBeNull();
+  });
 });

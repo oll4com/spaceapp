@@ -509,16 +509,17 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
   },
   {
     domain: "room",
-    action: "room.delete",
-    description: "Delete an empty or retired workspace room (requires confirmation).",
+    // Space Control runs room create, rename and activate only (kind "room"); a room is deleted from the app, not here.
+    action: "room.activate",
+    description: "Switch the operator's app to another workspace room.",
     requiredPermission: "OPERATOR_WRITE",
-    isDestructive: true,
+    isDestructive: false,
     supportsDryRun: true,
     supportsRollback: false,
     parameters: {
-      confirm: { type: "boolean", required: true, description: "Explicit confirmation" }
+      targetRoomId: { type: "string", required: true, description: "Room to activate" }
     },
-    voiceIntents: ["delete this room", "remove closed room"]
+    voiceIntents: ["switch to the release room", "open room debug"]
   },
   {
     domain: "panes",
@@ -642,7 +643,6 @@ export const controlSecurityPolicy = {
   requiresConfirmation: [
     "settings.rollback",
     "tasks.delete",
-    "room.delete",
     "panes.close_all"
   ],
   rbacMatrix: {

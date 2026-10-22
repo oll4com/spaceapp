@@ -244,11 +244,14 @@ export function parseCredentialStatus(stdout: string): CliCredentialStatus | nul
   return null;
 }
 
-export async function observeCliRuntimeCredential(runtime: AgentRuntime): Promise<string | null> {
+export async function observeCliRuntimeCredential(
+  runtime: AgentRuntime,
+  execute: CliCredentialCommandExecutor = execFileAsync as unknown as CliCredentialCommandExecutor
+): Promise<string | null> {
   const definition = cliRuntimeDescriptors.find((candidate) => candidate.id === runtime.id);
   if (!definition?.credentialObservationAction || !runtime.detectedCommandPath) return null;
   try {
-    const { stdout } = await execFileAsync(
+    const { stdout } = await execute(
       runtime.detectedCommandPath,
       [definition.credentialObservationAction],
       {

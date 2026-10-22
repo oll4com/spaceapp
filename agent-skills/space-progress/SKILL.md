@@ -30,7 +30,7 @@ node /opt/spaceapp/scripts/space-progress.mjs needs-decision "Which VPN route fo
 node /opt/spaceapp/scripts/space-progress.mjs done "Slice 2 deployed on dev, tests green" --report-file /var/lib/spaceapp-user/agent-workspace/reports/<task>/report.md
 ```
 
-The same report is the MCP tool `space_progress_report` on the `space_browser` server
+The same report is the MCP tool `space_progress_report` on the `space_progress` server (`space_browser` still accepts it)
 (`status`, `summary`, `plan`, `step`, `percent`, `ticket`, `next`, `needs`, `report`).
 
 ## Rules

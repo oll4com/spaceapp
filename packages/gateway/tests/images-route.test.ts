@@ -57,7 +57,8 @@ async function setup(upstream: (call: { url: string; token: string; body: Record
       settings: () => repository.getSettings(), fetchImpl, now: () => nowMs, codeAssistBaseUrl: "https://code-assist.test", codexBaseUrl: "https://codex.test",
       settleKeyUsage: async (_keyId, usage) => { settled.push(usage); } }) });
   const generate = (payload: Record<string, unknown>) => server.app.inject({ method: "POST", url: "/images/v1/generate", headers: { authorization: `Bearer ${plainKey}` }, payload });
-  return { repository, logs, calls, generate, refresh, settled };
+  const text = (payload: Record<string, unknown>) => server.app.inject({ method: "POST", url: "/gemini/v1/generate", headers: { authorization: `Bearer ${plainKey}` }, payload });
+  return { repository, logs, calls, generate, text, refresh, settled };
 }
 
 describe("Image route", () => {
@@ -88,6 +89,32 @@ describe("Image route", () => {
     expect((await rejected.generate({ model: "gemini-3.1-flash-image", prompt: "x" })).statusCode).toBe(200);
     expect(rejected.refresh).toHaveBeenCalledTimes(1);
     expect(rejected.calls.map((call) => call.token)).toEqual(["ANTIGRAVITY-token-a", "ANTIGRAVITY-token-a-fresh"]);
+  });
+
+  it("tries the next upstream name on the same account when Code Assist does not know a model, and remembers the one that works", async () => {
+    const notFound = () => json({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404);
+    const { generate, calls, logs, repository } = await setup(({ body }) => (body.model === "gemini-3.1-pro-image" ? geminiImage() : notFound()));
+    const response = await generate({ model: "gemini-3-pro-image", prompt: "OLL4 logo" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().model).toBe("gemini-3-pro-image");
+    expect(calls.map((call) => [call.token, call.body.model])).toEqual([
+      ["ANTIGRAVITY-token-a", "gemini-3-pro-image"], ["ANTIGRAVITY-token-a", "gemini-3-pro-image-preview"], ["ANTIGRAVITY-token-a", "gemini-3.1-pro-image"]]);
+    await logs.flush();
+    expect((await repository.listRequestLogs({ limit: 5 }))[0]).toMatchObject({ model: "gemini-3-pro-image", status: "success" });
+    // The next call starts with the name that worked.
+    expect((await generate({ model: "gemini-3-pro-image", prompt: "again" })).statusCode).toBe(200);
+    expect(calls.slice(3).map((call) => call.body.model)).toEqual(["gemini-3.1-pro-image"]);
+
+    // When no name is known upstream, the 404 still reaches the client after every candidate on one account.
+    const none = await setup(() => notFound());
+    const refused = await none.generate({ model: "gemini-3-pro-image", prompt: "x" });
+    expect(refused.statusCode).toBe(404);
+    expect(none.calls.map((call) => call.body.model)).toEqual(["gemini-3-pro-image", "gemini-3-pro-image-preview", "gemini-3.1-pro-image", "gemini-3.1-pro-image-preview", "nano-banana-pro-preview"]);
+    expect(new Set(none.calls.map((call) => call.token))).toEqual(new Set(["ANTIGRAVITY-token-a"]));
+    // A model without candidates is sent once, as before.
+    const flash = await setup(() => notFound());
+    expect((await flash.generate({ model: "gemini-3.1-flash-image", prompt: "x" })).statusCode).toBe(404);
+    expect(flash.calls).toHaveLength(1);
   });
 
   it("generates a GPT Image through the Codex image tool and prices the tool's tokens", async () => {
@@ -133,6 +160,48 @@ describe("Image route", () => {
     expect(response.statusCode).toBe(422);
     expect(response.json().error.message).toContain("SAFETY");
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("Gemini text route", () => {
+  const VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+  const answer = (parts: Record<string, unknown>[], finishReason = "STOP") => json({ response: { candidates: [{ content: { role: "model", parts }, finishReason }],
+    usageMetadata: { promptTokenCount: 6000, candidatesTokenCount: 200, thoughtsTokenCount: 50 }, modelVersion: "gemini-3.8-flash-n" }, traceId: "t" });
+
+  it("sends the YouTube video as fileData on the least-used Antigravity account and answers the text without thoughts", async () => {
+    const { text, calls, logs, repository, settled } = await setup(() => answer([{ text: "thinking", thought: true }, { text: "A man at the zoo." }]));
+    const response = await text({ model: "gemini-3.8-flash-medium", prompt: "Summarize", videoUrl: VIDEO });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ text: "A man at the zoo.", model: "gemini-3.8-flash-medium" });
+    expect(calls[0]).toMatchObject({ url: "https://code-assist.test/v1internal:generateContent", token: "ANTIGRAVITY-token-a", body: {
+      model: "gemini-3.8-flash-medium", project: "project-a", userAgent: "antigravity", requestType: "agent",
+      request: { contents: [{ role: "user", parts: [{ fileData: { fileUri: VIDEO, mimeType: "video/mp4" } }, { text: "Summarize" }] }],
+        generationConfig: { mediaResolution: "MEDIA_RESOLUTION_LOW" } } } });
+    await logs.flush();
+    const [log] = await repository.listRequestLogs({ limit: 5 });
+    expect(log).toMatchObject({ provider: "ANTIGRAVITY", model: "gemini-3.8-flash-medium", status: "success", inputTokens: 6000, outputTokens: 200 });
+    expect(settled).toEqual([expect.objectContaining({ model: "gemini-3.8-flash-medium", inputTokens: 6000, outputTokens: 200 })]);
+  });
+
+  it("moves to the next account on a quota 429 and answers 422 on an empty answer without trying another", async () => {
+    let first = true;
+    const moved = await setup(() => { if (first) { first = false; return json({ error: { code: 429, message: "quota", status: "RESOURCE_EXHAUSTED" } }, 429); } return answer([{ text: "ok" }]); });
+    expect((await moved.text({ model: "gemini-3.8-flash-medium", prompt: "x", videoUrl: VIDEO })).json().text).toBe("ok");
+    expect(moved.calls.map((call) => call.token)).toEqual(["ANTIGRAVITY-token-a", "ANTIGRAVITY-token-b"]);
+    const empty = await setup(() => answer([], "SAFETY"));
+    const response = await empty.text({ model: "gemini-3.8-flash-medium", prompt: "x" });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.message).toContain("SAFETY");
+    expect(empty.calls).toHaveLength(1);
+  });
+
+  it("refuses image and non-Gemini models, other video URLs and models outside the key's allowlist", async () => {
+    const { text, calls } = await setup(() => answer([{ text: "ok" }]), { allowedModels: ["gemini-3.5-flash-lite"] });
+    expect((await text({ model: "gemini-3.1-flash-image", prompt: "x" })).json().error.code).toBe("model_not_supported");
+    expect((await text({ model: "gpt-5.6-luna", prompt: "x" })).statusCode).toBe(400);
+    expect((await text({ model: "gemini-3.5-flash-lite", prompt: "x", videoUrl: "https://example.com/watch?v=jNQXAC9IVRw" })).statusCode).toBe(400);
+    expect((await text({ model: "gemini-3.8-flash-medium", prompt: "x" })).statusCode).toBe(403);
+    expect(calls).toHaveLength(0);
   });
 });
 

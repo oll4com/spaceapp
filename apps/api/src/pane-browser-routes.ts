@@ -38,6 +38,7 @@ import {
   type YouTubeAccountStore
 } from "./youtube-accounts.js";
 import { youtubePlaybackSchema, type YouTubePlaybackStore } from "./youtube-playback-state.js";
+import { youtubeVideoText } from "./youtube-summary.js";
 import { seedYouTubeSignIn } from "./youtube-shared-signin.js";
 
 const browserPageParamSchema = z.object({ id: idSchema, pageId: z.string().min(1).max(200) });
@@ -158,7 +159,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   /** The Job Copilot pane a new one continues (its tabs and view); null when there is none. */
   previousCopilotPane?: (pane: Pane) => Promise<Pane | null>;
   /** Drops CLI automation sockets of a pane when an operator takes control. */
-  cliBrowserCdpProxy?: { closeForPane(paneId: string, refusal: "BROWSER_CONTROL_HELD", reason: string): number };
+  cliBrowserCdpProxy?: { closeForPane(paneId: string, refusal: "BROWSER_CONTROL_HELD" | "ACTIVE_TAB_MOVED", reason: string): number; connectionCount(paneId: string): number };
   /** Operator input per control lease, shared with the stream socket and the CLI bridge (idle release, agent reclaim). */
   controlActivity?: BrowserControlActivity;
 }) {
@@ -223,6 +224,8 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         accountTab: { pageId, profileId, label: email, ...(signIn && profileId !== null ? { url: googleAccountSignInUrl(email) } : url ? { url } : {}) },
         traceId
       }, actor));
+      // Agent automation (space_playwright_pane) reconnects to the Chrome the tab now lives in on its next command.
+      options.cliBrowserCdpProxy?.closeForPane(pane.id, "ACTIVE_TAB_MOVED", "The tab moved into another Google account's browser.");
       return browserSessionManager.listPages(pane);
     },
     async openTab(userId, pane, url, profileId, traceId, actor) {
@@ -425,6 +428,15 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     await youtubePlaybackStore.save((await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? `${request.user!.id}:proof:${pane.roomId}` : request.user!.id, pane.id, playback);
     return { ok: true };
   });
+  app.post("/api/panes/:id/youtube/summary", defaultRouteRateLimitOptions, async (request) => {
+    const { id } = parseQuery(idParamSchema, request.params);
+    const { videoId, kind } = parseBody(z.object({ videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), kind: z.enum(["summary", "transcript"]).default("summary") }).strict(),
+      request.body);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("A video summary or full text requires a YouTube pane.");
+    const { youtubeSummaryModel } = await store.getUserSettings(request.user!.id);
+    return youtubeVideoText({ gatewayUrl: config.gatewayUrl, keyFile: config.codexLbKeyFile, model: youtubeSummaryModel, videoId, kind });
+  });
   app.post("/api/panes/:id/youtube/watch", defaultRouteRateLimitOptions, async (request) => {
     const { id } = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, id);
@@ -545,7 +557,14 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!browserSessionManager.listPages) {
       throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
     }
-    return browserSessionManager.listPages(pane);
+    const pages = await browserSessionManager.listPages(pane);
+    // The frame's corner label names the CLI pane driving this browser and its room (operator request 2026-10-20).
+    const agentPaneId = controlActivity.agentFor(pane.id, (options.cliBrowserCdpProxy?.connectionCount(pane.id) ?? 0) > 0);
+    let agentPane: Pane | null = null;
+    try { agentPane = agentPaneId ? await store.getPane(agentPaneId) : null; } catch { /* the agent's pane is gone */ }
+    return { ...pages, agent: agentPane && !agentPane.isClosed
+      ? { paneId: agentPane.id, title: agentPane.title, roomId: agentPane.roomId, roomName: (await store.getRoom(agentPane.roomId)).name }
+      : null };
   });
   app.post("/api/panes/:id/browser/pages", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);

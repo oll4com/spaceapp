@@ -33,7 +33,15 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceWordingIssues("Write me at dev@example.invalid", base)).toContain("email-address");
     expect(freelanceWordingIssues("Call +66 81 234 5678", base)).toContain("phone-number");
     expect(freelanceWordingIssues("Ping me on Telegram", base)).toContain("messenger");
+    // "Telegram bot" is the product of offer (a); every way to reach us off the platform stays refused.
+    expect(freelanceWordingIssues("A 24/7 agent with a Telegram bot that answers only you; Telegram bots for teams too. Built with @opencode/cli.", base)).toEqual([]);
+    expect(freelanceWordingIssues("Message me on Telegram about the Telegram bot", base)).toContain("messenger");
+    expect(freelanceWordingIssues("My Telegram bot is @nick_dev42, write there", base)).toContain("messenger-handle");
+    expect(freelanceWordingIssues("Telegram bot demo: t.me/nickdev_bot", base)).toContain("messenger-link");
+    expect(freelanceWordingIssues("Telegram bot, or call me on WhatsApp", base)).toContain("messenger");
     expect(freelanceWordingIssues("Details at https://example.com/x", base)).toContain("outside-link");
+    expect(freelanceWordingIssues("See https://example.invalid/work and https://gist.github.com/x", base)).toEqual([]);
+    expect(freelanceWordingIssues("Demo at http://127.0.0.1:4911/x", base)).toContain("outside-link");
     expect(freelanceWordingIssues("A seamless integration", base)).toContain("seamless");
     expect(freelanceWordingIssues("Ping me on Telegram", { ...base, contracted: true })).toEqual([]);
     expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 30 } })).toEqual(["below-rate-floor"]);

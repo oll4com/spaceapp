@@ -12,7 +12,8 @@ here and in the README match the code.
 development host: `deploy/`, `version.json`, `npm run check:claims` and
 `docker-compose.yml` are not part of the public tree, and the trust-boundary
 section below is that host's sudoers model. A public install runs the Docker
-Compose packaging of `packages/run-spaceapp/templates/compose.yml`; its trust
+Compose packaging of `packages/run-spaceapp/templates/compose.yml` (in the public installer repository
+oll4com/spaceapp, not in this repo); its trust
 boundaries are in `docs/security-model.md`.
 
 Related documents:
@@ -77,7 +78,7 @@ The public installer runs a different packaging (Docker Compose with
 `spaceapp-core`, `spaceapp-cli`, PostgreSQL, Temporal and an optional
 `spaceapp-browser`; see the README). In the public repository that compose file
 is `packages/run-spaceapp/templates/compose.yml`, shipped with the `run-spaceapp`
-package.
+package; that package lives in the public installer repository oll4com/spaceapp, not in this repo.
 
 ### Data stores
 
@@ -85,7 +86,7 @@ package.
 | --- | --- | --- |
 | PostgreSQL (`packages/db`) | API, workers | Rooms, panes, sessions, tasks, events, audit chain (`prev_hash`/`chain_hash`), artifact metadata, memory records and `vector` embeddings with HNSW indexes. Migrations: `packages/db/migrations/*.sql` via `packages/db/src/migration-runner.ts` |
 | In-memory store (`packages/runtime/src/store.ts`) | API | Selected by `SPACE_RUNTIME_STORE=memory`, the source default; `postgres` needs `SPACE_DATABASE_URL`. Not durable |
-| Temporal histories | Temporal | Workflow state for Room Agent supervisors, chat turns, Dot goals and memory jobs |
+| Temporal histories | Temporal | Workflow state for the opt-in Room Agent mission supervisor, chat turns, Dot goals and memory jobs (the Room Agent conversation does not use Temporal) |
 | CLI host buffers | Pane host | 8 MiB output ring per session (`SPACE_CLI_HOST_OUTPUT_BUFFER_BYTES`), lost if the host restarts; the API also stores transcript chunks in PostgreSQL (`pane_cli_transcript_chunks`), except for LOGIN sessions |
 | Provider-native sessions | Provider CLIs | Files under the CLI state roots in `/var/lib/spaceapp-user` (for example `~/.codex`); not in PostgreSQL backups |
 | Artifact bytes | API filesystem | Hash-identified files with a reconciliation journal ([upload reconciliation](quality/upload-reconciliation.md)) |
@@ -103,7 +104,7 @@ package.
 | CLI sessions | `apps/api/src/cli-terminal.ts` (`CliTerminalManager`), `packages/cli-host/src/client.ts` | Start, attach, input, resize, interrupt, resume over the pane-host socket |
 | Runtime registry | `apps/api/src/cli-runtime-descriptors.ts` | 16 CLI descriptors: command wrapper, auth mode, state root, native resume arguments, default model |
 | CLI wrappers | `deploy/<runtime>-vscode-parity` installed as `/opt/spaceapp/bin/<runtime>-vscode-parity` | Outer mode as `space` re-executes `sudo -n -u spaceapp-user <wrapper> --run-inner <args>`; inner mode runs the managed CLI from `/opt/spaceapp/var/cli-versions/<runtime>/current`; the droid, muse, omp, qoder and hermes wrappers run a system or home-directory binary instead |
-| Room Agent | `apps/api/src/room-agent.ts` (`TemporalRoomAgentWorkflowCoordinator`), routes `/api/rooms/:id/room-agent/*` | Persists the request and signals the per-room supervisor workflow |
+| Room Agent | `apps/api/src/room-agent-chat.ts` (conversation), `apps/api/src/room-agent.ts` (`TemporalRoomAgentWorkflowCoordinator`, opt-in missions), routes `/api/rooms/:id/room-agent/*` | The conversation is one streamed turn per room in the API process through Space Gateway (`/v1/chat/completions` with tools; `opencode run` text fallback); only the opt-in mission path signals the per-room supervisor workflow |
 | Chat and turn dispatch | `apps/api/src/turns.ts` | Starts `codexAppServerTurnWorkflow` and `dummyTurnWorkflow` |
 | Dot goals | `apps/api/src/dot-goals.ts` | Starts `dotGoalWorkflow` |
 | Workers | `apps/worker/src/worker.ts`, `workflows.ts`, `activities.ts` | `roomAgentSupervisorWorkflow`, `roomAgentActionWorkflow`, `codexAppServerTurnWorkflow`, `dotGoalWorkflow`, `dummyTurnWorkflow`; adapters for Codex app-server, OpenCode HTTP and CLI chat |
@@ -161,7 +162,7 @@ flowchart TB
 | API (`space`) to root helpers | 16 `space ALL=(root)` entries for fixed commands: auth broker, source-control secret broker, CLI VPN broker, journal reader, DOCX normalizer, agent-tools writer, CLI maintenance dispatcher, CLI update control, release control, memory reclaim, Codex usage/credits helpers, and fixed `systemctl` restarts (T3 Code, DeepSeek harness, OpenCode shared server, core restart) | A helper is only as narrow as its own argument validation |
 | Root admin shell | Separate root pane host that accepts only `cli:root`; API feature flag `SPACE_CLI_ROOT_ENABLED` (off by default) | Full root on the host once enabled |
 | Authenticated proofs | `sudo -n /opt/spaceapp/bin/space-auth-broker` (root) issues a session cookie for an allowlisted origin with a TTL of 60 to 600 s; the proof uses a temporary Chrome profile and writes redacted JSON/PNG under the reports root | The proof drives the real operator account and live API; it is not a sandbox |
-| CLI agents to protected operations | `space_ops` full catalog (7 tools): `space_status`, `space_logs`, `space_scoped_test`, `space_authenticated_ui_proof`, `space_clip_paste_proof`, `space_live_verify`, `space_deploy_commit`. | Gated tools still need their own arguments (`confirmLiveWrite`, exact SHAs) |
+| CLI agents to protected operations | `space_ops` full catalog (6 tools): `space_status`, `space_logs`, `space_scoped_test`, `space_authenticated_ui_proof`, `space_clip_paste_proof`, `space_live_verify`. Since 2026-10-19 only the merge queue deploys (the deploy tool left the catalog). | Gated tools still need their own arguments (`confirmLiveWrite`, exact SHAs) |
 | Native Chat agents | `space-readonly` catalog (3 tools): `space_status`, `space_logs`, `space_authenticated_ui_proof`. Reached through `space-mcp-actions` blocks that the worker posts to `/api/internal/agent/mcp-actions` | Tests and deploy are never offered to native agents |
 | Room Agent control | `space-control` MCP server with a dedicated CLI token and room grant; requires an authenticated ADMIN operator context | Phase one supports Codex CLI adapters only |
 | Dots tool gateway | `space_search_tools`, `space_describe_tool`, `space_call_tool` for Control, browser and connector actions (`/api/internal/dots/tools/*`); each call is re-authorized against run, Dot, room and user and recorded in `dot_tool_invocations`; sensitive actions wait for owner approval | Kill switch `SPACE_DOT_TOOL_GATEWAY=disabled` |
@@ -205,7 +206,8 @@ flowchart TD
 | Concern | Who decides | Where |
 | --- | --- | --- |
 | Planning, code edits, tool choice inside a CLI | The provider CLI and its model | Provider process; Space sees PTY output and, for some runtimes, native session files (for example Codex rollouts) |
-| Chat and Room Agent replies | The model behind the adapter (Codex app-server, OpenCode, CLI chat) | Worker activities |
+| Chat replies | The model behind the adapter (Codex app-server, OpenCode, CLI chat) | Worker activities |
+| Room Agent replies | The Space Gateway model the room's tier selects | API process (`apps/api/src/room-agent-chat.ts`) |
 | Which room actions run | The model proposes `space-room-actions` blocks; Space parses them against the action schemas and the room inventory, and the API authorizes and executes them | `apps/worker/src/room-action-bridge.ts` -> API internal route |
 | Session lifecycle (start, attach, interrupt, resume) | Space | API, pane host, runtime descriptors |
 | Durable multi-step work (Room Agent missions, Dot goals, memory jobs) | Space, through Temporal workflows with fixed retry policies | `apps/worker/src/workflows.ts` |
@@ -260,28 +262,25 @@ evidence that a task succeeded.
 
 ### Room Agent turn
 
+The conversation runs in the API process, not in Temporal (`apps/api/src/room-agent-chat.ts`). The opt-in mission
+supervisor (`roomAgentSupervisorWorkflow`, `SPACE_AGENT_PANE_ENABLED`) is the only Room Agent path through Temporal.
+
 ```mermaid
 sequenceDiagram
-  participant UI as Room Agent panel
+  participant UI as Room Agent dock
   participant API as space-api
   participant DB as PostgreSQL
-  participant T as Temporal
-  participant W as space-worker
-  participant A as adapter (Codex app-server / OpenCode / CLI chat)
+  participant G as Space Gateway
   participant M as model provider
   UI->>API: POST /api/rooms/:id/room-agent/messages
-  API->>DB: record message, mission, control grant, audit
-  API->>T: signalWithStart roomAgentSupervisorWorkflow (one per room)
-  API-->>UI: 202 Accepted
-  T->>W: run child codexAppServerTurnWorkflow
-  W->>A: execute turn activity
-  A->>M: model request
-  M-->>A: reply with space-room-actions blocks
-  A-->>W: turn result
-  W->>API: POST /api/internal/agent/room-actions (internal token)
-  API->>DB: validate, execute against panes, record outcome
-  W->>T: finish turn, continue or continueAsNew
-  API-->>UI: room events
+  API->>DB: record message and audit
+  API->>G: POST /v1/chat/completions (stream, tools)
+  G->>M: model request
+  M-->>G: streamed reply and tool calls
+  G-->>API: chat.completion.chunk frames
+  API->>API: run Room Agent tools (room-agent-tools.ts)
+  API-->>UI: frames over the dock's SSE route
+  API->>DB: store the turn; one ROOM_AGENT_UPDATED event
 ```
 
 ### Authenticated proof

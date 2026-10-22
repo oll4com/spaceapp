@@ -18,7 +18,6 @@
     "@ai-sdk/gateway": "4.0.87",
     "@fastify/compress": "^9.1.0",
     "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^11.2.0",
     "@fastify/helmet": "^13.0.2",
     "@fastify/multipart": "^10.0.0",
     "@fastify/rate-limit": "^10.3.0",
@@ -56,5 +55,5 @@
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

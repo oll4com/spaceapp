@@ -62,10 +62,16 @@ export const instanceBackgroundJobs = [
   "freelance-copilot-scheduler",
   // Notifies the admins when an exhausted Codex account is usable again; one instance announces it.
   "codex-quota-reset-notify",
+  // Notifies the admins when the daily Space Memory maintenance run failed; only stable runs the memory workers.
+  "memory-maintenance-notify",
+  // Notifies the admins when Space Gateway (shared by stable and dev) has been down a minute; one instance announces it.
+  "gateway-down-notify",
   // Token usage page: reads Claude Code transcripts through the sudo helper, which only stable has.
   "token-usage-claude",
   // Nous answers panes and copilots on its own from the monitor and the notifications; one instance acts for an owner.
-  "nous"
+  "nous",
+  // Nous's pane board: one cheap Claude summary run per changed batch of panes, in stable's worker only.
+  "nous-pane-board"
 ] as const;
 export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
 

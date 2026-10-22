@@ -29,6 +29,15 @@ describe("dock header desktop titlebar integration", () => {
     expect(stylesCss).toMatch(/\.surface-dismiss-layer\s*\{[^}]*inset:\s*max\(var\(--desktop-titlebar-height,\s*0px\)/);
   });
 
+  it("starts fullscreen docks (Nous, dock kit, Settings) below the desktop titlebar and safe area", () => {
+    const nousCss = readFileSync(resolve(__dirname, "../src/features/nous/nous.css"), "utf8");
+    const dockKitCss = readFileSync(resolve(__dirname, "../src/features/dock-kit/dock-kit.css"), "utf8");
+    expect(nousCss).toMatch(/\.dock-panel\.nous-dock\.is-fullscreen\s*\{[^}]*inset:\s*max\(var\(--desktop-titlebar-height,\s*0px\),\s*env\(safe-area-inset-top/);
+    expect(dockKitCss).toMatch(/\.dock-kit-shell\.is-fullscreen\s*\{[^}]*inset:\s*max\(var\(--desktop-titlebar-height,\s*0px\),\s*env\(safe-area-inset-top/);
+    const settingsCss = readFileSync(resolve(__dirname, "../src/features/settings/settings-disclosure.css"), "utf8");
+    expect(settingsCss).toMatch(/\.agent-settings-dock\.is-fullscreen\s*\{[^}]*inset:\s*max\(var\(--desktop-titlebar-height,\s*0px\),\s*env\(safe-area-inset-top/);
+  });
+
   it("ensures side-surface-inline has overflow: hidden so dock header cannot scroll offscreen", () => {
     expect(desktopNavCss).toMatch(/\.space-shell\.shell-desktop\s+\.side-surface-inline\s*\{[^}]*overflow:\s*hidden;/);
   });

@@ -93,7 +93,8 @@ describe("a logout is reported saved only when it was saved", () => {
       failing = false;
       defaultSessionRevocationStore.cleanup();
       await new Promise((resolve) => setImmediate(resolve));
-      expect(signatures.size).toBe(1);
+      // The cookie's signature and its session id (which ends every renewed copy, addendum step 12).
+      expect(signatures.size).toBe(2);
     } finally {
       defaultSessionRevocationStore.detachPersistence();
       await app.close();

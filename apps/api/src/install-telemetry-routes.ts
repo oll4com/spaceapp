@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { systemAnalyticsInstallsResponseSchema, type SystemAnalyticsInstall, type SystemAnalyticsInstallsResponse } from "@space/contracts";
 import { sendApiError } from "./http-errors.js";
-import { browserFromUserAgent, INSTALL_TELEMETRY_FIELDS, type InstallTelemetryFields } from "./install-telemetry.js";
+import { browserFromUserAgent, createFirstAnswerWatch, INSTALL_TELEMETRY_FIELDS, type InstallTelemetryFields } from "./install-telemetry.js";
 
 /** What the browser adds to the daily active event: only what the server cannot know. */
 const installActivitySchema = z.object({
@@ -107,6 +107,13 @@ export function summarizeInstallPings(log: string, now = Date.now()): Omit<Syste
  * The daily active event of public installations (authenticated users; the parent installs authentication and
  * CSRF) and the ADMIN view of the install pings that a host job copies from spaceapp.dev.
  */
+/** Starts the server-side first_answer watch with the app and stops it on close (see createFirstAnswerWatch). */
+export function registerFirstAnswerWatch(app: FastifyInstance, input: Parameters<typeof createFirstAnswerWatch>[0]): void {
+  const watch = createFirstAnswerWatch(input);
+  app.addHook("onReady", async () => { await watch.start(); });
+  app.addHook("onClose", async () => watch.stop());
+}
+
 export function registerInstallTelemetryRoutes(app: FastifyInstance, options: {
   onActive: (fields: InstallTelemetryFields) => void;
   installPingsPath?: string;

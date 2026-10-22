@@ -7,10 +7,10 @@ import { z } from "zod";
 import {
   deriveDelegationKey, deriveVaultKey, newVaultHandle, openVaultEnvelope, openWithVaultPrivateKey, sealToVaultPublicKey, sealVaultEnvelope,
   signVaultCertificate, vaultBase64url, vaultCanonicalJson, vaultDelegationCertificateSchema, vaultDelegationOperatorMessage,
-  vaultKeyFromSeed, vaultRandomBytes, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, generateVaultPassword,
+  vaultKeyFromSeed, vaultPublicKeyOf, vaultRandomBytes, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, generateVaultPassword,
   vaultSignupGrantCertificateSchema, vaultSignupGrantOperatorMessage, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS,
-  vaultUnlockChallengeMessage, vaultUseCapabilitySchema, verifyVaultCertificate, verifyVaultMessage, wipeVaultBytes, VAULT_FIELD_ROLES,
-  VaultCryptoError, type VaultUseClaims
+  vaultSignupSite, vaultUnlockChallengeMessage, vaultUseCapabilitySchema, verifyVaultCertificate, verifyVaultMessage, wipeVaultBytes, VAULT_FIELD_ROLES,
+  VaultCryptoError, canonicalVaultOrigin, type VaultUseClaims
 } from "@space/contracts";
 
 // The Vault fill broker (ADR-012), the only process that holds the ARK. It runs as the space-vault user from a root-owned
@@ -73,7 +73,9 @@ const schemas = {
   delegate: z.object({
     ownerUserId: owner, vaultId, generation: z.number().int().min(1), unlockEpoch: z.number().int().min(1), envelopeDigest: z.string().length(43), expiresAt: z.string().datetime(),
     items: z.array(z.object({ handle: z.string(), origins: z.array(z.string()).min(1), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1), approvalMode: z.string(), submit: z.boolean() }).strict()).min(1).max(200),
-    sealedFillKey: vaultTransportEnvelopeSchema, operatorSignature: z.string().length(86), unlockPublicKey: key, serverShareEnvelope: vaultSymmetricEnvelopeSchema
+    sealedFillKey: vaultTransportEnvelopeSchema, operatorSignature: z.string().length(86), unlockPublicKey: key, serverShareEnvelope: vaultSymmetricEnvelopeSchema,
+    /** The inbox's private key sealed to the transport key, so logins agents save join this delegation without an unlock. */
+    sealedInboxKey: vaultTransportEnvelopeSchema.optional()
   }).strict(),
   use: z.object({
     ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, epoch: z.number().int().min(1), handle: z.string(), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3),
@@ -89,8 +91,16 @@ const schemas = {
     /** The page field's length limits, so the generated password fits it (numbers only: no page pattern runs here). */
     field: z.object({ minLength: z.number().int().min(1).max(128).nullable(), maxLength: z.number().int().min(1).max(512).nullable() }).strict().optional()
   }).strict(),
-  signupRevoke: z.object({ ownerUserId: owner, vaultId, grantId: z.string().regex(/^vault_grant:[A-Za-z0-9_-]{16,64}$/) }).strict()
+  signupRevoke: z.object({ ownerUserId: owner, vaultId, grantId: z.string().regex(/^vault_grant:[A-Za-z0-9_-]{16,64}$/) }).strict(),
+  autoGrant: z.object({ ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, origin: z.string().max(300) }).strict(),
+  delegatePending: z.object({
+    ownerUserId: owner, vaultId, certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema, inboxKeyEnvelope: vaultSymmetricEnvelopeSchema,
+    entry: z.object({ handle: z.string().regex(/^vault_item:[A-Za-z0-9_-]{16,64}$/), origin: z.string().max(300),
+      sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable() }).strict()
+  }).strict()
 };
+/** Grants minted under the delegation: one site, one use, short-lived; no daily cap (operator request 2026-10-20). */
+export const VAULT_AUTO_GRANT = { ttlMs: 10 * 60_000 } as const;
 
 // The operator-signed delegation (and sign-up grant) is the whole authorization for a fill (operator decision 2026-10-18,
 // plan clipboard:Ml8zElMcc4Ac): no custody report is consulted any more.
@@ -150,6 +160,15 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
   const handlers: Record<string, (body: unknown) => Promise<unknown>> = {
     async "GET /v1/transport-key"() { return { publicKey: b64.encode(transport.publicKey), keyVersion: KEY_VERSION }; },
     async "GET /v1/delegation-key"() { return { publicKey: b64.encode(signing.publicKey), keyVersion: KEY_VERSION }; },
+    // Read only, on the API's socket (hardening plan step 16): the newest audit entries' times, ops, results and hashes,
+    // never an owner, vault or value. shortcut: reads the whole file; rotate it if it ever grows past a few MB.
+    async "GET /v1/audit"() {
+      let lines: string[] = [];
+      try { lines = readFileSync(auditPath, "utf8").trim().split("\n").filter(Boolean); } catch { /* no entries yet */ }
+      const entries = lines.slice(-200).map((line) => { const entry = JSON.parse(line) as { at: string; op: string; result: string; hash: string };
+        return { at: entry.at, op: entry.op, result: entry.result, hash: entry.hash }; });
+      return { head: auditHead, total: lines.length, entries };
+    },
 
     async "POST /v1/server-share"(raw) {
       const input = schemas.serverShare.parse(raw);
@@ -179,16 +198,60 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       if (input.generation <= (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
       if (Date.parse(input.expiresAt) <= now().getTime()) throw new VaultBrokerRefusal("EXPIRED");
       const fillKey = await openWithVaultPrivateKey(transport.privateKey, transport.publicKey, input.sealedFillKey, scope(input)).catch(() => { throw new VaultBrokerRefusal("SEALED_KEY_REFUSED"); });
+      const inboxKey = input.sealedInboxKey ? await openWithVaultPrivateKey(transport.privateKey, transport.publicKey, input.sealedInboxKey, scope(input))
+        .catch(() => { wipeVaultBytes(fillKey); throw new VaultBrokerRefusal("SEALED_KEY_REFUSED"); }) : null;
       const generationKey = await deriveDelegationKey(ark, input, input.generation);
       try {
         const keyEnvelope = await sealVaultEnvelope(generationKey, fillKey, { ...scope(input), purpose: "FILL_KEY", generation: input.generation });
+        const inboxKeyEnvelope = inboxKey ? await sealVaultEnvelope(generationKey, inboxKey, { ...scope(input), purpose: "INBOX_KEY", generation: input.generation }) : undefined;
         const claims = { v: 1 as const, kind: "DELEGATION" as const, certId: newVaultHandle("vault_delegation"), ownerUserId: input.ownerUserId, vaultId: input.vaultId,
           generation: input.generation, unlockEpoch: input.unlockEpoch, items: input.items, envelopeDigest: input.envelopeDigest,
           issuedAt: new Date(now().getTime() - 1000).toISOString(), expiresAt: input.expiresAt };
         // Older generations of this vault stop working from here on.
         raiseFloor(input, input.generation);
-        return { certificate: await signVaultCertificate(signing.privateKey, claims, KEY_VERSION), keyEnvelope };
-      } finally { wipeVaultBytes(fillKey, generationKey); }
+        return { certificate: await signVaultCertificate(signing.privateKey, claims, KEY_VERSION), keyEnvelope, ...(inboxKeyEnvelope ? { inboxKeyEnvelope } : {}) };
+      } finally { wipeVaultBytes(fillKey, generationKey, ...(inboxKey ? [inboxKey] : [])); }
+    },
+
+    // A login an agent saved, created or changed joins the standing delegation at once (operator request 2026-10-20: agents
+    // never wait for an unlock). Its values come only from the inbox entry and go only under this delegation's fill key. A new
+    // login gets exactly its own site; a changed one keeps the sites the operator signed, so no stored value is ever typed
+    // anywhere new. The entry stays in the inbox for the dock's next unlock.
+    async "POST /v1/delegate-pending"(raw) {
+      const input = schemas.delegatePending.parse(raw);
+      const delegation = await verifyDelegation(input.certificate);
+      if (delegation.ownerUserId !== input.ownerUserId || delegation.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
+      if (delegation.generation < (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
+      const { entry } = input;
+      const existing = delegation.items.find((item) => item.handle === entry.handle);
+      if (existing ? Boolean(entry.sealedUsername) || !entry.sealedPassword : canonicalVaultOrigin(entry.origin)?.origin !== entry.origin || !entry.sealedPassword && !entry.sealedUsername) {
+        throw new VaultBrokerRefusal("BAD_ENTRY");
+      }
+      if (!existing && delegation.items.length >= 200) throw new VaultBrokerRefusal("DELEGATION_FULL");
+      const generationKey = await deriveDelegationKey(ark, input, delegation.generation);
+      const keys: Uint8Array[] = [generationKey];
+      try {
+        const context = { ...scope(input), generation: delegation.generation };
+        const fillKey = await openVaultEnvelope(generationKey, input.keyEnvelope, { ...context, purpose: "FILL_KEY" }).catch(() => { throw new VaultBrokerRefusal("KEY_REFUSED"); });
+        keys.push(fillKey);
+        const inboxKey = await openVaultEnvelope(generationKey, input.inboxKeyEnvelope, { ...context, purpose: "INBOX_KEY" }).catch(() => { throw new VaultBrokerRefusal("KEY_REFUSED"); });
+        keys.push(inboxKey);
+        const inboxPublicKey = await vaultPublicKeyOf("X25519", inboxKey);
+        const fieldEnvelopes: Partial<Record<"USERNAME" | "PASSWORD", unknown>> = {};
+        for (const [role, sealed] of [["USERNAME", entry.sealedUsername], ["PASSWORD", entry.sealedPassword]] as const) {
+          if (!sealed) continue;
+          const plain = await openWithVaultPrivateKey(inboxKey, inboxPublicKey, sealed, scope(input)).catch(() => { throw new VaultBrokerRefusal("ENTRY_REFUSED"); });
+          keys.push(plain);
+          fieldEnvelopes[role] = await sealVaultEnvelope(fillKey, plain, { ...context, purpose: "FILL_FIELD", itemId: entry.handle, field: role });
+        }
+        const roles = Object.keys(fieldEnvelopes) as Array<"USERNAME" | "PASSWORD">;
+        const items = existing
+          ? delegation.items.map((item) => item.handle === entry.handle ? { ...item, fields: [...new Set([...item.fields, ...roles])] } : item)
+          : [...delegation.items, { handle: entry.handle, origins: [entry.origin], fields: roles, approvalMode: "FULL" as const, submit: true }];
+        // Same generation, epoch, expiry and issue time: a revoke voids it exactly like the delegation it extends.
+        const claims = { ...delegation, certId: newVaultHandle("vault_delegation"), items };
+        return { certificate: await signVaultCertificate(signing.privateKey, claims, KEY_VERSION), fieldEnvelopes };
+      } finally { wipeVaultBytes(...keys); }
     },
 
     async "POST /v1/use"(raw) {
@@ -225,8 +288,9 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       try {
         fillKey = await openVaultEnvelope(generationKey, input.keyEnvelope, { ...scope(claims), purpose: "FILL_KEY", generation: claims.generation }).catch(() => { throw new VaultBrokerRefusal("KEY_REFUSED"); });
         const fields: Record<string, string> = {};
-        // Only the fields this capability names leave, whatever else the request carries.
-        for (const role of claims.fields) {
+        // Only the fields this capability names leave, whatever else the request carries. A generating fill (a password
+        // change) types a fresh password and needs no stored field, so none leaves (hardening plan step 15).
+        for (const role of claims.generate ? [] : claims.fields) {
           const envelope = input.fieldEnvelopes[role];
           if (!envelope) continue;
           const plain = await openVaultEnvelope(fillKey, envelope, { ...scope(claims), purpose: "FILL_FIELD", itemId: claims.handle, field: role, generation: claims.generation })
@@ -276,6 +340,21 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
           sealedFields: await sealToVaultPublicKey(b64.decode(input.replyPublicKey), fields, scope(input))
         };
       } finally { wipeVaultBytes(password, fields); }
+    },
+
+    // No grant the operator signed for this site (operator request 2026-10-18): the dock's delegation, signed while "Agents and
+    // Nous can use my Vault" is on, is the authorization, so the broker mints a grant for exactly this site, used once by
+    // /v1/signup above. Only a certificate leaves; the password is still generated there and never reaches the API.
+    async "POST /v1/signup-auto-grant"(raw) {
+      const input = schemas.autoGrant.parse(raw);
+      const delegation = await verifyDelegation(input.certificate);
+      if (delegation.ownerUserId !== input.ownerUserId || delegation.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
+      if (delegation.generation < (floors[floorKey(input)] ?? 0) || delegation.issuedAt <= (signups.voidBefore[floorKey(input)] ?? "")) throw new VaultBrokerRefusal("REVOKED");
+      if (vaultSignupSite(input.origin) !== input.origin) throw new VaultBrokerRefusal("ORIGIN_MISMATCH");
+      const issued = now();
+      const claims = { v: 1 as const, kind: "SIGNUP_GRANT" as const, grantId: newVaultHandle("vault_grant"), ownerUserId: input.ownerUserId, vaultId: input.vaultId,
+        sites: [input.origin], dailyCap: 1, unlockEpoch: delegation.unlockEpoch, issuedAt: issued.toISOString(), expiresAt: new Date(issued.getTime() + VAULT_AUTO_GRANT.ttlMs).toISOString() };
+      return { certificate: await signVaultCertificate(signing.privateKey, claims, KEY_VERSION) };
     },
 
     async "POST /v1/signup-revoke"(raw) {

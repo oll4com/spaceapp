@@ -39,6 +39,14 @@ export function CliPaneControlsSettingsCard() {
         checked={Boolean(settings.terminalContextMenu ?? true)}
         onChange={(terminalContextMenu) => update({ terminalContextMenu })}
       />
+      <SpaceToggle
+        className="settings-flat-row settings-flat-toggle-row voice-toggle"
+        name="terminal-local-draft"
+        label="Local draft open by default"
+        detail="CLI panes open with the local draft under them. A pane where you opened or closed the draft keeps that choice."
+        checked={Boolean(settings.terminalLocalDraft)}
+        onChange={(terminalLocalDraft) => update({ terminalLocalDraft })}
+      />
       <div className="settings-flat-subheading">
         <strong>Buttons</strong>
         <small>Hiding a button only removes it from the pane; the feature keeps working.</small>

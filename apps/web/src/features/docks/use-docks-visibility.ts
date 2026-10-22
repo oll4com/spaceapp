@@ -98,7 +98,7 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
   {
     id: "vault",
     label: "Vault",
-    description: "Your encrypted passwords, filled for you without agents ever seeing them.",
+    description: "Encrypted passwords agents can use but never see.",
     icon: Vault
   },
   {

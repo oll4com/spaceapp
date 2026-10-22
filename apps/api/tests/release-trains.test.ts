@@ -41,6 +41,15 @@ describe("release trains", () => {
       .toContain("in dev no, in main no, in candidate yes.");
   });
 
+  it("keeps every joined change of a live train, however many join (Record Retention Invariant)", async () => {
+    const repo = new InMemoryControlRepository();
+    await changeReleaseTrain(repo, op({ op: "open", version: "1.1.5" }), agent(jack));
+    for (let index = 0; index < 60; index++) await changeReleaseTrain(repo, op({ op: "join", commit: `c0ffee${String(index).padStart(4, "0")}` }), self(finn));
+    const [train] = await listReleaseTrains(repo);
+    expect(train!.contributors).toHaveLength(60);
+    expect(train!.contributors[0]!.commit).toBe("c0ffee0000");
+  });
+
   it("lets only the captain move a pane's release on, and closes joins once publishing starts", async () => {
     const repo = new InMemoryControlRepository();
     await changeReleaseTrain(repo, op({ op: "open", version: "1.1.5" }), self(jack));

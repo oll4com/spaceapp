@@ -22,7 +22,11 @@ export interface VaultState extends VaultEnrollment {
   agentAccess: boolean;
 }
 /** The page a fill landed in: its protection lifts once this page is gone. */
-export interface VaultFillTarget { targetId: string; origin: string; document: string | null }
+export interface VaultFillTarget {
+  targetId: string; origin: string; document: string | null;
+  /** Earlier fenced tabs of the same pane that are still open (2026-10-19). */
+  also?: Array<{ targetId: string; origin: string; document: string | null }>;
+}
 export interface VaultAuditEntry { id: string; seq: number; event: VaultAuditRecord; prevHash: string; hash: string; createdAt: string }
 
 const GENESIS = "0".repeat(64);
@@ -143,7 +147,11 @@ export class PostgresVaultRepository {
     });
   }
 
-  /** Lock, logout, user disable, share removal, Browser Host restart: one new epoch voids every capability and nonce. */
+  /**
+   * The operator's Lock (the only caller): one new epoch voids every capability and nonce. Logout, a disabled user, a removed
+   * share and a Browser Host restart do not bump it: the agent-access delegation is meant to outlive the operator's session
+   * (one-switch decision 2026-10-18); a disabled user's nonces and fills are refused by the disabled_at checks instead.
+   */
   async bumpEpoch(owner: string, reason: string, action: "LOCK" | "EPOCH_BUMP" = "EPOCH_BUMP"): Promise<number | null> {
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
@@ -188,6 +196,16 @@ export class PostgresVaultRepository {
     return rows.map((row) => fromItemRow(row).metadata);
   }
 
+  /** Per item: when it was added and last changed, and how many fills used it (successful FILL audit events). */
+  async itemStats(owner: string): Promise<Record<string, { addedAt: string; changedAt: string; uses: number; lastUsedAt: string | null }>> {
+    const rows = (await this.pool.query<{ id: string; addedAt: Date | string; changedAt: Date | string; uses: string | number; lastUsedAt: Date | string | null }>(
+      `SELECT i.id, i.created_at AS "addedAt", i.updated_at AS "changedAt", count(a.id) AS uses, max(a.created_at) AS "lastUsedAt"
+       FROM vault_items i JOIN users u ON u.id = i.owner_user_id AND u.disabled_at IS NULL
+       LEFT JOIN vault_audit a ON a.vault_id = i.vault_id AND a.event->>'itemId' = i.id AND a.event->>'action' = 'FILL' AND a.event->>'result' IN ('FILLED', 'SUBMITTED')
+       WHERE i.owner_user_id = $1 GROUP BY i.id`, [owner])).rows;
+    return Object.fromEntries(rows.map((row) => [row.id, { addedAt: iso(row.addedAt), changedAt: iso(row.changedAt), uses: Number(row.uses), lastUsedAt: row.lastUsedAt ? iso(row.lastUsedAt) : null }]));
+  }
+
   async deleteItem(owner: string, id: string): Promise<boolean> {
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
@@ -203,9 +221,10 @@ export class PostgresVaultRepository {
    * Stores a broker-signed delegation as the next generation. The broker verifies its own signature; here the claims must
    * match this owner, vault, epoch and next generation, name only this owner's items, and digest the exact fill envelopes.
    */
-  async createDelegation(owner: string, input: { certificate: unknown; keyEnvelope: unknown; fillEnvelopes: unknown }) {
+  async createDelegation(owner: string, input: { certificate: unknown; keyEnvelope: unknown; fillEnvelopes: unknown; inboxKeyEnvelope?: unknown }) {
     const certificate = vaultDelegationCertificateSchema.parse(input.certificate);
     const keyEnvelope = vaultSymmetricEnvelopeSchema.parse(input.keyEnvelope);
+    const inboxKeyEnvelope = input.inboxKeyEnvelope === undefined ? null : vaultSymmetricEnvelopeSchema.parse(input.inboxKeyEnvelope);
     const fillEnvelopes = vaultFillEnvelopesSchema.parse(input.fillEnvelopes);
     const digest = await vaultDigest(fillEnvelopes);
     const { claims } = certificate;
@@ -218,11 +237,12 @@ export class PostgresVaultRepository {
         && claims.unlockEpoch === vault.epoch && claims.envelopeDigest === digest && owned.length === new Set(handles).size
         && Object.keys(fillEnvelopes).every((handle) => handles.includes(handle));
       if (!valid) throw new VaultConflictError("BAD_DELEGATION");
-      await client.query(`UPDATE vault_delegations SET status = 'REVOKED', key_envelope = NULL, fill_envelopes = NULL, revoked_at = now()
+      await client.query(`UPDATE vault_delegations SET status = 'REVOKED', key_envelope = NULL, fill_envelopes = NULL, inbox_key_envelope = NULL, revoked_at = now()
         WHERE vault_id = $1 AND status = 'ACTIVE'`, [vault.id]);
-      await client.query(`INSERT INTO vault_delegations (id, vault_id, owner_user_id, generation, certificate, key_envelope, fill_envelopes, status)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, 'ACTIVE')`,
-      [claims.certId, vault.id, owner, claims.generation, JSON.stringify(certificate), JSON.stringify(keyEnvelope), JSON.stringify(fillEnvelopes)]);
+      await client.query(`INSERT INTO vault_delegations (id, vault_id, owner_user_id, generation, certificate, key_envelope, fill_envelopes, inbox_key_envelope, status)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, 'ACTIVE')`,
+      [claims.certId, vault.id, owner, claims.generation, JSON.stringify(certificate), JSON.stringify(keyEnvelope), JSON.stringify(fillEnvelopes),
+        inboxKeyEnvelope ? JSON.stringify(inboxKeyEnvelope) : null]);
       await client.query(`UPDATE vaults SET delegation_generation = $2, updated_at = now() WHERE id = $1`, [vault.id, claims.generation]);
       await this.audit(client, vault, { actor: "OPERATOR", action: "DELEGATE", result: "OK" });
       return { generation: claims.generation };
@@ -230,14 +250,39 @@ export class PostgresVaultRepository {
   }
 
   async getActiveDelegation(owner: string) {
-    const row = (await this.pool.query<{ certificate: unknown; keyEnvelope: unknown; fillEnvelopes: unknown; generation: number }>(
-      `SELECT d.certificate, d.key_envelope AS "keyEnvelope", d.fill_envelopes AS "fillEnvelopes", d.generation
+    const row = (await this.pool.query<{ certificate: unknown; keyEnvelope: unknown; fillEnvelopes: unknown; inboxKeyEnvelope: unknown; generation: number }>(
+      `SELECT d.certificate, d.key_envelope AS "keyEnvelope", d.fill_envelopes AS "fillEnvelopes", d.inbox_key_envelope AS "inboxKeyEnvelope", d.generation
        FROM vaults v JOIN users u ON u.id = v.owner_user_id AND u.disabled_at IS NULL
        JOIN vault_delegations d ON d.vault_id = v.id AND d.status = 'ACTIVE' AND d.generation = v.delegation_generation
        WHERE v.owner_user_id = $1`,
       [owner])).rows[0];
     return row ? { generation: row.generation, certificate: vaultDelegationCertificateSchema.parse(row.certificate),
-      keyEnvelope: vaultSymmetricEnvelopeSchema.parse(row.keyEnvelope), fillEnvelopes: vaultFillEnvelopesSchema.parse(row.fillEnvelopes) } : null;
+      keyEnvelope: vaultSymmetricEnvelopeSchema.parse(row.keyEnvelope), fillEnvelopes: vaultFillEnvelopesSchema.parse(row.fillEnvelopes),
+      inboxKeyEnvelope: row.inboxKeyEnvelope ? vaultSymmetricEnvelopeSchema.parse(row.inboxKeyEnvelope) : null } : null;
+  }
+
+  /**
+   * A login agents saved, created or changed joins the active delegation (operator request 2026-10-20): the broker's extended
+   * certificate (same generation) and that item's new fill envelopes replace the stored ones. "STALE" when the delegation
+   * changed since `basedOn` (a new generation, or another extension landed first): the caller asks the broker again.
+   */
+  async extendDelegation(owner: string, input: { basedOn: string; certificate: unknown; handle: string; fieldEnvelopes: unknown }): Promise<"OK" | "STALE"> {
+    const certificate = vaultDelegationCertificateSchema.parse(input.certificate);
+    const fields = vaultFillEnvelopesSchema.parse({ [input.handle]: input.fieldEnvelopes })[input.handle]!;
+    return this.transaction(async (client) => {
+      const vault = await this.lock(client, owner);
+      if (!vault) return "STALE";
+      const row = (await client.query<{ id: string; certificate: { claims?: { certId?: string } }; fillEnvelopes: Record<string, Record<string, unknown>> }>(
+        `SELECT id, certificate, fill_envelopes AS "fillEnvelopes" FROM vault_delegations WHERE vault_id = $1 AND status = 'ACTIVE' AND generation = $2`,
+        [vault.id, vault.delegationGeneration])).rows[0];
+      const { claims } = certificate;
+      if (!row || row.certificate.claims?.certId !== input.basedOn || claims.ownerUserId !== owner || claims.vaultId !== vault.id
+        || claims.generation !== vault.delegationGeneration || !claims.items.some((item) => item.handle === input.handle)) return "STALE";
+      const fillEnvelopes = { ...row.fillEnvelopes, [input.handle]: { ...row.fillEnvelopes[input.handle], ...fields } };
+      await client.query(`UPDATE vault_delegations SET certificate = $2::jsonb, fill_envelopes = $3::jsonb WHERE id = $1`,
+        [row.id, JSON.stringify(certificate), JSON.stringify(fillEnvelopes)]);
+      return "OK";
+    });
   }
 
   /** Turns the dock's agent-access switch on (the dock then delegates); off is revokeAgentAccess. */
@@ -256,7 +301,7 @@ export class PostgresVaultRepository {
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
       if (!vault) return null;
-      await client.query(`UPDATE vault_delegations SET status = 'REVOKED', key_envelope = NULL, fill_envelopes = NULL, revoked_at = now()
+      await client.query(`UPDATE vault_delegations SET status = 'REVOKED', key_envelope = NULL, fill_envelopes = NULL, inbox_key_envelope = NULL, revoked_at = now()
         WHERE vault_id = $1 AND status = 'ACTIVE'`, [vault.id]);
       await client.query(`UPDATE vault_signup_grants SET revoked_at = now() WHERE vault_id = $1 AND revoked_at IS NULL`, [vault.id]);
       const next = (await client.query<{ epoch: number; generation: number }>(`UPDATE vaults SET delegation_generation = delegation_generation + 1,

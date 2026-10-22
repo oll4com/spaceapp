@@ -216,7 +216,8 @@ All 16 inventories passed their flag and launch-gate checks (Cursor:
 | Muse Code | 1.4.4 (1.4.4-R5419.1) | `~/.local/bin/muse` launcher | not managed |
 | Droid | 0.238.0 | `~/.local/bin/droid` | not managed |
 
-**OpenCode 2 (`@opencode/cli`), 2026-10-16.** Space supports both majors. Stable runs OpenCode 2.0.32 since the
+**OpenCode 2 (`@opencode/cli`), 2026-10-16.** Space supported both majors until OpenCode 1 was retired on 2026-10-18
+(plan `clipboard:kJ1BIeylJRLG`); it now speaks OpenCode 2 only. Stable runs OpenCode 2.0.32 since the
 cutover of 2026-10-17, which migrated 1171 sessions in 22 s (`docs/runbooks/opencode-2-cutover.md`).
 - **Canary:** passes for 2.0.31 (`cli-canary --binary`, OpenCode 2 expectations: `--server`, `--standalone`,
   `--session`, `run --format/--title/--model`).

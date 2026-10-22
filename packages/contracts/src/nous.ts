@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { nousPaneBoardSettingsSchema } from "./nous-pane-board.js";
 import { patchSchema } from "./partial-update.js";
 
 /**
@@ -71,7 +72,7 @@ export const nousDecisionStatusSchema = z.enum(["OPEN", "APPROVED", "DECLINED", 
 export type NousDecisionStatus = z.infer<typeof nousDecisionStatusSchema>;
 
 const refId = z.string().min(1).max(200);
-export const nousCopilotSchema = z.enum(["MAIL", "MARKETING", "FREELANCE", "JOB", "DESIGN"]);
+export const nousCopilotSchema = z.enum(["MAIL", "MARKETING", "FREELANCE", "JOB", "DESIGN", "APP_STUDIO"]);
 export type NousCopilot = z.infer<typeof nousCopilotSchema>;
 
 /**
@@ -93,7 +94,9 @@ export const nousDecisionActionSchema = z.discriminatedUnion("type", [
   /** Approves the product's release train at its current candidate commit. */
   z.object({ type: z.literal("RELEASE_APPROVE"), product: z.string().min(1).max(80) }).strict(),
   /** A Space Control batch (space_execute) in one of the owner's rooms that Nous may not run itself: deletes, publishing, settings. */
-  z.object({ type: z.literal("SPACE_CONTROL"), roomId: refId, actions: z.array(z.record(z.string(), z.unknown())).min(1).max(20) }).strict()
+  z.object({ type: z.literal("SPACE_CONTROL"), roomId: refId, actions: z.array(z.record(z.string(), z.unknown())).min(1).max(20) }).strict(),
+  /** Rebuilds the Vault broker from stable's committed code and restarts it, as root (scripts/space-vault-broker-reinstall.mjs). */
+  z.object({ type: z.literal("VAULT_BROKER_REINSTALL") }).strict()
 ]);
 export type NousDecisionAction = z.infer<typeof nousDecisionActionSchema>;
 
@@ -149,7 +152,9 @@ export const nousSettingsSchema = z.object({
   /** The operator lets Nous approve changes to the protected Warm code (operator decision 2026-10-17, off by default). */
   mayApproveWarm: z.boolean().default(false),
   /** Kinds of decisions the operator approved with "Always approve" in the dock; a PATCH can only remove them. */
-  alwaysApprove: z.array(nousStandingApprovalSchema).max(50).default([])
+  alwaysApprove: z.array(nousStandingApprovalSchema).max(50).default([]),
+  /** The pane board's summaries (plan clipboard:Y9cgKVHFaHrr); a function default so a PATCH without it keeps the saved one. */
+  paneBoard: nousPaneBoardSettingsSchema.default(() => nousPaneBoardSettingsSchema.parse({}))
 }).strict();
 export type NousSettings = z.infer<typeof nousSettingsSchema>;
 
@@ -246,7 +251,9 @@ export type NousDecisionFeedbackInput = z.infer<typeof nousDecisionFeedbackInput
 export const nousOverviewSchema = z.object({
   plans: z.array(z.object({
     id: z.string(), title: z.string(), progress: z.number().int().min(0).max(100), status: z.string(),
-    room: z.string().nullable(), pane: z.string().nullable(), nextStep: z.string().nullable()
+    room: z.string().nullable(), pane: z.string().nullable(), nextStep: z.string().nullable(),
+    /** Its pane is working now (the state the Live view's Running tile counts; plan clipboard:RXqSSUQSdwJK). */
+    active: z.boolean().optional()
   }).strict()),
   needsHands: z.array(z.object({ id: z.string(), source: z.string(), title: z.string(), room: z.string().nullable() }).strict()),
   trains: z.string(),

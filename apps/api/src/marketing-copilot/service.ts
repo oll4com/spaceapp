@@ -90,6 +90,10 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     const label = MARKETING_CHANNEL_LABELS[post.channel];
     if (settings.paused) throw new SpaceConflictError("MARKETING_PAUSED: the pane is paused; nothing is published until the operator resumes it.");
     if (!settings.channels[post.channel].enabled) throw new SpaceConflictError(`MARKETING_CHANNEL_OFF: ${label} is off in this pane's Setup.`);
+    // Stable 2026-10-19: an approved X post slotted for 10-21 13:10 UTC went out two days early when the CLI began it itself.
+    if (post.scheduledAt && Date.parse(post.scheduledAt) > Date.parse(now())) {
+      throw new SpaceConflictError(`MARKETING_NOT_DUE: this post is scheduled for ${post.scheduledAt}; it publishes then, not before (it comes back as a PUBLISH item when due).`);
+    }
     const slot = await nextSlot(owner, pane, post);
     if (slot) throw new SpaceConflictError(`MARKETING_LIMIT: ${label} allows ${settings.channels[post.channel].posts} post(s) per ${settings.channels[post.channel].perDays} day(s); the next slot opens at ${slot}.`);
     if (post.status === "APPROVED") return { ruleId: null };

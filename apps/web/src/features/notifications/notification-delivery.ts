@@ -16,6 +16,8 @@ export function deliverNotifications(notifications: SpaceNotification[], setting
   const shown = new Set<string>();
   for (const notification of notifications.slice(0, 5)) {
     if (!notificationChannelEnabled(channels, notification.source, "inApp")) continue;
+    // Held for the operator's morning (quiet hours): listed in the Notification Center, no pop-up, chime or desktop alert.
+    if (typeof notification.payload?.heldUntil === "string" && Date.parse(notification.payload.heldUntil) > Date.now()) continue;
     // Newest first: only the newest record of a pane in this batch is shown.
     if (shown.has(notificationToastKey(notification))) continue;
     shown.add(notificationToastKey(notification));

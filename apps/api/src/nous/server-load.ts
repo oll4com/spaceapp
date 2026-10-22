@@ -140,7 +140,9 @@ export function createServerLoad(deps: ServerLoadDeps) {
     const [history, rows, roots] = await Promise.all([
       deps.health.history("10m").catch(() => null),
       // shortcut: ps pcpu is the process's lifetime average, not the last seconds; read /proc twice if spikes matter.
-      (deps.ps ?? runPs)().then(parsePs).catch(() => []), deps.paneRoots().catch(() => new Map<number, string>())
+      // The sampling ps reports itself at hundreds of percent (lifetime pcpu of a fresh process): drop its row, as System Analytics does.
+      (deps.ps ?? runPs)().then(parsePs).then((rows) => rows.filter((row) => !(row.command === "ps" && row.ppid === process.pid))).catch(() => []),
+      deps.paneRoots().catch(() => new Map<number, string>())
     ]);
     const since = at - WINDOW_MS;
     const mean = (id: string) => history ? windowMean(history, id, since) : { value: null, points: 0 };

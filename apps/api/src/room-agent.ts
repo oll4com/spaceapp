@@ -277,8 +277,10 @@ export async function completeRoomAgentPrompt(input: {
   codexLbKeyFile?: string | null;
   timeoutMs?: number;
   runCommand?: (modelId: string, prompt: string, timeoutMs: number) => Promise<string | null>;
+  /** Public installs: the CLI container's OpenCode (the core image has none). */
+  runOpenCode?: typeof runOpenCodeText;
 }): Promise<string | null> {
-  const { systemPrompt, content, modelSelection, codexLbBaseUrl, timeoutMs = 20_000, runCommand } = input;
+  const { systemPrompt, content, modelSelection, codexLbBaseUrl, timeoutMs = 20_000, runCommand, runOpenCode = runOpenCodeText } = input;
   const prompt = `${systemPrompt}\n\nUser request: ${content}`;
 
   if (runCommand) {
@@ -306,7 +308,7 @@ export async function completeRoomAgentPrompt(input: {
     } catch {}
   }
 
-  const output = await runOpenCodeText(modelSelection.modelId, prompt, timeoutMs).catch(() => null);
+  const output = await runOpenCode(modelSelection.modelId, prompt, timeoutMs).catch(() => null);
   return output?.trim() || null;
 }
 

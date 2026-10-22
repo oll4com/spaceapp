@@ -39,6 +39,7 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
   const perSource = (source: NotificationSource, key: "inApp" | "desktop" | "telegram" | "push", checked: boolean) => settings
     && save({ ...settings, perSource: { ...settings.perSource, [source]: { ...settings.perSource[source], [key]: checked } } });
   const current = settings ?? defaultNotificationSettings;
+  const quiet = (patch: Partial<NotificationSettings["quietHours"]>) => settings && save({ ...settings, quietHours: { ...settings.quietHours, ...patch } });
 
   return (
     <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings" aria-busy={!settings}>
@@ -68,6 +69,19 @@ export function NotificationSettingsCard({ suppressNotifications, onSuppressNoti
             void setPushNotifications(checked, api).then((state) => { setPush(state.on); setPushAvailable(state.available); })
               .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Push notifications could not be changed."));
           }} />
+      ) : null}
+      <SpaceToggle className="settings-flat-row settings-flat-toggle-row" name="notifications-quiet-hours" label="Quiet hours for hand requests"
+        detail={current.quietHours.enabled
+          ? `From ${current.quietHours.start} to ${current.quietHours.end} in your working time zone (Settings → Date & time zone; without one nothing is held), sign-ins, CAPTCHAs, handoffs and needs-you requests are kept without alerts and come as one morning batch. Urgent ones still alert.`
+          : "Off: hand requests alert at any hour."}
+        checked={current.quietHours.enabled} disabled={!settings} onChange={(checked) => quiet({ enabled: checked })} />
+      {current.quietHours.enabled ? (
+        <div className="settings-flat-row notification-quiet-hours">
+          <label>From <input type="time" name="quiet-hours-start" value={current.quietHours.start} disabled={!settings}
+            onChange={(event) => { if (/^\d{2}:\d{2}$/.test(event.target.value)) quiet({ start: event.target.value }); }} /></label>
+          <label>Until <input type="time" name="quiet-hours-end" value={current.quietHours.end} disabled={!settings}
+            onChange={(event) => { if (/^\d{2}:\d{2}$/.test(event.target.value)) quiet({ end: event.target.value }); }} /></label>
+        </div>
       ) : null}
       <details className="settings-flat-row notification-source-settings">
         <summary>Per source</summary>

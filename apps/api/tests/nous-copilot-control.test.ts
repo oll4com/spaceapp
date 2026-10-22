@@ -62,6 +62,15 @@ describe("space_copilot_control", () => {
     expect(f.invoke).toHaveBeenLastCalledWith("user:operator", "POST", "/api/panes/pane%3Abob00001/job-apply/run/stop", {});
   });
 
+  it("controls an App Studio pane through its own settings and run routes", async () => {
+    const f = fixture(session(), session(), { paused: false, devices: ["iphone-402x874"] });
+    expect(await f.control("user:operator", pane("APP_STUDIO"), "pause")).toBe("Paused Bob.");
+    expect(f.invoke).toHaveBeenLastCalledWith("user:operator", "PUT", "/api/panes/pane%3Abob00001/app-studio/settings",
+      { view: { tab: "inbox" }, settings: { paused: true, devices: ["iphone-402x874"] } });
+    expect(await f.control("user:operator", pane("APP_STUDIO"), "run_start")).toBe("Bob's run is RUNNING; its agent got the kickoff.");
+    expect(f.invoke).toHaveBeenLastCalledWith("user:operator", "POST", "/api/panes/pane%3Abob00001/app-studio/run/start", {});
+  });
+
   it("refuses panes that are not copilots", async () => {
     const f = fixture(session());
     await expect(f.control("user:operator", pane("TERMINAL"), "start_agent")).rejects.toThrow("not a copilot pane");

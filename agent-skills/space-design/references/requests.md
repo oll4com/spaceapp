@@ -9,12 +9,18 @@ engine, brand kit and reference artifacts, and an optional callback (a Marketing
 | `TAKEN` | A Design pane took it with `space_design_next` |
 | `IN_PROGRESS` | The designer is generating, rendering or asked a question |
 | `NEEDS_APPROVAL` | Delivered by the designer; the pane's setting holds it for the operator's approval |
-| `DELIVERED` | The requester has the assets (and a Marketing post its graphics) |
+| `DELIVERED` | The requester has the assets (and a Marketing post its graphics); a corrected delivery replaces them |
 | `FAILED` | The designer could not make it; `message` says why |
 | `CANCELLED` | The requester or the operator cancelled it |
 
 Routing: an explicit `designPaneId`, else an open Design pane in the requester's room, else the owner's most recently
 active unpaused one. A request nobody takes for 30 minutes after it was taken goes back to the queue.
+
+What a requester reads of each delivered asset (`space_design_request_status`, `space_design_request_wait`): `assetId`,
+`artifactId`, `label`, `formatId`, `width` × `height` (measured from the file), `matchesFormat` (null for video, whose
+size is not read), `description`, `madeBy` (`by` AGENT or OPERATOR, `runtimeId`, `model`), `engine` and `model` (the image
+engine's), `parentAssetId`, `createdAt` and `replacedBy` (the newest later version in the same format and kind). A PNG
+carries the same in iTXt chunks: `Title`, `Description`, `Software` and `spaceapp:design` (JSON).
 
 Every step is in the pane's Requests tab and Activity; the operator answers questions and approves deliveries there.
 Notifications: queued without a pane, a question, approval needed, a failure (attention) and a delivery (information),

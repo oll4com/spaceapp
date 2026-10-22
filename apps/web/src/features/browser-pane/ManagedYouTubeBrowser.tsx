@@ -1,3 +1,4 @@
+import { browserReconnectDelayMs } from "./browser-reconnect.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { Loader2, MousePointer2, RefreshCw, X } from "../ui-theme/app-icons.js";
 import { useEffect, useRef, useState } from "react";
@@ -399,7 +400,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
 
     const scheduleReconnect = () => {
       if (disposed || reconnectTimer !== null || transportPausedRef.current) return;
-      const delayMs = Math.min(2_000, 250 * (2 ** Math.min(reconnectAttempt, 3)));
+      const delayMs = browserReconnectDelayMs(reconnectAttempt, 250);
       reconnectAttempt += 1;
       updateBrowserStreamTelemetry("reconnecting");
       setError((current) => current ?? browserStreamReconnectMessage);

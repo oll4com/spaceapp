@@ -1,17 +1,34 @@
-# Third-party CLI notices
+# Third-party notices
 
-SpaceApp application source is BUSL-1.1. The run-spaceapp launcher is Apache-2.0.
+SpaceApp application source and the run-spaceapp launcher are MIT (from 1.1.7; earlier releases keep their license).
 The CLI image includes OpenCode and installs other independent packages on demand
 that retain their own licenses and terms. This inventory records the metadata
 reviewed for the pinned SpaceApp 0.1.0 build; it is not legal advice and does not
 grant rights beyond the upstream terms.
+
+## Third-party code in SpaceApp
+
+Parts of SpaceApp's own source are taken or ported from other projects. They keep their licence and notices; the full
+texts are in `THIRD_PARTY_LICENSES/` in the repository and in every SpaceApp image (`/app/THIRD_PARTY_LICENSES`).
+
+| Work | Licence | Used by | Text |
+| --- | --- | --- | --- |
+| Google Material Symbols | Apache-2.0 | `packages/icons` (Material Rounded icon pack) | `THIRD_PARTY_LICENSES/google-material-symbols.txt` |
+| Headroom 0.37.0 | Apache-2.0 | `packages/gateway` context compression (TypeScript ports) | `THIRD_PARTY_LICENSES/headroom.txt` |
+| unidiff-rs 0.4.1 | MIT | `packages/gateway` diff compressor (reduced TypeScript port) | `THIRD_PARTY_LICENSES/unidiff-rs.txt` |
+| tree-sitter grammars (eight) | MIT | `packages/gateway/grammars/*.wasm` | `THIRD_PARTY_LICENSES/tree-sitter-grammars.txt` |
+| codex-lb | MIT | `packages/gateway` (TypeScript ports) | `THIRD_PARTY_LICENSES/codex-lb.txt` |
+| caveman 3.2.0 | Apache-2.0 | `packages/gateway` output policy CONCISE | `THIRD_PARTY_LICENSES/caveman.txt` |
+| ponytail 5.2.0 | MIT | `packages/gateway` output policy LEAN | `THIRD_PARTY_LICENSES/ponytail.txt` |
+
+## CLI packages
 
 | CLI package | Version | Published license/terms | Source or terms | Release status |
 | --- | --- | --- | --- | --- |
 | `@openai/codex@0.145.0` | 0.145.0 | Apache-2.0 | [openai/codex](https://github.com/openai/codex) | reviewed |
 | Claude Code (`@anthropic-ai/claude-code@2.1.301`) | 2.1.301 | “All rights reserved”; Anthropic Commercial Terms and legal agreements | [Anthropic legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) | owner-installed only; not redistributed |
 | `@google/gemini-cli@0.52.0` | 0.52.0 | Apache-2.0 | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) | reviewed |
-| `opencode-ai@1.18.4` | 1.18.4 | MIT in npm metadata | [npm package](https://www.npmjs.com/package/opencode-ai) | reviewed |
+| `@opencode/cli@2.0.32` | 2.0.32 | MIT in npm metadata | [npm package](https://www.npmjs.com/package/@opencode/cli) | reviewed |
 | `@qwen-code/qwen-code@0.20.1` | 0.20.1 | Apache-2.0 in the package `LICENSE` | [QwenLM/qwen-code](https://github.com/QwenLM/qwen-code) | reviewed |
 | `@moonshot-ai/kimi-code@0.29.0` | 0.29.0 | MIT | [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) | reviewed |
 | `@xai-official/grok@0.2.111` | 0.2.111 | Apache-2.0 in npm metadata | [npm package](https://www.npmjs.com/package/@xai-official/grok) | reviewed |

@@ -108,7 +108,7 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
   }
   async prune(before: string) {
     let count = 0;
-    for (const [id, item] of this.items) if (item.createdAt < before) { this.items.delete(id); count += 1; }
+    for (const [id, item] of this.items) if (item.createdAt < before && !(item.severity !== "INFO" && (item.status === "OPEN" || item.status === "READ"))) { this.items.delete(id); count += 1; }
     return count;
   }
   async enqueueTelegram(notification: SpaceNotification) { if (!this.telegramEnabled) return false; this.telegram.push(notification); return true; }
@@ -184,7 +184,8 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
     return (result as { rowCount?: number | null }).rowCount ?? 0;
   }
   async prune(before: string) {
-    const result = await this.pool.query("DELETE FROM space_notifications WHERE created_at < $1", [before]);
+    // An unresolved ATTENTION or URGENT item (a review, a question, a Nous card) waits for the operator however old it is.
+    const result = await this.pool.query("DELETE FROM space_notifications WHERE created_at < $1 AND NOT (severity <> 'INFO' AND status IN ('OPEN', 'READ'))", [before]);
     return (result as { rowCount?: number | null }).rowCount ?? 0;
   }
   async enqueueTelegram(notification: SpaceNotification, labels: { source: string }, alertKey?: string) {

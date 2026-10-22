@@ -78,7 +78,7 @@ export async function changeReleaseTrain(repo: ControlRepository, input: Release
         if (live.status !== "OPEN") throw new SpaceConflictError(`${product} ${live.version} is already publishing: this change goes to the next release.`);
         if (!by.pane || !input.commit) throw new SpaceConflictError("Give the pane and the commit that joins the release.");
         const entry = { ...by.pane, commit: input.commit.toLowerCase(), note: input.note ?? null, addedAt: at };
-        next.contributors = [...next.contributors.filter((item) => item.commit !== entry.commit), entry].slice(-50);
+        next.contributors = [...next.contributors.filter((item) => item.commit !== entry.commit), entry];
       } else if (op === "leave") {
         if (!by.pane) throw new SpaceConflictError("Name the pane that leaves the release.");
         next.contributors = next.contributors.filter((item) => item.paneId !== by.pane!.paneId || (input.commit && item.commit !== input.commit.toLowerCase()));

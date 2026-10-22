@@ -24,12 +24,15 @@ import {
   Rocket,
   Handshake,
   PenTool,
+  TabletSmartphone,
   Search,
   ServerCog,
   Sparkles,
-  Users
+  Users,
+  Youtube
 } from "../ui-theme/app-icons.js";
 import { VoiceSettingsCard } from "../voice-input/VoiceSettingsCard.js";
+import { YouTubeSummarySettingsCard } from "../browser-pane/YouTubeSummarySettingsCard.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
 import { SettingsDisclosure, SettingsGroup, SettingsSearchable, SettingsSections } from "./SettingsDisclosure.js";
 import type { EnvironmentPresetCard } from "./EnvironmentPresetCard.js";
@@ -54,6 +57,7 @@ import type { MailCopilotSettingsCard } from "../mail-copilot-pane/MailCopilotSe
 import type { MarketingCopilotSettingsCard } from "../marketing-copilot-pane/MarketingCopilotSettingsCard.js";
 import type { FreelanceCopilotSettingsCard } from "../freelance-copilot-pane/FreelanceCopilotSettingsCard.js";
 import type { DesignSettingsCard } from "../design-pane/DesignSettingsCard.js";
+import type { AppStudioSettingsCard } from "../app-studio-pane/AppStudioSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
 import { NousSettingsCard } from "../nous/NousSettingsCard.js";
 
@@ -84,6 +88,7 @@ export interface AgentSettingsCards {
   MarketingCopilot: typeof MarketingCopilotSettingsCard;
   FreelanceCopilot: typeof FreelanceCopilotSettingsCard;
   Design: typeof DesignSettingsCard;
+  AppStudio: typeof AppStudioSettingsCard;
 }
 
 export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
@@ -189,7 +194,8 @@ export function AgentSettingsDock({
     MailCopilot: LazyMailCopilotSettingsCard,
     MarketingCopilot: LazyMarketingCopilotSettingsCard,
     FreelanceCopilot: LazyFreelanceCopilotSettingsCard,
-    Design: LazyDesignSettingsCard
+    Design: LazyDesignSettingsCard,
+    AppStudio: LazyAppStudioSettingsCard
   } = cards;
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -376,6 +382,16 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
           help="The Design pane makes graphics with an AI coding agent as its designer. Choose that agent and its account once and every new Design pane, on every device, opens with it; turn on asking to pick each time."
           keywords="design graphics banner social images studio designer agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDesignSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="app-studio" title="App Studio" description="The app builder and account new App Studio panes open with." scope="Your account" icon={TabletSmartphone}
+          help="App Studio builds mobile apps for Android and iOS with an AI coding agent and shows every screen on the most-used phones. Choose that agent and its account once and every new App Studio pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="app studio mobile app android ios iphone expo react native preview phone agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyAppStudioSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="youtube-summary" title="YouTube summary" description="The AI model that summarizes YouTube videos and writes out their full text." scope="Your account" icon={Youtube}
+          help="In a YouTube pane, Summarize with AI has this Gemini model watch the video you are on and write a short summary with its key points; Full text writes down everything said in it. It runs on your Antigravity accounts in Space Gateway."
+          keywords="youtube video summary summarize full text transcript ai gemini model antigravity">
+          <YouTubeSummarySettingsCard />
         </SettingsDisclosure>
 
         {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="The AI service new chats start with." scope="New sessions" icon={ServerCog}

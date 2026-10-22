@@ -69,7 +69,11 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
       if (args.op === "cancel") {
         if (!args.followup) return fail("Give the follow-up's id to cancel.");
         const closed = await deps.repository.close(owner, args.followup, "CANCELLED", "Cancelled by Nous");
-        return closed ? { ok: true, display: "Cancelled a follow-up", result: lineOf(closed) } : fail(`No open follow-up ${args.followup}.`);
+        if (closed) return { ok: true, display: "Cancelled a follow-up", result: lineOf(closed) };
+        // 30 failures in 7 days (review 2026-10-20): the follow-up had already fired or been cancelled, which is what cancel wants.
+        const ended = (await deps.repository.list(owner, 200)).find((item) => item.id === args.followup);
+        return ended ? { ok: true, display: "That follow-up already ended", result: `Already ${ended.status.toLowerCase()}: ${lineOf(ended)}` }
+          : fail(`No follow-up ${args.followup}: op list shows yours.`);
       }
       if (!args.note) return fail("Give the note: what to do when it fires.");
       const triggers = [args.at !== undefined || args.inMinutes !== undefined, args.ticket !== undefined, pane !== null].filter(Boolean).length;

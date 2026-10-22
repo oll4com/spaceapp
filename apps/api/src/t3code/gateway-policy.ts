@@ -41,14 +41,19 @@ export function parseT3GatewayPath(rawUrl: string) {
 
 export function isAllowedT3Http(method: string, rawPath: string): boolean {
   const path = rawPath.split("?", 1)[0]!;
-  if (method === "POST") return path === "/api/orchestration/dispatch" || path === "/api/pull-requests/diff" || path === "/api/observability/v1/traces";
+  // /api/orchestration/dispatch and /snapshot are T3 0.0.45's (kept for a rollback). T3 0.1.0's app mutates projects over
+  // RPC; its HTTP route serves Space's own proof cleanup. The MCP OAuth (/oauth/mcp, /.well-known/oauth-protected-resource)
+  // and inbound hook (/v1/environments/*/hooks) routes are never forwarded.
+  if (method === "POST") return path === "/api/orchestration/dispatch" || path === "/api/projects/mutate" || path === "/api/pull-requests/diff" ||
+    path === "/api/observability/v1/traces";
   if (method !== "GET" && method !== "HEAD") return false;
   if (["/.well-known/t3/environment", "/api/auth/session", "/api/orchestration/snapshot", "/api/orchestration/shell"].includes(path)) return true;
-  if (/^\/api\/orchestration\/threads\/[^/]+$/.test(path)) return true;
+  // T3 0.1.0 reads a thread's bounded snapshot, history pages and transcript separately.
+  if (/^\/api\/orchestration\/threads\/[^/]+(?:\/(?:bounded|history|transcript))?$/.test(path)) return true;
   if (/^\/assets\/[A-Za-z0-9_./-]+$/.test(path) && T3_ASSET_EXTENSION.test(path)) return true;
   if (/^\/(?:favicon\.ico|favicon-\d+x\d+\.png|apple-touch-icon\.png|manifest\.webmanifest|third-party-licenses\.json|icon-[a-z0-9-]+\.png)$/.test(path)) return true;
   return ["/", "/welcome", "/usage", "/pull-requests"].includes(path) ||
-    /^\/(?:settings(?:\/[a-z-]+)?|projects\/[A-Za-z0-9_-]+|draft\/[A-Za-z0-9_-]+|(?:primary|[a-f0-9-]{36})\/[A-Za-z0-9_-]+)$/.test(path);
+    /^\/(?:settings(?:\/[a-z-]+)?|projects\/[A-Za-z0-9_-]+|draft\/[A-Za-z0-9_-]+|(?:primary|[a-f0-9-]{36})\/[A-Za-z0-9_:-]+)$/.test(path);
 }
 
 export function t3RedirectLocation(location: string, basePath: string, fromPath = "/"): string {

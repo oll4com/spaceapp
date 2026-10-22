@@ -19,6 +19,7 @@ import type {
   AntigravityUsageAccountList,
   ApiProviderAccountList,
   ClaudeUsageAccountList,
+  GatewayAnthropicBillingReport,
   GatewayClaudeApiKeyUse,
   CliSessionReapResponse,
   CliSessionStats,
@@ -54,7 +55,7 @@ import {
   matchesAvailabilityFilter,
   type AccountAvailabilityFilter,
 } from "./account-availability.js";
-import { antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "./account-entries.js";
+import { anthropicBillLines, antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "./account-entries.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import {
   QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
@@ -123,6 +124,8 @@ export interface ToolbarMetricsClient {
   claudeAccounts?(): Promise<ClaudeUsageAccountList>;
   /** Space Gateway's Claude API key account and what went through it (ADMIN rail alert on first use). */
   claudeApiKeyUse?(): Promise<GatewayClaudeApiKeyUse>;
+  /** Anthropic's bill for the last 31 days (ADMIN), shown on the Claude API key's card. */
+  anthropicBilling?(): Promise<GatewayAnthropicBillingReport | null>;
   apiProviderAccounts?(): Promise<ApiProviderAccountList>;
   reopenPane?(roomId: string, paneId: string): Promise<void>;
   reopenAllDetached?(): Promise<void>;
@@ -137,6 +140,7 @@ const defaultClient: ToolbarMetricsClient = {
   antigravityAccounts: () => api.toolbarAntigravityUsageAccounts(),
   claudeAccounts: () => api.toolbarClaudeUsageAccounts(),
   claudeApiKeyUse: () => api.gatewayClaudeApiKeyUse(),
+  anthropicBilling: () => api.gatewayAnthropicBilling(31),
   apiProviderAccounts: () => api.toolbarApiProviderAccounts(),
   resetCredits: () => api.toolbarResetCredits(),
   redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
@@ -434,6 +438,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     () => client.claudeAccounts ? client.claudeAccounts() : api.toolbarClaudeUsageAccounts(),
     60_000, sharedTelemetry?.claudeAccounts
   );
+  const anthropicBilling = useLazyResource(() => client.anthropicBilling ? client.anthropicBilling() : Promise.resolve(null), 60_000);
   const apiProviderAccounts = useLazyResource(
     () => {
       if (client.apiProviderAccounts) return client.apiProviderAccounts();
@@ -650,6 +655,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         void resetCredits.load();
         void antigravityAccounts.load();
         void claudeAccounts.load();
+        if (canManage) void anthropicBilling.load();
         void apiProviderAccounts.load();
         return accounts.load();
       case "cli": return Promise.all([cli.load(), analyticsSessions.load()]);
@@ -944,7 +950,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           >{reset.label}</button>
         );
       });
-      const claudeEntries = claudeAccountEntries(claudeAccounts.data?.data ?? [], clock);
+      const claudeEntries = claudeAccountEntries(claudeAccounts.data?.data ?? [], clock, anthropicBillLines(anthropicBilling.data, clock, dateTimeSettings));
       const scopedEntries = accountProviderFilter === "all"
         ? [...antigravityEntries, ...codexEntries, ...claudeEntries]
         : accountProviderFilter === "antigravity"

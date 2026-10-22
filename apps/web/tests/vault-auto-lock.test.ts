@@ -23,13 +23,13 @@ describe("Vault auto-lock", () => {
 
   it("locks when the tab is hidden, the page is left, or the computer slept", () => {
     const hidden = vi.fn();
-    renderHook(() => useVaultAutoLock(true, VAULT_AUTO_LOCK_DEFAULTS, hidden));
+    renderHook(() => useVaultAutoLock(true, { idleMinutes: 0, lockOnHide: true }, hidden));
     setHidden(true);
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     expect(hidden).toHaveBeenCalledWith("HIDDEN");
 
     const left = vi.fn();
-    renderHook(() => useVaultAutoLock(true, VAULT_AUTO_LOCK_DEFAULTS, left));
+    renderHook(() => useVaultAutoLock(true, { idleMinutes: 0, lockOnHide: true }, left));
     act(() => { window.dispatchEvent(new Event("pagehide")); });
     expect(left).toHaveBeenCalledWith("HIDDEN");
 

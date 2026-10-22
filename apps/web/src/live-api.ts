@@ -3,6 +3,7 @@ import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { LiveRoomContext } from "@space/contracts";
 import type { DesignAsset, DesignBrandKit, DesignBrandKitInput, DesignEvent, DesignFormat, DesignNetwork, DesignPaneMetadata, DesignRequest, DesignRequestCreate, DesignTemplateId, DesignView } from "@space/contracts";
+import type { AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, AppStudioRunStatus } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
@@ -194,6 +195,9 @@ import type {
   NousMessage,
   NousAttachment,
   NousOverview,
+  NousPaneBoard,
+  NousPaneBoardAnswerInput,
+  NousPaneBoardAnswerResult,
   NousAway,
   NousAwayGrant,
   NousSettings,
@@ -697,6 +701,14 @@ export type BrowserCaptureSegmentListPayload = BrowserCaptureSegmentListResponse
 export type BrowserCaptureTimelinePayload = BrowserCaptureTimelineResponse;
 export type BrowserDiagnosticsPayload = BrowserDiagnosticsResponse;
 
+/** `GET /api/artifacts/:id/metadata`: `embedded` holds a PNG's text chunks, `design` its parsed `spaceapp:design` JSON. */
+export interface ArtifactMetadataPayload {
+  artifact: { id: string; filename: string; mimeType: string; byteSize: number; sha256: string; createdAt: string; roomId: string | null; metadata: Record<string, unknown> };
+  image: { width: number; height: number } | null;
+  embedded: Record<string, string>;
+  design: Record<string, unknown> | null;
+}
+
 export interface BrowserRecordingManifestPayload {
   durationMs: number;
   intervalMs?: number;
@@ -921,6 +933,9 @@ function reportCoreApiResponse(response: Response, payload: unknown, requestStar
   }
 }
 
+/** Per item: when it was added and last changed, and how many successful fills used it. */
+export interface VaultItemStats { addedAt: string; changedAt: string; uses: number; lastUsedAt: string | null }
+
 export interface VaultStateResponse {
   ownerUserId: string;
   enrolled: boolean;
@@ -929,6 +944,8 @@ export interface VaultStateResponse {
   agentAccess: boolean;
   /** Items the current delegation hands to them. */
   delegatedItems: number;
+  /** Logins waiting in the inbox until this dock is unlocked. */
+  pendingItems?: number;
   vault: { vaultId: string; epoch: number; delegationGeneration: number; kdf: VaultKdfParams; unlockKeyVersion: number; hasRecovery: boolean; auditSeq: number } | null;
 }
 
@@ -1483,6 +1500,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  updateClipboardNoteText: (clipboardItemId: string, text: string) =>
+    request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}/text`, {
+      method: "PATCH",
+      body: JSON.stringify({ text })
+    }),
   deleteClipboardItem: (clipboardItemId: string) =>
     request<{ id: string; deleted: true }>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
       method: "DELETE"
@@ -1528,12 +1550,13 @@ export const api = {
   vaultUnlock: (body: { challenge: string; replyPublicKey: string; signature: string }) =>
     request<{ sealedServerShare: VaultTransportEnvelope; epoch: number }>("/api/space-vault/unlock", { method: "POST", body: JSON.stringify(body) }),
   vaultLock: () => request<{ epoch: number }>("/api/space-vault/lock", { method: "POST", body: "{}" }),
-  vaultItems: () => request<{ items: VaultItemMetadata[] }>("/api/space-vault/items"),
+  vaultItems: () => request<{ items: VaultItemMetadata[]; stats?: Record<string, VaultItemStats> }>("/api/space-vault/items"),
   vaultItem: (id: string) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(id)}`),
   vaultSaveItem: (item: VaultItemRecordInput) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(item.metadata.id)}`, { method: "PUT", body: JSON.stringify(item) }),
   vaultDeleteItem: (id: string) => request<{ deleted: true }>(`/api/space-vault/items/${encodeURIComponent(id)}`, { method: "DELETE" }),
   vaultRotatePassword: (body: unknown) => request<{ epoch: number }>("/api/space-vault/password", { method: "POST", body: JSON.stringify(body) }),
   vaultSetRecovery: (recovery: VaultRecovery) => request<{ recovery: true }>("/api/space-vault/recovery", { method: "PUT", body: JSON.stringify(recovery) }),
+  vaultRecovery: () => request<{ recovery: VaultRecovery | null }>("/api/space-vault/recovery"),
   vaultInbox: () => request<{ inbox: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope } | null }>("/api/space-vault/inbox"),
   vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope }) => request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
   vaultPending: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending"),
@@ -1576,6 +1599,11 @@ export const api = {
   setNousAway: (input: { away: boolean; grant?: NousAwayGrant[] }) => request<{ away: NousAway | null }>("/api/nous/away", { method: "POST", body: JSON.stringify(input) }),
   nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview"),
   nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions"),
+  /** Nous's pane board (plan clipboard:Y9cgKVHFaHrr): every open pane by room with its live line, items and reply box. */
+  nousPaneBoard: () => request<{ board: NousPaneBoard }>("/api/nous/pane-board"),
+  refreshNousPaneBoard: (paneId?: string) => request<{ started: boolean }>("/api/nous/pane-board/refresh", { method: "POST", body: JSON.stringify(paneId ? { paneId } : {}) }),
+  answerNousPane: (paneId: string, input: NousPaneBoardAnswerInput) =>
+    request<NousPaneBoardAnswerResult>(`/api/nous/pane-board/${encodeURIComponent(paneId)}/answer`, { method: "POST", body: JSON.stringify(input) }),
   answerNousDecision: (id: string, input: NousDecisionAnswerInput) =>
     request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify(input) }),
   nousDecisionFeedback: (id: string, couldHaveDecided: boolean) =>
@@ -2773,7 +2801,7 @@ export const api = {
       method: "POST",
       headers: cliTerminalControlHeaders(paneId)
     }),
-  submitLocalCliDraft: (paneId: string, input: { submissionId: string; expectedSessionId: string; text: string; imagePaths?: string[] }) =>
+  submitLocalCliDraft: (paneId: string, input: { submissionId: string; expectedSessionId: string; text: string; imagePaths?: string[]; imageOffsets?: number[] }) =>
     request<{ submissionId: string; sessionId: string; status: "SENT" | "UNCERTAIN" | "REJECTED"; reason?: string }>(`/api/panes/${encodeURIComponent(paneId)}/cli/local-composer/submissions`, {
       method: "POST", headers: cliTerminalControlHeaders(paneId), body: JSON.stringify(input)
     }),
@@ -2849,6 +2877,8 @@ export const api = {
   saveYouTubePlayback: (paneId: string, playback: YouTubePlayback) =>
     request<{ ok: true }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/playback`, { method: "PUT", body: JSON.stringify(playback), keepalive: true }),
   watchYouTube: (paneId: string) => request<{ currentUrl: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/watch`, { method: "POST", body: "{}" }),
+  youtubeVideoText: (paneId: string, videoId: string, kind: "summary" | "transcript") =>
+    request<{ text: string; model: string }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/summary`, { method: "POST", body: JSON.stringify({ videoId, kind }) }),
   browserSession: (paneId: string) => request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/session`),
   startBrowserSession: (
     paneId: string,
@@ -3382,6 +3412,8 @@ export const api = {
     return request<Paginated<Artifact>>(`/api/artifacts${suffix ? `?${suffix}` : ""}`);
   },
   artifactFileUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
+  /** The Details dialog: the record, an image's measured size and the metadata a PNG carries inside. */
+  artifactMetadata: (artifactId: string) => request<ArtifactMetadataPayload>(`/api/artifacts/${encodeURIComponent(artifactId)}/metadata`),
   agentFilePreviewUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/preview`,
   agentFileDownloadUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/download`,
   browserRecordingManifest: (artifactId: string) =>
@@ -3451,8 +3483,9 @@ export const api = {
       signal: input.signal
     });
   },
-  uploadAgentFiles: (input: { roomId: string; files: File[] }) => {
+  uploadAgentFiles: (input: { roomId: string; files: File[]; folder?: string }) => {
     const form = new FormData();
+    if (input.folder) form.append("folder", input.folder);
     input.files.forEach((file) => form.append("file", file, file.name || "agent-file"));
     return request<{ artifacts: Artifact[] }>(`/api/rooms/${encodeURIComponent(input.roomId)}/agent-files/uploads`, {
       method: "POST",
@@ -3910,6 +3943,12 @@ export const api = {
     request<{ asset: DesignAsset; text: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/design/generate`, { method: "POST", body: JSON.stringify(input) }),
   designAssets: (paneId: string, query: { network?: DesignNetwork; formatId?: string; brandKitId?: string; requestId?: string; limit?: number } = {}) =>
     request<{ assets: DesignAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets?${new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}`, { cache: "no-store" }),
+  uploadDesignAsset: (paneId: string, file: Blob, fields: { formatId: string; label?: string; parentAssetId?: string; requestId?: string }) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) if (value) form.append(key, value);
+    form.append("file", file, "design.png");
+    return request<{ asset: DesignAsset }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets`, { method: "POST", body: form });
+  },
   designVariants: (paneId: string, assetId: string, input: { formatIds?: string[]; params?: Record<string, unknown>; requestId?: string | null }) =>
     request<{ assets: DesignAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets/${encodeURIComponent(assetId)}/variants`, { method: "POST", body: JSON.stringify(input) }),
   deleteDesignAsset: (paneId: string, assetId: string) =>
@@ -3930,6 +3969,16 @@ export const api = {
   designEvents: (paneId: string, limit = 100) =>
     request<{ events: DesignEvent[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/events?limit=${limit}`, { cache: "no-store" }),
   designBrandKits: () => request<{ brandKits: DesignBrandKit[] }>("/api/design/brand-kits", { cache: "no-store" }),
+  // App Studio pane: settings, everything the pane shows in one read, briefs, answers and the run.
+  appStudioState: (paneId: string) =>
+    request<{ metadata: AppStudioPaneMetadata; run: { status: AppStudioRunStatus; paused: boolean; openQuestions: number; pendingBriefs: number }; previews: AppStudioPreview[]; events: AppStudioEvent[] }>(
+      `/api/panes/${encodeURIComponent(paneId)}/app-studio/state`, { cache: "no-store" }),
+  updateAppStudioSettings: (paneId: string, metadata: AppStudioPaneMetadata) =>
+    request<{ metadata: AppStudioPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  createAppStudioBrief: (paneId: string, text: string) =>
+    request<{ brief: AppStudioEvent; kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/briefs`, { method: "POST", body: JSON.stringify({ text }) }),
+  answerAppStudioQuestion: (paneId: string, questionId: string, answer: string) =>
+    request<{ question: AppStudioEvent }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/questions/${encodeURIComponent(questionId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
   createDesignBrandKit: (input: DesignBrandKitInput) => request<{ brandKit: DesignBrandKit }>("/api/design/brand-kits", { method: "POST", body: JSON.stringify(input) }),
   updateDesignBrandKit: (id: string, input: Partial<DesignBrandKitInput>) =>
     request<{ brandKit: DesignBrandKit }>(`/api/design/brand-kits/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }),
@@ -4183,6 +4232,7 @@ export const api = {
   importConfiguration: (input: {
     bundle: unknown;
     mode?: ImportConfigMode;
+    confirmReplace?: boolean;
     targetUserId?: string;
     importApiKeys?: boolean;
     importCredentials?: boolean;

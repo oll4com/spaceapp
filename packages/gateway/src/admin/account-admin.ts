@@ -64,8 +64,8 @@ export function registerAccountAdminRoutes(app: FastifyInstance, options: {
     const authJson = {
       auth_mode: "chatgpt",
       OPENAI_API_KEY: null,
-      tokens: { id_token: credentials.idToken, access_token: credentials.accessToken, refresh_token: credentials.refreshToken,
-        account_id: credentials.upstreamAccountId },
+      // Never the refresh token (security addendum step 8): it is a lasting sign-in, so the file works until the access token expires.
+      tokens: { id_token: credentials.idToken, access_token: credentials.accessToken, refresh_token: "", account_id: credentials.upstreamAccountId },
       last_refresh: account.lastRefreshAt ?? new Date().toISOString()
     };
     return reply.header("cache-control", "no-store").send({

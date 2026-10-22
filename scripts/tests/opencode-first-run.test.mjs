@@ -16,13 +16,22 @@ const decide=(rules,path)=>{
 };
 const line=e=>JSON.stringify(e);
 const toolRun=token=>[line({type:'step_start'}),line({type:'tool_use',part:{type:'tool',tool:'read',state:{status:'completed'}}}),line({type:'step_finish'}),line({type:'step_start'}),line({type:'text',part:{text:token}}),line({type:'step_finish'})].join('\n');
-const entry=(id,cost=0)=>`opencode/${id}\n${JSON.stringify({id,providerID:'opencode',name:id,status:'active',cost:{input:cost,output:cost},capabilities:{toolcall:true},release_date:'2026-09-01'},null,2)}`;
+// OpenCode 2 /api/model entries (shape recorded from 2.0.31/2.0.32 on 2026-10-16/17).
+const entry=(id,cost=0,released=1788000000000)=>({id,providerID:'opencode',name:id,status:'active',enabled:true,
+ cost:[{input:cost,output:cost,cache:{read:0,write:0}}],capabilities:{tools:true},time:{released}});
+const catalog=(...models)=>JSON.stringify({data:models});
 test('only native explicitly zero-priced tool models are eligible',()=>{
- assert.deepEqual(parseCatalog(entry('free')+'\n'+entry('paid',1)).map(x=>x.id),['opencode/free']);
+ assert.deepEqual(parseCatalog(catalog(entry('free'),entry('paid',1))).map(x=>x.id),['opencode/free']);
+ // A paid tier, a disabled model or another provider is never a free candidate; newest release first.
+ const tiered={...entry('tiered'),cost:[{input:0,output:0},{input:1,output:2}]};
+ assert.deepEqual(parseCatalog(catalog(entry('older',0,1),tiered,{...entry('off'),enabled:false},{...entry('other'),providerID:'yunwu'},entry('newer',0,2))).map(x=>x.id),
+  ['opencode/newer','opencode/older']);
 });
 test('only a completed read tool call followed by the file token counts as working',()=>{
  const token='SPACEAPP-0123456789ab';
  assert.equal(toolCycleSucceeded({code:0,stdout:toolRun(token)},token),true);
+ // OpenCode 2 standalone runs exit right after the answer without the last step_finish.
+ assert.equal(toolCycleSucceeded({code:0,stdout:toolRun(token).split('\n').slice(0,-1).join('\n')},token),true);
  assert.equal(toolCycleSucceeded({code:0,stdout:''},token),false);
  // A plain completion without the tool call is not enough.
  assert.equal(toolCycleSucceeded({code:0,stdout:[line({type:'text',part:{text:token}}),line({type:'step_finish'})].join('\n')},token),false);
@@ -35,14 +44,16 @@ test('only a completed read tool call followed by the file token counts as worki
 test('a model that fails the tool cycle falls through to another free model without provider override',async()=>{
  const calls=[];
  const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
- calls.push(args); assert.equal(env.OPENCODE_API_KEY,undefined);
- if(args[0]==='models')return {code:0,stdout:entry('unavailable')+'\n'+entry('working')};
+ calls.push(args); assert.equal(env.OPENCODE_API_KEY,undefined); assert.equal(env.OPENCODE_DISABLE_AUTOUPDATE,'true');
+ if(args[0]==='api')return {code:0,stdout:catalog(entry('unavailable'),entry('working'))};
  const token=readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim();
  assert.match(token,/^SPACEAPP-[0-9a-f]{12}$/);
  if(args.includes('opencode/unavailable'))return {code:0,stdout:[line({type:'tool_use',part:{tool:'read',state:{status:'completed'}}}),line({type:'error'})].join('\n')};
  return {code:0,stdout:toolRun(token)};
  }});
  assert.equal(selected.id,'opencode/working');assert.equal(selected.verification,'tool-call');assert.equal(calls.length,3);
+ // OpenCode 2 would start its per-user background service without --standalone.
+ assert.deepEqual(calls[0],['api','GET','/api/model','--standalone']);assert.deepEqual(calls[1].slice(0,2),['run','--standalone']);
 });
 
 test('bootstrap loads installation memory and authorizes only its external directory',()=>{
@@ -134,7 +145,7 @@ test('Big Pickle is tried first, then the newest free models',async()=>{
  assert.deepEqual(preferDefault([{id:'opencode/new-free'},{id:'opencode/big-pickle'}]).map(x=>x.id),['opencode/big-pickle','opencode/new-free']);
  const tried=[];
  const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
-  if(args[0]==='models')return {code:0,stdout:entry('new-free')+'\n'+entry('big-pickle')};
+  if(args[0]==='api')return {code:0,stdout:catalog(entry('new-free'),entry('big-pickle'))};
   tried.push(args[args.indexOf('--model')+1]);
   if(args.includes('opencode/big-pickle'))return {code:0,stdout:line({type:'error'})};
   return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
@@ -155,4 +166,28 @@ test('a lock left by a killed first run is broken instead of making every start 
   assert.ok(Date.now()-started<5000);
   assert.equal(JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8')).model,'owner/model');
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+// VM219 2026-10-20: right after the owner claim several OpenCode starts overlap in the CLI container and the catalog answers 503.
+test('the catalog call is retried after a 503 from overlapping starts, then the selection goes on as before',async()=>{
+ const listings=[];
+ const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
+  if(args[0]==='api'){listings.push(Date.now());return listings.length===1?{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable\n'}:{code:0,stdout:catalog(entry('big-pickle'))};}
+  return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
+ }});
+ assert.equal(selected.id,'opencode/big-pickle');assert.equal(listings.length,2);
+ assert.ok(listings[1]-listings[0]>=2900,'3 s apart');
+});
+
+test('three failed catalog calls (503, timeout, connection) fail as before, within the budget',async()=>{
+ const answers=[{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable'},{code:124,stdout:'',stderr:''},{code:1,stdout:'',stderr:'Error: connect ECONNREFUSED 127.0.0.1:4096'}];
+ let listings=0;const started=Date.now();
+ await assert.rejects(selectWorkingFreeModel({executeNative:async(args)=>{if(args[0]==='api')return answers[listings++];throw new Error('no model run');}}),/catalog could not be refreshed/);
+ assert.equal(listings,3);assert.ok(Date.now()-started<100000);
+});
+
+test('a 4xx catalog answer is not retried',async()=>{
+ let listings=0;
+ await assert.rejects(selectWorkingFreeModel({executeNative:async(args)=>{if(args[0]==='api'){listings++;return {code:1,stdout:'',stderr:'HTTP 401 Unauthorized'};}throw new Error('no model run');}}),/catalog could not be refreshed/);
+ assert.equal(listings,1);
 });

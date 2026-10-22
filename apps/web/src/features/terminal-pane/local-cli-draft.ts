@@ -6,6 +6,8 @@ export interface LocalCliFile {
   type: string;
   size: number;
   lastModified: number;
+  /** Placeholder such as "[Image #1]" that marks where the file goes in the text. */
+  marker?: string;
   uploaded?: PaneCliUploadedFile;
 }
 
@@ -17,6 +19,7 @@ export interface LocalCliSubmission {
   /** Frozen wire payload, never reconstructed after an ambiguous response. */
   payload: string;
   imagePaths: string[];
+  imageOffsets?: number[];
   status: "SENDING" | "SENT" | "UNCERTAIN" | "REJECTED";
 }
 
@@ -40,13 +43,14 @@ export function readLocalCliDraft(storage: Storage, key: string): LocalCliDraft 
   const value = JSON.parse(raw) as LocalCliDraft;
   const filesValid = (files: unknown): files is LocalCliFile[] => Array.isArray(files) && files.every(file =>
     file && typeof file.id === "string" && typeof file.name === "string" && typeof file.type === "string" &&
-    typeof file.size === "number" && typeof file.lastModified === "number" &&
+    typeof file.size === "number" && typeof file.lastModified === "number" && (file.marker === undefined || typeof file.marker === "string") &&
     (!file.uploaded || (typeof file.uploaded.sessionId === "string" && typeof file.uploaded.terminalPath === "string" &&
       typeof file.uploaded.shellQuotedPath === "string" && typeof file.uploaded.mimeType === "string")));
   const submission = value?.submission;
   const submissionValid = submission === null || (submission && typeof submission.id === "string" &&
     typeof submission.sessionId === "string" && typeof submission.text === "string" && typeof submission.payload === "string" &&
     filesValid(submission.files) && Array.isArray(submission.imagePaths) && submission.imagePaths.every(path => typeof path === "string") &&
+    (submission.imageOffsets === undefined || (Array.isArray(submission.imageOffsets) && submission.imageOffsets.every(offset => typeof offset === "number"))) &&
     ["SENDING", "SENT", "UNCERTAIN", "REJECTED"].includes(submission.status));
   if (value?.version !== 1 || typeof value.revision !== "string" || typeof value.text !== "string" ||
       !filesValid(value.files) || !submissionValid) {
@@ -243,19 +247,57 @@ export const localCliFileStore: LocalCliFileStore = {
   })
 };
 
-export function localCliPrompt(text: string, files: LocalCliFile[], nativeImages: boolean): { text: string; imagePaths: string[] } {
+const attachmentKind = (type: string) => type.startsWith("image/") ? "Image" : type.startsWith("video/") ? "Video" : "File";
+
+/** Numbers new markers after the highest one of each kind, so a removed file's number is never reused for another. */
+export function localCliFileMarkers(existing: LocalCliFile[], types: string[]): string[] {
+  const next: Record<string, number> = {};
+  for (const file of existing) {
+    const match = file.marker?.match(/^\[(Image|Video|File) #(\d+)\]$/);
+    if (match) next[match[1]!] = Math.max(next[match[1]!] ?? 0, Number(match[2]));
+  }
+  return types.map(type => { const kind = attachmentKind(type); next[kind] = (next[kind] ?? 0) + 1; return `[${kind} #${next[kind]}]`; });
+}
+
+/** Removes a file's marker and the space after it. */
+export function withoutLocalCliMarker(text: string, marker: string | undefined): string {
+  const at = marker ? text.indexOf(marker) : -1;
+  return at < 0 ? text : text.slice(0, at) + text.slice(at + marker!.length + (text[at + marker!.length] === " " ? 1 : 0));
+}
+
+/**
+ * Native image CLIs get each image pasted at its marker's offset in the returned text (the CLI shows its own
+ * "[Image #N]" there); other files replace their marker with their path. A file whose marker was deleted still
+ * goes, after the text.
+ */
+export function localCliPrompt(text: string, files: LocalCliFile[], nativeImages: boolean): { text: string; imagePaths: string[]; imageOffsets: number[] } {
   const counts = { Image: 0, Video: 0, File: 0 };
   const imagePaths: string[] = [];
+  const imageOffsets: number[] = [];
+  const trailingImages: string[] = [];
   const references: string[] = [];
-  for (const file of files) {
-    const uploaded = file.uploaded;
-    if (!uploaded) throw new Error(`${file.name} has not finished uploading.`);
-    if (nativeImages && uploaded.isImage) {
-      imagePaths.push(uploaded.terminalPath);
+  const uploadedOf = (file: LocalCliFile) => {
+    if (!file.uploaded) throw new Error(`${file.name} has not finished uploading.`);
+    return file.uploaded;
+  };
+  const placed = files.map(file => ({ file, at: file.marker ? text.indexOf(file.marker) : -1 })).sort((a, b) => a.at - b.at);
+  let body = "";
+  let from = 0;
+  for (const { file, at } of placed) {
+    const uploaded = uploadedOf(file);
+    if (at < from) {
+      if (nativeImages && uploaded.isImage) trailingImages.push(uploaded.terminalPath);
+      else references.push(`${file.marker ?? `[${attachmentKind(uploaded.mimeType)} #${++counts[attachmentKind(uploaded.mimeType)]}]`} ${uploaded.shellQuotedPath}`);
       continue;
     }
-    const kind = uploaded.isImage ? "Image" : uploaded.mimeType.startsWith("video/") ? "Video" : "File";
-    references.push(`[${kind} #${++counts[kind]}] ${uploaded.shellQuotedPath}`);
+    body += text.slice(from, at);
+    from = at + file.marker!.length;
+    if (nativeImages && uploaded.isImage) {
+      imagePaths.push(uploaded.terminalPath);
+      imageOffsets.push(body.length);
+    } else body += `${file.marker} ${uploaded.shellQuotedPath}`;
   }
-  return { text: [text, ...references].filter(Boolean).join("\n"), imagePaths };
+  body = [body + text.slice(from), ...references].filter(Boolean).join("\n");
+  for (const path of trailingImages) { imagePaths.push(path); imageOffsets.push(body.length); }
+  return { text: body, imagePaths, imageOffsets };
 }

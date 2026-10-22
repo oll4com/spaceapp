@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { nousDecisionKind, type ClipboardItem, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousState } from "@space/contracts";
+import { nousDecisionKind, type ClipboardItem, type CodexEnvironment, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousState } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
@@ -8,12 +8,13 @@ import { useIsDockActive } from "../docks/dock-active-context.js";
 import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
 import { Check, ChevronRight, CircleStop, Gavel, Maximize2, Minimize2, Nous, Paperclip, Send, Trash2, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
-import { NousLauncher, NousLiveStats } from "./NousLiveStats.js";
-import { NousPanesView } from "./NousPanes.js";
+import { NousLauncher, NousLivePlans, NousLiveStats } from "./NousLiveStats.js";
+import { NousPaneBoard } from "./NousPaneBoard.js";
+import { ToolbarMetrics } from "../toolbar-metrics/ToolbarMetrics.js";
 import { clipboardFiles, NousMessageFiles, NousPendingFiles, operatorText, usePendingFiles } from "./NousFiles.js";
 import "./nous.css";
 
-type Tab = "conversation" | "decisions" | "overview" | "panes";
+type Tab = "conversation" | "decisions" | "overview" | "panes" | "plans" | "tokens";
 const FAST_POLL_MS = 3_000;
 const SLOW_POLL_MS = 20_000;
 const STATUS_LABELS: Record<NousState["status"], string> = {
@@ -22,7 +23,7 @@ const STATUS_LABELS: Record<NousState["status"], string> = {
 const REASON_LABELS: Record<NonNullable<NousState["running"]>["reason"], string> = {
   OPERATOR: "Answering you", INBOX: "Reading news from the rooms", DECISION: "Acting on your answer", HEARTBEAT: "Checking every room"
 };
-const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", decisions: "Decisions", overview: "Overview", panes: "Panes" };
+const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", decisions: "Decisions", overview: "Overview", panes: "Pane board", plans: "Plans", tokens: "Accounts & quotas" };
 const CATEGORY_LABELS: Record<NousDecision["category"], string> = { RELEASE: "Release", DESTRUCTIVE: "Irreversible", EXTERNAL: "Third parties or money", DIRECTION: "Direction" };
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 const planIdsIn = (text: string) => [...new Set(text.match(/clipboard:[A-Za-z0-9_-]+/g) ?? [])];
@@ -86,7 +87,7 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
 
   useEffect(() => {
     // Maximized, the board shows the overview in every view.
-    if (!isActive || !canRun || (tab !== "overview" && tab !== "panes" && !fullscreen)) return;
+    if (!isActive || !canRun || (tab !== "overview" && tab !== "panes" && tab !== "plans" && !fullscreen)) return;
     let cancelled = false;
     const load = () => api.nousOverview().then((result) => { if (!cancelled) setOverview(result.overview); })
       .catch((err: unknown) => { if (!cancelled) setError(messageOf(err, "The overview could not be loaded.")); });
@@ -216,7 +217,8 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   const lastError = state?.lastError ? <p className="nous-muted nous-last-error">Last problem: {state.lastError}</p> : null;
   const views = <DockChips label="Nous views" value={tab} onChange={(next) => { setPlanView(null); setTab(next); }} options={[
     { id: "conversation", label: "Conversation" }, { id: "decisions", label: "Decisions", ...(open.length ? { count: open.length } : {}) }, { id: "overview", label: "Overview" },
-    { id: "panes", label: "Panes", ...(overview?.panes?.some((pane) => pane.overdue) ? { count: overview.panes.filter((pane) => pane.overdue).length } : {}) }
+    { id: "panes", label: "Panes", ...(overview?.panes?.some((pane) => pane.overdue) ? { count: overview.panes.filter((pane) => pane.overdue).length } : {}) },
+    { id: "plans", label: "Plans" }, { id: "tokens", label: "Tokens" }
   ]} />;
   const actions = (
     <>
@@ -262,8 +264,19 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
         <NousDecisionCard key={decision.id} decision={decision} onAnswer={answerDecision(decision)} />
       ))}
     </div>
-  ) : (
-    tab === "panes" ? <NousPanesView overview={overview} /> : <NousOverviewView overview={overview} active={isActive} />
+  ) : tab === "plans" ? (
+    // Operator request 2026-10-19 (plan clipboard:7PiQv4Cnq0C2): Live's plan list in any dock size; a row opens the plan.
+    <div className="nous-overview">
+      <section className="nous-live" aria-label="Plans" data-motion={isActive ? "on" : "off"}>
+        <NousLivePlans overview={overview} active={isActive} onOpen={openPlan} />
+        {!overview ? <DockState kind="loading" title="Loading the plans" />
+          : overview.plans.some((plan) => plan.pane) ? null : <p className="nous-muted">No open plan is on a pane.</p>}
+      </section>
+    </div>
+  ) : tab === "tokens" ? <NousAccountQuotas /> : (
+    tab === "panes" ? <NousPaneBoard active={isActive} decisions={decisions} overview={overview} onSent={() => void refresh().catch(() => undefined)}
+      renderDecision={(decision) => <NousDecisionCard inline decision={decision} onAnswer={answerDecision(decision)} />} />
+      : <NousOverviewView overview={overview} active={isActive} />
   );
 
   if (fullscreen) {
@@ -279,7 +292,7 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
     const turns = state?.turnsThisHour ?? 0;
     const maxTurns = state?.settings.maxTurnsPerHour ?? 20;
     return (
-      <section className={`dock-panel nous-dock is-fullscreen nous-workspace${thinking ? " is-thinking" : ""}`} aria-label="Nous">
+      <section className={`dock-panel nous-dock is-fullscreen nous-workspace${thinking ? " is-thinking" : ""}${tab === "panes" && !planView ? " is-pane-board" : ""}`} aria-label="Nous">
         <aside className="nous-rail" aria-label="Nous status">
           <div className="nous-rail-identity">
             <div className="nous-rail-brain"><NousBrain3D size={168} animate={isActive} thinking={thinking} firing /></div>
@@ -336,6 +349,16 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
       {confirmDialog}
     </section>
   );
+}
+
+/**
+ * The Tokens tab (operator correction 2026-10-19, plan clipboard:7PiQv4Cnq0C2): Resources → Accounts & quotas itself, the same
+ * component, routes and numbers, read-only here; it reads the accounts each time the tab opens.
+ */
+function NousAccountQuotas() {
+  const [environment, setEnvironment] = useState<CodexEnvironment | null>(null);
+  useEffect(() => { let cancelled = false; void api.codexEnvironment().then((next) => { if (!cancelled) setEnvironment(next); }).catch(() => undefined); return () => { cancelled = true; }; }, []);
+  return <div className="nous-quotas"><ToolbarMetrics presentation="embedded" initialPanel="accounts" allowChanges={false} environment={environment} /></div>;
 }
 
 /** Maximized only: one run of tool steps as a single line (count and the latest step) that opens to every step. */
@@ -542,6 +565,7 @@ function describeAction(action: NonNullable<NousDecision["action"]>): string {
   if (action.type === "PANE_TEXT") return action.mode === "ANSWER" ? `answer “${action.text}” to the pane's prompt` : `send “${action.text.slice(0, 160)}” to the pane`;
   if (action.type === "RELEASE_APPROVE") return `approve the ${action.product} release at its candidate commit`;
   if (action.type === "SPACE_CONTROL") return `run in Space Control: ${action.actions.map((entry) => [entry.kind, entry.operation].filter(Boolean).join(" ")).join(", ")}`;
+  if (action.type === "VAULT_BROKER_REINSTALL") return "rebuild the Vault broker from stable's code and restart it, as root";
   return `${action.decision} the ${action.copilot.toLowerCase()} copilot's ${action.item.toLowerCase()}`;
 }
 

@@ -26,6 +26,8 @@ export interface AccountQuotaEntry {
   availability: AvailabilityState;
   offlineLabel?: string;
   hint?: string;
+  /** Extra lines under the hint or the rows (the Claude API key's Anthropic bill). */
+  notes?: string[];
   rows: AccountQuotaRow[];
   // Remaining share of the tightest window, used to list the roomiest accounts first.
   capacity: number;
@@ -175,6 +177,7 @@ export function AccountQuotaCard({ entry, clock, settings }: {
           </div>
         </div>
       )) : entry.hint ? <span className="toolbar-metric-dim">{entry.hint}</span> : null}
+      {entry.notes?.map((note) => <span key={note} className="account-quota-note">{note}</span>)}
     </li>
   );
 }

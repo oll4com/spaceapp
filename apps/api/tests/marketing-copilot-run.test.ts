@@ -114,6 +114,34 @@ describe("marketing copilot run loop", () => {
     }
   });
 
+  it("begins an approved post only once its scheduled slot has come (stable 2026-10-19: an X post went out two days early)", async () => {
+    const { app, headers, agent, paneUrl } = await fixture();
+    try {
+      const approved = async (body: string, scheduledAt?: string) => {
+        const postId = (await app.inject({ method: "POST", url: `${cli}/posts`, headers: agent,
+          payload: { channel: "X", body, ...(scheduledAt ? { scheduledAt } : {}) } })).json().post.id as string;
+        await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: { postId, summary: body } });
+        expect((await app.inject({ method: "POST", url: `${paneUrl}/posts/${encodeURIComponent(postId)}/review`, headers, payload: { decision: "approve" } })).json().post.status).toBe("APPROVED");
+        return postId;
+      };
+      const begin = (postId: string) => app.inject({ method: "POST", url: `${cli}/publish/begin`, headers: agent, payload: { postId } });
+      const slot = new Date(Date.now() + 2 * 86_400_000).toISOString();
+      const early = await approved("Rooms of CLIs you host yourself, one per project.", slot);
+      const refused = await begin(early);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error.message).toBe(`MARKETING_NOT_DUE: this post is scheduled for ${slot}; it publishes then, not before (it comes back as a PUBLISH item when due).`);
+      // Nothing changed: the post is still approved and still not due.
+      expect((await begin(early)).json().error.message).toMatch(/^MARKETING_NOT_DUE/);
+
+      const due = await approved("Every pane keeps its own CLI session.", new Date(Date.now() - 60_000).toISOString());
+      expect((await begin(due)).json().post.status).toBe("PUBLISHING");
+      const unscheduled = await approved("Switch rooms without losing a terminal.");
+      expect((await begin(unscheduled)).json().post.status).toBe("PUBLISHING");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("shows the agent the operator's bookmarks with their Google accounts and lets it save new ones", async () => {
     const { app, headers, agent, outsider } = await fixture();
     try {

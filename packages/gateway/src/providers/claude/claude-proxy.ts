@@ -8,7 +8,7 @@ import { outputPolicyText, requestOutputPolicy, withAnthropicOutputPolicy } from
 import { effectiveCompression, requestCompressionMode } from "../../compression/provider-settings.js";
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { gatewayError, gatewayErrors, type GatewayErrorEnvelope } from "../../errors.js";
-import { checkKeyLimits, PolicyRejection } from "../../policy.js";
+import { assertModelAllowed, checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { claudeCostUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
 import { requestOrigin } from "../../client-detect.js";
@@ -193,9 +193,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     // These models 400 on thinking "disabled" (Qoder's WebFetch side call sends it); without the field they run adaptive.
     if (model && /^claude-(fable-5|mythos-5|opus-5-5|sonnet-5-5)/.test(model) && (body.thinking as { type?: unknown } | undefined)?.type === "disabled") delete body.thinking;
     try {
-      if (key.allowedModels.length > 0 && model !== null && !key.allowedModels.includes(model)) {
-        throw new PolicyRejection(403, gatewayError("model_not_allowed", `This API key does not have access to model '${model}'`, "invalid_request_error"));
-      }
+      assertModelAllowed(key, model);
       checkKeyLimits(key, model, new Date(startedAt).toISOString());
     } catch (error) {
       if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(anthropicError(error.envelope));
@@ -476,6 +474,14 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const accounts = await usableAccounts(scope);
     let body: Record<string, unknown> = request.body && typeof request.body === "object" ? { ...(request.body as Record<string, unknown>) } : {};
     if (key.enforcedModel) body.model = key.enforcedModel;
+    // Counting is free upstream, but it still names a model: the key's allowlist and spent limits apply as on /v1/messages.
+    try {
+      assertModelAllowed(key, typeof body.model === "string" && body.model.trim() ? body.model.trim() : null);
+      checkKeyLimits(key, typeof body.model === "string" ? body.model.trim() || null : null, new Date().toISOString());
+    } catch (error) {
+      if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(anthropicError(error.envelope));
+      throw error;
+    }
     // The count must match what /v1/messages sends, so Claude Code's context accounting includes the output policy.
     const policyText = outputPolicyText(requestOutputPolicy({ policy: effectiveCompression(await options.settings(), "CLAUDE").outputPolicy, key,
       clientName: requestOrigin(request).clientName, headerValue: header(request, "x-space-gateway-output-policy") }));

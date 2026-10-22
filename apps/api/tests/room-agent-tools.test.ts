@@ -97,6 +97,18 @@ describe("Room Agent tools", () => {
     expect(self.ok).toBe(false);
   });
 
+  it("waits for a just-opened CLI's prompt before setting its model, and tells how to answer a pane that is not on a question", async () => {
+    const c = fixture();
+    const base = await c.deps.inspectPane(c.bob as never);
+    c.deps.inspectPane.mockResolvedValueOnce({ ...base, state: "UNKNOWN" as never }).mockResolvedValueOnce({ ...base, state: "IDLE" as never });
+    expect(await c.tools.execute("set_pane_model", { pane: "Bob", modelId: "gpt-5.5" }, c.ctx)).toMatchObject({ ok: true });
+    expect(c.deps.controlExecute).toHaveBeenCalledTimes(1);
+    c.deps.inspectPane.mockResolvedValueOnce({ ...base, state: "IDLE" as never });
+    const idle = await c.tools.execute("answer_pane_prompt", { pane: "Bob", answer: "yes" }, c.ctx);
+    expect(idle).toMatchObject({ ok: false });
+    expect(idle.result).toContain("send the answer as its next prompt (send_to_pane)");
+  });
+
   it("asks before closing, stopping or restarting and closes only when confirmed", async () => {
     const c = fixture();
     for (const [name, args] of [["close_pane", { panes: ["Bob"] }], ["restart_pane", { panes: ["Bob"] }], ["stop_pane", { pane: "Bob" }]] as const) {
@@ -130,7 +142,7 @@ describe("Room Agent tools", () => {
   it("guards Space Control: protected deploys are refused, destructive batches wait for a yes, reads go through", async () => {
     expect(roomAgentControlRisk("space_execute", { actions: [{ kind: "resource", operation: "ops.deploy" }] }).level).toBe("PROTECTED");
     expect(roomAgentControlRisk("space_execute", { actions: [{ kind: "pane", operation: "prompt" }, { kind: "pane", operation: "close" }] }))
-      .toEqual({ level: "DESTRUCTIVE", reason: "close panes" });
+      .toEqual({ level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: "close panes" });
     expect(roomAgentControlRisk("space_schedules", { command: { actions: [{ kind: "resource", operation: "files.delete" }] } }).level).toBe("DESTRUCTIVE");
     expect(roomAgentControlRisk("space_inspect", { section: "STATE" }).level).toBe("SAFE");
     const c = fixture();

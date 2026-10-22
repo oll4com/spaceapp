@@ -26,6 +26,12 @@ the network's own interface (profile photos, story bars, mobile crops) may cover
 | `github-social` | GitHub | GitHub social preview | 1280×640 | 40 / 40 / 40 / 40 | IMAGE | - |
 | `devto-cover` | dev.to | dev.to cover | 1000×420 | 0 / 0 / 0 / 0 | IMAGE | - |
 | `blog-hero` | Blog | Blog hero | 1600×900 | 0 / 0 / 0 / 0 | IMAGE | - |
+| `logo` | Brand | Logo | 1024×1024 | 0 / 0 / 0 / 0 | IMAGE | - |
+| `logo-wide` | Brand | Wide logo | 1600×600 | 0 / 0 / 0 / 0 | IMAGE | - |
+| `app-icon` | Brand | App icon | 512×512 | 52 / 52 / 52 / 52 | IMAGE | - |
+
+The Studio's "Download .ico" turns any square design (a `logo` or `app-icon`) into one favicon / app icon file with 16, 32,
+48, 64, 128 and 256 px images.
 
 Custom sizes: `custom-<width>x<height>`, 64–4096 px per side (for example `custom-1920x1080`).
 

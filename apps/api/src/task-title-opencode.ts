@@ -7,9 +7,6 @@ import { runNativeMetadataCommand } from "./task-title-native.js";
 import { taskTitleImagesMax } from "./task-title-images.js";
 import { runSqliteJson } from "./toolbar-model-stats.js";
 
-/** OpenCode 2 (`@opencode/cli`): a resolved binary under its package. */
-const isOpenCode2 = (command: string) => command.includes("/node_modules/@opencode/cli/");
-
 /**
  * OpenCode Zen serves its free tier only to requests that carry OpenCode's
  * own tool definitions (a tool-less request is refused with HTTP 403), so the
@@ -62,23 +59,12 @@ function isolatedEnvironment(root: string, config: unknown): NodeJS.ProcessEnv {
 const openCodeVersionByBinary = new Map<string, { identity: string; version: string; rejectsPermissionRequests: boolean }>();
 
 /**
- * The title sandbox depends on `opencode run` rejecting permission requests
- * unless `--auto` is passed (verified on 1.19.0: "The user rejected permission
- * to use this specific tool call"). Releases that do not document that switch
- * with a false default are not used, so an update cannot silently weaken it.
+ * The title sandbox depends on `opencode run` rejecting permission requests unless `--auto` is passed: OpenCode 2
+ * auto-rejects them in a non-interactive run (verified on 2.0.31). A release that does not document that switch is not
+ * used, so an update cannot silently weaken it. OpenCode 1 was retired (plan clipboard:kJ1BIeylJRLG).
  */
 export function openCodeRunRejectsPermissionRequests(version: string, runHelp: string): boolean {
-  // OpenCode 2 auto-rejects permission requests in a non-interactive run unless --auto is given (verified on 2.0.31).
-  if (/^opencode v2\.\d+\.\d+$/.test(version)) return /^\s*--auto\s+Auto-approve permissions\b/m.test(runHelp);
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!match || match[1] !== "1" || Number(match[2]) < 19) return false;
-  // yargs wraps an option's description onto continuation lines.
-  const options = runHelp.split("\n").reduce<string[]>((blocks, line) => {
-    if (/^\s*-/.test(line) || !blocks.length) blocks.push(line);
-    else blocks[blocks.length - 1] += ` ${line.trim()}`;
-    return blocks;
-  }, []);
-  return options.some((option) => /^\s*--auto\b/.test(option) && /\[default: false\]/.test(option));
+  return /^opencode v2\.\d+\.\d+$/.test(version) && /^\s*--auto\s+Auto-approve permissions\b/m.test(runHelp);
 }
 
 /** yargs prints `run --help` to stderr; read both streams, bounded. */
@@ -171,23 +157,7 @@ export async function resolveNativeOpenCodeRuntime(
     if (root) await rm(await root, { recursive: true, force: true }).catch(() => undefined);
   }
 }
-export function parseNativeOpenCodeModels(
-  output: string,
-): Record<string, unknown> {
-  const models: Record<string, unknown> = {};
-  const blocks = output.split(/^opencode\//m).slice(1);
-  for (const block of blocks) {
-    const line = block.indexOf("\n");
-    if (line < 0) continue;
-    const id = block.slice(0, line).trim();
-    if (!/^[A-Za-z0-9._-]{1,200}$/.test(id)) continue;
-    try {
-      models[id] = JSON.parse(block.slice(line).trim());
-    } catch {}
-  }
-  return models;
-}
-/** OpenCode 2's /api/model as the v1 catalog entries readers use: id, name, status and the highest tier's cost. */
+/** OpenCode 2's /api/model as the catalog entries readers use: id, name, status and the highest tier's cost. */
 export function parseOpenCode2Models(output: string): Record<string, unknown> {
   let data: unknown = [];
   try { data = (JSON.parse(output) as { data?: unknown }).data ?? []; } catch {}
@@ -219,11 +189,10 @@ export function nativeOpenCodeModelCatalog(command: string): Promise<NativeOpenC
 async function readNativeOpenCodeModelCatalog(command: string): Promise<NativeOpenCodeCatalog> {
   const root = await mkdtemp(join(tmpdir(), "space-title-catalog-"));
   try {
-    const v2 = isOpenCode2(command);
     const output = await runNativeMetadataCommand(
       command,
-      // OpenCode 2 dropped `models --verbose`; its API lists the models as JSON.
-      v2 ? ["api", "GET", "/api/model", "--standalone"] : ["models", "opencode", "--verbose"],
+      // OpenCode 2 lists the models as JSON on its API.
+      ["api", "GET", "/api/model", "--standalone"],
       "",
       undefined,
       10000,
@@ -240,7 +209,7 @@ async function readNativeOpenCodeModelCatalog(command: string): Promise<NativeOp
     );
     return {
       providers: [
-        { id: "opencode", models: v2 ? parseOpenCode2Models(output) : parseNativeOpenCodeModels(output) },
+        { id: "opencode", models: parseOpenCode2Models(output) },
       ],
     };
   } finally {
@@ -301,7 +270,7 @@ export async function generateNativeOpenCodeTitle(input: {
         input.command,
         [
           "run",
-          ...(isOpenCode2(input.command) ? ["--standalone"] : []),
+          "--standalone",
           "--format",
           "json",
           "--model",
@@ -369,7 +338,7 @@ export async function generateNativeOpenCodeTitle(input: {
       if (input.signal.aborted) stop();
       else child.stdin.end(openCodeTitleRequestPreamble + input.prompt);
     });
-    return parseNativeTitleOutput(isOpenCode2(input.command) ? await withOpenCode2StepFinish(stdout, root) : stdout, maxInputTokens);
+    return parseNativeTitleOutput(await withOpenCode2StepFinish(stdout, root), maxInputTokens);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

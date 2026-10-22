@@ -7,8 +7,11 @@ import { openWorkspacePath, descriptorPath } from "./workspace-filesystem.js";
 import { applyFileResponsePolicy } from "./file-response-policy.js";
 import { agentFilePreviewKind, readAgentFileTextPreview, renderAgentFileDocxPreview } from "./cli-agent-files.js";
 import { sendApiError } from "./http-errors.js";
+import { imageDimensions, readPngText } from "./design/images.js";
 
 const idParamSchema = z.object({ id: idSchema });
+/** Images up to the Design pane's limit are read for their size and embedded metadata; larger files answer the record only. */
+const METADATA_READ_MAX_BYTES = 25 * 1024 * 1024;
 
 /** Read-only artifact domain. Authentication and request/error policies remain
  * owned by the composition root; registration does not create service timers. */
@@ -56,6 +59,35 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
       reply.header("content-length", String(fileStat.size));
       return reply.send(handle.createReadStream());
     } catch (error) { await handle.close(); throw error; }
+  });
+  // What the Details dialog shows (Agent Files and the Design pane): the record, an image's measured size and the metadata a
+  // PNG carries inside (a design's description and who made it, `spaceapp:design`).
+  app.get("/api/artifacts/:id/metadata", routeOptions, async (request) => {
+    const params = idParamSchema.parse(request.params);
+    const artifact = await store.getArtifact(params.id);
+    if (artifact.deletedAt) {
+      throw new SpaceNotFoundError(`Artifact ${artifact.id} was not found.`);
+    }
+    let image: { width: number; height: number } | null = null;
+    let embedded: Record<string, string> = {};
+    if (artifact.mimeType.toLowerCase().startsWith("image/") && artifact.byteSize <= METADATA_READ_MAX_BYTES) {
+      const handle = await openWorkspacePath(artifactRoot, localArtifactFilePath({ artifactRoot, artifact }));
+      try {
+        const bytes = await handle.readFile();
+        image = imageDimensions(bytes);
+        embedded = readPngText(bytes);
+      } finally { await handle.close(); }
+    }
+    let design: Record<string, unknown> | null = null;
+    try {
+      const parsed: unknown = embedded["spaceapp:design"] ? JSON.parse(embedded["spaceapp:design"]) : null;
+      design = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch { design = null; }
+    return {
+      artifact: { id: artifact.id, filename: artifactFilename(artifact), mimeType: artifact.mimeType, byteSize: artifact.byteSize, sha256: artifact.sha256,
+        createdAt: artifact.createdAt, roomId: artifact.roomId, metadata: artifact.metadata },
+      image, embedded, design
+    };
   });
   app.get("/api/artifacts/:id/download", routeOptions, async (request, reply) => {
     const params = idParamSchema.parse(request.params);

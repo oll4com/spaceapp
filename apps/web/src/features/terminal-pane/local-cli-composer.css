@@ -8,7 +8,7 @@
   min-height: 0;
   max-height: 55%;
   overflow: auto;
-  padding: 8px;
+  padding: 4px 8px;
   border-top: 1px solid var(--draft-border);
   background: var(--draft-surface);
   color: var(--draft-text);
@@ -16,25 +16,40 @@
   line-height: 1.4;
 }
 
-.local-cli-composer-heading,
+/* The draft's buttons join the CLI toolbar row; without that row they keep one row of their own. */
+.local-cli-toolbar,
 .local-cli-composer-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  min-width: 0;
 }
-
-.local-cli-composer-heading label { font-weight: 600; }
-.local-cli-save-state { flex: 1; color: var(--draft-muted); }
+.local-cli-composer-actions { margin-bottom: 4px; }
+.terminal-floating-controls:has(> .local-cli-toolbar) { flex-wrap: wrap; }
+.local-cli-save-state {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--modern-muted, var(--room-muted, #a7a59e));
+  font-size: 12px;
+}
+/* The draft and its send button share one line, send at the far right like the CLI's turn control. */
+.local-cli-input-row { display: flex; align-items: flex-end; gap: 8px; }
+.local-cli-input-row textarea { flex: 1 1 0; min-width: 0; }
+.local-cli-input-row .terminal-turn-control { flex: 0 0 36px; }
 .local-cli-composer textarea {
   display: block;
   box-sizing: border-box;
   width: 100%;
-  min-height: 56px;
+  field-sizing: content;
+  min-height: calc(1.5em + 14px);
   max-height: 240px;
-  resize: vertical;
-  margin: 6px 0;
-  padding: 8px;
+  resize: none;
+  margin: 0;
+  padding: 6px 8px;
   border: 1px solid var(--draft-border);
   border-radius: 6px;
   background: var(--modern-surface-raised, var(--room-bg, #101112));
@@ -59,14 +74,14 @@
 .local-cli-composer .compact-action svg { width: 14px; height: 14px; }
 .local-cli-composer .compact-action:hover:not(:disabled) { background: color-mix(in srgb, var(--draft-accent) 16%, var(--draft-surface)); }
 .local-cli-composer .compact-action:active:not(:disabled) { background: color-mix(in srgb, var(--draft-accent) 25%, var(--draft-surface)); }
-.local-cli-composer :disabled { opacity: 0.55; cursor: not-allowed; }
-.local-cli-composer .local-cli-send { margin-left: auto; color: var(--draft-accent); }
-.local-cli-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 6px 0; list-style: none; }
-.local-cli-files li { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+:is(.local-cli-composer, .local-cli-toolbar) :disabled:not(.terminal-turn-control) { opacity: 0.55; cursor: not-allowed; }
+.local-cli-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 4px 0 0; list-style: none; }
+.local-cli-files li { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .local-cli-files li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.local-cli-files img { width: 36px; height: 36px; object-fit: contain; }
-.local-cli-error { color: var(--modern-danger, #ff7a8c); margin: 6px 0; overflow-wrap: anywhere; }
-.local-cli-recovery { margin: 8px 0; }
+.local-cli-files li > span:not(.local-cli-file-marker) { max-width: 10rem; color: var(--draft-muted); }
+.local-cli-files img { width: 28px; height: 28px; object-fit: contain; }
+.local-cli-error { color: var(--modern-danger, #ff7a8c); margin: 4px 0; overflow-wrap: anywhere; }
+.local-cli-recovery { margin: 6px 0; }
 .local-cli-recovery p { margin: 0 0 4px; }
 .local-cli-recovery pre { max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; font: inherit; }
 @media (pointer: coarse) {

@@ -12,9 +12,14 @@ export const cliLocalComposerSubmissionSchema = z.object({
   expectedSessionId: idSchema,
   text: z.string().max(200_000).refine(value => !unsafeTextControl.test(value), "The text contains terminal control characters."),
   imagePaths: z.array(z.string().min(2).max(1_000).startsWith("/")
-    .refine(value => !/[\u0000-\u001f\u007f-\u009f]/.test(value), "An image path contains control characters.")).max(8).optional()
+    .refine(value => !/[\u0000-\u001f\u007f-\u009f]/.test(value), "An image path contains control characters.")).max(8).optional(),
+  /** Where each image goes in the text; without it the images go first. */
+  imageOffsets: z.array(z.number().int().min(0)).max(8).optional()
 }).strict().refine(value => value.text.trim().length > 0 || (value.imagePaths?.length ?? 0) > 0,
-  "Write a message or attach an image before sending.");
+  "Write a message or attach an image before sending.")
+  .refine(({ imageOffsets: offsets, imagePaths, text }) => !offsets || (offsets.length === (imagePaths?.length ?? 0) &&
+    offsets.every((offset, index) => offset <= text.length && (index === 0 || offset >= offsets[index - 1]!))),
+  "Image offsets must follow the images in order and stay inside the text.");
 
 export type CliLocalComposerSubmission = z.infer<typeof cliLocalComposerSubmissionSchema>;
 export interface CliLocalComposerReceipt {
@@ -85,7 +90,7 @@ export function createCliLocalComposerService(deps: {
     }): Promise<CliLocalComposerReceipt> {
       const parsed = cliLocalComposerSubmissionSchema.parse(input);
       const key = recordKey(identity.paneId, parsed.submissionId);
-      const contentHash = hash([parsed.expectedSessionId, parsed.text, parsed.imagePaths ?? []]);
+      const contentHash = hash([parsed.expectedSessionId, parsed.text, parsed.imagePaths ?? [], ...(parsed.imageOffsets ? [parsed.imageOffsets] : [])]);
       // Same-pane submissions cannot interleave, including across API processes.
       // A timed-out lock can expose DISPATCHING, which is still never retried.
       return repository.withLock(`cli-local-composer:${identity.ownerUserId}:${identity.paneId}`, async () => {
@@ -119,8 +124,15 @@ export function createCliLocalComposerService(deps: {
               await deps.sendInput(parsed.expectedSessionId, `\u001b[200~${text}\u001b[201~`, attempt.traceId, `${hostKey}:${step}`);
               await wait(200);
             };
-            for (const [index, path] of (parsed.imagePaths ?? []).entries()) await paste(path, `image:${index}`);
-            if (parsed.text.length) await paste(parsed.text, "text");
+            // The CLI shows each pasted image where the cursor is, so text and images go in the order they were written.
+            let at = 0;
+            for (const [index, path] of (parsed.imagePaths ?? []).entries()) {
+              const offset = parsed.imageOffsets?.[index] ?? 0;
+              if (offset > at) await paste(parsed.text.slice(at, offset), `text:${index}`);
+              at = Math.max(at, offset);
+              await paste(path, `image:${index}`);
+            }
+            if (parsed.text.length > at) await paste(parsed.text.slice(at), "text");
             await attempt.assertCurrent();
             mayHaveWritten = true;
             await deps.sendInput(parsed.expectedSessionId, "\r", attempt.traceId, `${hostKey}:enter`);

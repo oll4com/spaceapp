@@ -107,6 +107,8 @@ export function canonicalVaultOrigin(input: string): { origin: string; warnings:
 
 const canonicalOrigin = z.string().max(300).refine((value) => canonicalVaultOrigin(value)?.origin === value, "Not an exact canonical origin.");
 
+// approvalMode and maxFillsPerHour are kept so stored items keep parsing; nothing enforces them since the one-switch
+// decision (2026-10-18: no per-use approval, no hourly limit; vault-protection.test.ts "no hourly limit").
 export const vaultItemPolicySchema = z.object({
   agentUse: z.boolean(), approvalMode: z.enum(VAULT_APPROVAL_MODES), submitAllowed: z.boolean(),
   maxFillsPerHour: z.number().int().min(1).max(60), acceptedOriginRisks: z.array(canonicalOrigin).max(10),
@@ -244,7 +246,9 @@ export const vaultAgentSaveRequestSchema = z.object({
 
 /** space_vault_status: whether the operator lets agents and Nous use the Vault, and how many items are handed to them. */
 export const vaultAgentStatusResultSchema = z.object({
-  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), agentAccess: z.boolean(), delegatedItems: z.number().int().min(0)
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), agentAccess: z.boolean(), delegatedItems: z.number().int().min(0),
+  /** Logins agents saved or the Vault generated that wait in the inbox until the operator's dock is unlocked (2026-10-19). */
+  pendingItems: z.number().int().min(0)
 }).strict();
 /** space_vault_audit: this pane's recent Vault attempts, ids and result codes only. */
 export const vaultAgentAuditResultSchema = z.object({
@@ -269,7 +273,9 @@ export const vaultUnlockRequestSchema = z.object({
 }).strict();
 export const vaultPasswordRotateRequestSchema = z.object({
   expectedEpoch: z.number().int().min(1), kdf: vaultKdfParamsSchema, passwordEnvelope: vaultSymmetricEnvelopeSchema,
-  unlockPublicKey: b64urlField(40, 120), unlockKeyVersion: keyVersion
+  unlockPublicKey: b64urlField(40, 120), unlockKeyVersion: keyVersion,
+  /** A new master password set with the recovery key (audited as RECOVERY_USE). */
+  recovery: z.boolean().optional()
 }).strict();
 export const vaultAuditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50), beforeSeq: z.coerce.number().int().min(1).optional()
@@ -288,7 +294,9 @@ export const vaultDelegateRequestSchema = z.object({
   unlockEpoch: z.number().int().min(1),
   expiresAt: isoDate,
   /** The unlocked dock's Ed25519 signature (the vault's unlock key) over vaultDelegationOperatorMessage: proof of the master password. */
-  operatorSignature: b64url(86, 86)
+  operatorSignature: b64url(86, 86),
+  /** The inbox's private key sealed to the broker (operator request 2026-10-20): logins agents save join the delegation at once. */
+  sealedInboxKey: vaultTransportEnvelopeSchema.optional()
 }).strict();
 
 /**
@@ -309,7 +317,9 @@ export const vaultAgentListItemSchema = z.object({
   handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3)
 }).strict();
 export const vaultAgentListResultSchema = z.object({
-  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(200)
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(200),
+  /** As in status: logins that are not fillable yet because no unlocked dock has added and handed them over. */
+  pendingItems: z.number().int().min(0)
 }).strict();
 
 /** The operator's inbox key: generated passwords arrive sealed to it while the Vault is locked. */

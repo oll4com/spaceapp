@@ -22,9 +22,8 @@ export const NOUS_VAULT_FILL_DESCRIPTION = "Fill a Vault item into a browser pan
   + "Space types the values itself; you never see or send a value, username, URL or selector. The answer is {status, auditId}: FILLED or SUBMITTED, "
   + "BLOCKED (agent access is off, the item is not delegated, or no login form), ORIGIN_MISMATCH (the page is not the item's site).";
 export const NOUS_VAULT_LIST_DESCRIPTION = "The Vault items the operator lets agents and you use: handles, labels, exact sites and fields, never a value. BLOCKED while agent access is off.";
-export const NOUS_VAULT_SAVE_DESCRIPTION = "Save a login whose password you set (a new account, or a reset of an account the Vault has no item for: site, username or email, "
-  + "the password you chose, a label) into the operator's Vault. It is sealed at once; the operator's Vault adds it on their next unlock, "
-  + "and it becomes fillable then. Never save a login whose password you did not set.";
+export const NOUS_VAULT_SAVE_DESCRIPTION = "Save a login you created (site, username or email, the password you chose, a label) into the operator's Vault. "
+  + "It is sealed at once and fillable as soon as space_vault_list shows it, without the operator's unlock. Never save a login you did not create.";
 
 const vaultOff = { status: "BLOCKED", auditId: null } as const;
 

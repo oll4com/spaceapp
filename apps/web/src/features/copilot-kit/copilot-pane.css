@@ -264,6 +264,8 @@
   resize: vertical;
 }
 .jc-queue-add textarea:focus-visible, .jc-field input:focus-visible, .jc-field select:focus-visible, .jc-field textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--jc-accent) 70%, transparent); outline-offset: 1px; }
+/* The select's background is translucent, so the browser draws the open list on its own light popup: give the options opaque colours. */
+.jc-field select :is(option, optgroup) { background: var(--jc-bg); color: var(--jc-text); }
 .jc-queue-add-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 :is(.jc-pane, .jc-launch) .jc-queue-add-actions .jc-icon-button { margin-left: auto; }
 .jc-queue-csv { display: grid; gap: 6px; }
@@ -422,7 +424,6 @@
 /* A not-ready runtime's reason wraps: phones have no tooltip to read a cut-off line. */
 .jc-launch-option-copy small { color: var(--room-muted, #9aa3a0); white-space: normal; overflow-wrap: anywhere; }
 .jc-launch-check { width: 14px; height: 14px; color: var(--room-accent, #6db7aa); }
-.jc-launch-profile { max-width: min(20rem, 100%); }
 .jc-launch-remember { min-width: 0; }
 .jc-launch-state { margin: 0; color: var(--room-muted, #9aa3a0); }
 .jc-launch-state.error { color: #f08a8a; }

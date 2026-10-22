@@ -12,6 +12,10 @@ managed browser (the operator's logged-in accounts), this CLI session, and a rai
 briefs, reviews your posts, answers your questions and reads your Memory. Posts, memory, activity and the
 publication gate live behind the Space API.
 
+**The operator's time (2026-10-20):** before a hand request (sign-in, CAPTCHA, browser handoff, needs-you), read the operator's local time from the tool's answer (`operator.localTime`, `operator.quiet`, `operator.heldUntil`); at night it waits for their morning batch on its own: keep the work ready and continue other work.
+
+**Browser hygiene (2026-10-20):** Space has at most 10 browsers for all panes together; keep only the tabs the current step needs; close a tab when its page is done; keep the working tab in front and never leave a page loading in a hidden tab (a hidden tab delays every input 5 s); before a run or turn ends close every tab except a form waiting for the operator's handoff, a sign-in the next step needs, or a page under a Vault fill; report "browser: N tabs, kept: ... because ..."; Nous checks every hour.
+
 ## Tools
 
 | Server | Tools |
@@ -72,7 +76,8 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
   channel at least twice unchanged; never for Hacker News, Reddit or Product Hunt.
 - **FULL**: publish drafts on your own judgement within each channel's cap and limit.
 - The API refuses what the settings forbid (`MARKETING_NEEDS_REVIEW`, `MARKETING_LIMIT`, `MARKETING_CHANNEL_OFF`,
-  `MARKETING_PAUSED`). A refusal is an answer: ask for a review, or wait for the slot it names.
+  `MARKETING_PAUSED`) and a post before its `scheduledAt` (`MARKETING_NOT_DUE`, naming the slot). A refusal is an answer: ask
+  for a review, or wait for the slot it names. Publish a scheduled post only when its PUBLISH item comes, never earlier.
 
 ## Photos and videos of SpaceApp
 
@@ -93,6 +98,8 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
 2. `space_browser_start` on this pane. When the operator saved a bookmark for the channel's site
    (`bookmarks` in `space_marketing_state`, or `space_marketing_bookmarks_list`), open it with
    `space_marketing_bookmark_open {bookmarkId}`: the new tab is signed in with that bookmark's Google account.
+   `space_playwright_pane` always works in the Chrome of the pane's active tab, so it reaches that tab too
+   (`browser_file_upload` included); when a call answers that the browser closed, call it again.
    A site you signed up on or a page the operator will come back to (a profile, a dashboard): save it with
    `space_marketing_bookmark_save {url, title}` (another Google account: copy `profileId` and `accountLabel` from a
    bookmark of that account).

@@ -52,6 +52,7 @@ export function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Gateway
     retentionIntervalMs: boundedInt(env.SPACE_GATEWAY_RETENTION_INTERVAL_MS, 3_600_000, 60_000, 86_400_000),
     usagePollIntervalMs: boundedInt(env.SPACE_GATEWAY_USAGE_POLL_INTERVAL_MS, 300_000, 30_000, 3_600_000),
     compressionWorkers: boundedInt(env.SPACE_GATEWAY_COMPRESSION_WORKERS, 2, 1, 16),
-    internalToken: env.SPACE_INTERNAL_API_TOKEN?.trim() || null
+    // The admin credential has its own variable (security addendum step 9); unset, it is the API's internal token.
+    internalToken: env.SPACE_GATEWAY_ADMIN_TOKEN?.trim() || env.SPACE_INTERNAL_API_TOKEN?.trim() || null
   };
 }

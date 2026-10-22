@@ -683,7 +683,7 @@ describe("Space contracts", () => {
         mode: "CHAT",
         terminalRuntimeId: "cli:root"
       })
-    ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN mode");
+    ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO mode");
     expect(updatePaneInputSchema.parse({ terminalRuntimeId: "cli:root" })).toEqual({
       terminalRuntimeId: "cli:root"
     });

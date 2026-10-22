@@ -644,7 +644,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
         >
           <span className="spaceapp-download-card">
             <Rocket aria-hidden="true" />
-            <span className="spaceapp-download-title"><strong>SpaceApp</strong> is source-available</span>
+            <span className="spaceapp-download-title"><strong>SpaceApp</strong> is open source (MIT)</span>
             <span>and <strong>free</strong> to self-host.</span>
           </span>
         </a>

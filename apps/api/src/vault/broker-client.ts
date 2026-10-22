@@ -27,6 +27,8 @@ export class VaultBrokerRefusedError extends GitControlError {
 
 export interface VaultBroker {
   transportKey(): Promise<{ publicKey: string; keyVersion: number }>;
+  /** The broker's audit chain, read only: times, ops, results and hashes of its newest entries (no ids, no values). */
+  audit?(): Promise<{ head: string; total: number; entries: Array<{ at: string; op: string; result: string; hash: string }> }>;
   /** Broker opens the share sealed to its transport key and seals it under the ARK for this owner and vault. */
   sealServerShare(input: { ownerUserId: string; vaultId: string; keyVersion: number; sealedServerShare: VaultTransportEnvelope; unlockPublicKey: string }): Promise<VaultSymmetricEnvelope>;
   /**
@@ -44,7 +46,17 @@ export interface VaultBroker {
     items: Array<{ handle: string; origins: string[]; fields: string[]; approvalMode: string; submit: boolean }>; sealedFillKey: VaultTransportEnvelope;
     /** The operator's unlock-key signature over the delegation, and what pins that key (the vault's server share). */
     operatorSignature: string; unlockPublicKey: string; serverShareEnvelope: VaultSymmetricEnvelope;
-  }): Promise<{ certificate: unknown; keyEnvelope: VaultSymmetricEnvelope }>;
+    /** The inbox's private key sealed to the transport key; the answer then carries it wrapped for this generation. */
+    sealedInboxKey?: VaultTransportEnvelope;
+  }): Promise<{ certificate: unknown; keyEnvelope: VaultSymmetricEnvelope; inboxKeyEnvelope?: VaultSymmetricEnvelope }>;
+  /**
+   * A login agents saved, created or changed joins the active delegation without an unlock: the broker opens the inbox entry,
+   * seals its fields under the delegation's fill key and signs the extended certificate (same generation).
+   */
+  delegatePending(input: {
+    ownerUserId: string; vaultId: string; certificate: unknown; keyEnvelope: VaultSymmetricEnvelope; inboxKeyEnvelope: VaultSymmetricEnvelope;
+    entry: { handle: string; origin: string; sealedUsername: VaultTransportEnvelope | null; sealedPassword: VaultTransportEnvelope | null };
+  }): Promise<{ certificate: z.infer<typeof vaultDelegationCertificateSchema>; fieldEnvelopes: Partial<Record<"USERNAME" | "PASSWORD", VaultSymmetricEnvelope>> }>;
   /**
    * One fill: the broker checks the delegation and generation, records a one-time nonce and signs a use capability bound to
    * this pane's live target, frame and exact origin (as the Browser Host reported them).
@@ -72,6 +84,8 @@ export interface VaultBroker {
     inboxPublicKey: string; replyPublicKey: string; field?: { minLength: number | null; maxLength: number | null };
   }): Promise<{ sealedPassword: VaultTransportEnvelope; sealedFields: VaultTransportEnvelope }>;
   signupRevoke(input: { ownerUserId: string; vaultId: string; grantId: string }): Promise<{ revoked: true }>;
+  /** A one-site, one-use sign-up grant minted under the active delegation, for a site the operator signed no grant for. */
+  signupAutoGrant(input: { ownerUserId: string; vaultId: string; certificate: unknown; origin: string }): Promise<{ certificate: z.infer<typeof vaultSignupGrantCertificateSchema> }>;
 }
 
 const transportKeySchema = z.object({ publicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/), keyVersion: z.number().int().min(1) }).strict();
@@ -103,18 +117,24 @@ function call<T>(socketPath: string, method: "GET" | "POST", path: string, body:
 export function createSocketVaultBroker(socketPath = VAULT_BROKER_SOCKET_PATH): VaultBroker {
   return {
     transportKey: () => call(socketPath, "GET", "/v1/transport-key", undefined, transportKeySchema),
+    audit: () => call(socketPath, "GET", "/v1/audit", undefined, z.object({ head: z.string().regex(/^[0-9a-f]{64}$/), total: z.number().int().min(0),
+      entries: z.array(z.object({ at: z.string().max(40), op: z.string().max(40), result: z.string().max(60), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict()).max(200) }).strict()),
     delegationKey: () => call(socketPath, "GET", "/v1/delegation-key", undefined, z.object({ publicKey: z.string().regex(/^[A-Za-z0-9_-]{40,120}$/), keyVersion: z.number().int().min(1) }).strict()),
     issueUse: (input) => call(socketPath, "POST", "/v1/use", input, z.object({ capability: vaultUseCapabilitySchema }).strict()),
     openFill: (input) => call(socketPath, "POST", "/v1/fill", input, z.object({ sealedFields: vaultTransportEnvelopeSchema }).strict()).then((answer) => answer.sealedFields),
     revoke: (input) => call(socketPath, "POST", "/v1/revoke", input, z.object({ generation: z.number().int() }).strict()),
-    delegate: (input) => call(socketPath, "POST", "/v1/delegate", input, z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema }).strict()),
+    delegate: (input) => call(socketPath, "POST", "/v1/delegate", input, z.object({ certificate: vaultDelegationCertificateSchema, keyEnvelope: vaultSymmetricEnvelopeSchema,
+      inboxKeyEnvelope: vaultSymmetricEnvelopeSchema.optional() }).strict()),
+    delegatePending: (input) => call(socketPath, "POST", "/v1/delegate-pending", input, z.object({ certificate: vaultDelegationCertificateSchema,
+      fieldEnvelopes: z.object({ USERNAME: vaultSymmetricEnvelopeSchema.optional(), PASSWORD: vaultSymmetricEnvelopeSchema.optional() }).strict() }).strict()),
     sealServerShare: (input) => call(socketPath, "POST", "/v1/server-share", input, z.object({ serverShareEnvelope: vaultSymmetricEnvelopeSchema }).strict())
       .then((answer) => answer.serverShareEnvelope),
     unlock: (input) => call(socketPath, "POST", "/v1/unlock", input, z.object({ sealedServerShare: vaultTransportEnvelopeSchema }).strict())
       .then((answer) => answer.sealedServerShare),
     signupGrant: (input) => call(socketPath, "POST", "/v1/signup-grant", input, z.object({ certificate: vaultSignupGrantCertificateSchema }).strict()),
     signup: (input) => call(socketPath, "POST", "/v1/signup", input, z.object({ sealedPassword: vaultTransportEnvelopeSchema, sealedFields: vaultTransportEnvelopeSchema }).strict()),
-    signupRevoke: (input) => call(socketPath, "POST", "/v1/signup-revoke", input, z.object({ revoked: z.literal(true) }).strict())
+    signupRevoke: (input) => call(socketPath, "POST", "/v1/signup-revoke", input, z.object({ revoked: z.literal(true) }).strict()),
+    signupAutoGrant: (input) => call(socketPath, "POST", "/v1/signup-auto-grant", input, z.object({ certificate: vaultSignupGrantCertificateSchema }).strict())
   };
 }
 

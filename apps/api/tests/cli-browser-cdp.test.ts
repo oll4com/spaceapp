@@ -1,15 +1,17 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createContext, runInContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { BrowserControlLease, PaneBrowserSession } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
-import type { BrowserSessionManager } from "../src/browser-sessions.js";
+import { browserAccountTabsFile, googleBrowserProfilePathFor, type BrowserSessionManager } from "../src/browser-sessions.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
-import { cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpProxyIdBase, cliBrowserCdpStatusPath, createCliBrowserCdpTargetFilter, readChromeAutomationEndpoint } from "../src/cli-browser-cdp.js";
+import { cliBrowserCdpCloseCodes, cliBrowserCdpPath, cliBrowserCdpProxyIdBase, cliBrowserCdpStatusPath, cliBrowserPasswordRedaction, createCliBrowserCdpTargetFilter, readChromeAutomationEndpoint } from "../src/cli-browser-cdp.js";
 import { getApiConfig } from "../src/config.js";
+import { registerVaultFenceHooks } from "../src/vault/fence-hooks.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 const csrfHeaderName = "x-space-csrf-token";
@@ -77,6 +79,7 @@ async function fixture(chromePort: number) {
     SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
     SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"),
     SPACE_BROWSER_SESSIONS_ENABLED: "true",
+    SPACE_BROWSER_SESSIONS_PROFILE_ROOT: join(root, "profiles"),
     SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true",
     SPACE_INTERNAL_API_TOKEN: "internal-token-for-cdp-tests"
   });
@@ -231,6 +234,55 @@ describe("CLI browser CDP proxy", () => {
     expect(filter.fromChrome(ordinary)).toBe(ordinary);
   });
 
+  it("masks password values in Playwright's utility world before the client can use it, and leaves the page's own world alone", () => {
+    const sent: Record<string, unknown>[] = [];
+    const filter = createCliBrowserCdpTargetFilter((message) => sent.push(message));
+    const created = (name: string, id: number) => JSON.stringify({ method: "Runtime.executionContextCreated",
+      params: { context: { id, origin: "https://login.example", name, uniqueId: `u-${id}`, auxData: { frameId: "frame-1", isDefault: name === "" } } }, sessionId: "s-mine" });
+    const utility = created("__playwright_utility_world_page@1", 7);
+    expect(filter.fromChrome(utility)).toBe(utility);
+    expect(sent).toEqual([{ id: cliBrowserCdpProxyIdBase + 1, method: "Runtime.evaluate",
+      params: { expression: cliBrowserPasswordRedaction, contextId: 7, returnByValue: true, silent: true }, sessionId: "s-mine" }]);
+    // Older Playwright names the world without a page id; the page's main world and other worlds get nothing.
+    expect(filter.fromChrome(created("__playwright_utility_world__", 8))).not.toBeNull();
+    for (const name of ["", "extension-world"]) expect(filter.fromChrome(created(name, 9))).not.toBeNull();
+    expect(sent.map((message) => (message.params as { contextId: number }).contextId)).toEqual([7, 8]);
+    // The proxy's own reply never reaches the client.
+    expect(filter.fromChrome(JSON.stringify({ id: cliBrowserCdpProxyIdBase + 1, result: { result: { type: "undefined" } } }))).toBeNull();
+
+    // In a world like Chrome's: password fields read as a mask, other fields and writes are untouched, and a second run is a no-op.
+    const world = createContext({});
+    runInContext(`globalThis.HTMLInputElement = class { constructor(type, value) { this.type = type; this.raw = value; }
+      get value() { return this.raw; } set value(next) { this.raw = next; } }`, world);
+    runInContext(cliBrowserPasswordRedaction, world);
+    runInContext(cliBrowserPasswordRedaction, world);
+    expect(runInContext(`const secret = new HTMLInputElement("password", "synthetic-value"), empty = new HTMLInputElement("password", ""),
+      text = new HTMLInputElement("text", "hello"); secret.value = "next-synthetic";
+      JSON.stringify([secret.value, secret.raw, empty.value, text.value])`, world))
+      .toBe(JSON.stringify(["\u2022".repeat(8), "next-synthetic", "", "hello"]));
+  });
+
+  it("hides every tab another pane's Vault fence covers, whichever Chrome the store lists it in", async () => {
+    const chrome = await fakeChrome();
+    const { app, store, room, token, jobPane, session } = await fixture(chrome.port);
+    try {
+      // The filled pane runs on another Chrome profile and the store does not list the tab (a handoff page, a stale list).
+      const filled = store.createPane({ roomId: room.id, title: "Freelance", mode: "BROWSER" });
+      store.createPaneBrowserSession({ paneId: filled.id, roomId: room.id, agentNumber: 2, profileId: "profile:filled", profilePath: `${session.profilePath}-filled`, viewport: "desktop" });
+      registerVaultFenceHooks(store, { fenceHandoff: async () => undefined, fencedTargets: async (paneId) => paneId === filled.id ? ["fenced-tab"] : [] });
+      const client = await attach(app, jobPane.id, token);
+      client.socket.send(JSON.stringify({ id: 1, method: "Target.attachToTarget", params: { targetId: "fenced-tab", flatten: true } }));
+      client.socket.send(JSON.stringify({ id: 2, method: "Browser.getVersion" }));
+      await waitFor(() => (client.messages.length >= 2 ? true : undefined), "both replies");
+      expect(JSON.parse(client.messages.find((text) => JSON.parse(text).id === 1)!)).toMatchObject({ id: 1, error: { code: -32000 } });
+      expect(chrome.received).toEqual([JSON.stringify({ id: 2, method: "Browser.getVersion" })]);
+      client.socket.close(1000, "done");
+    } finally {
+      await app.close();
+      await chrome.close();
+    }
+  });
+
   it("refuses commands for another pane's page of the same Chrome before they reach the browser", async () => {
     const chrome = await fakeChrome();
     const { app, store, room, token, jobPane, session } = await fixture(chrome.port);
@@ -254,6 +306,47 @@ describe("CLI browser CDP proxy", () => {
     } finally {
       await app.close();
       await chrome.close();
+    }
+  });
+
+  it("follows the active tab into another Google account's Chrome and reconnects when it moves back", async () => {
+    const home = await fakeChrome();
+    const main = await fakeChrome();
+    const { app, store, config, token, jobPane, session } = await fixture(home.port);
+    try {
+      // The pane's tab of the main account lives in that account's Chrome (browser-sessions.ts switchPageAccount).
+      const identity = { googleAccount: { ownerUserId: "user:operator", accountId: "google_account:main" } };
+      const mainProfile = googleBrowserProfilePathFor(config.browserSessionsProfileRoot, identity.googleAccount.ownerUserId, identity.googleAccount.accountId);
+      await mkdir(mainProfile, { recursive: true });
+      await writeFile(join(mainProfile, "DevToolsActivePort"), `${main.port}\n/devtools/browser/test\n`, "utf8");
+      const tabsFile = browserAccountTabsFile(config.browserSessionsProfileRoot, jobPane.id);
+      await mkdir(join(tabsFile, ".."), { recursive: true });
+      await writeFile(tabsFile, JSON.stringify({ version: 1, accounts: { "google_account:main": identity } }), "utf8");
+      const tab = (pageId: string, isActive: boolean, account: { profileId: string; label: string } | null) =>
+        ({ pageId, kind: "PAGE" as const, url: "https://x.com/compose/post", title: pageId, isActive, openerPageId: null, canGoBack: false, canGoForward: false, account });
+      store.updatePaneBrowserSession(session.sessionId, {
+        pages: [tab("linkedin", false, null), tab("x-main", true, { profileId: "google_account:main", label: "spaceappdv@gmail.com" })],
+        activePageId: "x-main"
+      });
+
+      const client = await attach(app, jobPane.id, token);
+      client.socket.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
+      await waitFor(() => client.messages[0], "the main account Chrome's reply");
+      expect(main.received).toEqual([JSON.stringify({ id: 1, method: "Browser.getVersion" })]);
+      expect(home.received).toEqual([]);
+
+      // The operator or agent brings the pane's own tab back to the front: the client is closed and reconnects at home.
+      store.updatePaneBrowserSession(session.sessionId, { pages: [tab("linkedin", true, null), tab("x-main", false, { profileId: "google_account:main", label: "spaceappdv@gmail.com" })], activePageId: "linkedin" });
+      expect(await client.closed).toBe(cliBrowserCdpCloseCodes.ACTIVE_TAB_MOVED);
+      const again = await attach(app, jobPane.id, token);
+      again.socket.send(JSON.stringify({ id: 2, method: "Browser.getVersion" }));
+      await waitFor(() => again.messages[0], "the pane's own Chrome's reply");
+      expect(home.received).toEqual([JSON.stringify({ id: 2, method: "Browser.getVersion" })]);
+      again.socket.close(1000, "done");
+    } finally {
+      await app.close();
+      await home.close();
+      await main.close();
     }
   });
 

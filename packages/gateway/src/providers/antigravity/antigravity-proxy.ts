@@ -335,7 +335,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
 
   app.register(async (scope) => {
     scope.removeAllContentTypeParsers();
-    scope.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 64 * 1024 * 1024 }, (_request, payload, done) => done(null, payload));
+    scope.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 32 * 1024 * 1024 }, (_request, payload, done) => done(null, payload));
     scope.all("/antigravity/*", handle);
   });
 }

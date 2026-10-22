@@ -13,15 +13,15 @@ export const copilotControlActionSchema = z.enum(["start_agent", "stop_agent", "
   .describe("start_agent/stop_agent: the pane's CLI agent. pause/resume: the copilot itself. run_start/run_pause/run_stop: its work run.");
 export type CopilotControlAction = z.infer<typeof copilotControlActionSchema>;
 
-export const COPILOT_CONTROL_DESCRIPTION = "Control a copilot pane (Mail, Marketing, Freelance, Job): start or stop its CLI agent, pause or resume the copilot, "
-  + "start, pause or stop its run. Start the agent before a run; give Marketing and Freelance their work as a brief first. "
+export const COPILOT_CONTROL_DESCRIPTION = "Control a copilot pane (Mail, Marketing, Freelance, Job, Design, App Studio): start or stop its CLI agent, pause or resume the copilot, "
+  + "start, pause or stop its run. Start the agent before a run; give Marketing, Freelance and App Studio their work as a brief first. "
   + "Sends to third parties stay behind the copilot's own reviews and autonomy.";
 
 /** The owner's own API as Space Control calls it: a session for the owner, so each route checks and audits as for a click. */
 export type CopilotInvoke = (owner: string, method: "GET" | "POST" | "PUT", url: string, payload?: unknown) => Promise<unknown>;
 
 const routePrefix: Partial<Record<Pane["mode"], string>> = {
-  JOB_APPLY: "job-apply", MAIL_COPILOT: "mail-copilot", MARKETING_COPILOT: "marketing-copilot", FREELANCE_COPILOT: "freelance-copilot", DESIGN: "design"
+  JOB_APPLY: "job-apply", MAIL_COPILOT: "mail-copilot", MARKETING_COPILOT: "marketing-copilot", FREELANCE_COPILOT: "freelance-copilot", DESIGN: "design", APP_STUDIO: "app-studio"
 };
 
 const running = (session: PaneCliSession | null) =>

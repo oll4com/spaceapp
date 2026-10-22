@@ -71,6 +71,11 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 
 - The `MEDIA_CAPTURE` scope ships with the broker in stable's deploy. Until the operator promotes it, the engine answers
   "This broker has no read-only scope yet": capture in a Studio room, or use the mock.
+- A Studio room (`--room` of an Agent Proof room) is always shot with a full `studio` session: the page lists only that
+  room, its terminals attach as a normal client sized to the shot (a read-only observer keeps each CLI's own width, so
+  Claude Code and Gemini render garbled), and every request naming another room is refused, because the page would
+  otherwise follow the operator when they switch rooms in their own browser. Still look at every frame before handing
+  a clip over.
 - Dev runs no browser host (browser panes show `BROWSER_SESSIONS_DISABLED`) and at most 2 CLIs.
 - Read-only sessions get no Dots, voice or Live history answers, so those panes look emptier there.
 

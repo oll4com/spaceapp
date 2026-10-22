@@ -8151,6 +8151,23 @@ svg.space-aurora-icon {
   font-size: 0.68rem;
 }
 
+.browser-agent-label {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  max-width: calc(100% - 1rem);
+  overflow: hidden;
+  border: 1px solid var(--accent, #8bdfcc);
+  border-radius: 4px;
+  background: rgba(10, 16, 18, 0.88);
+  color: var(--accent, #8bdfcc);
+  padding: 0.2rem 0.45rem;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
 .browser-pane-notice {
   position: absolute;
   left: 0.5rem;
@@ -21382,6 +21399,14 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 .youtube-player-loading { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .youtube-player-message { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid #773d47; background: #25171a; color: #ffb9bf; border-radius: 5px; font-size: 12px; }
 .youtube-player-message span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.youtube-summary { flex-shrink: 0; max-height: 40%; overflow-y: auto; padding: 8px 10px; border: 1px solid var(--border, #35404b); border-radius: 6px; background: var(--surface-muted, #171e25); font-size: 12px; }
+.youtube-summary header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.youtube-summary header strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.youtube-summary header small { opacity: .7; white-space: nowrap; }
+.youtube-summary[role="status"] { margin: 0; opacity: .85; }
+.youtube-experience .youtube-toolbar[data-compact="true"] .youtube-btn-label { display: none; }
+.youtube-experience .youtube-toolbar[data-compact="true"] .youtube-tool-btn { width: 32px; min-width: 32px; padding: 0; }
+.youtube-summary p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 .youtube-native-player > .youtube-player-message { position: absolute; left: 8px; right: 8px; top: 8px; }
 .youtube-playback-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 10px; font-size: 10px; opacity: .8; }
 .youtube-playback-footer small { flex-basis: 100%; font-size: 10px; }
@@ -21553,10 +21578,6 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 .pane-card.is-floating-mini-player.is-pointer-active .youtube-mini-float-resize-handle::after {
   border-color: var(--accent, #4ac6b2);
   opacity: 1;
-}
-
-.youtube-tool-btn.youtube-float-btn {
-  gap: 4px;
 }
 
 /* ==========================================================================

@@ -18,6 +18,7 @@ import {
   stripTrailingLineEndings
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
+import { imageDigestEnv, PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -94,6 +95,16 @@ export function profileRuntimeSettings(profile) {
   return settings;
 }
 const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
+// provider install claude: approve Claude Code's postinstall (its native binary) for exactly the pinned version in the vendor
+// project's package.json allowScripts, as deploy/docker/provider-install.mjs does on first use, then install with npm. $1 is the
+// package; npm 11 refuses --allow-scripts for an install with --prefix.
+const CLAUDE_INSTALL_SCRIPT = [
+  "node -e 'const fs=require(\"fs\");const dir=\"/var/lib/spaceapp-cli/vendor/claude\";const file=dir+\"/package.json\";",
+  "let manifest={private:true};try{manifest=JSON.parse(fs.readFileSync(file,\"utf8\"))}catch{}",
+  "manifest.allowScripts={...manifest.allowScripts,[process.argv[1]]:true};fs.mkdirSync(dir,{recursive:true});",
+  "fs.writeFileSync(file,JSON.stringify(manifest,null,2)+\"\\n\")' \"$1\"",
+  " && exec npm install --prefix /var/lib/spaceapp-cli/vendor/claude --no-audit --no-fund \"$1\""
+].join("");
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 export const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
 const PROVIDERS = Object.freeze({
@@ -614,11 +625,12 @@ export async function writeSetupToken(root, token) {
   return target;
 }
 
-export function renderRuntimeEnv(config) {
+export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK) {
   validateConfig(config);
   const settings = PROFILE_RUNTIME_SETTINGS[config.profile];
   return [
     `SPACEAPP_IMAGE_TAG=${safeEnv(config.version)}`,
+    ...imageDigestEnv(config.version, imageLock),
     `SPACEAPP_BIND_HOST=${safeEnv(config.bindHost)}`,
     `SPACEAPP_PORT=${config.port}`,
     `SPACEAPP_TELEMETRY=${config.telemetry}`,
@@ -686,7 +698,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     const slug = userSlug(user.id);
     return [
       `  spaceapp-cli-${slug}:`,
-      "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}",
+      // The owner's pinned CLI image (runtime.env sets the digest; 1.1.7 review: a moved tag cannot change a user's).
+      "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}",
       "    restart: unless-stopped",
       "    init: true",
       "    security_opt:",
@@ -812,17 +825,23 @@ export function composeCommand(action, root, options = {}) {
       "--user",
       "10001:10001",
       "--entrypoint",
-      "npm",
+      "sh",
       options.service ?? "spaceapp-cli",
-      "install",
-      "--prefix",
-      "/var/lib/spaceapp-cli/vendor/claude",
-      "--no-audit",
-      "--no-fund",
+      "-c",
+      CLAUDE_INSTALL_SCRIPT,
+      "sh",
       "@anthropic-ai/claude-code@2.1.301"
     ],
-    backup: ["exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"],
+    // The backup runs in a one-off container while the writers are paused (backupWithWritersPaused in cli.mjs).
+    backup: [
+      "run", "--rm", "--no-deps", "--user", "0:0",
+      "--env", "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
+      "--entrypoint", "node", "spaceapp-core", "scripts/portable-backup.mjs"
+    ],
+    pauseWriters: ["pause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
+    unpauseWriters: ["unpause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
     stopForRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"],
+    stopForPortableRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
     resetOwnerPassword: [
       "exec",
       "-T",
@@ -910,10 +929,21 @@ export async function selectLatestBackupId(root) {
   return backupId;
 }
 
+// mkdir keeps the mode of a secrets folder that already existed; the 0644 container secrets inside rely on it being
+// owner-only (review INT5-C-F21), so install, init and every command that writes the runtime files tighten it.
+// Windows has no POSIX modes.
+async function ensureOwnerOnlySecrets(root) {
+  if (process.platform === "win32") return;
+  const secrets = join(root, "secrets");
+  const info = await stat(secrets).catch(() => null);
+  if (info && (info.mode & 0o077) !== 0) await chmod(secrets, 0o700);
+}
+
 export async function writeRuntimeFiles(root, config) {
   validateHome(root);
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  await ensureOwnerOnlySecrets(root);
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
   // The core reads it as uid 10001 through a read-only bind mount.
@@ -934,6 +964,7 @@ export async function prepareInstallation(root, {
     mkdir(join(root, "backups"), { recursive: true, mode: 0o700 }),
     mkdir(join(root, "secrets", "providers"), { recursive: true, mode: 0o700 })
   ]);
+  await ensureOwnerOnlySecrets(root);
   const resolvedProfile = profile === undefined
     ? undefined
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());

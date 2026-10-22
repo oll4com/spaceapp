@@ -18,7 +18,7 @@ describe("signed session boundaries", () => {
     expect(() => signSessionTokenWithTtl(user, secret, 43_201, 0)).toThrow();
   });
 
-  it("issues normal operator sessions for exactly 400 days", () => {
+  it("issues normal operator sessions for exactly 30 days", () => {
     const token = signPersistentOperatorSessionToken(
       { id: "user:operator", email: "operator@space.test", role: "ADMIN" },
       "test-secret-with-enough-length",
@@ -26,6 +26,7 @@ describe("signed session boundaries", () => {
     );
 
     expect(decodeSessionToken(token).exp).toBe(persistentOperatorSessionTtlSeconds);
+    expect(persistentOperatorSessionTtlSeconds).toBe(30 * 24 * 60 * 60);
   });
 
   it("rejects persistent tokens for the proof operator identity", () => {

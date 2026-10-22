@@ -88,6 +88,9 @@ export const spaceConfigBundleSchema = z.object({
 export type SpaceConfigBundle = z.infer<typeof spaceConfigBundleSchema>;
 export type SpaceConfigRoom = z.infer<typeof spaceConfigRoomSchema>;
 
+export const configSectionSchema = z.enum(["rooms", "userSettings", "userLinks", "clipboardItems", "taskItems", "cliRuntimeSettings", "providers", "apiKeys", "credentials"]);
+export type ConfigSection = z.infer<typeof configSectionSchema>;
+
 export const exportConfigOptionsSchema = z.object({
   userId: z.string().optional(),
   includeClosedPanes: z.boolean().optional().default(false),
@@ -96,17 +99,7 @@ export const exportConfigOptionsSchema = z.object({
   passphrase: configBundlePassphraseSchema.optional(),
   /** CLI runtimes whose logins go into the encrypted blob (with includeCredentials). */
   cliAuthRuntimes: z.array(z.string().regex(/^cli:[a-z0-9-]{1,40}$/)).max(40).optional(),
-  sections: z.array(z.enum([
-    "rooms",
-    "userSettings",
-    "userLinks",
-    "clipboardItems",
-    "taskItems",
-    "cliRuntimeSettings",
-    "providers",
-    "apiKeys",
-    "credentials"
-  ])).optional()
+  sections: z.array(configSectionSchema).optional()
 });
 export type ExportConfigOptions = z.input<typeof exportConfigOptionsSchema>;
 
@@ -114,7 +107,10 @@ export const importConfigModeSchema = z.enum(["replace", "merge"]);
 export type ImportConfigMode = z.infer<typeof importConfigModeSchema>;
 
 export const importConfigOptionsSchema = z.object({
-  mode: importConfigModeSchema.optional().default("replace"),
+  // Merge adds to what is here; Replace deletes the imported sections' rooms, links, clipboard and tasks first, so it
+  // needs confirmReplace (Record Retention Invariant 2026-10-20).
+  mode: importConfigModeSchema.optional().default("merge"),
+  confirmReplace: z.boolean().optional(),
   targetUserId: z.string().optional(),
   importApiKeys: z.boolean().optional().default(true),
   importCredentials: z.boolean().optional().default(true),
@@ -127,7 +123,8 @@ export const importConfigOptionsSchema = z.object({
     from: z.string(),
     to: z.string()
   }).optional(),
-  sections: z.array(z.string()).optional()
+  /** The sections to import; all of them when absent. */
+  sections: z.array(configSectionSchema).optional()
 });
 export type ImportConfigOptions = z.input<typeof importConfigOptionsSchema>;
 

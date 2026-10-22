@@ -13,7 +13,8 @@ function fixture(screen: Record<string, unknown> = emptyPrompt) {
   const answer = vi.fn(async () => ({}));
   const inspect = vi.fn(async () => screen as never);
   const panes: Record<string, Pane> = { [cliPane.id]: cliPane, "pane:chat": { ...cliPane, id: "pane:chat", mode: "CHAT" } as Pane,
-    "pane:foreign": { ...cliPane, id: "pane:foreign", roomId: "room:theirs" } as Pane };
+    "pane:foreign": { ...cliPane, id: "pane:foreign", roomId: "room:theirs" } as Pane,
+    "pane:job": { ...cliPane, id: "pane:job", mode: "JOB_APPLY", title: "Job Copilot 1" } as Pane };
   const runner = createTaskScheduleRunner({
     store: {
       dueTaskSchedules: (now, limit) => store.dueTaskSchedules(now, limit),
@@ -95,6 +96,25 @@ describe("scheduled tasks", () => {
     expect(get(reminder.id).schedule).toMatchObject({ nextRunAt: "2026-10-15T12:00:00.000Z", lastOutcome: "Reminder due at 2026-10-15T10:00:00.000Z." });
     expect(get(chat.id).schedule!.lastOutcome).toMatch(/not a CLI/);
     expect(get(foreign.id).schedule!.lastOutcome).toMatch(/not in one of your rooms/);
+  });
+
+  // Copilot tasks were skipped as "not a CLI" although the copilot's CLI runs (2026-10-19).
+  it("types a due task into a copilot pane's CLI, and skips one whose CLI is not running", async () => {
+    const running = fixture();
+    running.add("Archive job emails.", every2h, "pane:job");
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await running.runner.tick()).toMatchObject({ RAN: 1 });
+    expect(running.answer).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:job", mode: "JOB_APPLY" }), expect.objectContaining({ submit: true }));
+
+    vi.setSystemTime(start);
+    const stopped = fixture({ state: "UNKNOWN", sessionId: null });
+    const task = stopped.add("Archive job emails.", every2h, "pane:job");
+    vi.setSystemTime(Date.parse("2026-10-15T10:30:00.000Z"));
+    expect(await stopped.runner.tick()).toMatchObject({ WAITING: 1 });
+    vi.setSystemTime(Date.parse("2026-10-15T12:00:01.000Z"));
+    expect(await stopped.runner.tick()).toMatchObject({ SKIPPED: 1 });
+    expect(stopped.answer).not.toHaveBeenCalled();
+    expect(stopped.get(task.id).schedule!.lastOutcome).toMatch(/the pane has no running CLI/);
   });
 
   it("saving a task again keeps its pending run, and the prompt fits one CLI line", () => {

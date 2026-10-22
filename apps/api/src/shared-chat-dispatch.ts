@@ -99,6 +99,6 @@ export function buildSharedChatDispatchPrompt(content: string, label: string, ru
       "Reply to them in the Shared Chat by running from the shell:",
       `/opt/spaceapp/scripts/space-chat-post.sh --label ${JSON.stringify(label)} --runtime ${JSON.stringify(runtimeId)} --text 'your reply in English'`,
       "Do not start any other tasks for this message. If it does not concern you at all, do not reply."
-    ].join("\n") + "\r"
+    ].join("\n")
   );
 }

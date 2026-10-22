@@ -14,7 +14,7 @@ export type DesignRequestPatch = Partial<Pick<DesignRequest, "designPaneId" | "s
 export interface DesignRequestFilter { status?: DesignRequestStatus[]; designPaneId?: string; requesterPaneId?: string; limit: number }
 export type DesignAssetCreateRecord = Omit<DesignAsset, "id" | "createdAt" | "updatedAt">;
 export type DesignAssetPatch = Partial<Pick<DesignAsset, "label" | "pinned" | "requestId">>;
-export interface DesignAssetFilter { paneId?: string; requestId?: string; formatIds?: string[]; brandKitId?: string; ids?: string[]; limit: number }
+export interface DesignAssetFilter { paneId?: string; requestId?: string; formatIds?: string[]; brandKitId?: string; ids?: string[]; parentIds?: string[]; limit: number }
 export type DesignEventCreateRecord = Omit<DesignEvent, "id" | "createdAt">;
 export interface DesignEventFilter { paneId?: string; requestId?: string; limit: number }
 
@@ -119,7 +119,8 @@ export class InMemoryDesignRepository implements DesignRepository {
   async listAssets(owner: string, filter: DesignAssetFilter) {
     return [...this.assets.values()].filter((row) => row.ownerUserId === owner && (!filter.paneId || row.paneId === filter.paneId)
       && (!filter.requestId || row.requestId === filter.requestId) && (!filter.formatIds?.length || filter.formatIds.includes(row.formatId))
-      && (!filter.brandKitId || row.brandKitId === filter.brandKitId) && (!filter.ids || filter.ids.includes(row.id)))
+      && (!filter.brandKitId || row.brandKitId === filter.brandKitId) && (!filter.ids || filter.ids.includes(row.id))
+      && (!filter.parentIds || (row.parentAssetId !== null && filter.parentIds.includes(row.parentAssetId))))
       .sort(byNewest).slice(0, filter.limit).map(copy);
   }
   async updateAsset(owner: string, id: string, patch: DesignAssetPatch) {
@@ -174,10 +175,11 @@ const kitTable: Table<DesignBrandKit> = {
 const requestTable: Table<DesignRequest> = {
   name: "design_requests",
   columns: { id: "id", ownerUserId: "owner_user_id", designPaneId: "design_pane_id", requester: "requester", brief: "brief", formatIds: "format_ids", engine: "engine", brandKitId: "brand_kit_id",
-    referenceArtifactIds: "reference_artifact_ids", callback: "callback", status: "status", resultAssetIds: "result_asset_ids", question: "question", answer: "answer", message: "message",
+    referenceArtifactIds: "reference_artifact_ids", callback: "callback", templateId: "template_id", params: "params", status: "status", resultAssetIds: "result_asset_ids", question: "question", answer: "answer", message: "message",
     takenAt: "taken_at", deliveredAt: "delivered_at", createdAt: "created_at", updatedAt: "updated_at" },
-  json: new Set(["requester", "callback"]), arrays: new Set(["formatIds", "referenceArtifactIds", "resultAssetIds"]),
+  json: new Set(["requester", "callback", "params"]), arrays: new Set(["formatIds", "referenceArtifactIds", "resultAssetIds"]),
   row: (raw) => ({ ...(raw as unknown as DesignRequest), requester: object(raw.requester) as DesignRequest["requester"], callback: raw.callback ? object(raw.callback) as DesignRequest["callback"] : null,
+    params: raw.params ? object(raw.params) : null,
     formatIds: (raw.formatIds as string[] | null) ?? [], referenceArtifactIds: (raw.referenceArtifactIds as string[] | null) ?? [], resultAssetIds: (raw.resultAssetIds as string[] | null) ?? [],
     takenAt: iso(raw.takenAt), deliveredAt: iso(raw.deliveredAt), createdAt: iso(raw.createdAt)!, updatedAt: iso(raw.updatedAt)! })
 };
@@ -185,10 +187,10 @@ const assetTable: Table<DesignAsset> = {
   name: "design_assets",
   columns: { id: "id", ownerUserId: "owner_user_id", paneId: "pane_id", requestId: "request_id", artifactId: "artifact_id", formatId: "format_id", width: "width", height: "height",
     mimeType: "mime_type", engine: "engine", model: "model", label: "label", prompt: "prompt", templateId: "template_id", params: "params", brandKitId: "brand_kit_id",
-    parentAssetId: "parent_asset_id", pinned: "pinned", createdAt: "created_at", updatedAt: "updated_at" },
-  json: new Set(["params"]), arrays: new Set(),
+    parentAssetId: "parent_asset_id", description: "description", madeBy: "made_by", pinned: "pinned", createdAt: "created_at", updatedAt: "updated_at" },
+  json: new Set(["params", "madeBy"]), arrays: new Set(),
   row: (raw) => ({ ...(raw as unknown as DesignAsset), width: Number(raw.width), height: Number(raw.height), params: raw.params ? object(raw.params) : null,
-    createdAt: iso(raw.createdAt)!, updatedAt: iso(raw.updatedAt)! })
+    madeBy: raw.madeBy ? object(raw.madeBy) as DesignAsset["madeBy"] : null, createdAt: iso(raw.createdAt)!, updatedAt: iso(raw.updatedAt)! })
 };
 const eventTable: Table<DesignEvent> = {
   name: "design_events",
@@ -252,8 +254,9 @@ export class PostgresDesignRepository implements DesignRepository {
   async listAssets(owner: string, filter: DesignAssetFilter) {
     return (await this.pool.query<Record<string, unknown>>(`SELECT ${select(assetTable as Table<unknown>)} FROM design_assets WHERE owner_user_id=$1 AND ($2::text IS NULL OR pane_id=$2)
         AND ($3::text IS NULL OR request_id=$3) AND ($4::text[] IS NULL OR format_id = ANY($4::text[])) AND ($5::text IS NULL OR brand_kit_id=$5)
-        AND ($6::text[] IS NULL OR id = ANY($6::text[])) ORDER BY created_at DESC, id DESC LIMIT $7`,
-      [owner, filter.paneId ?? null, filter.requestId ?? null, filter.formatIds?.length ? filter.formatIds : null, filter.brandKitId ?? null, filter.ids ?? null, filter.limit])).rows.map(assetTable.row);
+        AND ($6::text[] IS NULL OR id = ANY($6::text[])) AND ($8::text[] IS NULL OR parent_asset_id = ANY($8::text[])) ORDER BY created_at DESC, id DESC LIMIT $7`,
+      [owner, filter.paneId ?? null, filter.requestId ?? null, filter.formatIds?.length ? filter.formatIds : null, filter.brandKitId ?? null, filter.ids ?? null, filter.limit,
+        filter.parentIds ?? null])).rows.map(assetTable.row);
   }
   updateAsset(owner: string, id: string, patch: DesignAssetPatch) { return this.update(assetTable, owner, id, patch); }
   async deleteAsset(owner: string, id: string) {

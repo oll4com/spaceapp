@@ -16,4 +16,12 @@ describe("Fullscreen Pane Layout Sizing and Styles", () => {
     expect(classicCss).toContain("grid-column: 1 / -1;");
     expect(classicCss).toContain("grid-row: 1 / -1;");
   });
+
+  it("does not mark the grid maximized in full screen, so the selected pane is never hidden by another pane's maximize", () => {
+    const appSource = readFileSync(resolve(__dirname, "../src/App.tsx"), "utf8");
+    const classicCss = readFileSync(resolve(__dirname, "../src/styles.css"), "utf8");
+
+    expect(classicCss).toContain(".pane-grid.maximized .pane-card:not(.is-maximized)");
+    expect(appSource).toMatch(/const layerHasMaximizedPane = shellMode !== "mobile" && !layerFullscreenLayout && /);
+  });
 });

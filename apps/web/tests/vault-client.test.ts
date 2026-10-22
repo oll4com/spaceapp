@@ -5,7 +5,8 @@ import {
   vaultBase64url, vaultItemRecordSchema, vaultRandomBytes, vaultSignupGrantOperatorMessage, vaultDelegationOperatorMessage, vaultDigest, openVaultEnvelope, vaultDelegateRequestSchema, vaultSignupGrantRequestSchema, vaultUnlockChallengeMessage, verifyVaultMessage, type VaultKdfParams,
   type VaultSymmetricEnvelope
 } from "@space/contracts";
-import { argon2idKdf, changeMasterPassword, confirmVaultItem, decryptVaultItem, encryptVaultItem, importVaultPending, restorePreviousVaultItem, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey, type VaultApi, type VaultInboxApi } from "../src/features/vault/vault-client.js";
+import { VAULT_AUTO_LOCK_DEFAULTS, VAULT_AUTO_LOCK_KEY, readVaultAutoLock } from "../src/features/vault/vault-auto-lock.js";
+import { argon2idKdf, changeMasterPassword, confirmVaultItem, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, restorePreviousVaultItem, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey, type VaultApi, type VaultInboxApi } from "../src/features/vault/vault-client.js";
 
 // Synthetic secrets only. The fake API keeps what the server keeps (ciphertext and public keys); the fake broker does
 // what the root-owned broker does, with a synthetic ARK the API side never sees.
@@ -29,7 +30,8 @@ async function harness() {
       server.vault = { ...body, epoch: 1, serverShareEnvelope: await sealServerShare(ark, share, scope) };
       return { vaultId: body.vaultId, epoch: 1 };
     },
-    vaultSetRecovery: async (recovery) => { remember(recovery); return { recovery: true }; },
+    vaultSetRecovery: async (recovery) => { remember(recovery); server.vault = { ...server.vault, recovery }; return { recovery: true }; },
+    vaultRecovery: async () => { server.sent.push("GET recovery"); return { recovery: server.vault?.recovery ?? null }; },
     vaultUnlockChallenge: async () => {
       server.challenge = vaultBase64url.encode(vaultRandomBytes(32));
       const { vaultId, passwordEnvelope, kdf, unlockKeyVersion, epoch } = server.vault;
@@ -70,6 +72,23 @@ describe("Vault dock client", () => {
       expect(sent).not.toContain(vaultBase64url.encode(unlocked.vrk));
       expect(sent).not.toContain(recoveryKey);
     }
+  });
+
+  it("recovers with the recovery key: a new master password, a new epoch, and the old password opens nothing (hardening step 14)", async () => {
+    const { client, server } = await harness();
+    const { unlocked, recoveryKey } = await setUpVault(client, "user:alice", `${SENTINEL}-old`, fastKdf);
+    // A wrong recovery key fails in the browser: no challenge is signed and no unlock or password change is sent.
+    const sentBefore = server.sent.length;
+    await expect(recoverVault(client, "user:alice", vaultBase64url.encode(vaultRandomBytes(32)), `${SENTINEL}-new`, fastKdf)).rejects.toBeInstanceOf(VaultCryptoError);
+    await expect(recoverVault(client, "user:alice", "not-a-key", `${SENTINEL}-new`, fastKdf)).rejects.toBeInstanceOf(VaultCryptoError);
+    expect(server.sent.slice(sentBefore).every((sent) => sent === "GET recovery")).toBe(true);
+    const recovered = await recoverVault(client, "user:alice", recoveryKey, `${SENTINEL}-new`, fastKdf);
+    expect(recovered.vrk).toEqual(unlocked.vrk);
+    expect(recovered.epoch).toBe(unlocked.epoch + 1);
+    expect(JSON.parse(server.sent.at(-1)!)).toMatchObject({ recovery: true, expectedEpoch: unlocked.epoch });
+    await expect(unlockVault(client, "user:alice", `${SENTINEL}-old`, fastKdf)).rejects.toBeInstanceOf(VaultCryptoError);
+    expect((await unlockVault(client, "user:alice", `${SENTINEL}-new`, fastKdf)).vrk).toEqual(unlocked.vrk);
+    for (const sent of server.sent) { expect(sent).not.toContain(SENTINEL); expect(sent).not.toContain(recoveryKey); }
   });
 
   it("encrypts items locally, keeps the old password until confirmed, and can restore it", async () => {
@@ -128,6 +147,13 @@ describe("Vault dock client", () => {
     const fillKey = await openWithVaultPrivateKey(transport.privateKey, transport.publicKey, sent.sealedFillKey, scope);
     const field = await openVaultEnvelope(fillKey, sent.fillEnvelopes[allowed.metadata.id].PASSWORD, { ...scope, purpose: "FILL_FIELD", itemId: allowed.metadata.id, field: "PASSWORD", generation: 3 });
     expect(new TextDecoder().decode(field)).toBe(SENTINEL);
+    expect(sent).not.toHaveProperty("sealedInboxKey");
+    // With the inbox key, it goes along sealed to the broker only (operator request 2026-10-20: agents never wait for an unlock).
+    const inbox = await generateVaultTransportKey();
+    await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: any) => { sent = body; return { generation: body.generation }; } } as never, unlocked,
+      { records: [allowed], delegationGeneration: 3, inbox });
+    expect(vaultDelegateRequestSchema.parse(sent)).toEqual(sent);
+    expect(await openWithVaultPrivateKey(transport.privateKey, transport.publicKey, sent.sealedInboxKey, scope)).toEqual(inbox.privateKey);
     // After a revoke while unlocked the vault's epoch has moved on: the dock signs the current one.
     await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: any) => { sent = body; return { generation: body.generation }; } } as never, unlocked,
       { records: [allowed], delegationGeneration: 3, epoch: unlocked.epoch + 1 });
@@ -157,7 +183,8 @@ describe("Vault dock client", () => {
     const api: VaultInboxApi = {
       vaultInbox: async () => ({ inbox }), vaultSetInbox: async (body) => { inbox = body; return { inbox: true }; },
       vaultPending: async () => ({ pending: pending.splice(0) }), vaultDeletePending: async (id) => { deleted.push(id); return { deleted: true }; },
-      vaultItem: async (id) => ({ item: vaultItemRecordSchema.parse(stored[id]) }), vaultSaveItem: async (item) => { stored[item.metadata.id] = item; return { item: vaultItemRecordSchema.parse(item) }; }
+      vaultItem: async (id) => ({ item: vaultItemRecordSchema.parse(stored[id]) }), vaultSaveItem: async (item) => { stored[item.metadata.id] = item; return { item: vaultItemRecordSchema.parse(item) }; },
+      vaultItems: async () => ({ items: Object.values(stored).map((record: any) => record.metadata) })
     };
     const key = await vaultInboxKey(api, unlocked);
     expect(inbox.publicKey).toBe(vaultBase64url.encode(key.publicKey));
@@ -181,6 +208,36 @@ describe("Vault dock client", () => {
     expect(changedItem.metadata.status).toBe("ACTIVE");
     expect((await decryptVaultItem(unlocked, changedItem)).PASSWORD).toBe(`${SENTINEL}-changed`);
     expect((await decryptVaultItem(unlocked, changedItem, changedItem.history[0]!.fields)).PASSWORD).toBe("SYNTHETIC-old");
+
+    // Resets of a site the Vault already holds (2026-10-19: three Braintrust resets made three items): the same site and
+    // username update that one login, oldest first, so it ends with the newest password; another username is a new login.
+    const reset = (id: string, handle: string, password: string, createdAt: string, username = "synthetic-shop@example.com") => seal(username).then(async (sealedUsername) =>
+      ({ id, kind: "NEW_ACCOUNT", handle, label: "Shop", origin: "https://shop.example", sealedUsername, sealedPassword: await seal(password), paneId: null, createdAt }));
+    pending.push(await reset("vault_pending:EEEEEEEEEEEEEEEEEEEEEE", "vault_item:EEEEEEEEEEEEEEEEEEEEEE", `${SENTINEL}-third`, "2026-10-19T08:14:00.000Z"),
+      await reset("vault_pending:FFFFFFFFFFFFFFFFFFFFFF", "vault_item:FFFFFFFFFFFFFFFFFFFFFF", `${SENTINEL}-second`, "2026-10-19T08:12:00.000Z"),
+      await reset("vault_pending:GGGGGGGGGGGGGGGGGGGGGG", "vault_item:GGGGGGGGGGGGGGGGGGGGGG", `${SENTINEL}-other`, "2026-10-19T08:13:00.000Z", "another-shop-user"));
+    expect(await importVaultPending(api, unlocked, key)).toBe(3);
+    expect(stored["vault_item:EEEEEEEEEEEEEEEEEEEEEE"]).toBeUndefined();
+    expect(stored["vault_item:FFFFFFFFFFFFFFFFFFFFFF"]).toBeUndefined();
+    const shop = vaultItemRecordSchema.parse(stored[newHandle]);
+    expect((await decryptVaultItem(unlocked, shop)).PASSWORD).toBe(`${SENTINEL}-third`);
+    expect(shop.history.length).toBe(2);
+    expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored["vault_item:GGGGGGGGGGGGGGGGGGGGGG"]))).USERNAME).toBe("another-shop-user");
+  });
+
+  it("never auto-locks by default; a choice the operator stored still wins (operator decision 2026-10-19)", () => {
+    const store = new Map<string, string>();
+    const local = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } };
+    const previous = (globalThis as { localStorage?: unknown }).localStorage;
+    (globalThis as { localStorage?: unknown }).localStorage = local;
+    try {
+      expect(VAULT_AUTO_LOCK_DEFAULTS).toEqual({ idleMinutes: 0, lockOnHide: false });
+      expect(readVaultAutoLock()).toEqual({ idleMinutes: 0, lockOnHide: false });
+      local.setItem(VAULT_AUTO_LOCK_KEY, JSON.stringify({ idleMinutes: 5, lockOnHide: true }));
+      expect(readVaultAutoLock()).toEqual({ idleMinutes: 5, lockOnHide: true });
+    } finally {
+      (globalThis as { localStorage?: unknown }).localStorage = previous;
+    }
   });
 
   it("derives keys with Argon2id at the stored parameters", async () => {

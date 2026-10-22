@@ -114,6 +114,8 @@ export interface SpaceApiConfig {
   memoryEmbeddingKeyFile: string | null;
   /** The Design pane's Space Gateway key (`space-admin-action design-key`): image models only, a daily cost cap. */
   designGatewayKeyFile: string;
+  /** The dedicated key that seals connector tokens and copilot mailbox passwords (hardening plan step 9). */
+  connectorKeyFile: string;
   memoryEmbeddingKeyName: string | null;
   memoryEmbeddingTimeoutMs: number;
   memoryGraphEnabled: boolean;
@@ -178,6 +180,10 @@ export interface SpaceApiConfig {
   browserHostSocketPath: string;
   swarmExecutionEnabled: boolean;
   internalApiToken: string | null;
+  /** Signs the agents' bridge, Agent Files and control tokens; falls back to the internal token until it is set. */
+  agentTokenSecret?: string | null;
+  /** Space Gateway's admin credential; falls back to the internal token until both sides set it. */
+  gatewayAdminToken?: string | null;
   apiRateLimitMax: number;
   telegramSecretRoot: string;
   streamingSecretRoot: string;
@@ -263,7 +269,7 @@ function parseGatewayUrl(raw: string | undefined): string {
 }
 
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -363,11 +369,17 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     mcpToolExecutionTimeoutMs: Number.parseInt(env.SPACE_MCP_TOOL_EXECUTION_TIMEOUT_MS ?? "10000", 10),
     memoryEmbeddingSmokeEnabled: env.SPACE_MEMORY_EMBEDDING_SMOKE_ENABLED === "true",
     memoryEmbeddingProvider: env.SPACE_MEMORY_EMBEDDING_PROVIDER || null,
-    memoryEmbeddingModel: env.SPACE_MEMORY_EMBEDDING_MODEL || null,
+    // Space Gateway's default is the local bge-m3 (on this server's CPU: no key, nothing leaves it; plan clipboard:o7SATwaOHqca).
+    // .env.example's text-embedding-3-small reads as that default there, so the switch needs no .env edit; other models override.
+    // shortcut: text-embedding-3-small through Space Gateway cannot be picked in .env any more; add an explicit override if wanted.
+    memoryEmbeddingModel: env.SPACE_MEMORY_EMBEDDING_PROVIDER === "codex-lb" && [undefined, "", "text-embedding-3-small"].includes(env.SPACE_MEMORY_EMBEDDING_MODEL)
+      ? "bge-m3" : env.SPACE_MEMORY_EMBEDDING_MODEL || null,
     memoryEmbeddingDimensions: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_DIMENSIONS, 1536), 4096),
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
     designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || "/opt/spaceapp/secrets/space-design.key",
+    // Dev never reads stable's key: it has its own under its var directory.
+    connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? "/opt/spaceapp-dev/var/connector/space-connector.key" : "/opt/spaceapp/secrets/space-connector.key"),
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,
     memoryEmbeddingTimeoutMs: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_TIMEOUT_MS, 10000), 30000),
     memoryGraphEnabled: env.SPACE_MEMORY_GRAPH_ENABLED === "true",
@@ -429,6 +441,9 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserHostSocketPath: env.SPACE_BROWSER_HOST_SOCKET || "/run/space-browser-host/browser-host.sock",
     swarmExecutionEnabled: env.SPACE_SWARM_EXECUTION_ENABLED === "true",
     internalApiToken: env.SPACE_INTERNAL_API_TOKEN || null,
+    // One secret per purpose (security addendum step 9); unset, each falls back to the internal token, so nothing changes.
+    agentTokenSecret: env.SPACE_AGENT_TOKEN_SECRET || null,
+    gatewayAdminToken: env.SPACE_GATEWAY_ADMIN_TOKEN || null,
     apiRateLimitMax: Math.min(parsePositiveInt(env.SPACE_API_RATE_LIMIT_MAX, 3000), 20000),
     telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
     streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
