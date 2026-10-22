@@ -148,7 +148,9 @@ Troubleshooting:
   `npm run dev:stack -- reset` to start over.
 - On Windows keep the checkout on the WSL2 file system (`~/...`, not `/mnt/c`),
   where file watching and Unix sockets work. On macOS with Colima, give the VM
-  at least 4 GB of memory.
+  at least 4 GB of memory. node-pty ships its macOS `spawn-helper` without the
+  executable bit; the dev stack sets it in `node_modules` (otherwise every pane
+  fails with `posix_spawnp failed`).
 
 ## Checks before a commit
 

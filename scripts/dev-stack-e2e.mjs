@@ -179,7 +179,9 @@ function attachTerminal(paneId, sessionId, token) {
   const socket = new WebSocket(`ws://${BIND_HOST}:${ports.web}/api/panes/${encodeURIComponent(paneId)}/cli/terminal?${query}`, {
     headers: { cookie: [...jar].map(([key, value]) => `${key}=${value}`).join("; "), origin: web }
   });
-  const terminal = { output: "", messages: [], error: null, socket };
+  const terminal = { output: "", messages: [], error: null, socket, opened: false, closed: null };
+  socket.on("open", () => { terminal.opened = true; });
+  socket.on("close", (code, reason) => { terminal.closed = `${code} ${reason.toString()}`; });
   socket.on("message", (data) => {
     const message = JSON.parse(data.toString());
     if (message.type === "output") terminal.output += message.data;
@@ -312,7 +314,19 @@ async function main() {
       if (terminal.error) throw new Error(`terminal WebSocket: ${terminal.error}`);
       const text = stripAnsi(terminal.output);
       return { done: text.includes("Ask anything") && text.includes("ctrl+p"), value: text };
-    }, 120_000);
+    }, 120_000).catch(async (error) => {
+      // What the pane, the CLI session and OpenCode reported, so a failure on another platform can be read from CI.
+      const state = await http("GET", `/api/panes/${encodeURIComponent(pane.json.id)}/cli/session`).catch((e) => ({ json: String(e) }));
+      log(`terminal: opened=${terminal.opened} closed=${terminal.closed} messages=${JSON.stringify(terminal.messages).slice(0, 2000)}`);
+      log(`terminal output: ${JSON.stringify(terminal.output.slice(-2000))}`);
+      log(`session: ${JSON.stringify(state.json).slice(0, 3000)}`);
+      for (const file of [join(stateDir, "cli", "providers", "opencode", "state", "opencode", "spaceapp-shared-server.log")]) {
+        if (existsSync(file)) log(`${file}:\n${readFileSync(file, "utf8").slice(-3000)}`);
+      }
+      const probe = spawnSync(join(stateDir, "bin", "opencode-vscode-parity"), ["--version"], { encoding: "utf8", timeout: 30_000 });
+      log(`opencode-vscode-parity --version: status=${probe.status} ${JSON.stringify(`${probe.stdout}${probe.stderr}`.slice(-1500))}`);
+      throw error;
+    });
     check(true, "OpenCode drew its prompt (\"Ask anything\", \"ctrl+p commands\") over the web server's WebSocket proxy");
     check(screen.includes(pin.version), `the pane runs OpenCode ${pin.version}, the version the Dockerfile pins`);
     const state = await http("GET", `/api/panes/${encodeURIComponent(pane.json.id)}/cli/session`);

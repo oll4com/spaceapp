@@ -434,7 +434,7 @@ case "\${1:-}" in
     printf 'NOT_READY\\n'; exit 1 ;;
   credential-observation)
     [ -x "$opencode_bin" ] || exit 1
-    printf 'OBSERVATION:%s\\n' "$(printf '%s' "opencode:ready" | sha256sum 2>/dev/null | cut -d ' ' -f 1 || printf 'ready')"
+    printf 'OBSERVATION:%s\\n' "$(printf '%s' "opencode:ready" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d ' ' -f 1 || printf 'ready')"
     exit 0 ;;
   credential-smoke)
     [ -x "$opencode_bin" ] || exit 1

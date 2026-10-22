@@ -255,6 +255,28 @@ function ensureOpenCode(s) {
   return { ...pin, binary };
 }
 
+/**
+ * node-pty 1.1 ships its macOS spawn-helper without the executable bit, so every pane fails with "posix_spawnp
+ * failed" on macOS (Linux does not use the helper). The installed app runs on Linux; the dev stack fixes the mode in
+ * this checkout's node_modules, the only place it touches.
+ */
+function ensureNodePtySpawnHelper() {
+  if (process.platform !== "darwin") return;
+  const root = join(repoRoot, "node_modules", "node-pty");
+  const candidates = [join(root, "build", "Release", "spawn-helper")];
+  const prebuilds = join(root, "prebuilds");
+  if (existsSync(prebuilds)) {
+    for (const entry of readdirSync(prebuilds)) if (entry.startsWith("darwin-")) candidates.push(join(prebuilds, entry, "spawn-helper"));
+  }
+  for (const helper of candidates) {
+    if (!existsSync(helper)) continue;
+    const mode = statSync(helper).mode & 0o777;
+    if ((mode & 0o111) === 0o111) continue;
+    chmodSync(helper, mode | 0o111);
+    info(`made ${relative(repoRoot, helper)} executable (node-pty ships it without the executable bit on macOS)`);
+  }
+}
+
 function writeCliWrappers(s) {
   const wrapper = join(s.paths.bin, "spaceapp-cli-wrapper");
   writeFileSync(wrapper, renderCliWrapper({ stateDir: s.stateDir, repoRoot, nodePath: process.execPath, opencodePort: s.ports.opencode }), { mode: 0o700 });
@@ -623,6 +645,7 @@ async function up() {
   const opencode = ensureOpenCode(s);
   info(`OpenCode          ${opencode.spec} in ${relative(repoRoot, s.paths.opencode)}/`);
   writeCliWrappers(s);
+  ensureNodePtySpawnHelper();
 
   for (const name of workspace.order) await buildIfStale(name, workspace.dirs[name]);
   await buildIfStale("@space/worker", "apps/worker");
