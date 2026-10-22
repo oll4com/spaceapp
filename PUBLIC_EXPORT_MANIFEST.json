@@ -3,13 +3,13 @@
   "schemaVersion": 2,
   "sourceCommit": "7619ef952387dba2480afecdb1ae332a0dc489ff",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 394,
   "files": [
     {
       "path": ".gitignore",
       "sourceObjectId": "1fdf2ac77a391fc36521502732002c96a11913d4",
-      "sha256": "18242d3b694d31c2e42ccf6b02261a946906352537ab4b83a5f3278b09584aea",
-      "size": 1144
+      "sha256": "ff36afcea27bcf9dc99df41e2db547f2bc6d14fd6cebc58815a2b048c9b94dae",
+      "size": 1156
     },
     {
       "path": ".nvmrc",
@@ -20,8 +20,8 @@
     {
       "path": "CONTRIBUTING.md",
       "sourceObjectId": "078772388754304e33d238fefaad2f04e9120107",
-      "sha256": "14f559c40ed46089c3fb74339d1b225cdd817fc61ef5a39bf1dce8ea28a83216",
-      "size": 5143
+      "sha256": "62dd658576a69b65e49e9ea3b9be12d1bb82a79fb0d474fd570cf943136a6b9c",
+      "size": 7924
     },
     {
       "path": "LICENSE",
@@ -21662,8 +21662,8 @@
     {
       "path": "apps/web/vite.config.ts",
       "sourceObjectId": "440a79e31a3f86df0c66bb67ed1d44a4dbcba128",
-      "sha256": "6903aa14b349193f17c903d4c14f984dbb547868a650ef3acc7a7f12b9d8849c",
-      "size": 2700
+      "sha256": "456383196c17b82b166ad7a5f3ce711b3dfbde109f544b61242d8c09bbff3c00",
+      "size": 2875
     },
     {
       "path": "apps/web/vite.demo-boundary.ts",
@@ -22520,8 +22520,8 @@
     {
       "path": "package.json",
       "sourceObjectId": "62128b7e59e9f56b96f4d6685e4a50155f02f4c5",
-      "sha256": "211f8b2305dd627f738e6b1f1246cea555165cdb1d657669c220c271f6ed5ef4",
-      "size": 4220
+      "sha256": "9e311110717fd77a286852f71302ff6c2e82b59027d31de5e9bb6f53b7ff80c4",
+      "size": 4456
     },
     {
       "path": "packages/browser-host/package.json",
@@ -28346,8 +28346,8 @@
     {
       "path": "scripts/space-hygiene-check.mjs",
       "sourceObjectId": "ac1989c78261a25bb966f92b611243c911a5a083",
-      "sha256": "6173c0038cd92d06fe1800973ea47f79d019f090b8c392602ffc4716b4c444fa",
-      "size": 6615
+      "sha256": "180c733ef76ab2faedd113513750241ebe72b6031e72b9647d905a65793c3601",
+      "size": 6627
     },
     {
       "path": "scripts/tests/composition-root-size.test.mjs",

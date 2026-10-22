@@ -43,6 +43,9 @@
     "@napi-rs/canvas": "1.0.9"
   },
   "scripts": {
+    "dev:stack": "node scripts/dev-stack.mjs up",
+    "dev:stack:down": "node scripts/dev-stack.mjs down",
+    "dev:stack:reset": "node scripts/dev-stack.mjs reset",
     "dev:api": "npm run dev -w @space/api",
     "dev:web": "npm run dev -w @space/web",
     "dev:worker": "npm run dev -w @space/worker",
@@ -59,6 +62,7 @@
     "test:architecture": "node --test scripts/tests/domain-boundaries.test.mjs scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs && node scripts/domain-boundaries.mjs",
     "smoke:offline": "npm run build -w @space/cli-host && node scripts/contributor-smoke.mjs",
     "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs",
+    "test:dev-stack": "node --test scripts/tests/dev-stack.test.mjs",
     "lint": "eslint --max-warnings=-1 apps packages scripts"
   },
   "devDependencies": {
