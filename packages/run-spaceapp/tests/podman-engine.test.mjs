@@ -119,7 +119,16 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   assert.equal(res1.reason, "podman_missing");
 
   // Failing compose
-  const failCompose = async (spec) => spec.command === "podman" && spec.args[0] === "compose" ? 1 : 0;
+  const failCompose = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+      return 0;
+    }
+    if (spec.args?.[0] === "compose") {
+      return 1;
+    }
+    return 0;
+  };
   const res2 = await verifyPodmanPrerequisites(failCompose, { stderr: null });
   assert.equal(res2.ok, false);
   assert.equal(res2.reason, "podman_compose_missing");
@@ -193,6 +202,101 @@ test("verifyPodmanPrerequisites checks binary, compose, version, rootless, and i
   const res6 = await verifyPodmanPrerequisites(cgroupV1, { stderr: null });
   assert.equal(res6.ok, false);
   assert.equal(res6.reason, "podman_cgroup_unsupported");
+
+  // Case 1: Podman version unparseable
+  const unparseableVersion = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("custom build without semver\n");
+    }
+    return 0;
+  };
+  const resCase1 = await verifyPodmanPrerequisites(unparseableVersion, { stderr: null });
+  assert.equal(resCase1.ok, false);
+  assert.equal(resCase1.reason, "podman_version_unparseable");
+
+  // Case 2: podman info produces invalid JSON
+  const invalidJsonInfo = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write("Error: cannot connect to podman socket\n");
+    }
+    return 0;
+  };
+  const resCase2 = await verifyPodmanPrerequisites(invalidJsonInfo, { stderr: null });
+  assert.equal(resCase2.ok, false);
+  assert.equal(resCase2.reason, "podman_info_invalid_json");
+
+  // Case 3: rootless field missing from info
+  const missingRootless = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          cgroupVersion: "v2"
+          // security.rootless missing
+        }
+      }));
+    }
+    return 0;
+  };
+  const resCase3 = await verifyPodmanPrerequisites(missingRootless, { stderr: null });
+  assert.equal(resCase3.ok, false);
+  assert.equal(resCase3.reason, "podman_not_rootless");
+
+  // Case 4: cgroupVersion missing from info
+  const missingCgroup = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          security: { rootless: true }
+          // cgroupVersion missing
+        }
+      }));
+    }
+    return 0;
+  };
+  const resCase4 = await verifyPodmanPrerequisites(missingCgroup, { stderr: null });
+  assert.equal(resCase4.ok, false);
+  assert.equal(resCase4.reason, "podman_cgroup_unsupported");
+
+  // Case 5: formatted info probe fails (non-zero exit)
+  const failedFormattedInfo = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "info") {
+      return 1;
+    }
+    return 0;
+  };
+  const resCase5 = await verifyPodmanPrerequisites(failedFormattedInfo, { stderr: null });
+  assert.equal(resCase5.ok, false);
+  assert.equal(resCase5.reason, "podman_info_failed");
+
+  // macOS Podman machine validation
+  const macPass = async (spec, io) => {
+    if (spec.args?.[0] === "--version" && io?.stdout) {
+      io.stdout.write("podman version 5.1.0\n");
+    }
+    if (spec.args?.[0] === "info" && io?.stdout) {
+      io.stdout.write(JSON.stringify({
+        host: {
+          os: "darwin"
+        }
+      }));
+    }
+    return 0;
+  };
+  const resMac = await verifyPodmanPrerequisites(macPass, { stderr: null, platform: "darwin" });
+  assert.equal(resMac.ok, true);
+  assert.equal(resMac.code, 0);
 });
 
 test("renderWorkspaceCompose adds selinux z option when engine is podman", async () => {

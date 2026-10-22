@@ -106,6 +106,11 @@ jobs:
           # 4. Create and verify backup
           node packages/run-spaceapp/bin/spaceapp.mjs backup
 
+      - name: Teardown and data purge verification
+        if: always()
+        run: |
           # 5. Clean teardown and data purge
-          node packages/run-spaceapp/bin/spaceapp.mjs down
-          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}'
+          node packages/run-spaceapp/bin/spaceapp.mjs down || true
+          node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive --answers '{"purgeConfirm":"DELETE"}' || true
+          # 6. Verify no remaining spaceapp containers or volumes
+          test -z "$(podman ps -a --filter label=com.spaceapp.service -q 2>/dev/null)" || (echo "Residual SpaceApp containers found" && exit 1)

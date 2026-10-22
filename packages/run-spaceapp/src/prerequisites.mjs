@@ -1201,8 +1201,8 @@ export async function podmanIsReady(execute) {
   return true;
 }
 
-export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr } = {}) {
-  // 1. Podman binary and version check (enforce podman >= 5.0)
+export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr, platform = process.platform } = {}) {
+  // 1. Podman binary and version check (enforce podman >= 5.0, fail-closed on unparsable/invalid version)
   let versionOutput = "";
   const versionStdout = new Writable({
     write(chunk, _encoding, done) {
@@ -1222,13 +1222,15 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
       stderr?.write("Podman is not available on PATH or exited with non-zero status.\n");
       return { ok: false, code: code || 1, reason: "podman_missing" };
     }
-    const match = versionOutput.match(/(?:podman\s+version\s+|version\s+)?([0-9]+)\.([0-9]+)\.([0-9]+)/i);
-    if (match) {
-      const major = parseInt(match[1], 10);
-      if (major < 5) {
-        stderr?.write(`Podman version 5.0+ is required; detected version ${match[1]}.${match[2]}.${match[3]}.\n`);
-        return { ok: false, code: 1, reason: "podman_version_unsupported" };
-      }
+    const match = versionOutput.match(/(?:podman\s+version\s+|version\s+)?([0-9]+)\.([0-9]+)(?:\.([0-9]+))?/i);
+    if (!match) {
+      stderr?.write(`Podman version could not be parsed: "${versionOutput.trim()}".\n`);
+      return { ok: false, code: 1, reason: "podman_version_unparseable" };
+    }
+    const major = parseInt(match[1], 10);
+    if (major < 5) {
+      stderr?.write(`Podman version 5.0+ is required; detected version ${match[1]}.${match[2]}.\n`);
+      return { ok: false, code: 1, reason: "podman_version_unsupported" };
     }
   } catch (err) {
     stderr?.write(`Podman execution error: ${err.message}\n`);
@@ -1236,9 +1238,18 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
   }
 
   // 2. Podman Compose provider check
+  let composeOutput = "";
+  const composeStdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (composeOutput.length < 65536) {
+        composeOutput += chunk.toString();
+      }
+      done();
+    }
+  });
   try {
     const composeCode = await execute({ command: "podman", args: ["compose", "version"] }, {
-      stdin: null, stdout: null, stderr: null
+      stdin: null, stdout: composeStdout, stderr: null
     });
     if (composeCode !== 0) {
       stderr?.write("Podman Compose provider is not configured. Install podman-compose or compose plugin.\n");
@@ -1249,7 +1260,7 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
     return { ok: false, code: 1, reason: "podman_compose_error" };
   }
 
-  // 3. Podman info / rootless verification
+  // 3. Podman info / rootless verification (fail-closed)
   let infoOutput = "";
   const infoStdout = new Writable({
     write(chunk, _encoding, done) {
@@ -1264,29 +1275,42 @@ export async function verifyPodmanPrerequisites(execute, { stderr = process.stde
       stdin: null, stdout: infoStdout, stderr: null
     });
     if (infoCode !== 0) {
-      // Fallback: try podman info without format
-      const fallbackCode = await execute({ command: "podman", args: ["info"] }, {
-        stdin: null, stdout: null, stderr: null
-      });
-      if (fallbackCode !== 0) {
-        stderr?.write("Podman system info probe failed.\n");
-        return { ok: false, code: fallbackCode, reason: "podman_info_failed" };
+      stderr?.write("Podman formatted info probe failed.\n");
+      return { ok: false, code: infoCode, reason: "podman_info_failed" };
+    }
+    const trimmed = infoOutput.trim();
+    if (!trimmed) {
+      stderr?.write("Podman info probe produced empty output.\n");
+      return { ok: false, code: 1, reason: "podman_info_empty" };
+    }
+    let info;
+    try {
+      info = JSON.parse(trimmed);
+    } catch {
+      stderr?.write("Podman info probe produced invalid JSON.\n");
+      return { ok: false, code: 1, reason: "podman_info_invalid_json" };
+    }
+
+    if (!info || typeof info !== "object" || !info.host) {
+      stderr?.write("Podman info host details missing.\n");
+      return { ok: false, code: 1, reason: "podman_info_missing_host" };
+    }
+
+    if (platform === "darwin") {
+      // macOS uses Podman machine (VM guest runs rootless Linux)
+      if (info.host.os !== "linux" && info.host.os !== "darwin") {
+        stderr?.write(`Unexpected Podman host OS on macOS: ${info.host.os}\n`);
+        return { ok: false, code: 1, reason: "podman_machine_invalid_os" };
       }
-    } else if (infoOutput.trim()) {
-      try {
-        const info = JSON.parse(infoOutput.trim());
-        if (info.host) {
-          if (info.host.security?.rootless === false) {
-            stderr?.write("Podman is running as root. SpaceApp requires rootless Podman execution.\n");
-            return { ok: false, code: 1, reason: "podman_not_rootless" };
-          }
-          if (info.host.cgroupVersion && info.host.cgroupVersion !== "v2") {
-            stderr?.write(`Podman cgroup version is ${info.host.cgroupVersion}. SpaceApp requires cgroup v2.\n`);
-            return { ok: false, code: 1, reason: "podman_cgroup_unsupported" };
-          }
-        }
-      } catch {
-        // Output was not valid JSON, but podman info exited 0
+    } else {
+      // Linux: verify rootless === true and cgroupVersion === "v2" strictly
+      if (info.host.security?.rootless !== true) {
+        stderr?.write("Podman is not running rootless. SpaceApp requires rootless Podman execution.\n");
+        return { ok: false, code: 1, reason: "podman_not_rootless" };
+      }
+      if (info.host.cgroupVersion !== "v2") {
+        stderr?.write(`Podman cgroup version is "${info.host.cgroupVersion}". SpaceApp requires cgroup v2.\n`);
+        return { ok: false, code: 1, reason: "podman_cgroup_unsupported" };
       }
     }
   } catch (err) {

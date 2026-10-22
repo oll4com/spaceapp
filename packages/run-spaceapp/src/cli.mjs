@@ -748,7 +748,7 @@ async function installCommand(args, {
   stage = "docker";
   let prerequisiteResult = { code: 0, reexecuted: false };
   if (result.config.engine === "podman") {
-    const podmanCheck = await verifyPodmanPrerequisites(execute, { stderr });
+    const podmanCheck = await verifyPodmanPrerequisites(execute, { stderr, platform });
     prerequisiteResult = { code: podmanCheck.code, reexecuted: false };
   } else {
     prerequisiteResult = await ensureDocker({
@@ -2204,6 +2204,7 @@ async function supportBundleCommand({
             version: config.version,
             profile: config.profile,
             accessMode: config.accessMode,
+            engine: config.engine ?? "docker",
             companionsEnabled: config.companionsEnabled,
             bindHost: config.bindHost,
             port: config.port,
