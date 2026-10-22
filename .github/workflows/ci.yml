@@ -31,6 +31,8 @@ jobs:
           cache: npm
 
       - name: Verify export provenance
+        # Pull requests from forks change exported files by design; main and same-repo branches stay checked.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: node scripts/verify-export-provenance.mjs .
 
       - name: Create sanitized candidate
