@@ -262,6 +262,16 @@ No Docker, production data or AI provider is required. The historical notes
 below describe the earlier introduction of trace correlation, not a production
 replay proof for this instrumentation.
 
+`npm test -w @space/worker` prepares the pinned Temporal test server (1.40.0)
+before starting Vitest. The preparation step reuses a persistent checkout-local
+cache under `.cache/temporal-test-server/<version>/<platform>-<arch>`; only its
+first run needs network access. To prepare an offline checkout ahead of time,
+run `npm run test:setup -w @space/worker` while online and retain that cache, or
+set `SPACE_TEMPORAL_TEST_SERVER_PATH` to an already provisioned executable for
+the host platform. An invalid override fails with setup instructions rather
+than falling back to a download. The integration suite always uses the SDK's
+`existing-path` option and performs no test-server downloads itself.
+
 No file under `apps/worker/src` that the workflow bundle imports was changed
 (`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
 `dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base

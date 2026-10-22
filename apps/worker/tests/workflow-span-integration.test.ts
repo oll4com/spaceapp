@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createOtlpSpanExporter, type SpanExporter } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "../src/activity-observability.js";
 import { workflowSpanSinks } from "../src/workflow-span-export.js";
+import { temporalTestServerPath } from "../scripts/temporal-test-server.mjs";
 
 interface ExportedSpan {
   traceId: string; spanId: string; parentSpanId?: string; name: string;
@@ -33,6 +34,7 @@ describe("real Temporal workflows export connected OTLP traces", () => {
   const received: ExportedSpan[] = [];
   const bodies: string[] = [];
   beforeAll(async () => {
+    const executable = await temporalTestServerPath();
     collector = createServer(async (request, response) => {
       let body = "";
       for await (const chunk of request) body += chunk.toString();
@@ -45,7 +47,9 @@ describe("real Temporal workflows export connected OTLP traces", () => {
     await once(collector, "listening");
     const address = collector.address() as { port: number };
     exporter = createOtlpSpanExporter({ endpoint: `http://127.0.0.1:${address.port}`, serviceName: "space-worker-test", flushIntervalMs: 60_000 });
-    env = await TestWorkflowEnvironment.createTimeSkipping();
+    env = await TestWorkflowEnvironment.createTimeSkipping({
+      server: { executable: { type: "existing-path", path: executable } }
+    });
     bundle = await bundleWorkflowCode({
       workflowsPath: fileURLToPath(new URL("./support/tracing-workflows.ts", import.meta.url)),
       workflowInterceptorModules: [fileURLToPath(new URL("../src/workflow-observability-interceptors.ts", import.meta.url))]
