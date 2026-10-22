@@ -183,3 +183,17 @@ npx --yes run-spaceapp@latest uninstall      # Stop and remove containers (prese
 Uninstall retains data by default and prints the separate
 `npm uninstall -g run-spaceapp` command for removing an optional global
 launcher.
+
+### Podman Support (Rootless)
+
+SpaceApp supports rootless Podman as an alternative container engine on Linux:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Requirements for Podman:
+- Podman >= 5.0 with `podman compose` provider configured.
+- Rootless user namespaces enabled (`subuid`/`subgid` configured).
+- Access mode must be `isolated` (host-root mode is rejected with Podman to preserve security boundaries).
+- To switch container engines on an existing installation, back up data, reinstall with `--engine <engine>`, and restore.

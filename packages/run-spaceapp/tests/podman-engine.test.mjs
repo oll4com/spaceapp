@@ -48,3 +48,22 @@ test("executeCommand allowlists podman executable", () => {
   const promise = executeCommand({ command: "podman", args: ["--version"] });
   assert.ok(promise instanceof Promise);
 });
+
+test("validateConfig rejects accessMode: host-root with engine: podman", () => {
+  const cfg = createDefaultConfig({ version: "1.1.7", engine: "podman", accessMode: "host-root" });
+  assert.throws(
+    () => validateConfig(cfg),
+    /Host-root access is not supported with rootless Podman/
+  );
+});
+
+test("podmanIsReady returns false when podman is missing or fails", async () => {
+  const { podmanIsReady } = await import("../src/prerequisites.mjs");
+  const failingExecute = async () => 1;
+  const ready = await podmanIsReady(failingExecute);
+  assert.equal(ready, false);
+
+  const passingExecute = async () => 0;
+  const readyPass = await podmanIsReady(passingExecute);
+  assert.equal(readyPass, true);
+});

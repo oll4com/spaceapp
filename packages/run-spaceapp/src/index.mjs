@@ -370,6 +370,9 @@ export function validateConfig(config) {
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
   }
+  if (config.accessMode === "host-root" && config.engine === "podman") {
+    throw new Error("Host-root access is not supported with rootless Podman. Use accessMode: isolated or Docker.");
+  }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
   }

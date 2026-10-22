@@ -1184,3 +1184,19 @@ function launchDetachedCommand(spec) {
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] }
+  ]) {
+    try {
+      if (await execute(spec, { stdin: null, stdout: null, stderr: null }) !== 0) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
