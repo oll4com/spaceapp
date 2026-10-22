@@ -50,7 +50,7 @@ On Linux distributions where Docker is unavailable or rootless containers are re
   node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman
   ```
 - Rootless Podman requires `--access isolated` (host-root access is disabled).
-- To migrate an existing Docker installation to Podman, back up your data using `spaceapp backup`, reinstall with `--engine podman`, and restore.
+- Engine changes are not supported in an existing `SPACEAPP_HOME`; `config.json` records the engine and backups are stored under that home. To move a Docker installation to Podman, create a backup with `spaceapp backup`, copy the backup file outside the existing home, install to a new `SPACEAPP_HOME` with `--engine podman`, copy the backup into the new home’s `backups` directory, then restore it there. Keep the original installation and external backup until you have independently verified the restored data; this procedure does not guarantee a successful migration.
 
 ## macOS
 

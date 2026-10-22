@@ -801,7 +801,7 @@ export function composeCommand(action, root, options = {}) {
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
   let engine = options.engine ?? options.config?.engine;
-  if (!engine) {
+  if (engine === undefined) {
     try {
       const cfgPath = join(stateRoot, "config.json");
       const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
@@ -809,6 +809,9 @@ export function composeCommand(action, root, options = {}) {
     } catch {
       engine = "docker";
     }
+  }
+  if (engine !== "docker" && engine !== "podman") {
+    throw new Error("engine must be docker or podman.");
   }
   const base = [
     "compose",

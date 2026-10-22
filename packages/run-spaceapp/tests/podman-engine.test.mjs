@@ -587,13 +587,21 @@ test("fresh install with engine omitted enters Docker setup when neither engine 
   assert.equal(result.dockerSetupCalled, true);
 });
 
-async function installWithDetectedEngines({ docker, podman }) {
+test("Windows fresh install does not probe or auto-select Podman", async () => {
+  const result = await installWithDetectedEngines({ docker: false, podman: true, platform: "win32" });
+  assert.equal(result.engine, "docker");
+  assert.equal(result.podmanProbeCalls, 0);
+});
+
+async function installWithDetectedEngines({ docker, podman, platform = "linux" }) {
   const { run } = await import("../src/cli.mjs");
   const { Readable, Writable } = await import("node:stream");
   const root = await mkdtemp(join(tmpdir(), "spaceapp-auto-engine-"));
   let dockerSetupCalled = false;
   let dockerNowReady = docker;
+  let podmanProbeCalls = 0;
   const execute = async (spec, io) => {
+    if (spec.command === "podman") podmanProbeCalls += 1;
     if (spec.command === "docker" && ["--version", "info"].includes(spec.args?.[0])) return dockerNowReady ? 0 : 1;
     if (spec.command === "docker" && spec.args?.[0] === "compose") return dockerNowReady ? 0 : 1;
     if (spec.command === "podman") {
@@ -608,7 +616,7 @@ async function installWithDetectedEngines({ docker, podman }) {
   };
   const answers = JSON.stringify({ confirm: true, profile: "small", access: "isolated", companions: false, telemetry: false, open: false });
   const code = await run(["install", "--non-interactive", "--answers", answers], {
-    env: { SPACEAPP_HOME: root, SPACEAPP_TELEMETRY: "0" }, platform: "linux",
+    env: { SPACEAPP_HOME: root, SPACEAPP_TELEMETRY: "0" }, platform,
     stdin: Readable.from([]), stdout: new Writable({ write: (_c, _e, cb) => cb() }), stderr: new Writable({ write: (_c, _e, cb) => cb() }),
     execute, inspectResources: async () => ({ freeDiskBytes: 50 * 1024 ** 3, totalMemoryBytes: 8 * 1024 ** 3, cpuCount: 4 }),
     ensureDocker: async () => { dockerSetupCalled = true; dockerNowReady = true; return { code: 0 }; },
@@ -617,7 +625,7 @@ async function installWithDetectedEngines({ docker, podman }) {
   });
   assert.equal(code, 0);
   const config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
-  return { engine: config.engine, dockerSetupCalled };
+  return { engine: config.engine, dockerSetupCalled, podmanProbeCalls };
 }
 
 test("verifyPodmanPrerequisites rejects podman-compose 1.2.0", async () => {
