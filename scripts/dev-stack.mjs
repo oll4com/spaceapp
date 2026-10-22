@@ -16,7 +16,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BIND_HOST, CLI_WRAPPER_RUNTIMES, DevStackError, PORT_ENV, STATE_MARKER, buildCliHostEnvironment, buildCoreEnvironment,
-  cliHostSocketPath, composeProjectName, findProcesses, packageBuildOrder, packageForPath, processAlive, processMatches,
+  cliHostSocketPath, composeProjectName, directoryMarker, findProcesses, packageBuildOrder, packageForPath, processAlive, processMatches,
   readOpenCodePin, readPinnedImages, rebuildPlan, redact, renderCliWrapper, renderComposeFile, resolvePorts
 } from "./dev-stack-lib.mjs";
 
@@ -632,59 +632,85 @@ async function up() {
   const secrets = ensureSecrets(s);
   writePrivate(join(s.paths.run, "supervisor.json"), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), project: s.project }));
 
-  const running = projectResources(s.project).containers.length > 0;
-  if (!running) await assertPortsFree(s, ["postgres", "temporal"]);
-  writeFileSync(s.paths.compose, renderComposeFile({ images, ports: s.ports, project: s.project }), { mode: 0o600 });
-  info("starting PostgreSQL (pgvector) and Temporal in Docker, waiting for their health checks...");
-  const started = Date.now();
-  compose(s, ["up", "--detach", "--wait", "--wait-timeout", "300", "--remove-orphans"], {
-    env: { SPACEAPP_DEV_POSTGRES_PASSWORD: secrets.postgresPassword }, quiet: true
-  });
-  info(`PostgreSQL and Temporal are healthy (${((Date.now() - started) / 1000).toFixed(0)}s)`);
+  // From here on containers and processes may exist, so every way out (a failure or a signal) cleans them up.
+  // Before the supervisor exists that is the containers and the OpenCode server; afterwards Supervisor.shutdown.
+  let supervisor;
+  let cleaningUp = false;
+  const cleanupBeforeSupervisor = async (code) => {
+    if (cleaningUp) return;
+    cleaningUp = true;
+    await stopOpenCodeServer(s);
+    info("stopping PostgreSQL and Temporal, startup did not finish (data is kept)...");
+    compose(s, ["down", "--timeout", "20"], { allowFailure: true, env: { SPACEAPP_DEV_POSTGRES_PASSWORD: "" } });
+    rmSync(s.paths.supervisor, { force: true });
+    rmSync(s.paths.children, { force: true });
+    if (code !== undefined) process.exit(code);
+  };
+  const failStartup = async (error) => {
+    process.stderr.write(`${paint("1;31", "dev-stack: error:")} ${error.message}\n`);
+    if (error.hint) process.stderr.write(`${paint("33", "dev-stack: hint:")} ${error.hint}\n`);
+    if (supervisor) await supervisor.shutdown(1);
+    else await cleanupBeforeSupervisor(1);
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => void (supervisor ? supervisor.shutdown(0) : cleanupBeforeSupervisor(130)));
+  }
 
-  const opencode = ensureOpenCode(s);
-  info(`OpenCode          ${opencode.spec} in ${relative(repoRoot, s.paths.opencode)}/`);
-  writeCliWrappers(s);
-  ensureNodePtySpawnHelper();
+  try {
+    const running = projectResources(s.project).containers.length > 0;
+    if (!running) await assertPortsFree(s, ["postgres", "temporal"]);
+    writeFileSync(s.paths.compose, renderComposeFile({ images, ports: s.ports, project: s.project }), { mode: 0o600 });
+    info("starting PostgreSQL (pgvector) and Temporal in Docker, waiting for their health checks...");
+    const started = Date.now();
+    compose(s, ["up", "--detach", "--wait", "--wait-timeout", "300", "--remove-orphans"], {
+      env: { SPACEAPP_DEV_POSTGRES_PASSWORD: secrets.postgresPassword }, quiet: true
+    });
+    info(`PostgreSQL and Temporal are healthy (${((Date.now() - started) / 1000).toFixed(0)}s)`);
 
-  for (const name of workspace.order) await buildIfStale(name, workspace.dirs[name]);
-  await buildIfStale("@space/worker", "apps/worker");
+    const opencode = ensureOpenCode(s);
+    info(`OpenCode          ${opencode.spec} in ${relative(repoRoot, s.paths.opencode)}/`);
+    writeCliWrappers(s);
+    ensureNodePtySpawnHelper();
 
-  const { env: coreEnv } = buildCoreEnvironment({
-    composeText, repoRoot, stateDir: s.stateDir, ports: s.ports, socketPath: s.socket.path,
-    appVersion: workspace.version, optionalModules: process.env.SPACEAPP_DEV_OPTIONAL_MODULES,
-    secrets: { databaseUrl: secrets.databaseUrl, sessionSecret: secrets.sessionSecret }
-  });
-  seedMemory(coreEnv);
+    for (const name of workspace.order) await buildIfStale(name, workspace.dirs[name]);
+    await buildIfStale("@space/worker", "apps/worker");
 
-  info("applying database migrations...");
-  const migrate = spawnSync(process.execPath, [join(repoRoot, "packages", "db", "dist", "migrate.js")], {
-    cwd: repoRoot, env: { PATH: process.env.PATH ?? "", SPACE_DATABASE_URL: secrets.databaseUrl }, encoding: "utf8"
-  });
-  const migrateOutput = redact(`${migrate.stdout}${migrate.stderr}`, [secrets.postgresPassword, secrets.databaseUrl]).trim();
-  if (migrate.status !== 0) throw new DevStackError(`Database migrations failed:\n${migrateOutput}`);
-  const applied = migrateOutput.split("\n").filter((line) => line.startsWith("applied ")).length;
-  info(applied > 0 ? `applied ${applied} migrations` : "database schema is up to date");
+    const { env: coreEnv } = buildCoreEnvironment({
+      composeText, repoRoot, stateDir: s.stateDir, ports: s.ports, socketPath: s.socket.path,
+      appVersion: workspace.version, optionalModules: process.env.SPACEAPP_DEV_OPTIONAL_MODULES,
+      secrets: { databaseUrl: secrets.databaseUrl, sessionSecret: secrets.sessionSecret }
+    });
+    seedMemory(coreEnv);
 
-  const cliHostEnv = buildCliHostEnvironment({ coreEnv, stateDir: s.stateDir });
-  const supervisor = new Supervisor(s, secrets, coreEnv, cliHostEnv, workspace);
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => void supervisor.shutdown(0));
-  rmSync(s.socket.path, { force: true });
-  info("starting the CLI host, worker, API (watch mode) and Vite...");
-  supervisor.start("cli-host");
-  await supervisor.waitForSocket(s.socket.path);
-  supervisor.start("worker");
-  supervisor.start("api");
-  // Vite proxies /api to the API; starting it once the API listens keeps proxy errors out of the first screen.
-  await supervisor.waitForApi();
-  supervisor.start("web");
+    info("applying database migrations...");
+    const migrate = spawnSync(process.execPath, [join(repoRoot, "packages", "db", "dist", "migrate.js")], {
+      cwd: repoRoot, env: { PATH: process.env.PATH ?? "", SPACE_DATABASE_URL: secrets.databaseUrl }, encoding: "utf8"
+    });
+    const migrateOutput = redact(`${migrate.stdout}${migrate.stderr}`, [secrets.postgresPassword, secrets.databaseUrl]).trim();
+    if (migrate.status !== 0) throw new DevStackError(`Database migrations failed:\n${migrateOutput}`);
+    const applied = migrateOutput.split("\n").filter((line) => line.startsWith("applied ")).length;
+    info(applied > 0 ? `applied ${applied} migrations` : "database schema is up to date");
+
+    const cliHostEnv = buildCliHostEnvironment({ coreEnv, stateDir: s.stateDir });
+    supervisor = new Supervisor(s, secrets, coreEnv, cliHostEnv, workspace);
+    rmSync(s.socket.path, { force: true });
+    info("starting the CLI host, worker, API (watch mode) and Vite...");
+    supervisor.start("cli-host");
+    await supervisor.waitForSocket(s.socket.path);
+    supervisor.start("worker");
+    supervisor.start("api");
+    // Vite proxies /api to the API; starting it once the API listens keeps proxy errors out of the first screen.
+    await supervisor.waitForApi();
+    supervisor.start("web");
+  } catch (error) {
+    await failStartup(error);
+    return;
+  }
   let ready;
   try {
     ready = await supervisor.waitUntilReady();
   } catch (error) {
-    process.stderr.write(`${paint("1;31", "dev-stack: error:")} ${error.message}\n`);
-    if (error.hint) process.stderr.write(`${paint("33", "dev-stack: hint:")} ${error.hint}\n`);
-    await supervisor.shutdown(1);
+    await failStartup(error);
     return;
   }
   if (!ready) return;
@@ -746,7 +772,7 @@ async function stopEverything(s) {
   }
   await stopOpenCodeServer(s);
   // Pane processes (OpenCode) run from the state directory; none may outlive the stack.
-  for (const leftover of findProcesses([s.stateDir])) {
+  for (const leftover of findProcesses([directoryMarker(s.stateDir)])) {
     info(`stopping leftover process ${leftover.pid}: ${leftover.command.slice(0, 120)}`);
     try { process.kill(leftover.pid, "SIGTERM"); } catch { /* gone */ }
   }
@@ -779,7 +805,7 @@ async function reset() {
   }
   if (s.socket.external) rmSync(dirname(s.socket.path), { recursive: true, force: true });
   const remaining = projectResources(s.project);
-  const processes = findProcesses([s.stateDir]);
+  const processes = findProcesses([directoryMarker(s.stateDir)]);
   if (remaining.containers.length || remaining.volumes.length || remaining.networks.length || processes.length || existsSync(s.stateDir)) {
     throw new DevStackError(`reset left something behind: ${JSON.stringify({ ...remaining, processes: processes.map((p) => p.pid), stateDir: existsSync(s.stateDir) })}`);
   }

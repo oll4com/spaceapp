@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 /** Ports of an installed SpaceApp (run-spaceapp): the dev stack never uses them. */
 export const INSTALLED_PORTS = Object.freeze([4910, 4911]);
@@ -592,6 +592,12 @@ export function processMatches(pid, markers) {
 }
 
 /** Every live process whose command line mentions one of the markers (except this process). */
+/** Command-line marker for processes started from `dir`. The trailing separator keeps a sibling directory
+ *  (`.dev-stack-2/` next to `.dev-stack/`, see SPACEAPP_DEV_STATE_DIR) from matching. */
+export function directoryMarker(dir, separator = sep) {
+  return dir.endsWith(separator) ? dir : `${dir}${separator}`;
+}
+
 export function findProcesses(markers, { exclude = [process.pid] } = {}) {
   let output;
   try {

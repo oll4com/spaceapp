@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   BIND_HOST, CLI_WRAPPER_RUNTIMES, DEFAULT_PORTS, DROPPED_CORE_KEYS, DevStackError, INSTALLED_PORTS, PORT_ENV,
-  buildCliHostEnvironment, buildCoreEnvironment, cliHostSocketPath, composeProjectName, interpolate, mapContainerPath,
+  buildCliHostEnvironment, buildCoreEnvironment, cliHostSocketPath, composeProjectName, directoryMarker, interpolate, mapContainerPath,
   containerPathMap, packageBuildOrder, packageForPath, parsePort, readOpenCodePin, readPinnedImage, readPinnedImages,
   readServiceEnvironment, rebuildPlan, redact, renderCliWrapper, renderComposeFile, resolvePorts, stripAnsi
 } from "../dev-stack-lib.mjs";
@@ -194,4 +194,12 @@ test("output is redacted and ANSI-free where it is searched", () => {
   assert.equal(redact("url postgres://u:supersecret@h and supersecret", ["supersecret"]), "url postgres://u:[redacted]@h and [redacted]");
   assert.equal(redact("short abc", ["abc"]), "short abc", "very short strings are not treated as secrets");
   assert.equal(stripAnsi("\u001b[32mready\u001b[0m \u001b]0;title\u0007ok"), "ready ok");
+});
+
+test("the leftover-process marker for a state directory does not match a sibling state directory", () => {
+  const marker = directoryMarker(stateDir, "/");
+  assert.equal(marker, `${stateDir}/`);
+  assert.equal(directoryMarker(`${stateDir}/`, "/"), `${stateDir}/`);
+  assert.ok(`node ${stateDir}/bin/opencode serve`.includes(marker));
+  assert.ok(!`node ${stateDir}-2/bin/opencode serve`.includes(marker));
 });
