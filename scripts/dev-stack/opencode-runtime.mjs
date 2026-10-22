@@ -58,8 +58,10 @@ export async function verifyOpenCode(state, version, { invoke = invokeVersion, i
     for (const path of [env.HOME, env.TMPDIR, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_CACHE_HOME, env.XDG_STATE_HOME]) await mkdir(path, { recursive: true, mode: 0o700 });
     observation.stage = 'actual-native-version';
     const actual = (await invoke(native.executable, ['--version'], { cwd: env.HOME, env, timeout: 15000 })).trim();
-    observation.actualVersion = /^\d+\.\d+\.\d+$/.test(actual) ? actual : '[unexpected version output]';
-    if (actual !== version) throw Object.assign(new Error('Actual private OpenCode executable version differs from its canonical pin.'), { code: 'VERSION_MISMATCH' });
+    // Pinned OpenCode 2 uses Effect CLI's exact `<name> v<version>` format.
+    observation.actualVersion = /^opencode v(\d+\.\d+\.\d+)$/.exec(actual)?.[1] ?? '[unexpected version output]';
+    observation.versionOutput = actual.replaceAll(env.HOME, '[private-home]').replaceAll(state, '[private-state]').slice(0, 256);
+    if (actual !== `opencode v${version}`) throw Object.assign(new Error('Actual private OpenCode executable version differs from its canonical pin.'), { code: 'VERSION_MISMATCH' });
     observation.ok = true; return native;
   } catch (error) {
     observation.error = { name: error.name, code: error.code ?? null, signal: error.signal ?? null, killed: error.killed === true }; throw error;

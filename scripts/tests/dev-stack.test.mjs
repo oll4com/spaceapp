@@ -461,7 +461,7 @@ async function nativeFixture(t, platform = 'linux', arch = 'x64') {
   await mkdir(join(modules, '@opencode/cli'), { recursive: true }); await mkdir(join(modules, name, 'bin'), { recursive: true });
   await writeFile(core, JSON.stringify({ name: '@opencode/cli', version: pins.opencode, optionalDependencies: { [name]: pins.opencode } }));
   await writeFile(selected, JSON.stringify({ name, version: pins.opencode }));
-  await writeFile(executable, `#!/bin/sh\nif [ "$1" = '--version' ]; then printf '%s\\n' '${pins.opencode}'; else printf '%s\\n' "$PWD" "$HOME"; fi\n`); await chmod(executable, 0o700);
+  await writeFile(executable, `#!/bin/sh\nif [ "$1" = '--version' ]; then printf '%s\\n' 'opencode v${pins.opencode}'; else printf '%s\\n' "$PWD" "$HOME"; fi\n`); await chmod(executable, 0o700);
   return { config, core, selected, executable, name };
 }
 test('native OpenCode resolves the exact confined optional binary rather than the postinstall placeholder', async t => {
@@ -484,13 +484,18 @@ test('native version verification executes the selected file directly with only 
     calls++; assert.equal(file, executable); assert.deepEqual(args, ['--version']); assert.equal(options.timeout, 15000);
     assert.equal(options.env.OPENAI_API_KEY, undefined); assert.equal(options.env.SSH_AUTH_SOCK, undefined);
     assert.equal(options.env.HOME, join(config.state, 'providers/opencode')); assert.equal(options.cwd, options.env.HOME);
-    return pins.opencode + '\n';
+    return 'opencode v' + pins.opencode + '\n';
   };
   await verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke, inherited: { PATH: '/reviewed', OPENAI_API_KEY: 'must-not-inherit', SSH_AUTH_SOCK: 'must-not-inherit' } });
   assert.equal(calls, 1);
   let failure;
-  await assert.rejects(verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke: async () => '0.0.0', observe: async value => { failure = value; } }), /Actual private.*version/);
+  await assert.rejects(verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke: async () => 'opencode v0.0.0', observe: async value => { failure = value; } }), /Actual private.*version/);
   assert.equal(failure.ok, false); assert.equal(failure.stage, 'actual-native-version'); assert.equal(failure.actualVersion, '0.0.0'); assert.equal(failure.error.code, 'VERSION_MISMATCH'); assert.equal(failure.native.relativeExecutable.includes('node_modules'), true);
+  for (const output of [pins.opencode, `other v${pins.opencode}`, `error opencode v${pins.opencode}`, `opencode v${pins.opencode}\nextra`]) {
+    await assert.rejects(verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke: async () => output }), /Actual private.*version/);
+  }
+  await assert.rejects(verifyOpenCode(config.state, pins.opencode, { platform: 'linux', arch: 'x64', invoke: async () => `${join(config.state, 'providers/opencode')} ${config.state} ${'x'.repeat(300)}`, observe: async value => { failure = value; } }), /Actual private.*version/);
+  assert(!failure.versionOutput.includes(config.state)); assert(failure.versionOutput.length <= 256);
   assert.equal(opencodeEnvironment(config.state, { ANTHROPIC_API_KEY: 'secret' }).ANTHROPIC_API_KEY, undefined);
 });
 test('wrong core/native version, missing optional dependency and linked package paths fail closed', async t => {
