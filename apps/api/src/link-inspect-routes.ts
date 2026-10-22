@@ -1,5 +1,6 @@
 import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import { fetchPublicUrl } from "./public-url-fetch.js";
 
 /** Link preview inspection for pasted URLs; the parent retains authentication, CSRF, errors and rate limits. */
 export function registerLinkInspectRoutes(app: FastifyInstance, options: {
@@ -87,17 +88,17 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
     }
 
     try {
-      const response = await fetch(parsed.toString(), {
+      // A private or local target is never fetched: the link keeps its hostname as the title.
+      const response = await fetchPublicUrl(parsed.toString(), {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         },
-        signal: AbortSignal.timeout(4000),
-        redirect: "follow"
+        timeoutMs: 4000
       });
 
-      const xFrameOptions = (response.headers.get("x-frame-options") || "").toLowerCase();
-      const csp = (response.headers.get("content-security-policy") || "").toLowerCase();
+      const xFrameOptions = String(response.headers["x-frame-options"] ?? "").toLowerCase();
+      const csp = String(response.headers["content-security-policy"] ?? "").toLowerCase();
 
       if (playsInYouTubePane) {
         // Embedded through the YouTube pane, not a frame of this page.
@@ -119,9 +120,9 @@ export function registerLinkInspectRoutes(app: FastifyInstance, options: {
         openMode = "EMBEDDED";
       }
 
-      const contentType = response.headers.get("content-type") || "";
+      const contentType = response.headers["content-type"] || "";
       if (contentType.includes("text/html") || contentType.includes("application/xhtml") || !contentType) {
-        const text = await response.text();
+        const text = response.text;
 
         const sanitize = (raw: string) => {
           let cleaned = raw.trim()

@@ -2,15 +2,18 @@ import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authenticateLogin,
+  createCsrfToken,
   generatePkcePair,
   getAuthConfig,
   hashPassword,
+  renewSessionIfDue,
   SessionRevocationStore,
   signOAuthState,
   signSession,
   signSessionWithTtl,
   verifyOAuthState,
   verifyPassword,
+  verifyCsrfToken,
   verifyPkce,
   verifySession
 } from "../src/auth.js";
@@ -59,10 +62,10 @@ describe("Space auth", () => {
     expect(() => signSessionWithTtl({ id: "user:proof", email: "proof@space.test", role: "ADMIN" }, secret, 43_201)).toThrow();
   });
 
-  it("keeps the operator session valid until the 400-day boundary", () => {
+  it("keeps the operator session valid until the 30-day boundary", () => {
     vi.useFakeTimers();
     const issuedAt = Date.parse("2026-07-20T06:00:00.000Z");
-    const ttlMs = 400 * 24 * 60 * 60 * 1000;
+    const ttlMs = 30 * 24 * 60 * 60 * 1000;
     vi.setSystemTime(issuedAt);
     const secret = "test-secret-with-enough-length";
     const token = signSession({ id: "user:operator", email: "operator@space.test", role: "ADMIN" }, secret);
@@ -71,6 +74,64 @@ describe("Space auth", () => {
     expect(verifySession(token, secret)).toMatchObject({ id: "user:operator" });
     vi.setSystemTime(issuedAt + ttlMs);
     expect(verifySession(token, secret)).toBeNull();
+  });
+
+  it("renews a used operator session once less than half of its 30 days is left, keeping its issue time and CSRF token", () => {
+    const secret = "test-secret-with-enough-length";
+    const day = 24 * 60 * 60 * 1000;
+    const issuedAt = Date.parse("2026-10-19T08:00:00.000Z");
+    const token = signSession({ id: "user:operator", email: "operator@space.test", role: "ADMIN" }, secret, issuedAt);
+    const csrf = createCsrfToken(token, secret)!;
+    expect(renewSessionIfDue(token, secret, issuedAt + 10 * day)).toBeNull();
+    const renewed = renewSessionIfDue(token, secret, issuedAt + 16 * day)!;
+    const payload = JSON.parse(Buffer.from(renewed.split(".")[0]!, "base64url").toString("utf8"));
+    expect(payload).toMatchObject({ v: 2, iat: Math.floor(issuedAt / 1000), exp: Math.floor((issuedAt + 46 * day) / 1000) });
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(issuedAt + 40 * day);
+      // The original cookie has run out; the renewed one goes on, and the client's cached CSRF token still fits it.
+      expect(verifySession(token, secret)).toBeNull();
+      expect(verifySession(renewed, secret)).toMatchObject({ id: "user:operator" });
+      expect(verifyCsrfToken(renewed, csrf, secret)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    // Revoking the user still ends a renewed session: the issue time never moves.
+    const revocations = new SessionRevocationStore();
+    void revocations.revokeUser("user:operator", issuedAt + 1_000);
+    expect(verifySession(renewed, secret, revocations)).toBeNull();
+    expect(renewSessionIfDue(signSessionWithTtl({ id: "user:proof", email: "p@space.test", role: "ADMIN" }, secret, 600), secret)).toBeNull();
+    // Logging out with the renewed cookie also ends the copy from before the renewal (and the other way round).
+    const loggedOut = new SessionRevocationStore();
+    const current = renewSessionIfDue(token, secret, issuedAt + 16 * day)!;
+    expect(verifySession(token, secret, loggedOut)).toMatchObject({ id: "user:operator" });
+    void loggedOut.revokeToken(current);
+    expect(verifySession(current, secret, loggedOut)).toBeNull();
+    expect(verifySession(token, secret, loggedOut)).toBeNull();
+  });
+
+  it("does not cut a cookie issued before the 30-day change: its next request moves it to the new lifetime", () => {
+    const secret = "test-secret-with-enough-length";
+    const now = Date.now();
+    const legacyBody = Buffer.from(JSON.stringify({ user: { id: "user:operator", email: "operator@space.test", role: "ADMIN" },
+      exp: Math.floor(now / 1000) + 390 * 24 * 3600, iat: Math.floor(now / 1000) - 10 * 24 * 3600 })).toString("base64url");
+    const legacy = `${legacyBody}.${createHmac("sha256", secret).update(legacyBody).digest("base64url")}`;
+    const legacyCsrf = createCsrfToken(legacy, secret)!;
+    expect(verifySession(legacy, secret)).toMatchObject({ id: "user:operator" });
+    const renewed = renewSessionIfDue(legacy, secret, now)!;
+    const payload = JSON.parse(Buffer.from(renewed.split(".")[0]!, "base64url").toString("utf8"));
+    expect(payload.exp).toBe(Math.floor(now / 1000) + 30 * 24 * 3600);
+    expect(verifySession(renewed, secret)).toMatchObject({ id: "user:operator" });
+    expect(verifySession(legacy, secret)).toMatchObject({ id: "user:operator" });
+    // A tab that fetched its CSRF token before the renewal keeps working, through later renewals too.
+    expect(verifyCsrfToken(renewed, legacyCsrf, secret)).toBe(true);
+    const again = renewSessionIfDue(renewed, secret, now + 20 * 24 * 3600 * 1000)!;
+    expect(verifyCsrfToken(again, legacyCsrf, secret)).toBe(true);
+    expect(verifyCsrfToken(again, "forged", secret)).toBe(false);
+    // Logging out with the renewed cookie also revokes the older cookie it came from.
+    const loggedOut = new SessionRevocationStore();
+    void loggedOut.revokeToken(again);
+    expect(verifySession(legacy, secret, loggedOut)).toBeNull();
   });
 
   it("does not issue persistent sessions to the proof operator", () => {

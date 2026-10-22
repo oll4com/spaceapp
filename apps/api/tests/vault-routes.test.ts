@@ -72,6 +72,7 @@ describe("Vault operator routes", () => {
       expect((await app.inject({ method: "PUT", url, headers: alice.headers, payload: item })).statusCode).toBe(200);
       const listed = await app.inject({ method: "GET", url: "/api/space-vault/items", headers: alice.headers });
       expect(listed.json().items).toEqual([item.metadata]);
+      expect(listed.json().stats).toEqual({ [item.metadata.id]: expect.objectContaining({ uses: 0, lastUsedAt: null }) });
       expect(listed.body).not.toContain(SENTINEL);
       expect((await app.inject({ method: "GET", url, headers: bob.headers })).json().error.code).toBe("VAULT_ITEM_NOT_FOUND");
       expect((await app.inject({ method: "DELETE", url, headers: bob.headers })).statusCode).toBe(404);
@@ -108,7 +109,7 @@ describe("Vault agent routes", () => {
         expect(answer.json(), path).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/) });
         expect(answer.body, path).not.toContain(SENTINEL);
       }
-      expect((await call("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), agentAccess: false, delegatedItems: 0 });
+      expect((await call("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), agentAccess: false, delegatedItems: 0, pendingItems: 0 });
       const audited = (await call("audit", { limit: 3 })).json();
       expect(audited.entries).toHaveLength(3);
       expect(audited.entries[0]).toEqual({ at: expect.any(String), action: "AGENT_LIST", result: "LISTED", reason: null, itemId: null });

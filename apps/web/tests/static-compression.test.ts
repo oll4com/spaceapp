@@ -201,6 +201,16 @@ describe("Space static asset compression", () => {
     expect(operatorRoot.status).toBe(200);
     expect(operatorRoot.headers["content-security-policy"]).toBe("frame-ancestors 'self'; object-src 'none'; base-uri 'self'");
     expect(operatorRoot.headers["x-frame-options"]).toBe("SAMEORIGIN");
+    // The script policy is report-only until its reports are clean (security addendum step 7).
+    expect(operatorRoot.headers["content-security-policy-report-only"]).toBe("script-src 'self' https://www.youtube.com; object-src 'none'; base-uri 'self'; report-uri /csp-report");
+    expect(operatorRoot.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+    const report = await new Promise<number>((resolve, reject) => {
+      const sent = http.request({ host: "127.0.0.1", port, path: "/csp-report", method: "POST", headers: { "content-type": "application/csp-report" } },
+        (response) => { response.resume(); resolve(response.statusCode ?? 0); });
+      sent.on("error", reject);
+      sent.end(JSON.stringify({ "csp-report": { "violated-directive": "script-src", "blocked-uri": "https://evil.example/x.js?token=1" } }));
+    });
+    expect(report).toBe(204);
     expect(homepageAlias.headers["content-security-policy"]).toContain("default-src 'self'");
     expect(homepageAlias.headers["content-security-policy"]).toContain("frame-src 'self'");
     expect(homepageAlias.headers["content-security-policy"]).toContain("frame-ancestors 'none'");

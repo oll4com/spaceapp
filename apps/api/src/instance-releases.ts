@@ -9,6 +9,7 @@ import {
 } from "@space/contracts";
 import { readDeployQueue } from "./deploy-queue.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { signQueueOperatorGrant } from "./queue-operator-grants.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -104,9 +105,11 @@ export async function readReleases(options: ReleasesOptions = defaultReleasesOpt
   });
 }
 
-async function runQueue(options: ReleasesOptions, args: string[]): Promise<string> {
+async function runQueue(options: ReleasesOptions, args: string[], operatorOp?: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(options.nodeBin, [options.queueScript, ...args], { env: gitEnv, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+    // The operator's own Releases action carries their grant for the queue's operator-only commands.
+    const env = operatorOp ? { ...gitEnv, SPACE_QUEUE_OPERATOR_GRANT: signQueueOperatorGrant(operatorOp, "operator:settings-releases") } : gitEnv;
+    const { stdout } = await execFileAsync(options.nodeBin, [options.queueScript, ...args], { env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
     return stdout.trim();
   } catch (error) {
     const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
@@ -118,7 +121,7 @@ async function runQueue(options: ReleasesOptions, args: string[]): Promise<strin
 /** Queues the verified dev commit for stable; the stable queue ships it through the protected pipeline. */
 export async function promoteDev(options: ReleasesOptions = defaultReleasesOptions): Promise<ReleaseActionResponse> {
   if (!options.managedHere) throw new ReleaseActionError("Releases are managed from the stable instance.", 409);
-  const output = await runQueue(options, ["promote", "--json"]);
+  const output = await runQueue(options, ["promote", "--json"], "promote");
   if (!output.startsWith("{")) {
     return releaseActionResponseSchema.parse({ status: "ALREADY_LIVE", ticketId: null, message: "Stable already runs the latest dev commit." });
   }
@@ -133,6 +136,6 @@ export async function promoteDev(options: ReleasesOptions = defaultReleasesOptio
 export async function approveHotfix(ticketId: string, options: ReleasesOptions = defaultReleasesOptions): Promise<ReleaseActionResponse> {
   if (!options.managedHere) throw new ReleaseActionError("Releases are managed from the stable instance.", 409);
   if (!/^q-\d{8}-\d{6}-[0-9a-f]{4}$/.test(ticketId)) throw new ReleaseActionError("Invalid ticket id.", 400);
-  await runQueue(options, ["approve", ticketId, "--target", "stable"]);
+  await runQueue(options, ["approve", ticketId, "--target", "stable"], `approve:${ticketId}`);
   return releaseActionResponseSchema.parse({ status: "APPROVED", ticketId, message: "Hotfix approved for stable." });
 }

@@ -29,6 +29,9 @@ const outgoingRules: Array<[NousDecisionCategory, string, RegExp]> = [
   ["EXTERNAL", "a payment", /\b(?:pay|payment|purchase|buy|checkout|subscribe|refund|charge)\b[^\n.]{0,40}(?:€|\$|eur|usd|card|invoice|plan|subscription)/i]
 ];
 
+/** The text without release commands it names only to forbid them ("never --hotfix"). */
+export const withoutNegatedRelease = (text: string): string => text.replace(NEGATED_RELEASE, "");
+
 export interface NousCriticalVerdict { category: NousDecisionCategory; reasons: string[] }
 /** What the operator lets Nous do on its own in its settings (mayPromote, mayApproveWarm). */
 export interface NousAllowances { promote: boolean; warm: boolean }
@@ -36,7 +39,7 @@ const NONE: NousAllowances = { promote: false, warm: false };
 
 /** Text Nous wants to send to a pane as a prompt. */
 export function classifyNousOutgoing(text: string, allow: NousAllowances = NONE): NousCriticalVerdict | null {
-  const asked = text.replace(NEGATED_RELEASE, "");
+  const asked = withoutNegatedRelease(text);
   const hits = outgoingRules.filter(([, reason, pattern]) => pattern.test(asked) && !(allow.promote && reason === "promoting dev to stable"));
   if (!hits.length) return null;
   return { category: hits[0]![0], reasons: [...new Set(hits.map(([, reason]) => reason))] };

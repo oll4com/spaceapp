@@ -40,8 +40,8 @@ export interface NousAttachmentRepository {
   /** Removes rows and returns them, so their files can be deleted too. */
   remove(owner: string, id: string): Promise<NousAttachmentRecord | null>;
   removeAll(owner: string): Promise<NousAttachmentRecord[]>;
-  /** Unsent rows older than `unsentBefore` and every row older than `before`. */
-  removeExpired(unsentBefore: string, before: string): Promise<NousAttachmentRecord[]>;
+  /** Files never sent with a message, uploaded before `before`; a sent file stays until its conversation is cleared. */
+  removeUnsent(before: string): Promise<NousAttachmentRecord[]>;
   dispose(): Promise<void>;
 }
 
@@ -100,8 +100,8 @@ export class InMemoryNousAttachmentRepository implements NousAttachmentRepositor
     for (const row of removed) this.rows.delete(row.id);
     return removed;
   }
-  async removeExpired(unsentBefore: string, before: string) {
-    const removed = [...this.rows.values()].filter((row) => row.createdAt < before || (!row.messageId && row.createdAt < unsentBefore));
+  async removeUnsent(before: string) {
+    const removed = [...this.rows.values()].filter((row) => !row.messageId && row.createdAt < before);
     for (const row of removed) this.rows.delete(row.id);
     return removed;
   }
@@ -152,9 +152,8 @@ export class PostgresNousAttachmentRepository implements NousAttachmentRepositor
     const result = await this.pool.query<Row>(`DELETE FROM nous_attachments WHERE owner_user_id = $1 RETURNING ${columns}`, [owner]);
     return result.rows.map(recordOf);
   }
-  async removeExpired(unsentBefore: string, before: string) {
-    const result = await this.pool.query<Row>(`DELETE FROM nous_attachments WHERE created_at < $2 OR (message_id IS NULL AND created_at < $1) RETURNING ${columns}`,
-      [unsentBefore, before]);
+  async removeUnsent(before: string) {
+    const result = await this.pool.query<Row>(`DELETE FROM nous_attachments WHERE message_id IS NULL AND created_at < $1 RETURNING ${columns}`, [before]);
     return result.rows.map(recordOf);
   }
   async dispose() { await (this.pool as { end?: () => Promise<void> }).end?.(); }

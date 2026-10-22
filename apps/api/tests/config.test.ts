@@ -88,6 +88,11 @@ describe("Space API config", () => {
     expect(configured.memoryEmbeddingKeyFile).toBe("/opt/spaceapp/secrets/space-openai-embedding.key");
     expect(configured.memoryEmbeddingKeyName).toBe("space-openai-embedding");
     expect(configured.memoryEmbeddingTimeoutMs).toBe(30000);
+
+    // Space Gateway defaults to its local model; .env.example's OpenAI value reads as that default, any other model overrides.
+    const gateway = (model?: string) => getApiConfig({ SPACE_MEMORY_EMBEDDING_PROVIDER: "codex-lb", ...(model === undefined ? {} : { SPACE_MEMORY_EMBEDDING_MODEL: model }) });
+    expect([gateway().memoryEmbeddingModel, gateway("").memoryEmbeddingModel, gateway("text-embedding-3-small").memoryEmbeddingModel]).toEqual(["bge-m3", "bge-m3", "bge-m3"]);
+    expect(gateway("gemini-embedding-001").memoryEmbeddingModel).toBe("gemini-embedding-001");
   });
 
   it("keeps the memory graph disabled by default and parses its isolated snapshot root", () => {

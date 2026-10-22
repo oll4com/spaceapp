@@ -17,12 +17,13 @@ describe("ConfigurationMigrationCard", () => {
     const replaceRadio = screen.getByRole("radio", { name: /Replace/i }) as HTMLInputElement;
     const mergeRadio = screen.getByRole("radio", { name: /Merge/i }) as HTMLInputElement;
 
-    expect(replaceRadio.checked).toBe(true);
-    expect(mergeRadio.checked).toBe(false);
-
-    fireEvent.click(mergeRadio);
+    // Merge is the default; Replace deletes and must be chosen (Record Retention Invariant).
     expect(replaceRadio.checked).toBe(false);
     expect(mergeRadio.checked).toBe(true);
+
+    fireEvent.click(replaceRadio);
+    expect(replaceRadio.checked).toBe(true);
+    expect(mergeRadio.checked).toBe(false);
 
     const apiKeysSwitch = screen.getByRole("switch", { name: /Include Provider API Keys/i }) as HTMLInputElement;
     const credsSwitch = screen.getByRole("switch", { name: /Include CLI logins/i }) as HTMLInputElement;
@@ -83,5 +84,33 @@ describe("ConfigurationMigrationCard", () => {
     vi.stubGlobal("fetch", fetch);
     await expect(Reflect.apply(runtime.api[method], runtime.api, [{}])).rejects.toMatchObject({ code: "DEMO_UNSUPPORTED" });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("imports with Merge by default and asks before a Replace deletes anything (Record Retention Invariant)", async () => {
+    const { runtime } = createDemoRuntime();
+    const inspectConfiguration = vi.fn().mockResolvedValue({ valid: true, version: "1.1.0", exportedAt: "2026-10-20T00:00:00.000Z", source: { instance: "stable", exportedBy: "user:operator" },
+      summary: { roomsCount: 1, panesCount: 1, hasUserSettings: false, userLinksCount: 0, clipboardItemsCount: 0, taskItemsCount: 0, providersCount: 0, cliRuntimeSettingsCount: 0, apiKeysCount: 0, credentialsCount: 0 },
+      secrets: { encrypted: false, cliAuthRuntimes: [] }, warnings: [], missingProjectRoots: [] });
+    const importConfiguration = vi.fn().mockResolvedValue({ success: true, targetUserId: "user:operator", mode: "merge", stats: { roomsImported: 1, panesImported: 1, linksImported: 0, clipboardImported: 0, tasksImported: 0 }, warnings: [] });
+    installSpaceRuntime({ ...runtime, api: { ...runtime.api, inspectConfiguration, importConfiguration } });
+    const { container } = render(<ConfigurationMigrationCard canManageInstallation />);
+    const json = JSON.stringify({ format: "spaceapp-configuration-bundle" });
+    const file = Object.assign(new File([json], "backup.spaceapp", { type: "application/json" }), { text: async () => json });
+    fireEvent.change(container.querySelector("input[type=file]")!, { target: { files: [file] } });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Apply & Import \(MERGE\)/ }));
+    await waitFor(() => expect(importConfiguration).toHaveBeenCalledTimes(1));
+    expect(importConfiguration.mock.calls[0]![0]).toMatchObject({ mode: "merge" });
+    expect(importConfiguration.mock.calls[0]![0]).not.toHaveProperty("confirmReplace");
+
+    fireEvent.change(container.querySelector("input[type=file]")!, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("radio", { name: /Replace/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Apply & Import \(REPLACE\)/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(importConfiguration).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /Apply & Import \(REPLACE\)/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Replace everything" }));
+    await waitFor(() => expect(importConfiguration).toHaveBeenCalledTimes(2));
+    expect(importConfiguration.mock.calls[1]![0]).toMatchObject({ mode: "replace", confirmReplace: true });
   });
 });

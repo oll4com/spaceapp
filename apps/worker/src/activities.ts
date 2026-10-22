@@ -36,7 +36,6 @@ import {
   fetchOpenCodeCurrentModel,
   fetchOpenCodeSessionModels,
   openCodeServerBaseUrl,
-  openCodeServerApiVersion,
   openCodeServerIsHealthy,
   openCodeSpaceChatStateRoot,
   openCodeV2Authorization,
@@ -2387,47 +2386,12 @@ export async function executeOpenCodeTurnPrompt(
   abortSignal: AbortSignal | undefined,
   fetchImpl: typeof fetch
 ): Promise<{ text: string | null; usage: OpenCodeTurnUsage | null }> {
-  const baseUrl = openCodeServerBaseUrl(control.serverPort, control.serverHost);
-  const authorization = `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`;
-  const composite = input.modelId ? parseOpenCodeCompositeModelId(input.modelId) : null;
-  const body: Record<string, unknown> = {
-    parts: [{ type: "text", text: input.prompt }],
-    ...(composite ? { model: { providerID: composite.providerId, modelID: composite.modelId } } : {}),
-    agent: input.collaborationMode === "plan" ? "plan" : "build",
-    tools: {}
-  };
   const timeoutSignal = AbortSignal.timeout(config.messageTimeoutMs);
   const signal = abortSignal
     ? AbortSignal.any([timeoutSignal, abortSignal])
     : timeoutSignal;
-  if (await openCodeServerApiVersion(control) === 2) return executeOpenCodeV2TurnPrompt(control, input, signal, fetchImpl);
-  try {
-    const response = await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/message`, {
-      method: "POST",
-      headers: {
-        authorization,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(body),
-      signal
-    });
-    if (!response.ok) {
-      throw new Error(`OpenCode message failed with HTTP ${response.status}.`);
-    }
-    const payload = (await response.json()) as { parts?: unknown; info?: unknown };
-    return { text: extractOpenCodeAssistantText(payload.parts), usage: openCodeTurnUsage(payload.info) };
-  } catch (error) {
-    try {
-      await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/abort`, {
-        method: "POST",
-        headers: { authorization },
-        signal: AbortSignal.timeout(5_000)
-      });
-    } catch {
-      // Preserve the original turn failure; abort is a bounded cleanup attempt.
-    }
-    throw error;
-  }
+  // OpenCode 2 only (OpenCode 1 and its blocking /session/:id/message call were retired, plan clipboard:kJ1BIeylJRLG).
+  return executeOpenCodeV2TurnPrompt(control, input, signal, fetchImpl);
 }
 
 /** OpenCode 2 has no blocking message call: pick the agent, queue the prompt, wait until the loop is idle, read the answer. */

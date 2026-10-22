@@ -29,8 +29,10 @@ async function fixture() {
   await chmod(wrapper, 0o755);
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
-    SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-freelance-copilot-tests", SPACE_ARTIFACT_ROOT: root
+    SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-freelance-copilot-tests", SPACE_ARTIFACT_ROOT: root,
+    SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key")
   });
+  await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
   const store = new InMemorySpaceStore();
   const eventBus = new SpaceEventBus();
   const roomEvents: Event[] = [];
@@ -148,6 +150,8 @@ describe("freelance copilot run loop", () => {
     expect(bootstrap).toContain("space_freelance_client_ready");
     const skill = await readFile(new URL("../../../agent-skills/space-freelance-copilot/SKILL.md", import.meta.url), "utf8");
     expect(skill).toContain("name: space-freelance-copilot");
+    expect(skill).toContain("## Demo-first proposals (score 70+)");
+    expect(persona).toContain("demo-first proposal");
     await expect(readFile(new URL("../../../agent-skills/space-freelance-copilot/references/channels.md", import.meta.url), "utf8")).resolves.toContain("## Upwork");
   });
 });

@@ -1,5 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, type AppStudioPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
 import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
@@ -296,6 +296,7 @@ import type {
   SpaceConfigRoom,
   ExportConfigOptions,
   ImportConfigOptions,
+  ConfigSection,
   ImportConfigResult,
   SourceControlConnection,
   SourceControlProvider,
@@ -369,7 +370,7 @@ import {
   type CliAuthCapture,
   type ConfigImportHooks
 } from "./configuration-secrets.js";
-import { prepareConfigImport, remapRoomKeyedSettings } from "./configuration-import.js";
+import { assertConfigReplaceConfirmed, configImportIncludes, mergeImportedUserSettings, prepareConfigImport, remapRoomKeyedSettings } from "./configuration-import.js";
 
 export const ACTIVE_PANE_CAP = 16;
 export const PANE_CLI_TRANSCRIPT_CHUNK_CAP = 200;
@@ -962,6 +963,7 @@ export interface SpaceStore {
     clipboardItemId: string,
     input: UpdatePlanProgressRequest
   ): MaybePromise<ClipboardItem>;
+  updateClipboardNoteText(ownerUserId: string, clipboardItemId: string, text: string): MaybePromise<ClipboardItem>;
   deleteClipboardItem(ownerUserId: string, clipboardItemId: string): MaybePromise<ClipboardItem>;
   clearClipboardItems(ownerUserId: string): MaybePromise<number>;
   upsertTaskItem(input: UpsertTaskItemInput): MaybePromise<TaskItem>;
@@ -1070,6 +1072,7 @@ export interface SpaceStore {
   updateMarketingCopilotMetadata(paneId: string, metadata: MarketingCopilotPaneMetadata): MaybePromise<Pane>;
   updateFreelanceCopilotMetadata(paneId: string, metadata: FreelanceCopilotPaneMetadata): MaybePromise<Pane>;
   updateDesignMetadata(paneId: string, metadata: DesignPaneMetadata): MaybePromise<Pane>;
+  updateAppStudioMetadata(paneId: string, metadata: AppStudioPaneMetadata): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -1444,8 +1447,17 @@ export const nowIso = () => new Date().toISOString();
 export const makeSpaceId = (prefix: string) => `${prefix}:${nanoid(12)}`;
 export const hashPrompt = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
 
+// Provider secrets that identify themselves by shape (security addendum step 1, 2026-10-19: a live Stripe key sat in a
+// monthly memory file and recall returned it). OpenAI-style `sk-` keys are already caught by the transcript redaction.
+const memorySecretPatterns: Array<[RegExp, string]> = [
+  [/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b/g, "[REDACTED Stripe key]"],
+  [/\bwhsec_[A-Za-z0-9+/=]{10,}/g, "[REDACTED webhook secret]"],
+  [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[REDACTED AWS key]"],
+  [/\b(aws_?secret_?access_?key\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}\b/gi, "$1[REDACTED]"]
+];
+
 export function redactMemoryText(value: string): string {
-  return redactPersistedTranscriptContent(value)
+  return memorySecretPatterns.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), redactPersistedTranscriptContent(value))
     .replace(/\b((?:creds|credentials)\s*:\s*[^\s]+@[^\s]+\s*\/\s*)[^\s·;,]+/gi, "$1[REDACTED]")
     .replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
     .replace(/\b(space_session(?:_dev)?=)[^;\s]+/gi, "$1[REDACTED]");
@@ -1633,6 +1645,11 @@ export function assertMemoryRollbackTarget(input: CreateMemoryChangeSetInput, ta
   ) {
     throw new SpaceConflictError(`Memory rollback ${target.id} must exactly reverse its target snapshots and hashes.`);
   }
+}
+
+/** Only copy/paste history is capped; plans and notes are removed only by an explicit delete. */
+function isPrunableClip(source: ClipboardItem["source"]): boolean {
+  return source === "COPY" || source === "PASTE";
 }
 
 function isFiniteVector(value: unknown): value is number[] {
@@ -3219,11 +3236,13 @@ export class InMemorySpaceStore implements SpaceStore {
       (record) => record.ownerUserId === parsed.ownerUserId && record.contentHash === contentHash
     );
     const timestamp = nowIso();
+    const keepsSource = existing !== undefined && isPrunableClip(parsed.source) && !isPrunableClip(existing.item.source);
     const item = clipboardItemSchema.parse({
       id: existing?.item.id ?? makeSpaceId("clipboard"),
       text: parsed.text,
-      source: parsed.source,
-      title: parsed.title ?? null,
+      // A copy or paste of a plan's or note's text keeps its source and title, so it never becomes prunable history.
+      source: keepsSource ? existing.item.source : parsed.source,
+      title: keepsSource ? existing.item.title : parsed.title ?? null,
       minimumModel: parsed.minimumModel ?? existing?.item.minimumModel ?? null,
       minimumReasoning: parsed.minimumReasoning ?? existing?.item.minimumReasoning ?? null,
       isCompleted: existing?.item.isCompleted ?? false,
@@ -3246,8 +3265,9 @@ export class InMemorySpaceStore implements SpaceStore {
       item
     });
 
+    // Only COPY/PASTE history is capped (newest 100); plans and notes go only by an explicit delete.
     const stale = [...this.clipboardItems.values()]
-      .filter((record) => record.ownerUserId === parsed.ownerUserId)
+      .filter((record) => record.ownerUserId === parsed.ownerUserId && isPrunableClip(record.item.source))
       .sort((left, right) => right.sequence - left.sequence)
       .slice(100);
     for (const record of stale) this.clipboardItems.delete(record.item.id);
@@ -3445,6 +3465,21 @@ export class InMemorySpaceStore implements SpaceStore {
     return record.item;
   }
 
+  updateClipboardNoteText(ownerUserId: string, clipboardItemId: string, text: string): ClipboardItem {
+    const record = this.clipboardItems.get(clipboardItemId);
+    if (!record || record.ownerUserId !== ownerUserId || (record.item.source !== "MANUAL_NOTE" && record.item.source !== "AGENT_NOTE")) {
+      throw new SpaceNotFoundError(`Clipboard note ${clipboardItemId} was not found.`);
+    }
+    const contentHash = createHash("sha256").update(text).digest("hex");
+    const holder = [...this.clipboardItems.values()].find((other) => other.ownerUserId === ownerUserId && other.contentHash === contentHash);
+    if (holder && holder !== record) throw new SpaceConflictError("Another clipboard record already has this exact text.");
+    this.clipboardSequence += 1;
+    record.contentHash = contentHash;
+    record.sequence = this.clipboardSequence;
+    record.item = clipboardItemSchema.parse({ ...record.item, text, characterCount: Array.from(text).length, lastUsedAt: nowIso() });
+    return record.item;
+  }
+
   updateClipboardItemProgress(
     ownerUserId: string,
     clipboardItemId: string,
@@ -3583,11 +3618,11 @@ export class InMemorySpaceStore implements SpaceStore {
       item
     });
 
+    // Only finished, unscheduled tasks are capped (newest 100); open and scheduled tasks go only by an explicit delete.
     const stale = [...this.taskItems.values()]
-      .filter((record) => record.ownerUserId === parsed.ownerUserId)
+      .filter((record) => record.ownerUserId === parsed.ownerUserId && (record.item.status === "DONE" || record.item.status === "ARCHIVED") && !record.item.schedule)
       .sort((left, right) => right.sequence - left.sequence)
-      .slice(100)
-      .filter((record) => !record.item.schedule?.nextRunAt);
+      .slice(100);
     for (const record of stale) this.taskItems.delete(record.item.id);
     return item;
   }
@@ -5005,6 +5040,15 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(updated);
   }
 
+  updateAppStudioMetadata(paneId: string, metadata: AppStudioPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "APP_STUDIO" || current.isClosed) throw new SpaceConflictError("An open App Studio pane is required.");
+    const parsed = appStudioPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, appStudioMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -5046,7 +5090,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
-        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN"].includes(input.mode ?? current.mode)
+        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId
             : input.terminalRuntimeId
@@ -6353,8 +6397,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN panes.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -9167,9 +9211,11 @@ export class InMemorySpaceStore implements SpaceStore {
   ): Promise<ImportConfigResult> {
     const parsedBundle = spaceConfigBundleSchema.parse(bundle);
     const targetUserId = options.targetUserId || parsedBundle.source.exportedBy || "user:operator";
-    const mode = options.mode || "replace";
+    const mode = options.mode || "merge";
+    assertConfigReplaceConfirmed({ mode, confirmReplace: options.confirmReplace });
+    const take = (section: ConfigSection) => configImportIncludes(options.sections, section);
     const { secrets, warnings } = await openConfigBundleSecrets(parsedBundle, options.passphrase);
-    const prepared = await prepareConfigImport(parsedBundle, { pathRewrite: options.pathRewrite }, {
+    const prepared = await prepareConfigImport(parsedBundle, { pathRewrite: options.pathRewrite, sections: options.sections }, {
       profileExists: async (runtimeId, profileId) => {
         try { return Boolean(this.getCliAccountProfile(runtimeId as CliToggleRuntimeId, profileId)); } catch { return false; }
       }
@@ -9177,9 +9223,10 @@ export class InMemorySpaceStore implements SpaceStore {
     warnings.push(...prepared.warnings);
     const data = prepared.data;
 
+    // Replace clears only the sections this import brings.
     if (mode === "replace") {
       for (const [roomId, room] of this.rooms.entries()) {
-        if (room.ownerUserId === targetUserId) {
+        if (take("rooms") && room.ownerUserId === targetUserId) {
           this.rooms.delete(roomId);
           for (const [paneId, pane] of this.panes.entries()) {
             if (pane.roomId === roomId) {
@@ -9189,17 +9236,17 @@ export class InMemorySpaceStore implements SpaceStore {
         }
       }
       for (const [id, rec] of this.clipboardItems.entries()) {
-        if (rec.ownerUserId === targetUserId) {
+        if (take("clipboardItems") && rec.ownerUserId === targetUserId) {
           this.clipboardItems.delete(id);
         }
       }
       for (const [id, rec] of this.userLinks.entries()) {
-        if (rec.ownerUserId === targetUserId) {
+        if (take("userLinks") && rec.ownerUserId === targetUserId) {
           this.userLinks.delete(id);
         }
       }
       for (const [id, rec] of this.taskItems.entries()) {
-        if (rec.ownerUserId === targetUserId) {
+        if (take("taskItems") && rec.ownerUserId === targetUserId) {
           this.taskItems.delete(id);
         }
       }
@@ -9250,8 +9297,9 @@ export class InMemorySpaceStore implements SpaceStore {
 
     let settingsUpdated = false;
     if (data.userSettings) {
+      const imported = remapRoomKeyedSettings(data.userSettings, roomIdMap);
       this.userSettings.set(targetUserId, {
-        ...remapRoomKeyedSettings(data.userSettings, roomIdMap),
+        ...(mode === "merge" ? mergeImportedUserSettings(this.userSettings.get(targetUserId), imported) : imported),
         updatedAt: nowIso()
       });
       settingsUpdated = true;
@@ -9353,13 +9401,13 @@ export class InMemorySpaceStore implements SpaceStore {
     }
 
     let apiKeysImported = 0;
-    if (options.importApiKeys !== false && secrets.apiKeys && Object.keys(secrets.apiKeys).length > 0) {
+    if (options.importApiKeys !== false && take("apiKeys") && secrets.apiKeys && Object.keys(secrets.apiKeys).length > 0) {
       const res = writeImportedApiKeys(secrets.apiKeys, { secretsDir: options.secretsDir });
       apiKeysImported = res.imported;
       warnings.push(`Imported ${apiKeysImported} provider API key(s) to ${res.targetDir}`);
     }
 
-    const cliAuth = options.importCredentials !== false && secrets.cliAuth && hooks.applyCliAuth
+    const cliAuth = options.importCredentials !== false && take("credentials") && secrets.cliAuth && hooks.applyCliAuth
       ? await hooks.applyCliAuth(secrets.cliAuth)
       : undefined;
     const credentialsImported = cliAuth?.filter((entry) => entry.result === "imported").length ?? 0;

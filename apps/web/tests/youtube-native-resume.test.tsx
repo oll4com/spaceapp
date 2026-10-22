@@ -9,7 +9,7 @@ import { YouTubeNativePlayer } from '../src/features/browser-pane/YouTubeNativeP
 import { parseYouTubePlayback, youtubePlaybackUrl } from '../src/features/browser-pane/youtube-playback.js';
 import { USER_LINKS_UPDATED_EVENT } from '../src/features/user-links/UserLinks.js';
 
-const mocks = vi.hoisted(() => ({ createLink: vi.fn(), links: vi.fn(), youtubeAccounts: vi.fn(), selectYouTubeAccount: vi.fn(), me: vi.fn(), youtubePlayback: vi.fn(), saveYouTubePlayback: vi.fn(), stopBrowserSession: vi.fn(), watchYouTube: vi.fn(), browserPages: vi.fn(), load: vi.fn() }));
+const mocks = vi.hoisted(() => ({ createLink: vi.fn(), links: vi.fn(), youtubeAccounts: vi.fn(), selectYouTubeAccount: vi.fn(), me: vi.fn(), youtubePlayback: vi.fn(), saveYouTubePlayback: vi.fn(), stopBrowserSession: vi.fn(), watchYouTube: vi.fn(), browserPages: vi.fn(), youtubeVideoText: vi.fn(), load: vi.fn() }));
 vi.mock('../src/api.js', () => ({ api: mocks }));
 vi.mock('../src/features/vibe-music/youtubePlaylistPlayer.js', () => ({ loadYouTubeIframeApi: mocks.load }));
 vi.mock('../src/features/browser-pane/ManagedYouTubeBrowser.js', () => ({ ManagedYouTubeBrowser: ({ targetUrl }: { targetUrl?: string }) => <div data-testid="managed-youtube" data-target-url={targetUrl}>Managed browser</div> }));
@@ -120,6 +120,62 @@ describe('YouTube native resume', () => {
     expect(await screen.findByRole('button', { name: 'Added to Playlist' })).toBeTruthy();
     expect(mocks.createLink).toHaveBeenCalledTimes(2);
   });
+  it('summarizes the video playing now with AI, copies it and closes the summary', async () => {
+    mocks.youtubeVideoText.mockResolvedValue({ text: 'A short talk.\n- 0:05 the point', model: 'gemini-3.8-flash-tiered' });
+    render(<YouTubePane pane={pane} agentNumber={1} />);
+    await waitFor(() => expect(players).toHaveLength(1));
+    await act(async () => players[0]!.options.events.onReady());
+    players[0]!.videoId = 'lmnopqrstuv';
+    players[0]!.title = 'Autoplayed talk';
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize with AI' }));
+    const summary = await screen.findByRole('region', { name: 'AI summary' });
+    expect(mocks.youtubeVideoText).toHaveBeenCalledWith('pane:test', 'lmnopqrstuv', 'summary');
+    expect(summary.textContent).toContain('Autoplayed talk');
+    expect(summary.textContent).toContain('- 0:05 the point');
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('region', { name: 'AI summary' })).toBeNull();
+    mocks.youtubeVideoText.mockRejectedValueOnce(new Error('Gemini could not read the video: quota'));
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize with AI' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('Gemini could not read the video: quota'));
+  });
+  it('gets the full text of the video and says it is working meanwhile', async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    mocks.youtubeVideoText.mockImplementation(() => new Promise((done) => { answer = done; }));
+    render(<YouTubePane pane={pane} agentNumber={1} />);
+    await waitFor(() => expect(players).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Full text' }));
+    expect(await screen.findByText(/writing down everything said/)).toHaveProperty('role', 'status');
+    expect(screen.getByRole('button', { name: 'Summarize with AI' })).toHaveProperty('disabled', true);
+    await act(async () => answer({ text: '0:00 Hello everyone.', model: 'gemini-3.8-flash-tiered' }));
+    expect(mocks.youtubeVideoText).toHaveBeenCalledWith('pane:test', 'abcdefghijk', 'transcript');
+    expect((await screen.findByRole('region', { name: 'Full text' })).textContent).toContain('0:00 Hello everyone.');
+  });
+  it('shows in the toolbar only what applies now and never the Float of the titlebar', async () => {
+    mocks.youtubePlayback.mockResolvedValue({ playback: null });
+    mocks.browserPages.mockResolvedValue({ pages: [{ isActive: true, url: 'https://www.youtube.com/' }] });
+    render(<YouTubePane pane={pane} agentNumber={1} onToggleFloat={vi.fn()} />);
+    await screen.findByTestId('managed-youtube');
+    for (const name of ['Summarize with AI', 'Full text', 'Add to Playlist', 'Play', 'Previous track', 'Next track', 'Play current video', 'Float mini player']) {
+      expect(screen.queryByRole('button', { name })).toBeNull();
+    }
+    expect(screen.queryByRole('combobox', { name: 'YouTube playlist' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: 'YouTube video or playlist link' }), { target: { value: 'https://youtu.be/xxxxxxxxxxx' } });
+    expect(screen.getByRole('button', { name: 'Play' })).toBeTruthy();
+  });
+  it('hides the button labels only while the toolbar does not fit them', async () => {
+    const width = { scroll: 900, client: 600 };
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('youtube-toolbar') ? width.scroll : 0; });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('youtube-toolbar') ? width.client : 0; });
+    const view = render(<YouTubePane pane={pane} agentNumber={1} />);
+    await waitFor(() => expect(players).toHaveLength(1));
+    const toolbar = view.container.querySelector('.youtube-toolbar') as HTMLElement;
+    await waitFor(() => expect(toolbar.dataset.compact).toBe('true'));
+    width.client = 950;
+    view.rerender(<YouTubePane pane={{ ...pane }} agentNumber={1} />);
+    await waitFor(() => expect(toolbar.dataset.compact).toBeUndefined());
+    scroll.mockRestore(); client.mockRestore();
+  });
   it.each([true, false])('restores reload playback intent %s while preserving the saved time', async (wasPlaying) => {
     vi.spyOn(performance, 'getEntriesByType').mockReturnValue([{ type: 'reload' }] as unknown as PerformanceEntry[]);
     sessionStorage.setItem('test-playback:reload', JSON.stringify({ playing: wasPlaying, savedAt: Date.now() }));
@@ -197,15 +253,23 @@ describe('YouTube native resume', () => {
     await act(async () => resolve({ Player: FakePlayer }));
     expect(players).toHaveLength(0);
   });
-  it('uses the current video and exact captured time after stopping browsing', async () => {
+  it('moves a video opened in the YouTube browser to the player at the captured time, and Browse YouTube does not bounce back', async () => {
     mocks.youtubePlayback.mockResolvedValue({ playback: null });
     mocks.browserPages.mockResolvedValue({ pages: [{ isActive: true, url: 'https://www.youtube.com/watch?v=abcdefghijk' }] });
     mocks.watchYouTube.mockResolvedValue({ currentUrl: 'https://www.youtube.com/watch?v=abcdefghijk&t=81s' });
     render(<YouTubePane pane={pane} agentNumber={1} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Play current video' }));
-    await waitFor(() => expect(players).toHaveLength(1));
+    await waitFor(() => expect(players).toHaveLength(1), { timeout: 4000 });
     expect(players[0]!.options.playerVars.start).toBe(81);
-  });
+    expect(players[0]!.options.playerVars.autoplay).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Browse YouTube' }));
+    await screen.findByTestId('managed-youtube');
+    await new Promise((done) => setTimeout(done, 1800));
+    expect(mocks.watchYouTube).toHaveBeenCalledTimes(1);
+    mocks.browserPages.mockResolvedValue({ pages: [{ isActive: true, url: 'https://www.youtube.com/watch?v=zyxwvutsrqp' }] });
+    mocks.watchYouTube.mockResolvedValue({ currentUrl: 'https://www.youtube.com/watch?v=zyxwvutsrqp' });
+    await waitFor(() => expect(mocks.watchYouTube).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    await waitFor(() => expect(screen.queryByTestId('managed-youtube')).toBeNull());
+  }, 15000);
   it('does not start playback if releasing the remote browser fails', async () => {
     mocks.stopBrowserSession.mockRejectedValue(new Error('offline'));
     render(<YouTubePane pane={pane} agentNumber={1} />);
@@ -359,8 +423,7 @@ describe('YouTube playlist picker', () => {
     render(<YouTubePane pane={pane} agentNumber={1} />);
     await waitFor(() => expect(players).toHaveLength(1));
 
-    const select = await screen.findByRole('combobox', { name: 'YouTube playlist' });
-    expect(select.textContent).toContain('No playlists');
+    expect(screen.queryByRole('combobox', { name: 'YouTube playlist' })).toBeNull();
 
     mocks.links.mockResolvedValue({
       data: [
@@ -372,9 +435,7 @@ describe('YouTube playlist picker', () => {
       window.dispatchEvent(new Event(USER_LINKS_UPDATED_EVENT));
     });
 
-    await waitFor(() => {
-      expect(select.textContent).toContain('Study Beats');
-    });
+    expect((await screen.findByRole('combobox', { name: 'YouTube playlist' })).textContent).toContain('Study Beats');
   });
 
   it('toggles play and pause on the active player and updates button label', async () => {
@@ -459,21 +520,6 @@ describe('YouTube playlist picker', () => {
   });
 });
 
-describe('YouTube floating mini player', () => {
-  it('renders float button in toolbar and triggers onToggleFloat when clicked', async () => {
-    const onToggleFloat = vi.fn();
-    const view = render(<YouTubePane pane={pane} agentNumber={1} onToggleFloat={onToggleFloat} />);
-    await waitFor(() => expect(players).toHaveLength(1));
-    const floatBtn = screen.getByRole('button', { name: 'Float mini player' });
-    fireEvent.click(floatBtn);
-    expect(onToggleFloat).toHaveBeenCalledTimes(1);
-
-    view.rerender(<YouTubePane pane={pane} agentNumber={1} isFloating onToggleFloat={onToggleFloat} />);
-    const restoreBtn = screen.getByRole('button', { name: 'Restore pane to grid' });
-    fireEvent.click(restoreBtn);
-    expect(onToggleFloat).toHaveBeenCalledTimes(2);
-  });
-});
 
 
 

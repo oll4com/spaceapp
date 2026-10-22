@@ -1,7 +1,7 @@
 import type {} from "./request-context.js";
 import { isAbsolute } from "node:path";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
-import { ConfigSecretsError, prepareConfigImport, type SpaceStore } from "@space/runtime";
+import { CONFIG_REPLACE_UNCONFIRMED, ConfigSecretsError, prepareConfigImport, type SpaceStore } from "@space/runtime";
 import {
   exportConfigOptionsSchema,
   importConfigOptionsSchema,
@@ -190,6 +190,9 @@ export function registerConfigurationRoutes(app: FastifyInstance, options: {
     if (input.pathRewrite && (!isAbsolute(input.pathRewrite.from) || !isAbsolute(input.pathRewrite.to))) {
       return sendApiError(reply, 400, "CONFIGURATION_PATH_INVALID", "Project folders must be absolute paths.");
     }
+    if (input.mode === "replace" && input.confirmReplace !== true) {
+      return sendApiError(reply, 400, "CONFIGURATION_REPLACE_UNCONFIRMED", CONFIG_REPLACE_UNCONFIRMED);
+    }
     if (input.passphrase && recentFailures(request.user.id).length >= passphraseFailureLimit) {
       return sendApiError(reply, 429, "CONFIGURATION_PASSPHRASE_LOCKED", "Too many wrong passphrases. Try again in 10 minutes.");
     }
@@ -198,6 +201,7 @@ export function registerConfigurationRoutes(app: FastifyInstance, options: {
     try {
       result = await store.importConfigurationBundle(input.bundle, {
         mode: input.mode,
+        confirmReplace: input.confirmReplace,
         targetUserId,
         pathRewrite: input.pathRewrite,
         sections: input.sections,

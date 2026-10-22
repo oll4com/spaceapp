@@ -11,12 +11,14 @@ import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
 import { classifyGoogleAiFailure, GEMINI_EMBEDDING_MODELS, geminiEmbed, googleRetrySeconds, readGeminiEmbeddingRequest, type GeminiEmbeddingRequest } from "../google-ai/embeddings.js";
+import { LOCAL_EMBEDDING_MODELS, type LocalEmbeddings } from "../local/embeddings.js";
 
 /**
  * OpenAI API key accounts and `/v1/embeddings` over them, as codex-lb served embeddings for Space memory (ChatGPT
  * subscriptions have no embeddings). Requests go to the least-troubled key and move to another key on rate limits,
  * 5xx and rejected keys. Gemini embedding models go to the Google AI key accounts instead (google-ai/embeddings.ts), with
- * the gateway's optional `task_type` (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY...), which is never sent to OpenAI.
+ * the gateway's optional `task_type` (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY...), which is never sent to OpenAI. Local models
+ * (local/embeddings.ts) run on this server and need no account.
  */
 export const OPENAI_API_BASE_URL = "https://api.openai.com/v1";
 
@@ -30,6 +32,8 @@ export function registerEmbeddingsRoute(app: FastifyInstance, helpers: GatewayRo
   pool: AccountPool; logs: RequestLogWriter; settings: () => Promise<GatewaySettings>; upstreamBaseUrl?: string; fetchImpl?: typeof fetch;
   /** Google AI key accounts, for the Gemini embedding models. */
   googlePool?: AccountPool; googleBaseUrl?: string;
+  /** The models that run on this server. */
+  local?: LocalEmbeddings;
   now?: () => number; maxAccountAttempts?: number;
   settleKeyUsage?: (keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number; model: string | null; at: string }) => Promise<void>;
 }) {
@@ -55,6 +59,25 @@ export function registerEmbeddingsRoute(app: FastifyInstance, helpers: GatewayRo
     } catch (error) {
       if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(error.envelope);
       throw error;
+    }
+    const localModel = LOCAL_EMBEDDING_MODELS.get(model);
+    if (localModel) {
+      const parsed = readGeminiEmbeddingRequest(body);
+      if ("error" in parsed) return reply.code(400).send(gatewayError("invalid_request", parsed.error, "invalid_request_error"));
+      if (parsed.dimensions !== null && parsed.dimensions < localModel.dimensions) {
+        return reply.code(400).send(gatewayError("invalid_request", `dimensions must be at least ${localModel.dimensions} for ${model}.`, "invalid_request_error"));
+      }
+      let result: Awaited<ReturnType<LocalEmbeddings["embed"]>>;
+      try {
+        if (!options.local) throw new Error("No local models here.");
+        result = await options.local.embed(model, parsed.texts, parsed.taskType === "RETRIEVAL_QUERY" ? "query" : "document", parsed.dimensions);
+      } catch {
+        return reply.code(503).send(gatewayError("model_unavailable", `The local embedding model ${model} is not available on this server.`));
+      }
+      // shortcut: local requests are not in the request logs (no provider value for them, and they cost nothing); add a LOCAL
+      // provider when the Token usage page should count them.
+      return reply.header("x-request-id", `emb_${randomUUID().replace(/-/g, "")}`).send({ object: "list", model,
+        data: result.vectors.map((embedding, index) => ({ object: "embedding", index, embedding })), usage: { prompt_tokens: result.tokens, total_tokens: result.tokens } });
     }
     const google = GEMINI_EMBEDDING_MODELS.has(model);
     const pool = google ? options.googlePool : options.pool;

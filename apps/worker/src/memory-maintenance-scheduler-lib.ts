@@ -12,7 +12,7 @@ interface WorkflowStartOptions {
   taskQueue: string;
   workflowId: string;
   args: [MemoryMaintenanceInput];
-  workflowIdReusePolicy: "REJECT_DUPLICATE";
+  workflowIdReusePolicy: "ALLOW_DUPLICATE_FAILED_ONLY";
   workflowIdConflictPolicy: "USE_EXISTING";
 }
 
@@ -63,7 +63,8 @@ export async function scheduleMemoryMaintenance(options: ScheduleMemoryMaintenan
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       workflowId,
       args: [input],
-      workflowIdReusePolicy: "REJECT_DUPLICATE",
+      // A failed day can be run again (`systemctl start space-memory-maintenance.service`); a completed day never repeats.
+      workflowIdReusePolicy: "ALLOW_DUPLICATE_FAILED_ONLY",
       workflowIdConflictPolicy: "USE_EXISTING"
     });
     return { status: "SCHEDULED", workflowId, runId: handle.firstExecutionRunId ?? null };

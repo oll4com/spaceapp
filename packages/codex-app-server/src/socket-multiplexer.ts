@@ -537,7 +537,9 @@ export async function startCodexAppServerSocketMultiplexer(
     if (request.method === "thread/start" || request.method === "thread/resume" || request.method === "thread/fork") {
       if (request.clientId === primaryClientId && request.primarySelectionGeneration === primarySelectionGeneration) {
         primarySelectionPending = false;
-        if (!message.error) primaryThreadId = stringField(asRecord(asRecord(message.result)?.thread), "id");
+        const thread = asRecord(asRecord(message.result)?.thread);
+        // The TUI's ephemeral side threads are never the user-facing task (prompts sent there stay hidden).
+        if (!message.error && thread?.ephemeral !== true) primaryThreadId = stringField(thread, "id");
       }
       currentThreadId = stringField(asRecord(asRecord(message.result)?.thread), "id") ?? currentThreadId;
     }

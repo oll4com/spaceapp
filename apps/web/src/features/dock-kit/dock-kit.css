@@ -52,9 +52,10 @@
   flex: 0 0 auto;
 }
 
+/* Below the desktop title bar, which would otherwise cover the dock's top. */
 .dock-kit-shell.is-fullscreen {
   position: fixed;
-  inset: 0;
+  inset: max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) 0 0 0;
   z-index: 90;
   padding: 1rem;
   background: rgb(5 8 10 / 0.78);

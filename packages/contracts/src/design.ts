@@ -8,12 +8,12 @@ import { marketingPostIdSchema, type MarketingChannel } from "./marketing-copilo
 // For the same reason every metadata field is declared here up front, and DESIGN never gets a pane browser in v1.
 export const DESIGN_PANE_MODE = "DESIGN" as const;
 
-export const DESIGN_NETWORKS = ["WEB", "INSTAGRAM", "FACEBOOK", "X", "LINKEDIN", "YOUTUBE", "TIKTOK", "PINTEREST", "PRODUCT_HUNT", "GITHUB", "DEVTO", "BLOG"] as const;
+export const DESIGN_NETWORKS = ["WEB", "INSTAGRAM", "FACEBOOK", "X", "LINKEDIN", "YOUTUBE", "TIKTOK", "PINTEREST", "PRODUCT_HUNT", "GITHUB", "DEVTO", "BLOG", "BRAND"] as const;
 export const designNetworkSchema = z.enum(DESIGN_NETWORKS);
 export type DesignNetwork = z.infer<typeof designNetworkSchema>;
 export const DESIGN_NETWORK_LABELS: Record<DesignNetwork, string> = {
   WEB: "Web", INSTAGRAM: "Instagram", FACEBOOK: "Facebook", X: "X", LINKEDIN: "LinkedIn", YOUTUBE: "YouTube", TIKTOK: "TikTok",
-  PINTEREST: "Pinterest", PRODUCT_HUNT: "Product Hunt", GITHUB: "GitHub", DEVTO: "dev.to", BLOG: "Blog"
+  PINTEREST: "Pinterest", PRODUCT_HUNT: "Product Hunt", GITHUB: "GitHub", DEVTO: "dev.to", BLOG: "Blog", BRAND: "Brand"
 };
 
 export type DesignFormatKind = "IMAGE" | "VIDEO" | "BOTH";
@@ -61,7 +61,11 @@ export const DESIGN_FORMATS = Object.freeze([
   format("ph-thumb", "PRODUCT_HUNT", "Product Hunt thumbnail", 240, 240, "BOTH", inset(0), 10),
   format("github-social", "GITHUB", "GitHub social preview", 1280, 640, "IMAGE", inset(40)),
   format("devto-cover", "DEVTO", "dev.to cover", 1000, 420, "IMAGE"),
-  format("blog-hero", "BLOG", "Blog hero", 1600, 900, "IMAGE")
+  format("blog-hero", "BLOG", "Blog hero", 1600, 900, "IMAGE"),
+  // Brand marks (operator request 2026-10-19): a square logo, a horizontal lockup and an app icon (the Studio exports a .ico from square designs).
+  format("logo", "BRAND", "Logo", 1024, 1024, "IMAGE"),
+  format("logo-wide", "BRAND", "Wide logo", 1600, 600, "IMAGE"),
+  format("app-icon", "BRAND", "App icon", 512, 512, "IMAGE", inset(52))
 ]);
 export const DESIGN_FORMAT_IDS: readonly string[] = DESIGN_FORMATS.map((entry) => entry.id);
 
@@ -129,12 +133,13 @@ export function nearestDesignAspectRatio(width: number, height: number): DesignA
 }
 
 /** HTML templates (scripts/design-templates/*.html): text, logo and brand layers over an optional background image. */
-export const DESIGN_TEMPLATE_IDS = ["photo-headline", "gradient-headline", "quote-card", "release-announcement", "screenshot-frame", "wide-banner", "bold-thumbnail"] as const;
+export const DESIGN_TEMPLATE_IDS = ["photo-headline", "gradient-headline", "quote-card", "release-announcement", "screenshot-frame", "wide-banner", "bold-thumbnail", "logo"] as const;
 export const designTemplateIdSchema = z.enum(DESIGN_TEMPLATE_IDS);
 export type DesignTemplateId = z.infer<typeof designTemplateIdSchema>;
 export const DESIGN_TEMPLATE_LABELS: Record<DesignTemplateId, string> = {
   "photo-headline": "Photo with headline", "gradient-headline": "Gradient headline", "quote-card": "Quote card",
-  "release-announcement": "Release announcement", "screenshot-frame": "Screenshot frame", "wide-banner": "Wide banner", "bold-thumbnail": "Bold thumbnail"
+  "release-announcement": "Release announcement", "screenshot-frame": "Screenshot frame", "wide-banner": "Wide banner", "bold-thumbnail": "Bold thumbnail",
+  logo: "Logo"
 };
 
 // ---- ids ----------------------------------------------------------------------------------------
@@ -188,6 +193,24 @@ export const SPACEAPP_BRAND_KIT: Readonly<DesignBrandKit> = Object.freeze({
   createdAt: "2026-10-18T00:00:00.000Z",
   updatedAt: "2026-10-18T00:00:00.000Z"
 });
+
+/**
+ * A colour combination for the Studio's templates (background, title and button, accent, text): the built-in ones below,
+ * and the operator's own in user settings (`designColorPresets`), shared by every Design pane.
+ */
+export const designColorPresetSchema = z.object({
+  name: z.string().trim().min(1).max(40), background: hexColor, primary: hexColor, accent: hexColor, text: hexColor
+}).strict();
+export type DesignColorPreset = z.infer<typeof designColorPresetSchema>;
+export const DESIGN_COLOR_PRESETS_MAX = 30;
+export const DESIGN_COLOR_PRESETS: readonly DesignColorPreset[] = Object.freeze([
+  { name: "SpaceApp night", background: "#0A0E24", primary: "#67D9F5", accent: "#93E9FA", text: "#FFFFFF" },
+  { name: "Paper", background: "#F7F5F0", primary: "#1F4FD8", accent: "#E4572E", text: "#1A1A1A" },
+  { name: "Ocean light", background: "#EAF6FB", primary: "#0077B6", accent: "#00B4D8", text: "#0B2233" },
+  { name: "Sunset", background: "#2B1033", primary: "#FF7A59", accent: "#FFD166", text: "#FFF4EC" },
+  { name: "Forest", background: "#0F2A1F", primary: "#6FDC8C", accent: "#F2C14E", text: "#EAF5EE" },
+  { name: "Mono", background: "#111111", primary: "#FFFFFF", accent: "#9A9A9A", text: "#F5F5F5" }
+]);
 
 // ---- pane metadata ------------------------------------------------------------------------------
 export const DESIGN_REQUEST_AUTONOMY = ["AUTO", "APPROVAL"] as const;
@@ -269,6 +292,10 @@ export const DESIGN_BRIEF_MAX = 4000;
 export const DESIGN_REQUEST_MAX_FORMATS = 8;
 export const DESIGN_REQUEST_MAX_REFERENCES = 3;
 
+/** A template's fields (headline, subline, cta, colors, ...): limited here, each value validated by the renderer. */
+export const designTemplateParamsSchema = z.record(z.string().max(40), z.unknown())
+  .refine((value) => Object.keys(value).length <= 20 && JSON.stringify(value).length <= 8000, "Template fields are limited.");
+
 export const designRequestSchema = z.object({
   id: designRequestIdSchema,
   ownerUserId: z.string().min(1).max(200),
@@ -281,6 +308,9 @@ export const designRequestSchema = z.object({
   brandKitId: designBrandKitIdSchema.nullable(),
   referenceArtifactIds: z.array(artifactIdSchema).max(DESIGN_REQUEST_MAX_REFERENCES),
   callback: designRequestCallbackSchema.nullable(),
+  /** The Studio's template and its fields, when the requester chose them; else the Design pane's default template. */
+  templateId: designTemplateIdSchema.nullable().optional(),
+  params: designTemplateParamsSchema.nullable().optional(),
   status: designRequestStatusSchema,
   resultAssetIds: z.array(designAssetIdSchema).max(32),
   /** The Design agent's open question to the operator, and the answer. */
@@ -302,6 +332,8 @@ export const designRequestCreateSchema = z.object({
   engine: designEngineSchema.optional(),
   brandKitId: designBrandKitIdSchema.optional(),
   referenceArtifactIds: z.array(artifactIdSchema).max(DESIGN_REQUEST_MAX_REFERENCES).default([]),
+  templateId: designTemplateIdSchema.optional(),
+  params: designTemplateParamsSchema.optional(),
   designPaneId: paneIdSchema.optional(),
   callback: designRequestCallbackSchema.optional()
 }).strict();
@@ -309,6 +341,14 @@ export type DesignRequestCreate = z.infer<typeof designRequestCreateSchema>;
 
 // ---- assets -------------------------------------------------------------------------------------
 export const DESIGN_ASSET_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4"] as const;
+export const DESIGN_ASSET_DESCRIPTION_MAX = 2000;
+/** Who made an asset: a pane's CLI agent (runtime from its session, the model it declares) or the operator in the Studio. */
+export const designAssetMadeBySchema = z.object({
+  by: z.enum(["AGENT", "OPERATOR"]),
+  runtimeId: z.string().max(120).nullable(),
+  model: z.string().max(120).nullable()
+}).strict();
+export type DesignAssetMadeBy = z.infer<typeof designAssetMadeBySchema>;
 export const designAssetSchema = z.object({
   id: designAssetIdSchema,
   ownerUserId: z.string().min(1).max(200),
@@ -330,6 +370,9 @@ export const designAssetSchema = z.object({
   brandKitId: designBrandKitIdSchema.nullable(),
   /** The asset this one is a version of. */
   parentAssetId: designAssetIdSchema.nullable(),
+  /** What the graphic shows, with its exact text (mandatory since 2026-10-19; null on older rows). A PNG also carries it inside. */
+  description: z.string().max(DESIGN_ASSET_DESCRIPTION_MAX).nullable(),
+  madeBy: designAssetMadeBySchema.nullable(),
   pinned: z.boolean(),
   createdAt: isoDateTime,
   updatedAt: isoDateTime

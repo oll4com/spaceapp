@@ -431,7 +431,7 @@
       "status": "confirmed",
       "reproduction": "failure-matrix.md",
       "evidence": "docs/quality/restore-and-migrations.md; scripts/restore-drill.mjs (+ scripts/tests/restore-drill.test.mjs); scripts/space-db-backup.mjs (+ tests); reports /var/lib/spaceapp-user/agent-workspace/reports/20261011-restore-drill/",
-      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8. External review 2026-10-16 #3: the portable backup runs while writers continue and leaves out the Temporal databases; the installer change (pause, Temporal dumps, staged restore) is planned for the next run-spaceapp release. Public overlay 56ceb06 (joined run-spaceapp 1.1.6, not published): spaceapp backup pauses core, CLI, browser and Temporal and also dumps the Temporal databases; restore stages the files and restores every database in one transaction before swapping them in. Drill 2026-10-16 with spaceapp-core 1.1.6, PostgreSQL 17 with pgvector and Temporal 1.29: backup and restore exact; a restore that fails in the database leaves database, Temporal and files untouched, where the 1.1.6 restore had already replaced the files. A schemaVersion 2 backup cannot be restored by an older SpaceApp.",
+      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8. External review 2026-10-16 #3: the portable backup runs while writers continue and leaves out the Temporal databases; the installer change (pause, Temporal dumps, staged restore) is planned for the next run-spaceapp release. Public overlay 56ceb06 (did not ship in 1.1.6: the 1.1.6 re-cut from f8803d5d96 did not take it; ships in run-spaceapp 1.1.7): spaceapp backup pauses core, CLI, browser and Temporal and also dumps the Temporal databases; restore stages the files and restores each database in its own transaction before swapping them in; run-spaceapp 1.1.7 (rc3) first copies the current databases aside and, when a later database or the file swap fails, puts every database and the files back, or prints the command per database when that fails too (internal review 1.1.7, Codex #2: separate transactions are not one restore). Drill 2026-10-16 with spaceapp-core 1.1.6, PostgreSQL 17 with pgvector and Temporal 1.29: backup and restore exact; a restore that fails in the database leaves database, Temporal and files untouched, where the 1.1.6 restore had already replaced the files. A schemaVersion 2 backup cannot be restored by an older SpaceApp.",
       "resolution": "partial"
     },
     {
@@ -581,7 +581,7 @@
     {
       "id": "PRODUCT-001",
       "reviewerSection": "D/K/Q §scope",
-      "observation": "Single-owner, multi-tenancy, HA and BSL limitations",
+      "observation": "Single-owner, multi-tenancy and HA limitations",
       "observationSource": "Supplied roadmap synthesis; not a freshly retrieved verbatim reviewer quotation",
       "reviewedShas": {
         "D": "89559e0620e065b2d552043a9655d215c1c08f25",
@@ -2071,7 +2071,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": "packages/run-spaceapp/templates/compose.yml; launcher suite 164/164",
-      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7. External review 2026-10-16 #8. 2026-10-17: public overlay 219b4c0 (for run-spaceapp 1.1.7): after the images are published and verified, the release writes their digests into the tested npm package (templates/images.lock.json, the only allowed difference) and the launcher pulls name:version@sha256; the devtest probe accepts pinned images. Proven only by the next real publish.",
+      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7. External review 2026-10-16 #8. 2026-10-17: public overlay 219b4c0 (ships in run-spaceapp 1.1.7, with the codex-sessions-init service pinned too): after the images are published and verified, the release writes their digests into the tested npm package (templates/images.lock.json, the only allowed difference) and the launcher pulls name:version@sha256; the devtest probe accepts pinned images. Proven only by the next real publish.",
       "resolution": "partial"
     },
     {
@@ -2137,7 +2137,7 @@
     {
       "id": "EXT-C-F9",
       "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
-      "observation": "400-day stateless sessions; the token's role stands when no user record exists",
+      "observation": "Stateless sessions (30 days, renewed on use since 2026-10-19; older 400-day cookies move to 30 days on their next request); the token's role stands when no user record exists",
       "observationSource": "Independent review of the v1.1.4 snapshot (public 837e0b0), 2026-10-14",
       "reviewedShas": {
         "public": "837e0b034be977c116444b539f77409cb87642c8"
@@ -2271,7 +2271,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": "scripts/public-test-exclusions.json (public); npm run test:public",
-      "disposition": "Measured 2026-10-14 on the export of 67ec80863a with every test included: 1,215 application and package test files; on the exported tree runtime 204/204, gateway 744/745, web 3,607/3,622, API 3,347/3,690 tests pass. Public bc47400/bc6332703c: every application and package test is exported except the files listed with their reason in scripts/public-test-exclusions.json (private deploy files or scripts, host tools, PostgreSQL, maintainers scratch path, export rewrites, Temporal), and test:public runs every workspace suite; the release workflow tests the candidate before it publishes. Open: the first public CI run that shows them green, and fixing excluded tests that could run publicly. External review 2026-10-16 #4 counted 117 exclusions, 35 of them failing on the exported tree; they are to be fixed or given a precise reason. 2026-10-16 (external review #4): none of the 34 \"fails on the exported tree\" exclusions was a product defect; they failed on rewritten fixtures, private paths and setups that read the host. 8a156edb3e with public overlay fe203af and 39eca70 brings 30 back into the public suite; four stay excluded with their exact need (real Chrome and Xvfb, Docker, a script the export does not ship, a git checkout). Open: regex literals in TerminalPane.tsx and packages/cli-host session-registry still hide /opt/spaceapp from the export rewrite (Warm and pane host: needs the operator).",
+      "disposition": "Measured 2026-10-14 on the export of 67ec80863a with every test included: 1,215 application and package test files; on the exported tree runtime 204/204, gateway 744/745, web 3,607/3,622, API 3,347/3,690 tests pass. Public bc47400/bc6332703c: every application and package test is exported except the files listed with their reason in scripts/public-test-exclusions.json (private deploy files or scripts, host tools, PostgreSQL, maintainers scratch path, export rewrites, Temporal), and test:public runs every workspace suite; the release workflow tests the candidate before it publishes. Open: the first public CI run that shows them green, and fixing excluded tests that could run publicly. External review 2026-10-16 #4 counted 117 exclusions, 35 of them failing on the exported tree; they are to be fixed or given a precise reason. 2026-10-16 (external review #4): none of the 34 \"fails on the exported tree\" exclusions was a product defect; they failed on rewritten fixtures, private paths and setups that read the host. 8a156edb3e with public overlay fe203af and 39eca70 brings 30 back into the public suite; four stay excluded with their exact need (real Chrome and Xvfb, Docker, a script the export does not ship, a git checkout). Open: regex literals in TerminalPane.tsx and packages/cli-host session-registry still hide /opt/spaceapp from the export rewrite (Warm and pane host: needs the operator). run-spaceapp 1.1.7: 23 previously excluded tests pass on the exported tree and run in the public suite (external review 2026-10-16 #4); 93 reviewed exclusions remain, each with its reason, three of them new since 1.1.6 because they need host-only files (the merge queue's operator-grant script, the nginx configuration).",
       "resolution": "partial"
     },
     {
@@ -2691,7 +2691,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "Planned for 1.1.7: report every tree file missing from the manifest and list the public-owned ones in it.",
+      "disposition": "Moved to 1.1.8 (operator decision through Nous, 2026-10-19): it changes the export manifest format (the manifest must also list the public repository's own files). Known issue in the 1.1.7 CHANGELOG.",
       "resolution": "open"
     },
     {
@@ -2790,9 +2790,9 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": null,
-      "disposition": "Planned for 1.1.7 with first-party digest pinning (EXT-C-F5): Cursor checksum, provider lockfiles without install scripts, Docker apt key fingerprint.",
-      "resolution": "open"
+      "evidence": "packages/run-spaceapp/tests/prerequisites.test.mjs, scripts/tests/provider-install.test.mjs (public repository)",
+      "disposition": "run-spaceapp 1.1.7: Docker's apt and rpm repository keys are trusted only with Docker's published fingerprints (dnf imports the checked key before installing, so dnf -y never accepts a key itself); the Cursor agent archive is pinned by sha256 per architecture and refused before unpacking otherwise; first-party images are pulled by digest (EXT-C-F5). Open, planned for 1.1.8: per-provider npm lockfiles for the CLIs installed on first use (known issue in the 1.1.7 CHANGELOG).",
+      "resolution": "partial"
     },
     {
       "id": "INT5-C-F15",
@@ -2830,9 +2830,9 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": null,
-      "disposition": "Overlay wording fix, planned for 1.1.7.",
-      "resolution": "open"
+      "evidence": "scripts/tests/public-package-metadata.test.mjs (public repository)",
+      "disposition": "run-spaceapp 1.1.7: the six .trivyignore entries that no longer matched anything are removed, the one with the wrong boolean trustProxy rationale included; Trivy 0.70.0 with the 2026-10-19 database found only GHSA-2mjx-qc3c-rqvc (rustls in the Temporal bridge, ignored with its reason until 2026-11-10) in the 1.1.6 images and nothing in the source.",
+      "resolution": "fixed"
     },
     {
       "id": "INT5-C-F17",
@@ -2930,9 +2930,9 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": null,
-      "disposition": "Containers read them as other uids (PostgreSQL as 999); the launcher creates the 0700 parent. Checking a pre-existing parent's mode is a 1.1.7 candidate.",
-      "resolution": "accepted-tradeoff"
+      "evidence": "packages/run-spaceapp/tests/config.test.mjs (public repository)",
+      "disposition": "Containers read them as other uids (PostgreSQL as 999), so the files stay 0644 behind an owner-only folder. run-spaceapp 1.1.7: install, init and every command that writes the runtime files (update, up, repair) make a secrets folder that already existed 0700 on Linux and macOS.",
+      "resolution": "fixed"
     },
     {
       "id": "INT5-C-F22",
@@ -3253,6 +3253,46 @@
       "status": "confirmed",
       "disposition": "80967e68aa (2026-10-18): /api/cli/control/mcp refuses the token with 403 CONTROL_PANE_NOT_GRANTED unless the pane's opener (its recorded owner, else the room's owner) is unset, the grant actor, or an ADMIN/OPERATOR account. A member's pane in a shared room and a USER's own room no longer get the operator's identity. The operator's rooms (owner user:operator or none) and panes are unchanged.",
       "resolution": "fixed"
+    },
+    {
+      "id": "IR117-C-F6",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md, 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "open",
+      "affected": "scripts/portable-restore.mjs (public launcher), docs/operations.md (rollback, then restore the pre-update backup)",
+      "reproduction": null,
+      "evidence": "Reasoned from PostgreSQL semantics by the reviewer; not executed",
+      "observation": "Restoring a backup from an older SpaceApp onto a newer, already-migrated database fails when the newer release added tables that reference existing ones: pg_restore --clean cannot drop the referenced tables",
+      "disposition": "Open (1.1.8, task:X9Sc-Jou67Nh). The failed restore changes nothing (1.1.7 rc3 puts every database back), but 'rollback, then restore the pre-update backup' does not work across such releases. 1.1.7 rc3 records the SpaceApp version in each backup; restoring into an emptied schema is planned."
+    },
+    {
+      "id": "IR117-C-F7",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md, 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "open",
+      "affected": "scripts/release-evidence.mjs, scripts/embed-image-lock.mjs, scripts/verify-published-containers.mjs (public release workflow)",
+      "reproduction": null,
+      "evidence": "release/acceptance.json limitations; reviewer read of the release workflow",
+      "observation": "The release gate binds the acceptance evidence to the source digest; the published images are rebuilt by the release workflow and pinned by the digests it resolves afterwards, not the image IDs the lab tested, and attestation checks verify predicate types only",
+      "disposition": "Open (1.1.8, task:6sCDD1rdjPyC). Users run images built from the tested source, not the tested image bytes; recording the tested digests and refusing or re-testing on a mismatch is planned."
     }
   ]
 }

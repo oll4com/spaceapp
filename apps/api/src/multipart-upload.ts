@@ -3,6 +3,7 @@ import { mkdtemp, open, rm, statfs, unlink } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import type { FastifyRequest } from "fastify";
+import { turnArtifactMaxCount } from "@space/contracts";
 import { acquireFileUpload, stageFileUpload } from "./file-upload.js";
 import { FilesystemError } from "./filesystem-error.js";
 import { descriptorPath, openWorkspacePath } from "./workspace-filesystem.js";
@@ -50,6 +51,8 @@ export async function withStagedBufferUpload<T>(root: string, input: {
 export async function withStagedUploads<T>(request: FastifyRequest, root: string, options: {
   maxFiles: number;
   fileBytes: number;
+  /** A route whose schema has more form fields than the plugin's default (4) raises the limit for itself only. */
+  fields?: number;
   onField?: (name: string, value: unknown) => void;
 }, consume: (uploads: StagedFile[], totalBytes: number) => Promise<T>): Promise<T> {
   const release = acquireFileUpload();
@@ -66,7 +69,10 @@ export async function withStagedUploads<T>(request: FastifyRequest, root: string
     directory = await mkdtemp(path.join(root, ".incoming-uploads-"));
     const budget = { bytes: 0 };
     const uploads: StagedFile[] = [];
-    for await (const part of request.parts()) {
+    // A route that takes more files than the plugin's global limit (turnArtifactMaxCount + 1) raises it for itself only.
+    const moreFiles = options.maxFiles > turnArtifactMaxCount ? { files: options.maxFiles + 1, parts: options.maxFiles + 1 + (options.fields ?? 4) } : {};
+    const limits = { ...(options.fields ? { fields: options.fields } : {}), ...moreFiles };
+    for await (const part of request.parts(Object.keys(limits).length ? { limits } : undefined)) {
       if (part.type === "field") { options.onField?.(part.fieldname, part.value); continue; }
       if (uploads.length >= options.maxFiles) throw new FilesystemError(`At most ${options.maxFiles} files can be uploaded at once.`, 422, "UPLOAD_LIMIT_EXCEEDED");
       const staged = await stageFileUpload({ directory, filename: randomUUID(), source: part.file, budget, signal: abort.signal, fileBytes: options.fileBytes });

@@ -200,6 +200,7 @@ export function registerPaneCliTerminalRoutes(app: FastifyInstance, options: {
         initialRows: query.initialRows,
         userId: request.user!.id,
         proofScope: request.user?.proofScope,
+        proofSession: request.sessionPrincipal === "user:operator-proof",
         requestId: request.requestIdForSpace
       });
     } catch (error) {
@@ -287,7 +288,7 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
   applyOpenCodePaneSelection: (
     pane: Pane, session: PaneCliSession, model: PaneCliModelSettings["models"][number], effort: string, traceId: string,
     assertControl?: (current: PaneCliSession) => Promise<void>, allModels?: PaneCliModelSettings["models"]
-  ) => Promise<{ nativeTuiConfirmed: boolean }>;
+  ) => Promise<void>;
   roomOpenCodeTasks: (control: OpenCodeServerControl) => Promise<NativeTaskExecution[]>;
   assertNoManagedModelMutation: (paneId: string) => Promise<void>;
   roomPaneController: RoomPaneController;
@@ -407,11 +408,8 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
       }
       const wasActive = before.settings.isTurnActive;
       const advertisedModel = before.settings.models.find(model => model.id === input.modelId)!;
-      const applied = await applyOpenCodePaneSelection(pane, active, advertisedModel, input.reasoningEffort, request.requestIdForSpace,
+      await applyOpenCodePaneSelection(pane, active, advertisedModel, input.reasoningEffort, request.requestIdForSpace,
         current => assertCliHttpMutationControl(request, current), before.settings.models);
-      const nativeSkippedWarning = applied.nativeTuiConfirmed
-        ? null
-        : "Applied on the OpenCode server; the attached TUI did not confirm because its screen was unreadable. The new model applies to subsequent turns.";
       const updatedSession = await store.updatePaneCliSession(
         active.sessionId,
         {
@@ -436,7 +434,8 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
       const afterSettings: PaneCliModelSettings = {
         ...before.settings,
         current: { modelId: input.modelId, reasoningEffort: input.reasoningEffort },
-        currentSource: applied.nativeTuiConfirmed ? "native" : "server"
+        // OpenCode 2's TUI follows the server's session model, so the server is the source of the selection.
+        currentSource: "server"
       };
       await recordAudit(store, request, {
         action: "pane.cli.model-settings",
@@ -467,7 +466,7 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
         interrupted: false,
         continuation: "NOT_NEEDED",
         transport: "OPENCODE",
-        warning: nativeSkippedWarning
+        warning: null
       };
     }
 

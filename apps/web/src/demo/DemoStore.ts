@@ -1942,6 +1942,7 @@ export class DemoStore {
       case "youtubePlayback": return { playback: null };
       case "saveYouTubePlayback": return { ok: true };
       case "watchYouTube": return { currentUrl: null };
+      case "youtubeVideoText": throw new SpaceApiError("Video summaries and full text need a live Space with Space Gateway. Demo mode cannot read videos.", { status: 409, code: "DEMO_LOCAL_ONLY" });
       case "browserAccounts": return { selectedProfileId: null, profiles: [] };
       case "browserStatus": return Promise.resolve({ enabled: true, statusReason: "Local canvas fixture; no browser host is connected.", defaultUrl: "https://demo.invalid/space-launch", checkedAt: DEMO_FIXED_AT });
       case "browserSession":
@@ -2119,6 +2120,13 @@ export class DemoStore {
         if (input.activeAgent !== undefined) item.activeAgent = input.activeAgent;
         if (input.steps) item.steps = input.steps as any;
         if (item.progressPercentage === 100) item.isCompleted = true;
+        return Promise.resolve(structuredClone(item));
+      }
+      case "updateClipboardNoteText": {
+        const item = this.fixture.clipboardItems.find((candidate) => candidate.id === roomId);
+        if (!item) throw new SpaceApiError("Clipboard item not found.", { status: 404, code: "NOT_FOUND" });
+        item.text = args[1] as string;
+        item.characterCount = Array.from(item.text).length;
         return Promise.resolve(structuredClone(item));
       }
       case "deleteClipboardItem": if (this.publicMock) this.fixture.clipboardItems = this.fixture.clipboardItems.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });

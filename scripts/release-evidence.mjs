@@ -8,13 +8,17 @@ export function candidateDigest(root=process.cwd()) {
   const entries=execFileSync('git',['-C',root,'ls-files','-s','-z'],{encoding:'utf8'}).split('\0').filter(Boolean).filter(line=>!excluded.has(line.split('\t')[1]));
   return createHash('sha256').update(entries.sort().join('\0')).digest('hex');
 }
-// Operator decision efc30984 (2026-10-18), run-spaceapp 1.1.6 only: OpenCode Zen refused every free model from the
-// lab's address, so a platform's free-model first answer may be missing when release/acceptance.json names that decision
-// for it. Every other version, platform and check stays as strict as before.
-const zenFirstAnswerException={version:'1.1.6',decision:'efc30984'};
+// OpenCode Zen refused every free model from the lab's address, so a platform's free-model first answer may be missing
+// only for these versions and only when release/acceptance.json names that version's decision for it:
+// - 1.1.6: operator decision efc30984 (2026-10-18).
+// - 1.1.7: named in the 1.1.7 RELEASE decision (Nous, 2026-10-20), so the operator approves it with the candidate; Zen
+//   answered the probe from 162.55.99.104 with HTTP 429 at 16:02 UTC on 2026-10-20, after 403 "abusive traffic" on 2026-10-18.
+// Every other version, platform and check stays as strict as before.
+const zenFirstAnswerExceptions=Object.freeze({'1.1.6':'efc30984','1.1.7':'zen-refusal-1.1.7'});
 function zenExceptionApplies(evidence,version,platform){
-  return version===zenFirstAnswerException.version&&evidence?.launcherVersion===zenFirstAnswerException.version&&Array.isArray(evidence?.knownExceptions)&&
-    evidence.knownExceptions.some(entry=>entry?.platform===platform&&entry?.scenario==='first-agent'&&entry?.decision===zenFirstAnswerException.decision);
+  const decision=Object.hasOwn(zenFirstAnswerExceptions,version)?zenFirstAnswerExceptions[version]:null;
+  return Boolean(decision)&&evidence?.launcherVersion===version&&Array.isArray(evidence?.knownExceptions)&&
+    evidence.knownExceptions.some(entry=>entry?.platform===platform&&entry?.scenario==='first-agent'&&entry?.decision===decision);
 }
 export function validateEvidence(evidence,{digest,version,runtime,now=Date.now()}={}) {
   const failures=[];

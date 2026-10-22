@@ -30,3 +30,24 @@ it("does not allow a second request id to replace a pending signed URL transform
   rpc.client(JSON.stringify(message));
   expect(() => rpc.client(JSON.stringify({ ...message, tag: "server.getConfig" }))).toThrow();
 });
+it("is fail-closed: refuses T3 0.1.0's ACP-registry, scheduled-task, cleanup, OTLP, MCP-app and secret methods and any unknown method", () => {
+  const rpc = new T3RpcBoundary(new T3AssetHandles(), { sessionId: "synthetic", paneId: "pane:owned123" });
+  const refused = ["server.acceptAcpRegistryUrlAuth", "server.deleteAcpRegistrySession", "server.disableAcpRegistryProvider", "server.importAcpRegistrySession",
+    "server.listAcpRegistryProviders", "server.listAcpRegistrySessions", "server.logoutAcpRegistry", "server.prepareAcpRegistryAgent", "server.searchAcpRegistry",
+    "server.setAcpRegistryProvider", "server.uninstallAcpRegistryManagedBinary", "scheduledTasks.delete", "scheduledTasks.getWebhookDelivery", "scheduledTasks.list",
+    "scheduledTasks.listWebhookDeliveries", "scheduledTasks.rotateWebhookToken", "scheduledTasks.runNow", "scheduledTasks.setEnabled", "scheduledTasks.subscribe",
+    "scheduledTasks.upsert", "server.runStorageCleanup", "server.getStorageCleanupReport", "server.checkOtlpEndpoint", "mcpApps.callTool", "mcpApps.readResource",
+    "mcpApps.toolInfo", "mcpApps.updateModelContext", "secrets.answerRequest", "preview.adjust", "preview.clearProfile", "preview.reportProfiles",
+    "pullRequests.generateReviewGuide", "no.such.method", "server.getConfig.extra"];
+  refused.forEach((tag, index) => {
+    const answers: string[] = [];
+    expect(rpc.client(JSON.stringify({ _tag: "Request", id: `n${index}`, tag, payload: {}, headers: [] }), value => answers.push(value)), tag).toBeNull();
+    expect(JSON.parse(answers[0]!).exit.cause[0].error._tag, tag).toBe("EnvironmentAuthorizationError");
+  });
+  // T3 0.1.0's chat starts a thread with orchestration.launchThread.
+  for (const tag of ["orchestration.dispatchCommand", "orchestration.subscribeShell", "orchestration.subscribeThread", "projects.list", "terminal.open", "git.runStackedAction",
+    "orchestration.launchThread"]) {
+    const message = { _tag: "Request", id: `a-${tag.replace(/\./g, "_")}`, tag, payload: {}, headers: [] };
+    expect(JSON.parse(rpc.client(JSON.stringify(message), () => { throw Error(`${tag} was refused`); })!), tag).toEqual(message);
+  }
+});

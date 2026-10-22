@@ -4,7 +4,7 @@ import { api } from "../../api.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { Bot, Check, Terminal, X } from "../ui-theme/app-icons.js";
-import { AgentAccountField, defaultAccountProfileId, useCopilotAccounts } from "./AgentAccountField.js";
+import { defaultAccountProfileId, useCopilotAccounts } from "./AgentAccountField.js";
 import type { CopilotKind } from "./copilot-kind.js";
 import { copilotAccountFor, copilotAgentLabel, copilotRuntimeOptions, defaultCopilotRuntimeId, saveCopilotLaunch, type CopilotAgentChoice } from "./copilot-runtimes.js";
 import "./copilot-pane.css";
@@ -12,8 +12,9 @@ import "./copilot-pane.css";
 export type CopilotLaunchChoice = CopilotAgentChoice;
 
 /**
- * Runtime and account chooser shown before the first pane of a copilot opens (ready CLIs in catalog order, the
- * kind's CLI recommended). "Remember" saves the choice in the user's settings; later panes open with it without asking.
+ * Runtime chooser shown before the first pane of a copilot opens (ready CLIs in catalog order, the kind's CLI
+ * recommended). There is no account choice: the pane starts on the CLI's default account, the Space Gateway pool while
+ * it is ready (operator decision 2026-10-19). "Remember" saves the choice in the user's settings; later panes open with it without asking.
  */
 export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onClose, onCreate }: {
   kind: CopilotKind;
@@ -26,9 +27,6 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
 }) {
   const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [runtimeId, setRuntimeId] = useState<string | null>(null);
-  // The account picked per CLI in this dialog; a CLI without a pick starts on its default account.
-  const [accountByRuntime, setAccountByRuntime] = useState<Record<string, string>>(() =>
-    preselect?.accountProfileId ? { [preselect.runtimeId]: preselect.accountProfileId } : {});
   const [remember, setRemember] = useState(() => !preselect?.askOnLaunch);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +35,7 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
   const selectedId = runtimeId ?? (preselectReady ? preselect!.runtimeId : defaultCopilotRuntimeId(options));
   const selected = options.find((option) => option.runtime.id === selectedId) ?? null;
   const selectedLabel = selected ? copilotAgentLabel(selected.runtime.id, selected.runtime) : "…";
+  // Loaded before Open so the pane gets the default account explicitly, not an account saved earlier.
   const accounts = useCopilotAccounts(selectedId);
 
   useEffect(() => {
@@ -55,11 +54,11 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
   }, [onClose]);
 
   async function create() {
-    if (!selected || !selected.ready || pending) return;
+    if (!selected || !selected.ready || !accounts || pending) return;
     setPending(true);
     setError(null);
     const id = selected.runtime.id;
-    const accountProfileId = copilotAccountFor(id, accountByRuntime[id] ?? defaultAccountProfileId(id, accounts));
+    const accountProfileId = copilotAccountFor(id, defaultAccountProfileId(id, accounts));
     try {
       // Server-side, so every device opens later panes the same way; not remembering keeps asking, starting here.
       await saveCopilotLaunch(kind, { runtimeId: id, accountProfileId, askOnLaunch: !remember }).catch(() => undefined);
@@ -102,17 +101,12 @@ export function CopilotLaunchDialog({ kind, preselect = null, notice = null, onC
             })}
           </div>
         )}
-        {selected ? (
-          <AgentAccountField className="jc-launch-profile" runtimeId={selected.runtime.id} runtimeLabel={selectedLabel} accounts={accounts}
-            value={accountByRuntime[selected.runtime.id] ?? null} disabled={pending}
-            onChange={(profileId) => setAccountByRuntime((current) => ({ ...current, [selected.runtime.id]: profileId }))} />
-        ) : null}
         {error && options.length > 0 ? <p className="jc-launch-state error" role="alert">{error}</p> : null}
         <SpaceToggle className="jc-launch-remember" label="Remember as my default" checked={remember} disabled={pending} onChange={setRemember}
-          detail={remember ? `New ${kind.label} panes open with this agent and account without asking. Change it in ${kind.settingsPlace}.` : `The next ${kind.label} pane asks again.`} />
+          detail={remember ? `New ${kind.label} panes open with this agent without asking. Change it in ${kind.settingsPlace}.` : `The next ${kind.label} pane asks again.`} />
         <footer className="jc-launch-actions">
           <button type="button" className="jc-button" onClick={onClose} disabled={pending}>Cancel</button>
-          <button type="button" className="jc-button primary" onClick={() => void create()} disabled={!selected?.ready || pending}>
+          <button type="button" className="jc-button primary" onClick={() => void create()} disabled={!selected?.ready || !accounts || pending}>
             {pending ? "Opening…" : `Open with ${selectedLabel}`}
           </button>
         </footer>

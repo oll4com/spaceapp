@@ -26,7 +26,10 @@ export async function recordAudit(
     action: input.action,
     targetType: input.targetType,
     targetId: input.targetId ?? null,
-    metadata: input.metadata ?? {}
+    // An agent's broker session acts as the operator; the row keeps who really called (hardening plan step 17).
+    metadata: request.sessionPrincipal
+      ? { ...input.metadata, sessionPrincipal: request.sessionPrincipal, ...(request.user?.brokerScope ? { brokerScope: request.user.brokerScope } : {}) }
+      : input.metadata ?? {}
   });
 }
 

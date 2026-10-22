@@ -818,6 +818,46 @@ describe("Room action executor", () => {
     );
   });
 
+  // Claude Code panes kept typed prompts as unsent drafts after their Enter (2026-10-20); missions get the shared re-press.
+  it("presses Enter again while a mission prompt stays a draft in an idle CLI's composer", async () => {
+    const { store, room, agentPane, agentSession, mission } = setupMission();
+    const cliPane = store.createPane({ roomId: room.id, title: "Claude work", mode: "TERMINAL", cwd: "/etc" });
+    const cliSession = store.createPaneCliSession({
+      paneId: cliPane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", modelId: "claude-opus-5-5",
+      reasoningEffort: "high", cwd: "/etc", status: "RUNNING", statusReason: "Running.", isActive: true
+    });
+    const rule = "─".repeat(40);
+    const screens = [`${rule}\n❯ \n${rule}`, `${rule}\n❯ [Pasted text #1 +2 lines]\n${rule}`, `${rule}\n❯ \n${rule}`];
+    const sendInput = vi.fn(async (_sessionId, _data, _traceId, turnMarker) => ({ turnMarker, markerAtMs: Date.now() }));
+    const executor = createRoomActionExecutor({
+      store,
+      cliTerminalManager: {
+        sendInput,
+        observeRoomScreenUndimmed: vi.fn(async () => screens.shift() ?? `${rule}\n❯ \n${rule}`),
+        getTurnActivity: vi.fn(async (_sessionId, marker) => ({ marker, status: "COMPLETED" as const, turnId: "turn:mission" })),
+        interrupt: vi.fn(async () => true)
+      },
+      spaceAgentAdapter: {} as never,
+      browserSessionManager: {} as never,
+      pollIntervalMs: 1,
+      actionTimeoutMs: 5_000
+    });
+    const bridge = spaceAgentRoomActionBridgeRequestSchema.parse({
+      roomId: room.id, missionId: mission.id, agentPaneId: agentPane.id, agentSessionId: agentSession.sessionId,
+      selectedToolIds: ["room:send"],
+      actions: [{ toolId: "room:send", action: { type: "send", paneId: cliPane.id, input: "Run the check once." } }]
+    });
+
+    const result = await executor.execute(bridge, "req:mission-draft");
+
+    expect(result.results).toMatchObject([{ status: "EXECUTED" }]);
+    const actionId = store.listRoomAgentActions(mission.id)[0]?.actionId;
+    expect(sendInput.mock.calls.map((call) => [call[1] === "\r" ? "\r" : "text", call[4]])).toEqual([
+      ["text", actionId], ["\r", `${actionId}:submit`], ["\r", `${actionId}:submit:resubmit-0`]
+    ]);
+    expect(sendInput.mock.calls[0]?.[0]).toBe(cliSession.sessionId);
+  });
+
   it("submits durable CLI content after recovery without writing the instruction twice", async () => {
     const { store, room, agentPane, agentSession, mission } = setupMission();
     const cliPane = store.createPane({ roomId: room.id, title: "Staged CLI work", mode: "TERMINAL", cwd: "/etc" });

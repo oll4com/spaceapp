@@ -60,10 +60,10 @@ export async function readOpenCodeNativeSessionIdFromProcessTree(
       if (command.byteLength <= opencodeProcessCommandMaxBytes) {
         const args = command.toString("utf8").split("\0").filter(Boolean);
         const sessionArgumentIndex = args.indexOf("--session");
-        // OpenCode 1 attaches (`opencode attach URL --session ID`); OpenCode 2 connects (`opencode --server URL --session ID DIR`).
+        // The OpenCode 2 TUI connects with `opencode --server URL --session ID DIR` (OpenCode 1's attach was retired).
         if (
           basename(args[0] ?? "") === "opencode" &&
-          (args[1] === "attach" || args[1] === "--server") &&
+          args[1] === "--server" &&
           sessionArgumentIndex >= 2
         ) {
           const nativeSessionId = args[sessionArgumentIndex + 1] ?? "";

@@ -4,7 +4,7 @@ import type { SpaceStore } from "@space/runtime";
 import type { CliBridgeClaims } from "./mail-copilot/agent-routes.js";
 import { paneProgressSchema, type PaneReports } from "./pane-reports.js";
 
-// A pane CLI's own progress report to Nous (scripts/space-progress.mjs, space_progress_report on the space_browser MCP
+// A pane CLI's own progress report to Nous (scripts/space-progress.mjs, space_progress_report on the space_progress MCP
 // server), with its pane-scoped bridge token: a token reports only for its own pane, in its pane's current room.
 export const cliProgressPath = "/api/cli/progress";
 

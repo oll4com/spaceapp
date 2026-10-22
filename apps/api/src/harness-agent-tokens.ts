@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Pane } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
 import { cliAgentFilesApiBaseUrl, issueCliAgentFilesToken } from "./cli-agent-files.js";
-import { cliBrowserBridgeApiBaseUrl, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
+import { agentTokenSecret, cliBrowserBridgeApiBaseUrl, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import { issueControlToken } from "./space-control-token.js";
 import { tokenExpiryMs } from "./t3code/agent-tokens.js";
 
@@ -40,7 +40,7 @@ export function harnessPaneTokenSessions(paneId: string, boundSessionId?: string
 }
 
 export interface HarnessAgentTokenOptions {
-  config: Pick<SpaceApiConfig, "internalApiToken" | "browserToolBridgeEnabled" | "host" | "port" | "browserEvidenceTargetOrigin">;
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret" | "browserToolBridgeEnabled" | "host" | "port" | "browserEvidenceTargetOrigin">;
   dir?: string;
   // The token files take this directory's group: the harness user's.
   groupFrom?: string;
@@ -72,7 +72,7 @@ export async function publishHarnessAgentTokens(options: HarnessAgentTokenOption
   const context = { roomId: input.roomId, paneId: input.paneId, cliSessionId: harnessAgentSessionId(input.paneId) };
   const browserToken = issueCliBrowserBridgeToken(options.config, context, nowMs);
   const agentFilesToken = issueCliAgentFilesToken(options.config, context, nowMs);
-  const controlToken = issueControlToken(options.config.internalApiToken, context);
+  const controlToken = issueControlToken(agentTokenSecret(options.config), context);
   if (!browserToken && !agentFilesToken && !controlToken) return "unavailable";
   const apiBase = cliBrowserBridgeApiBaseUrl(options.config), filesBase = cliAgentFilesApiBaseUrl(options.config);
   // The same variables a CLI pane's session gets (cli-terminal.ts).

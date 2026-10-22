@@ -16,9 +16,13 @@ SaaS control plane.
   their own licenses, privacy policies, and credential formats.
 - Container images and npm artifacts are software-supply-chain inputs. SpaceApp's
   own images are built, scanned and published by the public release workflow,
-  which verifies their SBOM and provenance attestations; the launcher pulls them
-  by exact version tag. Third-party images (PostgreSQL, Temporal, codex-lb,
-  headroom) are pinned by digest in the compose template.
+  which verifies their SBOM and provenance attestations. From run-spaceapp 1.1.7
+  the release then writes each image's digest into the npm package
+  (`templates/images.lock.json`, published with npm provenance) and the launcher
+  pulls `name:version@sha256:…`, so a moved tag cannot change what an install
+  runs; older packages pull by exact version tag. Third-party images
+  (PostgreSQL, Temporal, codex-lb, headroom) are pinned by digest in the compose
+  template.
 
 ## Default protections
 

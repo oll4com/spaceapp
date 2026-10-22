@@ -34,9 +34,7 @@ export function applyRequestPolicy(input: Body, key: GatewayApiKeyRecord | null,
   const body: Body = { ...input };
   if (key?.enforcedModel) body.model = key.enforcedModel;
   const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
-  if (key && key.allowedModels.length > 0 && model !== null && !key.allowedModels.includes(model)) {
-    throw new PolicyRejection(403, gatewayError("model_not_allowed", `This API key does not have access to model '${model}'`, "invalid_request_error"));
-  }
+  assertModelAllowed(key, model);
 
   let reasoning = reasoningOf(body);
   if (key?.enforcedReasoningEffort) {
@@ -63,13 +61,78 @@ export function applyRequestPolicy(input: Body, key: GatewayApiKeyRecord | null,
   return { body, model, reasoningEffort: requestedEffort, requestedServiceTier: rawTier, serviceTier };
 }
 
-/** Rejects a request once one of the key's limits for this model is used up in its current window. */
+/** A key with a model allowlist serves only those models; a request that names no model is not an exception. */
+export function assertModelAllowed(key: GatewayApiKeyRecord | null, model: string | null): void {
+  if (key && key.allowedModels.length > 0 && (model === null || !key.allowedModels.includes(model))) {
+    throw new PolicyRejection(403, gatewayError("model_not_allowed", model === null ? "This API key needs a model it has access to"
+      : `This API key does not have access to model '${model}'`, "invalid_request_error"));
+  }
+}
+
+/**
+ * Usage a key has spent that its stored limits do not show yet: requests still running and settlements still being written.
+ * shortcut: per gateway process (a reload's draining worker keeps its own); a DB reservation would also cover that window.
+ */
+const pendingByKey = new Map<string, { inFlight: number; costMicros: number; inputTokens: number; outputTokens: number }>();
+const costReserveMicros = Math.max(0, Number(process.env.SPACE_GATEWAY_COST_RESERVE_MICROS ?? 200_000) || 0);
+
+function pendingOf(keyId: string) {
+  let pending = pendingByKey.get(keyId);
+  if (!pending) pendingByKey.set(keyId, pending = { inFlight: 0, costMicros: 0, inputTokens: 0, outputTokens: 0 });
+  return pending;
+}
+
+function dropIfIdle(keyId: string) {
+  const pending = pendingByKey.get(keyId);
+  if (pending && pending.inFlight <= 0 && pending.costMicros <= 0 && pending.inputTokens <= 0 && pending.outputTokens <= 0) pendingByKey.delete(keyId);
+}
+
+/** Counts a request as running until the returned release is called (once is enough; later calls do nothing). */
+export function trackKeyRequest(keyId: string): () => void {
+  pendingOf(keyId).inFlight += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    pendingOf(keyId).inFlight -= 1;
+    dropIfIdle(keyId);
+  };
+}
+
+/** Keeps a settlement's usage counted until the write that stores it has finished. */
+export async function trackKeySettlement(keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number },
+  write: () => Promise<void>): Promise<void> {
+  const pending = pendingOf(keyId);
+  pending.costMicros += usage.costMicros; pending.inputTokens += usage.inputTokens; pending.outputTokens += usage.outputTokens;
+  try {
+    await write();
+  } finally {
+    const after = pendingOf(keyId);
+    after.costMicros -= usage.costMicros; after.inputTokens -= usage.inputTokens; after.outputTokens -= usage.outputTokens;
+    dropIfIdle(keyId);
+  }
+}
+
+function pendingValue(limit: GatewayApiKeyRecord["limits"][number], pending: ReturnType<typeof pendingOf> | undefined): number {
+  if (!pending || limit.modelFilter !== null) return 0;
+  switch (limit.limitType) {
+    // Every other running request holds a reserve, so parallel requests cannot all pass a nearly spent cost cap.
+    case "COST_USD": return pending.costMicros + Math.max(0, pending.inFlight - 1) * costReserveMicros;
+    case "TOTAL_TOKENS": return pending.inputTokens + pending.outputTokens;
+    case "INPUT_TOKENS": return pending.inputTokens;
+    case "OUTPUT_TOKENS": return pending.outputTokens;
+    default: return 0;
+  }
+}
+
+/** Rejects a request once one of the key's limits for this model is used up in its current window, pending usage included. */
 export function checkKeyLimits(key: GatewayApiKeyRecord | null, model: string | null, nowIso: string): void {
   if (!key) return;
+  const pending = pendingByKey.get(key.id);
   for (const limit of key.limits) {
     if (limit.modelFilter !== null && limit.modelFilter !== model) continue;
     if (limit.resetAt <= nowIso) continue;
-    if (limit.currentValue >= limit.maxValue) {
+    if (limit.currentValue + pendingValue(limit, pending) >= limit.maxValue) {
       const kind = limit.limitType.toLowerCase();
       throw new PolicyRejection(429, gatewayError("rate_limit_exceeded",
         `API key ${kind} ${limit.limitWindow.toLowerCase()} limit exceeded${limit.modelFilter ? ` for model ${limit.modelFilter}` : ""}`, "rate_limit_error"));

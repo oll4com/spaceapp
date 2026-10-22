@@ -38,8 +38,9 @@ async function fixture(extra: { jobApplyGoogle?: JobApplyGoogleAccess } = {}) {
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
     SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-job-apply-tests",
-    SPACE_ARTIFACT_ROOT: root
+    SPACE_ARTIFACT_ROOT: root, SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key")
   });
+  await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
   const store = new InMemorySpaceStore();
   const app = await createApp({ store, config: { ...config, jobApplyRoot: join(root, "job-apply") }, jobApplyMailboxes: mailboxes, ...extra,
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });

@@ -12,6 +12,7 @@ network and no script from your fields. Every field is plain text (HTML is escap
 | `screenshot-frame` | An app screenshot in a device frame with a headline | `screenshotArtifactId` (required) |
 | `wide-banner` | Headers and covers (X header, LinkedIn banner, YouTube banner): text kept inside the safe area | optional background |
 | `bold-thumbnail` | YouTube thumbnails and small cards: big short text, high contrast | optional background |
+| `logo` | A logo with exact text: the brand kit's mark above (wide formats: beside) the name in `headline` and an optional tagline in `subline`; with no text the mark fills an app icon. Image models misspell names: set the name here | the brand kit's first logo |
 
 ## Fields (`params`)
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { GatewayStatus, SystemAnalyticsModelsResponse, SystemHealthSnapshot, SystemServicesResponse } from "@space/contracts";
+import type { GatewayAdminService } from "../gateway/gateway-service.js";
 
 /**
  * Read-only ops views for Nous (plan clipboard:8s0ZNiO3q5ZT S5): service health and recent errors (like space_status),
@@ -11,12 +12,44 @@ export interface NousOpsDeps {
   services?: () => Promise<SystemServicesResponse>;
   tokenUsage?: (range: NousUsageRange) => Promise<SystemAnalyticsModelsResponse>;
   gateway?: () => Promise<GatewayStatus>;
+  /** Space Gateway's admin reads (gap audit, plan clipboard:ajcJqa3IW6Eh): never a key secret, never a request body. */
+  gatewayAdmin?: Pick<GatewayAdminService, "listAccounts" | "listApiKeys" | "listRequestLogs" | "report" | "anthropicBilling">;
 }
 
 export const nousUsageRangeSchema = z.enum(["1h", "24h", "7d", "30d"]);
 export type NousUsageRange = z.infer<typeof nousUsageRangeSchema>;
 export const nousOpsServicesArgsSchema = z.object({});
 export const nousOpsUsageArgsSchema = z.object({ range: nousUsageRangeSchema.optional().describe("Token usage period (default 24h).") });
+export const nousOpsGatewayArgsSchema = z.object({
+  view: z.enum(["accounts", "keys", "logs", "report", "billing"]).describe("accounts: status and usage windows; keys: names, models, limits (never the key); logs: newest request metadata; report: daily rollups; billing: Anthropic's bill next to the estimate."),
+  days: z.number().int().min(1).max(31).optional().describe("report and billing: days back (default 7)."),
+  limit: z.number().int().min(1).max(100).optional().describe("logs: how many (default 30).")
+});
+
+/** Space Gateway detail for Nous, read only; the same admin reads as space-admin-action gateway-accounts/-keys/-logs/-report/-anthropic-billing. */
+export async function nousOpsGatewayText(deps: NousOpsDeps, args: z.infer<typeof nousOpsGatewayArgsSchema>): Promise<string> {
+  const admin = deps.gatewayAdmin;
+  if (!admin) return "Space Gateway's admin views are not available here.";
+  const days = args.days ?? 7;
+  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  if (args.view === "accounts") {
+    return (await admin.listAccounts()).data.map((account) => `- ${account.provider} · ${account.alias ?? account.label}${account.email ? ` <${account.email}>` : ""} · ${account.status}`
+      + `${account.statusReason ? ` (${account.statusReason.slice(0, 120)})` : ""} · windows ${JSON.stringify(account.primaryWindow)} / ${JSON.stringify(account.secondaryWindow)} · last used ${account.lastUsedAt?.slice(0, 16) ?? "never"}`).join("\n") || "No accounts.";
+  }
+  if (args.view === "keys") {
+    return (await admin.listApiKeys()).data.map((key) => `- ${key.name} (${key.keyPrefix}…) · ${key.isActive ? "active" : "off"} · ${key.trafficClass}`
+      + `${key.enforcedModel ? ` · model ${key.enforcedModel}` : key.allowedModels.length ? ` · models ${key.allowedModels.join(", ")}` : ""}`
+      + `${key.limits.length ? ` · limits ${key.limits.map((limit) => `${limit.limitType}/${limit.limitWindow} ${limit.currentValue}/${limit.maxValue}`).join(", ")}` : ""} · last used ${key.lastUsedAt?.slice(0, 16) ?? "never"}`).join("\n") || "No keys.";
+  }
+  if (args.view === "logs") {
+    const logs = await admin.listRequestLogs({ limit: args.limit ?? 30 });
+    return logs.data.map((log) => `- ${log.requestedAt.slice(0, 19)} · ${log.provider} ${log.model} · ${log.status}${log.errorCode ? ` ${log.errorCode}` : ""} · in ${count(log.inputTokens)} out ${count(log.outputTokens)} · ${usd(log.costUsd)}`
+      + `${log.latencyMs != null ? ` · ${log.latencyMs} ms` : ""}`).join("\n") || "No requests.";
+  }
+  if (args.view === "report") return JSON.stringify(await admin.report(since, today)).slice(0, 11_000);
+  return JSON.stringify(await admin.anthropicBilling(days)).slice(0, 11_000);
+}
 
 const usd = (value: number | null | undefined) => value == null ? "n/a" : `$${value.toFixed(2)}`;
 const count = (value: number | null | undefined) => value == null ? "n/a" : value >= 1e6 ? `${(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}k` : String(value);

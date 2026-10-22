@@ -2,7 +2,7 @@ import type {
   GatewayAccount, GatewayAccountDetail, GatewayAccountUpdateRequest, GatewayApiKey, GatewayApiKeyCreateRequest, GatewayApiKeyCreatedResponse,
   GatewayApiKeyDetail, GatewayApiKeyUpdateRequest, GatewayCompressionStats, GatewayDashboard, GatewayDashboardRange, GatewayHealth, GatewayReport,
   GatewayRequestLog, GatewayRequestLogFacets, GatewayRequestLogFilter, GatewayRequestLogList, GatewaySettings, GatewaySettingsUpdateRequest, GatewayStatus,
-  GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession, GatewayAnthropicAdminStatus
+  GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession, GatewayAnthropicAdminStatus, GatewayAnthropicBillingReport
 } from "@space/contracts";
 import { api } from "../../api.js";
 import { announceGatewaySettings } from "./gateway-settings-events.js";
@@ -55,6 +55,8 @@ export interface SpaceGatewayClient {
   saveAnthropicAdminKey(adminKey: string): Promise<GatewayAnthropicAdminStatus>;
   removeAnthropicAdminKey(): Promise<{ removed: boolean }>;
   syncAnthropicBilling(): Promise<GatewayAnthropicAdminStatus>;
+  /** Anthropic's bill for the last `days` UTC days, shown on the Claude API-key account. */
+  anthropicBilling?(days: number): Promise<GatewayAnthropicBillingReport>;
 }
 
 export const defaultGatewayClient: SpaceGatewayClient = {
@@ -99,7 +101,8 @@ export const defaultGatewayClient: SpaceGatewayClient = {
   anthropicAdmin: () => api.gatewayAnthropicAdmin(),
   saveAnthropicAdminKey: (adminKey) => api.saveGatewayAnthropicAdminKey(adminKey),
   removeAnthropicAdminKey: () => api.removeGatewayAnthropicAdminKey(),
-  syncAnthropicBilling: () => api.syncGatewayAnthropicBilling()
+  syncAnthropicBilling: () => api.syncGatewayAnthropicBilling(),
+  anthropicBilling: (days) => api.gatewayAnthropicBilling(days)
 };
 
 export function errorText(reason: unknown, fallback: string) {

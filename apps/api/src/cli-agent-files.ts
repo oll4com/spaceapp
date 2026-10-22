@@ -15,6 +15,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
 import { childProcessEnv } from "./child-process-env.js";
 import { instanceStorageDirectory } from "./instance-storage.js";
+import { agentTokenLive, agentTokenSecret, agentTokenTtlMs } from "./cli-browser-bridge.js";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
 export const agentFileMaxBytes = 100 * 1024 * 1024;
@@ -27,7 +28,7 @@ export const agentFileStorageMode = 0o644;
 export const agentFileDirectoryMode = 0o750;
 
 const tokenPrefix = "cliagentfiles.v1";
-const defaultTokenTtlMs = 12 * 60 * 60 * 1000;
+const defaultTokenTtlMs = agentTokenTtlMs;
 const execFileAsync = promisify(execFile);
 const docxMimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const textExtensions = new Set([
@@ -143,8 +144,9 @@ export class AgentFileDocxNormalizationError extends Error {
   }
 }
 
-function signingSecret(config: Pick<SpaceApiConfig, "internalApiToken">): string | null {
-  return config.internalApiToken ? `cli-agent-files:${config.internalApiToken}` : null;
+function signingSecret(config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">): string | null {
+  const root = agentTokenSecret(config);
+  return root ? `cli-agent-files:${root}` : null;
 }
 
 function signPayload(secret: string, encodedPayload: string): string {
@@ -345,12 +347,12 @@ export function agentFilePreviewKind(artifact: Artifact): AgentFilePreviewKind {
   return agentFilePreviewKindFor(artifact.mimeType, filename);
 }
 
-export function cliAgentFilesEnabled(config: Pick<SpaceApiConfig, "internalApiToken">): boolean {
-  return Boolean(config.internalApiToken);
+export function cliAgentFilesEnabled(config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">): boolean {
+  return Boolean(agentTokenSecret(config));
 }
 
 export function issueCliAgentFilesToken(
-  config: Pick<SpaceApiConfig, "internalApiToken">,
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">,
   context: CliAgentFilesContext,
   nowMs = Date.now()
 ): string | null {
@@ -369,7 +371,7 @@ export function issueCliAgentFilesToken(
 }
 
 export function verifyCliAgentFilesToken(
-  config: Pick<SpaceApiConfig, "internalApiToken">,
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">,
   token: string | null | undefined,
   nowMs = Date.now()
 ): CliAgentFilesTokenPayload | null {
@@ -385,7 +387,7 @@ export function verifyCliAgentFilesToken(
     const payload = cliAgentFilesTokenPayloadSchema.parse(
       JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"))
     );
-    if (payload.exp <= Math.floor(nowMs / 1000)) return null;
+    if (!agentTokenLive(payload.iat, nowMs)) return null;
     return payload;
   } catch {
     return null;

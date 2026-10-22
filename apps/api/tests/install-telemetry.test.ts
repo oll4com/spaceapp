@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  browserFromUserAgent, buildInstallTelemetryPing, createInstallTelemetry, createInstallTelemetryReporter, installTelemetryEnabled, installTelemetryId
+  browserFromUserAgent, buildInstallTelemetryPing, createFirstAnswerWatch, createInstallTelemetry, createInstallTelemetryReporter, installTelemetryEnabled,
+  installTelemetryId
 } from "../src/install-telemetry.js";
 
 const dirs: string[] = [];
@@ -136,5 +137,44 @@ describe("install telemetry", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+  it("sees the first finished answer on the server, without a dashboard read, and then stops", async () => {
+    const send = vi.fn().mockResolvedValue(true);
+    const reporter = createInstallTelemetryReporter({ enabled: true, event: "first_answer", markerFile: await marker(), version: "1.1.7", arch: "x64", send });
+    // The second room's agent finishes its answer on the third read; that read reports it, as readDashboardAgents does.
+    let reads = 0;
+    const readRoom = vi.fn(async (roomId: string) => {
+      if (roomId === "room:b" && ++reads === 3) reporter.observe();
+    });
+    const watch = createFirstAnswerWatch({ reporter, rooms: async () => [{ id: "room:a" }, { id: "room:b" }], readRoom, intervalMs: 5 });
+    await watch.start();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => expect(await reporter.pending()).toBe(false));
+    const callsWhenSent = readRoom.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(readRoom.mock.calls.length).toBeLessThanOrEqual(callsWhenSent + 2);
+    const settled = readRoom.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(readRoom.mock.calls.length).toBe(settled);
+    expect(send.mock.calls[0]![0]).toMatchObject({ event: "first_answer", version: "1.1.7" });
+    watch.stop();
+  });
+
+  it("never reads rooms when telemetry is off or first_answer was sent before a restart", async () => {
+    const readRoom = vi.fn();
+    const off = createInstallTelemetryReporter({ enabled: false, event: "first_answer", markerFile: await marker(), version: "1.1.7" });
+    const offWatch = createFirstAnswerWatch({ reporter: off, rooms: async () => [{ id: "room:a" }], readRoom, intervalMs: 1 });
+    await offWatch.start();
+    const markerFile = await marker();
+    await mkdir(dirname(markerFile), { recursive: true });
+    await writeFile(markerFile, `${JSON.stringify({ sentAt: "2026-10-18T00:00:00.000Z", period: "once" })}\n`);
+    const sent = createInstallTelemetryReporter({ enabled: true, event: "first_answer", markerFile, version: "1.1.7" });
+    expect(await sent.pending()).toBe(false);
+    const sentWatch = createFirstAnswerWatch({ reporter: sent, rooms: async () => [{ id: "room:a" }], readRoom, intervalMs: 1 });
+    await sentWatch.start();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(readRoom).not.toHaveBeenCalled();
+    offWatch.stop();
+    sentWatch.stop();
   });
 });

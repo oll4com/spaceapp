@@ -530,7 +530,8 @@ export async function run(argv, {
   }
   if (command === "backup") {
     assertNoArgs(args, command);
-    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    // A paused, consistent backup first (external review 2026-10-16 #3), then the workspace list and CLI settings (pilot F8).
+    const backupCode = await backupWithWritersPaused(runtimeExecute, root, config, { stdin, stdout, stderr });
     if (backupCode !== 0) return backupCode;
     await addBackupExtras({ root, config, stdin, stdout, stderr, execute: runtimeExecute })
       .catch((error) => stderr.write(`The backup was created; its workspace list and CLI settings were not added: ${error.message}\n`));
@@ -548,9 +549,9 @@ export async function run(argv, {
       throw new Error("Restore cancelled.");
     }
     const backupId = await selectLatestBackupId(root);
-    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    const backupCode = await backupWithWritersPaused(runtimeExecute, root, config, { stdin, stdout, stderr });
     if (backupCode !== 0) return backupCode;
-    const stopCode = await runtimeExecute(composeCommand("stopForRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    const stopCode = await runtimeExecute(composeCommand("stopForPortableRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
     if (stopCode !== 0) return stopCode;
     const restoreCode = await runtimeExecute(
       composeCommand("restore", root, { backupId, profile: config.profile }),
@@ -1449,6 +1450,25 @@ async function collectFiles(directory, logicalDirectory) {
   return files;
 }
 
+// Writers (core, CLI, browser, Temporal) are frozen, not stopped, while the backup runs in a one-off container:
+// the database, files, memory and Temporal histories are one moment and CLI sessions survive (external review
+// 2026-10-16). Compose skips services that are not running.
+async function backupWithWritersPaused(execute, root, config, io) {
+  const options = { profile: config.profile, companionsEnabled: config.companionsEnabled };
+  io.stdout.write("Pausing SpaceApp writers for the backup; the app and CLI sessions resume afterwards...\n");
+  const pauseCode = await execute(composeCommand("pauseWriters", root, options), io);
+  if (pauseCode !== 0) return pauseCode;
+  let backupCode = 1;
+  let resumeCode = 1;
+  try {
+    backupCode = await execute(composeCommand("backup", root, options), io);
+  } finally {
+    resumeCode = await execute(composeCommand("unpauseWriters", root, options), io).catch(() => 1);
+    if (resumeCode !== 0) io.stderr.write(`SpaceApp writers could not be resumed (exit ${resumeCode}). Run "${UNIVERSAL_COMMAND} up".\n`);
+  }
+  return backupCode !== 0 ? backupCode : resumeCode;
+}
+
 async function createQuiescedCheckpoint(root, config, io) {
   io.stdout.write("Pausing SpaceApp writers before the database checkpoint...\n");
   try {
@@ -2195,10 +2215,7 @@ async function factoryResetCommand({
   let backupCode;
   try {
     stdout.write("Creating safety backup before factory reset...\n");
-    backupCode = await execute(
-      composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
-      { stdin, stdout, stderr }
-    );
+    backupCode = await backupWithWritersPaused(execute, root, config, { stdin, stdout, stderr });
   } catch (err) {
     stdout.write(`Safety backup error: ${err.message}.\n`);
     backupCode = 1;

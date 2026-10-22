@@ -8,6 +8,7 @@ import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
 import { nousSettingsSchema } from "./nous.js";
+import { brokerScopeSchema } from "./broker-scopes.js";
 import { patchSchema } from "./partial-update.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
@@ -16,7 +17,8 @@ import { copilotLaunchSettingsSchema } from "./copilot.js";
 import { mailCopilotPaneMetadataSchema } from "./mail-copilot.js";
 import { marketingCopilotPaneMetadataSchema } from "./marketing-copilot.js";
 import { freelanceCopilotPaneMetadataSchema } from "./freelance-copilot.js";
-import { designPaneMetadataSchema } from "./design.js";
+import { DESIGN_COLOR_PRESETS_MAX, designColorPresetSchema, designPaneMetadataSchema } from "./design.js";
+import { appStudioPaneMetadataSchema } from "./app-studio.js";
 import { notificationSettingsSchema } from "./notifications.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
@@ -117,7 +119,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "APP_STUDIO"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -182,9 +184,11 @@ export const eventTypeSchema = z.enum([
   "MARKETING_COPILOT_UPDATED",
   "FREELANCE_COPILOT_UPDATED",
   "DESIGN_UPDATED",
+  "APP_STUDIO_UPDATED",
   "NOTIFICATION_CREATED",
   "NOTIFICATION_UPDATED",
-  "NOUS_FOCUS_REQUESTED"
+  "NOUS_FOCUS_REQUESTED",
+  "NOUS_PANE_BOARD_UPDATED"
 ]);
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
@@ -449,6 +453,7 @@ export const paneSchema = z.object({
   marketingCopilotMetadata: marketingCopilotPaneMetadataSchema.nullable().optional(),
   freelanceCopilotMetadata: freelanceCopilotPaneMetadataSchema.nullable().optional(),
   designMetadata: designPaneMetadataSchema.nullable().optional(),
+  appStudioMetadata: appStudioPaneMetadataSchema.nullable().optional(),
   paneName: z.string().min(1).max(60).nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
@@ -539,12 +544,12 @@ export const createPaneInputSchema = z
     split: paneSplitSchema.optional()
   })
   .superRefine((input, context) => {
-    // Copilot panes (Job, Mail, Marketing, Freelance) and Design panes run their agent in a CLI session, so they carry a runtime too.
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN") {
+    // Copilot panes (Job, Mail, Marketing, Freelance), Design and App Studio panes run their agent in a CLI session, so they carry a runtime too.
+    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN" && input.mode !== "APP_STUDIO") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN mode."
+        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO mode."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -636,6 +641,14 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("DESIGN"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
+      /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
+      accountProfileId: jobCopilotAccountProfileIdSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("APP_STUDIO"),
       terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
       /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
       accountProfileId: jobCopilotAccountProfileIdSchema.optional()
@@ -3167,7 +3180,9 @@ export const updateBrowserStreamModeInputSchema = z.object({
 export const browserPageListResponseSchema = z.object({
   sessionId: idSchema,
   activePageId: z.string().min(1).max(200).nullable(),
-  pages: z.array(browserPageSummarySchema).max(100)
+  pages: z.array(browserPageSummarySchema).max(100),
+  /** The CLI pane driving this browser and its room, for the frame's corner label; the API adds it, never the Browser Host. */
+  agent: z.object({ paneId: idSchema, title: z.string(), roomId: idSchema, roomName: z.string() }).nullable().optional()
 });
 
 export const createBrowserPageInputSchema = z.object({
@@ -3427,7 +3442,8 @@ export const createBrowserHandoffRequestInputSchema = browserHandoffRequestSchem
   .extend({
     handoffRequestId: idSchema.optional(),
     reason: z.string().trim().min(1).max(500),
-    ttlSeconds: z.number().int().min(30).max(1800).default(300)
+    // Up to 16 hours: a handoff asked during the operator's night waits for their morning (plan clipboard:9XSwTPyxXP1W).
+    ttlSeconds: z.number().int().min(30).max(57_600).default(300)
   });
 
 export const updateBrowserHandoffRequestInputSchema = z
@@ -3672,6 +3688,15 @@ export const browserToolActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("set_viewport"),
     viewport: browserSessionViewportSchema
   }),
+  // A key press: submit a form (Enter) or move to the next or previous control (Tab, Shift+Tab); returns no page content.
+  browserActionBaseSchema.extend({
+    type: z.literal("press"),
+    key: z.enum(["Enter", "Tab", "Shift+Tab"])
+  }),
+  // A screenshot with every form field, text area and editable area drawn as dots (the pane that filled a Vault page sees it).
+  browserActionBaseSchema.extend({
+    type: z.literal("masked_screenshot")
+  }),
   browserActionBaseSchema.extend({
     type: z.literal("diagnostics"),
     includeNetwork: z.boolean().default(true),
@@ -3693,6 +3718,8 @@ export const browserToolActionTypeSchema = z.enum([
   "type",
   "scroll",
   "set_viewport",
+  "press",
+  "masked_screenshot",
   "diagnostics",
   "record"
 ]);
@@ -3711,6 +3738,8 @@ export const spaceBrowserToolIdSchema = z.enum([
   "browser:type",
   "browser:scroll",
   "browser:set_viewport",
+  "browser:press",
+  "browser:masked_screenshot",
   "browser:diagnostics",
   "browser:record"
 ]);
@@ -3731,6 +3760,10 @@ function expectedBrowserToolIdForAction(type: z.infer<typeof browserToolActionTy
       return "browser:scroll";
     case "set_viewport":
       return "browser:set_viewport";
+    case "press":
+      return "browser:press";
+    case "masked_screenshot":
+      return "browser:masked_screenshot";
     case "diagnostics":
       return "browser:diagnostics";
     case "record":
@@ -8653,7 +8686,9 @@ export const authUserSchema = z.object({
   googleId: z.string().nullable().optional(),
   avatarUrl: z.string().nullable().optional(),
   proofScope: paneCliProofScopeSchema.optional(),
-  automationScope: appDiagnosticsAutomationScopeSchema.optional()
+  automationScope: appDiagnosticsAutomationScopeSchema.optional(),
+  /** Set only by the auth broker on an agent's operator session; the API limits that session to the scope's routes. */
+  brokerScope: brokerScopeSchema.optional()
 }).strict();
 
 export const dateFormatSchema = z.enum([
@@ -8692,6 +8727,7 @@ export const voiceComposerSettingsSchema = z.object({
   terminalShortcutsButton: z.boolean().default(true),
   terminalVariablesButton: z.boolean().default(true),
   terminalPlansButton: z.boolean().default(true),
+  terminalLocalDraft: z.boolean().default(false),
   // Ids of CLI shortcuts hidden from the shortcuts menu; empty shows them all.
   terminalHiddenShortcuts: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(64).default([])
 });
@@ -8757,6 +8793,21 @@ export type FreelanceCopilotLaunchSettings = z.infer<typeof freelanceCopilotLaun
 /** The same for Design panes (Settings → Design); the designer defaults to Claude Code. */
 export const designLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type DesignLaunchSettings = z.infer<typeof designLaunchSettingsSchema>;
+/** The same for App Studio panes (Settings → App Studio); the agent defaults to Claude Code. */
+export const appStudioLaunchSettingsSchema = copilotLaunchSettingsSchema;
+export type AppStudioLaunchSettings = z.infer<typeof appStudioLaunchSettingsSchema>;
+
+/**
+ * Gemini models on Space Gateway's Antigravity accounts that summarize a YouTube video (YouTube pane); the first is the default. Code
+ * Assist names, not Antigravity's menu names: each watched a YouTube video live on 2026-10-20 (`gemini-3.8-flash-medium`/`-high` and
+ * every 3.1 Pro or 4 Argon name tried answered 404).
+ */
+export const YOUTUBE_SUMMARY_MODELS = [
+  { id: "gemini-3.8-flash-tiered", label: "Gemini 3.8 Flash" },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite, fastest" }
+] as const;
+const youtubeSummaryModelSchema = z.enum(YOUTUBE_SUMMARY_MODELS.map((model) => model.id) as [string, ...string[]]);
 
 export const userSettingsSchema = z.object({
   uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).default("modern"),
@@ -8816,10 +8867,15 @@ export const userSettingsSchema = z.object({
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
   design: designLaunchSettingsSchema.nullable().optional(),
+  appStudio: appStudioLaunchSettingsSchema.nullable().optional(),
+  /** The operator's own colour combinations in the Design Studio (the built-in ones are DESIGN_COLOR_PRESETS). */
+  designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
   /** Notification channels (in-app, toast, sound, desktop, Telegram) and per-source overrides. */
   notifications: notificationSettingsSchema.nullable().optional(),
   /** Nous, the mind of SpaceApp: on or off and its hourly turn limit. */
   nous: nousSettingsSchema.nullable().optional(),
+  /** A model dropped from YOUTUBE_SUMMARY_MODELS reads as the default instead of failing (and resetting) every setting. */
+  youtubeSummaryModel: youtubeSummaryModelSchema.optional().catch(undefined),
   updatedAt: isoDateTimeSchema.optional()
 });
 
@@ -8887,8 +8943,12 @@ export const updateUserSettingsInputSchema = z.object({
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
   /** null forgets the default: the next Design pane asks again. */
   design: designLaunchSettingsSchema.nullable().optional(),
+  /** null forgets the default: the next App Studio pane asks again. */
+  appStudio: appStudioLaunchSettingsSchema.nullable().optional(),
+  designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
   notifications: notificationSettingsSchema.nullable().optional(),
-  nous: nousSettingsSchema.nullable().optional()
+  nous: nousSettingsSchema.nullable().optional(),
+  youtubeSummaryModel: youtubeSummaryModelSchema.optional()
 }).strict();
 
 export const authMeSchema = z.object({
@@ -9410,6 +9470,9 @@ export const setClipboardItemCompletedRequestSchema = z
   })
   .strict();
 
+/** A note's new text, edited in place: the note keeps its id, source, room, pane and created time. */
+export const updateClipboardNoteTextRequestSchema = z.object({ text: nonBlankExactText(clipboardTextMaxCharacters) }).strict();
+
 export const updatePlanProgressRequestSchema = z
   .object({
     executionStatus: planExecutionStatusSchema.optional(),
@@ -9443,6 +9506,7 @@ export type SaveAgentClipboardPlanInput = z.infer<typeof saveAgentClipboardPlanI
 export type UpsertClipboardItemInput = z.infer<typeof upsertClipboardItemInputSchema>;
 export type ListClipboardItemsQuery = z.infer<typeof listClipboardItemsQuerySchema>;
 export type SetClipboardItemCompletedRequest = z.infer<typeof setClipboardItemCompletedRequestSchema>;
+export type UpdateClipboardNoteTextRequest = z.infer<typeof updateClipboardNoteTextRequestSchema>;
 export type UpdatePlanProgressRequest = z.infer<typeof updatePlanProgressRequestSchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
 

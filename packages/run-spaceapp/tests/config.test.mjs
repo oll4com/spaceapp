@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import {
   inspectSystemResources,
   loadConfig,
   prepareInstallation,
+  writeRuntimeFiles,
   renderHostAccessCompose,
   resolveInstallAccessMode,
   resolveInstallProfile,
@@ -281,6 +282,22 @@ test("initialization synchronizes an existing install to the launcher version an
     passwordBefore
   );
   assert.deepEqual(await loadConfig(root), result.config);
+});
+
+test("installation preparation makes a secrets folder that already existed owner-only (review INT5-C-F21)", {
+  skip: process.platform === "win32" ? "Windows has no POSIX modes" : false
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-prepare-secrets-mode-"));
+  await mkdir(join(root, "secrets"));
+  await chmod(join(root, "secrets"), 0o755);
+  const prepared = await prepareInstallation(root, { version: "1.1.7", profile: "light" });
+  assert.equal((await stat(join(root, "secrets"))).mode & 0o777, 0o700);
+  assert.equal((await stat(join(root, "secrets", "providers"))).mode & 0o777, 0o700);
+  await assertContainerSecretFile(join(root, "secrets", "postgres-password"));
+  // An existing installation is fixed by the next command that writes its runtime files (update, up, repair).
+  await chmod(join(root, "secrets"), 0o755);
+  await writeRuntimeFiles(root, prepared.config);
+  assert.equal((await stat(join(root, "secrets"))).mode & 0o777, 0o700);
 });
 
 test("installation preparation defers committed version and runtime changes", async () => {

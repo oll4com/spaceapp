@@ -65,18 +65,69 @@ describe("local CLI compose and recovery", () => {
     expect(vi.mocked(URL.revokeObjectURL).mock.calls.map(([url]) => url).sort()).toEqual(generated.sort());
   });
 
+  it("puts a photo marker at the caret, pastes the image there and removes the marker with the photo", async () => {
+    const view = render(<LocalCliDraftEditor {...props} nativeImages fileStore={fileStore} />);
+    edit("before after");
+    field().setSelectionRange(7, 7);
+    attach(view.container);
+    expect(field().value).toBe("before [Image #1] after");
+    expect(field().selectionStart).toBe(18);
+    await waitFor(() => expect(screen.queryByText("Saving attachments…")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Remove photo.png" }));
+    expect(field().value).toBe("before after");
+    attach(view.container, new File(["second"], "second.png", { type: "image/png" }));
+    expect(field().value).toBe("before after [Image #1] ");
+    await waitFor(() => expect(screen.queryByText("Saving attachments…")).toBeNull());
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(api.submitLocalCliDraft).toHaveBeenCalledTimes(1));
+    expect(api.submitLocalCliDraft.mock.calls[0]![1]).toMatchObject({ text: "before after  ", imagePaths: ["/synthetic/photo.png"], imageOffsets: [13] });
+  });
+
+  it("renders its buttons in the CLI toolbar row instead of a row of its own", () => {
+    const toolbar = document.body.appendChild(document.createElement("div"));
+    const view = render(<LocalCliDraftEditor {...props} toolbar={toolbar} fileStore={fileStore} />);
+    for (const name of ["Close local draft", "Attach files to local draft"]) {
+      expect(within(toolbar).getByRole("button", { name })).toBeTruthy();
+      expect(within(view.container).queryByRole("button", { name })).toBeNull();
+    }
+    expect(field().rows).toBe(1);
+    // Send sits on the draft's own line, far right, and turns on once the draft has text.
+    const send = within(view.container).getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    expect(send.parentElement).toBe(field().parentElement);
+    expect(send.previousElementSibling).toBe(field());
+    expect(send.disabled).toBe(true);
+    edit("θελω να");
+    expect(send.disabled).toBe(false);
+    expect(send.getAttribute("data-state")).toBe("ready");
+    view.unmount();
+    toolbar.remove();
+  });
+
   it("recovers the final keystroke and a file after an immediate remount", async () => {
     const view = render(<LocalCliDraftEditor {...props} fileStore={fileStore} />);
     edit("Τελευταίο γράμμα Ω");
     attach(view.container);
     await waitFor(() => expect(screen.queryByText("Saving attachments…")).toBeNull());
     const saved = readLocalCliDraft(localStorage, key);
-    expect(saved.text).toBe("Τελευταίο γράμμα Ω");
+    expect(saved.text).toBe("Τελευταίο γράμμα Ω [Image #1] ");
     expect(await fileStore.get(key, saved.files[0]!.id)).toBeInstanceOf(Blob);
     view.unmount();
     render(<LocalCliDraftEditor {...props} fileStore={fileStore} />);
-    expect(field().value).toBe("Τελευταίο γράμμα Ω");
+    expect(field().value).toBe("Τελευταίο γράμμα Ω [Image #1] ");
     expect(screen.getByText("photo.png")).toBeTruthy();
+  });
+
+  it("tells touch devices that Enter adds a line and Send sends, and keeps the desktop hint", () => {
+    const desktop = render(<LocalCliDraftEditor {...props} fileStore={fileStore} />);
+    expect(field().placeholder).toBe("Write here. Enter sends; Shift+Enter adds a line.");
+    desktop.unmount();
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)", media: query }) as MediaQueryList);
+    try {
+      render(<LocalCliDraftEditor {...props} fileStore={fileStore} />);
+      expect(field().placeholder).toBe("Write here. Enter adds a line; tap Send to send.");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("does not send during IME composition and keeps Shift+Enter for multiline editing", async () => {
@@ -106,7 +157,7 @@ describe("local CLI compose and recovery", () => {
     fireEvent.click(sendButton());
     await waitFor(() => expect(field().value).toBe(""));
     const saved = readLocalCliDraft(localStorage, key);
-    expect(saved.submission?.text).toBe("Inspect this");
+    expect(saved.submission?.text).toBe("Inspect this [Image #1] ");
     expect(saved.submission?.files).toHaveLength(1);
     expect(blobs.size).toBe(1);
     expect(saved.submission?.status).toBe("SENT");
@@ -130,7 +181,7 @@ describe("local CLI compose and recovery", () => {
     expect(screen.getByText(/CLI input changed before sending/)).toBeTruthy();
     expect(api.submitLocalCliDraft).not.toHaveBeenCalled();
     const saved = readLocalCliDraft(localStorage, key);
-    expect(saved.text).toBe("Keep this local message");
+    expect(saved.text).toBe("Keep this local message [Image #1] ");
     expect(saved.files[0]?.uploaded?.artifactId).toBe("artifact:one");
     expect(saved.submission).toBeNull();
   });
@@ -209,7 +260,7 @@ describe("local CLI compose and recovery", () => {
     expect(unload.defaultPrevented).toBe(true);
     expect(reload).not.toHaveBeenCalled();
     render(<LocalCliDraftEditor {...props} fileStore={fileStore} />);
-    expect(field().value).toBe("photo still saving");
+    expect(field().value).toBe("photo still saving [Image #1] ");
     expect(screen.getByText("photo.png")).toBeTruthy();
     expect((sendButton() as HTMLButtonElement).disabled).toBe(true);
     await act(async () => { finish(); await reloading; });

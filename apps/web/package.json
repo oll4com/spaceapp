@@ -43,5 +43,5 @@
     "vite": "^7.3.0",
     "vitest": "^4.1.11"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

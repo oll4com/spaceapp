@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { NousAttachments } from "./attachments.js";
 import type { NousService } from "./service.js";
 import type { NousToolDefinition } from "./tools.js";
+import { NOUS_HELPER_PREFIX, NOUS_SUBAGENT_EXCLUDED, nousSubagentTools, type NousSubagents } from "./subagents.js";
 
 /**
  * Nous's tools over HTTP MCP for its headless Claude Code turn. The CLI reaches the API with the turn's token (an HMAC
@@ -46,6 +47,8 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
   secret: string; service: Pick<NousService, "turnRunning" | "callTool">; tools: NousToolDefinition[]; routeOptions: Record<string, unknown>;
   /** The operator's attached files: their tools answer with image blocks, which Nous's own tools cannot. */
   attachments?: Pick<NousAttachments, "tools" | "handles" | "callTool">;
+  /** The turn's helpers: a helper's token works only while it and its parent turn run, with the helpers' tools only. */
+  subagents?: Pick<NousSubagents, "running" | "countCall">;
 }): void {
   // Claude Code may open a server-to-client stream first; this server only answers requests.
   app.get(NOUS_MCP_PATH, deps.routeOptions, async (_request, reply) => reply.code(405).header("allow", "POST").send());
@@ -53,7 +56,9 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
     const bearer = /^Bearer (.+)$/.exec(String(request.headers.authorization ?? ""))?.[1];
     const claims = verifyNousToken(deps.secret, bearer);
     if (!claims) return reply.code(401).send({ error: "A Nous turn token is required." });
-    if (!deps.service.turnRunning(claims.owner, claims.turnId)) return reply.code(403).send({ error: "This Nous turn is over." });
+    const helper = claims.turnId.startsWith(NOUS_HELPER_PREFIX) ? deps.subagents?.running(claims.owner, claims.turnId) ?? null : undefined;
+    if (helper === null) return reply.code(403).send({ error: "This Nous helper is over." });
+    if (!helper && !deps.service.turnRunning(claims.owner, claims.turnId)) return reply.code(403).send({ error: "This Nous turn is over." });
     const parsed = rpcSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request." } });
     const { id, method, params } = parsed.data;
@@ -63,16 +68,22 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
       return answer({ protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "space-nous", version: "1.0.0" } });
     }
     if (method === "ping") return answer({});
-    if (method === "tools/list") return answer({ tools: [...deps.tools, ...(deps.attachments?.tools ?? [])] });
+    if (method === "tools/list") return answer({ tools: [...(helper ? nousSubagentTools(deps.tools) : deps.tools), ...(deps.attachments?.tools ?? [])] });
     if (method === "tools/call") {
       const call = callSchema.safeParse(params);
       if (!call.success) return { jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid tool call." } };
+      if (helper && NOUS_SUBAGENT_EXCLUDED.has(call.data.name)) {
+        return answer({ content: [{ type: "text", text: `${call.data.name} stays with Nous: say in your report what it should do.` }], isError: true });
+      }
+      if (helper) deps.subagents!.countCall(claims.turnId);
       if (deps.attachments?.handles(call.data.name)) {
         const result = await deps.attachments.callTool(claims.owner, call.data.name, call.data.arguments ?? {});
         return answer({ content: [{ type: "text", text: result.text }, ...result.images.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))], isError: !result.ok });
       }
       const callId = typeof call.data._meta?.["claudecode/toolUseId"] === "string" ? String(call.data._meta["claudecode/toolUseId"]).slice(0, 80) : `${Date.now()}`;
-      const outcome = await deps.service.callTool(claims.owner, claims.turnId, call.data.name, call.data.arguments ?? {}, callId);
+      const outcome = helper
+        ? await deps.service.callTool(claims.owner, helper.parentTurnId, call.data.name, call.data.arguments ?? {}, callId, { subagentId: claims.turnId, title: helper.title })
+        : await deps.service.callTool(claims.owner, claims.turnId, call.data.name, call.data.arguments ?? {}, callId);
       return answer({ content: [{ type: "text", text: outcome.result || outcome.display }], isError: !outcome.ok });
     }
     return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } };

@@ -4,8 +4,8 @@ import { CLI_PANE_TYPES, PANE_TYPES, PANE_CATALOG_VERSION, cliTurnInterruptKey, 
 describe("room command catalog", () => {
   it("contains every menu type and separates Harness from DeepSeek CLI", () => {
     expect(CLI_PANE_TYPES).toHaveLength(16);
-    expect(PANE_TYPES).toHaveLength(31);
-    expect(new Set(PANE_TYPES.map(type => type.typeId)).size).toBe(31);
+    expect(PANE_TYPES).toHaveLength(32);
+    expect(new Set(PANE_TYPES.map(type => type.typeId)).size).toBe(32);
     expect(PANE_TYPES.find(type => type.typeId === "deepseek")?.mode).toBe("TERMINAL");
     expect(PANE_TYPES.find(type => type.typeId === "harness")?.mode).toBe("HARNESS");
     expect(PANE_TYPES.find(type => type.typeId === "live")?.mode).toBe("LIVE");

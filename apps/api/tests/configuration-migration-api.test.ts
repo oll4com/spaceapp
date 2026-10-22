@@ -128,6 +128,17 @@ describe("Configuration Migration API", () => {
     const targetSessionToken = signSession(targetUser, sessionSecret);
     const targetCsrfToken = createCsrfToken(targetSessionToken, sessionSecret)!;
 
+    // Replace deletes the account's rooms, links, clipboard and tasks: refused unless confirmed (Record Retention Invariant).
+    const unconfirmed = await targetApp.inject({
+      method: "POST",
+      url: "/api/configuration/import",
+      headers: { cookie: `${cookieName}=${targetSessionToken}`, [csrfHeaderName]: targetCsrfToken },
+      payload: { bundle, mode: "replace" }
+    });
+    expect(unconfirmed.statusCode).toBe(400);
+    expect(unconfirmed.json().error.code).toBe("CONFIGURATION_REPLACE_UNCONFIRMED");
+    expect(targetStore.listRooms("user:local")).toEqual([]);
+
     const importRes = await targetApp.inject({
       method: "POST",
       url: "/api/configuration/import",
@@ -137,7 +148,8 @@ describe("Configuration Migration API", () => {
       },
       payload: {
         bundle,
-        mode: "replace"
+        mode: "replace",
+        confirmReplace: true
       }
     });
     expect(importRes.statusCode).toBe(200);

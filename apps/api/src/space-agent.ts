@@ -442,6 +442,8 @@ const browserToolDefinitions: Array<{ id: string; displayName: string; slug: str
   { id: "browser:type", displayName: "Browser type", slug: "browser.type", description: "Type into the active tab while respecting exclusive operator control." },
   { id: "browser:scroll", displayName: "Browser scroll", slug: "browser.scroll", description: "Scroll the active managed browser tab." },
   { id: "browser:set_viewport", displayName: "Browser viewport", slug: "browser.set_viewport", description: "Switch the managed browser between desktop, tablet, and mobile viewport profiles." },
+  { id: "browser:press", displayName: "Browser key", slug: "browser.press", description: "Press Enter, Tab or Shift+Tab in the managed browser." },
+  { id: "browser:masked_screenshot", displayName: "Browser masked screenshot", slug: "browser.masked_screenshot", description: "Screenshot the managed browser with every form field drawn as dots." },
   { id: "browser:diagnostics", displayName: "Browser diagnostics", slug: "browser.diagnostics", description: "Read sanitized console, network, error, frame, and navigation timeline diagnostics." },
   { id: "browser:record", displayName: "Browser recording", slug: "browser.record", description: "Record bounded WebM and frame evidence for frame-by-frame debugging across parallel browser panes." }
 ];

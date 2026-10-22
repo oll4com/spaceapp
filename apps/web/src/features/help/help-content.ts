@@ -507,7 +507,8 @@ export const helpSections: HelpSection[] = [
       entry("mode-jobs", "Job Copilot pane symbol", modeIcons.JOB_APPLY, "Pane badge", "Identifies a Job Copilot pane that works through job applications.", ["INFORMATIONAL"]),
       entry("mode-mail", "Mail Copilot pane symbol", modeIcons.MAIL_COPILOT, "Pane badge", "Identifies a Mail Copilot pane that handles your Gmail accounts.", ["INFORMATIONAL"]),
       entry("mode-marketing", "Marketing Copilot pane symbol", modeIcons.MARKETING_COPILOT, "Pane badge", "Identifies a Marketing Copilot pane that promotes SpaceApp on your own accounts.", ["INFORMATIONAL"]),
-      entry("mode-freelance", "Freelance Copilot pane symbol", modeIcons.FREELANCE_COPILOT, "Pane badge", "Identifies a Freelance Copilot pane that finds clients on freelance platforms and hands you the ones ready to go ahead.", ["INFORMATIONAL"])
+      entry("mode-freelance", "Freelance Copilot pane symbol", modeIcons.FREELANCE_COPILOT, "Pane badge", "Identifies a Freelance Copilot pane that finds clients on freelance platforms and hands you the ones ready to go ahead.", ["INFORMATIONAL"]),
+      entry("mode-app-studio", "App Studio pane symbol", modeIcons.APP_STUDIO, "Pane badge", "Identifies an App Studio pane that builds mobile apps for Android and iOS and shows every screen on the most-used phones.", ["INFORMATIONAL"])
     ]
   }
 ];

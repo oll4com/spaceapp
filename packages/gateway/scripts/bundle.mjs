@@ -36,6 +36,8 @@ await build({ ...common, entryPoints: [join(root, "src", "supervisor-main.ts")],
 const hash = createHash("sha256").update(await readFile(outfile)).update(await readFile(workerFile));
 const grammars = join(root, "grammars");
 for (const file of (await readdir(grammars)).filter((name) => name.endsWith(".wasm")).sort()) hash.update(file).update(await readFile(join(grammars, file)));
+// The local embedding worker runs from the sources (providers/local), so a change to it also hands the gateway over.
+hash.update(await readFile(join(root, "src", "providers", "local", "space-local-embeddings.py")));
 const digest = hash.digest("hex");
 await writeFile(`${outfile}.sha256`, `${digest}\n`);
 const supervisorDigest = createHash("sha256").update(await readFile(supervisorFile)).digest("hex");

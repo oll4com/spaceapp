@@ -8,6 +8,8 @@ export const NOUS_FOCUS_EVENT = "space:nous-focus";
 /** Go and Back tell the Nous dock to leave its fullscreen while the operator is at the pane, and to come back after. */
 export const NOUS_FOCUS_PHASE_EVENT = "space:nous-focus-phase";
 export type NousFocusPhase = "go" | "back";
+/** NOUS_PANE_BOARD_UPDATED from the server stream (ids only): the Nous dock's pane board refetches. */
+export const NOUS_PANE_BOARD_EVENT = "space:nous-pane-board";
 
 export function requestNousFocus(detail: NousFocusDetail): void {
   window.dispatchEvent(new CustomEvent<NousFocusDetail>(NOUS_FOCUS_EVENT, { detail }));
@@ -26,8 +28,18 @@ export function forwardNousFocusEvents(source: Pick<EventSource, "addEventListen
     const payload = event?.type === "NOUS_FOCUS_REQUESTED" ? nousFocusRequestPayloadSchema.safeParse(event.payload) : null;
     if (payload?.success) requestNousFocus({ roomId: payload.data.roomId, paneId: payload.data.paneId, ownerUserId: payload.data.ownerUserId, immediate: false });
   };
+  // The pane board's changes (plan clipboard:Y9cgKVHFaHrr) ride the same forward, so the app shell needs no new listener.
+  const board = (message: MessageEvent<string>) => {
+    let event: { type?: unknown; paneId?: unknown } | null;
+    try { event = JSON.parse(message.data) as typeof event; } catch { return; }
+    if (event?.type === "NOUS_PANE_BOARD_UPDATED") window.dispatchEvent(new CustomEvent(NOUS_PANE_BOARD_EVENT, { detail: { paneId: typeof event.paneId === "string" ? event.paneId : null } }));
+  };
   source.addEventListener("NOUS_FOCUS_REQUESTED", listener as EventListener);
-  return () => source.removeEventListener("NOUS_FOCUS_REQUESTED", listener as EventListener);
+  source.addEventListener("NOUS_PANE_BOARD_UPDATED", board as EventListener);
+  return () => {
+    source.removeEventListener("NOUS_FOCUS_REQUESTED", listener as EventListener);
+    source.removeEventListener("NOUS_PANE_BOARD_UPDATED", board as EventListener);
+  };
 }
 
 // Stored as "off" so the default (no value on this device) is on.

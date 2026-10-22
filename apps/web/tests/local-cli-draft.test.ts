@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   emptyLocalCliDraft, localCliDraftKey, readLocalCliDraft, writeLocalCliDraft,
-  getLocalCliDraftDurability, registerLocalCliDraftReloadGuard, reloadAfterLocalCliDraftsSaved, noteLocalCliDraftChange
+  getLocalCliDraftDurability, registerLocalCliDraftReloadGuard, reloadAfterLocalCliDraftsSaved, noteLocalCliDraftChange,
+  localCliFileMarkers, localCliPrompt, withoutLocalCliMarker, type LocalCliFile
 } from "../src/features/terminal-pane/local-cli-draft.js";
 
 afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); });
@@ -93,5 +94,32 @@ describe("durable local CLI drafts", () => {
     await expect(pending).resolves.toBe(false);
     expect(reload).not.toHaveBeenCalled();
     first(); second();
+  });
+
+  describe("attachment markers", () => {
+    const file = (marker: string | undefined, name: string, isImage = true): LocalCliFile => ({ id: name, name, type: isImage ? "image/png" : "text/plain",
+      size: 1, lastModified: 0, marker, uploaded: { artifactId: `artifact:${name}`, sessionId: "session:one", isImage, originalFilename: name,
+        mimeType: isImage ? "image/png" : "text/plain", terminalPath: `/up/${name}`, shellQuotedPath: `'/up/${name}'` } as LocalCliFile["uploaded"] });
+
+    it("numbers markers per kind after the highest one kept", () => {
+      expect(localCliFileMarkers([file("[Image #3]", "a"), file("[File #1]", "b", false)], ["image/png", "video/mp4", "text/plain", "image/jpeg"]))
+        .toEqual(["[Image #4]", "[Video #1]", "[File #2]", "[Image #5]"]);
+    });
+
+    it("pastes native images where their markers are and keeps an image whose marker was deleted", () => {
+      expect(localCliPrompt("look [Image #2] then [Image #1] end", [file("[Image #1]", "one"), file("[Image #2]", "two"), file("[Image #3]", "gone")], true))
+        .toEqual({ text: "look  then  end", imagePaths: ["/up/two", "/up/one", "/up/gone"], imageOffsets: [5, 11, 15] });
+    });
+
+    it("puts the path at the marker for other CLIs and appends unmarked legacy files", () => {
+      expect(localCliPrompt("see [Image #1] and [File #1]", [file("[Image #1]", "one"), file("[File #1]", "notes.txt", false), file(undefined, "old")], false))
+        .toEqual({ text: "see [Image #1] '/up/one' and [File #1] '/up/notes.txt'\n[Image #1] '/up/old'", imagePaths: [], imageOffsets: [] });
+    });
+
+    it("removes a marker with the space after it", () => {
+      expect(withoutLocalCliMarker("a [Image #1] b", "[Image #1]")).toBe("a b");
+      expect(withoutLocalCliMarker("a [Image #1]", "[Image #1]")).toBe("a ");
+      expect(withoutLocalCliMarker("typed", undefined)).toBe("typed");
+    });
   });
 });

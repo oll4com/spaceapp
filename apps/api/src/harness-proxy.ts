@@ -40,12 +40,31 @@ export function stripSpaceCookies(value: string | string[] | undefined): string 
   return kept.length > 0 ? kept.join("; ") : undefined;
 }
 
+/** The Harness is a shell on the host: only the operator roles reach it, never a USER account. */
+export function harnessRoleAllowed(role: string | undefined): boolean {
+  return role === "ADMIN" || role === "OPERATOR";
+}
+
 function requireHarnessSession(request: FastifyRequest, reply: FastifyReply): boolean {
-  if (request.user) {
-    return true;
+  if (!request.user) {
+    sendProxyError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
+    return false;
   }
-  sendProxyError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
-  return false;
+  if (!harnessRoleAllowed(request.user.role)) {
+    sendProxyError(reply, 403, "HARNESS_FORBIDDEN", "The Harness is available to the operator only.");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The third-party Harness client sends no CSRF header (its uploads run in a Web Worker), so for its routes the browser's own
+ * Fetch Metadata proof of a same-origin request stands in for the token; another site can produce neither.
+ */
+export function harnessSameOriginRequest(request: FastifyRequest, routePath: string): boolean {
+  const harnessRoute = request.routeOptions.url === "/api/:method" || request.routeOptions.url === "/api/harness/*" ||
+    routePath === "/api/harness" || routePath.startsWith("/api/harness/") || isHarnessRootHttpPath(routePath);
+  return harnessRoute && request.headers["sec-fetch-site"] === "same-origin";
 }
 
 const BROWSER_TRUST_HEADERS = new Set([
@@ -1168,6 +1187,9 @@ export function registerHarnessRoutes(
   });
 
   app.all("/api/harness/*", async (request, reply) => {
+    if (!requireHarnessSession(request, reply)) {
+      return reply;
+    }
     if (!config.harnessEnabled) {
       return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
     }
@@ -1202,7 +1224,7 @@ export function registerHarnessRoutes(
 
     try {
       const effectiveSessionId = await ensureHarnessPaneSession(target, paneSessionId, config.harnessProxyTimeoutMs, workspacePath);
-      // shortcut: tokens refresh when the pane (re)loads; a Harness pane left open over 12 hours needs a reload
+      // shortcut: tokens refresh when the pane (re)loads; a Harness pane left open past the token lifetime (agentTokenTtlMs) needs a reload
       // for its pane tools, upgrade to a periodic refresh if that bites.
       if (options.agentTokens && rawPaneId && pane?.mode === "HARNESS" && !pane.isClosed && pane.roomId) {
         await publishHarnessAgentTokens(options.agentTokens, { roomId: pane.roomId, paneId: rawPaneId,
@@ -1248,6 +1270,9 @@ export function registerHarnessRoutes(
   }
 
   app.all("/api/:method", (request, reply) => {
+    if (!requireHarnessSession(request, reply)) {
+      return reply;
+    }
     if (!config.harnessEnabled) {
       return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
     }

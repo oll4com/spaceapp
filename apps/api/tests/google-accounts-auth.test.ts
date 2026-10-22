@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -8,11 +8,21 @@ import { createCsrfToken, exchangeGoogleCode, signSession, verifyGoogleIdToken }
 const secret = "google-registry-test-secret-123456789";
 const clientId = "google-registry-client";
 const claims = (sub: string, email = `${sub}@example.test`) => ({ sub, email, name: "Test account", aud: clientId, iss: "https://accounts.google.com", exp: Math.floor(Date.now()/1000)+600, email_verified: true });
-const fakeToken = (payload: object) => `test.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.test`;
+// Google's signing key and an impostor's: ID tokens are verified locally against the published JWKS (hardening step 11).
+const googleKey = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const impostorKey = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const jwks = { keys: [{ ...googleKey.publicKey.export({ format: "jwk" }), kid: "google-test-kid", alg: "RS256", use: "sig" }] };
+function signedToken(payload: object, { key = googleKey.privateKey, header = { alg: "RS256", kid: "google-test-kid", typ: "JWT" } as object } = {}) {
+  const body = `${Buffer.from(JSON.stringify(header)).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}`;
+  return `${body}.${createSign("RSA-SHA256").update(body).sign(key).toString("base64url")}`;
+}
+const certsUrl = "https://www.googleapis.com/oauth2/v3/certs";
+let currentToken = "";
 function google(payload: object, invalid = false) {
+  currentToken = signedToken(payload, invalid ? { key: impostorKey.privateKey } : {});
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-    if (url === "https://oauth2.googleapis.com/token") return Response.json({ id_token: fakeToken(payload) });
-    if (String(url).startsWith("https://oauth2.googleapis.com/tokeninfo?")) return Response.json(payload, { status: invalid ? 400 : 200 });
+    if (url === "https://oauth2.googleapis.com/token") return Response.json({ id_token: currentToken });
+    if (url === certsUrl) return Response.json(jwks, { headers: { "cache-control": "public, max-age=3600" } });
     throw Error("Unexpected external request in Google auth test");
   }));
 }
@@ -23,9 +33,24 @@ describe("verified Google identity", () => {
     google(claims("untrusted"), true);
     await expect(exchangeGoogleCode({ code: "test-code", clientId, redirectUri: "http://localhost/callback", codeVerifier: "test-verifier" })).rejects.toThrow(/verification/);
   });
-  it.each(["aud", "iss", "exp", "email_verified"])("rejects missing %s even when tokeninfo returns HTTP 200", async key => {
+  it.each(["aud", "iss", "exp", "email_verified"])("rejects a validly signed token without %s", async key => {
     const payload: Record<string, unknown> = claims("test"); delete payload[key]; google(payload);
-    await expect(verifyGoogleIdToken({ idToken: "test-token", clientId })).rejects.toThrow();
+    await expect(verifyGoogleIdToken({ idToken: signedToken(payload), clientId })).rejects.toThrow();
+  });
+  it("accepts only Google's signature, audience, issuer and an unexpired token", async () => {
+    google(claims("test"));
+    await expect(verifyGoogleIdToken({ idToken: signedToken(claims("test")), clientId })).resolves.toMatchObject({ sub: "test", email: "test@example.test" });
+    const bad: Array<[string, string, RegExp]> = [
+      ["impostor key", signedToken(claims("test"), { key: impostorKey.privateKey }), /verification failed/],
+      ["unknown kid", signedToken(claims("test"), { header: { alg: "RS256", kid: "other" } }), /verification failed/],
+      ["alg none", `${Buffer.from(JSON.stringify({ alg: "none", kid: "google-test-kid" })).toString("base64url")}.${Buffer.from(JSON.stringify(claims("test"))).toString("base64url")}.`, /verification failed/],
+      ["tampered payload", (() => { const [h, , s] = signedToken(claims("test")).split("."); return `${h}.${Buffer.from(JSON.stringify(claims("admin"))).toString("base64url")}.${s}`; })(), /verification failed/],
+      ["other audience", signedToken({ ...claims("test"), aud: "another-client" }), /audience/],
+      ["other issuer", signedToken({ ...claims("test"), iss: "https://evil.example" }), /issuer/],
+      ["expired", signedToken({ ...claims("test"), exp: Math.floor(Date.now() / 1000) - 1 }), /expired/],
+      ["unverified email", signedToken({ ...claims("test"), email_verified: "true" }), /not verified/]
+    ];
+    for (const [name, idToken, error] of bad) await expect(verifyGoogleIdToken({ idToken, clientId }), name).rejects.toThrow(error);
   });
   it("requires an ID token, not access-token-only user info", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => url.includes("/token") ? Response.json({ access_token: "synthetic" }) : Response.json(claims("test"))));
@@ -58,11 +83,11 @@ describe("Google account management and SSO", () => {
   });
   it("never grants access by matching email or a legacy-shaped user ID", async () => {
     const { actor } = user("email-match@example.test"); google(claims("new-sub", actor.email));
-    const res = await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: "test-token" } });
+    const res = await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: currentToken } });
     expect(res.statusCode).toBe(401);
     expect(res.cookies.find(c => c.name === "space_session")).toBeUndefined();
     store.upsertUser({ id: "user:google:unlinked-sub", email: "legacy-id@example.test", role: "ADMIN" }); google(claims("unlinked-sub", "legacy-id@example.test"));
-    expect((await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: "test-token" } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: currentToken } })).statusCode).toBe(401);
   });
   it("links two accounts idempotently and both sign into the original user without changing rooms or role", async () => {
     const u = user(); const subs = [`${u.actor.id}-a`, `${u.actor.id}-b`];
@@ -78,7 +103,7 @@ describe("Google account management and SSO", () => {
     expect(list.json().accounts.filter((a: { isPrimary: boolean }) => a.isPrimary)).toHaveLength(1);
     for (const sub of subs) {
       google(claims(sub));
-      const res = await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: "test-token" } });
+      const res = await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: currentToken } });
       expect(res.statusCode).toBe(200);
       expect(res.json().user).toMatchObject({ id: u.actor.id, role: "ADMIN", email: u.actor.email, googleId: subs[0] });
       const session = res.cookies.find(c => c.name === "space_session")!;
@@ -119,7 +144,7 @@ describe("Google account management and SSO", () => {
     });
     try {
       google(identity);
-      await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: "test-token" } });
+      await app.inject({ method: "POST", url: "/api/auth/google/credential", payload: { credential: currentToken } });
       expect(store.listGoogleAccounts(u.actor.id)).toEqual([]);
       expect(original(identity.sub)).toBeNull();
     } finally { lookup.mockRestore(); }

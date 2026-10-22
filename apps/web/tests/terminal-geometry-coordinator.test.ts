@@ -529,6 +529,59 @@ describe("terminal geometry coordinator", () => {
     expect(current.terminal.clearTextureAtlas).toHaveBeenCalledOnce();
   });
 
+  // A hidden warm room keeps its panes laid out, so window resizes and fullscreen/mobile switches reach
+  // its terminals' hosts while hidden. Nothing may fit or reach the PTY until the reveal, which resizes at
+  // most once and only when the grid changed.
+  it("never fits or resizes the PTY of a hidden terminal on window or layout changes; the reveal resizes once for a new grid", async () => {
+    const current = fixture();
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame();
+    current.setVisible(false);
+    current.coordinator.syncVisibility();
+    current.fitAddon.fit.mockClear(); current.sendResize.mockClear(); current.terminal.resize.mockClear();
+    for (const [width, height] of [[1000, 500], [1200, 700], [1000, 500]] as const) {
+      current.setHostSize(width, height);
+      window.dispatchEvent(new Event("resize"));
+      current.coordinator.requestRefit();
+      await vi.advanceTimersByTimeAsync(100);
+      await flushAnimationFrame(); await flushAnimationFrame();
+    }
+    expect(current.fitAddon.fit).not.toHaveBeenCalled();
+    expect(current.sendResize).not.toHaveBeenCalled();
+    expect(current.terminal.resize).not.toHaveBeenCalled();
+
+    current.fitAddon.proposeDimensions.mockImplementation(() => ({ cols: 100, rows: 30 }));
+    current.fitAddon.fit.mockImplementation(() => { current.terminal.cols = 100; current.terminal.rows = 30; });
+    current.setVisible(true);
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame(); await flushAnimationFrame();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(current.sendResize).toHaveBeenCalledOnce();
+    expect(current.sendResize).toHaveBeenCalledWith(expect.objectContaining({ cols: 100, rows: 30 }));
+    current.coordinator.dispose();
+  });
+
+  it("sends no PTY resize on reveal when a hidden terminal's layout changed and came back", async () => {
+    const current = fixture();
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame();
+    current.setVisible(false);
+    current.coordinator.syncVisibility();
+    current.sendResize.mockClear();
+    current.setHostSize(1200, 700);
+    window.dispatchEvent(new Event("resize"));
+    current.coordinator.requestRefit();
+    current.setHostSize(800, 400);
+    window.dispatchEvent(new Event("resize"));
+    current.coordinator.requestRefit();
+    current.setVisible(true);
+    current.coordinator.syncVisibility();
+    await flushAnimationFrame(); await flushAnimationFrame(); await flushAnimationFrame();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(current.sendResize).not.toHaveBeenCalled();
+    current.coordinator.dispose();
+  });
+
   it("fits again when the host size changed while the terminal was hidden", async () => {
     const current = fixture();
     current.coordinator.syncVisibility();

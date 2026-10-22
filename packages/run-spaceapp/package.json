@@ -1,10 +1,10 @@
 {
   "name": "run-spaceapp",
-  "version": "1.1.6",
-  "spaceappRuntimeVersion": "1.1.6",
+  "version": "1.1.7",
+  "spaceappRuntimeVersion": "1.1.7",
   "spaceappHostRootRuntimeCompatible": true,
   "description": "Cross-platform Docker launcher for the SpaceApp self-hosted agent workspace",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "spaceapp": "bin/spaceapp.mjs",

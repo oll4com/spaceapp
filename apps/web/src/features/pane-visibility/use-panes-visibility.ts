@@ -11,7 +11,8 @@ const PANE_SERVER_MODULE: Partial<Record<NonCliPaneType, string>> = {
   mail: "mail-copilot",
   marketing: "marketing-copilot",
   freelance: "freelance-copilot",
-  design: "design"
+  design: "design",
+  "app-studio": "app-studio"
 };
 
 export const PANES_HIDDEN_STORAGE_KEY = "space:panes-hidden:v1";
@@ -123,6 +124,13 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     label: "Design",
     description: "A graphics studio: social formats at exact sizes, AI images, templates, brand kits and motion, for you and for any agent that asks.",
     icon: modeIcons.DESIGN
+  },
+  {
+    id: "app-studio",
+    actionId: "add-app-studio",
+    label: "App Studio",
+    description: "An agent that builds mobile apps for Android and iOS and shows every screen on the most-used phones.",
+    icon: modeIcons.APP_STUDIO
   }
 ];
 
@@ -145,7 +153,8 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-mail": "mail",
   "add-marketing": "marketing",
   "add-freelance": "freelance",
-  "add-design": "design"
+  "add-design": "design",
+  "add-app-studio": "app-studio"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -163,7 +172,8 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   mail: "add-mail",
   marketing: "add-marketing",
   freelance: "add-freelance",
-  design: "add-design"
+  design: "add-design",
+  "app-studio": "add-app-studio"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";

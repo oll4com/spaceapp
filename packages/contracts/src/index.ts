@@ -1,4 +1,6 @@
+import "./zod-runtime.js";
 export * from "./schemas.js";
+export * from "./broker-scopes.js";
 export * from "./workflows.js";
 export * from "./public-waitlist.js";
 export * from "./heavy-mcp.js";
@@ -46,10 +48,12 @@ export * from "./mail-copilot.js";
 export * from "./marketing-copilot.js";
 export * from "./freelance-copilot.js";
 export * from "./design.js";
+export * from "./app-studio.js";
 export * from "./notifications.js";
 export * from "./council.js";
 export * from "./nous.js";
 export * from "./nous-focus.js";
+export * from "./nous-pane-board.js";
 export * from "./version.js";
 export * from "./observability.js";
 

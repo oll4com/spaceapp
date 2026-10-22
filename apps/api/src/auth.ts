@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual, type ScryptOptions } from "node:crypto";
+import { createHash, createHmac, createPublicKey, randomBytes, scrypt as scryptCallback, timingSafeEqual, verify as verifySignature, type KeyObject, type ScryptOptions } from "node:crypto";
 import { authUserSchema, resolveSpaceInstance, sessionCookieNameFor, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "./antigravity-usage-services.js";
@@ -29,7 +29,8 @@ export interface AuthConfig {
   operatorEmail?: string;
   operatorPasswordHash?: string;
   devLogin: boolean;
-  secureCookies: boolean;
+  /** "auto": Secure exactly when the request came over https (X-Forwarded-Proto from the trusted proxy). */
+  secureCookies: boolean | "auto";
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
@@ -46,6 +47,12 @@ export interface SessionPayload {
   user: AuthUser;
   exp: number;
   iat?: number;
+  /** 2: a sliding operator session (security addendum step 12); absent on older cookies and ephemeral sessions. */
+  v?: 2;
+  /** The CSRF token clients derived from the cookie this one renewed, so their cached value keeps working. */
+  lc?: string;
+  /** One id for a session and all its renewals, so logging out ends every copy of it. */
+  sid?: string;
 }
 
 export const cookieName = SESSION_COOKIE;
@@ -82,7 +89,8 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
     operatorEmail: env.SPACE_OPERATOR_EMAIL,
     operatorPasswordHash: env.SPACE_OPERATOR_PASSWORD_HASH,
     devLogin: env.NODE_ENV !== "production" && env.SPACE_DEV_LOGIN === "true",
-    secureCookies: env.NODE_ENV === "production",
+    // NODE_ENV is unset on stable and dev, so the cookies of the https instances had no Secure flag (hardening step 11).
+    secureCookies: env.NODE_ENV === "production" ? true : "auto",
     googleClientId,
     googleClientSecret,
     googleRedirectUri: env.SPACE_GOOGLE_REDIRECT_URI || env.GOOGLE_REDIRECT_URI || undefined
@@ -150,24 +158,75 @@ export function signSessionWithTtl(user: AuthUser, secret: string, ttlSeconds: n
   return `${body}.${sig}`;
 }
 
-export function signSession(user: AuthUser, secret: string, nowMs = Date.now()): string {
+export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), carried: { iat?: number; lc?: string; sid?: string } = {}): string {
   if (user.id === "user:operator-proof") throw new Error("Proof operators cannot receive persistent sessions.");
   if (secret.length < 16) throw new Error("SPACE_SESSION_SECRET must be at least 16 characters.");
   const payload: SessionPayload = {
     user,
     exp: Math.floor(nowMs / 1000) + persistentOperatorSessionTtlSeconds,
-    iat: Math.floor(nowMs / 1000)
+    iat: carried.iat ?? Math.floor(nowMs / 1000),
+    v: 2,
+    sid: carried.sid ?? randomBytes(32).toString("hex"),
+    ...(carried.lc ? { lc: carried.lc } : {})
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = createHmac("sha256", secret).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
 
+/** The payload of a session token whose signature checks out (expiry and revocation are verifySession's job). */
+export function signedSessionPayload(token: string | undefined, secret: string): SessionPayload | null {
+  const [body, sig, ...rest] = (token ?? "").split(".");
+  if (!body || !sig || rest.length || secret.length < 16) return null;
+  const expected = Buffer.from(createHmac("sha256", secret).update(body).digest("base64url"));
+  const actual = Buffer.from(sig);
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as SessionPayload;
+    return payload && typeof payload === "object" && typeof payload.exp === "number" ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function legacyCsrfToken(sessionToken: string, secret: string): string {
+  return createHmac("sha256", secret).update(`csrf:${sessionToken}`).digest("base64url");
+}
+
 export function createCsrfToken(sessionToken: string | undefined, secret: string): string | null {
   if (!sessionToken || secret.length < 16) {
     return null;
   }
-  return createHmac("sha256", secret).update(`csrf:${sessionToken}`).digest("base64url");
+  // A sliding session keeps one CSRF token across its renewals: it names the session (user and issue time), not the cookie.
+  const payload = signedSessionPayload(sessionToken, secret);
+  if (payload?.v === 2 && typeof payload.iat === "number" && typeof payload.user?.id === "string") {
+    return createHmac("sha256", secret).update(`csrf:v2:${payload.user.id}:${payload.iat}`).digest("base64url");
+  }
+  return legacyCsrfToken(sessionToken, secret);
+}
+
+const slidingSessionRenewBelowSeconds = Math.floor(persistentOperatorSessionTtlSeconds / 2);
+const maximumEphemeralLifetimeSeconds = 60 * 60 * 12;
+
+/**
+ * The renewed cookie for a persistent operator session that is used (security addendum step 12): a sliding session with
+ * less than half its 30 days left, or an older long-lived cookie (it moves to the 30-day lifetime on its next request).
+ * The issue time stays, so revoking a user still ends it; null when nothing is due or the token is not one to renew.
+ */
+export function renewSessionIfDue(sessionToken: string | undefined, secret: string, nowMs = Date.now()): string | null {
+  const payload = signedSessionPayload(sessionToken, secret);
+  if (!payload || !sessionToken) return null;
+  const now = Math.floor(nowMs / 1000);
+  if (payload.exp <= now || payload.user?.id === "user:operator-proof") return null;
+  const issuedAt = typeof payload.iat === "number" ? payload.iat : undefined;
+  if (payload.v === 2) {
+    if (payload.exp - now >= slidingSessionRenewBelowSeconds) return null;
+    return signSession(payload.user, secret, nowMs, { iat: issuedAt, lc: payload.lc, sid: payload.sid });
+  }
+  // Ephemeral sessions (proofs, captures: at most 12 hours) are never stretched.
+  if (issuedAt !== undefined && payload.exp - issuedAt <= maximumEphemeralLifetimeSeconds) return null;
+  // The older cookie's own revocation key becomes the session id: logging out with the renewed cookie revokes it too.
+  return signSession(payload.user, secret, nowMs, { iat: issuedAt, lc: legacyCsrfToken(sessionToken, secret), sid: tokenSignatureHash(sessionToken) });
 }
 
 export function verifyCsrfToken(sessionToken: string | undefined, submittedToken: unknown, secret: string): boolean {
@@ -178,9 +237,14 @@ export function verifyCsrfToken(sessionToken: string | undefined, submittedToken
   if (!expected) {
     return false;
   }
-  const actualBuffer = Buffer.from(submittedToken);
-  const expectedBuffer = Buffer.from(expected);
-  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+  const matches = (candidate: string) => {
+    const actualBuffer = Buffer.from(submittedToken);
+    const expectedBuffer = Buffer.from(candidate);
+    return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+  };
+  // A client may still hold the token it derived from the cookie before a renewal.
+  const carried = signedSessionPayload(sessionToken, secret)?.lc;
+  return matches(expected) || matches(legacyCsrfToken(sessionToken!, secret)) || (typeof carried === "string" && matches(carried));
 }
 
 export function createAgentPostToken(secret: string, payload: string): string | null {
@@ -217,6 +281,16 @@ function tokenSignatureHash(token: string): string {
   const parts = token.split(".");
   const sig = parts.length === 2 && parts[1] ? parts[1] : token;
   return createHash("sha256").update(sig).digest("hex");
+}
+
+/** A sliding session's id (64 hex characters, the form the revocation table stores); null otherwise. */
+function sessionIdOf(token: string): string | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[0] ?? "", "base64url").toString("utf8")) as Partial<SessionPayload>;
+    return typeof payload.sid === "string" && /^[0-9a-f]{64}$/.test(payload.sid) ? payload.sid : null;
+  } catch {
+    return null;
+  }
 }
 
 export class SessionRevocationStore {
@@ -267,7 +341,10 @@ export class SessionRevocationStore {
     const hash = tokenSignatureHash(token);
     const ttl = expiryMs ?? (Date.now() + 400 * 24 * 60 * 60 * 1000);
     this.revokedSignatures.set(hash, ttl);
-    return this.saveSignature(hash, ttl);
+    // A renewed session is a new cookie with the same session id: logging out ends every copy of it.
+    const sid = sessionIdOf(token);
+    if (sid) this.revokedSignatures.set(sid, ttl);
+    return Promise.all([this.saveSignature(hash, ttl), ...(sid ? [this.saveSignature(sid, ttl)] : [])]).then(() => undefined);
   }
 
   public revokeUser(userId: string, epochMs = Date.now()): Promise<void> {
@@ -313,6 +390,9 @@ export class SessionRevocationStore {
         return true;
       }
     }
+    const sid = sessionIdOf(token);
+    const sessionExp = sid ? this.revokedSignatures.get(sid) : undefined;
+    if (sessionExp !== undefined && Date.now() <= sessionExp) return true;
     if (userId) {
       const userEpoch = this.userRevocationEpochs.get(userId);
       if (userEpoch !== undefined) {
@@ -495,28 +575,58 @@ export async function exchangeGoogleCode(input: {
   return verifyGoogleIdToken({ idToken: data.id_token, clientId: input.clientId, fetchImpl });
 }
 
+const GOOGLE_CERTS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+const GOOGLE_KEYS_REFETCH_MS = 60_000;
+let googleKeys: { byKid: Map<string, KeyObject>; until: number; fetchedAt: number } | null = null;
+
+/** Google's ID token signing key, from its published JWKS cached for its max-age; an unknown kid refetches at most once a minute. */
+async function googleSigningKey(kid: string, fetchImpl: typeof fetch, nowMs: number): Promise<KeyObject> {
+  const cached = googleKeys?.byKid.get(kid);
+  if (cached && googleKeys!.until > nowMs) return cached;
+  if (!googleKeys || googleKeys.until <= nowMs || nowMs - googleKeys.fetchedAt >= GOOGLE_KEYS_REFETCH_MS) {
+    const res = await fetchImpl(GOOGLE_CERTS_URL, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error("Google token verification failed: signing keys unavailable.");
+    const maxAge = Number(/max-age=(\d+)/.exec(res.headers.get("cache-control") ?? "")?.[1] ?? 3600);
+    const { keys = [] } = (await res.json()) as { keys?: Array<JsonWebKey & { kid?: string }> };
+    googleKeys = { fetchedAt: nowMs, until: nowMs + Math.min(maxAge, 86_400) * 1000,
+      byKid: new Map(keys.filter((key) => key.kty === "RSA" && typeof key.kid === "string").map((key) => [key.kid!, createPublicKey({ key, format: "jwk" })])) };
+  }
+  const key = googleKeys.byKid.get(kid);
+  if (!key) throw new Error("Google token verification failed: unknown signing key.");
+  return key;
+}
+
+/** Verifies a Google ID token locally (hardening plan step 11): RS256 signature against Google's keys, then aud, iss, exp, email_verified. */
 export async function verifyGoogleIdToken(input: {
   idToken: string;
   clientId?: string;
   fetchImpl?: typeof fetch;
 }): Promise<GoogleAuthUserInfo> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const res = await fetchImpl(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(input.idToken)}`, {
-    signal: AbortSignal.timeout(10_000)
-  });
-  if (!res.ok) {
-    throw new Error("Google token verification failed.");
-  }
-  const payload = (await res.json()) as {
-    email?: string;
-    sub?: string;
-    aud?: string;
-    iss?: string;
-    exp?: string | number;
-    email_verified?: string | boolean;
+  const [encodedHeader, encodedPayload, signature, extra] = input.idToken.split(".");
+  if (!encodedHeader || !encodedPayload || !signature || extra !== undefined) throw new Error("Google token verification failed.");
+  let header: { alg?: unknown; kid?: unknown };
+  let payload: {
+    email?: unknown;
+    sub?: unknown;
+    aud?: unknown;
+    iss?: unknown;
+    exp?: unknown;
+    email_verified?: unknown;
     name?: string;
     picture?: string;
   };
+  try {
+    header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8"));
+    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("Google token verification failed.");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string") throw new Error("Google token verification failed.");
+  const key = await googleSigningKey(header.kid, fetchImpl, Date.now());
+  if (!verifySignature("RSA-SHA256", Buffer.from(`${encodedHeader}.${encodedPayload}`), key, Buffer.from(signature, "base64url"))) {
+    throw new Error("Google token verification failed.");
+  }
   if (typeof payload.email !== "string" || !payload.email || typeof payload.sub !== "string" || !payload.sub || payload.sub.length > 255) {
     throw new Error("Google token response missing required fields.");
   }
@@ -526,10 +636,10 @@ export async function verifyGoogleIdToken(input: {
   if (payload.iss !== "https://accounts.google.com" && payload.iss !== "accounts.google.com") {
     throw new Error("Google token issuer mismatch.");
   }
-  if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Math.floor(Date.now() / 1000)) {
+  if (typeof payload.exp !== "number" || payload.exp <= Math.floor(Date.now() / 1000)) {
     throw new Error("Google token has expired.");
   }
-  if (payload.email_verified !== true && payload.email_verified !== "true") {
+  if (payload.email_verified !== true) {
     throw new Error("Google email address is not verified.");
   }
   return {

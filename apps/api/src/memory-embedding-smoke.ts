@@ -456,7 +456,8 @@ export async function createMemoryEmbeddings(
   }
   const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(), config.memoryEmbeddingTimeoutMs);
+  // The local model takes about a second a text on the CPU: each two texts of a batch get the whole timeout.
+  const timeout = setTimeout(() => abort.abort(), config.memoryEmbeddingTimeoutMs * Math.ceil(input.length / 2));
   try {
     const response = await fetchImpl(endpoint, {
       method: "POST",

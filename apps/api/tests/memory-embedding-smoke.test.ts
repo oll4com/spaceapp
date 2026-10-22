@@ -116,7 +116,7 @@ describe("memory embedding smoke", () => {
     expect(JSON.stringify(calls[0]?.init?.headers)).toContain("dummy-credential-that-must-not-leak");
   });
 
-  it("calls Codex-LB embeddings through the dedicated Space credential when provider smoke passes", async () => {
+  it("calls Space Gateway embeddings through the dedicated Space credential, where the old OpenAI default reads as the local bge-m3", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const result = await runMemoryEmbeddingSmoke(
       getApiConfig({
@@ -151,11 +151,12 @@ describe("memory embedding smoke", () => {
       pgvectorReady: true,
       embeddingProviderReady: true,
       provider: "codex-lb",
-      model: "text-embedding-3-small",
+      model: "bge-m3",
       dimensions: 3
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("http://codex-lb.local/v1/embeddings");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ model: "bge-m3", dimensions: 3 });
     expect(calls[0]?.init?.method).toBe("POST");
     expect(JSON.stringify(result)).not.toContain("dummy-codex-lb-credential");
   });

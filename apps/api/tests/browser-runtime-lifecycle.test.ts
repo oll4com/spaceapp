@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
@@ -99,6 +99,20 @@ describe('managed browser runtime lifecycle', () => {
       const displays = Array.from({ length: 8 }, () => allocateDisplay());
       expect(displays.every(display => display !== null)).toBe(true);
       displays.forEach(display => { if (display !== null) releaseDisplay(display); });
+    } finally { await f.cleanup(); }
+  });
+  it('removes the logins Chrome saved in the profile before launching it, and nothing else', async () => {
+    const f = await fixture('FREELANCE_COPILOT');
+    try {
+      const profile = join(f.session.profilePath, 'Default');
+      await mkdir(profile, { recursive: true });
+      // A saved password is autofilled and reaches an agent's page snapshot (2026-10-19); synthetic files only.
+      for (const name of ['Login Data', 'Login Data-journal', 'Login Data For Account', 'Login Data For Account-wal', 'Cookies', 'Preferences']) {
+        await writeFile(join(profile, name), 'synthetic');
+      }
+      await f.manager.getActive(f.pane);
+      expect(f.children.filter(child => child.command === process.execPath)).toHaveLength(1);
+      expect((await readdir(profile)).sort()).toEqual(['Cookies', 'Preferences']);
     } finally { await f.cleanup(); }
   });
   it('finishes late stream cleanup after Chrome exits instead of blocking the next account', async () => {

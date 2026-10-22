@@ -23,7 +23,7 @@ export const t3AgentTokenFile = (dir: string, workspaceRoot: string) =>
   join(dir, createHash("sha256").update(workspaceRoot).digest("hex") + ".json");
 
 export interface T3AgentTokenOptions {
-  config: Pick<SpaceApiConfig, "internalApiToken" | "browserToolBridgeEnabled" | "host" | "port" | "browserEvidenceTargetOrigin">;
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret" | "browserToolBridgeEnabled" | "host" | "port" | "browserEvidenceTargetOrigin">;
   dir?: string;
   // The token files take this directory's group: the T3 service user's.
   groupFrom?: string;

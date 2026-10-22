@@ -8,7 +8,7 @@ import {
 } from "@space/contracts";
 import type { FreelanceCopilotRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
-import type { ConnectorCrypto } from "../dot-connectors.js";
+import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
 import { extractCode, extractLinksFromText, type MailboxFactory, type MailboxReader } from "../job-apply/mailbox.js";
 
 export interface FreelanceCopilotServiceOptions {
@@ -113,7 +113,13 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
   async function openMailbox(owner: string): Promise<MailboxReader> {
     const mailbox = await repository.getMailbox(owner);
     if (!mailbox) throw new SpaceConflictError("FREELANCE_MAILBOX: no mailbox is connected; the operator connects work@example.invalid in the pane's Setup.");
-    return options.mailboxes.open(mailbox.config, options.crypto.open(mailbox.passwordSealed));
+    const context = connectorSealContext("freelance-mailbox", owner);
+    const password = options.crypto.open(mailbox.passwordSealed, context);
+    // A password sealed before the connector key (v1) is sealed again as v2 once read; without the key it stays as it is.
+    if (mailbox.passwordSealed.startsWith("v1.")) {
+      try { await repository.setMailbox(owner, { config: mailbox.config, passwordSealed: options.crypto.seal(password, context) }); } catch { /* stays v1 */ }
+    }
+    return options.mailboxes.open(mailbox.config, password);
   }
   async function withMailbox<T>(owner: string, read: (reader: MailboxReader) => Promise<T>): Promise<T> {
     const reader = await openMailbox(owner);
@@ -337,7 +343,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
         throw new SpaceConflictError(`FREELANCE_MAILBOX: the mailbox did not accept the sign-in (${error instanceof Error ? error.message.slice(0, 200) : "error"}).`);
       });
       await reader.close().catch(() => undefined);
-      await repository.setMailbox(owner, { config, passwordSealed: options.crypto.seal(password) });
+      await repository.setMailbox(owner, { config, passwordSealed: options.crypto.seal(password, connectorSealContext("freelance-mailbox", owner)) });
       return service.mailboxStatus(owner);
     },
     disconnectMailbox: (owner: string) => repository.deleteMailbox(owner),

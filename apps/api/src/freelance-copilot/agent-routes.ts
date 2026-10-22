@@ -1,3 +1,4 @@
+import { operatorHands } from "../owner-clock.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -18,7 +19,7 @@ export const cliFreelanceCopilotPathPrefix = "/api/cli/freelance-copilot/";
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface FreelanceCopilotAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane" | "getControlActor">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "getControlActor" | "getUserSettings">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -69,9 +70,14 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
   });
   handle("post", "next", async ({ owner, pane }, request) => service.nextItem(owner, pane, body(z.object({ waitMs }).strict(), request)));
   if (deps.bookmarks) registerBookmarkAgentRoutes(handle, deps.bookmarks, deps, "freelance_copilot");
-  handle("post", "report", async ({ owner, pane }, request) => service.reportItem(owner, pane, body(z.object({
-    eventId: freelanceEventIdSchema, outcome: z.enum(["done", "needs_user", "skipped"]), summary: z.string().trim().min(1).max(1000), memoryIds: z.array(freelanceMemoryIdSchema).max(20).default([])
-  }).strict(), request)));
+  handle("post", "report", async ({ owner, pane }, request) => {
+    const input = body(z.object({
+      eventId: freelanceEventIdSchema, outcome: z.enum(["done", "needs_user", "skipped"]), summary: z.string().trim().min(1).max(1000), memoryIds: z.array(freelanceMemoryIdSchema).max(20).default([])
+    }).strict(), request);
+    const reported = await service.reportItem(owner, pane, input);
+    // A needs-you report learns the operator's local time and, at night, until when it is held (plan clipboard:9XSwTPyxXP1W).
+    return input.outcome === "needs_user" ? { ...reported, operator: await operatorHands(deps.store, owner) } : reported;
+  });
 
   // ---- leads -------------------------------------------------------------------------------------
   handle("get", "leads", async ({ owner }, request) => {
@@ -135,6 +141,6 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
   handle("post", "rules", async ({ owner, pane }, request) => ({ rule: await service.proposeRule(owner, pane, body(freelanceRuleProposalSchema, request), "AGENT") }));
   handle("post", "note", async ({ owner, pane }, request) => {
     const input = body(z.object({ message: z.string().trim().min(1).max(1000), leadId: freelanceLeadIdSchema.optional(), needsUser: z.boolean().default(false) }).strict(), request);
-    return { event: await service.note(owner, pane, input) };
+    return { event: await service.note(owner, pane, input), ...(input.needsUser ? { operator: await operatorHands(deps.store, owner) } : {}) };
   });
 }

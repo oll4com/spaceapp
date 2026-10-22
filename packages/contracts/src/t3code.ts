@@ -6,7 +6,8 @@ import { z } from "zod";
 
 // Genuine upstream selection. A draft is a local composer identity; it must
 // never masquerade as a server thread or a provider result.
-const upstreamId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+// T3 0.1.0's own threads carry colons (thread:project:<id>:<id>, <command>:fork); user threads are UUIDs.
+const upstreamId = z.string().regex(/^[A-Za-z0-9_:-]{1,200}$/);
 export const t3CodeSelectionSchema = z.object({
   environmentId: upstreamId,
   projectId: upstreamId,

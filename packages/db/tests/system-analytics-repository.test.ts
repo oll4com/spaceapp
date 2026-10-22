@@ -110,6 +110,19 @@ describe("system analytics repositories", () => {
     ]);
   });
 
+  it("lists model events of the given providers only, or of all when none are given", async () => {
+    const memory = new InMemorySystemAnalyticsRepository();
+    await memory.upsertModelEvents([modelEvent("codex:a"), modelEvent("opencode:a", { providerId: "opencode" })]);
+    await expect(memory.listModelEvents("2026-01-01T00:00:00.000Z", ["opencode"])).resolves.toEqual([expect.objectContaining({ eventKey: "opencode:a" })]);
+    await expect(memory.listModelEvents("2026-01-01T00:00:00.000Z")).resolves.toHaveLength(2);
+    const { pool, queries } = recordingPool();
+    const repository = new PostgresSystemAnalyticsRepository(pool);
+    await repository.listModelEvents("2026-01-01T00:00:00.000Z", ["opencode"]);
+    await repository.listModelEvents("2026-01-01T00:00:00.000Z");
+    expect(queries.map((entry) => entry.values[1])).toEqual([["opencode"], null]);
+    expect(queries[0]!.sql).toContain("AND ($2::text[] IS NULL OR provider_id = ANY($2::text[]))");
+  });
+
   it("upserts model events in batches of 500 with one row per key, keeping stored routes", async () => {
     const { pool, queries } = recordingPool();
     const repository = new PostgresSystemAnalyticsRepository(pool);

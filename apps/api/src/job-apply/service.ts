@@ -73,7 +73,7 @@ import type { JobApplicationFieldRecord, JobApplicationRecord, JobApplyEventReco
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { localArtifactFilePath } from "../artifact-storage.js";
 import { readAttachment, type AttachmentReaderOptions } from "../attachment-readers.js";
-import type { ConnectorCrypto } from "../dot-connectors.js";
+import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
 import { createDiscovery, type Discovery } from "./discovery.js";
 import { CONFIRMATION_SEARCH_TERMS, companyKey, GmailMailboxError, matchConfirmationEmail, openGmailMailbox, searchGmail } from "./gmail-mailbox.js";
 import { ensureJobApplyLabels, gmailMessageText, labelGmailMessages, unlabelGmailMessages, listGmailTriageMessages } from "./gmail-organize.js";
@@ -384,9 +384,13 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     const config = jobApplyMailboxConfigSchema.parse(record.mailbox);
     let password: string;
     try {
-      password = crypto.open(record.mailboxPasswordEncrypted);
+      password = crypto.open(record.mailboxPasswordEncrypted, connectorSealContext("job-apply-mailbox", owner));
     } catch {
       throw new JobApplyMailboxError("The saved mailbox password cannot be read any more. Reconnect the mailbox.");
+    }
+    // Sealed before the connector key (v1): sealed again as v2 once read; without the key it stays as it is.
+    if (record.mailboxPasswordEncrypted.startsWith("v1.")) {
+      try { await repository.upsertProfile(owner, { mailboxPasswordEncrypted: crypto.seal(password, connectorSealContext("job-apply-mailbox", owner)) }); } catch { /* stays v1 */ }
     }
     try {
       return await options.mailboxes.open(config, password);
@@ -513,7 +517,11 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         throw new JobApplyMailboxError(`Mailbox connection failed: ${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}`);
       }
       await reader.close().catch(() => undefined);
-      const record = await repository.upsertProfile(owner, { mailbox: config, mailboxPasswordEncrypted: crypto.seal(password), mailboxVerifiedAt: now() });
+      let sealed: string;
+      try { sealed = crypto.seal(password, connectorSealContext("job-apply-mailbox", owner)); } catch (error) {
+        throw new JobApplyMailboxError(error instanceof Error ? error.message : "The mailbox password could not be stored.");
+      }
+      const record = await repository.upsertProfile(owner, { mailbox: config, mailboxPasswordEncrypted: sealed, mailboxVerifiedAt: now() });
       return profileOf(owner, record);
     },
     async testMailbox(owner: string): Promise<{ ok: true; verifiedAt: string; recent: MailboxMessageSummary[] }> {

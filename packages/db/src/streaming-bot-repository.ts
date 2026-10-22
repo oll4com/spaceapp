@@ -123,7 +123,6 @@ export interface StreamingBotRepository {
   listActivity(limit: number): Promise<StreamingBotActivityRecord[]>;
   appendActivity(input: CreateStreamingBotActivityInput): Promise<StreamingBotActivityRecord>;
   pruneActivity(keep: number): Promise<number>;
-  clearBotMemory(roomId: string): Promise<number>;
   dispose(): Promise<void>;
 }
 
@@ -355,10 +354,6 @@ export class InMemoryStreamingBotRepository implements StreamingBotRepository {
     const removed = Math.max(0, this.activity.length - keep);
     this.activity.length = Math.min(this.activity.length, keep);
     return removed;
-  }
-
-  async clearBotMemory(_roomId: string): Promise<number> {
-    return 0;
   }
 
   async dispose(): Promise<void> {}
@@ -749,14 +744,6 @@ export class PostgresStreamingBotRepository implements StreamingBotRepository {
          SELECT id FROM streaming_bot_activity ORDER BY created_at DESC OFFSET $1
        )`,
       [Math.max(1, keep)]
-    );
-    return result.rowCount ?? 0;
-  }
-
-  async clearBotMemory(roomId: string): Promise<number> {
-    const result = await this.pool.query<{ deleted: number }>(
-      `DELETE FROM memory_records WHERE room_id = $1`,
-      [roomId]
     );
     return result.rowCount ?? 0;
   }

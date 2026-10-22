@@ -182,3 +182,8 @@
   .memory-3d-hint { font-size: 8px; }
   #memory-atlas .memory-atlas-topics { max-height: 80px; }
 }
+/* Review mode (plan clipboard:yAtbVyHE5s4T): maintenance jobs, open issues and change sets in one scrolling column. */
+.memory-review { position: absolute; inset: 0; overflow: auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-content: start; gap: 18px; padding: 22px 28px; color: #e6f1f8; scrollbar-width: thin; }
+.memory-review > .memory-workspace-error, .memory-review > .memory-jobs { grid-column: 1 / -1; }
+.memory-review-issues h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #a8c7d9; }
+@media (max-width: 1000px) { .memory-review { grid-template-columns: minmax(0, 1fr); padding: 14px; } }

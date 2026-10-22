@@ -30,7 +30,6 @@ const VIEW_EDGE = 1_568;
 const VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
 const VIDEO_EXTENSIONS: Record<string, string> = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm" };
 const UNSENT_MS = 24 * 3_600_000;
-const KEEP_MS = 30 * 24 * 3_600_000;
 
 export interface NousAttachmentImage { data: string; mimeType: string }
 export interface NousAttachmentToolResult { ok: boolean; text: string; images: NousAttachmentImage[] }
@@ -282,8 +281,8 @@ export function createNousAttachments(deps: {
     },
 
     async sweep() {
-      const at = now();
-      const removed = await deps.repository.removeExpired(new Date(at - UNSENT_MS).toISOString(), new Date(at - KEEP_MS).toISOString());
+      // Only files never sent go; a sent file is part of the conversation (Record Retention Invariant 2026-10-20).
+      const removed = await deps.repository.removeUnsent(new Date(now() - UNSENT_MS).toISOString());
       await removeFiles(removed);
       return removed.length;
     },

@@ -655,19 +655,14 @@ describe("Space API native agent panes", () => {
     const control = new FakeCodexAgentControl();
     const room = store.createRoom({ name: "Enabled OpenCode Chat", initialPaneCount: 1 }, "trace:room");
     const pane = store.listPanes(room.id)[0]!;
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      providers: [
-        { id: "opencode", name: "OpenCode Zen", models: {
-          "nemotron-3-ultra-free": { name: "Nemotron 3 Ultra Free" },
-          "north-mini-code-free": { name: "North Mini Code Free" },
-          "retired": { name: "Retired", status: "deprecated" }
-        } },
-        { id: "opencode-go", name: "OpenCode Go", models: {
-          "deepseek-v4-pro": { name: "DeepSeek V4 Pro", variants: { high: {}, max: {} } },
-          "qwen3.7-plus": { name: "Qwen3.7 Plus", variants: { minimal: {}, high: {} } }
-        } }
-      ]
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+    // OpenCode 2's /api/model.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "nemotron-3-ultra-free", providerID: "opencode", name: "Nemotron 3 Ultra Free", status: "active" },
+      { id: "north-mini-code-free", providerID: "opencode", name: "North Mini Code Free", status: "active" },
+      { id: "retired", providerID: "opencode", name: "Retired", status: "deprecated" },
+      { id: "deepseek-v4-pro", providerID: "opencode-go", name: "DeepSeek V4 Pro", status: "active", variants: ["high", "max"] },
+      { id: "qwen3.7-plus", providerID: "opencode-go", name: "Qwen3.7 Plus", status: "active", variants: ["minimal", "high"] }
+    ] }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     try {
       const adapter = createSpaceAgentAdapter({
@@ -702,8 +697,7 @@ describe("Space API native agent panes", () => {
         "opencode-v1|opencode-go/deepseek-v4-pro|high", "opencode-v1|opencode-go/deepseek-v4-pro|max",
         "opencode-v1|opencode-go/qwen3.7-plus|minimal", "opencode-v1|opencode-go/qwen3.7-plus|high"
       ]);
-      // One catalog request; the other is the cached OpenCode API version probe.
-      expect(fetchMock.mock.calls.filter(([url]) => !String(url).endsWith("/api/info"))).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledOnce();
       control.collaborationModes = [];
       const updated = await adapter.updateSettings({ pane, collaborationMode: "plan" });
       expect(updated.session.collaborationMode).toBe("plan");
@@ -961,11 +955,9 @@ describe("Space API native agent panes", () => {
     const starter = new FakeCodexTurnStarter();
     const room = store.createRoom({ name: "Isolated OpenCode Chat", initialPaneCount: 1 }, "trace:room");
     const pane = store.listPanes(room.id)[0]!;
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      providers: [{ id: "opencode-go", models: {
-        "deepseek-v4-pro": { name: "DeepSeek V4 Pro", variants: { high: {}, max: {} } }
-      } }]
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "deepseek-v4-pro", providerID: "opencode-go", name: "DeepSeek V4 Pro", status: "active", variants: ["high", "max"] }
+    ] }), { status: 200, headers: { "content-type": "application/json" } }));
     const sessionControlResolver = vi.fn(async (spaceAgentSessionId: string) => ({
       version: 1 as const,
       spaceSessionId: spaceAgentSessionId,

@@ -2,10 +2,11 @@ import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
-  DESIGN_IMAGE_ENGINES, DESIGN_NETWORKS, DESIGN_REQUEST_STATUSES, DESIGN_TABS, designAssetIdSchema, designBrandKitIdSchema, designBrandKitInputSchema, designFormatRefSchema,
-  designPaneMetadataSchema, designRequestCreateSchema, designRequestIdSchema, designTemplateIdSchema, type Pane
+  DESIGN_ASSET_DESCRIPTION_MAX, DESIGN_IMAGE_ENGINES, DESIGN_NETWORKS, DESIGN_REQUEST_STATUSES, DESIGN_TABS, designAssetIdSchema, designBrandKitIdSchema, designBrandKitInputSchema, designFormatRefSchema,
+  designPaneMetadataSchema, designRequestCreateSchema, designRequestIdSchema, designTemplateIdSchema, designTemplateParamsSchema, type DesignAssetMadeBy, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
+import { readStagedUpload, withStagedUploads } from "../multipart-upload.js";
 import type { DesignService } from "./service.js";
 
 export interface DesignRouteDependencies {
@@ -17,6 +18,8 @@ export interface DesignRouteDependencies {
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
   parseQuery<TSchema extends z.ZodTypeAny>(schema: TSchema, query: unknown): z.infer<TSchema>;
   audit(request: FastifyRequest, action: string, targetId: string | null, metadata?: Record<string, unknown>): Promise<void>;
+  /** Where uploads are staged and stored (the artifact root). */
+  artifactRoot: string;
 }
 
 const paneIdSchema = z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/);
@@ -26,7 +29,10 @@ const requestParamsSchema = z.object({ id: paneIdSchema, requestId: designReques
 const assetParamsSchema = z.object({ id: paneIdSchema, assetId: designAssetIdSchema }).strict();
 const kitParamsSchema = z.object({ id: designBrandKitIdSchema }).strict();
 const artifactId = z.string().regex(/^artifact:[A-Za-z0-9_-]{6,80}$/);
-const params = z.record(z.string().max(40), z.unknown()).refine((value) => Object.keys(value).length <= 20 && JSON.stringify(value).length <= 8000, "Template fields are limited.");
+const params = designTemplateParamsSchema;
+/** What a design shows, with its exact text; the agent routes require it on uploads. */
+export const designDescriptionSchema = z.string().trim().min(1).max(DESIGN_ASSET_DESCRIPTION_MAX);
+const OPERATOR_MADE_BY: DesignAssetMadeBy = { by: "OPERATOR", runtimeId: null, model: null };
 
 export const designRenderBodySchema = z.object({
   templateId: designTemplateIdSchema,
@@ -37,7 +43,8 @@ export const designRenderBodySchema = z.object({
   brandKitId: designBrandKitIdSchema.nullable().optional(),
   output: z.enum(["png", "jpeg", "webp"]).optional(),
   requestId: designRequestIdSchema.nullable().optional(),
-  label: z.string().trim().min(1).max(200).nullable().optional()
+  label: z.string().trim().min(1).max(200).nullable().optional(),
+  description: designDescriptionSchema.nullable().optional()
 }).strict();
 export const designGenerateBodySchema = z.object({
   engine: z.enum(DESIGN_IMAGE_ENGINES).exclude(["TEMPLATE"]),
@@ -45,7 +52,8 @@ export const designGenerateBodySchema = z.object({
   formatId: designFormatRefSchema,
   referenceArtifactIds: z.array(artifactId).max(3).optional(),
   requestId: designRequestIdSchema.nullable().optional(),
-  label: z.string().trim().min(1).max(200).nullable().optional()
+  label: z.string().trim().min(1).max(200).nullable().optional(),
+  description: designDescriptionSchema.nullable().optional()
 }).strict();
 export const designVariantsBodySchema = z.object({
   formatIds: z.array(designFormatRefSchema).max(8).optional(),
@@ -102,14 +110,14 @@ export function registerDesignRoutes(app: FastifyInstance, service: DesignServic
   app.post("/api/panes/:id/design/render", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
     const input = parseBody(designRenderBodySchema, request.body ?? {});
-    const asset = await service.render(owner, pane, input);
+    const asset = await service.render(owner, pane, { ...input, madeBy: OPERATOR_MADE_BY });
     await deps.audit(request, "design.render", asset.id, { templateId: input.templateId, formatId: input.formatId });
     return { asset };
   });
   app.post("/api/panes/:id/design/generate", routeOptions, async (request) => {
     const { owner, pane } = await paneOf(request);
     const input = parseBody(designGenerateBodySchema, request.body ?? {});
-    const generated = await service.generateImage(owner, pane, input);
+    const generated = await service.generateImage(owner, pane, { ...input, madeBy: OPERATOR_MADE_BY });
     await deps.audit(request, "design.generate", generated.asset.id, { engine: input.engine, formatId: input.formatId, model: generated.asset.model });
     return generated;
   });
@@ -119,10 +127,24 @@ export function registerDesignRoutes(app: FastifyInstance, service: DesignServic
     const { owner } = await paneOf(request);
     return { assets: await service.listAssets(owner, parseQuery(designAssetQuerySchema, request.query ?? {})) };
   });
+  // A cropped or annotated version made in the Studio (or any image the operator adds): typed by its bytes, never its name.
+  app.post("/api/panes/:id/design/assets", routeOptions, async (request) => {
+    const { owner, pane } = await paneOf(request);
+    const fields: Record<string, string> = {};
+    const asset = await withStagedUploads(request, deps.artifactRoot, { maxFiles: 1, fileBytes: 25 * 1024 * 1024, fields: 5, onField: (name, value) => { if (typeof value === "string") fields[name] = value; } },
+      async (uploads) => {
+        const input = parseBody(z.object({ formatId: designFormatRefSchema, label: z.string().trim().min(1).max(200).optional(), parentAssetId: designAssetIdSchema.optional(),
+          requestId: designRequestIdSchema.optional(), description: designDescriptionSchema.optional() }).strict(), fields);
+        return service.saveAsset(owner, pane, { bytes: await readStagedUpload(deps.artifactRoot, uploads[0]!), formatId: input.formatId, engine: "UPLOAD", label: input.label ?? null,
+          parentAssetId: input.parentAssetId ?? null, requestId: input.requestId ?? null, description: input.description ?? null, madeBy: OPERATOR_MADE_BY });
+      });
+    await deps.audit(request, "design.asset.upload", asset.id, { formatId: asset.formatId, mimeType: asset.mimeType });
+    return { asset };
+  });
   app.post("/api/panes/:id/design/assets/:assetId/variants", routeOptions, async (request) => {
     const params = parseQuery(assetParamsSchema, request.params);
     const { owner, pane } = await paneOf(request);
-    const assets = await service.variants(owner, pane, params.assetId, parseBody(designVariantsBodySchema, request.body ?? {}));
+    const assets = await service.variants(owner, pane, params.assetId, { ...parseBody(designVariantsBodySchema, request.body ?? {}), madeBy: OPERATOR_MADE_BY });
     await deps.audit(request, "design.variants", params.assetId, { count: assets.length });
     return { assets };
   });

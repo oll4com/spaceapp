@@ -111,6 +111,11 @@ const publicScripts = new Set([
   "scripts/tests/release-evidence.test.mjs",
   "scripts/build-demo-projects.mjs",
   "scripts/tests/opencode-first-run.test.mjs",
+  // run-spaceapp 1.1.7: the provider install checks, and the release step that pins the published image digests.
+  "scripts/tests/provider-install.test.mjs",
+  "scripts/embed-image-lock.mjs",
+  "scripts/tests/embed-image-lock.test.mjs",
+  "scripts/tests/opencode-standalone.test.mjs",
   "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
@@ -331,6 +336,17 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAACXBIWXM
     return text.replace("expect(delivered.assets.map((asset) => [asset.artifactId, asset.width])).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).reverse());",
       "expect(delivered.assets.map((asset) => [asset.artifactId, asset.width]).sort()).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).sort());");
   }
+  if (path === "packages/browser-host/package.json") {
+    // MIT from 1.1.7 (operator decision e4498487): the source licence change could not touch packages/browser-host (it ships
+    // only with a guarded Browser Host restart), so the export sets this package's licence field too.
+    return text.replace('"license": "BUSL-1.1"', '"license": "MIT"');
+  }
+  if (path === "apps/api/tests/room-watchdog.test.ts") {
+    // 1.1.7 public suite: the watchdog's background auto-interrupt can record PANE_UPDATED in the same millisecond, so the
+    // latest event is a race (1 of 3 runs); the test means that the alert was stored. Source fix in the dev queue.
+    return text.replace('    expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");',
+      '    expect(store.listEvents(room.id).find((event) => event.id === recorded.id)?.type).toBe("ROOM_WATCHDOG_ALERT");');
+  }
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
   }
@@ -500,6 +516,13 @@ export function contributorGuideProblems(guide, scripts, hasFile) {
   return [...problems, ...documentLinkProblems("CONTRIBUTING.md", guide, hasFile)];
 }
 
+// The operator's own host skills, tracked in the source since 2026-10-19 (3cd14bbd7f): they release, deploy,
+// sync VMs and drive devtest VMs on the operator's hosts only, so they were never public.
+const operatorHostSkills = new Set([
+  "space-clipboard-ops", "space-cli-open-resume", "space-live-ops", "space-release-ops", "space-room-cli-status",
+  "space-sync-to-vm218", "spaceapp-devtest", "run-spaceapp-devtest", "spaceapp-setup-maintenance", "spaceapp-setup-release"
+]);
+
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
@@ -507,6 +530,7 @@ export function isPublicExportPath(path) {
   // HyperFrames' vendored fonts, sound effects and textures carry mixed licences (OFL for some fonts
   // only, Pixabay, none stated); they stay private until the operator clears them. The skill starts off.
   if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
+  if (operatorHostSkills.has(normalized.match(/^agent-skills\/([^/]+)\//)?.[1])) return false;
   if (privateOnlyTests.has(normalized)) return false;
   // Tests named *-postgres* start a disposable PostgreSQL container (--pull=never) that public CI does not have.
   if (/\/(?:tests|__tests__)\/[^/]*-postgres[^/]*$/.test(normalized)) return false;
@@ -521,6 +545,8 @@ export function isPublicExportPath(path) {
     normalized.startsWith("starter-memory/") ||
     normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
+    // Licence texts of third-party code in apps/ and packages/ (Claude review 1.1.7 F5).
+    normalized.startsWith("THIRD_PARTY_LICENSES/") ||
     normalized.startsWith("agent-skills/") ||
     // The quality evidence ships with the code it describes, so a review reads both at one commit.
     normalized.startsWith("docs/quality/") ||

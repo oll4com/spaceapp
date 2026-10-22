@@ -28,6 +28,7 @@ import { createAntigravityRefresher } from "./providers/antigravity/credentials.
 import { startAntigravityUsagePoller } from "./providers/antigravity/usage-refresh.js";
 import { registerClaudeProxyRoutes } from "./providers/claude/claude-proxy.js";
 import { apiKeyRefresher, registerEmbeddingsRoute } from "./providers/openai-api/embeddings-proxy.js";
+import { LocalEmbeddings } from "./providers/local/embeddings.js";
 import { createClaudeRefresher } from "./providers/claude/credentials.js";
 import { startClaudeUsagePoller } from "./providers/claude/usage-refresh.js";
 import { CompressionCache, RawBlockRegistry } from "./compression/engine.js";
@@ -38,6 +39,7 @@ import { createGatewayServer } from "./server.js";
 import { DRAIN_MESSAGE } from "./supervisor.js";
 import { registerStatsRoute } from "./stats.js";
 import { registerAnthropicAdminRoutes, startAnthropicBillingSync, type AnthropicBillingSync } from "./admin/anthropic-admin.js";
+import { trackKeySettlement } from "./policy.js";
 
 async function readVersion(): Promise<string> {
   try {
@@ -89,6 +91,7 @@ async function main() {
   const openRouterPool = new AccountPool({ provider: "OPENROUTER", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const deepSeekPool = new AccountPool({ provider: "DEEPSEEK", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const googleAiPool = new AccountPool({ provider: "GOOGLE_AI", repository, cipher: () => cipher, refresher: apiKeyRefresher });
+  const localEmbeddings = new LocalEmbeddings();
   const onStickyError = (error: unknown) =>
     process.stderr.write(`space-gateway sticky binding storage failed: ${error instanceof Error ? error.message : "unknown"}\n`);
   const promptCacheTtl = () => promptCacheTtlMs;
@@ -98,7 +101,8 @@ async function main() {
     claudeSessions: new StickyStore({ repository, provider: "CLAUDE", kind: "PROMPT_CACHE", onError: onStickyError, ttlMs: promptCacheTtl }),
     antigravitySessions: new StickyStore({ repository, provider: "ANTIGRAVITY", kind: "PROMPT_CACHE", onError: onStickyError, ttlMs: promptCacheTtl })
   };
-  const settleKeyUsage = (keyId: string, usage: Parameters<typeof repository.settleApiKeyUsage>[1]) => repository.settleApiKeyUsage(keyId, usage);
+  const settleKeyUsage = (keyId: string, usage: Parameters<typeof repository.settleApiKeyUsage>[1]) =>
+    trackKeySettlement(keyId, usage, () => repository.settleApiKeyUsage(keyId, usage));
   const compression = { run: compressionPool.run, cache: compressionCache, rawBlocks, record: (rows: Parameters<typeof repository.recordCompression>[0]) => repository.recordCompression(rows),
     recordSignals: (rows: Parameters<typeof repository.recordCompressionSignals>[0]) => repository.recordCompressionSignals(rows) };
   let clientVersion = () => "0.150.1";
@@ -125,14 +129,14 @@ async function main() {
       const claude = registerClaudeProxyRoutes(app, helpers, { pool: claudePool, logs, settings, settleKeyUsage, compression, sticky: sticky.claudeSessions });
       clientVersion = registerCodexModelRoutes(app, helpers, { pool: codexPool, anthropicModels: claude.models }).clientVersion;
       registerWeeklyRemainingRoute(app, helpers, { pool: codexPool });
-      registerCodexAccountUsageRoute(app, { pool: codexPool });
+      registerCodexAccountUsageRoute(app, { pool: codexPool, internalToken: config.internalToken });
       registerCodexSignInRoutes(app, { repository, pool: codexPool, cipher: () => cipher, internalToken: config.internalToken,
         otherProviders: { CLAUDE: claudeAccountActions({ repository, pool: claudePool }), ANTIGRAVITY: antigravityAccountActions({ repository, pool: antigravityPool }),
           OPENAI_API: openAiApiAccountActions({ pool: openAiApiPool }),
           OPENROUTER: apiKeyAccountActions({ entry: keyPoolProviders.openrouter, pool: openRouterPool }),
           DEEPSEEK: apiKeyAccountActions({ entry: keyPoolProviders.deepseek, pool: deepSeekPool }),
           GOOGLE_AI: apiKeyAccountActions({ entry: googleAiEntry, pool: googleAiPool }) } });
-      registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, googlePool: googleAiPool, logs, settings, settleKeyUsage });
+      registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, googlePool: googleAiPool, local: localEmbeddings, logs, settings, settleKeyUsage });
       registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool, CLAUDE: claudePool,
         GOOGLE_AI: googleAiPool },
         cipher: () => cipher, internalToken: config.internalToken });
@@ -144,7 +148,7 @@ async function main() {
       registerAccountAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken,
         // Under the supervisor a reload starts a new worker that reads the settings, then hands over without dropping streams.
         reload: typeof process.send === "function" ? () => { setTimeout(() => process.kill(process.ppid, "SIGHUP"), 200).unref(); return true; } : undefined });
-      registerStatsRoute(app, { repository, cache: compressionCache, compressionMode: async () => (await settings()).compressionMode });
+      registerStatsRoute(app, { repository, internalToken: config.internalToken, cache: compressionCache, compressionMode: async () => (await settings()).compressionMode });
       registerAnthropicAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken, sync: () => anthropicBilling });
     }
   });

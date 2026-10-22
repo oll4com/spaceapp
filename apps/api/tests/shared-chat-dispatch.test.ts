@@ -170,5 +170,7 @@ describe("buildSharedChatDispatchPrompt", () => {
     expect(prompt).toContain("τι κάνεις;");
     expect(prompt).toContain("/opt/spaceapp/scripts/space-chat-post.sh");
     expect(prompt).toContain("--runtime \"cli:deepseek\"");
+    // Enter is pressed separately after the paste (submitCliPrompt), never inside the typed text.
+    expect(prompt).not.toMatch(/[\r\n]$/);
   });
 });

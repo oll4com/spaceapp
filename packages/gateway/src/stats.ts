@@ -1,6 +1,7 @@
 import type { GatewayCompressionRow, GatewayRepository } from "@space/db";
 import type { CompressionCache } from "./compression/engine.js";
 import { headroomWasteSignalNames } from "./compression/waste-signals.js";
+import { createAdminGuard } from "./admin/codex-sign-in.js";
 
 /**
  * Headroom-compatible statistics (`GET /stats`), after Headroom 0.37's `/stats` (Apache-2.0, Headroom Contributors):
@@ -146,8 +147,12 @@ export async function buildHeadroomStats(input: { repository: GatewayRepository;
 /** `GET /stats?hours=24` (1 to 720 hours). */
 export function registerStatsRoute(app: import("fastify").FastifyInstance, options: {
   repository: GatewayRepository; cache?: CompressionCache; compressionMode: () => Promise<string>; now?: () => Date;
+  /** Only the Space API reads usage statistics; loopback alone also admits every CLI pane. */
+  internalToken: string | null;
 }) {
+  const guard = createAdminGuard(options.internalToken);
   app.get("/stats", async (request, reply) => {
+    if (!(await guard(request, reply))) return reply;
     const raw = Number((request.query as { hours?: unknown }).hours ?? 24);
     const hours = Number.isFinite(raw) ? Math.min(720, Math.max(1, Math.trunc(raw))) : 24;
     try {

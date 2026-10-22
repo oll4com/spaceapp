@@ -46,4 +46,14 @@ describe("CLI pane controls settings card", () => {
       ...defaultVoiceComposerSettings, opening: "Remember this", terminalTurnControl: true
     });
   });
+
+  it("opens the local draft by default only when switched on", () => {
+    render(<CliPaneControlsSettingsCard />);
+    const toggle = screen.getByRole("switch", { name: "Local draft open by default" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(writeVoiceComposerSettings).toHaveBeenCalledExactlyOnceWith({
+      ...defaultVoiceComposerSettings, opening: "Remember this", terminalTurnControl: false, terminalLocalDraft: true
+    });
+  });
 });

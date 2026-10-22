@@ -53,6 +53,13 @@ describe("Nous's server load", () => {
     expect(history).toHaveBeenCalledTimes(2);
   });
 
+  it("leaves out the sampling ps's own row (stable 2026-10-19: Nous read it as ps at 400% CPU)", async () => {
+    const ps = [`  9 ${process.pid} 412.0 3000 ps`, "  10 1 380.5 4000000 qemu-system-x86", "  11 7 2.0 1000 ps"].join("\n");
+    const load = createServerLoad({ health: { history: async () => { throw new Error("no history"); } }, paneRoots: async () => new Map(),
+      ps: async () => ps, loadavg: () => [1, 1, 1], cores: 20, memTotalBytes: 40 * GiB, now: () => NOW });
+    expect((await load.read()).topCpu.map((row) => row.pid)).toEqual([10, 11]);
+  });
+
   it("names the heaviest processes with the pane whose CLI runs them", () => {
     const rows = parsePs([
       "    1     0  0.1   9000 systemd",

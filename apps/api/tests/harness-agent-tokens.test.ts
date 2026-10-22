@@ -6,7 +6,7 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { verifyCliAgentFilesToken } from "../src/cli-agent-files.js";
-import { cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
+import { agentTokenTtlMs, cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
 import { harnessAgentPrincipal, harnessAgentSessionId, harnessPaneTokenSessions, publishHarnessAgentTokens } from "../src/harness-agent-tokens.js";
 import { verifyControlToken } from "../src/space-control-token.js";
@@ -33,7 +33,7 @@ describe("Harness agent tokens", () => {
     expect(verifyCliBrowserBridgeToken(tokenConfig, file.env.SPACE_BROWSER_ACTION_TOKEN, now)).toMatchObject(claims);
     expect(verifyCliAgentFilesToken(tokenConfig, file.env.SPACE_AGENT_FILES_TOKEN, now)).toMatchObject(claims);
     expect(verifyControlToken(secret, file.env.SPACE_CONTROL_TOKEN)).toMatchObject(claims);
-    expect(file.expiresAt).toBe(now + 12 * 3_600_000);
+    expect(file.expiresAt).toBe(now + agentTokenTtlMs);
     // Readable by the harness user's group only.
     expect((await stat(path)).mode & 0o777).toBe(0o640);
     expect((await stat(dir)).mode & 0o7777).toBe(0o2750);
@@ -79,8 +79,8 @@ describe("Harness agent tokens", () => {
     expect((await read(picked)).paneId).toBe("pane:otherPane01");
     expect((await read("session-next")).paneId).toBe(input.paneId);
 
-    // Expired files go.
-    now += 13 * 3_600_000;
+    // Expired files go (the tokens live as long as agent tokens do; a closed pane's are refused before that).
+    now += agentTokenTtlMs + 3_600_000;
     expect(await publishHarnessAgentTokens(options, { roomId: input.roomId, paneId: "pane:thirdPane01" })).toBe("written");
     for (const name of [picked, "session-next", "space-pane-hrnPane0001", "space-pane-otherPane01"]) expect(await exists(name)).toBe(false);
     expect(await exists("space-pane-thirdPane01")).toBe(true);

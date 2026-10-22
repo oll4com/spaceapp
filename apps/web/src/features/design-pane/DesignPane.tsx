@@ -72,6 +72,11 @@ export function DesignPane({ pane, isVisible, terminal }: DesignPaneProps) {
     window.addEventListener("space:notification-open", onOpen);
     return () => window.removeEventListener("space:notification-open", onOpen);
   }, [pane.id]);
+  // Upload files goes to the designer's CLI: its terminal opens the file picker (in this click, so the browser allows it) and shows.
+  const uploadFiles = useCallback(() => {
+    setRail((current) => ({ ...current, collapsed: false, tab: "terminal" }));
+    window.dispatchEvent(new CustomEvent("space:terminal-pane-action", { detail: { paneId: pane.id, action: "upload" } }));
+  }, [pane.id]);
 
   const togglePaused = useCallback(async (checked: boolean) => {
     if (!data.settings) return;
@@ -134,13 +139,13 @@ export function DesignPane({ pane, isVisible, terminal }: DesignPaneProps) {
       <div className="jc-body">
         <section className="jc-main dz-main" aria-label="Studio" data-active={studioShown ? "true" : "false"} aria-hidden={studioShown ? undefined : "true"}>
           {data.settings ? <StudioView pane={pane} settings={data.settings.settings} assets={data.assets} brandKits={data.brandKits} request={openRequest}
-            onChanged={() => void data.refresh()} onClearRequest={() => setOpenRequest(null)} /> : <p className="jc-muted jc-panel-loading" role="status">Loading the Studio…</p>}
+            onChanged={() => void data.refresh()} onClearRequest={() => setOpenRequest(null)} onUploadFiles={uploadFiles} /> : <p className="jc-muted jc-panel-loading" role="status">Loading the Studio…</p>}
         </section>
         <div className="jc-rail-handle" role="separator" aria-orientation="vertical" aria-label="Resize the design rail" aria-hidden={rail.collapsed ? "true" : undefined}
           onPointerDown={onResizeStart} onPointerMove={onResizeMove} onPointerUp={onResizeEnd} onPointerCancel={onResizeEnd} onDoubleClick={() => setRail((current) => ({ ...current, width: RAIL_DEFAULT_WIDTH }))} />
         <CopilotRail tabs={tabs} active={activeTab} collapsed={rail.collapsed} layout={layout} onSelect={selectTab}>
           {railOpen && activeTab === "requests" ? <RequestsTab paneId={pane.id} requests={data.requests} onOpen={openInStudio} onChanged={() => void data.refresh()} /> : null}
-          {railOpen && activeTab === "library" ? <LibraryTab paneId={pane.id} assets={data.assets} brandKits={data.brandKits} onOpen={openAsset} onChanged={() => void data.refresh()} /> : null}
+          {railOpen && activeTab === "library" ? <LibraryTab paneId={pane.id} assets={data.assets} brandKits={data.brandKits} onOpen={openAsset} onChanged={() => void data.refresh()} onUploadFiles={uploadFiles} /> : null}
           {railOpen && activeTab === "brand-kits" ? <BrandKitsTab pane={pane} brandKits={data.brandKits} onChanged={() => void data.refresh()} /> : null}
           {railOpen && activeTab === "setup" && data.settings ? (
             <SetupTab pane={pane} settings={data.settings} brandKits={data.brandKits} runtimeOptions={runtimeOptions} switching={agent.switching} accountRevision={agent.accountRevision}

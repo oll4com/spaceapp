@@ -178,6 +178,9 @@ export function createPaneReports(deps: PaneReportsDeps) {
         next: text(input.next, 300), needs: text(input.needs, 500), body: text(input.report, PANE_REPORT_BODY_MAX) });
       return report;
     },
+    /** Space's own word on a pane, e.g. its automatic move to Space Gateway at a usage limit (claude-limit-move.ts). */
+    note: (room: Room, pane: Pane, status: "PROGRESS" | "BLOCKED", summary: string): Promise<PaneReport> =>
+      add(ownerOf(room), { roomId: room.id, paneId: pane.id, at: new Date(now()).toISOString(), source: "AUTO", status, summary: cleanText(summary, PANE_REPORT_SUMMARY_MAX) }),
     latest: (owner: string) => deps.repository.latest(owner),
     latestPlans: (owner: string) => deps.repository.latestPlans(owner),
     list: (owner: string, paneId: string, limit: number) => deps.repository.list(owner, paneId, limit)

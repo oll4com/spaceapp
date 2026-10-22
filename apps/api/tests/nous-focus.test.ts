@@ -6,12 +6,12 @@ const room = { id: "room:focus000001", name: "Main" } as Room;
 const pane = { id: "pane:focus000001", roomId: room.id, title: "Freelance", paneName: "Emma" } as Pane;
 
 describe("space_focus_pane", () => {
-  it("publishes ids only, for the owner, and at most once a minute", () => {
+  it("publishes ids only, for the owner, and at most once a minute", async () => {
     const published: Event[] = [];
     let clock = Date.parse("2026-10-17T10:00:00.000Z");
     const focus = createNousFocus({ eventBus: { publish: (event) => published.push(event) }, now: () => clock });
 
-    const first = focus.request("user:operator", room, pane, "CAPTCHA on Upwork");
+    const first = await focus.request("user:operator", room, pane, "CAPTCHA on Upwork");
     expect(first.ok).toBe(true);
     expect(published).toHaveLength(1);
     const event = eventSchema.parse(published[0]);
@@ -20,10 +20,10 @@ describe("space_focus_pane", () => {
     expect(JSON.stringify(event)).not.toContain("CAPTCHA");
 
     clock += FOCUS_PANE_MIN_INTERVAL_MS - 1;
-    expect(focus.request("user:operator", room, pane, "again")).toMatchObject({ ok: false, refused: true });
-    expect(focus.request("user:other", room, pane, "another owner")).toMatchObject({ ok: true });
+    expect(await focus.request("user:operator", room, pane, "again")).toMatchObject({ ok: false, refused: true });
+    expect(await focus.request("user:other", room, pane, "another owner")).toMatchObject({ ok: true });
     clock += 1;
-    expect(focus.request("user:operator", room, pane, "later")).toMatchObject({ ok: true });
+    expect(await focus.request("user:operator", room, pane, "later")).toMatchObject({ ok: true });
     expect(published).toHaveLength(3);
   });
 

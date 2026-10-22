@@ -34,6 +34,7 @@ export {
 export {
   InMemorySystemAnalyticsRepository,
   PostgresSystemAnalyticsRepository,
+  type SystemAnalyticsModelEventGroup,
   type SystemAnalyticsModelEventRecord,
   type SystemAnalyticsModelEventStatus,
   type SystemAnalyticsRoute,
@@ -95,12 +96,14 @@ export * from "./nous-repository.js";
 export * from "./nous-followups-repository.js";
 export * from "./nous-plan-marks-repository.js";
 export * from "./nous-pane-checks-repository.js";
+export * from "./nous-pane-summaries-repository.js";
 export * from "./nous-away-repository.js";
 export * from "./pane-reports-repository.js";
 export * from "./nous-attachment-repository.js";
 export * from "./mail-copilot-repository.js";
 export * from "./marketing-copilot-repository.js";
 export * from "./design-repository.js";
+export * from "./app-studio-repository.js";
 export * from "./freelance-copilot-repository.js";
 export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";

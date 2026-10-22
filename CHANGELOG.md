@@ -18,6 +18,111 @@ Semantic Versioning.
 
 - A source development stack (`npm run dev:stack`) with isolated local state,
   service hot reload, and documented setup, stop, and reset commands.
+## [1.1.7] - 2026-10-21
+
+Source: sanitized Space app @ 7619ef9523 (4729 files: SpaceApp 77d00f6895 with
+the reviewed fixes of the 1.1.7 internal review). Moves SpaceApp and the
+launcher to the MIT License, makes OpenCode 2 the first CLI, and ships the
+remaining fixes from the independent reviews; open items are listed in
+`docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Licence
+
+- SpaceApp and the run-spaceapp launcher are released under the MIT License
+  from 1.1.7 (Copyright (c) 2026 INTRATRADE SINGLE MEMBER P.C.). Published
+  versions keep their licence: v0.1.3 to v1.0.2 Apache-2.0, v1.0.31 to 1.1.6
+  BSL 1.1; the launcher was Apache-2.0 up to 1.1.6.
+- The licence texts of third-party code inside SpaceApp (Material Symbols,
+  Headroom, unidiff-rs, the tree-sitter grammars, codex-lb, caveman, ponytail)
+  ship in `THIRD_PARTY_LICENSES/` in the repository and in every image, and
+  `THIRD_PARTY_NOTICES.md` lists them.
+
+### OpenCode 2
+
+- OpenCode 2 (`@opencode/cli` 2.0.32) is the first CLI. Its panes attach to one
+  shared OpenCode server per CLI container, started once and restarted by the
+  next pane when it stopped or its keys or configuration changed; every other
+  OpenCode command runs `--standalone`, so no per-user background service
+  starts.
+- The core container no longer runs OpenCode or checks a CLI login itself:
+  those calls go to the CLI container's credential agent, each with fixed
+  inputs and size and time limits. Text-mode OpenCode answers there may only
+  read files.
+- The first-launch free-model check retries the model catalog after a server
+  error, a timeout or a lost connection (three tries).
+- After a CLI container restart the shared server's helper no longer stops
+  whatever process took the old server's process number; it stops only its own
+  `opencode serve`.
+- OpenCode's own update check is off: the image pins OpenCode and run-spaceapp
+  releases update it (its update dialog took a new pane's first prompt).
+
+### Security and integrity
+
+- SpaceApp's own images are pulled by the digest the release records in the
+  npm package, including the CLI containers of team accounts.
+- Docker's Linux repository keys are trusted only when the downloaded key file
+  holds Docker's published key and no other primary key. On Fedora, RHEL and
+  CentOS the launcher writes Docker's repository file itself, with that checked
+  key as the only key (Docker's own repository file is no longer downloaded), so
+  `dnf` accepts only packages signed with it. The Cursor agent download is
+  pinned by checksum.
+- Desktop Google sign-in hands the session only to the desktop app that started
+  it: the browser returns a one-time code to the app's own loopback address and
+  the app redeems it with a secret it kept (RFC 8252 with PKCE). A sign-in link
+  started by someone else no longer gives them the session. Desktop builds older
+  than this need an update to sign in with Google; password sign-in is
+  unchanged.
+- A secrets folder that already existed is made owner-only by `install`,
+  `update`, `up` and `repair`.
+- Six vulnerability-scan exceptions that no longer matched anything were
+  removed.
+
+### Backup and restore
+
+- `backup` pauses the core, CLI, browser and Temporal containers and also saves
+  the Temporal databases, so the database, files, memory and workflow history
+  are one moment; the backup's workspace list and CLI settings follow.
+- `restore` stages the files, saves a copy of the current databases and then
+  restores each database of the backup in its own transaction, swapping the
+  files in only after every database restored. If a database or the file swap
+  fails, it puts every database and file back as they were before the restore
+  and says so (the copy needs free space on the data volume for the databases
+  once more). If putting a database back fails too, it keeps the copies, names
+  each database left at the backup's state and prints the command that puts it
+  back; running the same restore again finishes the restore instead. A backup
+  made by 1.1.7 cannot be restored by an older SpaceApp, and it records the
+  SpaceApp version it was made with.
+
+### Fixes
+
+- Claude Code installs without npm's `allow-scripts` warning.
+- On a public install the room monitor sees a Codex pane's screen and turns
+  (the API reads Codex's session logs from their own read-only volume), and
+  Codex no longer stops a new pane at its own update prompt.
+- With telemetry Yes, `first_answer` is reported when an agent finishes its
+  first answer, not only while the agents dashboard is open.
+- The launcher tests skip their POSIX-only checks on Windows.
+
+### Also in this release
+
+- Optional modules `app-studio` (build Android and iOS apps with Expo, with
+  phone previews) and `design` (graphics that any agent can request); like the
+  other optional modules they are off in new installations (enable them with
+  `optionalModules` in `config.json` and `spaceapp repair`).
+- CLI panes: a local draft field, and prompts that Space types are pasted as
+  one block so no CLI keeps them as an unsent draft.
+- Large folders no longer slow the Files view; Agent Files are shared by every
+  room.
+
+### Known issues
+
+- The provenance check (`scripts/verify-export-provenance.mjs`) verifies the
+  files exported from the Space source; the public repository's own files
+  (launcher, Dockerfile, workflows) are not listed in the export manifest yet.
+  Planned for 1.1.8 (review INT5-C-F9).
+- Optional CLIs installed on first use are pinned to exact versions, but their
+  own npm dependencies are resolved when they install; per-provider lockfiles
+  are planned for 1.1.8 (review INT5-C-F14).
 
 ## [1.1.6] - 2026-10-18
 
@@ -34,6 +139,30 @@ for owners who opt in and the remaining fixes from the independent reviews of
   asks before each command.
 - `restore` prints workspace paths in plain quotes (Windows paths no longer show
   doubled backslashes).
+- `workspace add` and `workspace remove` apply at once: they recreate the core
+  and CLI services, and say to run `up` when that fails (pilot F1).
+- On Linux, `workspace add` checks whether the AI CLIs (uid 10001) can write to
+  the folder and, when they cannot, prints the `setfacl` command that gives them
+  access without changing its owner (pilot F3).
+- OpenCode also gets the Anthropic and OpenAI keys set with
+  `credentials set claude` and `credentials set codex` (pilot F4).
+- After `credentials set`, a CLI pane starts after one reload: the browser no
+  longer keeps an old login state (pilot F5).
+- Codex starts on public installs, on its own default model, instead of failing
+  with 503 `CLI_CODEX_DEFAULTS_UNRESOLVED` (pilot F6).
+- `backup` also saves the launcher configuration with the workspace list
+  (`spaceapp-config.json`) and the CLI settings (`cli-config.tar.gz`, mode 0600,
+  never logins or keys); `restore` puts the CLI settings back and prints the
+  `workspace add` commands to run again (pilot F8).
+- `uninstall --purge-data` runs unattended with the answer key `purgeConfirm`
+  (pilot F9).
+- Claude Code is pinned to 2.1.301 (2.1.206 started API-key users on Opus 4.8)
+  (pilot F11).
+- Space Memory files use the `space_memory` names; an installation that still
+  has `gemini_history*.md` files gets them moved once, with the old names kept
+  as links (pilot F13).
+- The CLI image includes `python3-minimal` (about 13 MB): agents often check
+  their work with a short Python script (pilot F18).
 - Team accounts, off until the owner runs `user enable`: each invited user gets
   a CLI container of their own (own keys, logins, Space Memory and workspaces),
   `credentials set`, `workspace add` and `provider install` take `--user`, and

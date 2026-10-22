@@ -43,7 +43,7 @@ function context(overrides: Partial<RoomToolbarActionsContext> = {}): RoomToolba
     create: {
       isCodexEnabled: true, cliPaneCreationPending: false, toggleChatLauncher: vi.fn(), toggleCliLauncher: vi.fn(), addRootAdminPane: vi.fn(async () => undefined),
       addPane: vi.fn(), addFilesPane: vi.fn(async () => undefined), addDatabasesPane: vi.fn(async () => undefined), addDemosPane: vi.fn(async () => undefined),
-      addT3CodePane: vi.fn(async () => undefined), addJobApplyPane: vi.fn(async () => undefined), addMailCopilotPane: vi.fn(async () => undefined), addMarketingCopilotPane: vi.fn(async () => undefined), addFreelanceCopilotPane: vi.fn(async () => undefined), addDesignPane: vi.fn(async () => undefined), addLivePane: vi.fn(async () => null)
+      addT3CodePane: vi.fn(async () => undefined), addJobApplyPane: vi.fn(async () => undefined), addMailCopilotPane: vi.fn(async () => undefined), addMarketingCopilotPane: vi.fn(async () => undefined), addFreelanceCopilotPane: vi.fn(async () => undefined), addDesignPane: vi.fn(async () => undefined), addAppStudioPane: vi.fn(async () => undefined), addLivePane: vi.fn(async () => null)
     },
     tools: {
       desktopWidgets: { isWidgetEnabled: () => false, toggleWidget: vi.fn() } as never, openStickyNote: vi.fn(), isBrowserFullscreen: false,

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NousAttachment, NousDecision, NousMessage, NousState } from "@space/contracts";
+import { nousPaneBoardSettingsSchema } from "@space/contracts";
 import { formatUserTime } from "../src/features/date-time-settings/date-time-settings.js";
 import { NousDock } from "../src/features/nous/NousDock.js";
 import { NousSettingsCard } from "../src/features/nous/NousSettingsCard.js";
@@ -12,8 +13,9 @@ import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
 const at = "2026-10-17T08:00:00.000Z";
+const paneBoard = nousPaneBoardSettingsSchema.parse({});
 const state = (patch: Partial<NousState> = {}): NousState => ({
-  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] }, model: "claude-opus-5-5", effort: "xhigh", running: null,
+  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [], paneBoard }, model: "claude-opus-5-5", effort: "xhigh", running: null,
   turnsThisHour: 2, lastError: null, openDecisions: 1, inbox: 0, ...patch
 });
 const away = { id: "nous_away:a1", startedAt: "2026-10-17T16:29:00.000Z", until: null, reason: "Going to sleep", mandate: "Keep the plans moving", grant: [] as Array<"PROMOTE" | "TEST_PANES"> };
@@ -45,7 +47,7 @@ const attachment = (id: string, kind: NousAttachment["kind"], filename: string, 
 
 function serve(overrides: {
   state?: NousState; messages?: NousMessage[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
-  upload?: (file: File) => Response; live?: unknown; panes?: unknown;
+  upload?: (file: File) => Response; live?: unknown; panes?: unknown; board?: unknown; plans?: unknown[]; quotas?: Record<string, unknown>;
 } = {}) {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   let uploads = 0;
@@ -68,12 +70,18 @@ function serve(overrides: {
     });
     if (url === "/api/nous/messages" && method === "POST") return Response.json({ message: message("OPERATOR", body.content, "a1b2c3d6") }, { status: 202 });
     if (url === "/api/nous/decisions") return Response.json({ decisions: overrides.decisions ?? [decision] });
+    if (url === "/api/nous/pane-board") return Response.json({ board: overrides.board ?? { rooms: [], paused: null, callsToday: 0, settings: {}, generatedAt: at } });
+    // The "Plans completed" counts: 4 plans, 1 of them open.
+    if (url.startsWith("/api/clipboard-items?source=PLAN&includeCompleted=") && url.endsWith("&pageSize=1")) return Response.json({
+      data: [], pagination: { page: 1, pageSize: 1, totalItems: url.includes("includeCompleted=true") ? 4 : 1, totalPages: 1 } });
     if (url.startsWith("/api/clipboard-items?")) return Response.json({
       data: [plan("clipboard:planDock0001", "Nous dock plans"), plan("clipboard:planNamed001", "Named plan", { executionStatus: "PLANNED", progressPercentage: 0 })],
       pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
     });
-    if (url === "/api/nous/overview") return Response.json({ overview: { plans: [{ id: "clipboard:plan01", title: "Nous", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: "3. Dock (PENDING)" }], needsHands: [], trains: "No release trains.", planMap: "Nous blocks the release plan.",
+    if (url === "/api/nous/overview") return Response.json({ overview: { plans: overrides.plans ?? [{ id: "clipboard:plan01", title: "Nous", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: "3. Dock (PENDING)" }], needsHands: [], trains: "No release trains.", planMap: "Nous blocks the release plan.",
       ...(overrides.live ? { live: overrides.live } : {}), ...(overrides.panes ? { panes: overrides.panes } : {}) } });
+    if (overrides.quotas?.[url]) return Response.json(overrides.quotas[url]);
+    if (url === "/api/codex/environment") return Response.json({ error: { code: "NOT_FOUND", message: "No environment in this test." } }, { status: 404 });
     if (url === "/api/system-health") return Response.json({ sampledAt: at, metrics: [
       { id: "cpu", label: "CPU", group: "cpu", unit: "PERCENT", value: 37, detail: "", sampledAt: at },
       { id: "memory", label: "Memory", group: "memory", unit: "PERCENT", value: 61, detail: "", sampledAt: at }
@@ -151,14 +159,19 @@ describe("Nous dock", () => {
     cleanup();
 
     const rule = { key: "SPACE_CONTROL:resource media.publish", label: "run in Space Control: resource media.publish", at };
-    const settingsCalls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [rule] } }) });
+    const served = { state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [rule], paneBoard } }) };
+    const settingsCalls = serve(served);
     render(<NousSettingsCard />);
-    fireEvent.click(await screen.findByRole("button", { name: `Ask me again: ${rule.label}` }));
-    await waitFor(() => expect(settingsCalls.find((call) => call.url === "/api/nous/settings")?.body).toEqual({ alwaysApprove: [] }));
+    const askAgain = await screen.findByRole("button", { name: `Ask me again: ${rule.label}` });
+    // A kind approved in the dock after the card loaded is not removed with the one asked again (Record Retention Invariant).
+    const newer = { key: "SPACE_CONTROL:resource media.unpublish", label: "run in Space Control: resource media.unpublish", at };
+    served.state = state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [rule, newer], paneBoard } });
+    fireEvent.click(askAgain);
+    await waitFor(() => expect(settingsCalls.find((call) => call.url === "/api/nous/settings")?.body).toEqual({ alwaysApprove: [newer] }));
   });
 
   it("turns working on the operator's behalf on with its power switch and shows the plans", async () => {
-    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] } }) });
+    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [], paneBoard } }) });
     render(<NousDock canRun />);
     const power = await screen.findByRole("switch", { name: "Nous works on my behalf" });
     await waitFor(() => expect((power as HTMLInputElement).disabled).toBe(false));
@@ -173,12 +186,31 @@ describe("Nous dock", () => {
   });
 
   it("shows the same switches in Settings and saves each one alone", async () => {
-    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] } }) });
+    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [], paneBoard } }) });
     render(<NousSettingsCard />);
     const warm = await screen.findByRole("switch", { name: "Nous may approve Warm changes" });
     await waitFor(() => expect((screen.getByRole("switch", { name: "Nous works on my behalf" }) as HTMLInputElement).checked).toBe(true));
     fireEvent.click(warm);
     await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ mayApproveWarm: true }));
+  });
+
+  it("saves the pane board's settings whole: model, interval within range, language and closed panes (plan clipboard:Y9cgKVHFaHrr)", async () => {
+    const calls = serve({ state: state() });
+    render(<NousSettingsCard />);
+    const model = await screen.findByRole("combobox", { name: "Pane board summary model" });
+    await waitFor(() => expect((model as HTMLSelectElement).disabled).toBe(false));
+    expect((model as HTMLSelectElement).value).toBe("claude-haiku-5-5");
+    expect((screen.getByRole("combobox", { name: "Pane board summary language" }) as HTMLSelectElement).value).toBe("el");
+    const saved = () => calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body;
+    fireEvent.change(model, { target: { value: "claude-sonnet-5-5" } });
+    await waitFor(() => expect(saved()).toEqual({ paneBoard: { ...paneBoard, model: "claude-sonnet-5-5" } }));
+    const interval = screen.getByRole("spinbutton", { name: "Refresh interval (minutes)" });
+    fireEvent.change(interval, { target: { value: "90" } });
+    fireEvent.blur(interval);
+    await waitFor(() => expect(saved()).toEqual({ paneBoard: { ...paneBoard, intervalMinutes: 60 } }));
+    expect((interval as HTMLInputElement).value).toBe("60");
+    fireEvent.click(screen.getByRole("switch", { name: "Pane board shows closed panes" }));
+    await waitFor(() => expect(saved()).toEqual({ paneBoard: { ...paneBoard, showClosed: true } }));
   });
 
   it("starts Away from Settings, widens its grant there and shows the dock line (plan clipboard:B7eTUHTJYg3X)", async () => {
@@ -260,6 +292,85 @@ describe("Nous dock", () => {
     expect(within(done).getAllByRole("button").map((button) => button.textContent)).toEqual(["You could have decided this"]);
   });
 
+  it("marks the plans whose pane is working and puts the Clipboard's Plans completed bar on top of Live (plan clipboard:RXqSSUQSdwJK)", async () => {
+    serve({ live: { rooms: 1, agents: { running: 1, waiting: 0, idle: 1, total: 2 } }, plans: [
+      { id: "clipboard:plan01", title: "Nous", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Hugo", nextStep: null, active: true },
+      { id: "clipboard:plan02", title: "Docs", progress: 80, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: null, active: false }] });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
+    const stats = await screen.findByRole("region", { name: "Live stats" });
+    const bar = await within(stats).findByRole("group", { name: "Plan completion" });
+    expect(within(bar).getByText("3 / 4")).toBeTruthy();
+    expect(within(bar).getByRole("progressbar", { name: "Plans completed" }).getAttribute("aria-valuenow")).toBe("75");
+    expect(stats.firstElementChild?.nextElementSibling).toBe(bar);
+    await waitFor(() => expect(within(stats).getByText("Active 1")).toBeTruthy());
+    const rows = within(stats.querySelector(".nous-live-plans") as HTMLElement).getAllByRole("listitem");
+    expect(rows.map((row) => row.classList.contains("is-active"))).toEqual([true, false]);
+    expect(within(rows[0]!).getByRole("img", { name: "Active: Hugo is working" })).toBeTruthy();
+    expect(within(rows[1]!).queryByRole("img")).toBeNull();
+    expect(stats.getAttribute("data-motion")).toBe("on");
+  });
+
+  it("shows Live's plans in the dock's Plans tab and opens a plan from its row (plan clipboard:7PiQv4Cnq0C2)", async () => {
+    serve({ plans: [
+      { id: "clipboard:planDock0001", title: "Nous dock plans", progress: 50, status: "IN_PROGRESS", room: "Main", pane: "Hugo", nextStep: null, active: true },
+      { id: "clipboard:plan02", title: "Unassigned", progress: 0, status: "PLANNED", room: null, pane: null, nextStep: null }] });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Plans" }));
+    const view = await screen.findByRole("region", { name: "Plans" });
+    const bar = await within(view).findByRole("group", { name: "Plan completion" });
+    expect(within(bar).getByText("3 / 4")).toBeTruthy();
+    expect(view.getAttribute("data-motion")).toBe("on");
+    const row = await within(view).findByRole("button", { name: "Open the plan Nous dock plans, Hugo, 50%, active" });
+    expect(row.textContent).toContain("Hugo · Nous dock plans");
+    expect(within(row).getByRole("img", { name: "Active: Hugo is working" })).toBeTruthy();
+    expect(within(view).queryByText(/Unassigned/)).toBeNull();
+    fireEvent.click(row);
+    expect(await screen.findByRole("region", { name: "Plan" })).toBeTruthy();
+    expect(await screen.findByText("Fullscreen view")).toBeTruthy();
+  });
+
+  it("shows Resources → Accounts & quotas in the Tokens tab: the same panel, routes and counts (plan clipboard:7PiQv4Cnq0C2)", async () => {
+    const group = (displayName: string, fiveHourRemainingPercent: number, weeklyRemainingPercent: number) =>
+      ({ displayName, fiveHourRemainingPercent, weeklyRemainingPercent, fiveHourResetAt: null, weeklyResetAt: null });
+    const list = (data: unknown[], source: string) => ({ data, pagination: { page: 1, pageSize: 100, totalItems: data.length, totalPages: 1 }, source, isStale: false, error: null, checkedAt: at });
+    const calls = serve({ quotas: {
+      "/api/admin/antigravity-usage-accounts": list([
+        { id: "account:ag1", email: "ag1@example.test", label: "ag1", tier: "Google AI Pro", status: "CONNECTED", gemini: group("Gemini Models", 90, 80), claude: group("Claude and GPT models", 70, 60), sampledAt: at }
+      ], "space-gemini-profiles"),
+      "/api/admin/codex-usage-accounts": list([
+        { id: "account:cx1", label: "cx1@example.test", fiveHourRemainingPercent: 0, weeklyRemainingPercent: 0, weeklyResetAt: null, sampledAt: at }
+      ], "codex-usage-host"),
+      "/api/admin/claude-usage-accounts": list([
+        { id: "api", label: "api", email: null, plan: null, status: "API_KEY", fiveHourRemainingPercent: null, fiveHourResetAt: null, weeklyRemainingPercent: null,
+          weeklyResetAt: null, weeklyScope: null, sampledAt: null, apiKeyVerified: true, gatewayFallback: "ON", apiKeyUsage: { requests: 2542, costUsd: 215.08, lastUsedAt: at } }
+      ], "space-claude-profiles"),
+      "/api/admin/api-provider-accounts": list([], "mock"),
+      "/api/admin/codex-reset-credits": { data: [], error: null, checkedAt: at },
+      // Anthropic's bill on the API key's card (operator request 2026-10-20): today is Space Gateway's estimate until Anthropic posts it.
+      "/api/admin/gateway/anthropic-billing?days=31": { status: { configured: true, keyHint: "…pgAA", savedAt: at, lastSyncAt: at, lastError: null, upstream: [] },
+        days: [[0, false, 0, 1.6864], [1, true, 128.61, 130.65], [2, true, 80.91, 81.12]].map(([ago, reported, organizationUsd, gatewayEstimateUsd]) => ({
+          day: new Date(Date.now() - Number(ago) * 86_400_000).toISOString().slice(0, 10), reported, organizationUsd, workspaceUsd: organizationUsd, gatewayEstimateUsd,
+          gatewayBilledUsd: gatewayEstimateUsd, models: [] })) }
+    } });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tokens" }));
+    const providers = await screen.findByRole("tablist", { name: "Account providers" });
+    expect(within(providers).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["All", "Antigravity", "Codex", "Claude", "API"]);
+    expect(await screen.findByRole("button", { name: "All (3)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Available (1)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Exhausted (1)" })).toBeTruthy();
+    const antigravity = screen.getAllByText("Antigravity (Google)").find((el) => el.tagName === "STRONG")!.closest(".toolbar-metric-provider-section") as HTMLElement;
+    expect(within(antigravity).getByText("ag1", { selector: ".account-quota-title" })).toBeTruthy();
+    for (const route of ["/api/admin/antigravity-usage-accounts", "/api/admin/codex-usage-accounts", "/api/admin/claude-usage-accounts"]) {
+      expect(calls.some((call) => call.url === route)).toBe(true);
+    }
+    const apiCard = (await screen.findByText(/^Anthropic bill: today \$1\.69 \(estimate\) · 7 days \$211\.21 · /)).closest("li") as HTMLElement;
+    expect(within(apiCard).getByText(/Used 2542 times through Space Gateway \(\$215\.08\)/)).toBeTruthy();
+    expect(within(apiCard).getByText(/^Synced \d\d:\d\d /)).toBeTruthy();
+    // The token counts stay on Resources → AI usage → Token usage.
+    expect(calls.some((call) => call.url.startsWith("/api/admin/system-analytics/models"))).toBe(false);
+  });
   it("full screen: its controls at the far right, live stats instead of release trains, a launcher for music and widgets (plan clipboard:wr9yNPJwkDrp)", async () => {
     serve({ live: { rooms: 3, agents: { running: 2, waiting: 1, idle: 4, total: 7 } } });
     render(<NousDock canRun />);
@@ -276,6 +387,7 @@ describe("Nous dock", () => {
     await waitFor(() => expect(count("Rooms")).toBe("3"));
     expect([count("Running"), count("Idle"), count("Waiting"), count("On a plan")]).toEqual(["2", "4", "1", "1"]);
     expect(within(stats).getByText("Andy · Nous")).toBeTruthy();
+    expect(within(stats).getByText("Active 0")).toBeTruthy();
     await waitFor(() => expect(within(stats).getByRole("listitem", { name: "CPU: 37%" })).toBeTruthy());
     expect(within(stats).getByRole("listitem", { name: "Memory: 61%" })).toBeTruthy();
     expect(within(stats).getByRole("listitem", { name: "Agents running of all: 2/7" })).toBeTruthy();
@@ -293,42 +405,34 @@ describe("Nous dock", () => {
     window.removeEventListener("space:desktop-widgets:changed", changed);
     expect(changed).toHaveBeenCalled();
 
-    // YouTube: the shell floats an open YouTube pane of the room; without one the launcher says so (never opens a pane).
-    const answer = (opened: boolean) => () => window.dispatchEvent(new CustomEvent("space:youtube-float-result", { detail: { opened } }));
-    const none = answer(false);
-    window.addEventListener("space:open-youtube-float", none);
+    // YouTube: asks the shell to float the room's YouTube pane, or open one floating (use-youtube-float-request).
+    const youTube = vi.fn();
+    window.addEventListener("space:open-youtube-float", youTube);
     fireEvent.click(within(launcher).getByRole("button", { name: "YouTube" }));
-    window.removeEventListener("space:open-youtube-float", none);
-    expect(within(launcher).getByRole("status").textContent).toBe("Open a YouTube pane in this room first");
-    const some = answer(true);
-    window.addEventListener("space:open-youtube-float", some);
-    fireEvent.click(within(launcher).getByRole("button", { name: "YouTube" }));
-    window.removeEventListener("space:open-youtube-float", some);
-    expect(within(launcher).queryByRole("status")).toBeNull();
+    window.removeEventListener("space:open-youtube-float", youTube);
+    expect(youTube).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a card per pane with Nous's last check, verdict and next check, due panes first; a click goes to the pane (plan clipboard:MAongwnxq9Ro)", async () => {
+  it("shows Nous's last check, verdict and next check on each pane of the board; Go to pane takes the operator there (plan clipboard:MAongwnxq9Ro)", async () => {
     const card = (paneId: string, pane: string, extra: Record<string, unknown>) => ({ paneId, roomId: "room:bruno0001", room: "Bruno", pane, state: "idle",
       checkedAt: null, verdict: null, note: null, nextCheckAt: null, dueAt: at, overdue: false, ...extra });
-    serve({ panes: [card("pane:andy0001", "Andy", { checkedAt: at, verdict: "OPERATOR_TEST", note: "The operator's login test",
-      report: { at, status: "TURN_END", source: "AUTO", summary: "Slice 3 deployed on dev" } }), card("pane:bob00001", "Bob", { overdue: true })] });
+    const row = (paneId: string, name: string) => ({ paneId, roomId: "room:bruno0001", name, mode: "TERMINAL", runtimeId: "cli:claude", model: null, state: "idle", plan: null,
+      summary: { line: `${name} is idle`, waitsOn: "NONE", needsOperator: false, until: null, detail: null, source: "FALLBACK", model: null, generatedAt: at },
+      report: null, prompt: null, notifications: [], decisionIds: [], copilotItems: [] });
+    serve({ panes: [card("pane:andy0001", "Andy", { checkedAt: at, verdict: "OPERATOR_TEST", note: "The operator's login test" }), card("pane:bob00001", "Bob", { overdue: true })],
+      board: { rooms: [{ roomId: "room:bruno0001", name: "Bruno", panes: [row("pane:andy0001", "Andy"), row("pane:bob00001", "Bob")] }], paused: null, callsToday: 0, settings: {}, generatedAt: at } });
     render(<NousDock canRun />);
     fireEvent.click(await screen.findByRole("button", { name: "Panes" }));
-    const list = await screen.findByRole("list", { name: "Panes, 1 due" });
-    const cards = within(list).getAllByRole("listitem");
-    expect(cards.map((item) => item.getAttribute("aria-label"))).toEqual(["Bruno · Bob, due", "Bruno · Andy"]);
-    expect(within(cards[0]!).getByText("Never checked")).toBeTruthy();
-    expect(within(cards[0]!).getByText("Due now")).toBeTruthy();
-    expect(within(cards[1]!).getByText("Keep open")).toBeTruthy();
-    expect(within(cards[1]!).getByText(`Checked ${formatUserTime(at)}`)).toBeTruthy();
-    expect(within(cards[1]!).getByText("The operator's login test")).toBeTruthy();
-    // The pane's newest report (plan clipboard:ot6-jLKOWDNC).
-    expect(within(cards[1]!).getByText(`Reported ${formatUserTime(at)} · turn end: Slice 3 deployed on dev`)).toBeTruthy();
-    expect(within(cards[0]!).queryByText(/^Reported /)).toBeNull();
+    const andy = await screen.findByRole("listitem", { name: "Andy in Bruno" });
+    const bob = screen.getByRole("listitem", { name: "Bob in Bruno" });
+    await waitFor(() => expect(within(andy).getByText(`Nous checked ${formatUserTime(at)} · Your test pane: The operator's login test`)).toBeTruthy());
+    expect(within(andy).getByText("Keep open")).toBeTruthy();
+    expect(within(bob).getByText("Nous never checked it")).toBeTruthy();
+    expect(within(bob).getByText("Due now")).toBeTruthy();
     const focused: NousFocusDetail[] = [];
     const onFocus = (event: Event) => focused.push((event as CustomEvent<NousFocusDetail>).detail);
     window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
-    fireEvent.click(cards[1]!);
+    fireEvent.click(within(andy).getByRole("button", { name: "Go to pane" }));
     window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
     expect(focused).toEqual([{ roomId: "room:bruno0001", paneId: "pane:andy0001", ownerUserId: null, immediate: true }]);
   });

@@ -22,6 +22,36 @@ export const OPENCODE_SHARED_SERVER_RESTART_COMMAND = {
   args: ["-n", "/usr/bin/systemctl", "--no-block", "restart", "space-opencode-shared.service"]
 } as const;
 
+/** The Vault broker's reinstall unit (scripts/space-vault-broker-reinstall.mjs); started only on the operator's yes. */
+export const VAULT_BROKER_REINSTALL_COMMAND = {
+  command: "/usr/bin/sudo",
+  args: ["-n", "/usr/bin/systemctl", "start", "space-vault-broker-reinstall.service"]
+} as const;
+
+const VAULT_BROKER_REINSTALL_OUTCOMES: Record<string, string> = {
+  "0": "Rebuilt the Vault broker from stable's code and restarted it; the previous one is kept. Unlock the Vault once so agents can fill again.",
+  "3": "The installed Vault broker already matches stable's code; nothing changed.",
+  "2": "Refused before any change: stable's checkout has local changes or the build failed.",
+  "1": "The new Vault broker did not start; the previous one was restored and runs again.",
+  "4": "The Vault broker is down: neither the new nor the previous one started."
+};
+
+/** Runs the reinstall unit and says what happened; its JSON report is in `journalctl -u space-vault-broker-reinstall`. */
+export async function reinstallVaultBroker(): Promise<string> {
+  const unit = (): Promise<Record<string, string>> => execFileAsync("/usr/bin/systemctl", ["show", "space-vault-broker-reinstall.service",
+    "--property=InvocationID,ExecMainStatus"], { timeout: 5000, windowsHide: true })
+    .then(({ stdout }) => Object.fromEntries(stdout.trim().split("\n").map((line) => line.split("=", 2))), () => ({}));
+  const before = await unit();
+  const failed = await execFileAsync(VAULT_BROKER_REINSTALL_COMMAND.command, VAULT_BROKER_REINSTALL_COMMAND.args, { timeout: 320_000, windowsHide: true })
+    .then(() => null, (error: { stderr?: string; message: string }) => error);
+  const after = await unit();
+  // A new invocation proves the unit ran: sudo refuses on dev and before the deploy that installs it.
+  const outcome = after.InvocationID && after.InvocationID !== before.InvocationID ? VAULT_BROKER_REINSTALL_OUTCOMES[after.ExecMainStatus ?? ""] : undefined;
+  if (!outcome) throw new Error(`The reinstall did not run (the operator installs its unit once, ADR-012 "Enablement"): ${(failed?.stderr || failed?.message || "no exit status").trim().slice(0, 300)}`);
+  if (after.ExecMainStatus === "0" || after.ExecMainStatus === "3") return outcome;
+  throw new Error(`${outcome} See journalctl -u space-vault-broker-reinstall.`);
+}
+
 export const DEEPSEEK_HARNESS_RESTART_COMMAND = {
   command: "/usr/bin/sudo",
   args: ["-n", "/usr/bin/systemctl", "restart", "space-deepseek-harness.service"]

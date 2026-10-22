@@ -47,7 +47,7 @@ export const WIDGET_DEFINITIONS: WidgetItemConfig[] = [
   {
     id: "spaceapp-promo",
     label: "SpaceApp.dev promo",
-    description: "Floating banner promoting SpaceApp.dev (free, source-available).",
+    description: "Floating banner promoting SpaceApp.dev (free, open source).",
     icon: Rocket
   },
   {

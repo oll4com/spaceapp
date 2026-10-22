@@ -1,15 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./local-cli-composer.css";
 import { paneCliUploadMaxBytes, paneCliUploadMaxCount, type PaneCliUploadedFile } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
-import { ArrowUp, Paperclip, X } from "../ui-theme/app-icons.js";
+import { ArrowUp, History, NotebookPen, Paperclip, X } from "../ui-theme/app-icons.js";
 import {
-  getLocalCliDraftDurability, localCliDraftKey, localCliFileStore, localCliPrompt, noteLocalCliDraftChange, readLocalCliDraft,
-  writeLocalCliDraft, type LocalCliDraft, type LocalCliFile, type LocalCliFileStore
+  getLocalCliDraftDurability, localCliDraftKey, localCliFileMarkers, localCliFileStore, localCliPrompt, noteLocalCliDraftChange, readLocalCliDraft,
+  withoutLocalCliMarker, writeLocalCliDraft, type LocalCliDraft, type LocalCliFile, type LocalCliFileStore
 } from "./local-cli-draft.js";
 
 const noLocalFiles: LocalCliFile[] = [];
+// A phone's on-screen keyboard Enter arrives as an IME key (229) and adds a line; only Send sends there.
+const desktopPlaceholder = "Write here. Enter sends; Shift+Enter adds a line.";
+const touchPlaceholder = "Write here. Enter adds a line; tap Send to send.";
+const touchDevice = () => typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches === true;
 
 export interface LocalCliComposerProps {
   paneId: string;
@@ -20,6 +25,8 @@ export interface LocalCliComposerProps {
   prepareSend(): Promise<boolean>;
   onUploaded?(files: PaneCliUploadedFile[]): void;
   onClose(): void;
+  /** The CLI toolbar row; the draft's buttons render there so the draft adds no row of its own. */
+  toolbar?: HTMLElement | null;
 }
 
 /** Loads owner identity only when the optional composer is opened, never for every warm terminal. */
@@ -68,6 +75,7 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
   const composingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const caretRef = useRef<number | null>(null);
   const [previews, setPreviews] = useState<{ files: LocalCliFile[]; urls: Record<string, string> } | null>(null);
 
   function save(next: LocalCliDraft): boolean {
@@ -162,10 +170,16 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
       setError(`Attach up to ${paneCliUploadMaxCount} files, each no larger than 10 MB.`);
       return;
     }
-    const added = files.map(file => ({ id: crypto.randomUUID(), name: file.name || "clipboard-image", type: file.type, size: file.size, lastModified: file.lastModified }));
+    const markers = localCliFileMarkers(current.files, files.map(file => file.type));
+    const added = files.map((file, index) => ({ id: crypto.randomUUID(), name: file.name || "clipboard-image", type: file.type, size: file.size,
+      lastModified: file.lastModified, marker: markers[index] }));
     const pendingFiles = files.map((file, index) => ({ id: added[index]!.id, blob: file }));
+    // Markers go in at the caret like the CLI's own "[Image #1]"; a selection is kept, never replaced.
+    const at = Math.min(textareaRef.current?.selectionEnd ?? current.text.length, current.text.length);
+    const inserted = `${at && !/\s/.test(current.text[at - 1]!) ? " " : ""}${markers.join(" ")} `;
+    caretRef.current = at + inserted.length;
     durability.stageFiles(pendingFiles);
-    if (!save({ ...current, files: [...current.files, ...added] })) {
+    if (!save({ ...current, text: current.text.slice(0, at) + inserted + current.text.slice(at), files: [...current.files, ...added] })) {
       durability.keepFileError("The selected files are not saved. Keep this tab open and retry saving.");
       return;
     }
@@ -174,6 +188,12 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
       if (typeof navigator.storage?.persist === "function") void navigator.storage.persist().catch(() => false);
     } catch { /* The shared durability state keeps the error and original bytes. */ }
   }
+
+  useLayoutEffect(() => {
+    if (caretRef.current === null || !textareaRef.current) return;
+    textareaRef.current.setSelectionRange(caretRef.current, caretRef.current);
+    caretRef.current = null;
+  }, [draft?.text]);
 
   async function retrySave() {
     const current = draftRef.current;
@@ -244,14 +264,16 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
       submissionId = crypto.randomUUID();
       const snapshot: LocalCliDraft = {
         ...draftRef.current!, files,
-        submission: { id: submissionId, sessionId: expectedSessionId, text: current.text, files, payload: payload.text, imagePaths: payload.imagePaths, status: "SENDING" }
+        submission: { id: submissionId, sessionId: expectedSessionId, text: current.text, files, payload: payload.text, imagePaths: payload.imagePaths,
+          imageOffsets: payload.imageOffsets, status: "SENDING" }
       };
       if (!save(snapshot)) throw new Error("The send receipt could not be saved. Nothing was sent; retry saving first.");
       // Previous confirmed photos remain in the server's photo history. Locally
       // retain the active draft and one recovery copy without leaking old blobs.
       const obsolete = current.submission?.files.filter(file => !files.some(next => next.id === file.id)).map(file => file.id) ?? [];
       if (obsolete.length) void fileStore.remove(scope, obsolete).catch(() => undefined);
-      const receipt = await api.submitLocalCliDraft(props.paneId, { submissionId, expectedSessionId, text: payload.text, imagePaths: payload.imagePaths });
+      const receipt = await api.submitLocalCliDraft(props.paneId, { submissionId, expectedSessionId, text: payload.text, imagePaths: payload.imagePaths,
+        imageOffsets: payload.imageOffsets });
       if (aliveRef.current) applyReceipt(submissionId, receipt.status, receipt.reason);
     } catch (error) {
       if (!aliveRef.current) return;
@@ -283,6 +305,18 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
   const status = savingFiles ? "Saving attachments…" : !saved ? "Not saved" : sending ? "Sending…" :
     uncertain ? "Delivery needs checking" : draft?.submission?.status === "SENT" && !draft.text && !draft.files.length ? "Sent · recovery copy saved" : "Saved on this device";
   const fieldId = `local-cli-draft-${props.paneId}`;
+  const canSendDraft = Boolean(draft && locked && !busy && saved && !uncertain && props.canSend && (draft.text.trim() || draft.files.length));
+  const actions = <>
+    <span className={status === "Saved on this device" ? "sr-only" : "local-cli-save-state"} role="status">{status}</span>
+    <button type="button" className="terminal-shortcuts-button" aria-expanded="true" aria-label="Close local draft" title="Close local draft" disabled={busy || !saved} onClick={props.onClose}><NotebookPen aria-hidden="true" /></button>
+    <input ref={inputRef} type="file" hidden multiple onChange={event => {
+      const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; void addFiles(files);
+    }} />
+    <button type="button" className="terminal-shortcuts-button" disabled={!draft || !locked || busy} onClick={() => inputRef.current?.click()} aria-label="Attach files to local draft" title="Attach"><Paperclip aria-hidden="true" /></button>
+    {!saved || fileError ? <button type="button" className="compact-action" disabled={!locked} onClick={() => { void retrySave(); }}>Retry saving</button> : null}
+    {draft?.submission ? <button type="button" className="terminal-shortcuts-button" aria-expanded={showRecovery} aria-label={showRecovery ? "Hide recovery" : "Recovery copy"} title={showRecovery ? "Hide recovery copy" : "Recovery copy of the last send"} onClick={() => setShowRecovery(!showRecovery)}><History aria-hidden="true" /></button> : null}
+    {uncertain ? <button type="button" className="compact-action" disabled={recovering || sending || !locked} onClick={() => { void checkReceipt(); }}>{recovering ? "Checking…" : "Check delivery"}</button> : null}
+  </>;
   return <div className="local-cli-composer" data-local-cli-composer="" onKeyDown={event => event.stopPropagation()}
     onPaste={event => {
       const files = Array.from(event.clipboardData.files);
@@ -292,13 +326,10 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
     onDrop={event => {
       event.preventDefault(); event.stopPropagation(); void addFiles(Array.from(event.dataTransfer.files));
     }} onDragOver={event => { event.preventDefault(); event.stopPropagation(); }}>
-    <div className="local-cli-composer-heading">
-      <label htmlFor={fieldId}>Local draft</label>
-      <span className="local-cli-save-state" role="status">{status}</span>
-      <button type="button" className="compact-action" aria-label="Close local draft" disabled={busy || !saved} onClick={props.onClose}><X aria-hidden="true" /></button>
-    </div>
-    <textarea id={fieldId} ref={textareaRef} aria-label={`Local draft for ${props.paneTitle}`} rows={3} maxLength={60_000}
-      value={draft?.text ?? ""} disabled={!draft || !locked || sending} placeholder="Write here. Enter sends; Shift+Enter adds a line."
+    {props.toolbar ? createPortal(actions, props.toolbar) : <div className="local-cli-composer-actions">{actions}</div>}
+    <div className="local-cli-input-row">
+    <textarea id={fieldId} ref={textareaRef} aria-label={`Local draft for ${props.paneTitle}`} rows={1} maxLength={60_000}
+      value={draft?.text ?? ""} disabled={!draft || !locked || sending} placeholder={touchDevice() ? touchPlaceholder : desktopPlaceholder}
       onChange={event => { if (draftRef.current) save({ ...draftRef.current, text: event.target.value }); }}
       onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }}
       onKeyDown={event => {
@@ -306,13 +337,17 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
           event.preventDefault(); void send();
         }
       }} />
+    <button type="button" className="terminal-turn-control" data-state={canSendDraft ? "ready" : "idle"} aria-label="Send" title="Send draft (Enter)" disabled={!canSendDraft} onClick={() => { void send(); }}><ArrowUp aria-hidden="true" /></button>
+    </div>
     {visibleFiles.length ? <ul className="local-cli-files" aria-label={showRecovery ? "Recovery attachments" : "Draft attachments"}>
       {visibleFiles.map(file => <li key={file.id}>
         {previewUrls[file.id] ? <img src={previewUrls[file.id]} alt="" /> : null}
+        {file.marker ? <span className="local-cli-file-marker">{file.marker}</span> : null}
         <span title={file.name}>{file.name}</span>
         {!showRecovery ? <button type="button" className="compact-action" aria-label={`Remove ${file.name}`} disabled={busy || !locked} onClick={() => {
           const current = draftRef.current!;
-          if (save({ ...current, files: current.files.filter(item => item.id !== file.id) }) && !current.submission?.files.some(item => item.id === file.id)) void fileStore.remove(scope, [file.id]).catch(() => undefined);
+          if (save({ ...current, text: withoutLocalCliMarker(current.text, file.marker), files: current.files.filter(item => item.id !== file.id) }) &&
+              !current.submission?.files.some(item => item.id === file.id)) void fileStore.remove(scope, [file.id]).catch(() => undefined);
         }}><X aria-hidden="true" /></button> : null}
       </li>)}
     </ul> : null}
@@ -324,15 +359,5 @@ export function LocalCliDraftEditor({ userId, fileStore = localCliFileStore, ...
       <pre>{draft.submission.text || "Attachments only"}</pre>
       <button type="button" className="compact-action" disabled={sending || !locked} onClick={restore}>Restore as draft</button>
     </div> : null}
-    <div className="local-cli-composer-actions">
-      <input ref={inputRef} type="file" hidden multiple onChange={event => {
-        const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; void addFiles(files);
-      }} />
-      <button type="button" className="compact-action" disabled={!draft || !locked || busy} onClick={() => inputRef.current?.click()} aria-label="Attach files to local draft"><Paperclip aria-hidden="true" /> Attach</button>
-      {!saved || fileError ? <button type="button" className="compact-action" disabled={!locked} onClick={() => { void retrySave(); }}>Retry saving</button> : null}
-      {draft?.submission ? <button type="button" className="compact-action" onClick={() => setShowRecovery(!showRecovery)}>{showRecovery ? "Hide recovery" : "Recovery copy"}</button> : null}
-      {uncertain ? <button type="button" className="compact-action" disabled={recovering || sending || !locked} onClick={() => { void checkReceipt(); }}>{recovering ? "Checking…" : "Check delivery"}</button> : null}
-      <button type="button" className="compact-action local-cli-send" disabled={!draft || !locked || busy || !saved || Boolean(uncertain) || !props.canSend || (!draft.text.trim() && !draft.files.length)} onClick={() => { void send(); }}><ArrowUp aria-hidden="true" /> Send</button>
-    </div>
   </div>;
 }

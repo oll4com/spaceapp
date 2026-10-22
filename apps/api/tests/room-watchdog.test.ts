@@ -41,7 +41,7 @@ function lockFixture(timeouts: number[]) {
   const actor = { id: "operator:one", role: "ADMIN" as const };
   const execute = (requestId: string, actions: unknown[]) =>
     service.execute(actor, controlExecuteSchema.parse({ roomId: room.id, requestId, actions })).catch(() => undefined);
-  return { room, closed: closed!, holder: holder!, blocked: blocked!, controller, send, alerts, release, execute, service };
+  return { store, room, closed: closed!, holder: holder!, blocked: blocked!, controller, send, alerts, release, execute, service };
 }
 
 describe("Room Watchdog and Anti-Freeze Protection", () => {
@@ -125,6 +125,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     // A schedule whose pane inspection hangs (2026-10-17: a scheduled continue held room Vault for 30 s).
     const c = lockFixture([60]);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Like the Postgres store, recording gives the event a new id.
+    const record = c.store.recordRoomEvent.bind(c.store);
+    vi.spyOn(c.store, "recordRoomEvent").mockImplementation((input) => { const { id: _id, ...rest } = input as Event; return record(rest); });
     c.controller.inspect.mockImplementationOnce(async () => { await new Promise(() => {}); return undefined as never; });
     try {
       const command = controlExecuteSchema.parse({ roomId: c.room.id, requestId: "request:schedule",
@@ -134,6 +137,8 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
       expect(c.alerts).toHaveLength(1);
       expect(c.alerts[0]!.message).toMatch(new RegExp(`^Room watchdog: control held the lock on room "${c.room.id}" for \\d+ ms; the lock was released`));
       expect(c.alerts[0]!.message).not.toContain("held by");
+      // The stored copy is the one published, so a later latest-event republish keeps the id the notification dedupes on.
+      expect((await c.store.getLatestEvent(c.room.id))?.id).toBe(c.alerts[0]!.id);
     } finally {
       warn.mockRestore();
     }
@@ -256,7 +261,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
     expect(recorded.type).toBe("ROOM_WATCHDOG_ALERT");
-    expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
+    expect(store.listEvents(room.id).find((event) => event.id === recorded.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
   });
 
   it("gives queued operations their full execution window without queue-wait timer bleed", async () => {

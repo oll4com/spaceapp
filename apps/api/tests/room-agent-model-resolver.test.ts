@@ -6,8 +6,7 @@ import {
   checkCodexSolAvailability,
   checkGeminiAvailability,
   resolveAdvancedMissionModel,
-  runOpenCodeText,
-  openCodeRunModeArgs
+  runOpenCodeText
 } from "../src/room-agent-model-resolver.js";
 
 describe("room-agent-model-resolver", () => {
@@ -98,17 +97,17 @@ describe("room-agent-model-resolver", () => {
   });
 
   it("runs OpenCode 2 standalone so `run` never starts its background service", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "space-opencode-mode-"));
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "space-opencode-mode-"));
+    const savedPath = process.env.PATH;
+    const record = path.join(bin, "args");
     try {
-      for (const [dir, target] of [["v1", "node_modules/opencode-ai/bin/opencode.exe"], ["v2", "node_modules/@opencode/cli/bin/opencode.exe"]]) {
-        await fs.mkdir(path.join(root, dir, path.dirname(target)), { recursive: true });
-        await fs.writeFile(path.join(root, dir, target), "");
-        await fs.symlink(path.join(root, dir, target), path.join(root, dir, "opencode"));
-      }
-      expect(openCodeRunModeArgs(path.join(root, "v1"))).toEqual([]);
-      expect(openCodeRunModeArgs(`${path.join(root, "missing")}${path.delimiter}${path.join(root, "v2")}`)).toEqual(["--standalone"]);
+      await fs.writeFile(path.join(bin, "opencode"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\nprintf '%s\\n' '{"type":"text","part":{"text":"ok"}}'\n`, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${savedPath ?? ""}`;
+      expect(await runOpenCodeText("opencode/big-pickle", "hi", 5_000)).toBe("ok");
+      expect((await fs.readFile(record, "utf8")).split("\n").slice(0, 2)).toEqual(["run", "--standalone"]);
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      process.env.PATH = savedPath;
+      await fs.rm(bin, { recursive: true, force: true });
     }
   });
 

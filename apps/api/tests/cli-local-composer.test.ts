@@ -60,6 +60,18 @@ describe("durable local CLI composer submissions", () => {
     }
   });
 
+  it("pastes each image at its offset in the text and refuses offsets outside the text or out of order", async () => {
+    const f = fixture();
+    const paths = ["/opt/spaceapp/var/artifacts/cli-uploads/one.png", "/opt/spaceapp/var/artifacts/cli-uploads/two.png"];
+    const draft = { ...input(), text: "look  and  end", imagePaths: paths, imageOffsets: [5, 10] };
+    expect((await f.service.submit(identity, draft, attempt())).status).toBe("SENT");
+    expect(f.sendInput.mock.calls.map(call => call[1])).toEqual([
+      "look ", paths[0], " and ", paths[1], " end"].map(part => `\u001b[200~${part}\u001b[201~`).concat("\r"));
+    expect(new Set(f.sendInput.mock.calls.map(call => call[3])).size).toBe(f.sendInput.mock.calls.length);
+    for (const imageOffsets of [[5], [10, 5], [5, 99]])
+      expect(cliLocalComposerSubmissionSchema.safeParse({ ...draft, imageOffsets }).success).toBe(false);
+  });
+
   it("joins concurrent duplicate POSTs and lets GET report an in-progress receipt without changing it", async () => {
     const f = fixture();
     const draft = input();

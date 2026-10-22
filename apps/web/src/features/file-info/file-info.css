@@ -1,0 +1,14 @@
+/* The Details dialog (Agent Files, Design pane): a fact list over the shared attachment modal. */
+.file-info-modal { z-index: 60; }
+.file-info-body { display: block; width: min(40rem, 94vw); max-height: 86vh; overflow: auto; padding: 1rem 1.1rem; text-align: left; }
+.file-info-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.8rem; }
+.file-info-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.95rem; }
+.attachment-modal-body > .file-info-head > .file-info-close { position: static; }
+.file-info-close { display: inline-grid; place-items: center; width: 2rem; height: 2rem; padding: 0; border: 1px solid #3b3d3f; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.file-info-close svg { width: 1rem; height: 1rem; }
+.file-info-facts { display: grid; grid-template-columns: minmax(7.5rem, max-content) minmax(0, 1fr); gap: 0.45rem 1rem; margin: 0; font-size: 0.82rem; }
+.file-info-facts dt { color: #aeb8b4; }
+.file-info-facts dd { margin: 0; color: #e3ded3; overflow-wrap: anywhere; white-space: pre-wrap; }
+.file-info-fact { display: contents; }
+.file-info-note { margin: 0.8rem 0 0; font-size: 0.8rem; color: #aeb8b4; }
+@media (max-width: 560px) { .file-info-facts { grid-template-columns: minmax(0, 1fr); } .file-info-facts dd { margin-bottom: 0.35rem; } }

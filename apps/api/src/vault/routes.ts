@@ -9,7 +9,8 @@ import {
 } from "@space/contracts";
 import { VaultConflictError, type PostgresVaultRepository } from "@space/db";
 import { GitControlError } from "../source-control/errors.js";
-import { VaultBrokerUnavailableError, type VaultBroker } from "./broker-client.js";
+import { VaultBrokerRefusedError, VaultBrokerUnavailableError, type VaultBroker } from "./broker-client.js";
+import { handOverPendingLogin } from "./handover.js";
 
 // Vault routes (plan clipboard:vEYtT6-bEN0J step 4, ADR-012). Operator routes under /api/space-vault/* move ciphertext,
 // public keys and metadata only (the browser decrypts); session, CSRF and same-site checks are the API's global hook.
@@ -18,8 +19,8 @@ import { VaultBrokerUnavailableError, type VaultBroker } from "./broker-client.j
 
 export const cliVaultPathPrefix = "/api/cli/space-vault/";
 export type VaultStore = Pick<PostgresVaultRepository,
-  "getVault" | "enroll" | "rotateUnlock" | "setRecovery" | "bumpEpoch" | "saveItem" | "getItem" | "listItems" | "deleteItem"
-  | "enableAgentAccess" | "revokeAgentAccess" | "issueNonce" | "consumeNonce" | "appendAudit" | "listAudit" | "verifyAudit" | "createDelegation" | "getActiveDelegation"
+  "getVault" | "enroll" | "rotateUnlock" | "setRecovery" | "bumpEpoch" | "saveItem" | "getItem" | "listItems" | "itemStats" | "deleteItem"
+  | "enableAgentAccess" | "revokeAgentAccess" | "issueNonce" | "consumeNonce" | "appendAudit" | "listAudit" | "verifyAudit" | "createDelegation" | "getActiveDelegation" | "extendDelegation"
   | "setInbox" | "getInbox" | "addPending" | "listPending" | "deletePending" | "addSignupGrant" | "listSignupGrants" | "revokeSignupGrant">;
 
 const notEnrolled = (): never => { throw new GitControlError("VAULT_NOT_ENROLLED", "Set up the Vault first.", 404); };
@@ -59,9 +60,19 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const brokerAvailable = await broker.transportKey().then(() => true, () => false);
     return {
       ownerUserId: owner, enrolled: vault !== null, brokerAvailable, agentAccess: vault?.agentAccess ?? false, delegatedItems: delegation?.certificate.claims.items.length ?? 0,
+      // Logins agents saved or the Vault generated that wait for an unlocked dock to add and hand them over.
+      pendingItems: vault ? (await repository().listPending(owner)).length : 0,
       vault: vault && { vaultId: vault.vaultId, epoch: vault.epoch, delegationGeneration: vault.delegationGeneration, kdf: vault.kdf,
         unlockKeyVersion: vault.unlockKeyVersion, hasRecovery: vault.recovery !== null, auditSeq: vault.auditSeq, createdAt: vault.createdAt, updatedAt: vault.updatedAt }
     };
+  });
+
+  // The broker's own audit chain for ADMIN (space-admin-action vault-broker-audit, hardening plan step 16): ops, results, hashes.
+  app.get(route("/broker-audit"), routeOptions, async (request) => {
+    await deps.owner(request);
+    if (request.user?.role !== "ADMIN") throw new GitControlError("ADMIN_REQUIRED", "Only an administrator reads the broker's audit.", 403);
+    if (!broker.audit) throw new GitControlError("VAULT_BROKER_UNAVAILABLE", "The Vault broker is unavailable.", 503);
+    return broker.audit();
   });
 
   app.get(route("/broker"), routeOptions, async (request) => {
@@ -113,7 +124,10 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     return { epoch: (await repository().bumpEpoch(owner, "OPERATOR_LOCK", "LOCK")) ?? notEnrolled() };
   });
 
-  app.get(route("/items"), routeOptions, async (request) => ({ items: await repository().listItems(await deps.owner(request)) }));
+  app.get(route("/items"), routeOptions, async (request) => {
+    const owner = await deps.owner(request);
+    return { items: await repository().listItems(owner), stats: await repository().itemStats(owner) };
+  });
 
   app.get(route("/items/:id"), routeOptions, async (request) => {
     const owner = await deps.owner(request);
@@ -137,10 +151,18 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
 
   app.post(route("/password"), strictRouteOptions, async (request) => {
     const owner = await deps.owner(request);
-    const { expectedEpoch, ...next } = parseBody(vaultPasswordRotateRequestSchema, request.body);
+    const { expectedEpoch, recovery, ...next } = parseBody(vaultPasswordRotateRequestSchema, request.body);
     const vault = await vaultOf(owner);
-    const rotated = await repository().rotateUnlock(owner, expectedEpoch, { ...next, serverShareEnvelope: vault.serverShareEnvelope }).catch(conflict);
+    const rotated = await repository().rotateUnlock(owner, expectedEpoch, { ...next, serverShareEnvelope: vault.serverShareEnvelope },
+      recovery ? "RECOVERY_USE" : "PASSWORD_ROTATE").catch(conflict);
     return { epoch: (rotated ?? notEnrolled()).epoch };
+  });
+
+  // The recovery envelope (ciphertext under the recovery key) for the dock's recovery: the browser opens it, unlocks with the
+  // broker like a password unlock and sets a new master password (hardening plan step 14).
+  app.get(route("/recovery"), strictRouteOptions, async (request) => {
+    const owner = await deps.owner(request);
+    return { recovery: (await vaultOf(owner)).recovery };
   });
 
   app.put(route("/recovery"), strictRouteOptions, async (request) => {
@@ -160,7 +182,7 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
       await repository().appendAudit(owner, { actor: "OPERATOR", action: "DELEGATE", result: "BLOCKED", reason });
       return new GitControlError("VAULT_DELEGATION_REFUSED", "The delegation was refused; nothing changed.", 409);
     };
-    const items = [];
+    const items: Parameters<VaultBroker["delegate"]>[0]["items"] = [];
     for (const requested of body.items) {
       const stored = await repository().getItem(owner, requested.handle);
       const metadata = stored?.metadata;
@@ -179,16 +201,22 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
       throw await refuse("DELEGATION_STALE");
     }
     const asked = { generation: body.generation, unlockEpoch: body.unlockEpoch, envelopeDigest: await vaultDigest(body.fillEnvelopes), expiresAt: body.expiresAt };
-    const signed = await broker.delegate({ ownerUserId: owner, vaultId: vault.vaultId, ...asked, items, sealedFillKey: body.sealedFillKey,
-      operatorSignature: body.operatorSignature, unlockPublicKey: vault.unlockPublicKey, serverShareEnvelope: vault.serverShareEnvelope })
+    const delegate = (sealedInboxKey?: typeof body.sealedInboxKey) => broker.delegate({ ownerUserId: owner, vaultId: vault.vaultId, ...asked, items, sealedFillKey: body.sealedFillKey,
+      operatorSignature: body.operatorSignature, unlockPublicKey: vault.unlockPublicKey, serverShareEnvelope: vault.serverShareEnvelope, ...(sealedInboxKey ? { sealedInboxKey } : {}) });
+    // A broker installed before 2026-10-20 refuses the inbox key as an unknown field: delegate without it, as before.
+    const signed = await delegate(body.sealedInboxKey)
+      .catch((error) => body.sealedInboxKey && error instanceof VaultBrokerRefusedError && error.reason === "BAD_REQUEST" ? delegate() : Promise.reject(error))
       .catch(async (error) => { if (error instanceof VaultBrokerUnavailableError) throw error; throw await refuse("BROKER_REFUSED"); });
     const brokerKey = await broker.delegationKey();
     let claims;
     try { claims = await verifyVaultCertificate(vaultBase64url.decode(brokerKey.publicKey), signed.certificate, vaultDelegationCertificateSchema); } catch { throw await refuse("CERTIFICATE_INVALID"); }
     if (vaultCanonicalJson(claims.items) !== vaultCanonicalJson(items) || claims.generation !== asked.generation || claims.envelopeDigest !== asked.envelopeDigest
       || claims.unlockEpoch !== asked.unlockEpoch || claims.expiresAt !== asked.expiresAt) throw await refuse("CERTIFICATE_MISMATCH");
-    const stored = await repository().createDelegation(owner, { certificate: signed.certificate, keyEnvelope: signed.keyEnvelope, fillEnvelopes: body.fillEnvelopes })
+    const stored = await repository().createDelegation(owner, { certificate: signed.certificate, keyEnvelope: signed.keyEnvelope, fillEnvelopes: body.fillEnvelopes,
+      ...(signed.inboxKeyEnvelope ? { inboxKeyEnvelope: signed.inboxKeyEnvelope } : {}) })
       .catch(async (error) => { if (error instanceof VaultConflictError) throw await refuse("CERTIFICATE_MISMATCH"); throw error; });
+    // Logins agents saved that the dock has not added yet stay fillable under the new generation.
+    for (const handle of new Set((await repository().listPending(owner)).map((entry) => entry.handle))) await handOverPendingLogin(repository(), broker, owner, handle);
     return stored ?? notEnrolled();
   });
 

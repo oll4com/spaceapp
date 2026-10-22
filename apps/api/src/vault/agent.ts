@@ -9,6 +9,7 @@ import { isBrowserPane } from "../pane-guards.js";
 import type { VaultBroker } from "./broker-client.js";
 import type { VaultProtection } from "./protection.js";
 import { cliVaultPathPrefix, type VaultStore } from "./routes.js";
+import { handOverPendingLogin } from "./handover.js";
 import { runVaultSignup } from "./signup.js";
 
 // What agents and Nous may do with the Vault (operator decision 2026-10-18, plan clipboard:Ml8zElMcc4Ac). One switch in the
@@ -23,7 +24,8 @@ const actions: Record<VaultAgentPath, VaultAuditEvent["action"]> = {
   status: "AGENT_LIST", list: "AGENT_LIST", audit: "AGENT_LIST", fill: "FILL", "totp-fill": "FILL", "generate-fill": "GENERATE", save: "ITEM_SAVE"
 };
 
-type Outcome = { status: VaultAgentResult["status"]; reason: string | null; extra?: Record<string, unknown> };
+/** `itemId`: the item a new login or generated password becomes, so the audit (and the dock's Activity) names it. */
+type Outcome = { status: VaultAgentResult["status"]; reason: string | null; itemId?: string; extra?: Record<string, unknown> };
 export interface VaultAgentCall {
   owner: string;
   /** The calling pane (a CLI pane, or the pane Nous named). */
@@ -45,6 +47,8 @@ export function createVaultAgent(deps: {
   browser?: { vaultTarget?(pane: Pane): Promise<VaultHostTarget>; vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult> };
 }) {
   const blocked = (reason: string): Outcome => ({ status: "BLOCKED", reason });
+
+  const handOverPending = (repository: VaultStore, owner: string, handle: string) => handOverPendingLogin(repository, deps.broker, owner, handle);
 
   /** The browser to fill: the named pane, else the caller's own browser, else the room's first browser pane; always the owner's. */
   async function browserPane(call: VaultAgentCall): Promise<Pane | null> {
@@ -76,30 +80,39 @@ export function createVaultAgent(deps: {
       return outcome;
     };
 
-    // A new account has no item yet: it runs only under a sign-up grant the operator signed (option B, signup.ts).
+    // A new account (or a reset of an account without an item) has no item yet: it runs under a sign-up grant the operator
+    // signed for the site (option B, signup.ts), else under one the broker mints from the dock's delegation.
     if (path === "generate-fill" && body.purpose === "NEW_ACCOUNT") {
       const target = await live();
       if (typeof target === "string") return blocked(target);
-      // No grant for this site: refused before the browser's automation connections are closed.
-      if (!(await repository.listSignupGrants(owner)).some((grant) => grant.sites.includes(target.origin))) return blocked("NO_SIGNUP_GRANT");
-      return guarded(target, () => runVaultSignup({ repository, fill: (request) => vaultFill(pane, { mode: "SIGNUP", ...request }, traceId) },
+      const delegation = await repository.getActiveDelegation(owner);
+      // Neither: refused before the browser's automation connections are closed.
+      if (!delegation && !(await repository.listSignupGrants(owner)).some((grant) => grant.sites.includes(target.origin))) return blocked("NO_SIGNUP_GRANT");
+      const autoGrant = delegation ? () => deps.broker.signupAutoGrant({ ownerUserId: owner, vaultId: delegation.certificate.claims.vaultId,
+        certificate: delegation.certificate, origin: target.origin }) : undefined;
+      const created = await guarded(target, () => runVaultSignup({ repository, fill: (request) => vaultFill(pane, { mode: "SIGNUP", ...request }, traceId), autoGrant },
         { owner, paneId: pane.id, target, label: String(body.label), username: typeof body.username === "string" ? body.username : null,
           roles: Array.isArray(body.roles) && body.roles.length ? body.roles as Array<"NEW_PASSWORD" | "CONFIRM_PASSWORD"> : ["NEW_PASSWORD"], submit: body.submit === true }));
+      if (created.itemId) await handOverPending(repository, owner, created.itemId);
+      return created;
     }
     const handle = String(body.handle);
     const fields = path === "totp-fill" ? ["OTP"] : path === "generate-fill" ? ["PASSWORD"] : (body.fields as string[]);
     const delegation = await repository.getActiveDelegation(owner);
     const delegated = delegation?.certificate.claims.items.find((item) => item.handle === handle);
     if (!delegation || !delegated || fields.some((field) => !delegated.fields.includes(field as never))) return blocked("NOT_DELEGATED");
-    // Deleted or hidden since the dock last delegated: the stale envelopes are never used.
+    // Deleted or hidden since the dock last delegated: the stale envelopes are never used. A login agents saved since the
+    // last unlock is no item yet, only its inbox entry.
     const item = await repository.getItem(owner, handle);
-    if (!item || item.metadata.status !== "ACTIVE" || !item.metadata.policy.agentUse) return blocked("NOT_DELEGATED");
+    const saved = item ? null : (await repository.listPending(owner)).find((entry) => entry.handle === handle);
+    if (item ? item.metadata.status !== "ACTIVE" || !item.metadata.policy.agentUse : !saved) return blocked("NOT_DELEGATED");
+    const label = item?.metadata.label ?? saved!.label;
     const submit = body.submit === true;
     if (submit && !delegated.submit) return blocked("SUBMIT_NOT_ALLOWED");
     const target = await live();
     if (typeof target === "string") return blocked(target);
     if (!delegated.origins.includes(target.origin)) return { status: "ORIGIN_MISMATCH", reason: "ORIGIN_NOT_DELEGATED" };
-    // A generated password is sealed by the Browser Host to the operator's inbox key; the dock adds it on its next unlock.
+    // A generated password is sealed by the Browser Host to the operator's inbox key and joins the delegation at once.
     const inbox = path === "generate-fill" ? await repository.getInbox(owner) : null;
     if (path === "generate-fill" && !inbox) return blocked("INBOX_NOT_READY");
     const epoch = (await repository.getVault(owner))?.epoch;
@@ -112,14 +125,15 @@ export function createVaultAgent(deps: {
       const result = await vaultFill(pane, { mode: path === "totp-fill" ? "TOTP" : path === "generate-fill" ? "GENERATE" : "FILL", capability,
         keyEnvelope: delegation.keyEnvelope, fieldEnvelopes: delegation.fillEnvelopes[handle] ?? {} }, traceId);
       if (result.sealedGenerated && (result.status === "FILLED" || result.status === "SUBMITTED")) {
-        await repository.addPending(owner, { id: newVaultHandle("vault_pending"), kind: "CHANGE_PASSWORD", handle, label: item.metadata.label,
+        await repository.addPending(owner, { id: newVaultHandle("vault_pending"), kind: "CHANGE_PASSWORD", handle, label,
           origin: target.origin, sealedUsername: null, sealedPassword: result.sealedGenerated, paneId: pane.id, createdAt: new Date().toISOString() });
+        await handOverPending(repository, owner, handle);
       }
       return { status: result.status, reason: result.reason };
     });
   }
 
-  /** A login the caller created: sealed at once to the operator's inbox key; the dock adds it as an ACTIVE item on its next unlock. */
+  /** A login the caller created: sealed at once to the operator's inbox key and fillable at once; the dock adds it as an item on its next unlock. */
   async function save(repository: VaultStore, call: VaultAgentCall): Promise<Outcome> {
     const vault = await repository.getVault(call.owner);
     const inbox = vault && await repository.getInbox(call.owner);
@@ -127,9 +141,11 @@ export function createVaultAgent(deps: {
     const scope = { ownerUserId: call.owner, vaultId: vault.vaultId, keyVersion: 1 };
     const seal = (text: string) => sealToVaultPublicKey(vaultBase64url.decode(inbox.publicKey), new TextEncoder().encode(text), scope);
     const { site, username, password, label } = call.body as { site: string; username: string; password?: string; label: string };
-    await repository.addPending(call.owner, { id: newVaultHandle("vault_pending"), kind: "NEW_ACCOUNT", handle: newVaultHandle("vault_item"), label,
+    const handle = newVaultHandle("vault_item");
+    await repository.addPending(call.owner, { id: newVaultHandle("vault_pending"), kind: "NEW_ACCOUNT", handle, label,
       origin: vaultAgentSaveSite(site)!, sealedUsername: await seal(username), sealedPassword: password ? await seal(password) : null, paneId: call.paneId, createdAt: new Date().toISOString() });
-    return { status: "SAVED", reason: null };
+    await handOverPending(repository, call.owner, handle);
+    return { status: "SAVED", reason: null, itemId: handle };
   }
 
   async function outcome(repository: VaultStore, call: VaultAgentCall): Promise<Outcome> {
@@ -141,7 +157,10 @@ export function createVaultAgent(deps: {
       return { status: "LISTED", reason: null, extra: { entries } };
     }
     const delegated = vault?.agentAccess ? (await repository.getActiveDelegation(call.owner))?.certificate.claims.items ?? [] : [];
-    if (call.path === "status") return { status: "LISTED", reason: null, extra: { agentAccess: vault?.agentAccess ?? false, delegatedItems: delegated.length } };
+    // Saved and generated logins the dock has not added as items yet (they are fillable already when they joined the delegation).
+    const pending = vault ? await repository.listPending(call.owner) : [];
+    const pendingItems = pending.length;
+    if (call.path === "status") return { status: "LISTED", reason: null, extra: { agentAccess: vault?.agentAccess ?? false, delegatedItems: delegated.length, pendingItems } };
     if (!vault) return blocked("NOT_ENROLLED");
     if (!vault.agentAccess) return blocked("AGENT_ACCESS_OFF");
     if (call.path === "save") return save(repository, call);
@@ -149,9 +168,11 @@ export function createVaultAgent(deps: {
       const items = [];
       for (const item of delegated) {
         const stored = await repository.getItem(call.owner, item.handle);
-        if (stored?.metadata.status === "ACTIVE" && stored.metadata.policy.agentUse) items.push({ handle: item.handle, label: stored.metadata.label, origins: item.origins, fields: item.fields });
+        const label = stored ? stored.metadata.status === "ACTIVE" && stored.metadata.policy.agentUse ? stored.metadata.label : null
+          : pending.find((entry) => entry.handle === item.handle)?.label ?? null;
+        if (label) items.push({ handle: item.handle, label, origins: item.origins, fields: item.fields });
       }
-      return { status: "LISTED", reason: null, extra: { items } };
+      return { status: "LISTED", reason: null, extra: { items, pendingItems } };
     }
     return fill(repository, call);
   }
@@ -163,7 +184,7 @@ export function createVaultAgent(deps: {
       if (!repository) return vaultAgentResultSchema.parse({ status: "BLOCKED", auditId: null });
       const result = await outcome(repository, call).catch((): Outcome => blocked("FILL_FAILED"));
       const audited = await repository.appendAudit(call.owner, { actor: "AGENT", action: actions[call.path], result: result.status, reason: result.reason,
-        itemId: typeof call.body.handle === "string" ? call.body.handle : null, paneId: call.paneId });
+        itemId: result.itemId ?? (typeof call.body.handle === "string" ? call.body.handle : null), paneId: call.paneId });
       const answer = { status: result.status, auditId: audited?.id ?? null, ...result.extra };
       if (result.status !== "LISTED") return vaultAgentResultSchema.parse(answer);
       return (call.path === "status" ? vaultAgentStatusResultSchema : call.path === "audit" ? vaultAgentAuditResultSchema : vaultAgentListResultSchema).parse(answer);

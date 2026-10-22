@@ -2,9 +2,9 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import {
-  DESIGN_FORMATS, DESIGN_NETWORK_LABELS, DESIGN_REQUEST_OPEN_STATUSES, DESIGN_SPACEAPP_BRAND_KIT_ID, designBrandKitInputSchema, designPaneMetadataSchema, designRequestCreateSchema,
+  DESIGN_ASSET_DESCRIPTION_MAX, DESIGN_FORMATS, DESIGN_NETWORK_LABELS, DESIGN_REQUEST_OPEN_STATUSES, DESIGN_SPACEAPP_BRAND_KIT_ID, designBrandKitInputSchema, designPaneMetadataSchema, designRequestCreateSchema,
   resolveDesignFormat, resolveDesignPaneMetadata, SPACEAPP_BRAND_KIT,
-  type Artifact, type CreateArtifactInput, type DesignAsset, type DesignAssetEngine, type DesignBrandKit, type DesignBrandKitInput, type DesignEvent, type DesignEventType, type DesignFormat,
+  type Artifact, type CreateArtifactInput, type DesignAsset, type DesignAssetEngine, type DesignAssetMadeBy, type DesignBrandKit, type DesignBrandKitInput, type DesignEvent, type DesignEventType, type DesignFormat,
   type DesignGeneratingEngine, type DesignNetwork, type DesignPaneMetadata, type DesignPaneSettings, type DesignRequest, type DesignRequestCreate, type DesignRequester, type DesignRequestStatus,
   type DesignSafeArea, type DesignTemplateId, type DesignView, type Event as SpaceEvent, type Pane, type Room
 } from "@space/contracts";
@@ -13,7 +13,7 @@ import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type
 import { localArtifactFilePath } from "../artifact-storage.js";
 import type { NotificationService } from "../notifications/service.js";
 import { buildGenericUserUploadStorage } from "../upload-media.js";
-import { imageDimensions, sniffDesignMime, type DesignImageGenerator, type DesignMimeType } from "./images.js";
+import { imageDimensions, sniffDesignMime, withPngMetadata, type DesignImageGenerator, type DesignMimeType } from "./images.js";
 
 // The Design pane's backend (plan clipboard:URdc3U314lUH, P4): brand kits, the request queue other agents and panes fill and
 // a Design pane takes, image generation through Space Gateway, template renders, the asset library (each asset a pinned Media
@@ -21,11 +21,20 @@ import { imageDimensions, sniffDesignMime, type DesignImageGenerator, type Desig
 
 /** A TAKEN or IN_PROGRESS request without an update this long goes back to the queue (its pane stopped working on it). */
 export const DESIGN_REQUEST_STALE_MS = 30 * 60_000;
+/** How long a designer that is still starting is waited for before its request waits for the queue pass. */
+export const DESIGN_START_WAIT_MS = 10 * 60_000;
 const KICKOFF_GAP_MS = 60_000;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const MEDIA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const EXTENSIONS: Record<DesignMimeType, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "video/mp4": "mp4" };
+const TEMPLATE_TEXT_FIELDS = ["headline", "subline", "cta", "quote", "author", "badge", "version", "url"] as const;
+
+/** What a template render shows, from its text fields ("Template photo-headline: headline "…"; cta "…""); null without text. */
+export function templateDescription(templateId: string, params: Record<string, unknown> | null | undefined): string | null {
+  const parts = TEMPLATE_TEXT_FIELDS.flatMap((field) => typeof params?.[field] === "string" && params[field].trim() ? [`${field} "${params[field].trim()}"`] : []);
+  return parts.length ? `Template ${templateId}: ${parts.join("; ")}` : null;
+}
 
 /** Kate's renderer (src/design/render.ts): one render at a time per owner, the image itself back. */
 export interface DesignRenderInput {
@@ -68,11 +77,18 @@ export interface DesignServiceOptions {
   attachToMarketingPost?(owner: string, postId: string, assets: Array<{ artifactId: string; label: string }>): Promise<void>;
   marketingPostExists?(owner: string, postId: string): Promise<boolean>;
   kickoff?: DesignKickoff;
+  /**
+   * Opens a Design pane in the room and starts its designer, for a request that finds none open; it kicks the designer off
+   * itself once the CLI is ready. null when the room cannot take one (the request then waits in the queue).
+   */
+  openPane?(owner: string, roomId: string): Promise<Pane | null>;
   notifications?: Pick<NotificationService, "raise" | "resolve">;
   /** Every activity row (the room stream's DESIGN_UPDATED) and every new Media artifact (ARTIFACT_CREATED). */
   onEvent?(event: DesignEvent): void;
   onArtifact?(event: SpaceEvent): void;
   now?: () => number;
+  /** Test seam for the waits of a designer that is still starting. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type DesignService = ReturnType<typeof createDesignService>;
@@ -90,13 +106,14 @@ export function createDesignService(options: DesignServiceOptions) {
   const now = options.now ?? Date.now;
   const iso = () => new Date(now()).toISOString();
   const starting = new Map<string, Promise<boolean>>();
+  const opening = new Map<string, Promise<Pane | null>>();
   const lastKickoff = new Map<string, number>();
 
   const settingsOf = (pane: Pane): DesignPaneSettings => resolveDesignPaneMetadata(pane.designMetadata).settings;
   function assertDesignPane(pane: Pane): void {
     if (pane.mode !== "DESIGN" || pane.isClosed) throw new SpaceConflictError("An open Design pane is required.");
   }
-  const paneOrNull = async (paneId: string | null) => paneId ? Promise.resolve(store.getPane(paneId)).catch(() => null) : null;
+  const paneOrNull = async (paneId: string | null) => paneId ? Promise.resolve().then(() => store.getPane(paneId)).catch(() => null) : null;
 
   async function record(owner: string, pane: Pane | null, input: { requestId?: string | null; assetId?: string | null; type: DesignEventType; message: string; payload?: Record<string, unknown> }) {
     const event = await repository.createEvent({ ownerUserId: owner, paneId: pane?.id ?? null, requestId: input.requestId ?? null, assetId: input.assetId ?? null, type: input.type,
@@ -140,22 +157,33 @@ export function createDesignService(options: DesignServiceOptions) {
     return ownedArtifact(owner, logo).then(artifactPath);
   }
 
-  /** Stores the bytes as a pinned Media artifact of the pane's room and adds them to the library. */
+  /**
+   * Stores the bytes as a pinned Media artifact of the pane's room and adds them to the library. Every asset says what it shows
+   * (the given description, else its parent's, prompt or label) and who made it; a PNG also carries both inside the file.
+   */
   async function saveAsset(owner: string, pane: Pane, input: { bytes: Buffer; formatId: string; engine: DesignAssetEngine; model?: string | null; label?: string | null; prompt?: string | null;
-    templateId?: DesignTemplateId | null; params?: Record<string, unknown> | null; brandKitId?: string | null; parentAssetId?: string | null; requestId?: string | null; filename?: string }): Promise<DesignAsset> {
+    templateId?: DesignTemplateId | null; params?: Record<string, unknown> | null; brandKitId?: string | null; parentAssetId?: string | null; requestId?: string | null; filename?: string;
+    description?: string | null; madeBy: DesignAssetMadeBy }): Promise<DesignAsset> {
     const mimeType = sniffDesignMime(input.bytes);
     if (!mimeType) throw new SpaceConflictError("A design is a PNG, JPEG, WebP or GIF image or an MP4 video.");
     if (input.bytes.length > (mimeType === "video/mp4" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES)) throw new SpaceConflictError(`The file is larger than ${mimeType === "video/mp4" ? 100 : 25} MB.`);
     const format = formatOrThrow(input.formatId);
     const size = imageDimensions(input.bytes) ?? { width: format.width, height: format.height };
+    const parent = input.parentAssetId ? await repository.getAsset(owner, input.parentAssetId) : null;
+    const description = trimmed(input.description?.trim() || parent?.description || input.prompt?.trim() || input.label?.trim() || `${format.label} (${size.width}×${size.height})`, DESIGN_ASSET_DESCRIPTION_MAX);
+    const bytes = mimeType === "image/png" ? withPngMetadata(input.bytes, {
+      ...(input.label ? { Title: input.label } : {}), Description: description, Software: "SpaceApp Design",
+      "spaceapp:design": JSON.stringify({ formatId: format.id, width: size.width, height: size.height, description, madeBy: input.madeBy, engine: input.engine, model: input.model ?? null,
+        label: input.label ?? null, requestId: input.requestId ?? null, parentAssetId: input.parentAssetId ?? null, brandKitId: input.brandKitId ?? null, createdAt: iso() })
+    }) : input.bytes;
     const filename = `design-${format.id}.${EXTENSIONS[mimeType]}`;
     const storage = buildGenericUserUploadStorage({ artifactRoot: options.artifactRoot, roomId: pane.roomId, originalFilename: filename });
     await mkdir(dirname(storage.filePath), { recursive: true });
-    await writeFile(storage.filePath, input.bytes, { flag: "wx", mode: 0o640 });
+    await writeFile(storage.filePath, bytes, { flag: "wx", mode: 0o640 });
     let created: { artifact: Artifact; event: SpaceEvent };
     try {
       created = await store.createArtifact({ roomId: pane.roomId, paneId: pane.id, kind: mimeType === "video/mp4" ? "VIDEO" : "IMAGE", mimeType, storageUri: storage.storageUri,
-        sha256: createHash("sha256").update(input.bytes).digest("hex"), byteSize: input.bytes.length, pinnedAt: iso(), expiresAt: null,
+        sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.length, pinnedAt: iso(), expiresAt: null,
         metadata: { source: "DESIGN", originalFilename: filename, storedFilename: storage.storedFilename, formatId: format.id, width: size.width, height: size.height, engine: input.engine } });
     } catch (error) {
       await unlink(storage.filePath).catch(() => undefined);
@@ -164,7 +192,8 @@ export function createDesignService(options: DesignServiceOptions) {
     options.onArtifact?.(created.event);
     const asset = await repository.createAsset({ ownerUserId: owner, paneId: pane.id, requestId: input.requestId ?? null, artifactId: created.artifact.id, formatId: format.id,
       width: size.width, height: size.height, mimeType, engine: input.engine, model: input.model ?? null, label: input.label ?? null, prompt: input.prompt ?? null,
-      templateId: input.templateId ?? null, params: input.params ?? null, brandKitId: input.brandKitId ?? null, parentAssetId: input.parentAssetId ?? null, pinned: true });
+      templateId: input.templateId ?? null, params: input.params ?? null, brandKitId: input.brandKitId ?? null, parentAssetId: input.parentAssetId ?? null, description, madeBy: input.madeBy,
+      pinned: true });
     await record(owner, pane, { requestId: asset.requestId, assetId: asset.id, type: "ASSET_SAVED", message: `Saved ${format.label} (${size.width}×${size.height}) to Media`,
       payload: { artifactId: asset.artifactId, formatId: format.id, engine: asset.engine } });
     return asset;
@@ -224,6 +253,65 @@ export function createDesignService(options: DesignServiceOptions) {
     await record(owner, pane, { type: "RUN_STARTED", message: "Asked the designer to work through the request queue" });
     return true;
   }
+  /** One Design pane per room for requests that arrive together: the second waits for the first one's pane. */
+  function openPane(owner: string, roomId: string): Promise<Pane | null> {
+    const key = `${owner}:${roomId}`;
+    const pending = opening.get(key);
+    if (pending) return pending;
+    const open = Promise.resolve(options.openPane?.(owner, roomId) ?? null).catch(() => null).finally(() => opening.delete(key));
+    opening.set(key, open);
+    return open;
+  }
+  /**
+   * A designer that is still starting (an auto-opened pane, a slow sign-in) gets the kickoff at its first empty prompt: polled every
+   * 3 s for 90 s, then every 10 s, for up to 10 minutes. It stops when the pane closes or another kickoff reached it first.
+   */
+  async function waitAndStart(owner: string, pane: Pane): Promise<boolean> {
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const began = now();
+    while (now() - began < DESIGN_START_WAIT_MS) {
+      await sleep(now() - began < 90_000 ? 3_000 : 10_000);
+      const current = await paneOrNull(pane.id);
+      if (!current || current.mode !== "DESIGN" || current.isClosed || (lastKickoff.get(pane.id) ?? -Infinity) >= began) return false;
+      if (await autostart(owner, current)) return true;
+    }
+    return false;
+  }
+  /**
+   * The queue pass (once a minute): QUEUED work goes to an idle, unpaused Design pane whose designer is at an empty prompt: the pane it
+   * was routed to, and for requests routed to no pane the first such pane of the owner's rooms.
+   */
+  async function dispatchQueued(): Promise<number> {
+    const owners = [...new Set((await store.listRooms()).map((room) => room.ownerUserId).filter((owner): owner is string => Boolean(owner)))];
+    let started = 0;
+    for (const owner of owners) {
+      await reroute(owner);
+      const queued = await repository.listRequests(owner, { status: ["QUEUED"], limit: 50 });
+      if (!queued.length) continue;
+      const panes = (await designPanes(owner)).filter((pane) => !settingsOf(pane).paused);
+      const targets = panes.filter((pane) => queued.some((request) => request.designPaneId === pane.id));
+      if (queued.some((request) => request.designPaneId === null) && panes[0] && !targets.includes(panes[0])) targets.push(panes[0]);
+      for (const pane of targets) if (await autostart(owner, pane)) started += 1;
+    }
+    return started;
+  }
+  /**
+   * Work left on a Design pane that was closed or deleted (QUEUED, or TAKEN/IN_PROGRESS past the stale rule) goes to another open,
+   * unpaused Design pane of the owner, else back to the unassigned queue with its "Open a Design pane" notice. A paused pane keeps its work.
+   */
+  async function reroute(owner: string): Promise<void> {
+    const open = await repository.listRequests(owner, { status: ["QUEUED", "TAKEN", "IN_PROGRESS"], limit: 50 });
+    for (const request of open) {
+      if (!request.designPaneId || (request.status !== "QUEUED" && now() - Date.parse(request.updatedAt) < DESIGN_REQUEST_STALE_MS)) continue;
+      const current = await paneOrNull(request.designPaneId);
+      if (current && current.mode === "DESIGN" && !current.isClosed) continue;
+      const target = (await designPanes(owner)).find((pane) => !settingsOf(pane).paused) ?? null;
+      const moved = await repository.updateRequest(owner, request.id, { designPaneId: target?.id ?? null, status: "QUEUED" }, [request.status]);
+      if (!moved) continue;
+      await record(owner, target, { requestId: request.id, type: "NOTE", message: `Routed again: the Design pane it waited on was closed${target ? "" : "; it waits for a Design pane"}` });
+      if (!target) await notice(owner, "queued", moved, null, "Open a Design pane", `${moved.requester.label}'s design request waits in the queue: its Design pane was closed.`);
+    }
+  }
   /** Starts the pane's designer for queued work, when the pane is not paused and its CLI can take the kickoff. */
   function autostart(owner: string, pane: Pane): Promise<boolean> {
     // Requests sent back to back share one start: a second kickoff would type the prompt into the CLI twice.
@@ -234,13 +322,38 @@ export function createDesignService(options: DesignServiceOptions) {
     return start;
   }
 
-  /** What a requester sees of a request: its state, the question, and the delivered assets with their artifacts. */
+  /**
+   * The newest later version of an asset in the same format and kind (a corrected design), following up to 5 versions;
+   * variants in other formats, and a motion version of a still, are not replacements.
+   */
+  async function replacedBy(owner: string, asset: DesignAsset): Promise<string | null> {
+    const video = asset.mimeType === "video/mp4";
+    let newest: DesignAsset | null = null;
+    for (let depth = 0, current = asset; depth < 5; depth += 1) {
+      const children = await repository.listAssets(owner, { parentIds: [current.id], formatIds: [asset.formatId], limit: 20 });
+      const next = children.find((child) => (child.mimeType === "video/mp4") === video);
+      if (!next) break;
+      newest = current = next;
+    }
+    return newest?.id ?? null;
+  }
+
+  /**
+   * What a requester sees of a request: its state, the question, and the delivered assets with what each shows, who made it,
+   * whether its measured size is the format's (null for video, whose size is not read) and the newer version that replaces it.
+   */
   async function view(owner: string, request: DesignRequest) {
     const assets = request.resultAssetIds.length ? await repository.listAssets(owner, { ids: request.resultAssetIds, limit: 32 }) : [];
     return {
       request,
-      assets: assets.map((asset) => ({ assetId: asset.id, artifactId: asset.artifactId, label: asset.label ?? resolveDesignFormat(asset.formatId)?.label ?? asset.formatId,
-        formatId: asset.formatId, width: asset.width, height: asset.height, mimeType: asset.mimeType }))
+      assets: await Promise.all(assets.map(async (asset) => {
+        const format = resolveDesignFormat(asset.formatId);
+        return { assetId: asset.id, artifactId: asset.artifactId, label: asset.label ?? format?.label ?? asset.formatId,
+          formatId: asset.formatId, width: asset.width, height: asset.height, mimeType: asset.mimeType,
+          matchesFormat: asset.mimeType === "video/mp4" ? null : Boolean(format && format.width === asset.width && format.height === asset.height),
+          description: asset.description, madeBy: asset.madeBy, engine: asset.engine, model: asset.model, parentAssetId: asset.parentAssetId, createdAt: asset.createdAt,
+          replacedBy: await replacedBy(owner, asset) };
+      }))
     };
   }
 
@@ -257,7 +370,8 @@ export function createDesignService(options: DesignServiceOptions) {
     }
     const delivered = await transition(owner, request.id, from, { status: "DELIVERED", resultAssetIds: assets.map((asset) => asset.id), message: note, deliveredAt: iso() });
     for (const asset of assets) if (!asset.requestId) await repository.updateAsset(owner, asset.id, { requestId: request.id });
-    await record(owner, pane, { requestId: request.id, type: "DELIVERED", message: `Delivered ${assets.length} design${assets.length === 1 ? "" : "s"} to ${request.requester.label}`, payload: { assetIds: delivered.resultAssetIds } });
+    await record(owner, pane, { requestId: request.id, type: "DELIVERED", message: `${request.status === "DELIVERED" ? "Redelivered" : "Delivered"} ${assets.length} design${assets.length === 1 ? "" : "s"} to ${request.requester.label}`,
+      payload: { assetIds: delivered.resultAssetIds } });
     await clearNotices(owner, request.id, ["queued", "approval", "question", "failed"]);
     await notice(owner, "ready", delivered, pane, `Design delivered to ${request.requester.label}`, trimmed(request.brief, 300));
     return view(owner, delivered);
@@ -265,7 +379,8 @@ export function createDesignService(options: DesignServiceOptions) {
 
   /** A template at the format's exact size: text, logo and brand layers over an optional background asset or screenshot. */
   async function renderAsset(owner: string, pane: Pane, input: { templateId: DesignTemplateId; formatId: string; params?: Record<string, unknown>; backgroundAssetId?: string | null;
-    screenshotArtifactId?: string | null; brandKitId?: string | null; output?: "png" | "jpeg" | "webp"; requestId?: string | null; parentAssetId?: string | null; label?: string | null }): Promise<DesignAsset> {
+    screenshotArtifactId?: string | null; brandKitId?: string | null; output?: "png" | "jpeg" | "webp"; requestId?: string | null; parentAssetId?: string | null; label?: string | null;
+    description?: string | null; madeBy: DesignAssetMadeBy }): Promise<DesignAsset> {
     assertDesignPane(pane);
     if (!options.render) throw new SpaceFeatureDisabledError("DESIGN_RENDER_UNAVAILABLE", "Template rendering is not available on this runtime.");
     const format = formatOrThrow(input.formatId);
@@ -283,7 +398,8 @@ export function createDesignService(options: DesignServiceOptions) {
     const asset = await saveAsset(owner, pane, { bytes: result.bytes, formatId: format.id, engine: "TEMPLATE", templateId: input.templateId, brandKitId: kit.id,
       // Kept to re-render without regenerating: the template's text and the images it used.
       params: { values: input.params ?? {}, backgroundAssetId: background?.id ?? null, screenshotArtifactId: input.screenshotArtifactId ?? null, output: input.output ?? "png" },
-      parentAssetId: input.parentAssetId ?? background?.id ?? null, requestId: input.requestId, label: input.label });
+      parentAssetId: input.parentAssetId ?? background?.id ?? null, requestId: input.requestId, label: input.label,
+      description: input.description ?? templateDescription(input.templateId, input.params), madeBy: input.madeBy });
     await record(owner, pane, { requestId: input.requestId, assetId: asset.id, type: "RENDERED", message: `Rendered ${input.templateId} at ${format.label} (${format.width}×${format.height})` });
     await touch(owner, input.requestId);
     return asset;
@@ -339,14 +455,16 @@ export function createDesignService(options: DesignServiceOptions) {
 
     // ---- making designs
     saveAsset: async (owner: string, pane: Pane, input: Parameters<typeof saveAsset>[2]) => { assertDesignPane(pane); const asset = await saveAsset(owner, pane, input); await touch(owner, input.requestId); return asset; },
-    async generateImage(owner: string, pane: Pane, input: { engine: DesignGeneratingEngine; prompt: string; formatId: string; referenceArtifactIds?: string[]; requestId?: string | null; label?: string | null }) {
+    async generateImage(owner: string, pane: Pane, input: { engine: DesignGeneratingEngine; prompt: string; formatId: string; referenceArtifactIds?: string[]; requestId?: string | null; label?: string | null;
+      description?: string | null; madeBy: DesignAssetMadeBy }) {
       assertDesignPane(pane);
       if (!options.generate) throw new SpaceFeatureDisabledError("DESIGN_ENGINE_UNAVAILABLE", "Image generation is not available on this runtime; templates still work.");
       const format = formatOrThrow(input.formatId);
       if (input.requestId) await requestOf(owner, input.requestId);
       const references = await Promise.all((input.referenceArtifactIds ?? []).slice(0, 3).map((id) => imageFile(owner, id)));
       const generated = await options.generate({ engine: input.engine, prompt: input.prompt, width: format.width, height: format.height, references });
-      const asset = await saveAsset(owner, pane, { bytes: generated.bytes, formatId: format.id, engine: input.engine, model: generated.model, prompt: input.prompt, requestId: input.requestId, label: input.label });
+      const asset = await saveAsset(owner, pane, { bytes: generated.bytes, formatId: format.id, engine: input.engine, model: generated.model, prompt: input.prompt, requestId: input.requestId, label: input.label,
+        description: input.description, madeBy: input.madeBy });
       await record(owner, pane, { requestId: input.requestId, assetId: asset.id, type: "IMAGE_GENERATED", message: `Generated an image with ${generated.model} for ${format.label}` });
       await touch(owner, input.requestId);
       return { asset, text: generated.text };
@@ -356,7 +474,7 @@ export function createDesignService(options: DesignServiceOptions) {
      * A new version of an asset: a template asset re-renders with changed text, and one design resizes to other formats
      * ("Also make"); an image that is no template is composed onto each new format as a photo background.
      */
-    async variants(owner: string, pane: Pane, assetId: string, input: { formatIds?: string[]; params?: Record<string, unknown>; requestId?: string | null }): Promise<DesignAsset[]> {
+    async variants(owner: string, pane: Pane, assetId: string, input: { formatIds?: string[]; params?: Record<string, unknown>; requestId?: string | null; madeBy: DesignAssetMadeBy }): Promise<DesignAsset[]> {
       const asset = await assetOf(owner, assetId);
       const stored = asset.params as { values?: Record<string, unknown>; backgroundAssetId?: string | null; screenshotArtifactId?: string | null; output?: "png" | "jpeg" | "webp" } | null;
       const formatIds = input.formatIds?.length ? input.formatIds : [asset.formatId];
@@ -364,8 +482,10 @@ export function createDesignService(options: DesignServiceOptions) {
       for (const formatId of formatIds) {
         out.push(asset.templateId
           ? await renderAsset(owner, pane, { templateId: asset.templateId, formatId, params: { ...stored?.values, ...input.params }, backgroundAssetId: stored?.backgroundAssetId ?? null,
-            screenshotArtifactId: stored?.screenshotArtifactId ?? null, brandKitId: asset.brandKitId, output: stored?.output, parentAssetId: asset.id, requestId: input.requestId ?? asset.requestId, label: asset.label })
-          : await renderAsset(owner, pane, { templateId: "photo-headline", formatId, params: input.params ?? {}, backgroundAssetId: asset.id, parentAssetId: asset.id, requestId: input.requestId ?? asset.requestId, label: asset.label }));
+            screenshotArtifactId: stored?.screenshotArtifactId ?? null, brandKitId: asset.brandKitId, output: stored?.output, parentAssetId: asset.id, requestId: input.requestId ?? asset.requestId, label: asset.label,
+            madeBy: input.madeBy })
+          : await renderAsset(owner, pane, { templateId: "photo-headline", formatId, params: input.params ?? {}, backgroundAssetId: asset.id, parentAssetId: asset.id, requestId: input.requestId ?? asset.requestId, label: asset.label,
+            madeBy: input.madeBy }));
       }
       return out;
     },
@@ -374,9 +494,12 @@ export function createDesignService(options: DesignServiceOptions) {
       return repository.listAssets(owner, { ...filter, formatIds });
     },
     asset: assetOf,
-    async assetFile(owner: string, assetId: string): Promise<{ asset: DesignAsset; path: string }> {
+    /** An asset's Media file; with `roomId`, only an asset whose artifact lives in that room. */
+    async assetFile(owner: string, assetId: string, roomId?: string): Promise<{ asset: DesignAsset; path: string }> {
       const asset = await assetOf(owner, assetId);
-      return { asset, path: artifactPath(await ownedArtifact(owner, asset.artifactId, ["IMAGE", "VIDEO"])) };
+      const artifact = await ownedArtifact(owner, asset.artifactId, ["IMAGE", "VIDEO"]);
+      if (roomId && artifact.roomId !== roomId) throw new SpaceNotFoundError(`Design asset ${assetId} is not in this pane's room.`);
+      return { asset, path: artifactPath(artifact) };
     },
     /** Leaves the library: the Media artifact is unpinned and expires like any other in 7 days. */
     async deleteAsset(owner: string, assetId: string): Promise<void> {
@@ -389,6 +512,8 @@ export function createDesignService(options: DesignServiceOptions) {
     // ---- requests
     designPanes,
     autostart,
+    waitAndStart,
+    dispatchQueued,
     view,
     /** A request from the operator, a CLI pane, Nous, a Dot or Marketing Copilot, routed to a Design pane of the owner's rooms. */
     async createRequest(owner: string, requester: DesignRequester, raw: DesignRequestCreate) {
@@ -407,12 +532,17 @@ export function createDesignService(options: DesignServiceOptions) {
       if (input.brandKitId) await brandKit(owner, input.brandKitId);
       const formatIds = input.formatIds.length ? input.formatIds : [pane ? settingsOf(pane).defaultFormatId : "square"];
       for (const formatId of formatIds) formatOrThrow(formatId);
+      // Every agent can have a graphic made: with no Design pane open, one opens in the requester's room (after the checks above).
+      const opened = !pane && requester.roomId ? await openPane(owner, requester.roomId) : null;
+      pane ??= opened;
       const request = await repository.createRequest({ ownerUserId: owner, designPaneId: pane?.id ?? null, requester, brief: input.brief, formatIds, engine: input.engine ?? null,
-        brandKitId: input.brandKitId ?? null, referenceArtifactIds: input.referenceArtifactIds, callback: input.callback ?? null });
+        brandKitId: input.brandKitId ?? null, referenceArtifactIds: input.referenceArtifactIds, callback: input.callback ?? null, templateId: input.templateId ?? null, params: input.params ?? null });
       const formats = formatIds.map((id) => resolveDesignFormat(id)!.label).join(", ");
-      await record(owner, pane, { requestId: request.id, type: "REQUEST_CREATED", message: `${requester.label} asked for ${formats}: ${trimmed(input.brief, 300)}`, payload: { requester: requester.kind } });
+      await record(owner, pane, { requestId: request.id, type: "REQUEST_CREATED", message: `${requester.label} asked for ${formats}: ${trimmed(input.brief, 300)}${opened ? " (this Design pane opened for it)" : ""}`,
+        payload: { requester: requester.kind, ...(opened ? { paneOpened: true } : {}) } });
       if (!pane) await notice(owner, "queued", request, null, "Open a Design pane", `${requester.label} asked for a design (${formats}); it waits in the queue until a Design pane takes it.`);
-      const runStarted = pane ? await autostart(owner, pane) : false;
+      // A pane opened here gets its kickoff from openPane once its CLI is ready, never typed into a CLI that is still starting.
+      const runStarted = pane && !opened ? await autostart(owner, pane) : false;
       return { ...(await view(owner, request)), designPaneId: pane?.id ?? null, runStarted };
     },
     async request(owner: string, id: string) { return view(owner, await requestOf(owner, id)); },
@@ -441,7 +571,8 @@ export function createDesignService(options: DesignServiceOptions) {
         request,
         formats: request.formatIds.map((id) => resolveDesignFormat(id)!),
         engine: request.engine ?? settings.defaultEngine,
-        templateId: settings.defaultTemplateId,
+        templateId: request.templateId ?? settings.defaultTemplateId,
+        params: request.params ?? null,
         motion: settings.motion,
         brandKit: kit,
         requestAutonomy: settings.requestAutonomy,
@@ -463,19 +594,22 @@ export function createDesignService(options: DesignServiceOptions) {
       await clearNotices(owner, requestId, ["question"]);
       return view(owner, request);
     },
-    /** The designer hands its result back: delivered at once under AUTO, held for the operator under APPROVAL. */
+    /**
+     * The designer hands its result back: delivered at once under AUTO, held for the operator under APPROVAL. A DELIVERED request
+     * takes a corrected delivery too: its assets are replaced and the requester is told again.
+     */
     async deliver(owner: string, pane: Pane, requestId: string, input: { assetIds: string[]; message?: string | null }) {
       assertDesignPane(pane);
       const request = await requestOf(owner, requestId);
       const assets = await repository.listAssets(owner, { ids: input.assetIds, limit: 32 });
       if (!input.assetIds.length || assets.length !== new Set(input.assetIds).size) throw new SpaceNotFoundError("Deliver assets of your library (space_design_assets).");
       if (settingsOf(pane).requestAutonomy === "APPROVAL") {
-        const held = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS"], { status: "NEEDS_APPROVAL", resultAssetIds: assets.map((asset) => asset.id), message: input.message ?? null });
+        const held = await transition(owner, requestId, ["TAKEN", "IN_PROGRESS", "DELIVERED"], { status: "NEEDS_APPROVAL", resultAssetIds: assets.map((asset) => asset.id), message: input.message ?? null });
         await record(owner, pane, { requestId, type: "APPROVAL_REQUESTED", message: `Waiting for your approval before delivery to ${request.requester.label}` });
         await notice(owner, "approval", held, pane, `Design waits for your approval (${pane.title})`, trimmed(request.brief, 300));
         return view(owner, held);
       }
-      return finish(owner, pane, request, assets.map((asset) => asset.id), input.message ?? null, ["TAKEN", "IN_PROGRESS"]);
+      return finish(owner, pane, request, assets.map((asset) => asset.id), input.message ?? null, ["TAKEN", "IN_PROGRESS", "DELIVERED"]);
     },
     /** The operator's yes to a held delivery, or their own delivery from the Studio. */
     async approve(owner: string, requestId: string, input: { assetIds?: string[]; message?: string | null } = {}) {

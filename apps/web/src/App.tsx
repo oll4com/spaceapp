@@ -173,7 +173,7 @@ import {
 } from "./features/browser-pane/events.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
 import type { CopilotLaunchChoice } from "./features/copilot-kit/CopilotLaunchDialog.js";
-import { DESIGN_KIND, FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
+import { APP_STUDIO_KIND, DESIGN_KIND, FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
 import { resolveCopilotLaunch } from "./features/copilot-kit/copilot-runtimes.js";
 import { rememberNewPaneAccount } from "./features/cli-accounts/cli-account-memory.js";
 import { forwardCopilotStreamEvents } from "./features/copilot-kit/copilot-stream.js";
@@ -668,13 +668,11 @@ const LazyJobCopilotSettingsCard = lazyWithPreload(() =>
   import("./features/job-apply-pane/JobCopilotSettingsCard.js").then((module) => ({ default: module.JobCopilotSettingsCard })),
   { idle: true }
 );
-const LazyMailCopilotSettingsCard = lazyWithPreload(() =>
-  import("./features/mail-copilot-pane/MailCopilotSettingsCard.js").then((module) => ({ default: module.MailCopilotSettingsCard })),
-  { idle: true }
-);
+const LazyMailCopilotSettingsCard = lazyWithPreload(() => import("./features/mail-copilot-pane/MailCopilotSettingsCard.js").then((module) => ({ default: module.MailCopilotSettingsCard })), { idle: true });
 const LazyMarketingCopilotSettingsCard = lazyWithPreload(() => import("./features/marketing-copilot-pane/MarketingCopilotSettingsCard.js").then((module) => ({ default: module.MarketingCopilotSettingsCard })), { idle: true });
 const LazyFreelanceCopilotSettingsCard = lazyWithPreload(() => import("./features/freelance-copilot-pane/FreelanceCopilotSettingsCard.js").then((module) => ({ default: module.FreelanceCopilotSettingsCard })), { idle: true });
 const LazyDesignSettingsCard = lazyWithPreload(() => import("./features/design-pane/DesignSettingsCard.js").then((module) => ({ default: module.DesignSettingsCard })), { idle: true });
+const LazyAppStudioSettingsCard = lazyWithPreload(() => import("./features/app-studio-pane/AppStudioSettingsCard.js").then((module) => ({ default: module.AppStudioSettingsCard })), { idle: true });
 const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
 /** The Settings dock's cards, in the dock's order; their declarations above keep the idle preload order. */
 const agentSettingsCards: AgentSettingsCards = {
@@ -697,7 +695,7 @@ const agentSettingsCards: AgentSettingsCards = {
   Dots: LazyDotsSettingsCard,
   JobCopilot: LazyJobCopilotSettingsCard,
   MailCopilot: LazyMailCopilotSettingsCard,
-  MarketingCopilot: LazyMarketingCopilotSettingsCard, FreelanceCopilot: LazyFreelanceCopilotSettingsCard, Design: LazyDesignSettingsCard
+  MarketingCopilot: LazyMarketingCopilotSettingsCard, FreelanceCopilot: LazyFreelanceCopilotSettingsCard, Design: LazyDesignSettingsCard, AppStudio: LazyAppStudioSettingsCard
 };
 
 const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
@@ -2724,6 +2722,8 @@ export function App() {
   }
 
   async function signOut() {
+    // The unlocked Vault keys go with the session (they live for the tab, not the dock); loaded only with the Vault.
+    await import("./features/vault/vault-session.js").then((vault) => vault.lockVaultSession("SIGN_OUT")).catch(() => undefined);
     // A signed-out phone must not keep showing this account's pushes.
     if (pushNotificationsEnabled()) await setPushNotifications(false, api).catch(() => undefined);
     try {
@@ -3352,7 +3352,7 @@ export function App() {
     }
   }
 
-  async function addPane(mode: Pane["mode"], youtubeUrl?: string, count = 1) {
+  async function addPane(mode: Pane["mode"], youtubeUrl?: string, count = 1, float = false) {
     const roomId = selectedRoomIdRef.current;
     if (
       !roomId ||
@@ -3416,6 +3416,8 @@ export function App() {
         if (mode === "YOUTUBE" && youtubeUrl) {
           registerYouTubeBrowseIntent(pane.id, youtubeUrl);
         }
+        // Batched with setPanes below, so the pane's first frame is already the float.
+        if (mode === "YOUTUBE" && float) toggleYouTubeFloating(pane.id, true);
         if (selectedRoomIdRef.current === roomId) {
           setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
           setSelectedPaneId(pane.id);
@@ -3904,13 +3906,13 @@ export function App() {
       return new Set();
     }
   });
-  const toggleYouTubeFloating = useCallback((paneId: string) => {
+  const toggleYouTubeFloating = useCallback((paneId: string, float?: boolean) => {
     setFloatingYouTubePaneIds((prev) => {
       const next = new Set(prev);
-      if (next.has(paneId)) {
-        next.delete(paneId);
-      } else {
+      if (float ?? !next.has(paneId)) {
         next.add(paneId);
+      } else {
+        next.delete(paneId);
       }
       try {
         localStorage.setItem("space.youtube.floating.panes.v1", JSON.stringify(Array.from(next)));
@@ -3918,7 +3920,8 @@ export function App() {
       return next;
     });
   }, []);
-  useYouTubeFloatRequest({ panes, activeRoomId: activeRoom?.id ?? null, floatingIds: floatingYouTubePaneIds, toggle: toggleYouTubeFloating });
+  useYouTubeFloatRequest({ panes, activeRoomId: activeRoom?.id ?? null, floatingIds: floatingYouTubePaneIds, toggle: toggleYouTubeFloating,
+    open: () => void addPane("YOUTUBE", undefined, 1, true) });
   const visiblePanes = useMemo(() => {
     const unfiltered = panes.filter((pane) => (shellMode === "mobile" || !pane.isMinimized) && !floatingYouTubePaneIds.has(pane.id));
     return activeRoomCategoryFilter
@@ -4895,7 +4898,7 @@ export function App() {
         },
         create: {
           isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane,
-          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addLivePane
+          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addAppStudioPane: () => addCopilotPane(APP_STUDIO_KIND), addLivePane
         },
         tools: { desktopWidgets, openStickyNote, isBrowserFullscreen, snip: snipTool, captureRoomScreen, reloadRoomWindow, vpn: toolbarVpn },
         workspace: {
@@ -5136,7 +5139,7 @@ export function App() {
       else if (action.id === "add-t3code") void addT3CodePane(count);
       else if (action.id === "add-jobs") void addJobApplyPane(count);
       else if (action.id === "add-mail") void addMailCopilotPane(count);
-      else if (action.id === "add-marketing" || action.id === "add-freelance" || action.id === "add-design") void addCopilotPane(action.id === "add-marketing" ? MARKETING_COPILOT_KIND : action.id === "add-design" ? DESIGN_KIND : FREELANCE_COPILOT_KIND, count);
+      else if (action.id === "add-marketing" || action.id === "add-freelance" || action.id === "add-design" || action.id === "add-app-studio") void addCopilotPane(action.id === "add-marketing" ? MARKETING_COPILOT_KIND : action.id === "add-design" ? DESIGN_KIND : action.id === "add-app-studio" ? APP_STUDIO_KIND : FREELANCE_COPILOT_KIND, count);
       else if (action.id === "add-harness") void addHarnessPane(count);
       else action.onClick();
     }
@@ -6330,7 +6333,7 @@ export function App() {
         ]
       : unorderedTerminalBootstrapPaneIds;
     const layerVisiblePaneCount = (shellMode === "mobile" || layerFullscreenLayout) && layerActivePane ? 1 : layerVisiblePanes.length;
-    const layerHasMaximizedPane = shellMode !== "mobile" && layerVisiblePanes.some((pane) => pane.isMaximized);
+    const layerHasMaximizedPane = shellMode !== "mobile" && !layerFullscreenLayout && layerVisiblePanes.some((pane) => pane.isMaximized);
     const layerHeight = (layerRoom?.paneLayoutHeight ?? 1) as 1 | 2 | 3 | 4;
     const {
       naturalRows: layerNaturalRows,

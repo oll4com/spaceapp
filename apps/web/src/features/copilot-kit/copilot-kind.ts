@@ -7,8 +7,8 @@ import type { CopilotLaunchSettings, Pane, UserSettings } from "@space/contracts
  * the contracts it loaded at start).
  */
 export interface CopilotKind {
-  id: "job" | "mail" | "marketing" | "freelance" | "design";
-  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN";
+  id: "job" | "mail" | "marketing" | "freelance" | "design" | "app-studio";
+  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" | "APP_STUDIO";
   /** "Job Copilot", "Mail Copilot": the Create menu entry, dialog titles and notices. */
   label: string;
   /** The CLI recommended for this copilot (Claude Code: long, tool-heavy loops with native MCP and account profiles). */
@@ -23,11 +23,11 @@ export interface CopilotKind {
   /** Where the default agent is changed, named in notices ("Settings → Job Copilot"). */
   settingsPlace: string;
   /** The user-settings key holding the remembered agent. */
-  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design";
+  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio";
   /** Prefix of the settings card's form control names ("job-copilot"). */
   controlPrefix: string;
   /** The remembered launch of this kind in the user's settings. */
-  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design">): CopilotLaunchSettings | null;
+  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio">): CopilotLaunchSettings | null;
 }
 
 export const JOB_COPILOT_KIND: CopilotKind = {
@@ -106,7 +106,23 @@ export const DESIGN_KIND: CopilotKind = {
   remembered: (settings) => settings.design ?? null
 };
 
-export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND];
+/** The App Studio pane: mobile apps (Expo) built by the pane's CLI agent, previewed per phone (plan clipboard:v7hyZ76ThCyv). */
+export const APP_STUDIO_KIND: CopilotKind = {
+  id: "app-studio",
+  mode: "APP_STUDIO",
+  label: "App Studio",
+  preferredRuntimeId: "cli:claude",
+  recommendedReason: "Recommended: native MCP, skills, image viewing",
+  agentDescription: "The AI coding CLI that builds your mobile apps for Android and iOS. Claude Code is recommended.",
+  launchHeading: "Choose the app builder",
+  launchDescription: "The app builder makes Android and iOS apps with Expo in this pane and shows every screen on the most-used phones. Claude Code is recommended; any ready CLI works.",
+  settingsPlace: "Settings → App Studio",
+  settingsKey: "appStudio",
+  controlPrefix: "app-studio",
+  remembered: (settings) => settings.appStudio ?? null
+};
+
+export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND, APP_STUDIO_KIND];
 
 export function copilotKindForMode(mode: Pane["mode"]): CopilotKind | null {
   return COPILOT_KINDS.find((kind) => kind.mode === mode) ?? null;

@@ -1,5 +1,6 @@
 import { registerRoomPlaybackTarget } from "../room-agent/room-playback-control.js";
-import { Check, ChevronLeft, ChevronRight, Home, Maximize2, Music2, Pause, PictureInPicture2, Play, Plus, Users, Youtube } from "../ui-theme/app-icons.js";
+import { Captions, Check, ChevronLeft, ChevronRight, Home, Music2, Pause, Play, Plus, Sparkles, Users, X, Youtube } from "../ui-theme/app-icons.js";
+import { ChatCopyButton } from "../agent-pane/ChatMarkdown.js";
 import { googleSignInTarget, type YouTubeAccounts } from "./youtube-accounts.js";
 import { GoogleAccountMenuItems, selectedAccountSummary } from "./GoogleAccountMenuItems.js";
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -20,12 +21,13 @@ interface YouTubePaneProps {
   uiTheme?: UiTheme;
   toolbarHidden?: boolean;
   onVideoTitleChange?: (title: string) => void;
+  // Float and restore live in the pane's titlebar; PaneCard still passes these.
   isFloating?: boolean;
   onToggleFloat?: () => void;
 }
 
 export function YouTubePane(props: YouTubePaneProps) {
-  const { pane, observerOnly = false, toolbarHidden = false, onVideoTitleChange, isFloating = false, onToggleFloat } = props;
+  const { pane, observerOnly = false, toolbarHidden = false, onVideoTitleChange } = props;
   const [accounts, setAccounts] = useState<YouTubeAccounts | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [accountSwitching, setAccountSwitching] = useState(false);
@@ -108,6 +110,14 @@ export function YouTubePane(props: YouTubePaneProps) {
   const [addingToPlaylist, setAddingToPlaylist] = useState(false);
   const addingToPlaylistRef = useRef(false);
   const [addedVideoId, setAddedVideoId] = useState<string | null>(null);
+  type AiKind = 'summary' | 'transcript';
+  const [aiText, setAiText] = useState<{ kind: AiKind; title: string; text: string; model: string } | null>(null);
+  const [aiBusy, setAiBusy] = useState<AiKind | null>(null);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const [toolbarCompact, setToolbarCompact] = useState(false);
+  const labelledToolbarWidth = useRef(0);
+  /** The video the player showed when Browse YouTube opened its page: that page does not switch straight back. */
+  const browseFromVideoId = useRef<string | null>(null);
 
   useEffect(() => {
     onVideoTitleChange?.(mode === 'player' ? currentVideo?.title ?? '' : '');
@@ -147,6 +157,39 @@ export function YouTubePane(props: YouTubePaneProps) {
       if (mounted.current) setAddingToPlaylist(false);
     }
   }
+
+  async function askAi(kind: AiKind) {
+    if (observerOnly || aiBusy || mode !== 'player') return;
+    // Read the player at click time: autoplay may have moved on.
+    const video = playerRef.current?.currentVideo() ?? currentVideo;
+    if (!video?.videoId) return;
+    setAiBusy(kind); setAiText(null); setError(null);
+    try {
+      const result = await api.youtubeVideoText(pane.id, video.videoId, kind);
+      if (mounted.current) setAiText({ kind, title: video.title.trim() || `YouTube ${video.videoId}`, text: result.text, model: result.model });
+    } catch (cause) {
+      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Gemini could not read the video. Try again.');
+    } finally {
+      if (mounted.current) setAiBusy(null);
+    }
+  }
+
+  // Labels hide when the toolbar overflows with them and come back once it is as wide as it was with them.
+  function fitToolbar() {
+    const bar = toolbarRef.current;
+    if (!bar) return;
+    if (bar.dataset.compact !== 'true') {
+      if (bar.scrollWidth > bar.clientWidth + 1) { labelledToolbarWidth.current = bar.scrollWidth; setToolbarCompact(true); }
+    } else if (bar.clientWidth >= labelledToolbarWidth.current) setToolbarCompact(false);
+  }
+  useLayoutEffect(fitToolbar);
+  useEffect(() => {
+    const bar = toolbarRef.current;
+    if (!bar || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitToolbar());
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [observerOnly, toolbarHidden]);
 
   // Loaded with the pane and again whenever the menu opens, so sign-in states stay current.
   // A selection made meanwhile wins over an older answer.
@@ -337,23 +380,40 @@ export function YouTubePane(props: YouTubePaneProps) {
     ?? playlists.find(p => p.url === url || (Boolean(url) && Boolean(parseYouTubePlayback(p.url)?.playlistId) && parseYouTubePlayback(p.url)?.playlistId === parseYouTubePlayback(url)?.playlistId))?.id
     ?? '';
 
-  async function watchCurrent() {
+  async function watchCurrent(pageUrl: string) {
     setPending(true); setError(null);
     try {
-      const pages = await api.browserPages(pane.id);
-      const current = pages.pages.find((page) => page.isActive);
-      if (!current?.url || !parseYouTubePlayback(current.url)) {
-        setError('Select a video in YouTube first, then choose Play current video.'); return;
-      }
       const stopped = await api.watchYouTube(pane.id);
-      const parsed = parseYouTubePlayback(stopped.currentUrl ?? current.url);
+      const parsed = parseYouTubePlayback(stopped.currentUrl ?? pageUrl);
       if (!parsed) throw new Error('The selected video could not be opened.');
       latest.current = parsed; setInitial(parsed); setAutoPlay(true); setIsPlaying(true); setPlayerRevision(r => r + 1); setUrl(youtubePlaybackUrl(parsed)); setMode('player'); save(parsed);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'The selected video could not be opened.'); }
     finally { setPending(false); }
   }
 
+  // A video opened in the YouTube browser moves straight to the player, where it keeps playing from the same second.
+  const watchCurrentRef = useRef(watchCurrent);
+  watchCurrentRef.current = watchCurrent;
+  useEffect(() => {
+    if (observerOnly || mode !== 'browse' || pending || pane.isMinimized || typeof api.browserPages !== 'function') return;
+    let checking = false;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      if (checking || document.hidden) return;
+      checking = true;
+      void api.browserPages(pane.id).then((pages) => {
+        const page = pages.pages.find((item) => item.isActive);
+        const videoId = page?.url ? parseYouTubePlayback(page.url)?.videoId : null;
+        if (stopped || !page?.url) return;
+        if (!videoId || videoId !== browseFromVideoId.current) browseFromVideoId.current = null;
+        if (videoId && !browseFromVideoId.current) { stopped = true; void watchCurrentRef.current(page.url); }
+      }).catch(() => undefined).finally(() => { checking = false; });
+    }, 1500);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [pane.id, observerOnly, mode, pending, pane.isMinimized]);
+
   function browse() {
+    browseFromVideoId.current = latest.current?.videoId ?? null;
     if (latest.current) setTargetUrl(youtubePlaybackUrl(latest.current));
     setIsPlaying(false);
     setMode('browse'); setError(null);
@@ -472,7 +532,7 @@ export function YouTubePane(props: YouTubePaneProps) {
   }
 
   return <section className="youtube-experience" aria-label={`${pane.title} YouTube`} data-youtube-mode={mode}>
-    {!observerOnly && !toolbarHidden ? <div className="youtube-toolbar">
+    {!observerOnly && !toolbarHidden ? <div ref={toolbarRef} className="youtube-toolbar" data-compact={toolbarCompact ? 'true' : undefined}>
       {accounts ? <div className="youtube-account-picker">
         <button ref={accountButton} type="button" className="youtube-account-trigger youtube-tool-btn" aria-label={`Google account for ${pane.title}`}
           title={`Browser account: ${[accountSummary.name, accountSummary.status].filter(Boolean).join(' · ')}`} data-account-status={accountSummary.tone}
@@ -486,36 +546,36 @@ export function YouTubePane(props: YouTubePaneProps) {
         <Home aria-hidden="true" />
         <span className="youtube-btn-label">Home</span>
       </button>
-      <div className="youtube-playlist-picker">
+      {playlists.length > 0 ? <div className="youtube-playlist-picker">
         <Music2 aria-hidden="true" className="youtube-playlist-icon" />
         <select
           className="youtube-playlist-select"
           aria-label="YouTube playlist"
-          title={playlists.length === 0 ? "No playlists" : "Select a playlist"}
+          title="Select a playlist"
           value={currentPlaylistId}
-          disabled={pending || mode === 'loading' || playlists.length === 0}
+          disabled={pending || mode === 'loading'}
           onChange={(event) => void selectPlaylist(event.target.value)}
         >
-          <option value="">{playlists.length === 0 ? 'No playlists' : 'Playlists…'}</option>
+          <option value="">Playlists…</option>
           {playlists.map((link) => (
             <option key={link.id} value={link.id}>{link.title}</option>
           ))}
         </select>
-      </div>
+      </div> : null}
       <form className="youtube-link-form" onSubmit={(event) => { event.preventDefault(); void playLink(); }}>
         <input aria-label="YouTube video or playlist link" placeholder="Paste a YouTube link" value={url} onChange={(event) => setUrl(event.target.value)} />
       </form>
-      <button
+      {canNavigate ? <button
         type="button"
         className="youtube-tool-btn youtube-nav-btn"
         title="Previous track"
         aria-label="Previous track"
-        disabled={pending || mode === 'loading' || !canNavigate}
+        disabled={pending || mode === 'loading'}
         onClick={handlePrevious}
       >
         <ChevronLeft aria-hidden="true" />
-      </button>
-      <button
+      </button> : null}
+      {mode === 'player' || url.trim() ? <button
         type="button"
         className="youtube-tool-btn youtube-play-btn"
         title={isPlayerPlaying ? "Pause" : "Play"}
@@ -525,52 +585,52 @@ export function YouTubePane(props: YouTubePaneProps) {
       >
         {isPlayerPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
         <span className="youtube-btn-label">{isPlayerPlaying ? 'Pause' : 'Play'}</span>
-      </button>
-      <button
+      </button> : null}
+      {canNavigate ? <button
         type="button"
         className="youtube-tool-btn youtube-nav-btn"
         title="Next track"
         aria-label="Next track"
-        disabled={pending || mode === 'loading' || !canNavigate}
+        disabled={pending || mode === 'loading'}
         onClick={handleNext}
       >
         <ChevronRight aria-hidden="true" />
-      </button>
+      </button> : null}
+      {mode === 'player' ? <>
       <button type="button" className="youtube-tool-btn" title="Add current video to Space playlist"
         aria-label={addedVideoId === currentVideo?.videoId ? 'Added to Playlist' : 'Add to Playlist'}
-        disabled={pending || mode !== 'player' || !currentVideo?.videoId || addingToPlaylist || addedVideoId === currentVideo?.videoId}
+        disabled={pending || !currentVideo?.videoId || addingToPlaylist || addedVideoId === currentVideo?.videoId}
         onClick={() => void addToPlaylist()}>
         {addedVideoId === currentVideo?.videoId ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />}
         <span className="youtube-btn-label">{addingToPlaylist ? 'Adding…' : addedVideoId === currentVideo?.videoId ? 'Added to Playlist' : 'Add to Playlist'}</span>
       </button>
-      {mode === 'browse' ? (
-        <button type="button" className="youtube-tool-btn" title="Play current video" aria-label="Play current video" disabled={pending} onClick={() => void watchCurrent()}>
-          <Play aria-hidden="true" />
-          <span className="youtube-btn-label">Play current</span>
-        </button>
-      ) : (
-        <button type="button" className="youtube-tool-btn" title="Browse YouTube" aria-label="Browse YouTube" disabled={pending || mode === 'loading'} onClick={browse}>
-          <Youtube aria-hidden="true" />
-          <span className="youtube-btn-label">Browse YouTube</span>
-        </button>
-      )}
-      {onToggleFloat ? (
-        <button
-          type="button"
-          className="youtube-tool-btn youtube-float-btn"
-          title={isFloating ? "Restore pane to grid" : "Float mini player"}
-          aria-label={isFloating ? "Restore pane to grid" : "Float mini player"}
-          disabled={pending || mode === 'loading'}
-          onClick={onToggleFloat}
-        >
-          {isFloating ? <Maximize2 aria-hidden="true" /> : <PictureInPicture2 aria-hidden="true" />}
-          <span className="youtube-btn-label">{isFloating ? "Restore" : "Float"}</span>
-        </button>
-      ) : null}
+      <button type="button" className="youtube-tool-btn" title="Summarize this video with the AI model chosen in Settings → Assistants & AI → YouTube summary"
+        aria-label={aiBusy === 'summary' ? 'Summarizing video' : 'Summarize with AI'} disabled={pending || aiBusy !== null} onClick={() => void askAi('summary')}>
+        <Sparkles aria-hidden="true" />
+        <span className="youtube-btn-label">{aiBusy === 'summary' ? 'Summarizing…' : 'Summarize with AI'}</span>
+      </button>
+      <button type="button" className="youtube-tool-btn" title="Everything said in this video, as text, from the AI model chosen in Settings"
+        aria-label={aiBusy === 'transcript' ? 'Getting the full text' : 'Full text'} disabled={pending || aiBusy !== null} onClick={() => void askAi('transcript')}>
+        <Captions aria-hidden="true" />
+        <span className="youtube-btn-label">{aiBusy === 'transcript' ? 'Getting text…' : 'Full text'}</span>
+      </button>
+      <button type="button" className="youtube-tool-btn" title="Browse YouTube" aria-label="Browse YouTube" disabled={pending} onClick={browse}>
+        <Youtube aria-hidden="true" />
+        <span className="youtube-btn-label">Browse YouTube</span>
+      </button>
+      </> : null}
     </div> : null}
     {error ? <div className="youtube-player-message" role="alert"><span>{error}</span>
       <button type="button" onClick={() => { setError(null); if (mode === 'loading') setReload((value) => value + 1); }}> {mode === 'loading' ? 'Retry' : 'Dismiss'} </button>
     </div> : null}
+    {aiBusy ? <p className="youtube-summary" role="status">Gemini is watching the video{aiBusy === 'transcript' ? ' and writing down everything said; this takes about a minute for every 10 minutes of video' : ''}…</p> : null}
+    {aiText ? <section className="youtube-summary" aria-label={aiText.kind === 'summary' ? 'AI summary' : 'Full text'}>
+      <header><strong title={aiText.title}>{aiText.title}</strong><small>{aiText.kind === 'summary' ? 'Summary' : 'Full text'} · {aiText.model}</small>
+        <ChatCopyButton text={aiText.text} label="Copy" />
+        <button type="button" className="youtube-tool-btn" aria-label="Close" title="Close" onClick={() => setAiText(null)}><X aria-hidden="true" /></button>
+      </header>
+      <p>{aiText.text}</p>
+    </section> : null}
     <div className="youtube-content">
       {mode === 'loading' ? <p role="status">{accountSwitching ? 'Switching Google account…' : 'Restoring YouTube…'}</p> : null}
       {mode === 'browse' ? <ManagedYouTubeBrowser key={accountRevision} {...props} targetUrl={targetUrl} /> : null}

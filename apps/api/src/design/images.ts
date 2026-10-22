@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { crc32 } from "node:zlib";
 import { DESIGN_ENGINE_MODELS, nearestDesignAspectRatio, type DesignGeneratingEngine } from "@space/contracts";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
 
@@ -42,6 +43,66 @@ export function imageDimensions(bytes: Buffer): { width: number; height: number 
     }
   }
   return null;
+}
+
+const PNG_TEXT_CHUNKS = new Set(["iTXt", "tEXt", "zTXt"]);
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const frame = Buffer.alloc(12 + data.length);
+  frame.writeUInt32BE(data.length, 0);
+  body.copy(frame, 4);
+  frame.writeUInt32BE(crc32(body), 8 + data.length);
+  return frame;
+}
+
+/**
+ * The PNG with one uncompressed UTF-8 iTXt chunk per entry right after IHDR; text chunks with the same keywords are
+ * dropped first, so a re-uploaded design never keeps stale metadata. Other files, and PNGs without IHDR, are returned as is.
+ */
+export function withPngMetadata(bytes: Buffer, entries: Record<string, string>): Buffer {
+  const headerEnd = 33; // signature (8) + IHDR chunk (4 length + 4 type + 13 data + 4 CRC)
+  if (sniffDesignMime(bytes) !== "image/png" || bytes.length < headerEnd || bytes.subarray(12, 16).toString("ascii") !== "IHDR") return bytes;
+  const keys = new Set(Object.keys(entries));
+  const kept: Buffer[] = [];
+  let offset = headerEnd;
+  while (offset + 12 <= bytes.length) {
+    const end = offset + 12 + bytes.readUInt32BE(offset);
+    if (end > bytes.length) break;
+    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = bytes.subarray(offset + 8, end - 4);
+    const keyword = data.subarray(0, Math.max(0, data.indexOf(0))).toString("latin1");
+    if (!(PNG_TEXT_CHUNKS.has(type) && keys.has(keyword))) kept.push(bytes.subarray(offset, end));
+    offset = end;
+  }
+  const added = Object.entries(entries).map(([keyword, text]) =>
+    pngChunk("iTXt", Buffer.concat([Buffer.from(keyword, "latin1"), Buffer.from([0, 0, 0, 0, 0]), Buffer.from(text, "utf8")])));
+  return Buffer.concat([bytes.subarray(0, headerEnd), ...added, ...kept, bytes.subarray(offset)]);
+}
+
+/** The uncompressed tEXt and iTXt chunks of a PNG as keyword → text (the first of a repeated keyword); zTXt, compressed iTXt and other files give {}. */
+export function readPngText(bytes: Buffer): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (sniffDesignMime(bytes) !== "image/png") return out;
+  for (let offset = 8; offset + 12 <= bytes.length;) {
+    const end = offset + 12 + bytes.readUInt32BE(offset);
+    if (end > bytes.length) break;
+    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = bytes.subarray(offset + 8, end - 4);
+    const nul = data.indexOf(0);
+    const keyword = nul > 0 ? data.subarray(0, nul).toString("latin1") : "";
+    if (keyword && !(keyword in out)) {
+      if (type === "tEXt") out[keyword] = data.subarray(nul + 1).toString("latin1");
+      if (type === "iTXt" && data[nul + 1] === 0) {
+        // keyword \0 compression-flag method language \0 translated-keyword \0 text
+        const language = data.indexOf(0, nul + 3);
+        const translated = language < 0 ? -1 : data.indexOf(0, language + 1);
+        if (translated >= 0) out[keyword] = data.subarray(translated + 1).toString("utf8");
+      }
+    }
+    if (type === "IEND") break;
+    offset = end;
+  }
+  return out;
 }
 
 export interface DesignGenerateInput {

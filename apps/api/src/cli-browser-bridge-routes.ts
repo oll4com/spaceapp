@@ -1,3 +1,4 @@
+import { handoffTtlSeconds, ownerHandsAnswer, ownerQuietState } from "./owner-clock.js";
 import { BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, type BrowserControlActivity } from "./browser-control-activity.js";
 import type {} from "./request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
@@ -43,9 +44,12 @@ import { registerMarketingCopilotAgentRoutes } from "./marketing-copilot/agent-r
 import type { MarketingCopilotService } from "./marketing-copilot/service.js";
 import { registerDesignAgentRoutes } from "./design/agent-routes.js";
 import type { DesignService } from "./design/service.js";
+import { registerAppStudioAgentRoutes } from "./app-studio/agent-routes.js";
+import type { AppStudioService } from "./app-studio/service.js";
 import { registerFreelanceCopilotAgentRoutes } from "./freelance-copilot/agent-routes.js";
 import { registerTaskAgentRoutes } from "./task-agent-routes.js";
 import { registerPaneReportRoutes } from "./pane-report-routes.js";
+import { registerQueueOperatorGrantRoute } from "./queue-operator-grants.js";
 import type { PaneReports } from "./pane-reports.js";
 import { registerVaultAgentBridge, type VaultModule } from "./vault/wiring.js";
 import type { FreelanceCopilotService } from "./freelance-copilot/service.js";
@@ -72,6 +76,8 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   freelanceCopilotService?: FreelanceCopilotService;
   /** Design requests (every CLI pane) and the Design pane's worker tools; see design/agent-routes.ts. */
   designService?: DesignService;
+  /** The App Studio pane's agent tools; see app-studio/agent-routes.ts. */
+  appStudioService?: AppStudioService;
   vault?: VaultModule;
   /** Set once the pane browser routes are registered; agents choose saved Google sign-ins through it. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
@@ -182,6 +188,17 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "design", targetId, metadata })
     });
   }
+  if (deps.appStudioService) {
+    registerAppStudioAgentRoutes(app, deps.appStudioService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      uploadRoot: config.browserEvidenceArtifactRoot,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "app_studio", targetId, metadata })
+    });
+  }
   if (deps.vault) registerVaultAgentBridge(app, deps.vault, { store, requireBridge: requireCliBrowserBridgeContext });
   registerTaskAgentRoutes(app, {
     store,
@@ -193,6 +210,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   });
   registerPaneReportRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, requireBridge: requireCliBrowserBridgeContext, parseBody,
     reports: () => deps.nous?.current?.paneReports ?? null });
+  registerQueueOperatorGrantRoute(app, { routeOptions: defaultRouteRateLimitOptions, requireBridge: requireCliBrowserBridgeContext });
   async function requireCliAgentFilesContext(request: FastifyRequest, reply: FastifyReply) {
     if (!cliAgentFilesEnabled(config)) {
       await sendApiError(
@@ -395,6 +413,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       ownerAgentId: `cli:${bridge.claims.cliSessionId}`,
       traceId: request.requestIdForSpace
     }, { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` });
+    controlActivity?.noteAgent(browserPane.id, bridge.claims.paneId);
     await recordAudit(store, request, {
       action: "pane.cli.browser_session",
       targetType: "pane",
@@ -430,6 +449,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           request.requestIdForSpace,
           { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` }
         );
+        controlActivity?.noteAgent(browserPane.id, bridge.claims.paneId);
+        // A Browser Host started before these actions existed ignores them and answers no text: say so (fail closed).
+        if ((actionRequest.action.type === "press" || actionRequest.action.type === "masked_screenshot") && !actionResult.text) {
+          throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `${actionRequest.action.type} needs the Browser Host restart that brings it.`);
+        }
         const observation = {
           sessionId: actionResult.session.sessionId,
           paneId: actionResult.session.paneId,
@@ -525,6 +549,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return accountResult;
     }
     const session = await getActiveBrowserSessionForPane(store, pane);
+    controlActivity?.noteAgent(pane.id, bridge.claims.paneId);
     const actorId = `cli:${bridge.claims.cliSessionId}`;
     let result: unknown;
 
@@ -659,6 +684,9 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         break;
       }
       case "REQUEST_HANDOFF": {
+        // The operator's local time (plan clipboard:9XSwTPyxXP1W): at night the request waits for their morning, alive until an hour after it.
+        const owner = (await store.getRoom(pane.roomId)).ownerUserId;
+        const night = ownerQuietState(owner ? await store.getUserSettings(owner) : null);
         const handoff = await store.createBrowserHandoffRequest({
           sessionId: session.sessionId,
           paneId: pane.id,
@@ -668,11 +696,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           reason: `${input.command.kind}: ${input.command.reason}`.slice(0, 500),
           // A login or MFA needs the operator to come to the pane and a phone; five minutes ran out before
           // they arrived and "Take control" then had nothing to accept. The agent waits up to 15 minutes.
-          ttlSeconds: 1800
+          ttlSeconds: handoffTtlSeconds(night)
         });
         const handoffEvent = (await store.listEvents(pane.roomId)).find((event) => event.traceId === handoff.handoffRequestId);
         if (handoffEvent) eventBus.publish(handoffEvent);
-        result = { handoff };
+        result = { handoff, operator: ownerHandsAnswer(night) };
         break;
       }
       case "HANDOFF_STATUS": {

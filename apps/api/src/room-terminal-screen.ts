@@ -200,6 +200,40 @@ export function roomTerminalInterruptKey(runtimeId: string): string {
 }
 
 /**
+ * Text followed by Enter goes as a bracketed paste, like the local composer: Claude Code reads unbracketed text of
+ * about 60+ characters that arrives in one read with its Enter as a paste and drops the Enter, leaving a draft
+ * (scheduled tasks 2026-10-20). Single-key menu answers and answers without Enter stay keys.
+ */
+export function roomAnswerInput(answer: string, submit: boolean): string {
+  return submit && answer.length > 1 ? `\u001b[200~${answer}\u001b[201~` : answer;
+}
+
+/** A bare prompt marker among the last lines: the CLI's composer is empty. */
+export function roomComposerEmpty(screen: string): boolean {
+  const tail = screen.split("\n").filter((line) => line.trim()).slice(-6).join("\n");
+  return /^[ \t\u00a0]*[❯›>][ \t\u00a0]*$/m.test(tail);
+}
+
+/**
+ * Whether the composer (the last prompt line and the lines wrapped under it) still holds the typed text: its end, or
+ * Claude's "[Pasted text #N]" placeholder. Spaces are ignored, so wrapping does not matter; the last marker is the
+ * composer because earlier prompts echo above it.
+ */
+export function roomComposerHolds(screen: string, typed: string): boolean {
+  const lines = screen.split("\n");
+  const at = lines.findLastIndex((line) => /^[ \t\u00a0]*[❯›>]/.test(line));
+  if (at < 0) return false;
+  const composer = [lines[at]!];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.trim() || /^[\s─━]+$/.test(line)) break;
+    composer.push(line);
+  }
+  const compact = (value: string) => value.replace(/\s+/g, "");
+  const held = compact(composer.join("")).slice(1);
+  return held !== "" && (held.endsWith(compact(typed).slice(-32)) || /^\[Pastedtext#\d+(?:\+\d+lines)?\]$/.test(held));
+}
+
+/**
  * Identifies the question a CLI is showing: the last non-blank lines of the redacted screen.
  * An answer decided on one inspection is refused when the screen now shows another question.
  */

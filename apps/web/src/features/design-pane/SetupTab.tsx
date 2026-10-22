@@ -75,19 +75,19 @@ export function SetupTab({ pane, settings, brandKits, runtimeOptions, switching,
             <select value={current.defaultFormatId} disabled={busy} aria-label="Default format" onChange={(event) => void patch("Default format", { defaultFormatId: event.target.value })}>
               {current.defaultFormatId.startsWith("custom-") ? <option value={current.defaultFormatId}>{current.defaultFormatId}</option> : null}
               {DESIGN_FORMATS.map((format) => <option key={format.id} value={format.id}>{DESIGN_NETWORK_LABELS[format.network]} · {format.label} · {format.width}×{format.height}</option>)}
-            </select></label>
+            </select><small className="jc-muted">The size a new design and a request without a format start from.</small></label>
           <label className="jc-field"><span>Default engine</span>
             <select value={current.defaultEngine} disabled={busy} aria-label="Default engine" onChange={(event) => void patch("Default engine", { defaultEngine: event.target.value as DesignImageEngine })}>
               {DESIGN_IMAGE_ENGINES.map((id) => <option key={id} value={id}>{DESIGN_ENGINE_LABELS[id]}</option>)}
-            </select></label>
+            </select><small className="jc-muted">The AI model that draws pictures unless a request asks for another.</small></label>
           <label className="jc-field"><span>Default template</span>
             <select value={current.defaultTemplateId} disabled={busy} aria-label="Default template" onChange={(event) => void patch("Default template", { defaultTemplateId: event.target.value as DesignTemplateId })}>
               {DESIGN_TEMPLATE_IDS.map((id) => <option key={id} value={id}>{DESIGN_TEMPLATE_LABELS[id]}</option>)}
-            </select></label>
+            </select><small className="jc-muted">The layout the Studio starts with.</small></label>
           <label className="jc-field"><span>Brand kit</span>
             <select value={current.brandKitId} disabled={busy} aria-label="Default brand kit" onChange={(event) => void patch("Brand kit", { brandKitId: event.target.value })}>
               {brandKits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name}</option>)}
-            </select></label>
+            </select><small className="jc-muted">The logo, colours and fonts used when a request names no brand kit.</small></label>
           <label className="jc-field"><span>Motion length (seconds)</span>
             <input type="number" min={1} max={90} value={current.motion.defaultDurationSec} disabled={busy} aria-label="Motion length in seconds"
               onChange={(event) => void patch("Motion length", { motion: { ...current.motion, defaultDurationSec: Math.max(1, Math.min(90, Number.parseInt(event.target.value, 10) || 8)) } })} /></label>

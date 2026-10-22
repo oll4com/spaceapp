@@ -41,8 +41,11 @@ test("workspace add and remove apply the mounts to the running core and CLI serv
   await chmod(folder, 0o755);
   assert.equal(await run(["workspace", "add", folder], options), 0);
   assert.deepEqual(calls.at(-1).slice(-4), ["up", "-d", "spaceapp-core", "spaceapp-cli"]);
-  assert.match(stdout.value(), /uid 10001 and cannot write/);
-  assert.match(stdout.value(), new RegExp(`setfacl -R -m u:10001:rwX .*${folder}`));
+  // On a Windows runner the folder stays writable for everyone (no POSIX modes), so the Linux hint is rightly not needed there.
+  if (process.platform !== "win32") {
+    assert.match(stdout.value(), /uid 10001 and cannot write/);
+    assert.match(stdout.value(), new RegExp(`setfacl -R -m u:10001:rwX .*${folder}`));
+  }
   assert.equal(await run(["workspace", "remove", folder], options), 0);
   assert.deepEqual(calls.at(-1).slice(-4), ["up", "-d", "spaceapp-core", "spaceapp-cli"]);
 
@@ -78,7 +81,7 @@ test("a backup carries the workspace list and the CLI settings, and restore brin
   assert.equal(await run(["backup"], fixture.options), 0);
   const directory = join(root, "backups", "spaceapp-backup-20261016T070000000Z");
   assert.equal(await readFile(join(directory, "cli-config.tar.gz"), "utf8"), "cli-settings-archive");
-  assert.equal((await stat(join(directory, "cli-config.tar.gz"))).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal((await stat(join(directory, "cli-config.tar.gz"))).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(await readFile(join(directory, "spaceapp-config.json"), "utf8")).workspaces.map((w) => w.hostPath), [folder]);
 
   await run(["workspace", "remove", folder], fixture.options);

@@ -160,7 +160,7 @@ export class MockCopilots {
   private answer(method: string, args: unknown[]): unknown {
     switch (method) {
       // Operator-only surfaces of the maker's instance are not part of the public release: answer like a server without them.
-      case "roomShares": case "nous": case "nousMessages": case "nousOverview": case "nousDecisions":
+      case "roomShares": case "nous": case "nousMessages": case "nousOverview": case "nousDecisions": case "nousPaneBoard":
         throw new SpaceApiError("Not available in the public release.", { status: 404, code: "NOT_FOUND" });
       // The demo shows a finished run; asking, steering or deleting needs real models.
       case "createCouncilRun": case "councilRunAction": case "deleteCouncilRun":

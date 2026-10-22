@@ -13,7 +13,7 @@ const SWEEP_MS = 3_600_000;
 
 /**
  * The dock's file routes for Nous (plan clipboard:hQg9iKGYDqx7): upload, serve (with ranges, so a video can seek),
- * remove an unsent file; an hourly sweep removes unsent files after a day and every file after 30 days. Owner-scoped:
+ * remove an unsent file; an hourly sweep removes unsent files after a day; sent files stay until the conversation is cleared. Owner-scoped:
  * another user's file is not found.
  */
 export function registerNousAttachments(app: FastifyInstance, deps: {

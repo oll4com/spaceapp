@@ -713,9 +713,26 @@ jobs:
       - name: Install trusted-publishing npm CLI
         run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.18.0
 
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The images are published and verified by now: pin their digests into the package, so installs pull them by
+      # digest, and refuse if anything but templates/images.lock.json differs from the tested candidate.
+      - name: Pin the verified image digests into the npm candidate
+        run: >-
+          node scripts/embed-image-lock.mjs
+          --tarball "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz"
+          --runtime-version "${{ inputs.runtime_version }}"
+          --out-dir "$RUNNER_TEMP/pinned-npm-candidate"
+
       - name: Publish or verify the exact npm candidate
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
           RELEASE_GIT_HEAD: ${{ github.sha }}
-        run: node scripts/publish-npm-candidate.mjs "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz"
+        run: node scripts/publish-npm-candidate.mjs "$RUNNER_TEMP/pinned-npm-candidate/run-spaceapp-${{ inputs.version }}.tgz"

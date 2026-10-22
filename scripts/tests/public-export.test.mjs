@@ -128,6 +128,8 @@ test("public path policy exports application tests except the reviewed private-o
   // Review F15 (2026-10-14): every app and package test is public unless it cannot pass outside
   // the private environment; scripts/public-test-exclusions.json names each one with its reason.
   assert.equal(isPublicExportPath("apps/api/tests/private-runtime.test.ts"), true);
+  // Third-party licence texts ship with the code that carries them (Claude review 1.1.7 F5).
+  assert.equal(isPublicExportPath("THIRD_PARTY_LICENSES/google-material-symbols.txt"), true);
   assert.equal(isPublicExportPath("packages/runtime/tests/store.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/cli-runtimes.test.ts"), false);
   assert.equal(isPublicExportPath("apps/web/tests/public-deployment-config.test.ts"), false);
@@ -144,6 +146,14 @@ test("public path policy exports application tests except the reviewed private-o
   assert.equal(isPublicExportPath("packages/run-spaceapp/tests/cli.test.mjs"), true);
   assert.equal(isPublicExportPath("docs/legal/cli-distribution-policy.json"), true);
   assert.equal(isPublicExportPath("agent-skills/space-superpowers/SKILL.md"), true);
+  // The operator's own host skills (tracked in the source since 2026-10-19, 3cd14bbd7f) never ship:
+  // releases, deploys, VM syncs and devtest VMs exist only on the operator's hosts.
+  for (const skill of ["space-clipboard-ops", "space-cli-open-resume", "space-live-ops", "space-release-ops", "space-room-cli-status",
+    "space-sync-to-vm218", "spaceapp-devtest", "run-spaceapp-devtest", "spaceapp-setup-maintenance", "spaceapp-setup-release"]) {
+    assert.equal(isPublicExportPath(`agent-skills/${skill}/SKILL.md`), false, skill);
+  }
+  assert.equal(isPublicExportPath("agent-skills/spaceapp-setup-release/references/1.0.35-reference-helpers.zip"), false);
+  assert.equal(isPublicExportPath("agent-skills/space-progress/SKILL.md"), true);
   assert.equal(isPublicExportPath("SUPPORT.md"), true);
   for (const path of [
     ".trivyignore",

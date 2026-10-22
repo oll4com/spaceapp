@@ -46,48 +46,15 @@ describe("Database Retention Sweep", () => {
     expect(mockStore.pruneExpiredCliTranscriptChunks).toHaveBeenCalledTimes(4);
   });
 
-  it("prunes closed panes older than 24 hours in bounded batches", async () => {
-    let callCount = 0;
-    const mockStore: any = {
-      pruneClosedPanes: vi.fn(async ({ olderThanHours, batchSize }) => {
-        callCount++;
-        if (callCount === 1) return { deletedPanes: 500 };
-        return { deletedPanes: 42 };
-      })
-    };
-
-    const result = await runDatabaseRetentionSweep({
-      store: mockStore,
-      olderThanHoursForPanes: 24,
-      batchLimit: 500,
-      maxBatches: 5
-    });
-
-    expect(result.deletedPanes).toBe(542);
-    expect(result.batches).toBe(2);
-    expect(mockStore.pruneClosedPanes).toHaveBeenCalledTimes(2);
-    expect(mockStore.pruneClosedPanes).toHaveBeenCalledWith({
-      olderThanHours: 24,
-      batchSize: 500
-    });
-  });
-
-  it("executes combined retention sweep for both transcript chunks and closed panes", async () => {
+  it("never deletes closed panes: they go only by an explicit prune or with their room (Record Retention Invariant)", async () => {
     const mockStore: any = {
       pruneExpiredCliTranscriptChunks: vi.fn(async () => ({ deletedChunks: 15 })),
       pruneClosedPanes: vi.fn(async () => ({ deletedPanes: 25 }))
     };
 
-    const result = await runDatabaseRetentionSweep({
-      store: mockStore,
-      olderThanDays: 7,
-      olderThanHoursForPanes: 24,
-      batchLimit: 500,
-      maxBatches: 5
-    });
+    const result = await runDatabaseRetentionSweep({ store: mockStore, olderThanDays: 7, batchLimit: 500, maxBatches: 5 });
 
-    expect(result.deletedChunks).toBe(15);
-    expect(result.deletedPanes).toBe(25);
-    expect(result.batches).toBe(1);
+    expect(result).toEqual({ deletedChunks: 15, batches: 1 });
+    expect(mockStore.pruneClosedPanes).not.toHaveBeenCalled();
   });
 });

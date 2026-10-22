@@ -73,40 +73,6 @@ describe("OpenCode turn activity", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("records the OpenCode assistant message's token counters as measured run usage", async () => {
-    const { store, session, input } = executionFixture();
-    // A loopback stand-in for the OpenCode server's health and status probes; the
-    // prompt itself goes through the injected fetch.
-    const server = createServer((request, response) => {
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify(request.url?.startsWith("/global/health") ? { healthy: true } : { ses_native123: { type: "idle" } }));
-    });
-    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    try {
-      const controlDir = join(stateRoot, "opencode", "space-cli-control");
-      await mkdir(controlDir, { recursive: true });
-      await writeFile(join(controlDir, "ses_fixture123.json"), JSON.stringify({ version: 1, spaceSessionId: "ses_fixture123",
-        nativeSessionId: "ses_native123", serverPort: (server.address() as AddressInfo).port, serverHost: "127.0.0.1",
-        serverNetwork: "host", serverUsername: "fixture", serverPassword: "fixture" }));
-      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-        info: { role: "assistant", providerID: "opencode", modelID: "big-pickle",
-          tokens: { input: 1_200, output: 300, reasoning: 50, cache: { read: 8_000, write: 100 } } },
-        parts: [{ type: "text", text: "Done." }]
-      })));
-      const result = await runOpenCodeAgentTurn(input, {
-        env: { SPACE_ENABLE_OPENCODE_TURNS: "true", SPACE_OPENCODE_STATE_ROOT: stateRoot },
-        completionStore: store, fetchImpl: fetchImpl as never
-      });
-      expect(result.status).toBe("COMPLETED");
-      expect(store.getLatestSpaceAgentRun(session.sessionId)?.ledger?.usage).toMatchObject({
-        status: "MEASURED", inputTokens: 9_300, cachedInputTokens: 8_000, outputTokens: 350, reasoningOutputTokens: 50,
-        totalTokens: 9_650, model: "opencode/big-pickle", source: "opencode:session/message"
-      });
-    } finally {
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    }
-  });
-
   it("runs an OpenCode 2 turn: agent, prompt, wait, then the answer to that prompt with its usage", async () => {
     const { store, session, input } = executionFixture();
     const calls: string[] = [];

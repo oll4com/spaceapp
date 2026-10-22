@@ -94,8 +94,12 @@ describe("Space notifications (web)", () => {
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
     // A source turned down in the settings delivers nothing either.
     document.documentElement.removeAttribute("data-suppress-notifications");
-    act(() => { deliverNotifications([notification("d")], { channels: { inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true }, perSource: { MAIL_COPILOT: { inApp: false } } }); });
+    act(() => { deliverNotifications([notification("d")], { channels: { inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true }, perSource: { MAIL_COPILOT: { inApp: false } }, quietHours: { enabled: true, start: "23:00", end: "09:00" } }); });
     expect(screen.queryByText(/Anna/)).toBeNull();
+    // Held for the operator's morning (quiet hours, plan clipboard:9XSwTPyxXP1W): no toast or chime until then.
+    act(() => { deliverNotifications([notification("e", { payload: { heldUntil: new Date(Date.now() + 3_600_000).toISOString() } })], null); });
+    expect(screen.queryByText(/Anna/)).toBeNull();
+    expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
   });
 
   it("shows one toast per pane (the newest replaces the rest) and closes it on its own", async () => {

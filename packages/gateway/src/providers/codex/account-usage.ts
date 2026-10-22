@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { AccountPool } from "../../accounts/account-pool.js";
+import { createAdminGuard } from "../../admin/codex-sign-in.js";
 
 /**
  * Codex account quotas for tools on this host (`GET /__space-gateway/codex/account-usage`), in the schema
@@ -8,8 +9,12 @@ import type { AccountPool } from "../../accounts/account-pool.js";
  */
 const remaining = (used: number | null) => (used === null ? null : Math.max(0, Math.min(100, Math.round((100 - used) * 10) / 10)));
 
-export function registerCodexAccountUsageRoute(app: FastifyInstance, options: { pool: AccountPool }) {
-  app.get("/__space-gateway/codex/account-usage", async (_request, reply) => {
+export function registerCodexAccountUsageRoute(app: FastifyInstance, options: { pool: AccountPool; internalToken: string | null }) {
+  // Account labels can be e-mail addresses: only the root helper (with the admin token) reads them, never a CLI pane on
+  // loopback (security addendum step 8).
+  const guard = createAdminGuard(options.internalToken);
+  app.get("/__space-gateway/codex/account-usage", async (request, reply) => {
+    if (!(await guard(request, reply))) return reply;
     try {
       const accounts = (await options.pool.accounts())
         .filter((account) => account.status !== "PAUSED" && account.status !== "DEACTIVATED" && !options.pool.isSignedOut(account)

@@ -4,6 +4,7 @@ import type { ClipboardItem } from "@space/contracts";
 
 const mocks = vi.hoisted(() => ({
   createClipboardItem: vi.fn(),
+  updateClipboardNoteText: vi.fn(),
   deleteClipboardItem: vi.fn(),
   clipboardItems: vi.fn()
 }));
@@ -47,27 +48,42 @@ describe("StickyNoteWindow", () => {
     localStorage.clear();
   });
 
-  it("keeps one clipboard item per note: each save replaces the previous version", async () => {
+  it("keeps one clipboard item per note: each save changes its text in place and deletes nothing", async () => {
     vi.useFakeTimers();
     try {
-      let saveCount = 0;
-      mocks.createClipboardItem.mockImplementation(async (input: { text: string }) => ({ ...sampleNote, id: `clipboard:v${++saveCount}`, text: input.text }));
-      mocks.deleteClipboardItem.mockResolvedValue({ id: "x", deleted: true });
+      mocks.updateClipboardNoteText.mockImplementation(async (id: string, text: string) => ({ ...sampleNote, id, source: "AGENT_NOTE", text }));
       const onUpdateItemId = vi.fn();
       render(<StickyNoteWindow id="note" initialText={sampleNote.text} itemId={sampleNote.id} onClose={vi.fn()} onUpdateItemId={onUpdateItemId} />);
       const textarea = screen.getByRole("textbox", { name: "Sticky note content" });
 
       fireEvent.change(textarea, { target: { value: "First edit" } });
       await act(async () => { await vi.advanceTimersByTimeAsync(1300); });
-      expect(mocks.createClipboardItem).toHaveBeenLastCalledWith({ text: "First edit", source: "MANUAL_NOTE" });
-      expect(mocks.deleteClipboardItem).toHaveBeenLastCalledWith(sampleNote.id);
-      expect(onUpdateItemId).toHaveBeenLastCalledWith("clipboard:v1");
+      expect(mocks.updateClipboardNoteText).toHaveBeenLastCalledWith(sampleNote.id, "First edit");
 
       fireEvent.change(textarea, { target: { value: "Second edit" } });
       await act(async () => { await vi.advanceTimersByTimeAsync(1300); });
-      expect(mocks.deleteClipboardItem).toHaveBeenLastCalledWith("clipboard:v1");
-      expect(onUpdateItemId).toHaveBeenLastCalledWith("clipboard:v2");
-      expect(mocks.createClipboardItem).toHaveBeenCalledTimes(2);
+      expect(mocks.updateClipboardNoteText).toHaveBeenLastCalledWith(sampleNote.id, "Second edit");
+      expect(mocks.updateClipboardNoteText).toHaveBeenCalledTimes(2);
+      expect(mocks.createClipboardItem).not.toHaveBeenCalled();
+      expect(mocks.deleteClipboardItem).not.toHaveBeenCalled();
+      expect(onUpdateItemId).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("saves a note whose record was deleted meanwhile as a new manual note", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.updateClipboardNoteText.mockRejectedValue(Object.assign(new Error("Clipboard note was not found."), { status: 404 }));
+      mocks.createClipboardItem.mockImplementation(async (input: { text: string }) => ({ ...sampleNote, id: "clipboard:new", text: input.text }));
+      const onUpdateItemId = vi.fn();
+      render(<StickyNoteWindow id="note" initialText={sampleNote.text} itemId={sampleNote.id} onClose={vi.fn()} onUpdateItemId={onUpdateItemId} />);
+      fireEvent.change(screen.getByRole("textbox", { name: "Sticky note content" }), { target: { value: "Edited after delete" } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1300); });
+      expect(mocks.createClipboardItem).toHaveBeenCalledWith({ text: "Edited after delete", source: "MANUAL_NOTE" });
+      expect(onUpdateItemId).toHaveBeenLastCalledWith("clipboard:new");
+      expect(mocks.deleteClipboardItem).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

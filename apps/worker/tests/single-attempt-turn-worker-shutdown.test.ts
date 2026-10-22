@@ -109,7 +109,8 @@ describe("single-attempt turns after a worker shutdown", () => {
     const requests: string[] = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       requests.push(new URL(url).pathname);
-      if (url.endsWith("/abort")) return new Response("true", { status: 200 });
+      if (url.endsWith("/interrupt")) return new Response(JSON.stringify({ interrupted: true }), { status: 200 });
+      if (url.endsWith("/agent")) return new Response("{}", { status: 200 });
       // The prompt reached the OpenCode server; then the worker shuts down mid-turn.
       controller.abort(new Error("WORKER_SHUTDOWN"));
       init?.signal?.throwIfAborted();
@@ -118,8 +119,8 @@ describe("single-attempt turns after a worker shutdown", () => {
     await expect(runOpenCodeAgentTurn(input, {
       env: { SPACE_ENABLE_OPENCODE_TURNS: "true" }, completionStore: store, fetchImpl: fetchImpl as never, abortSignal: controller.signal
     })).rejects.toThrow("WORKER_SHUTDOWN");
-    // One prompt send, then the bounded server-side abort; no second send.
-    expect(requests).toEqual(["/session/ses_fixture123/message", "/session/ses_fixture123/abort"]);
+    // The agent pick, one prompt send, then the bounded server-side interrupt; no second send.
+    expect(requests).toEqual(["/api/session/ses_fixture123/agent", "/api/session/ses_fixture123/prompt", "/api/session/ses_fixture123/interrupt"]);
     expect(state()).toMatchObject({
       run: { status: "INTERRUPTED", errorCode: "TURN_OUTCOME_UNKNOWN", errorMessage: singleAttemptTurnOutcomeUnknownMessage },
       response: { status: "INTERRUPTED" },

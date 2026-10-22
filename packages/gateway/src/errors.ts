@@ -13,6 +13,7 @@ export const gatewayErrors = {
   inactiveApiKey: () => gatewayError("invalid_api_key", "This API key is disabled.", "authentication_error"),
   expiredApiKey: () => gatewayError("invalid_api_key", "This API key has expired.", "authentication_error"),
   noAccounts: () => gatewayError("no_accounts", "No accounts are available in Space Gateway.", "server_error"),
+  keyRateLimited: () => gatewayError("rate_limit_exceeded", "This API key sent too many requests this minute.", "rate_limit_error"),
   draining: () => gatewayError("gateway_draining", "Space Gateway is restarting. Retry the request.", "server_error"),
   unavailable: () => gatewayError("gateway_unavailable", "Space Gateway storage is unavailable.", "server_error"),
   sourceNotAllowed: () => gatewayError("source_not_allowed", "This address may not use Space Gateway.", "permission_error"),

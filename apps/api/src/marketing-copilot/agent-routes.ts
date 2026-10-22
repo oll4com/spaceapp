@@ -1,3 +1,4 @@
+import { operatorHands } from "../owner-clock.js";
 import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -17,7 +18,7 @@ export const cliMarketingCopilotPathPrefix = "/api/cli/marketing-copilot/";
 
 export interface CliBridgeClaims { roomId: string; paneId: string; cliSessionId: string }
 export interface MarketingCopilotAgentRouteDependencies {
-  store: Pick<SpaceStore, "getRoom" | "getPane" | "getControlActor">;
+  store: Pick<SpaceStore, "getRoom" | "getPane" | "getControlActor" | "getUserSettings">;
   routeOptions: Record<string, unknown>;
   requireBridge(request: FastifyRequest, reply: FastifyReply): Promise<{ claims: CliBridgeClaims } | null>;
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
@@ -91,9 +92,14 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
     return { facts: query.query ? searchPublicSpaceappKnowledge(query.query, 8) : PUBLIC_SPACEAPP_KNOWLEDGE };
   });
   handle("post", "next", async ({ owner, pane }, request) => service.nextItem(owner, pane, parseBody(z.object({ waitMs }).strict(), request.body ?? {})));
-  handle("post", "report", async ({ owner, pane }, request) => service.reportBrief(owner, pane, parseBody(z.object({
-    eventId: marketingEventIdSchema, outcome: z.enum(["drafted", "needs_user", "skipped", "done"]), summary: z.string().trim().min(1).max(1000), memoryIds: z.array(marketingMemoryIdSchema).max(20).default([])
-  }).strict(), request.body ?? {})));
+  handle("post", "report", async ({ owner, pane }, request) => {
+    const input = parseBody(z.object({
+      eventId: marketingEventIdSchema, outcome: z.enum(["drafted", "needs_user", "skipped", "done"]), summary: z.string().trim().min(1).max(1000), memoryIds: z.array(marketingMemoryIdSchema).max(20).default([])
+    }).strict(), request.body ?? {});
+    const reported = await service.reportBrief(owner, pane, input);
+    // A needs-you report learns the operator's local time and, at night, until when it is held (plan clipboard:9XSwTPyxXP1W).
+    return input.outcome === "needs_user" ? { ...reported, operator: await operatorHands(deps.store, owner) } : reported;
+  });
 
   handle("get", "posts", async ({ owner }, request) => {
     const query = parseQuery(z.object({ status: z.string().max(200).optional(), channel: marketingChannelSchema.optional(), campaignId: marketingCampaignIdSchema.optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }).strict(), request.query ?? {});
@@ -128,6 +134,6 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
   handle("post", "rules", async ({ owner, pane }, request) => ({ rule: await service.proposeRule(owner, pane, parseBody(marketingRuleProposalSchema, request.body ?? {}), "AGENT") }));
   handle("post", "note", async ({ owner, pane }, request) => {
     const input = parseBody(z.object({ message: z.string().trim().min(1).max(1000), postId: marketingPostIdSchema.optional(), needsUser: z.boolean().default(false) }).strict(), request.body ?? {});
-    return { event: await service.note(owner, pane, input) };
+    return { event: await service.note(owner, pane, input), ...(input.needsUser ? { operator: await operatorHands(deps.store, owner) } : {}) };
   });
 }

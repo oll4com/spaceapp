@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CliHostAttachInput, CliHostEventListener, CliHostSessionSummary } from "@space/cli-host";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
-import { createCsrfToken, signSession } from "../src/auth.js";
+import { createCsrfToken, signSession, signSessionWithTtl } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import { ownedSystemAnalytics } from "./owned-system-analytics.js";
 
@@ -40,6 +40,14 @@ function authFor(userId: string, proofScope?: "READ_ONLY") {
     },
     sessionSecret
   );
+  const csrfToken = createCsrfToken(token, sessionSecret);
+  if (!csrfToken) throw new Error("Failed to create test CSRF token.");
+  return { cookie: `space_session=${token}`, csrfToken };
+}
+
+// A broker-signed UI proof session (user:operator-proof, UI_PROOF scope), as space_authenticated_ui_proof gets it.
+function proofAuth() {
+  const token = signSessionWithTtl({ id: "user:operator-proof", email: "space@space.local", role: "ADMIN", brokerScope: "UI_PROOF" }, sessionSecret, 600);
   const csrfToken = createCsrfToken(token, sessionSecret);
   if (!csrfToken) throw new Error("Failed to create test CSRF token.");
   return { cookie: `space_session=${token}`, csrfToken };
@@ -81,7 +89,7 @@ async function waitForFrame(
   throw new Error(`Timed out waiting for terminal frame. Observed: ${JSON.stringify(frames)}`);
 }
 
-async function createHarness() {
+async function createHarness(roomKind?: "AGENT_PROOF") {
   const commandDir = await mkdtemp(join(tmpdir(), "space-cli-control-command-"));
   const workspaceRoot = await mkdtemp(join(tmpdir(), "space-cli-control-workspace-"));
   const commandPath = join(commandDir, "codex-vscode-parity");
@@ -89,7 +97,7 @@ async function createHarness() {
   await chmod(commandPath, 0o755);
 
   const store = new InMemorySpaceStore();
-  const room = store.createRoom({ name: "CLI terminal control", initialPaneCount: 0 });
+  const room = store.createRoom({ name: "CLI terminal control", initialPaneCount: 0, ...(roomKind ? { kind: roomKind } : {}) });
   const pane = store.createPane({ roomId: room.id, title: "Codex CLI", mode: "TERMINAL", cwd: "/etc" });
   const input = vi.fn(async () => ({ accepted: true, acceptedAtMs: Date.now() }));
   const resize = vi.fn(async () => undefined);
@@ -1019,6 +1027,65 @@ describe("CLI terminal protocol-v2 control", () => {
       expect(observer.closeCode()).toBeNull();
       observer.socket.terminate();
       controller.socket.terminate();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("attaches an operator-proof session in an operator room as an observer that never takes control or resizes", async () => {
+    // Security addendum clipboard:tmmVA6-ezGzD: a phone-size UI proof resized an operator pane's PTY.
+    const harness = await createHarness();
+    const operatorAuth = authFor("user:operator");
+    const uiProof = proofAuth();
+    try {
+      const session = await issueSession(harness, operatorAuth);
+      const controller = await connect(harness, session, operatorAuth, { tabLineageId: firstTabLineageId, pageClientId: firstPageClientId });
+      const controllerReady = await waitForFrame(controller.frames, (frame) => frame.type === "ready");
+      expect(controllerReady.controlState).toBe("CONTROLLER");
+
+      const proofSession = await issueSession(harness, uiProof, "GET");
+      expect(proofSession.session.sessionId).toBe(session.session.sessionId);
+      const proof = await connect(harness, proofSession, uiProof, {
+        tabLineageId: secondTabLineageId, pageClientId: secondPageClientId, initialCols: 41, initialRows: 17
+      });
+      await expect(waitForFrame(proof.frames, (frame) => frame.type === "ready")).resolves.toMatchObject({
+        clientMode: "OBSERVER", controlState: "OBSERVER"
+      });
+      proof.socket.send(JSON.stringify({ type: "resize", cols: 41, rows: 17 }));
+      proof.socket.send(JSON.stringify({ type: "input", data: "x" }));
+      proof.socket.send(JSON.stringify({ type: "control_upgrade" }));
+      await waitForFrame(proof.frames, (frame) => frame.type === "control_denied" && frame.code === "CLI_OBSERVER_MUTATION_DENIED");
+
+      controller.socket.send(JSON.stringify({ type: "input", data: "y", leaseId: controllerReady.leaseId }));
+      await vi.waitFor(() => expect(harness.host.input.mock.calls.map((call) => (call as unknown[])[2])).toEqual(["y"]));
+      expect(harness.host.resize).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 41, 17);
+      expect(controller.frames.some((frame) => frame.type === "control_state" && frame.controlState !== "CONTROLLER")).toBe(false);
+
+      // After the operator's socket closes, a new proof attach still only watches.
+      controller.socket.terminate();
+      const again = await connect(harness, await issueSession(harness, uiProof, "GET"), uiProof, {
+        tabLineageId: secondTabLineageId, pageClientId: "66666666-6666-4666-8666-666666666666", initialCols: 41, initialRows: 17
+      });
+      await expect(waitForFrame(again.frames, (frame) => frame.type === "ready")).resolves.toMatchObject({ controlState: "OBSERVER" });
+      expect(harness.host.resize).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 41, 17);
+      proof.socket.terminate();
+      again.socket.terminate();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("lets an operator-proof session control a pane in its Agent Proof room", async () => {
+    const harness = await createHarness("AGENT_PROOF");
+    const uiProof = proofAuth();
+    try {
+      const session = await issueSession(harness, uiProof);
+      const proof = await connect(harness, session, uiProof, { tabLineageId: firstTabLineageId, pageClientId: firstPageClientId });
+      const ready = await waitForFrame(proof.frames, (frame) => frame.type === "ready");
+      expect(ready).toMatchObject({ clientMode: "INTERACTIVE", controlState: "CONTROLLER" });
+      proof.socket.send(JSON.stringify({ type: "input", data: "z", leaseId: ready.leaseId }));
+      await vi.waitFor(() => expect(harness.host.input.mock.calls.map((call) => (call as unknown[])[2])).toEqual(["z"]));
+      proof.socket.terminate();
     } finally {
       await harness.cleanup();
     }

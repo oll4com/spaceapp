@@ -11,7 +11,10 @@ test("every compose image is pinned to a version or a digest", () => {
   assert.ok(images.length >= 7);
   for (const image of images) {
     if (image.startsWith("ghcr.io/oll4com/spaceapp-")) {
-      assert.match(image, /:\$\{SPACEAPP_IMAGE_TAG\}$/, image);
+      // The version tag plus the digest the published package pins (empty in a source checkout).
+      const target = image.match(/^ghcr\.io\/oll4com\/spaceapp-(core|cli|browser):/)?.[1];
+      assert.ok(target, image);
+      assert.equal(image, `ghcr.io/oll4com/spaceapp-${target}:\${SPACEAPP_IMAGE_TAG}\${SPACEAPP_${target.toUpperCase()}_IMAGE_DIGEST:-}`);
       continue;
     }
     const tag = image.split("@")[0].split(":").at(-1);

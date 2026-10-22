@@ -18,7 +18,7 @@ import { CliShortcutsMenu, cliTranscriptCommand } from "./CliShortcutsMenu.js";
 import { CliPlansMenu } from "./CliPlansMenu.js";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import { cliShortcutCommandsForRuntime, resolveCliModeShortcut, OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
-import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, File as FileIcon, Github, Hash, Images, Keyboard, Loader2, Maximize2, Square, Terminal as TerminalIcon, Trash2, X } from "../ui-theme/app-icons.js";
+import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, File as FileIcon, Github, Hash, Images, Keyboard, Loader2, Maximize2, NotebookPen, Square, Terminal as TerminalIcon, Trash2, X } from "../ui-theme/app-icons.js";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { detectKeyboardLayoutMismatch, toggleKeyboardLayout, type LayoutMismatchDetection } from "../agent-pane/greek-layout-converter.js";
 import { createTerminalResizeTrace } from "./terminal-resize-trace.js";
@@ -2041,15 +2041,20 @@ export const TerminalPane = memo(function TerminalPane({
     };
   });
 
-  const [localComposerOpen, setLocalComposerOpen] = useState(() => {
-    try { return getSpaceRuntime().platform.localStorage.getItem(`space.cli.localComposer.open:${pane.id}`) === "true"; }
-    catch { return false; }
+  // A pane's own open/close choice wins; panes without one follow the "Local draft open by default" setting.
+  const [localComposerChoice, setLocalComposerChoice] = useState<boolean | null>(() => {
+    try {
+      const stored = getSpaceRuntime().platform.localStorage.getItem(`space.cli.localComposer.open:${pane.id}`);
+      return stored === null ? null : stored === "true";
+    } catch { return null; }
   });
+  const localComposerOpen = localComposerChoice ?? Boolean(voiceInput.settings.terminalLocalDraft);
   function toggleLocalComposer(open: boolean) {
-    setLocalComposerOpen(open);
+    setLocalComposerChoice(open);
     try { getSpaceRuntime().platform.localStorage.setItem(`space.cli.localComposer.open:${pane.id}`, String(open)); }
     catch { /* Draft persistence reports its own storage errors. This is only the open preference. */ }
   }
+  const [localComposerToolbar, setLocalComposerToolbar] = useState<HTMLDivElement | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: string; appSelection?: boolean } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const voiceInputRef = useRef(voiceInput);
@@ -9164,8 +9169,9 @@ export const TerminalPane = memo(function TerminalPane({
             ) : null}
             <div className="terminal-floating-controls">
               {!observerOnly && sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId !== "cli:root" ? (
-                <button type="button" className="compact-action" aria-label="Open local draft" aria-expanded={localComposerOpen}
-                  disabled={localComposerOpen} onClick={() => toggleLocalComposer(true)}>Draft</button>
+                localComposerOpen ? <div ref={setLocalComposerToolbar} className="local-cli-toolbar" data-local-cli-composer="" /> :
+                  <button type="button" className="terminal-shortcuts-button" aria-label="Open local draft" title="Local draft"
+                    onClick={() => toggleLocalComposer(true)}><NotebookPen aria-hidden="true" /></button>
               ) : null}
               {voiceInput.settings.terminalShortcutsButton ? (
                 <CliShortcutsMenu commands={cliShortcutCommandsForRuntime(sessionResponse?.session.runtimeId)} showKeys transcriptCommand={cliTranscriptCommand(sessionResponse?.session.runtimeId)} disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onCommand={runCliShortcut} />
@@ -9251,7 +9257,8 @@ export const TerminalPane = memo(function TerminalPane({
                   </button>
                 </div>
               ) : null}
-              {isFloatingTurnControlSession && voiceInput.settings.terminalTurnControl ? (
+              {/* With the local draft open its own send sits beside the draft; this one stays only to Stop or send typed terminal text. */}
+              {isFloatingTurnControlSession && voiceInput.settings.terminalTurnControl && (!localComposerOpen || turnControlState !== "idle" || stopsBackgroundAgents || turnControlStopping) ? (
                 <button
                   type="button"
                   className="terminal-turn-control"
@@ -9278,7 +9285,7 @@ export const TerminalPane = memo(function TerminalPane({
           onUploaded={(files) => setUploadPreviews(current => [...current, ...files.filter(file => file.isImage && file.artifactId && !current.some(item => item.id === file.artifactId)).map(file => ({
             id: file.artifactId!, name: file.originalFilename, path: file.terminalPath, objectUrl: api.artifactFileUrl(file.artifactId!)
           }))])}
-          onClose={() => toggleLocalComposer(false)} />
+          onClose={() => toggleLocalComposer(false)} toolbar={localComposerToolbar} />
       ) : null}
       {contextMenu && typeof document !== "undefined" ? (() => {
         const contextMenuLeft = Math.max(8, Math.min(contextMenu.x, window.innerWidth - 210 - 8));

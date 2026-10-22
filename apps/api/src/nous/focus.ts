@@ -2,6 +2,7 @@ import { z } from "zod";
 import { eventSchema, nousFocusRequestPayloadSchema, type Pane, type Room } from "@space/contracts";
 import { makeSpaceId, type SpaceEventBus } from "@space/runtime";
 import { paneLabel } from "./digest.js";
+import type { OwnerQuietState } from "../owner-clock.js";
 
 /**
  * space_focus_pane (plan clipboard:twwygEtD4uuX): Nous brings the operator to a pane that needs them. The server only
@@ -25,22 +26,38 @@ export type NousFocusEventBus = Pick<SpaceEventBus, "publish">;
 /** A NousToolOutcome, declared here so focus.ts does not import tools.ts (no dependency cycle). */
 export interface NousFocusOutcome { ok: boolean; display: string; result: string; refused?: boolean }
 
-export function createNousFocus(deps: { eventBus: NousFocusEventBus; now?: () => number }) {
+/** `quiet`: the operator's quiet hours (plan clipboard:9XSwTPyxXP1W): at night a focus waits and is offered once at the end of them. */
+export function createNousFocus(deps: { eventBus: NousFocusEventBus; now?: () => number; quiet?: (owner: string) => Promise<OwnerQuietState | null> }) {
   const now = deps.now ?? Date.now;
   const lastByOwner = new Map<string, number>();
+  // shortcut: held focus requests live in memory; an API restart in the night drops them (the morning batch still lists the pane).
+  const held = new Map<string, { roomId: string; paneId: string; timer: ReturnType<typeof setTimeout> }>();
+  function publish(owner: string, roomId: string, paneId: string) {
+    const payload = nousFocusRequestPayloadSchema.parse({ requestId: makeSpaceId("nous_focus"), ownerUserId: owner, roomId, paneId });
+    deps.eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId, paneId, turnId: null, workflowId: null,
+      traceId: `nous-focus:${payload.requestId}`, type: "NOUS_FOCUS_REQUESTED", message: "Nous: a pane needs the operator", payload,
+      createdAt: new Date(now()).toISOString() }));
+  }
   return {
-    request(owner: string, room: Room, pane: Pane, reason: string): NousFocusOutcome {
+    async request(owner: string, room: Room, pane: Pane, reason: string): Promise<NousFocusOutcome> {
       const label = paneLabel(pane);
+      const night = deps.quiet ? await deps.quiet(owner).catch(() => null) : null;
+      if (night?.quiet && night.wakeAt) {
+        // The newest held request wins: one offer at the end of the night.
+        clearTimeout(held.get(owner)?.timer);
+        const timer = setTimeout(() => { held.delete(owner); publish(owner, room.id, pane.id); }, Math.max(0, Date.parse(night.wakeAt) - now()));
+        timer.unref?.();
+        held.set(owner, { roomId: room.id, paneId: pane.id, timer });
+        return { ok: true, display: `HELD: bringing the operator to ${label} waits for the morning`,
+          result: `HELD: it is night for the operator (${night.local}). Their screen offers ${label} in ${room.name} once at ${night.wakeLocal}; keep the work ready and continue other work.` };
+      }
       const last = lastByOwner.get(owner);
       if (last !== undefined && now() - last < FOCUS_PANE_MIN_INTERVAL_MS) {
         return { ok: false, refused: true, display: `Not bringing the operator to ${label} yet`,
           result: "You brought the operator to a pane less than a minute ago. Wait for them, or tell them in your answer." };
       }
       lastByOwner.set(owner, now());
-      const payload = nousFocusRequestPayloadSchema.parse({ requestId: makeSpaceId("nous_focus"), ownerUserId: owner, roomId: room.id, paneId: pane.id });
-      deps.eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId: room.id, paneId: pane.id, turnId: null, workflowId: null,
-        traceId: `nous-focus:${payload.requestId}`, type: "NOUS_FOCUS_REQUESTED", message: "Nous: a pane needs the operator", payload,
-        createdAt: new Date(now()).toISOString() }));
+      publish(owner, room.id, pane.id);
       return { ok: true, display: `Brought the operator to ${label} in ${room.name}: ${reason.slice(0, 160)}`,
         result: `The operator's screen offers to take them to ${label} in ${room.name}. They may say Not now; do not repeat it within the minute.` };
     }

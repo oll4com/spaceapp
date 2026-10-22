@@ -15,9 +15,9 @@ export interface SkippedPaneType { typeId: string; label: string; reason: string
  * profiles) is its default agent when ready. Otherwise the first ready CLI in catalog order.
  */
 export const JOB_APPLY_PREFERRED_RUNTIME_ID = "cli:claude";
-/** Copilot panes (Job, Mail, Marketing, Freelance) and Design panes run their agent in a CLI session of the pane. */
-export function isCopilotPaneMode(mode: string): mode is "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" {
-  return mode === "JOB_APPLY" || mode === "MAIL_COPILOT" || mode === "MARKETING_COPILOT" || mode === "FREELANCE_COPILOT" || mode === "DESIGN";
+/** Copilot panes (Job, Mail, Marketing, Freelance), Design and App Studio panes run their agent in a CLI session of the pane. */
+export function isCopilotPaneMode(mode: string): mode is "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" | "APP_STUDIO" {
+  return mode === "JOB_APPLY" || mode === "MAIL_COPILOT" || mode === "MARKETING_COPILOT" || mode === "FREELANCE_COPILOT" || mode === "DESIGN" || mode === "APP_STUDIO";
 }
 export function defaultJobApplyRuntimeId(readyCliRuntimeIds: readonly string[]): string | undefined {
   return readyCliRuntimeIds.includes(JOB_APPLY_PREFERRED_RUNTIME_ID) ? JOB_APPLY_PREFERRED_RUNTIME_ID : readyCliRuntimeIds[0];
@@ -99,8 +99,8 @@ export function createRoomPaneCommands(options: {
           ? `${entry.definition.label} CLI` : item.mode === "HARNESS" ? "Harness" : entry.definition.label,
         mode: item.mode,
         ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: roomCwd } : {}),
-        // No cwd: the agent gets a managed per-session workspace with the Space bootstrap. Design defaults to Claude Code too.
-        ...(item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" || item.mode === "FREELANCE_COPILOT" || item.mode === "DESIGN" ? { terminalRuntimeId: item.terminalRuntimeId ?? defaultJobApplyRuntimeId(readyCliRuntimeIds) } : {}),
+        // No cwd: the agent gets a managed per-session workspace with the Space bootstrap. Design and App Studio default to Claude Code too.
+        ...(item.mode === "JOB_APPLY" || item.mode === "MAIL_COPILOT" || item.mode === "MARKETING_COPILOT" || item.mode === "FREELANCE_COPILOT" || item.mode === "DESIGN" || item.mode === "APP_STUDIO" ? { terminalRuntimeId: item.terminalRuntimeId ?? defaultJobApplyRuntimeId(readyCliRuntimeIds) } : {}),
         ...(item.mode === "FILES" || item.mode === "DATABASES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
         ...(item.mode === "VNC" && item.vncTarget ? { vncTarget: item.vncTarget } : {})
       };

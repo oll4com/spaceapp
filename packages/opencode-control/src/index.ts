@@ -171,37 +171,9 @@ export function openCodeServerBaseUrl(port: number, host = "127.0.0.1"): string 
   return `http://${host}:${port}`;
 }
 
-function openCodeServerAuthorization(control: OpenCodeServerControl): string {
-  return `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`;
-}
-
-export async function openCodeServerFetch(
-  control: OpenCodeServerControl,
-  path: string,
-  init: RequestInit = {},
-  timeoutMs = opencodeServerControlRequestTimeoutMs,
-  fetchImpl: typeof fetch = fetch
-): Promise<Response> {
-  const response = await fetchImpl(`${openCodeServerBaseUrl(control.serverPort, control.serverHost)}${path}`, {
-    ...init,
-    headers: {
-      ...(init.headers ?? {}),
-      authorization: openCodeServerAuthorization(control)
-    },
-    signal: init.signal ?? AbortSignal.timeout(timeoutMs)
-  });
-  // OpenCode 2 answers paths it does not serve (every v1 route) with its web UI and 200: treat that as not found.
-  if (response.ok && (response.headers.get("content-type") ?? "").includes("text/html")) {
-    await response.body?.cancel().catch(() => undefined);
-    return new Response(null, { status: 404, statusText: "OpenCode web UI" });
-  }
-  return response;
-}
-
-// OpenCode 2 (@opencode/cli) serves a new API under /api and accepts only this Basic auth user name.
+// OpenCode 2 (@opencode/cli) serves its API under /api and accepts only this Basic auth user name. OpenCode 1 and its
+// v1 REST API were retired (operator decision 2026-10-18, plan clipboard:kJ1BIeylJRLG).
 const openCodeV2Username = "opencode";
-const openCodeApiVersionTtlMs = 30_000;
-const openCodeApiVersions = new Map<string, { version: 1 | 2; checkedAt: number }>();
 
 export function openCodeV2Authorization(control: OpenCodeServerControl): string {
   return `Basic ${Buffer.from(`${openCodeV2Username}:${control.serverPassword}`).toString("base64")}`;
@@ -218,23 +190,6 @@ async function openCodeV2Fetch(
     headers: { ...(init.headers ?? {}), authorization: openCodeV2Authorization(control) },
     signal: init.signal ?? AbortSignal.timeout(timeoutMs)
   });
-}
-
-/**
- * 2 when the server answers OpenCode 2's /api/info, 1 otherwise (a v1 server rejects the v2 user name or serves its
- * web UI there). Cached per server for 30 s, so a server switched to another major is seen within that time.
- */
-export async function openCodeServerApiVersion(control: OpenCodeServerControl): Promise<1 | 2> {
-  const key = `${control.serverHost ?? "127.0.0.1"}:${control.serverPort}`;
-  const cached = openCodeApiVersions.get(key);
-  if (cached && Date.now() - cached.checkedAt < openCodeApiVersionTtlMs) return cached.version;
-  // An unreachable server is not cached: the caller's own request reports that failure.
-  const response = await openCodeV2Fetch(control, "/api/info", {}, opencodeServerControlHealthTimeoutMs).catch(() => null);
-  if (!response) return 1;
-  const info = response.ok ? await response.json().catch(() => null) as { version?: unknown } | null : null;
-  const version = typeof info?.version === "string" && /^2\./.test(info.version) ? 2 : 1;
-  openCodeApiVersions.set(key, { version, checkedAt: Date.now() });
-  return version;
 }
 
 function openCodeLocationQuery(directory: string): string {
@@ -271,42 +226,31 @@ export function openCodeV2MessagesAsV1(messages: unknown[]): Array<{ info: JsonR
   return result;
 }
 
-/** The session's last `limit` messages, oldest first, in the v1 {info, parts} shape on either server. */
+/** The session's last `limit` messages, oldest first, in the {info, parts} shape Space reads. */
 export async function fetchOpenCodeSessionMessages(
   control: OpenCodeServerControl,
   nativeSessionId: string,
   limit: number
 ): Promise<unknown[]> {
-  const id = encodeURIComponent(nativeSessionId);
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  const response = v2
-    ? await openCodeV2Fetch(control, `/api/session/${id}/message?limit=${limit}&order=desc`)
-    : await openCodeServerFetch(control, `/session/${id}/message?limit=${limit}`);
+  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/message?limit=${limit}&order=desc`);
   if (!response.ok) throw new Error(`OpenCode message list failed with HTTP ${response.status}.`);
-  const payload: unknown = await response.json();
-  if (!v2) return Array.isArray(payload) ? payload : [];
-  const data = jsonRecord(payload).data;
+  const data = jsonRecord(await response.json()).data;
   return openCodeV2MessagesAsV1(Array.isArray(data) ? [...data].reverse() : []);
 }
 
 /** Queues a user prompt without waiting for the turn; false when the server refused it. */
 export async function sendOpenCodePrompt(control: OpenCodeServerControl, nativeSessionId: string, text: string): Promise<boolean> {
-  const id = encodeURIComponent(nativeSessionId);
-  const headers = { "content-type": "application/json" };
-  const response = await openCodeServerApiVersion(control) === 2
-    ? await openCodeV2Fetch(control, `/api/session/${id}/prompt`, { method: "POST", headers, body: JSON.stringify({ text }) })
-    : await openCodeServerFetch(control, `/session/${id}/prompt_async`, { method: "POST", headers, body: JSON.stringify({ parts: [{ type: "text", text }] }) });
+  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/prompt`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
   return response.ok;
 }
 
 /** Names of the visible primary agents (modes) the session can switch between. */
 export async function fetchOpenCodeAgentNames(control: OpenCodeServerControl, directory = control.directory ?? "/etc"): Promise<string[]> {
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  const response = v2 ? await openCodeV2Fetch(control, `/api/agent?${openCodeLocationQuery(directory)}`) : await openCodeServerFetch(control, "/agent");
+  const response = await openCodeV2Fetch(control, `/api/agent?${openCodeLocationQuery(directory)}`);
   if (!response.ok) return [];
-  const payload: unknown = await response.json().catch(() => null);
-  // OpenCode 2 names agents for display ("Build"); its id is the v1 name ("build").
-  const agents = (v2 ? jsonRecord(payload).data : payload) as Array<{ id?: string; name?: string; mode?: string; hidden?: boolean }> | undefined;
+  // OpenCode 2 names agents for display ("Build"); its id is the mode ("build").
+  const agents = jsonRecord(await response.json().catch(() => null)).data as Array<{ id?: string; name?: string; mode?: string; hidden?: boolean }> | undefined;
   return Array.isArray(agents)
     ? agents.flatMap((agent) => !agent.hidden && agent.mode !== "subagent" && (agent.id ?? agent.name) ? [(agent.id ?? agent.name)!] : [])
     : [];
@@ -314,13 +258,7 @@ export async function fetchOpenCodeAgentNames(control: OpenCodeServerControl, di
 
 export async function openCodeServerIsHealthy(control: OpenCodeServerControl): Promise<boolean> {
   try {
-    if (await openCodeServerApiVersion(control) === 2) {
-      return (await openCodeV2Fetch(control, "/api/info", {}, opencodeServerControlHealthTimeoutMs)).ok;
-    }
-    const response = await openCodeServerFetch(control, "/global/health", {}, opencodeServerControlHealthTimeoutMs);
-    if (!response.ok) return false;
-    const body = (await response.json()) as { healthy?: unknown };
-    return body?.healthy === true;
+    return (await openCodeV2Fetch(control, "/api/info", {}, opencodeServerControlHealthTimeoutMs)).ok;
   } catch {
     return false;
   }
@@ -353,30 +291,8 @@ export async function fetchOpenCodeSessionModels(
   control: OpenCodeServerControl,
   directory = '/etc'
 ): Promise<OpenCodeModelDescriptor[]> {
-  // The attached TUI resolves its configured catalog here. The v2 model list
-  // can contain unconfigured entries without the native reasoning variants.
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  const configured = v2 ? null : await openCodeServerFetch(control, `/config/providers?directory=${encodeURIComponent(directory)}`);
-  if (configured?.ok) {
-    const payload = await configured.json() as {providers?: Array<{id?: unknown; name?: string; models?: Record<string, {
-      id?: string; name?: string; status?: string; variants?: Record<string, unknown>
-    }>}>};
-    const models = (Array.isArray(payload.providers) ? payload.providers : []).flatMap(provider => {
-      if (typeof provider.id !== 'string' || !provider.models || typeof provider.models !== 'object') return [];
-      return Object.entries(provider.models).flatMap(([id, model]) => {
-        if (!model || model.status === 'deprecated') return [];
-        const variants = model.variants && typeof model.variants === 'object' && !Array.isArray(model.variants)
-          ? Object.keys(model.variants) : [];
-        return [{providerId:provider.id as string,providerName:provider.name ?? provider.id as string,modelId:model.id ?? id,displayName:model.name ?? id,variants,defaultVariant:null}];
-      });
-    });
-    if (models.length) return models;
-  } else if (configured && configured.status !== 404 && configured.status !== 405) {
-    throw new Error(`OpenCode configured model catalog failed with HTTP ${configured.status}.`);
-  }
-  const response = v2
-    ? await openCodeV2Fetch(control, `/api/model?${openCodeLocationQuery(directory)}`)
-    : await openCodeServerFetch(control, "/api/model");
+
+  const response = await openCodeV2Fetch(control, `/api/model?${openCodeLocationQuery(directory)}`);
   if (!response.ok) {
     throw new Error(`OpenCode model catalog request failed with HTTP ${response.status}.`);
   }
@@ -405,7 +321,6 @@ interface OpenCodeSessionModel {
 }
 
 interface OpenCodeSessionPayload {
-  model?: OpenCodeSessionModel | null;
   data?: { model?: OpenCodeSessionModel | null };
 }
 
@@ -413,24 +328,15 @@ export async function fetchOpenCodeCurrentModel(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<OpenCodeSessionModel | null> {
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  for (const prefix of v2 ? ['/api/session/'] : ['/session/', '/api/session/']) {
-    const path = `${prefix}${encodeURIComponent(nativeSessionId)}`;
-    const response = v2 ? await openCodeV2Fetch(control, path) : await openCodeServerFetch(control, path);
-    if (!response.ok) {
-      if (response.status === 404 || response.status === 405) continue;
-      return null;
-    }
-    const session = (await response.json()) as OpenCodeSessionPayload;
-    const model = session?.data?.model ?? session?.model;
-    if (!model || typeof model.id !== "string" || model.id.length === 0) continue;
-    return {
-      id: model.id,
-      providerID: typeof model.providerID === "string" && model.providerID.length > 0 ? model.providerID : "opencode",
-      variant: typeof model.variant === "string" && model.variant.length > 0 ? model.variant : null
-    };
-  }
-  return null;
+  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}`);
+  if (!response.ok) return null;
+  const model = ((await response.json()) as OpenCodeSessionPayload)?.data?.model;
+  if (!model || typeof model.id !== "string" || model.id.length === 0) return null;
+  return {
+    id: model.id,
+    providerID: typeof model.providerID === "string" && model.providerID.length > 0 ? model.providerID : "opencode",
+    variant: typeof model.variant === "string" && model.variant.length > 0 ? model.variant : null
+  };
 }
 
 export interface OpenCodeSessionTitleInfo {
@@ -442,12 +348,9 @@ export async function fetchOpenCodeSessionTitle(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<OpenCodeSessionTitleInfo | null> {
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  const path = `${v2 ? "/api" : ""}/session/${encodeURIComponent(nativeSessionId)}`;
-  const response = v2 ? await openCodeV2Fetch(control, path) : await openCodeServerFetch(control, path);
+  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}`);
   if (!response.ok) return null;
-  const payload = (await response.json()) as { title?: unknown; time?: { updated?: unknown }; data?: unknown };
-  const session = (v2 ? jsonRecord(payload.data) : payload) as { title?: unknown; time?: { updated?: unknown } };
+  const session = jsonRecord(jsonRecord(await response.json()).data) as { title?: unknown; time?: { updated?: unknown } };
   const title = typeof session.title === "string" && session.title.length > 0 ? session.title : null;
   const updatedAt = typeof session.time?.updated === "number" ? session.time.updated : 0;
   if (!title) return null;
@@ -459,16 +362,12 @@ export async function updateOpenCodeSessionTitle(
   nativeSessionId: string,
   title: string
 ): Promise<void> {
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  const path = `${v2 ? "/api" : ""}/session/${encodeURIComponent(nativeSessionId)}`;
-  const init = { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) };
-  const response = v2 ? await openCodeV2Fetch(control, path, init) : await openCodeServerFetch(control, path, init);
+  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}`,
+    { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
   if (!response.ok) {
     throw new Error(`OpenCode session title update failed with HTTP ${response.status}.`);
   }
 }
-
-type OpenCodeSessionStatus = { type: "idle" } | { type: "retry"; attempt: number } | { type: "busy" };
 
 /**
  * true while a turn runs, false when idle, null when the server gave no status. Callers that start work
@@ -477,32 +376,13 @@ type OpenCodeSessionStatus = { type: "idle" } | { type: "retry"; attempt: number
 export async function readOpenCodeSessionTurnActive(
   control: OpenCodeServerControl,
   nativeSessionId: string,
-  directory?: string
+  _directory?: string
 ): Promise<boolean | null> {
   try {
-    if (await openCodeServerApiVersion(control) === 2) {
-      // OpenCode 2 lists only the sessions that are running.
-      const response = await openCodeV2Fetch(control, "/api/session/active");
-      if (!response.ok) return null;
-      return Object.hasOwn(jsonRecord(jsonRecord(await response.json()).data), nativeSessionId);
-    }
-    const dir = directory ?? control.directory ?? "/etc";
-    const path = `/session/status?directory=${encodeURIComponent(dir)}`;
-    const response = await openCodeServerFetch(control, path);
+    // OpenCode 2 lists only the sessions that are running.
+    const response = await openCodeV2Fetch(control, "/api/session/active");
     if (!response.ok) return null;
-    const statuses = (await response.json()) as Record<string, OpenCodeSessionStatus>;
-    const status = statuses?.[nativeSessionId];
-    if (status?.type === "busy" || status?.type === "retry") return true;
-    if (status?.type === "idle") return false;
-    // Fallback: if not found under specified directory, check without query parameter
-    if (!statuses || !(nativeSessionId in statuses)) {
-      const fallbackResponse = await openCodeServerFetch(control, "/session/status");
-      if (!fallbackResponse.ok) return null;
-      const fallbackStatuses = (await fallbackResponse.json()) as Record<string, OpenCodeSessionStatus>;
-      const fbStatus = fallbackStatuses?.[nativeSessionId];
-      return fbStatus?.type === "busy" || fbStatus?.type === "retry";
-    }
-    return false;
+    return Object.hasOwn(jsonRecord(jsonRecord(await response.json()).data), nativeSessionId);
   } catch {
     return null;
   }
@@ -521,349 +401,11 @@ export async function abortOpenCodeSession(
   control: OpenCodeServerControl,
   nativeSessionId: string
 ): Promise<boolean> {
-  const v2 = await openCodeServerApiVersion(control) === 2;
-  const id = encodeURIComponent(nativeSessionId);
-  const response = v2
-    ? await openCodeV2Fetch(control, `/api/session/${id}/interrupt`, { method: "POST" })
-    : await openCodeServerFetch(control, `/session/${id}/abort`, { method: "POST" });
+  const response = await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}/interrupt`, { method: "POST" });
   if (!response.ok) {
     throw new Error(`OpenCode session abort failed with HTTP ${response.status}.`);
   }
-  const result: unknown = await response.json();
-  return v2 ? jsonRecord(result).interrupted === true : result === true;
-}
-
-export interface OpenCodeZeroTokenUnknownCompletion {
-  id: string;
-  sessionID: string;
-  parentID: string;
-  role: "assistant";
-  finish: "unknown";
-  time: { completed: number };
-  tokens: {
-    total?: number;
-    input: 0;
-    output: 0;
-    reasoning: 0;
-    cache: { read: 0; write: 0 };
-  };
-  error?: null;
-}
-
-function isZeroTokenCounter(value: unknown): value is 0 {
-  return typeof value === "number" && Number.isFinite(value) && value === 0;
-}
-
-export function isOpenCodeZeroTokenUnknownCompletion(
-  value: unknown
-): value is OpenCodeZeroTokenUnknownCompletion {
-  if (!value || typeof value !== "object") return false;
-  const info = value as Record<string, unknown>;
-  const time = info.time && typeof info.time === "object" ? info.time as Record<string, unknown> : null;
-  const tokens = info.tokens && typeof info.tokens === "object" ? info.tokens as Record<string, unknown> : null;
-  const cache = tokens?.cache && typeof tokens.cache === "object"
-    ? tokens.cache as Record<string, unknown>
-    : null;
-  return (
-    typeof info.id === "string" &&
-    info.id.startsWith("msg") &&
-    typeof info.sessionID === "string" &&
-    opencodeNativeSessionIdPattern.test(info.sessionID) &&
-    typeof info.parentID === "string" &&
-    info.parentID.startsWith("msg") &&
-    info.role === "assistant" &&
-    info.finish === "unknown" &&
-    info.error == null &&
-    typeof time?.completed === "number" &&
-    Number.isFinite(time.completed) &&
-    time.completed > 0 &&
-    isZeroTokenCounter(tokens?.input) &&
-    isZeroTokenCounter(tokens?.output) &&
-    isZeroTokenCounter(tokens?.reasoning) &&
-    isZeroTokenCounter(cache?.read) &&
-    isZeroTokenCounter(cache?.write) &&
-    (tokens?.total === undefined || isZeroTokenCounter(tokens.total))
-  );
-}
-
-interface OpenCodeMessageWithParts {
-  info: Record<string, unknown>;
-  parts: Array<Record<string, unknown>>;
-}
-
-export type OpenCodeSilentStopRecoveryOutcome =
-  | "ignored"
-  | "stale"
-  | "recovered"
-  | "exhausted"
-  | "failed";
-
-export interface OpenCodeSilentStopRecoveryResult {
-  outcome: OpenCodeSilentStopRecoveryOutcome;
-  sessionID?: string;
-  messageID?: string;
-  parentID?: string;
-  detail?: string;
-}
-
-export interface OpenCodeSilentStopRecoveryOptions {
-  control: OpenCodeServerControl;
-  directory: string;
-  maxRetriesPerTurn?: number;
-  idlePollAttempts?: number;
-  idlePollIntervalMs?: number;
-  fetchImpl?: typeof fetch;
-  sleep?: (milliseconds: number) => Promise<void>;
-  onNotice?: (message: string) => void;
-}
-
-function eventMessageInfo(event: unknown): unknown {
-  if (!event || typeof event !== "object") return null;
-  const outer = event as Record<string, unknown>;
-  const payload = outer.payload && typeof outer.payload === "object"
-    ? outer.payload as Record<string, unknown>
-    : outer;
-  if (payload.type !== "message.updated") return null;
-  const properties = payload.properties && typeof payload.properties === "object"
-    ? payload.properties as Record<string, unknown>
-    : null;
-  return properties?.info ?? null;
-}
-
-function recoveryQuery(directory: string): string {
-  return `?directory=${encodeURIComponent(directory)}`;
-}
-
-function recoveryPartInput(part: Record<string, unknown>): Record<string, unknown> | null {
-  if (!["text", "file", "agent", "subtask"].includes(String(part.type))) return null;
-  const { sessionID: _sessionID, messageID: _messageID, ...input } = part;
-  return input;
-}
-
-export class OpenCodeSilentStopRecovery {
-  private readonly control: OpenCodeServerControl;
-  private readonly directory: string;
-  private readonly maxRetriesPerTurn: number;
-  private readonly idlePollAttempts: number;
-  private readonly idlePollIntervalMs: number;
-  private readonly fetchImpl: typeof fetch;
-  private readonly sleep: (milliseconds: number) => Promise<void>;
-  private readonly onNotice: (message: string) => void;
-  private readonly attemptsByParent = new Map<string, number>();
-  private readonly handledMessages = new Set<string>();
-
-  constructor(options: OpenCodeSilentStopRecoveryOptions) {
-    this.control = options.control;
-    this.directory = options.directory;
-    this.maxRetriesPerTurn = Math.max(0, options.maxRetriesPerTurn ?? 1);
-    this.idlePollAttempts = Math.max(1, options.idlePollAttempts ?? 40);
-    this.idlePollIntervalMs = Math.max(0, options.idlePollIntervalMs ?? 50);
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-    this.onNotice = options.onNotice ?? (() => undefined);
-  }
-
-  async handleEvent(event: unknown): Promise<OpenCodeSilentStopRecoveryResult> {
-    const candidate = eventMessageInfo(event);
-    if (!isOpenCodeZeroTokenUnknownCompletion(candidate)) return { outcome: "ignored" };
-    if (candidate.sessionID !== this.control.nativeSessionId) return { outcome: "ignored" };
-    if (this.handledMessages.has(candidate.id)) return { outcome: "ignored" };
-    this.handledMessages.add(candidate.id);
-    this.trimTrackedState();
-
-    const base = {
-      sessionID: candidate.sessionID,
-      messageID: candidate.id,
-      parentID: candidate.parentID
-    };
-    try {
-      if (!(await this.waitForIdle(candidate.sessionID))) {
-        await this.publishFailureNotice(candidate, "the native session did not become idle");
-        return { outcome: "failed", ...base, detail: "session remained busy" };
-      }
-      const latest = await this.fetchLatestMessage(candidate.sessionID);
-      if (
-        !latest ||
-        latest.info.id !== candidate.id ||
-        !isOpenCodeZeroTokenUnknownCompletion(latest.info) ||
-        !latest.parts.every((part) => part.type === "step-start" || part.type === "step-finish")
-      ) {
-        return { outcome: "stale", ...base };
-      }
-
-      const attempts = this.attemptsByParent.get(candidate.parentID) ?? 0;
-      if (attempts >= this.maxRetriesPerTurn) {
-        await this.publishFailureNotice(candidate, "the single automatic retry also returned an empty completion");
-        return { outcome: "exhausted", ...base };
-      }
-
-      const parent = await this.fetchMessage(candidate.sessionID, candidate.parentID);
-      const prompt = this.sameTurnPrompt(parent, candidate);
-      this.attemptsByParent.set(candidate.parentID, attempts + 1);
-      await this.deleteMessage(candidate.sessionID, candidate.id);
-      await this.resumeSameTurn(candidate.sessionID, prompt);
-      this.onNotice(`Recovered OpenCode turn ${candidate.parentID} after an empty provider completion.`);
-      return { outcome: "recovered", ...base };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const noticePublished = await this.publishFailureNotice(candidate, detail).then(
-        () => true,
-        () => false
-      );
-      if (!noticePublished) this.onNotice(`OpenCode automatic recovery failed: ${detail}`);
-      return { outcome: "failed", ...base, detail };
-    }
-  }
-
-  private async request(path: string, init: RequestInit = {}): Promise<Response> {
-    return openCodeServerFetch(
-      this.control,
-      path,
-      init,
-      opencodeServerControlRequestTimeoutMs,
-      this.fetchImpl
-    );
-  }
-
-  private async waitForIdle(sessionID: string): Promise<boolean> {
-    for (let attempt = 0; attempt < this.idlePollAttempts; attempt += 1) {
-      const response = await this.request(`/session/status${recoveryQuery(this.directory)}`);
-      if (!response.ok) throw new Error(`OpenCode session status failed with HTTP ${response.status}.`);
-      const statuses = await response.json() as Record<string, OpenCodeSessionStatus>;
-      const status = statuses?.[sessionID];
-      if (!status || status.type === "idle") return true;
-      if (attempt + 1 < this.idlePollAttempts) await this.sleep(this.idlePollIntervalMs);
-    }
-    return false;
-  }
-
-  private async fetchLatestMessage(sessionID: string): Promise<OpenCodeMessageWithParts | null> {
-    const response = await this.request(
-      `/session/${encodeURIComponent(sessionID)}/message${recoveryQuery(this.directory)}&limit=1`
-    );
-    if (!response.ok) throw new Error(`OpenCode latest-message lookup failed with HTTP ${response.status}.`);
-    const messages = await response.json() as unknown;
-    if (!Array.isArray(messages) || messages.length === 0) return null;
-    return this.parseMessage(messages.at(-1));
-  }
-
-  private async fetchMessage(sessionID: string, messageID: string): Promise<OpenCodeMessageWithParts | null> {
-    const response = await this.request(
-      `/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}${recoveryQuery(this.directory)}`
-    );
-    if (!response.ok) return null;
-    return this.parseMessage(await response.json());
-  }
-
-  private parseMessage(value: unknown): OpenCodeMessageWithParts | null {
-    if (!value || typeof value !== "object") return null;
-    const message = value as Record<string, unknown>;
-    if (!message.info || typeof message.info !== "object" || !Array.isArray(message.parts)) return null;
-    const parts = message.parts.filter(
-      (part): part is Record<string, unknown> => Boolean(part && typeof part === "object")
-    );
-    if (parts.length !== message.parts.length) return null;
-    return { info: message.info as Record<string, unknown>, parts };
-  }
-
-  private sameTurnPrompt(
-    parent: OpenCodeMessageWithParts | null,
-    candidate: OpenCodeZeroTokenUnknownCompletion
-  ): Record<string, unknown> {
-    if (!parent || parent.info.id !== candidate.parentID || parent.info.role !== "user") {
-      throw new Error("OpenCode recovery could not verify the parent user message.");
-    }
-    const model = parent.info.model;
-    if (!model || typeof model !== "object") {
-      throw new Error("OpenCode recovery could not verify the parent message model.");
-    }
-    const rawModel = model as Record<string, unknown>;
-    if (typeof rawModel.providerID !== "string" || typeof rawModel.modelID !== "string") {
-      throw new Error("OpenCode recovery found an invalid parent message model.");
-    }
-    if (typeof parent.info.agent !== "string" || parent.info.agent.length === 0) {
-      throw new Error("OpenCode recovery found an invalid parent message agent.");
-    }
-    const parts = parent.parts.map(recoveryPartInput);
-    if (parts.some((part) => part === null)) {
-      throw new Error("OpenCode recovery found an unsupported parent message part.");
-    }
-    const prompt: Record<string, unknown> = {
-      messageID: candidate.parentID,
-      model: { providerID: rawModel.providerID, modelID: rawModel.modelID },
-      agent: parent.info.agent,
-      parts
-    };
-    for (const field of ["format", "system", "tools"] as const) {
-      if (parent.info[field] !== undefined) prompt[field] = parent.info[field];
-    }
-    if (typeof rawModel.variant === "string" && rawModel.variant.length > 0) {
-      prompt.variant = rawModel.variant;
-    }
-    return prompt;
-  }
-
-  private async deleteMessage(sessionID: string, messageID: string): Promise<void> {
-    const response = await this.request(
-      `/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}${recoveryQuery(this.directory)}`,
-      { method: "DELETE" }
-    );
-    if (!response.ok || (await response.json()) !== true) {
-      throw new Error(`OpenCode empty-message removal failed with HTTP ${response.status}.`);
-    }
-  }
-
-  private async resumeSameTurn(sessionID: string, prompt: Record<string, unknown>): Promise<void> {
-    const response = await this.request(
-      `/session/${encodeURIComponent(sessionID)}/prompt_async${recoveryQuery(this.directory)}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(prompt)
-      }
-    );
-    if (!response.ok) {
-      throw new Error(`OpenCode same-turn resume failed with HTTP ${response.status}.`);
-    }
-  }
-
-  private async publishFailureNotice(
-    candidate: OpenCodeZeroTokenUnknownCompletion,
-    reason: string
-  ): Promise<void> {
-    const partID = `prt_space_recovery_${candidate.id.replace(/[^A-Za-z0-9]/g, "").slice(-24)}`;
-    const text = `[Space recovery] OpenCode returned an empty completion. Automatic recovery stopped: ${reason}. Send “continue” to resume this turn.`;
-    const response = await this.request(
-      `/session/${encodeURIComponent(candidate.sessionID)}/message/${encodeURIComponent(candidate.id)}/part/${encodeURIComponent(partID)}${recoveryQuery(this.directory)}`,
-      {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id: partID,
-          sessionID: candidate.sessionID,
-          messageID: candidate.id,
-          type: "text",
-          text
-        })
-      }
-    );
-    if (!response.ok) {
-      throw new Error(`OpenCode recovery notice failed with HTTP ${response.status}.`);
-    }
-  }
-
-  private trimTrackedState(): void {
-    while (this.handledMessages.size > 128) {
-      const oldest = this.handledMessages.values().next().value as string | undefined;
-      if (!oldest) break;
-      this.handledMessages.delete(oldest);
-    }
-    while (this.attemptsByParent.size > 64) {
-      const oldest = this.attemptsByParent.keys().next().value as string | undefined;
-      if (!oldest) break;
-      this.attemptsByParent.delete(oldest);
-    }
-  }
+  return jsonRecord(await response.json()).interrupted === true;
 }
 
 export async function switchOpenCodeSessionModel(
@@ -884,9 +426,7 @@ export async function switchOpenCodeSessionModel(
   }
   const path = `/api/session/${encodeURIComponent(nativeSessionId)}/model`;
   const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model }) };
-  const response = await openCodeServerApiVersion(control) === 2
-    ? await openCodeV2Fetch(control, path, init)
-    : await openCodeServerFetch(control, path, init);
+  const response = await openCodeV2Fetch(control, path, init);
   if (!response.ok) {
     throw new Error(`OpenCode model switch failed with HTTP ${response.status}.`);
   }
@@ -989,16 +529,12 @@ export async function createOpenCodeSession(
   directory = "/etc"
 ): Promise<string | null> {
   try {
-    const v2 = await openCodeServerApiVersion(control) === 2;
-    const headers = { "content-type": "application/json" };
-    const response = v2
-      ? await openCodeV2Fetch(control, "/api/session", { method: "POST", headers, body: JSON.stringify({ title, location: { directory } }) }, 15_000)
-      : await openCodeServerFetch(control, "/session", { method: "POST", headers, body: JSON.stringify({ directory, title }) }, 15_000);
+    const response = await openCodeV2Fetch(control, "/api/session",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, location: { directory } }) }, 15_000);
     if (!response.ok) return null;
-    const payload = (await response.json()) as { id?: unknown; data?: unknown };
-    const id = v2 ? jsonRecord(payload.data).id : payload.id;
+    const id = jsonRecord(((await response.json()) as { data?: unknown }).data).id;
     if (typeof id !== "string" || id.length === 0) return null;
-    if (v2) await waitForOpenCodeV2Mcp(control, directory);
+    await waitForOpenCodeV2Mcp(control, directory);
     return id;
   } catch {
     return null;
@@ -1035,16 +571,7 @@ export async function openCodeSessionExists(
 ): Promise<boolean> {
   if (!nativeSessionId) return false;
   try {
-    if (await openCodeServerApiVersion(control) === 2) {
-      return (await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}`, {}, opencodeServerControlHealthTimeoutMs)).ok;
-    }
-    const response = await openCodeServerFetch(
-      control,
-      `/session/${encodeURIComponent(nativeSessionId)}`,
-      {},
-      opencodeServerControlHealthTimeoutMs
-    );
-    return response.ok;
+    return (await openCodeV2Fetch(control, `/api/session/${encodeURIComponent(nativeSessionId)}`, {}, opencodeServerControlHealthTimeoutMs)).ok;
   } catch {
     return false;
   }

@@ -5,7 +5,7 @@ import { z } from "zod";
  * delivered through the channels the user turned on (in-app badges and toasts, sound, browser desktop
  * notifications, Telegram) and kept in the Notification Center until read or acknowledged.
  */
-export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "ROOM_AGENT", "COUNCIL", "NOUS", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
+export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "ROOM_AGENT", "COUNCIL", "NOUS", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
 export const notificationSourceSchema = z.enum(NOTIFICATION_SOURCES);
 export type NotificationSource = z.infer<typeof notificationSourceSchema>;
 /**
@@ -14,7 +14,7 @@ export type NotificationSource = z.infer<typeof notificationSourceSchema>;
  */
 export const needsOperatorHands = (source: NotificationSource, kind: string) => source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER/i.test(kind);
 export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
-  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
+  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", APP_STUDIO: "App Studio", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
 };
 
 export const notificationSeveritySchema = z.enum(["INFO", "ATTENTION", "URGENT"]);
@@ -112,6 +112,12 @@ export const notificationChannelOverridesSchema = z.object({
   telegram: z.boolean().optional(),
   push: z.boolean().optional()
 }).strict();
+const clockTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM (24 hours).");
+export const quietHoursSchema = z.object({ enabled: z.boolean().default(true), start: clockTimeSchema.default("23:00"), end: clockTimeSchema.default("09:00") }).strict();
+export type QuietHours = z.infer<typeof quietHoursSchema>;
+export const defaultQuietHours: QuietHours = { enabled: true, start: "23:00", end: "09:00" };
+/** A hand request: only the operator's hands can do it (a handoff, sign-in, CAPTCHA, needs-you, or Nous's per-pane card). */
+export const isHandRequest = (source: NotificationSource, kind: string) => needsOperatorHands(source, kind) || (source === "NOUS" && kind === "NEEDS_HANDS");
 export const notificationSettingsSchema = z.object({
   channels: z.object({
     /** Badges and the Notification Center. Off keeps the record but shows no badge. */
@@ -125,7 +131,12 @@ export const notificationSettingsSchema = z.object({
     /** Push (FCM) to the user's registered Android devices, for ATTENTION and URGENT notifications, also with the app closed. */
     push: z.boolean().default(true)
   }).strict().default({ inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true }),
-  perSource: z.partialRecord(notificationSourceSchema, notificationChannelOverridesSchema).default({})
+  perSource: z.partialRecord(notificationSourceSchema, notificationChannelOverridesSchema).default({}),
+  /**
+   * The operator's night (operator request 2026-10-20, plan clipboard:9XSwTPyxXP1W), in their working time zone: what needs their hands
+   * (handoffs, sign-ins, CAPTCHAs, needs-you, Nous's cards) is recorded without alerts and comes as one morning batch. URGENT never waits.
+   */
+  quietHours: quietHoursSchema.default(defaultQuietHours)
 }).strict();
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export const defaultNotificationSettings: NotificationSettings = notificationSettingsSchema.parse({});

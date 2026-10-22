@@ -709,41 +709,41 @@ describe("JobCopilotLaunchDialog", () => {
   });
   afterEach(() => cleanup());
 
-  it("preselects Claude Code, lists its accounts with the gateway pool first, remembers the choice and creates the pane with it", async () => {
+  it("preselects Claude Code, offers no account choice, remembers the choice and creates the pane on the Space Gateway pool", async () => {
     const onCreate = vi.fn().mockResolvedValue(undefined);
-    render(<JobCopilotLaunchDialog onClose={() => undefined} onCreate={onCreate} />);
+    render(<JobCopilotLaunchDialog preselect={{ runtimeId: "cli:claude", accountProfileId: "work", askOnLaunch: true }} onClose={() => undefined} onCreate={onCreate} />);
     await waitFor(() => expect(screen.getByRole("radio", { name: /Claude Code CLI/ }).getAttribute("aria-checked")).toBe("true"));
     expect(screen.getByText("Recommended")).toBeTruthy();
-    const account = await screen.findByLabelText("Claude Code account") as HTMLSelectElement;
-    expect(Array.from(account.options).map((option) => option.textContent)).toEqual(["Space Gateway (pooled)", "Main", "Work"]);
-    // The ready gateway pool is where a new Claude Code pane starts unless the operator picks another account.
-    expect(account.value).toBe("space-gateway");
-    fireEvent.click(screen.getByRole("radio", { name: /OpenCode CLI/ }));
+    // Operator decision 2026-10-19: no account picker; a new pane starts on the ready gateway pool, even over an account saved earlier.
     expect(screen.queryByLabelText("Claude Code account")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /OpenCode CLI/ }));
     expect(screen.getByRole("button", { name: "Open with OpenCode" })).toBeTruthy();
     fireEvent.click(screen.getByRole("radio", { name: /Claude Code CLI/ }));
-    fireEvent.change(await screen.findByLabelText("Claude Code account"), { target: { value: "work" } });
-    expect((screen.getByRole("switch", { name: "Remember as my default" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole("switch", { name: "Remember as my default" }));
     expect(screen.getByText(/Change it in Settings → Job Copilot/)).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole("button", { name: "Open with Claude Code" }) as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open with Claude Code" })); });
-    expect(onCreate).toHaveBeenCalledWith({ terminalRuntimeId: "cli:claude", accountProfileId: "work" });
+    expect(onCreate).toHaveBeenCalledWith({ terminalRuntimeId: "cli:claude", accountProfileId: "space-gateway" });
     // Chosen once, saved server-side: later Job Copilot panes open with it on every device without the dialog.
-    expect(apiMock.updateUserSettings).toHaveBeenCalledWith({ jobCopilot: { runtimeId: "cli:claude", accountProfileId: "work", askOnLaunch: false } });
+    expect(apiMock.updateUserSettings).toHaveBeenCalledWith({ jobCopilot: { runtimeId: "cli:claude", accountProfileId: "space-gateway", askOnLaunch: false } });
   });
 
-  it("offers the accounts of every CLI with profiles and shows the Space Gateway pool Codex runs on", async () => {
+  it("starts a CLI without a gateway pool on its default account and Codex on the gateway, with no account field", async () => {
     apiMock.cliRuntimes.mockResolvedValue({ ...registry, data: [...registry.data, runtime("cli:gemini", "Gemini CLI")] });
     const onCreate = vi.fn().mockResolvedValue(undefined);
     render(<JobCopilotLaunchDialog onClose={() => undefined} onCreate={onCreate} />);
     fireEvent.click(await screen.findByRole("radio", { name: /Gemini CLI/ }));
-    const gemini = await screen.findByLabelText("Gemini account") as HTMLSelectElement;
-    expect(Array.from(gemini.options).map((option) => option.textContent)).toEqual(["Main", "Personal"]);
-    fireEvent.change(gemini, { target: { value: "personal" } });
-    fireEvent.click(screen.getByRole("radio", { name: /Codex CLI/ }));
-    expect(screen.getByRole("note").textContent).toContain("Space Gateway (pooled)");
+    await waitFor(() => expect((screen.getByRole("button", { name: "Open with Gemini" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByLabelText("Gemini account")).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open with Gemini" })); });
+    expect(onCreate).toHaveBeenLastCalledWith({ terminalRuntimeId: "cli:gemini", accountProfileId: "main" });
+    cleanup();
+    render(<JobCopilotLaunchDialog onClose={() => undefined} onCreate={onCreate} />);
+    fireEvent.click(await screen.findByRole("radio", { name: /Codex CLI/ }));
+    expect(screen.queryByRole("note")).toBeNull();
     expect(apiMock.listCliAccountProfiles).not.toHaveBeenCalledWith("cli:codex");
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Open with Codex" })); });
-    expect(onCreate).toHaveBeenCalledWith({ terminalRuntimeId: "cli:codex", accountProfileId: null });
+    expect(onCreate).toHaveBeenLastCalledWith({ terminalRuntimeId: "cli:codex", accountProfileId: null });
   });
 
   it("starts on the saved choice when asked every time, keeps asking without Remember, and says why a saved CLI is skipped", async () => {

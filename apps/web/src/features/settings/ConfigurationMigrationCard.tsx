@@ -18,6 +18,7 @@ import { api, type ConfigurationCliLogin, type ConfigurationInspectResult } from
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import type { SpaceConfigBundle, ImportConfigResult, ImportConfigMode } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { useDockConfirm } from "../dock-kit/DockKit.js";
 import "./configuration-migration.css";
 
 const cliAuthReasons: Record<string, string> = {
@@ -45,7 +46,9 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
   const [exportPassphrase, setExportPassphrase] = useState("");
   const [exportPassphraseConfirm, setExportPassphraseConfirm] = useState("");
 
-  const [importMode, setImportMode] = useState<ImportConfigMode>("replace");
+  // Merge adds; Replace deletes rooms, links, clipboard and tasks first, so it is never the default (Record Retention Invariant).
+  const [importMode, setImportMode] = useState<ImportConfigMode>("merge");
+  const { confirm, confirmDialog } = useDockConfirm();
   const [importApiKeys, setImportApiKeys] = useState(true);
   const [importCredentials, setImportCredentials] = useState(true);
   const [importPassphrase, setImportPassphrase] = useState("");
@@ -156,6 +159,8 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
 
   const handleImport = async () => {
     if (!canManageInstallation || !rawBundle) return;
+    const confirmReplace = importMode === "replace";
+    if (confirmReplace && !await confirm({ title: "Replace everything?", message: "Your current rooms, panes, links, clipboard items, plans and tasks will be deleted, then the backup is set up. This cannot be undone.", confirmLabel: "Replace everything" })) return;
     setIsImporting(true);
     setImportError(null);
     try {
@@ -163,6 +168,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
       const res = await api.importConfiguration({
         bundle: rawBundle,
         mode: importMode,
+        ...(confirmReplace ? { confirmReplace } : {}),
         importApiKeys,
         importCredentials,
         ...(inspection?.secrets?.encrypted && importPassphrase ? { passphrase: importPassphrase } : {}),
@@ -318,7 +324,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
             />
             <div className="config-migration-mode-info">
               <strong>Replace everything</strong>
-              <small>Removes your current rooms and panes, then sets everything up exactly as in the backup.</small>
+              <small>Deletes your current rooms, panes, links, clipboard and tasks, then sets everything up exactly as in the backup. You confirm before anything is deleted.</small>
             </div>
           </label>
 
@@ -618,6 +624,7 @@ export function ConfigurationMigrationCard({ canManageInstallation = false }: { 
           </div>
         ) : null}
       </div> : null}
+      {confirmDialog}
     </div>
   );
 }

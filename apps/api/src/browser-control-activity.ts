@@ -4,6 +4,7 @@ import type { FastifyRequest } from "fastify";
 import type { BrowserHostActorContext } from "@space/browser-host";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import { recordAudit } from "./request-audit.js";
+import { fenceCompletedHandoff } from "./vault/fence-hooks.js";
 
 /**
  * An operator lease with no input for this long goes back to the agent (operator decision 2026-10-15: within 2 minutes
@@ -15,6 +16,8 @@ export const BROWSER_CONTROL_IDLE_RELEASE_MS = 2 * 60_000;
 export const BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS = 2 * 60_000;
 /** How often the API checks the operator leases it watches. */
 export const BROWSER_CONTROL_IDLE_SWEEP_MS = 15_000;
+/** A pane browser's corner label names the CLI pane that last drove it this recently (or while its CDP connection stays open). */
+export const BROWSER_AGENT_LABEL_MS = 10 * 60_000;
 
 /** A bare hover (pointer moved with no button) is not an interaction: it must not keep an operator lease. */
 export function countsAsOperatorInput(input: { type?: unknown; eventType?: unknown; button?: unknown }): boolean {
@@ -30,7 +33,19 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
   const lastInput = new Map<string, number>();
   // Operator leases the idle sweeper checks (leaseId -> paneId); acquire and heartbeat add them.
   const watchedLeases = new Map<string, string>();
+  // shortcut: the CLI pane that last drove each pane browser lives in memory, so an API restart hides the label until its next call.
+  const agents = new Map<string, { paneId: string; at: number }>();
   return {
+    noteAgent(browserPaneId: string, agentPaneId: string): void {
+      agents.delete(browserPaneId);
+      agents.set(browserPaneId, { paneId: agentPaneId, at: now() });
+      if (agents.size > 1000) agents.delete(agents.keys().next().value!);
+    },
+    /** The CLI pane driving a pane browser: the last one within BROWSER_AGENT_LABEL_MS, or any time while it stays attached. */
+    agentFor(browserPaneId: string, attached = false): string | null {
+      const noted = agents.get(browserPaneId);
+      return noted && (attached || now() - noted.at <= BROWSER_AGENT_LABEL_MS) ? noted.paneId : null;
+    },
     noteInput(leaseId: string): void {
       lastInput.delete(leaseId);
       lastInput.set(leaseId, now());
@@ -60,7 +75,8 @@ type LeaseStore = Pick<SpaceStore, "getActiveBrowserHandoffRequest" | "getBrowse
 /**
  * An accepted handoff whose operator lease is over (released, or past its expiry because the tab stopped heartbeating)
  * is completed, and a lease past its expiry is marked EXPIRED (the session's control state goes back to UNCONTROLLED).
- * Before, such a handoff stayed ACCEPTED until its own 30-minute expiry and the agent kept waiting on it.
+ * Before, such a handoff stayed ACCEPTED until its own 30-minute expiry and the agent kept waiting on it. A completed handoff
+ * fences the page the operator worked in like a Vault fill (2026-10-19), so agents never read back what they typed.
  */
 export async function settleEndedOperatorLease(store: LeaseStore, sessionId: string): Promise<void> {
   const handoff = await store.getActiveBrowserHandoffRequest(sessionId);
@@ -68,6 +84,7 @@ export async function settleEndedOperatorLease(store: LeaseStore, sessionId: str
   const lease = await store.getBrowserControlLease(handoff.controlLeaseId);
   if (lease?.status === "ACTIVE" && Date.parse(lease.expiresAt) > Date.now()) return;
   if (lease?.status === "ACTIVE") await store.updateBrowserControlLease(lease.leaseId, { status: "EXPIRED" });
+  await fenceCompletedHandoff(store, handoff.paneId);
   await store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
 }
 
@@ -89,6 +106,9 @@ export async function releaseBrowserControlLease(deps: {
   const traceId = input.request?.requestIdForSpace ?? input.traceId ?? `browser-control:${input.lease.leaseId}`;
   // The host checks the caller is the holder; the API has decided, so it releases in the holder's name.
   const holder: BrowserHostActorContext = { holderType: input.lease.holderType, holderId: input.lease.holderId };
+  // The fence is up before the agent gets the browser back.
+  const accepted = await deps.store.getActiveBrowserHandoffRequest(input.lease.sessionId);
+  if (accepted?.status === "ACCEPTED" && accepted.controlLeaseId === input.lease.leaseId) await fenceCompletedHandoff(deps.store, input.pane.id);
   const released = await deps.browserSessionManager.releaseControl(input.pane, { leaseId: input.lease.leaseId }, traceId, holder);
   const handoff = await deps.store.getActiveBrowserHandoffRequest(released.sessionId);
   if (handoff?.status === "ACCEPTED" && handoff.controlLeaseId === released.leaseId) {

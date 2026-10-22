@@ -236,7 +236,7 @@ describe("SpaceGatewayDialog", () => {
     await waitFor(() => expect(api.updateAccount).toHaveBeenCalledWith(account.id, { warmupEnabled: true }));
     fireEvent.click(screen.getByRole("button", { name: "Export auth.json" }));
     expect(api.exportAccount).not.toHaveBeenCalled();
-    expect(screen.getByText(/The export contains a working sign-in/)).toBeTruthy();
+    expect(screen.getByText(/The export contains this account.s current access token but no refresh token/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Confirm export" }));
     expect(((await screen.findByLabelText("Exported auth.json")) as HTMLTextAreaElement).value).toContain("chatgpt");
   });
@@ -289,6 +289,20 @@ describe("SpaceGatewayDialog", () => {
       accountDetail: vi.fn(async () => ({ ...baseDetail, account: used, lifetime: { ...baseDetail.lifetime, requests: 4 } })) });
     render(<SpaceGatewayDialog client={usedApi} initialTab="accounts" onClose={() => undefined} />);
     await waitFor(() => expect(screen.getByTestId("claude-api-key-role").textContent).toMatch(/Served 4 requests · last used 5 min ago\./));
+  });
+
+  it("shows Anthropic's bill on the Claude API key account", async () => {
+    const keyAccount = { ...account, id: `gw_account:${"4".repeat(32)}`, label: "Claude API key …kkkk", provider: "CLAUDE" as const, planType: "api", email: null,
+      primaryWindow: { usedPercent: null, resetAt: null, windowMinutes: null }, secondaryWindow: { usedPercent: null, resetAt: null, windowMinutes: null } };
+    const today = new Date().toISOString().slice(0, 10);
+    const anthropicBilling = vi.fn(async () => ({
+      status: { ...noAnthropicKey, configured: true, lastSyncAt: new Date().toISOString() },
+      days: [{ day: today, reported: true, organizationUsd: 12.5, workspaceUsd: 12.5, gatewayEstimateUsd: 13, gatewayBilledUsd: 12.4, models: [] }]
+    }));
+    render(<SpaceGatewayDialog client={client({ accounts: vi.fn(async () => ({ data: [keyAccount] })), anthropicBilling })} initialTab="accounts" onClose={() => undefined} />);
+    await waitFor(() => expect(screen.getAllByTestId("claude-api-key-bill").map((line) => line.textContent)).toEqual([
+      "Anthropic bill: today $12.50 · 7 days $12.50 · this month $12.50 · 31 days $12.50.", expect.stringMatching(/^Synced \d\d:\d\d /)]));
+    expect(anthropicBilling).toHaveBeenCalledWith(31);
   });
 
   it("jumps from Routing to the Claude API key form in Accounts", async () => {
