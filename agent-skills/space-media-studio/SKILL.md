@@ -71,6 +71,11 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 
 - The `MEDIA_CAPTURE` scope ships with the broker in stable's deploy. Until the operator promotes it, the engine answers
   "This broker has no read-only scope yet": capture in a Studio room, or use the mock.
+- A Studio room (`--room` of an Agent Proof room) is always shot with a full `studio` session: the page lists only that
+  room, its terminals attach as a normal client sized to the shot (a read-only observer keeps each CLI's own width, so
+  Claude Code and Gemini render garbled), and every request naming another room is refused, because the page would
+  otherwise follow the operator when they switch rooms in their own browser. Still look at every frame before handing
+  a clip over.
 - Dev runs no browser host (browser panes show `BROWSER_SESSIONS_DISABLED`) and at most 2 CLIs.
 - Read-only sessions get no Dots, voice or Live history answers, so those panes look emptier there.
 
@@ -84,9 +89,9 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 
 ## Appearance
 
-Preview (account untouched): `--theme modern|classic|codex|motion|aurora|liquid-glass` (`codex` is shown as
+Preview (account untouched): `--theme modern|classic|codex|motion|aurora|liquid-glass|jarvis|aira` (`codex` is shown as
 Graphite), `--mode system|light|dark` (only the Modern theme has a light mode), `--icons lucide|material-rounded|motion|aurora|space`,
-`--background spaceapp|aurora|liquid-glass|none`, `--tint 0-100` (Glass Planet), `--room-theme graphite|forest|copper|steel|contrast|motion`,
+`--background spaceapp|aurora|liquid-glass|jarvis|aira|none`, `--tint 0-100` (Glass Planet), `--room-theme graphite|forest|copper|steel|contrast|motion`,
 `--zoom 50-200`.
 
 ### Persistent appearance (only on the operator's request)
@@ -127,12 +132,26 @@ them with the `space-hyperframes` skill, which also adds captions, music and mot
 
 ## Space Control `space_screenshot`
 
-The Room Agent and CLI agents (Space Control MCP) and Dots (`space.screenshot`, their own room) can call `space_screenshot`
-(`roomId`, `format`, `quality`, `maxWidth`, `maxHeight`, `viewport` = desktop, desktop-hd, laptop, tablet,
-tablet-landscape, mobile or android). The API captures the room read-only as the caller and saves the image as a
-SCREENSHOT in the room's Media (kept 7 days). The Live voice pane keeps its own screen-share path. From a CLI:
-`node /opt/spaceapp/scripts/space-admin-action.mjs control space_screenshot '{"roomId":"room:<studio>","format":"png","viewport":"mobile"}'`
-(Studio rooms only).
+CLI agents (Space Control MCP, their own room) and Dots (`space.screenshot`, their own room, photos only) call
+`space_screenshot`; the Room Agent does not have it. The API captures the room read-only as the caller and saves the
+result in the room's Media (kept 7 days; a Marketing Copilot post that attaches it keeps it).
+
+- Size: `aspect` = `16:9` (1920x1080), `1:1` (1080x1080), `4:5` (1080x1350), `9:16` (1080x1920, the phone layout) or
+  `full` (the desktop window), the social ratios of the desktop titlebar menu; or `viewport` = desktop, desktop-hd,
+  laptop, tablet, tablet-landscape, mobile, android, square, portrait or story (`viewport` wins).
+- What is shown: `paneId` (selected), `dock`, `settings` or `health` (the lists above); `crop` = `pane` or `dock` cuts
+  a photo to it.
+- Photo: `format`, `quality`, `maxWidth`, `maxHeight`; a SCREENSHOT artifact.
+- Video: `video: {"steps":[{dock?, settings?, health?, dwellMs}]}` (1-20 steps, at most 180 s, never cropped) records
+  an MP4 into a VIDEO artifact. It answers RUNNING with an `operationId`; read `space_operations
+  {"operation":"get","id":"<operationId>"}` until COMPLETED, whose result holds the `artifactId` and the real
+  `durationMs` (opening a dock or section between steps adds to the dwell time).
+- Every result lists under `skipped` the docks or sections it could not open: retry or change the step.
+
+From a CLI in a Studio room:
+`node /opt/spaceapp/scripts/space-admin-action.mjs control space_screenshot '{"roomId":"room:<studio>","aspect":"9:16","dock":"tasks","video":{"steps":[{"dwellMs":5000},{"settings":"appearance","dwellMs":5000}]}}'`
+then `control space_operations '{"roomId":"room:<studio>","operation":"get","id":"<operationId>"}'`. The Live voice pane
+keeps its own screen-share path.
 
 ## Known limits
 

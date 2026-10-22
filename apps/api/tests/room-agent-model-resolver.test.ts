@@ -96,6 +96,21 @@ describe("room-agent-model-resolver", () => {
     await fs.rm(stateDir, { recursive: true, force: true });
   });
 
+  it("runs OpenCode 2 standalone so `run` never starts its background service", async () => {
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "space-opencode-mode-"));
+    const savedPath = process.env.PATH;
+    const record = path.join(bin, "args");
+    try {
+      await fs.writeFile(path.join(bin, "opencode"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${record}'\nprintf '%s\\n' '{"type":"text","part":{"text":"ok"}}'\n`, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${savedPath ?? ""}`;
+      expect(await runOpenCodeText("opencode/big-pickle", "hi", 5_000)).toBe("ok");
+      expect((await fs.readFile(record, "utf8")).split("\n").slice(0, 2)).toEqual(["run", "--standalone"]);
+    } finally {
+      process.env.PATH = savedPath;
+      await fs.rm(bin, { recursive: true, force: true });
+    }
+  });
+
   it("answers only with OpenCode's text events, never with its raw error event", async () => {
     const bin = await fs.mkdtemp(path.join(os.tmpdir(), "space-fake-opencode-"));
     const savedPath = process.env.PATH;

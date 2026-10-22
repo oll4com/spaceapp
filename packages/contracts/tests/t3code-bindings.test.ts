@@ -32,3 +32,12 @@ it("round-trips versioned pane metadata without changing legacy pane defaults", 
   expect(paneSchema.parse({ ...pane, t3CodeMetadata: metadata }).t3CodeMetadata).toEqual(metadata);
   expect(paneSchema.parse(pane).t3CodeMetadata ?? null).toBeNull();
 });
+
+it("accepts T3 0.1.0's own thread ids with colons and still refuses path or markup characters", () => {
+  for (const threadId of ["thread:project:9f99c9ff-f72c-4dbe-af75-bc88aaac86a3:c69c5fb7-d17e-486a-9655-188b7d29554b", "cmd-1:fork"]) {
+    expect(contracts.t3CodeSelectionSchema.safeParse({ ...selection, threadId }).success, threadId).toBe(true);
+  }
+  for (const threadId of ["thread/../x", "a b", "<x>", "a%3Ab", "x".repeat(201)]) {
+    expect(contracts.t3CodeSelectionSchema.safeParse({ ...selection, threadId }).success, threadId).toBe(false);
+  }
+});

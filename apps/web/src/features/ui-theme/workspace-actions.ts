@@ -24,7 +24,7 @@ export const workspaceRoomActionIds = ["rename-room", "theme", "cli-floats", "re
 export const workspaceFooterActionIds = ["sign-out"];
 // Docks read as: navigate, collaborate, content, connections, then Settings last.
 export const workspaceDockOrder = [
-  "surface-rooms", "surface-room-agent", "surface-shared-chat", "surface-tasks", "surface-agent-sessions",
+  "surface-rooms", "surface-nous", "surface-room-agent", "surface-shared-chat", "surface-tasks", "surface-vault", "surface-agent-sessions",
   "surface-agent-files", "surface-media", "surface-clipboard", "surface-links", "surface-streaming",
   "surface-cli", "surface-source-control", "surface-health", "surface-settings"
 ];
@@ -83,13 +83,13 @@ export function workspaceActionColor(id: string): string | undefined {
 const labels: Record<string, string> = {
   "server-restart": "Manage",
   "surface-rooms": "Rooms",
-  "surface-room-agent": "Room Agent", "surface-shared-chat": "Council", "surface-tasks": "Tasks",
+  "surface-nous": "Nous", "surface-room-agent": "Room Agent", "surface-shared-chat": "Council", "surface-tasks": "Tasks", "surface-vault": "Vault",
   "surface-agent-files": "Agent Files", "surface-agent-sessions": "Sessions", "surface-media": "Media",
   "surface-clipboard": "Clipboard", "surface-links": "Links", "surface-settings": "Settings",
   "surface-cli": "CLI tools",
   "surface-source-control": "Source Control",
   "surface-health": "Health", "surface-streaming": "Streaming", "memory-workspace": "Memory", "space-gateway": "Space Gateway",
-  "add-files": "File Manager", "add-demos": "Demo Projects", "add-jobs": "Job Copilot", "add-mail": "Mail Copilot", "add-marketing": "Marketing Copilot", "add-freelance": "Freelance Copilot", "add-empty-slots": "Empty slots",
+  "add-files": "File Manager", "add-demos": "Demo Projects", "add-jobs": "Job Copilot", "add-mail": "Mail Copilot", "add-marketing": "Marketing Copilot", "add-freelance": "Freelance Copilot", "add-design": "Design", "add-app-studio": "App Studio", "add-vault": "Vault", "add-empty-slots": "Empty slots",
   "system-analytics": "System analytics", "system-services": "System services", "system-resources": "System resources",
   "pane-layout": "Pane layout", "font-down": "Text size", "resources": "Resources", "workspace-room": "Room",
   "desktop-displays": "Displays", "room-toolbar": "Room toolbar",

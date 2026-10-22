@@ -50,7 +50,7 @@
 .workspace-detail-content .room-theme-menu { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .workspace-detail-content .room-theme-menu > button { min-width: 0; }
 .workspace-detail-content :is(button, input, textarea, select, a):focus-visible, .workspace-back:focus-visible { outline: 2px solid var(--room-accent, #79b8ff); outline-offset: -2px; }
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .workspace-detail { flex: 1; }
   .workspace-detail-content { padding: 10px 0; }
   .workspace-detail-header { padding-left: 0; }

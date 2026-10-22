@@ -23,7 +23,7 @@ export const t3AgentTokenFile = (dir: string, workspaceRoot: string) =>
   join(dir, createHash("sha256").update(workspaceRoot).digest("hex") + ".json");
 
 export interface T3AgentTokenOptions {
-  config: Pick<SpaceApiConfig, "internalApiToken" | "browserToolBridgeEnabled" | "host" | "port" | "browserEvidenceTargetOrigin">;
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret" | "browserToolBridgeEnabled" | "host" | "port" | "browserEvidenceTargetOrigin">;
   dir?: string;
   // The token files take this directory's group: the T3 service user's.
   groupFrom?: string;
@@ -31,7 +31,7 @@ export interface T3AgentTokenOptions {
 }
 
 // <prefix>.<payload>.<signature>; the prefix itself contains a dot.
-const tokenExpiryMs = (token: string) => {
+export const tokenExpiryMs = (token: string) => {
   const parts = token.split(".");
   const payload = JSON.parse(Buffer.from(parts[parts.length - 2] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
   return typeof payload.exp === "number" ? payload.exp * 1000 : 0;

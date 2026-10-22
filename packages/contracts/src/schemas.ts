@@ -7,6 +7,9 @@ import { cliAdapterContractSchema } from "./cli-adapter.js";
 import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
+import { nousSettingsSchema } from "./nous.js";
+import { brokerScopeSchema } from "./broker-scopes.js";
+import { patchSchema } from "./partial-update.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
 import { jobApplyPaneMetadataSchema, jobCopilotAccountProfileIdSchema } from "./job-apply.js";
@@ -14,6 +17,8 @@ import { copilotLaunchSettingsSchema } from "./copilot.js";
 import { mailCopilotPaneMetadataSchema } from "./mail-copilot.js";
 import { marketingCopilotPaneMetadataSchema } from "./marketing-copilot.js";
 import { freelanceCopilotPaneMetadataSchema } from "./freelance-copilot.js";
+import { DESIGN_COLOR_PRESETS_MAX, designColorPresetSchema, designPaneMetadataSchema } from "./design.js";
+import { appStudioPaneMetadataSchema } from "./app-studio.js";
 import { notificationSettingsSchema } from "./notifications.js";
 import { traceLinksSchema, traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
@@ -114,7 +119,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "APP_STUDIO"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -178,11 +183,17 @@ export const eventTypeSchema = z.enum([
   "MAIL_COPILOT_UPDATED",
   "MARKETING_COPILOT_UPDATED",
   "FREELANCE_COPILOT_UPDATED",
+  "DESIGN_UPDATED",
+  "APP_STUDIO_UPDATED",
   "NOTIFICATION_CREATED",
-  "NOTIFICATION_UPDATED"
+  "NOTIFICATION_UPDATED",
+  "NOUS_FOCUS_REQUESTED",
+  "NOUS_PANE_BOARD_UPDATED"
 ]);
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
+
+export const roomSharePermissionSchema = z.enum(["VIEW", "COLLABORATE"]);
 
 export const roomSchema = z.object({
   id: idSchema,
@@ -198,7 +209,9 @@ export const roomSchema = z.object({
   archivedAt: isoDateTimeSchema.nullable(),
   paneCap: z.number().int().min(1).max(16),
   traceId: requestIdSchema,
-  ownerUserId: idSchema.nullable().optional()
+  ownerUserId: idSchema.nullable().optional(),
+  /** Only on a room shared with the caller (MU-007: the web hides write controls of a VIEW share). */
+  sharePermission: roomSharePermissionSchema.optional()
 });
 
 export const createRoomInputSchema = z.object({
@@ -439,6 +452,8 @@ export const paneSchema = z.object({
   mailCopilotMetadata: mailCopilotPaneMetadataSchema.nullable().optional(),
   marketingCopilotMetadata: marketingCopilotPaneMetadataSchema.nullable().optional(),
   freelanceCopilotMetadata: freelanceCopilotPaneMetadataSchema.nullable().optional(),
+  designMetadata: designPaneMetadataSchema.nullable().optional(),
+  appStudioMetadata: appStudioPaneMetadataSchema.nullable().optional(),
   paneName: z.string().min(1).max(60).nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
@@ -529,12 +544,12 @@ export const createPaneInputSchema = z
     split: paneSplitSchema.optional()
   })
   .superRefine((input, context) => {
-    // Copilot panes (Job, Mail, Marketing) run their agent in a CLI session, so they carry a runtime too.
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT") {
+    // Copilot panes (Job, Mail, Marketing, Freelance), Design and App Studio panes run their agent in a CLI session, so they carry a runtime too.
+    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN" && input.mode !== "APP_STUDIO") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT mode."
+        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO mode."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -622,6 +637,22 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
       /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
       accountProfileId: jobCopilotAccountProfileIdSchema.optional()
     })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("DESIGN"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
+      /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
+      accountProfileId: jobCopilotAccountProfileIdSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("APP_STUDIO"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
+      /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
+      accountProfileId: jobCopilotAccountProfileIdSchema.optional()
+    })
     .strict()
 ]);
 
@@ -646,10 +677,15 @@ export const roomPanesResultSchema = z.object({
 const persistedTranscriptTokenPattern = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
 const persistedTranscriptLabeledSecretPattern =
   /\b(api[_-]?key|secret|token|password)\s*[:=]\s*([^\s,;]+)/gi;
+// Space Control tokens (space-control-token.ts) are self-identifying: prefix.payload.sig in base64url. Redact them by
+// shape so they vanish even when a CLI echoes the bare value or the SPACE_CONTROL_TOKEN= name (the _TOKEN= label has no
+// \b before "token", so the labeled pattern above misses it). Codex, Claude Code and Oh My Pi all carry this token.
+const persistedTranscriptControlTokenPattern = /\bspacecontrol\.v\d+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 export function redactPersistedTranscriptContent(value: string): string {
   return value
     .replaceAll("\0", "")
+    .replace(persistedTranscriptControlTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptLabeledSecretPattern, (match, label: string, secretValue: string) =>
       secretValue === "[REDACTED]" ? match : `${label}:[REDACTED]`
@@ -3144,7 +3180,9 @@ export const updateBrowserStreamModeInputSchema = z.object({
 export const browserPageListResponseSchema = z.object({
   sessionId: idSchema,
   activePageId: z.string().min(1).max(200).nullable(),
-  pages: z.array(browserPageSummarySchema).max(100)
+  pages: z.array(browserPageSummarySchema).max(100),
+  /** The CLI pane driving this browser and its room, for the frame's corner label; the API adds it, never the Browser Host. */
+  agent: z.object({ paneId: idSchema, title: z.string(), roomId: idSchema, roomName: z.string() }).nullable().optional()
 });
 
 export const createBrowserPageInputSchema = z.object({
@@ -3404,7 +3442,8 @@ export const createBrowserHandoffRequestInputSchema = browserHandoffRequestSchem
   .extend({
     handoffRequestId: idSchema.optional(),
     reason: z.string().trim().min(1).max(500),
-    ttlSeconds: z.number().int().min(30).max(1800).default(300)
+    // Up to 16 hours: a handoff asked during the operator's night waits for their morning (plan clipboard:9XSwTPyxXP1W).
+    ttlSeconds: z.number().int().min(30).max(57_600).default(300)
   });
 
 export const updateBrowserHandoffRequestInputSchema = z
@@ -3434,7 +3473,7 @@ export const updateBrowserHandoffRequestInputSchema = z
   });
 
 export const browserHandoffRequestResponseSchema = z.object({
-  handoff: browserHandoffRequestSchema
+  handoff: browserHandoffRequestSchema.nullable()
 });
 
 export const browserTimelineEventTypeSchema = z.enum([
@@ -3649,6 +3688,15 @@ export const browserToolActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("set_viewport"),
     viewport: browserSessionViewportSchema
   }),
+  // A key press: submit a form (Enter) or move to the next or previous control (Tab, Shift+Tab); returns no page content.
+  browserActionBaseSchema.extend({
+    type: z.literal("press"),
+    key: z.enum(["Enter", "Tab", "Shift+Tab"])
+  }),
+  // A screenshot with every form field, text area and editable area drawn as dots (the pane that filled a Vault page sees it).
+  browserActionBaseSchema.extend({
+    type: z.literal("masked_screenshot")
+  }),
   browserActionBaseSchema.extend({
     type: z.literal("diagnostics"),
     includeNetwork: z.boolean().default(true),
@@ -3670,6 +3718,8 @@ export const browserToolActionTypeSchema = z.enum([
   "type",
   "scroll",
   "set_viewport",
+  "press",
+  "masked_screenshot",
   "diagnostics",
   "record"
 ]);
@@ -3688,6 +3738,8 @@ export const spaceBrowserToolIdSchema = z.enum([
   "browser:type",
   "browser:scroll",
   "browser:set_viewport",
+  "browser:press",
+  "browser:masked_screenshot",
   "browser:diagnostics",
   "browser:record"
 ]);
@@ -3708,6 +3760,10 @@ function expectedBrowserToolIdForAction(type: z.infer<typeof browserToolActionTy
       return "browser:scroll";
     case "set_viewport":
       return "browser:set_viewport";
+    case "press":
+      return "browser:press";
+    case "masked_screenshot":
+      return "browser:masked_screenshot";
     case "diagnostics":
       return "browser:diagnostics";
     case "record":
@@ -8632,7 +8688,9 @@ export const authUserSchema = z.object({
   googleId: z.string().nullable().optional(),
   avatarUrl: z.string().nullable().optional(),
   proofScope: paneCliProofScopeSchema.optional(),
-  automationScope: appDiagnosticsAutomationScopeSchema.optional()
+  automationScope: appDiagnosticsAutomationScopeSchema.optional(),
+  /** Set only by the auth broker on an agent's operator session; the API limits that session to the scope's routes. */
+  brokerScope: brokerScopeSchema.optional()
 }).strict();
 
 export const dateFormatSchema = z.enum([
@@ -8671,6 +8729,7 @@ export const voiceComposerSettingsSchema = z.object({
   terminalShortcutsButton: z.boolean().default(true),
   terminalVariablesButton: z.boolean().default(true),
   terminalPlansButton: z.boolean().default(true),
+  terminalLocalDraft: z.boolean().default(false),
   // Ids of CLI shortcuts hidden from the shortcuts menu; empty shows them all.
   terminalHiddenShortcuts: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(64).default([])
 });
@@ -8733,12 +8792,30 @@ export type MarketingCopilotLaunchSettings = z.infer<typeof marketingCopilotLaun
 /** The same for Freelance Copilot panes (Settings → Freelance Copilot). */
 export const freelanceCopilotLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type FreelanceCopilotLaunchSettings = z.infer<typeof freelanceCopilotLaunchSettingsSchema>;
+/** The same for Design panes (Settings → Design); the designer defaults to Claude Code. */
+export const designLaunchSettingsSchema = copilotLaunchSettingsSchema;
+export type DesignLaunchSettings = z.infer<typeof designLaunchSettingsSchema>;
+/** The same for App Studio panes (Settings → App Studio); the agent defaults to Claude Code. */
+export const appStudioLaunchSettingsSchema = copilotLaunchSettingsSchema;
+export type AppStudioLaunchSettings = z.infer<typeof appStudioLaunchSettingsSchema>;
+
+/**
+ * Gemini models on Space Gateway's Antigravity accounts that summarize a YouTube video (YouTube pane); the first is the default. Code
+ * Assist names, not Antigravity's menu names: each watched a YouTube video live on 2026-10-20 (`gemini-3.8-flash-medium`/`-high` and
+ * every 3.1 Pro or 4 Argon name tried answered 404).
+ */
+export const YOUTUBE_SUMMARY_MODELS = [
+  { id: "gemini-3.8-flash-tiered", label: "Gemini 3.8 Flash" },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite, fastest" }
+] as const;
+const youtubeSummaryModelSchema = z.enum(YOUTUBE_SUMMARY_MODELS.map((model) => model.id) as [string, ...string[]]);
 
 export const userSettingsSchema = z.object({
-  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass"]).default("modern"),
+  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).default("modern"),
   modernAppearance: z.enum(["system", "light", "dark"]).default("system"),
   modernIconPack: z.enum(["lucide", "material-rounded", "motion", "aurora", "space"]).default("space"),
-  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).default("spaceapp"),
+  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "jarvis", "aira", "none"]).default("spaceapp"),
   // Liquid Glass material, iOS 27 style: 0 is ultra clear, 100 fully tinted.
   liquidGlassTint: z.number().int().min(0).max(100).default(50),
   roomTheme: z.string().default("graphite"),
@@ -8791,24 +8868,32 @@ export const userSettingsSchema = z.object({
   mailCopilot: mailCopilotLaunchSettingsSchema.nullable().optional(),
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
+  design: designLaunchSettingsSchema.nullable().optional(),
+  appStudio: appStudioLaunchSettingsSchema.nullable().optional(),
+  /** The operator's own colour combinations in the Design Studio (the built-in ones are DESIGN_COLOR_PRESETS). */
+  designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
   /** Notification channels (in-app, toast, sound, desktop, Telegram) and per-source overrides. */
   notifications: notificationSettingsSchema.nullable().optional(),
+  /** Nous, the mind of SpaceApp: on or off and its hourly turn limit. */
+  nous: nousSettingsSchema.nullable().optional(),
+  /** A model dropped from YOUTUBE_SUMMARY_MODELS reads as the default instead of failing (and resetting) every setting. */
+  youtubeSummaryModel: youtubeSummaryModelSchema.optional().catch(undefined),
   updatedAt: isoDateTimeSchema.optional()
 });
 
 export const defaultUserSettings = userSettingsSchema.parse({});
 
 export const updateUserSettingsInputSchema = z.object({
-  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass"]).optional(),
+  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).optional(),
   modernAppearance: z.enum(["system", "light", "dark"]).optional(),
   modernIconPack: z.enum(["lucide", "material-rounded", "motion", "aurora", "space"]).optional(),
-  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).optional(),
+  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "jarvis", "aira", "none"]).optional(),
   liquidGlassTint: z.number().int().min(0).max(100).optional(),
   roomTheme: z.string().optional(),
-  dateTime: dateTimeSettingsSchema.partial().optional(),
-  voice: voiceComposerSettingsSchema.partial().optional(),
-  keyboardAutocorrect: keyboardAutocorrectSettingsSchema.partial().optional(),
-  livePane: livePaneSettingsSchema.partial().optional(),
+  dateTime: patchSchema(dateTimeSettingsSchema).optional(),
+  voice: patchSchema(voiceComposerSettingsSchema).optional(),
+  keyboardAutocorrect: patchSchema(keyboardAutocorrectSettingsSchema).optional(),
+  livePane: patchSchema(livePaneSettingsSchema).optional(),
   promptVariables: z.array(promptVariableSchema).optional(),
   promptVariablesEnabled: z.boolean().optional(),
   promptVariablesAutoExpandOnSubmit: z.boolean().optional(),
@@ -8858,7 +8943,14 @@ export const updateUserSettingsInputSchema = z.object({
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   /** null forgets the default: the next Freelance Copilot pane asks again. */
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
-  notifications: notificationSettingsSchema.nullable().optional()
+  /** null forgets the default: the next Design pane asks again. */
+  design: designLaunchSettingsSchema.nullable().optional(),
+  /** null forgets the default: the next App Studio pane asks again. */
+  appStudio: appStudioLaunchSettingsSchema.nullable().optional(),
+  designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
+  notifications: notificationSettingsSchema.nullable().optional(),
+  nous: nousSettingsSchema.nullable().optional(),
+  youtubeSummaryModel: youtubeSummaryModelSchema.optional()
 }).strict();
 
 export const authMeSchema = z.object({
@@ -8918,6 +9010,25 @@ export const acceptUserInviteInputSchema = z.object({
 }).strict();
 export const setUserDisabledInputSchema = z.object({
   disabled: z.boolean()
+}).strict();
+// Room sharing (multi-user step 3, plan clipboard:evAaFYqrgDfd), only with SPACE_MULTI_USER_ENABLED=true: a room's
+// owner shares it with VIEW (read only) or COLLABORATE (own panes in the room); only a pane's owner types into it.
+export const roomShareSchema = z.object({
+  roomId: idSchema,
+  userId: idSchema,
+  permission: roomSharePermissionSchema,
+  createdBy: idSchema,
+  createdAt: isoDateTimeSchema
+}).strict();
+export const setRoomShareInputSchema = z.object({
+  permission: roomSharePermissionSchema
+}).strict();
+export const addRoomShareInputSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+  permission: roomSharePermissionSchema
+}).strict();
+export const roomShareListResponseSchema = z.object({
+  shares: z.array(roomShareSchema.extend({ email: z.string().email() }))
 }).strict();
 
 export const updateUserRoleInputSchema = z.object({
@@ -9361,6 +9472,9 @@ export const setClipboardItemCompletedRequestSchema = z
   })
   .strict();
 
+/** A note's new text, edited in place: the note keeps its id, source, room, pane and created time. */
+export const updateClipboardNoteTextRequestSchema = z.object({ text: nonBlankExactText(clipboardTextMaxCharacters) }).strict();
+
 export const updatePlanProgressRequestSchema = z
   .object({
     executionStatus: planExecutionStatusSchema.optional(),
@@ -9394,17 +9508,28 @@ export type SaveAgentClipboardPlanInput = z.infer<typeof saveAgentClipboardPlanI
 export type UpsertClipboardItemInput = z.infer<typeof upsertClipboardItemInputSchema>;
 export type ListClipboardItemsQuery = z.infer<typeof listClipboardItemsQuerySchema>;
 export type SetClipboardItemCompletedRequest = z.infer<typeof setClipboardItemCompletedRequestSchema>;
+export type UpdateClipboardNoteTextRequest = z.infer<typeof updateClipboardNoteTextRequestSchema>;
 export type UpdatePlanProgressRequest = z.infer<typeof updatePlanProgressRequestSchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
 
+const taskTimeZoneSchema = z.string().trim().min(1).max(80).refine(isValidTimeZone, "Use an IANA time zone such as Asia/Bangkok.");
 /** When a task runs: Space types its objective into its CLI pane at each occurrence (a task without a pane is a reminder). */
-export const taskScheduleInputSchema = z
-  .object({
-    recurrence: dotScheduleRecurrenceSchema,
-    timeZone: z.string().trim().min(1).max(80).refine(isValidTimeZone, "Use an IANA time zone such as Europe/Athens.")
-  })
-  .strict();
-export const taskScheduleSchema = taskScheduleInputSchema
+export const storedTaskScheduleSchema = z.object({ recurrence: dotScheduleRecurrenceSchema, timeZone: taskTimeZoneSchema }).strict();
+/** A schedule as given: without timeZone it runs in its owner's working time zone (resolved by the store). */
+export const taskScheduleInputSchema = storedTaskScheduleSchema.extend({ timeZone: taskTimeZoneSchema.optional() }).strict();
+/**
+ * The owner's working time zone: Settings → Date & time (operator request 2026-10-17, plan clipboard:ubQLgcTtQWA_).
+ * "system" means the browser's own clock, which the server cannot know, so it falls back to UTC like an invalid zone.
+ */
+export function ownerWorkingTimeZone(settings: { dateTime?: { timeZone?: string } } | null | undefined): string {
+  const zone = settings?.dateTime?.timeZone;
+  return zone && zone !== "system" && isValidTimeZone(zone) ? zone : "UTC";
+}
+/** The schedule with its zone: a schedule given without one takes the owner's working time zone; null and undefined pass. */
+export function resolveTaskScheduleZone(schedule: TaskScheduleInput | null | undefined, ownerZone: string): StoredTaskSchedule | null | undefined {
+  return schedule ? { recurrence: schedule.recurrence, timeZone: schedule.timeZone ?? ownerZone } : schedule;
+}
+export const taskScheduleSchema = storedTaskScheduleSchema
   .extend({
     nextRunAt: isoDateTimeSchema.nullable(),
     lastRunAt: isoDateTimeSchema.nullable(),
@@ -9496,7 +9621,7 @@ export const taskItemListResponseSchema = paginated(taskItemSchema);
  * its pending run, so saving a task again does not shift an interval.
  */
 export function taskScheduleNextRunAt(
-  schedule: TaskScheduleInput | null,
+  schedule: StoredTaskSchedule | null,
   status: TaskStatus,
   nowMs: number,
   stored: TaskSchedule | null = null
@@ -9510,6 +9635,7 @@ export function taskScheduleNextRunAt(
 
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskScheduleInput = z.infer<typeof taskScheduleInputSchema>;
+export type StoredTaskSchedule = z.infer<typeof storedTaskScheduleSchema>;
 export type TaskSchedule = z.infer<typeof taskScheduleSchema>;
 export type TaskSource = z.infer<typeof taskSourceSchema>;
 export type TaskItem = z.infer<typeof taskItemSchema>;
@@ -10224,6 +10350,9 @@ export type AuthUser = z.infer<typeof authUserSchema>;
 export type AdminUserItem = z.infer<typeof adminUserItemSchema>;
 export type UserInvite = z.infer<typeof userInviteSchema>;
 export type UserInviteRole = z.infer<typeof userInviteRoleSchema>;
+export type RoomShare = z.infer<typeof roomShareSchema>;
+export type RoomSharePermission = z.infer<typeof roomSharePermissionSchema>;
+export type RoomShareListResponse = z.infer<typeof roomShareListResponseSchema>;
 export type AdminUserListResponse = z.infer<typeof adminUserListResponseSchema>;
 export type UpdateUserRoleInput = z.infer<typeof updateUserRoleInputSchema>;
 export type AuthMe = z.infer<typeof authMeSchema>;

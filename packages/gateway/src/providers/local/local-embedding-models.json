@@ -1,0 +1,13 @@
+{
+  "bge-m3": {
+    "repo": "Xenova/bge-m3",
+    "revision": "4de13258303883538bd53b696b452bf8099f0858",
+    "model": { "path": "onnx/model_int8.onnx", "sha256": "a206e10e995aa2a833924bcd725ba5dd6c3425cd34bac3cf2b5677cd2a1c51d6" },
+    "tokenizer": { "path": "tokenizer.json", "sha256": "6710678b12670bc442b99edc952c4d996ae309a7020c1fa0096dd245c2faf790" },
+    "dimensions": 1024,
+    "maxTokens": 512,
+    "pooling": "cls",
+    "queryPrefix": "",
+    "documentPrefix": ""
+  }
+}

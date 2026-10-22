@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+<defs>
+<linearGradient id="orbit" x1="0" x2="1"><stop offset="0" stop-color="#a78bfa" stop-opacity="0.15"/><stop offset="0.5" stop-color="#e879f9" stop-opacity="0.75"/><stop offset="1" stop-color="#fb7185" stop-opacity="0.15"/></linearGradient>
+<filter id="glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<g transform="rotate(-24 500 500)">
+<ellipse cx="500" cy="500" rx="440" ry="150" fill="none" stroke="url(#orbit)" stroke-width="1.6"/>
+<circle cx="863.1" cy="584.7" r="6" fill="#fdf4ff" filter="url(#glow)"/><circle cx="105.4" cy="433.6" r="6" fill="#fdf4ff" filter="url(#glow)"/>
+</g>
+<g transform="rotate(36 500 500)">
+<ellipse cx="500" cy="500" rx="420" ry="135" fill="none" stroke="url(#orbit)" stroke-width="1.6"/>
+<circle cx="288" cy="616.5" r="6" fill="#fdf4ff" filter="url(#glow)"/><circle cx="696.8" cy="380.7" r="6" fill="#fdf4ff" filter="url(#glow)"/>
+</g>
+<g transform="rotate(96 500 500)">
+<ellipse cx="500" cy="500" rx="455" ry="120" fill="none" stroke="url(#orbit)" stroke-width="1.6"/>
+<circle cx="664.9" cy="611.8" r="6" fill="#fdf4ff" filter="url(#glow)"/><circle cx="360.2" cy="385.8" r="6" fill="#fdf4ff" filter="url(#glow)"/>
+</g>
+<circle cx="500" cy="500" r="482" fill="none" stroke="#e879f9" stroke-opacity="0.4" stroke-width="2" stroke-dasharray="2 12" stroke-linecap="round"/>
+<path d="M335.1 952.9A482 482 0 0 1 25.3 583.7" fill="none" stroke="#fb7185" stroke-opacity="0.7" stroke-width="3" stroke-linecap="round" filter="url(#glow)"/>
+<path d="M664.9 47.1A482 482 0 0 1 917.4 259" fill="none" stroke="#a78bfa" stroke-opacity="0.7" stroke-width="3" stroke-linecap="round" filter="url(#glow)"/>
+</svg>

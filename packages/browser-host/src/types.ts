@@ -180,6 +180,9 @@ export interface BrowserHostRuntime {
   stopCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   cancelCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   diagnostics?(pane: Pane, includeNetwork: boolean, limit: number): Promise<BrowserHostDiagnostics>;
+  /** Vault (ADR-012): the pane's live top frame for a broker use capability, and the sealed fill itself. */
+  vaultTarget?(pane: Pane): Promise<unknown>;
+  vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<unknown>;
   checkGoogleAccount?(identity: BrowserHostGoogleAccountIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<BrowserHostGoogleAccountCheck>;
   adoptPaneGoogleProfile?(source: BrowserHostPaneProfileSource, context?: BrowserHostActorContext): Promise<BrowserHostPaneProfileAdoption>;
   startFrameStream?(
@@ -220,6 +223,8 @@ export type BrowserHostMethod =
   | "stopCapture"
   | "cancelCapture"
   | "diagnostics"
+  | "vaultTarget"
+  | "vaultFill"
   | "checkGoogleAccount"
   | "adoptPaneGoogleProfile"
   | "startFrameStream"

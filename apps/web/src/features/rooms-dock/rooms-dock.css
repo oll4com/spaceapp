@@ -979,3 +979,42 @@
     animation-duration: 1ms;
   }
 }
+
+/* Room sharing (multi-user): add a team member by email, change or remove a share. */
+.room-dock-sharing {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.room-dock-sharing-form,
+.room-dock-sharing-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.room-dock-sharing-form input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.room-dock-sharing-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.room-dock-sharing-list li span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.room-dock-sharing-error {
+  margin: 0;
+  color: var(--danger, #ff7b72);
+  font-size: 0.75rem;
+}

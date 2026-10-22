@@ -1,5 +1,5 @@
-import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
-export interface ControlRecord {kind:"operation"|"layout"|"snapshot"|"schedule"|"grant"|"pane_state"|"watch"|"audit"|"settings_snapshot"|"release_train"; actorId:string; key:string; roomId:string; version:number; value:unknown}
+import { createDedicatedSpacePgPool, createSpacePgPool, type PgPoolLike } from "./space-store.js";
+export interface ControlRecord {kind:"operation"|"layout"|"snapshot"|"schedule"|"grant"|"pane_state"|"watch"|"audit"|"settings_snapshot"|"release_train"|"nous_held"|"cli_composer_submission"; actorId:string; key:string; roomId:string; version:number; value:unknown}
 export interface ControlRepository {
   get(kind:ControlRecord["kind"],actorId:string,key:string):Promise<ControlRecord|null>;
   list(kind:ControlRecord["kind"],actorId:string|null,roomId?:string):Promise<ControlRecord[]>;
@@ -50,7 +50,8 @@ export class InMemoryControlRepository implements ControlRepository {
       return await Promise.race([next, acquirePromise]) as T;
     }finally{
       if (acquireTimer) clearTimeout(acquireTimer);
-      if(this.locks.get(key)===next)this.locks.delete(key);
+      // A waiter that timed out stays queued behind the holder until it settles, so the next caller still waits.
+      void next.catch(()=>{}).finally(()=>{if(this.locks.get(key)===next)this.locks.delete(key);});
     }
   }
   private key(kind:string,actor:string,key:string){return JSON.stringify([kind,actor,key]);}
@@ -62,7 +63,8 @@ export class InMemoryControlRepository implements ControlRepository {
 }
 export class PostgresControlRepository implements ControlRepository {
   constructor(private pool:PgPoolLike,private lockPool:PgPoolLike=pool){}
-  static fromConnectionString(url:string){return new PostgresControlRepository(createSpacePgPool(url,{max:10}),createSpacePgPool(url,{max:10}));}
+  // The lock client is held while work() queries the shared pool, so it stays on a pool of its own.
+  static fromConnectionString(url:string){return new PostgresControlRepository(createSpacePgPool(url,{max:10}),createDedicatedSpacePgPool(url,{max:10}));}
   async withLock<T>(key:string,work:()=>Promise<T>,timeoutMs=12000):Promise<T>{
     const client=await this.lockPool.connect();
     let lockAcquired = false;

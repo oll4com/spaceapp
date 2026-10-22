@@ -93,14 +93,14 @@ describe("task store", () => {
     expect(store.snapshot().taskItems).toEqual([{ ownerUserId: "user:two", item: two }]);
   });
 
-  it("prunes each user's tasks to the 100 most recently used unique objectives", () => {
+  it("prunes each user's finished tasks to the 100 most recently used unique objectives", () => {
     const store = new InMemorySpaceStore();
     for (let index = 0; index < 101; index += 1) {
       store.upsertTaskItem({
         ownerUserId: "user:one",
         title: `Task ${index}`,
         objective: `task ${index}`,
-        status: "OPEN",
+        status: "DONE",
         source: "MANUAL"
       });
     }
@@ -109,6 +109,23 @@ describe("task store", () => {
     expect(page.total).toBe(100);
     expect(page.items[0]?.objective).toBe("task 100");
     expect(page.items.some((item) => item.objective === "task 0")).toBe(false);
+  });
+
+  it("never prunes open or scheduled tasks, only DONE/ARCHIVED ones past the cap (task loss 2026-10-19)", () => {
+    const store = new InMemorySpaceStore();
+    const base = { ownerUserId: "user:one", source: "MANUAL" as const };
+    const kept = [
+      store.upsertTaskItem({ ...base, title: "Daily review", objective: "Run the daily review", status: "OPEN", schedule: { recurrence: { kind: "DAILY", time: "09:00" }, timeZone: "Asia/Bangkok" } }),
+      store.upsertTaskItem({ ...base, title: "Reminder", objective: "Call the accountant", status: "OPEN" }),
+      store.upsertTaskItem({ ...base, title: "Ran once", objective: "Pay the invoice", status: "DONE", schedule: { recurrence: { kind: "ONCE", at: "2026-10-15T09:00:00.000Z" }, timeZone: "Asia/Bangkok" } })
+    ];
+    for (let index = 0; index < 150; index += 1) {
+      store.upsertTaskItem({ ...base, title: `Done ${index}`, objective: `done ${index}`, status: index % 2 ? "DONE" : "ARCHIVED" });
+    }
+
+    for (const task of kept) expect(store.getTaskItem("user:one", task.id)).toMatchObject({ status: task.status, title: task.title });
+    expect(store.listTaskItems("user:one", { page: 1, pageSize: 100 }).total).toBe(103);
+    expect(store.deleteTaskItem("user:one", kept[1]!.id).id).toBe(kept[1]!.id);
   });
 
   it("searches case-insensitively, filters status, and paginates newest first", () => {

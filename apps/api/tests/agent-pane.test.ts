@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentPaneSessionSchema, type DummyTurnInput, type TurnStartResult } from "@space/contracts";
+import { resolveOpenCodeTitleFallbackControl } from "@space/opencode-control";
 import { attachedRequestRules } from "../src/attachment-context.js";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp, type CreateAppOptions } from "../src/app.js";
@@ -183,7 +184,7 @@ function fakeBrowserSessionManager(store: InMemorySpaceStore) {
     status: () => ({
       enabled: true,
       statusReason: "Browser sessions enabled for test.",
-      defaultUrl: "https://www.example.invalid/",
+      defaultUrl: "https://www.google.com/",
       checkedAt: "2026-07-05T00:00:00.000Z"
     }),
     startOrRestore: async () => {
@@ -203,7 +204,7 @@ function fakeBrowserSessionManager(store: InMemorySpaceStore) {
       return {
         session: {
           ...session,
-          currentUrl: `https://www.example.invalid/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
+          currentUrl: `https://www.google.com/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
           title: `Olla ${redactionQueryKey}=${redactionFixtureValue}`
         },
         frame: {
@@ -212,7 +213,7 @@ function fakeBrowserSessionManager(store: InMemorySpaceStore) {
           roomId: session.roomId,
           status: "READY",
           viewport: session.viewport,
-          currentUrl: `https://www.example.invalid/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
+          currentUrl: `https://www.google.com/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
           title: `Olla ${redactionQueryKey}=${redactionFixtureValue}`,
           screenshotDataUrl: "data:image/png;base64,aGVsbG8=",
           capturedAt: "2026-07-05T00:00:00.000Z"
@@ -634,24 +635,34 @@ describe("Space API native agent panes", () => {
     expect(session.modelOptions.every((option) => !option.id.includes("gpt-5.2"))).toBe(true);
   });
 
+  it("never reads stable's OpenCode access file or reaches its shared server for Chat on dev", async () => {
+    for (const instance of ["stable", "dev"] as const) {
+      vi.mocked(resolveOpenCodeTitleFallbackControl).mockClear();
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: `OpenCode Chat on ${instance}`, initialPaneCount: 1 }, "trace:room");
+      const pane = store.listPanes(room.id)[0]!;
+      const { app, cookie } = await authedApp({ store, config: { ...enabledConfig(), instance } });
+      const loaded = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(pane.id)}/agent-session`, headers: { cookie } });
+      const provider = agentPaneSessionSchema.parse(loaded.json()).modelProviders.find((entry) => entry.providerId === "opencode");
+      // The fallback control is the reader of the shared server's access file; dev must never call it.
+      expect([instance, vi.mocked(resolveOpenCodeTitleFallbackControl).mock.calls.length > 0]).toEqual([instance, instance === "stable"]);
+      if (instance === "dev") expect(provider?.statusReason).toBe("OpenCode Chat is unavailable on dev: it runs only on the stable instance.");
+    }
+  });
+
   it("shows enabled OpenCode inside Chat panes", async () => {
     const store = new InMemorySpaceStore();
     const control = new FakeCodexAgentControl();
     const room = store.createRoom({ name: "Enabled OpenCode Chat", initialPaneCount: 1 }, "trace:room");
     const pane = store.listPanes(room.id)[0]!;
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      providers: [
-        { id: "opencode", name: "OpenCode Zen", models: {
-          "nemotron-3-ultra-free": { name: "Nemotron 3 Ultra Free" },
-          "north-mini-code-free": { name: "North Mini Code Free" },
-          "retired": { name: "Retired", status: "deprecated" }
-        } },
-        { id: "opencode-go", name: "OpenCode Go", models: {
-          "deepseek-v4-pro": { name: "DeepSeek V4 Pro", variants: { high: {}, max: {} } },
-          "qwen3.7-plus": { name: "Qwen3.7 Plus", variants: { minimal: {}, high: {} } }
-        } }
-      ]
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+    // OpenCode 2's /api/model.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "nemotron-3-ultra-free", providerID: "opencode", name: "Nemotron 3 Ultra Free", status: "active" },
+      { id: "north-mini-code-free", providerID: "opencode", name: "North Mini Code Free", status: "active" },
+      { id: "retired", providerID: "opencode", name: "Retired", status: "deprecated" },
+      { id: "deepseek-v4-pro", providerID: "opencode-go", name: "DeepSeek V4 Pro", status: "active", variants: ["high", "max"] },
+      { id: "qwen3.7-plus", providerID: "opencode-go", name: "Qwen3.7 Plus", status: "active", variants: ["minimal", "high"] }
+    ] }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     try {
       const adapter = createSpaceAgentAdapter({
@@ -944,11 +955,9 @@ describe("Space API native agent panes", () => {
     const starter = new FakeCodexTurnStarter();
     const room = store.createRoom({ name: "Isolated OpenCode Chat", initialPaneCount: 1 }, "trace:room");
     const pane = store.listPanes(room.id)[0]!;
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      providers: [{ id: "opencode-go", models: {
-        "deepseek-v4-pro": { name: "DeepSeek V4 Pro", variants: { high: {}, max: {} } }
-      } }]
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "deepseek-v4-pro", providerID: "opencode-go", name: "DeepSeek V4 Pro", status: "active", variants: ["high", "max"] }
+    ] }), { status: 200, headers: { "content-type": "application/json" } }));
     const sessionControlResolver = vi.fn(async (spaceAgentSessionId: string) => ({
       version: 1 as const,
       spaceSessionId: spaceAgentSessionId,
@@ -1878,8 +1887,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:browser-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/browser-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/?token=raw-secret&category=tea",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/?token=raw-secret&category=tea",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -1979,8 +1988,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:browser-2",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/browser-2",
       viewport: "mobile",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/?token=raw-secret&category=tea",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/?token=raw-secret&category=tea",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2004,7 +2013,7 @@ describe("Space API native agent panes", () => {
       url: `/api/panes/${encodeURIComponent(chatPane.id)}/agent/messages`,
       headers: { cookie, [csrfHeaderName]: csrfToken },
       payload: {
-        content: "Research example.invalid using the visible browser.",
+        content: "Research google.com using the visible browser.",
         selectedToolIds: ["browser:extract_text", "browser:set_viewport"]
       }
     });
@@ -2028,7 +2037,7 @@ describe("Space API native agent panes", () => {
     expect(starter.started[0]!.prompt).toContain("Space private clipboard tools selected:");
     expect(starter.started[0]!.prompt).toContain("```space-clipboard-actions");
     expect(starter.started[0]!.prompt).toContain("Use these tools only when the operator explicitly asks");
-    expect(starter.started[0]!.prompt).toContain("User prompt:\nResearch example.invalid using the visible browser.");
+    expect(starter.started[0]!.prompt).toContain("User prompt:\nResearch google.com using the visible browser.");
     expect(starter.started[0]!.prompt).not.toContain("Space Agent Bootstrap:");
     expect(starter.started[0]!.prompt).not.toContain("Space managed browser tools selected");
     expect(starter.started[0]!.prompt).not.toContain("browser_session:olla-2");
@@ -2192,8 +2201,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:defaults-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/defaults-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2270,8 +2279,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:reload-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/reload-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2373,8 +2382,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:browser-bridge-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/browser-bridge-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2463,7 +2472,7 @@ describe("Space API native agent panes", () => {
     expect(executed.json().results[0]).toMatchObject({
       status: "EXECUTED",
       observation: {
-        currentUrl: `https://www.example.invalid/?${redactionQueryKey}=%5BREDACTED%5D&category=tea`,
+        currentUrl: `https://www.google.com/?${redactionQueryKey}=%5BREDACTED%5D&category=tea`,
         title: `Olla ${redactionQueryKey}:[REDACTED]`,
         text: `Observed page text with ${redactionQueryKey}:[REDACTED]`
       }

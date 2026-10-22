@@ -1,5 +1,6 @@
 import type { AgentRuntime, Pane, SpaceAgentRoomActionRequest, RoomTaskTiming, RoomTaskModelUsage } from "@space/contracts";
 import { nowIso, redactMemoryText, SpaceConflictError, type SpaceStore } from "@space/runtime";
+import { isCliPane } from "./pane-guards.js";
 import type { SpaceAgentAdapter } from "./space-agent.js";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 
@@ -18,6 +19,8 @@ export interface RoomPaneObservation {
   modes?: string[]; commands?: string[]; text?: string;
   /** Identifies the question on screen; pass it back as expectedPromptFingerprint when answering. */
   promptFingerprint?: string;
+  /** The CLI stopped at its account's usage limit (cliUsageLimited); nothing is typed into it until that changes. */
+  usageLimited?: boolean;
   configuredModelId?: string | null;
   effectiveModelId?: string | null;
   modelVerificationStatus?: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";
@@ -50,7 +53,8 @@ export function createRoomPaneController(options: {
   interruptCli(pane: Pane, traceId: string): Promise<Record<string, unknown>>;
 }): RoomPaneController {
   async function inspect(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation> {
-    if (pane.mode === "TERMINAL") return options.inspectCli(pane, freshness);
+    // Copilot panes host a CLI session too: they are controlled as CLIs, never as Chat panes.
+    if (isCliPane(pane)) return options.inspectCli(pane, freshness);
     const session = pane.mode === "CHAT" ? await options.store.getActiveSpaceAgentSession(pane.id) : null;
     // Reuse the same advertised catalog and effective mode as the Chat UI.
     // The stored selection alone has no model list and may inherit its mode.
@@ -104,7 +108,7 @@ export function createRoomPaneController(options: {
     },
     inspect,
     async configure(pane, action, traceId) {
-      if (pane.mode === "TERMINAL") return options.configureCli(pane, action, traceId);
+      if (isCliPane(pane)) return options.configureCli(pane, action, traceId);
       if (pane.mode !== "CHAT") throw new SpaceConflictError("Model and native mode controls require an AI pane.");
       const before = await options.store.getActiveSpaceAgentSession(pane.id);
       if (!before || before.sessionId !== action.expectedSessionId) throw new SpaceConflictError("The Chat session changed before this command.");
@@ -124,13 +128,13 @@ export function createRoomPaneController(options: {
     },
     command: options.commandCli,
     async start(pane, traceId) {
-      if (pane.mode === "TERMINAL") return options.startCli(pane, traceId);
+      if (isCliPane(pane)) return options.startCli(pane, traceId);
       if (pane.mode !== "CHAT") throw new SpaceConflictError("Task start requires an AI pane.");
       const session = await options.chat.createOrRestoreSession({ pane });
       return { sessionId: session.binding.sessionId, state: session.runStatus };
     },
     async resume(pane, taskId, traceId) {
-      if (pane.mode === "TERMINAL") return options.resumeCli(pane, taskId, traceId);
+      if (isCliPane(pane)) return options.resumeCli(pane, taskId, traceId);
       if (pane.mode !== "CHAT") throw new SpaceConflictError("Task resume requires an AI pane.");
       const session = await options.chat.loadSession({ pane });
       if (taskId && taskId !== session.threadId && taskId !== session.binding.sessionId) throw new SpaceConflictError("Choose this pane's own Chat task to resume.");
@@ -138,7 +142,7 @@ export function createRoomPaneController(options: {
       return { sessionId: result.session.binding.sessionId, state: result.session.runStatus };
     },
     async interrupt(pane, traceId) {
-      if (pane.mode === "TERMINAL") return options.interruptCli(pane, traceId);
+      if (isCliPane(pane)) return options.interruptCli(pane, traceId);
       const result = await options.chat.interrupt({ pane, reason: "Interrupted by operator through Room Agent." });
       return { sessionId: result.session.binding.sessionId, state: result.session.runStatus };
     }

@@ -12,14 +12,16 @@ import { createNativeReadCache } from "./native-read-cache.js";
 // Local slash commands write user records that never reach the model.
 export const CLAUDE_SPACE_CONFIG_DIR = "/var/lib/spaceapp-user/.codex/space-claude";
 const CLAUDE_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
+/** The newest characters of Claude's last answer this read returns (Nous's space_read_pane reply "last"). */
+export const CLAUDE_LAST_ANSWER_MAX_CHARS = 6_000;
 export const claudeNativeSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** Claude Code's live per-process session status; `shell` runs a `!` command. */
+/** Claude Code's live per-process session status; `shell` is idle with background shells still running (2.1.303: `idle && shells ? "shell"`). */
 export type ClaudeSessionStatus = "busy" | "shell" | "waiting" | "idle";
 
 export interface ClaudeNativeTurns {
   nativeSessionId: string;
-  /** Busy or running a shell command, as Claude's own status line reports "working". */
+  /** A turn is running. A finished turn whose background shells run on ("shell") takes prompts, so it is not busy. */
   busy: boolean;
   status: ClaudeSessionStatus | null;
   /** What a waiting session needs from the user, e.g. "permission prompt". */
@@ -33,6 +35,10 @@ export interface ClaudeNativeTurns {
   titleManual: boolean;
   /** The latest answer broke on a transient server or connection error ("API Error: Connection lost"). */
   apiError: boolean;
+  /** The latest answer is the account's usage limit (429 rate_limit) and when it resets; absent from readers older than 2026-10-20. */
+  rateLimit?: { at: string | null; resetsAt: string | null } | null;
+  /** Claude's last answer text from the transcript (its newest characters), null before the first one. */
+  lastAnswer: string | null;
   tasks: NativeTaskExecution[];
 }
 
@@ -66,6 +72,9 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   let aiTitle: string | null = null;
   let customTitle: string | null = null;
   let apiError = false;
+  let rateLimit: ClaudeNativeTurns["rateLimit"] = null;
+  let lastAnswer: string | null = null;
+  let lastAnswerId: string | null = null;
   const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number) => {
     if (!open) return;
     open.status = status;
@@ -94,7 +103,20 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
       if (at) lastActivityAt = at;
       // Only server errors are worth a retry; rate, session, sign-in and billing limits are not.
       apiError = entry.isApiErrorMessage === true && entry.error === "server_error";
-      const model = text(record(entry.message).model);
+      const resetsAt = record(entry.quotaLimits).resetsAt;
+      rateLimit = entry.isApiErrorMessage === true && entry.error === "rate_limit"
+        ? { at, resetsAt: typeof resetsAt === "number" && Number.isFinite(resetsAt) ? new Date(resetsAt * 1000).toISOString() : null } : null;
+      // One answer may span several records of the same message id (text, tool use, more text).
+      const message = record(entry.message);
+      const content = message.content;
+      const said = typeof content === "string" ? content : Array.isArray(content)
+        ? content.map((block) => record(block)).filter((block) => block.type === "text").map((block) => text(block.text) ?? "").join("\n") : "";
+      if (said.trim() && entry.isApiErrorMessage !== true) {
+        const id = text(message.id);
+        lastAnswer = (id && id === lastAnswerId && lastAnswer ? `${lastAnswer}\n${said}` : said).slice(-CLAUDE_LAST_ANSWER_MAX_CHARS);
+        lastAnswerId = id;
+      }
+      const model = text(message.model);
       if (!model || model === "<synthetic>") continue;
       const effort = text(entry.effort);
       modelId = model;
@@ -123,6 +145,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
     // a turn_duration record (killed or crashed CLI).
     close("INTERRUPTED", lastActivityAt ?? at);
     apiError = false;
+    rateLimit = null;
     open = {
       taskId: text(entry.promptId) ?? text(entry.uuid) ?? `claude-turn-${tasks.length + 1}`,
       title: (trimmed.startsWith("<task-notification>") ? "Background task notification" : prompt).slice(0, 2000),
@@ -135,7 +158,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   }
   if (open && !busy) close("INTERRUPTED", lastActivityAt);
   for (const task of tasks) task.timing.observedAt = observedAt;
-  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError };
+  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, lastAnswer };
 }
 
 async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {
@@ -208,7 +231,7 @@ export async function readClaudeNativeTurns(
       }
     }
     const status = claudeSessionStatus(session.status);
-    const busy = status === "busy" || status === "shell";
+    const busy = status === "busy";
     const timeline = claudeTaskTimeline(lines ?? [], busy, (options.now?.() ?? new Date()).toISOString());
     const waitingFor = status === "waiting" ? text(session.waitingFor)?.replace(/\s+/g, " ").trim().slice(0, 80) || null : null;
     const statusUpdatedAt = typeof session.statusUpdatedAt === "number" && Number.isFinite(session.statusUpdatedAt) && session.statusUpdatedAt > 0

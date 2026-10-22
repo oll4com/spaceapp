@@ -203,20 +203,30 @@ function countsLabel(value: unknown): string {
 }
 
 /** Space Control actions that only the operator may approve, or that need their explicit yes. */
-export function roomAgentControlRisk(tool: string, args: Record<string, unknown>): { level: "SAFE" | "DESTRUCTIVE" | "PROTECTED"; reason: string | null } {
+/** What a Space Control operation is, by its type (hardening plan step 12): the wording of its arguments never lowers it. */
+export type ControlActionClass = { level: "SAFE" | "DESTRUCTIVE" | "PROTECTED"; category: "RELEASE" | "DESTRUCTIVE" | "EXTERNAL" | null; reason: string | null };
+export function controlActionClass(kind: string, operation: string): ControlActionClass {
+  if (kind === "resource" && operation === "ops.deploy") return { level: "PROTECTED", category: "RELEASE", reason: "Deploys go only through the merge queue, by the operator." };
+  if (kind === "resource" && ["files.publish", "media.publish"].includes(operation)) return { level: "DESTRUCTIVE", category: "EXTERNAL", reason: operation };
+  if (kind === "pane" && ["close", "restart", "stop", "cancel"].includes(operation)) return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: `${operation} panes` };
+  if (kind === "resource" && (operation.endsWith(".delete") || ["settings.update", "settings.rollback", "ops.test", "ops.verify", "ops.proof", "access.cli"].includes(operation))) {
+    return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: operation };
+  }
+  if (kind === "clipboard" && operation === "delete") return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: "delete a clipboard record" };
+  if (["room", "cli", "vpn"].includes(kind)) return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: `${kind} ${operation}`.trim() };
+  return { level: "SAFE", category: null, reason: null };
+}
+
+export function roomAgentControlRisk(tool: string, args: Record<string, unknown>): ControlActionClass {
   const command = tool === "space_execute" ? args : tool === "space_schedules" ? (args.command as Record<string, unknown> | undefined) : undefined;
   const actions = Array.isArray(command?.actions) ? command!.actions as Array<Record<string, unknown>> : [];
-  let destructive: string | null = null;
+  let first: ControlActionClass | null = null;
   for (const action of actions) {
-    const kind = String(action.kind ?? "");
-    const operation = String(action.operation ?? "");
-    if (kind === "resource" && operation === "ops.deploy") return { level: "PROTECTED", reason: "Deploys go only through the merge queue, by the operator." };
-    if (kind === "pane" && ["close", "restart", "stop", "cancel"].includes(operation)) destructive ??= `${operation} panes`;
-    else if (kind === "resource" && (operation.endsWith(".delete") || ["settings.update", "settings.rollback", "files.publish", "media.publish", "ops.test", "ops.verify", "ops.proof", "access.cli"].includes(operation))) destructive ??= operation;
-    else if (kind === "clipboard" && operation === "delete") destructive ??= "delete a clipboard record";
-    else if (["room", "cli", "vpn"].includes(kind)) destructive ??= `${kind} ${operation}`.trim();
+    const risk = controlActionClass(String(action.kind ?? ""), String(action.operation ?? ""));
+    if (risk.level === "PROTECTED") return risk;
+    if (risk.level === "DESTRUCTIVE") first ??= risk;
   }
-  return destructive ? { level: "DESTRUCTIVE", reason: destructive } : { level: "SAFE", reason: null };
+  return first ?? { level: "SAFE", category: null, reason: null };
 }
 
 function operationOutcome(operation: ControlOperation, done: string, failure: string): RoomAgentToolOutcome {
@@ -230,6 +240,8 @@ function operationOutcome(operation: ControlOperation, done: string, failure: st
       results: operation.results.map((result) => ({ paneId: result.paneId ?? null, status: result.status, detail: result.detail })) })
   };
 }
+
+const SET_MODEL_READY_WAIT_MS = 20_000;
 
 export function createRoomAgentTools(deps: RoomAgentToolDeps) {
   async function resolvePanes(ctx: RoomAgentToolContext, refs: string[], prefer: "OPEN" | "CLOSED" = "OPEN") {
@@ -307,7 +319,9 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
       const observed = await deps.inspectPane(pane);
       if (!observed.sessionId) return fail(`${paneName(pane)} has no running CLI`);
       if (!args.decline && !["WAITING_FOR_INPUT", "UNKNOWN"].includes(observed.state)) {
-        return fail(`${paneName(pane)} is not waiting for an answer`, `${paneName(pane)} is not waiting for an answer (state ${observed.state}). Read the pane again.`);
+        const next = observed.state === "IDLE" ? "It is at an empty prompt: send the answer as its next prompt (send_to_pane) instead."
+          : observed.state === "RUNNING" ? "Its turn is still running: send the answer with send_to_pane (after its turn)." : "Read the pane again.";
+        return fail(`${paneName(pane)} is not waiting for an answer`, `${paneName(pane)} is not waiting for an answer (state ${observed.state}). ${next}`);
       }
       const expected = typeof raw.expectedPromptFingerprint === "string" ? raw.expectedPromptFingerprint : null;
       if (ctx.confirmed && expected && observed.promptFingerprint !== expected) {
@@ -384,6 +398,12 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     async set_pane_model(args, ctx) {
       const { panes: [pane], problem } = await resolvePanes(ctx, [args.pane]);
       if (!pane) return fail(`Could not find ${args.pane}`, problem!);
+      // A just-opened CLI reads UNKNOWN until it shows its prompt (stable 2026-10-19: 32 "Native state is unknown" in 7 days).
+      if (pane.mode === "TERMINAL") {
+        for (let waited = 0; waited < SET_MODEL_READY_WAIT_MS && (await deps.inspectPane(pane).catch(() => null))?.state === "UNKNOWN"; waited += 1_000) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      }
       return control(ctx, [{ kind: "configure", target: { paneIds: [pane.id], state: "OPEN" }, modelId: args.modelId,
         ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}), when: args.when === "now" ? "NOW" : "AFTER_TURN" }],
         `Set ${paneName(pane)}'s model to ${args.modelId}${args.reasoningEffort ? ` (${args.reasoningEffort})` : ""}`, `Could not change ${paneName(pane)}'s model`);

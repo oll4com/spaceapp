@@ -299,17 +299,15 @@ function DisableRuntimeDialog({
           Saved task history and transcripts stay intact. Enabling {dialog.runtimeName} again reopens the CLI panes closed here and resumes their tasks.
         </p>
         {requiresAcknowledgement ? (
-          <label className="cli-runtime-disable-confirm">
-            <input
-              type="checkbox"
-              checked={acknowledged}
-              disabled={pending}
-              onChange={(event) => setAcknowledgedToken(event.target.checked ? dialog.preview.confirmationToken : null)}
-            />
-            <span>{closingPanes > 0
+          <SpaceToggle
+            compact
+            checked={acknowledged}
+            disabled={pending}
+            onChange={(checked) => setAcknowledgedToken(checked ? dialog.preview.confirmationToken : null)}
+            label={closingPanes > 0
               ? `Close ${closingPanes} open ${closingPanes === 1 ? "pane" : "panes"} and stop their work`
-              : `Stop ${stoppingWork} active ${stoppingWork === 1 ? "task" : "tasks"}`}</span>
-          </label>
+              : `Stop ${stoppingWork} active ${stoppingWork === 1 ? "task" : "tasks"}`}
+          />
         ) : null}
         {dialog.notice ? <DockNotice tone="warning" className="cli-runtime-notice" onDismiss={onDismissNotice}>{dialog.notice}</DockNotice> : null}
         {dialog.error ? <DockNotice className="cli-runtime-notice" onDismiss={onDismissError}>{dialog.error}</DockNotice> : null}

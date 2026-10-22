@@ -26,7 +26,8 @@ const protectedRules: Array<[string, RegExp]> = [
   ["version bump", /space-version\s+bump|\bversion bump\b|npm\s+version\s+(?:patch|minor|major)/i],
   ["git push", /\bgit\s+push\b/i],
   ["secrets and credentials", /(?:^|[\s"'/])\.env\b|\bsecrets?\/|\bpassword\b|\bcredentials?\b|\bapi[_-]?key\b|space_session|SPACE_SESSION_SECRET|\.secret\b|id_(?:rsa|ed25519)/i],
-  ["live Space checkout", /\/srv\/space\/(?!var\/worktrees\/|var\/artifacts\/)(?:apps|packages|scripts|deploy|docs|bin)\//i],
+  // The path is written plainly so the public export's path rewrite reaches it (a \/ escape hides it).
+  ["live Space checkout", new RegExp("/opt/spaceapp/(?!var/worktrees/|var/artifacts/)(?:apps|packages|scripts|deploy|docs|bin)/", "i")],
   ["operator-only Space files", /\/etc\/(?:AGENTS\.md|docs\/)/i]
 ];
 

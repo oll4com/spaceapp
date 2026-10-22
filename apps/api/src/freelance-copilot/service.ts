@@ -8,7 +8,7 @@ import {
 } from "@space/contracts";
 import type { FreelanceCopilotRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
-import type { ConnectorCrypto } from "../dot-connectors.js";
+import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
 import { extractCode, extractLinksFromText, type MailboxFactory, type MailboxReader } from "../job-apply/mailbox.js";
 
 export interface FreelanceCopilotServiceOptions {
@@ -113,7 +113,13 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
   async function openMailbox(owner: string): Promise<MailboxReader> {
     const mailbox = await repository.getMailbox(owner);
     if (!mailbox) throw new SpaceConflictError("FREELANCE_MAILBOX: no mailbox is connected; the operator connects work@example.invalid in the pane's Setup.");
-    return options.mailboxes.open(mailbox.config, options.crypto.open(mailbox.passwordSealed));
+    const context = connectorSealContext("freelance-mailbox", owner);
+    const password = options.crypto.open(mailbox.passwordSealed, context);
+    // A password sealed before the connector key (v1) is sealed again as v2 once read; without the key it stays as it is.
+    if (mailbox.passwordSealed.startsWith("v1.")) {
+      try { await repository.setMailbox(owner, { config: mailbox.config, passwordSealed: options.crypto.seal(password, context) }); } catch { /* stays v1 */ }
+    }
+    return options.mailboxes.open(mailbox.config, password);
   }
   async function withMailbox<T>(owner: string, read: (reader: MailboxReader) => Promise<T>): Promise<T> {
     const reader = await openMailbox(owner);
@@ -337,7 +343,7 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
         throw new SpaceConflictError(`FREELANCE_MAILBOX: the mailbox did not accept the sign-in (${error instanceof Error ? error.message.slice(0, 200) : "error"}).`);
       });
       await reader.close().catch(() => undefined);
-      await repository.setMailbox(owner, { config, passwordSealed: options.crypto.seal(password) });
+      await repository.setMailbox(owner, { config, passwordSealed: options.crypto.seal(password, connectorSealContext("freelance-mailbox", owner)) });
       return service.mailboxStatus(owner);
     },
     disconnectMailbox: (owner: string) => repository.deleteMailbox(owner),
@@ -412,11 +418,12 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       await record(owner, { paneId: pane.id, leadId: input.leadId ?? null, type: "QUESTION", message: `Needs you: ${input.question}`, payload: { questionId, question: input.question, options: input.options ?? [] } });
       return { questionId };
     },
-    async answerQuestion(owner: string, pane: Pane | null, input: { questionId: string; answer: string }) {
+    /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
+    async answerQuestion(owner: string, pane: Pane | null, input: { questionId: string; answer: string }, by: "USER" | "NOUS" = "USER") {
       const question = (await repository.listEvents(owner, { types: ["QUESTION"], limit: 300 })).find((event) => event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
-      const memory = await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: String(question.payload.question).toLowerCase().slice(0, 300), text: input.answer, channel: null, tags: ["question"], source: "USER", pinned: false });
-      await record(owner, { paneId: pane?.id ?? question.paneId, leadId: question.leadId, type: "ANSWERED", message: `You answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id } });
+      const memory = await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: String(question.payload.question).toLowerCase().slice(0, 300), text: input.answer, channel: null, tags: ["question"], source: by === "NOUS" ? "AGENT" : "USER", pinned: false });
+      await record(owner, { paneId: pane?.id ?? question.paneId, leadId: question.leadId, type: "ANSWERED", message: `${by === "NOUS" ? "Nous" : "You"} answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id, answeredBy: by } });
       return { memory };
     },
     async waitForAnswer(owner: string, input: { questionId: string; waitMs: number }) {

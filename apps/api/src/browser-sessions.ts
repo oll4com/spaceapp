@@ -1,6 +1,6 @@
 import { spawn } from "./safe-child-process.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { accessSync, constants, createReadStream, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -17,6 +17,7 @@ import {
   browserToolActionResultSchema,
   paneBrowserSessionResponseSchema,
   type AcquireBrowserControlInput,
+  type FreelanceEgressRoute,
   type BrowserCaptureJob,
   type BrowserCaptureOptions,
   type BrowserCaptureSegment,
@@ -39,6 +40,9 @@ import {
   type PaneBrowserSession,
   type PaneBrowserSessionResponse
 } from "@space/contracts";
+import type { VaultHostFillResult, VaultHostTarget } from "@space/contracts";
+import { VAULT_BROKER_HOST_SOCKET_PATH, createSocketVaultBroker, sealedFillBroker } from "./vault/broker-client.js";
+import { readVaultTarget, runSealedFill, type SealedFillPage } from "./vault/sealed-fill.js";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
@@ -67,6 +71,10 @@ interface ViewportSize {
 }
 
 const DEEPSEEK_HARNESS_BROWSER_ORIGIN = "http://10.254.240.21:3080";
+
+/** Chrome's saved-login stores in a profile (and their SQLite side files). */
+export const CHROME_SAVED_LOGIN_FILES = ["Login Data", "Login Data For Account"]
+  .flatMap(store => ["", "-journal", "-wal", "-shm"].map(suffix => store + suffix));
 
 export interface BrowserStreamProfile {
   requestedMode: BrowserStreamMode;
@@ -237,6 +245,8 @@ interface BrowserRuntime {
   pageProfiles: Map<string, string>;
   /** Serializes joining, switching and leaving account Chromes. */
   accountWork: Promise<unknown>;
+  /** Set by a Vault sealed fill: this page keeps no console or network entries from then on (ADR-012). */
+  vaultProtected?: boolean;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -247,7 +257,7 @@ interface BrowserAccountTab {
 }
 
 /** Server-derived identity of an account tab's Chrome profile, kept so a restart reopens the tab in its account. */
-type BrowserAccountTabIdentity = Pick<StartBrowserSessionInput, "googleAccount" | "sharedProfileKey" | "profileKey">;
+export type BrowserAccountTabIdentity = Pick<StartBrowserSessionInput, "googleAccount" | "sharedProfileKey" | "profileKey">;
 
 export interface BrowserSessionStatus {
   enabled: boolean;
@@ -350,6 +360,9 @@ export interface BrowserSessionManager {
   cancelCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   recoverCaptureJobs?(): Promise<{ failedSegments: number; requeuedJobs: string[] }>;
   diagnostics?(pane: Pane, includeNetwork: boolean, limit: number): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }>;
+  /** Vault sealed fill (ADR-012); only the Browser Host process implements them. */
+  vaultTarget?(pane: Pane): Promise<VaultHostTarget>;
+  vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult>;
   /** Verifies the account's profile with Google; launches it only when `launch` is true and no pane is using it. */
   checkGoogleAccount?(identity: GoogleAccountBrowserIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<GoogleAccountBrowserCheckResult>;
   /**
@@ -462,6 +475,55 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   return Promise.race([promise, timeoutPromise]).finally(() => {
     if (timeout) clearTimeout(timeout);
   });
+}
+
+interface BrowserFrameTreeNode { frame: { id: string }; childFrames?: BrowserFrameTreeNode[] }
+// The masked screenshot's style (Vault fence, 2026-10-19): every form field, text area and editable area drawn as dots,
+// including a password field a "show password" toggle turned into text. Applied for one shot, then removed.
+const VAULT_MASK_CSS = "input,textarea,select,[contenteditable]:not([contenteditable=false]),[contenteditable]:not([contenteditable=false]) *"
+  + "{-webkit-text-security:disc!important}";
+export const VAULT_MASK_APPLY = `(() => { let s = document.getElementById("__space_vault_mask"); if (!s) { s = document.createElement("style");
+  s.id = "__space_vault_mask"; (document.head || document.documentElement).appendChild(s); } s.textContent = ${JSON.stringify(VAULT_MASK_CSS)};
+  return getComputedStyle(document.documentElement) !== null; })()`;
+export const VAULT_MASK_REMOVE = `(() => { document.getElementById("__space_vault_mask")?.remove(); return true; })()`;
+
+/**
+ * A PNG (base64) of the page with every form field, text area and editable area drawn as dots (Vault fence, 2026-10-19):
+ * the mask goes into an isolated world of every frame of this page for this one shot and is removed after it. Without the
+ * mask on the page's own frame nothing is captured; a frame of another process (out of this session) holds nothing a fill
+ * of this page typed.
+ */
+export async function captureMaskedScreenshot(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>): Promise<string> {
+  const tree = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree");
+  const frameIds: string[] = [];
+  const walk = (node: BrowserFrameTreeNode) => { frameIds.push(node.frame.id); for (const child of node.childFrames ?? []) walk(child); };
+  walk(tree.frameTree);
+  const contexts: number[] = [];
+  try {
+    for (const [index, frameId] of frameIds.entries()) {
+      try {
+        const world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId, worldName: "space-vault-mask" });
+        const applied = await send<{ result?: { value?: unknown } }>("Runtime.evaluate", { contextId: world.executionContextId, returnByValue: true, expression: VAULT_MASK_APPLY });
+        if (applied.result?.value !== true) throw new Error("mask not applied");
+        contexts.push(world.executionContextId);
+      } catch (error) {
+        if (index === 0) throw new SpaceConflictError(`The masked screenshot could not mask the page: ${error instanceof Error ? error.message : "unknown"}.`);
+      }
+    }
+    return (await send<{ data: string }>("Page.captureScreenshot", { format: "png", captureBeyondViewport: false })).data;
+  } finally {
+    for (const contextId of contexts) await send("Runtime.evaluate", { contextId, expression: VAULT_MASK_REMOVE }).catch(() => undefined);
+  }
+}
+
+/** Enter (with its submit char), Tab or Shift+Tab as real key events in the page. */
+export async function pressBrowserKey(client: { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> }, sessionId: string,
+  key: "Enter" | "Tab" | "Shift+Tab"): Promise<void> {
+  const name = key === "Enter" ? "Enter" : "Tab";
+  const base = { key: name, code: name, windowsVirtualKeyCode: name === "Enter" ? 13 : 9, modifiers: key === "Shift+Tab" ? 8 : 0 };
+  await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }, sessionId);
+  if (name === "Enter") await client.send("Input.dispatchKeyEvent", { type: "char", text: "\r", ...base }, sessionId);
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, sessionId);
 }
 
 function sanitizeSegment(value: string): string {
@@ -1387,6 +1449,16 @@ function windowsVirtualKeyCodeFor(key: string, code: string | undefined): number
   return 0;
 }
 
+/**
+ * The clock and languages of a Freelance route's exit country, so pages show the time and language the exit implies
+ * (English first: the operator's accounts are in English). Direct is this server's own zone.
+ * shortcut: Mullvad and Nord rotate cities, so they keep the server's zone; map them when a route pins one country.
+ */
+const egressLocales: Partial<Record<FreelanceEgressRoute, { timeZone: string; acceptLang: string }>> = {
+  thailand: { timeZone: "Asia/Bangkok", acceptLang: "en-US,en,th" },
+  greece: { timeZone: "Europe/Athens", acceptLang: "en-US,en,el" }
+};
+
 export function googleBrowserProfilePathFor(profileRoot: string, ownerUserId: string, accountId: string): string {
   if (!ownerUserId || !/^google_account:[A-Za-z0-9_-]+$/.test(accountId)) throw new SpaceConflictError("Invalid Google account profile identity.");
   const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -1404,6 +1476,35 @@ export function browserProfilePathFor(profileRoot: string, roomId: string, paneI
   if (profileKey == null) return root;
   if (!/^[a-f0-9]{64}$/.test(profileKey)) throw new Error("Invalid browser account profile scope.");
   return join(root, "accounts", profileKey);
+}
+
+/** The Chrome profile of an account identity: a Google account's, a shared CLI account's or one of the pane's own. */
+export function browserProfilePathForIdentity(profileRoot: string, pane: Pick<Pane, "id" | "roomId">, identity: BrowserAccountTabIdentity): string {
+  return identity.googleAccount
+    ? googleBrowserProfilePathFor(profileRoot, identity.googleAccount.ownerUserId, identity.googleAccount.accountId)
+    : identity.sharedProfileKey
+      ? sharedCliProfilePathFor(profileRoot, identity.sharedProfileKey)
+      : browserProfilePathFor(profileRoot, pane.roomId, pane.id, identity.profileKey);
+}
+
+// Server-only record of the account tabs' identities, outside every Chrome profile (a pane's own profile is its
+// directory, and adopting a sign-in moves that directory into a shared account).
+export const browserAccountTabsFile = (profileRoot: string, paneId: string) => join(profileRoot, "account-tabs", `${sanitizeSegment(paneId)}.json`);
+
+/** The identity behind each of a pane's account tabs, keyed by the tab's account profile id. */
+export async function readBrowserAccountTabIdentities(profileRoot: string, paneId: string): Promise<Record<string, BrowserAccountTabIdentity>> {
+  const raw = await readFile(browserAccountTabsFile(profileRoot, paneId), "utf8").catch(() => null);
+  const parsed = (() => { try { return raw ? JSON.parse(raw) as { accounts?: unknown } : null; } catch { return null; } })();
+  const result: Record<string, BrowserAccountTabIdentity> = {};
+  const key = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  for (const [profileId, value] of Object.entries(parsed?.accounts && typeof parsed.accounts === "object" ? parsed.accounts : {})) {
+    const entry = value as Record<string, unknown> & { googleAccount?: Record<string, unknown> };
+    if (entry.googleAccount && typeof entry.googleAccount.ownerUserId === "string" && typeof entry.googleAccount.accountId === "string") {
+      result[profileId] = { googleAccount: { ownerUserId: entry.googleAccount.ownerUserId, accountId: entry.googleAccount.accountId } };
+    } else if (key(entry.sharedProfileKey)) result[profileId] = { sharedProfileKey: entry.sharedProfileKey as string };
+    else if (entry.profileKey === null || key(entry.profileKey)) result[profileId] = { profileKey: entry.profileKey as string | null };
+  }
+  return result;
 }
 
 export async function dispatchBrowserRuntimeInput(
@@ -1630,11 +1731,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return next;
   }
   function profilePathForInput(input: StartBrowserSessionInput): string {
-    return input.googleAccount
-      ? googleBrowserProfilePathFor(config.browserSessionsProfileRoot, input.googleAccount.ownerUserId, input.googleAccount.accountId)
-      : input.sharedProfileKey
-        ? sharedCliProfilePathFor(config.browserSessionsProfileRoot, input.sharedProfileKey)
-        : browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey);
+    return browserProfilePathForIdentity(config.browserSessionsProfileRoot, input.pane, input);
   }
   /** Account identity of a start request; panes with the same identity share one Chrome. */
   function profileIdentityForInput(input: StartBrowserSessionInput): string | null {
@@ -2031,14 +2128,6 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           { urlPattern: "https://*/*", requestStage: "Request" }
         ]
       }, cdpSessionId),
-      client.send("Page.addScriptToEvaluateOnNewDocument", {
-        source: [
-          "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });",
-          "Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });",
-          "Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });",
-          "window.chrome = window.chrome || { runtime: {} };"
-        ].join(" ")
-      }, cdpSessionId).catch(() => undefined),
       config.browserSessionsYouTubeAdBlockEnabled
         ? client.send("Page.addScriptToEvaluateOnNewDocument", { source: youTubeAdBlockScript() }, cdpSessionId).catch(() => undefined)
         : undefined
@@ -2152,22 +2241,35 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   }
 
   /**
-   * The Chrome flags of a Freelance Copilot pane's per-platform egress (its PAC, and WebRTC kept on the proxied
-   * routes), with a key that names them; null for every other pane and for an all-direct pane.
+   * The Chrome flags of a Freelance Copilot pane's per-platform egress (its PAC, WebRTC kept on the proxied routes, and
+   * the clock and languages of the pane's own route), with a key that names them; null for every other pane and for
+   * an all-direct pane. The PAC holds the pane's route, so a route change changes the key and relaunches Chrome.
    */
-  async function egressFor(paneId: string): Promise<{ args: string[]; key: string } | null> {
+  async function egressFor(paneId: string): Promise<{ args: string[]; env: Record<string, string>; key: string } | null> {
     const pane = await Promise.resolve(store.getPane(paneId)).catch(() => null);
     if (pane?.mode !== "FREELANCE_COPILOT") return null;
-    const pac = freelanceEgressPac(resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings);
+    const settings = resolveFreelanceCopilotPaneMetadata(pane.freelanceCopilotMetadata).settings;
+    const pac = freelanceEgressPac(settings);
     if (!pac) return null;
+    const locale = egressLocales[settings.browserEgress];
     return {
-      args: [`--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pac).toString("base64")}`, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
+      args: [`--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(pac).toString("base64")}`, "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ...(locale ? [`--accept-lang=${locale.acceptLang}`] : [])],
+      env: locale ? { TZ: locale.timeZone } : {},
       key: createHash("sha256").update(pac).digest("hex")
     };
   }
 
-  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; key: string } | null = null): Promise<BrowserProfileRuntime> {
+  // Chrome's own saved logins are removed before each launch of an agent-driven profile: a saved password is autofilled
+  // and reaches an agent's page snapshot (Freelance Copilot, 2026-10-19). The managed policy deploy/chrome-policies stops
+  // new saves and autofill; this removes logins saved earlier. Chrome is not running for the profile here.
+  async function forgetChromeSavedLogins(profilePath: string) {
+    await Promise.all(CHROME_SAVED_LOGIN_FILES.map(name => rm(join(profilePath, "Default", name), { force: true })));
+  }
+
+  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">, egress: { args: string[]; env: Record<string, string>; key: string } | null = null): Promise<BrowserProfileRuntime> {
     await mkdir(session.profilePath, { recursive: true, mode: 0o700 });
+    await forgetChromeSavedLogins(session.profilePath);
     const viewport = viewportSizes[session.viewport];
     const audioEnv = config.browserSessionsAudioEnabled
       ? {
@@ -2211,11 +2313,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
         "--disable-features=Vulkan",
-        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
         ...(egress?.args ?? []),
         "about:blank"
       ],
-      { env: { ...childProcessEnv(), HOME: session.profilePath, ...audioEnv, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
+      { env: { ...childProcessEnv(), HOME: session.profilePath, ...audioEnv, ...egress?.env, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
     );
     let client: CdpClient | undefined;
     try {
@@ -2410,27 +2511,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await activateRuntimePage(session, runtime, [...runtime.ownedPages][0] ?? await createOwnedPage(runtime, "about:blank"));
   }
 
-  // Server-only record of the account tabs' identities, outside every Chrome profile (a pane's own profile is its
-  // directory, and adopting a sign-in moves that directory into a shared account).
-  const accountTabsFile = (paneId: string) => join(config.browserSessionsProfileRoot, "account-tabs", `${sanitizeSegment(paneId)}.json`);
-
-  async function readAccountTabIdentities(paneId: string): Promise<Record<string, BrowserAccountTabIdentity>> {
-    const raw = await readFile(accountTabsFile(paneId), "utf8").catch(() => null);
-    const parsed = (() => { try { return raw ? JSON.parse(raw) as { accounts?: unknown } : null; } catch { return null; } })();
-    const result: Record<string, BrowserAccountTabIdentity> = {};
-    const key = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-    for (const [profileId, value] of Object.entries(parsed?.accounts && typeof parsed.accounts === "object" ? parsed.accounts : {})) {
-      const entry = value as Record<string, unknown> & { googleAccount?: Record<string, unknown> };
-      if (entry.googleAccount && typeof entry.googleAccount.ownerUserId === "string" && typeof entry.googleAccount.accountId === "string") {
-        result[profileId] = { googleAccount: { ownerUserId: entry.googleAccount.ownerUserId, accountId: entry.googleAccount.accountId } };
-      } else if (key(entry.sharedProfileKey)) result[profileId] = { sharedProfileKey: entry.sharedProfileKey as string };
-      else if (entry.profileKey === null || key(entry.profileKey)) result[profileId] = { profileKey: entry.profileKey as string | null };
-    }
-    return result;
-  }
+  const readAccountTabIdentities = (paneId: string) => readBrowserAccountTabIdentities(config.browserSessionsProfileRoot, paneId);
 
   async function saveAccountTabIdentity(paneId: string, profileId: string, identity: BrowserAccountTabIdentity): Promise<void> {
-    const file = accountTabsFile(paneId);
+    const file = browserAccountTabsFile(config.browserSessionsProfileRoot, paneId);
     const accounts = { ...await readAccountTabIdentities(paneId), [profileId]: identity };
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
     await writeFile(file, JSON.stringify({ version: 1, accounts }), { mode: 0o600 });
@@ -2591,6 +2675,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         }
         return;
       }
+      if (runtime.vaultProtected) return;
       if (event.method === "Runtime.consoleAPICalled" || event.method === "Runtime.exceptionThrown") {
         pushBounded(runtime.consoleEntries, normalizeConsoleEvent(event), 500);
         return;
@@ -3158,6 +3243,19 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return record.artifact.id;
   }
 
+  /** The pane that filled a Vault page sees its labels and buttons, never a value (captureMaskedScreenshot). */
+  async function maskedScreenshot(session: PaneBrowserSession, runtime: BrowserRuntime): Promise<{ artifactId: string; path: string; masked: true }> {
+    const data = await captureMaskedScreenshot((method, params) => runtime.client.send(method, params, runtime.cdpSessionId));
+    const segment = sanitizeSegment(`masked-${randomUUID()}`);
+    const directory = join(config.browserEvidenceArtifactRoot, "browser-evidence", segment);
+    const filename = "masked-screenshot.png";
+    const path = join(directory, filename);
+    await mkdir(directory, { recursive: true, mode: 0o750 });
+    await writeFile(path, Buffer.from(data, "base64"), { mode: 0o640 });
+    const artifactId = await registerCaptureArtifact({ session, jobId: segment, filePath: path, filename, kind: "SCREENSHOT", mimeType: "image/png" });
+    return { artifactId, path, masked: true };
+  }
+
   async function runScreenshotCapture(job: BrowserCaptureJob, session: PaneBrowserSession, runtime: BrowserRuntime): Promise<string[]> {
     if (job.options.kind !== "SCREENSHOT") return [];
     const format = job.options.format.toLowerCase() as "png" | "jpeg" | "webp";
@@ -3538,6 +3636,23 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return browserTimelineEventSummarySchema.array().parse([...consoleEvents, ...networkEvents].slice(-limit));
   }
 
+  // Vault sealed fill (ADR-012): the pane's own tab, also in a shared Chrome (the API fences the filled browser, protection.ts).
+  function vaultPage(pane: Pane, runtime: BrowserRuntime): SealedFillPage {
+    return { cdp: runtime.client, sessionId: runtime.cdpSessionId, targetId: runtime.targetId, paneId: pane.id };
+  }
+  // H2 Option A: the Browser Host talks to the broker over its own socket, never through the API.
+  const vaultBroker = sealedFillBroker(createSocketVaultBroker(VAULT_BROKER_HOST_SOCKET_PATH));
+  async function vaultTargetForPane(pane: Pane): Promise<VaultHostTarget> {
+    return readVaultTarget(vaultPage(pane, await ensureRuntime(await requireActiveSession(pane))));
+  }
+  async function vaultFillForPane(pane: Pane, request: unknown): Promise<VaultHostFillResult> {
+    const runtime = await ensureRuntime(await requireActiveSession(pane));
+    runtime.vaultProtected = true;
+    runtime.consoleEntries.length = 0;
+    runtime.networkEntries.length = 0;
+    return runSealedFill(vaultPage(pane, runtime), vaultBroker, request);
+  }
+
   async function diagnosticsForPane(pane: Pane, includeNetwork: boolean, limit: number) {
     const session = await requireActiveSession(pane);
     const runtime = await ensureRuntime(session);
@@ -3704,7 +3819,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       await pageProfile(runtime, pageId).client.send("Target.closeTarget", { targetId: pageId });
       return refreshPages(session, runtime);
     },
-    acquireControl: (pane, input, _traceId, context) => acquireControl(pane, input, context),
+    async acquireControl(pane, input, _traceId, context) {
+      const lease = await acquireControl(pane, input, context);
+      // The holder drives the pane's active tab; Chrome holds each input to a background tab for 5 s and streams
+      // no frames from it, and an agent's own tab switch can leave the pane's tab behind another one.
+      const runtime = runtimes.get(lease.sessionId);
+      await runtime?.client.send("Target.activateTarget", { targetId: runtime.targetId }).catch(() => undefined);
+      return lease;
+    },
     heartbeatControl: (pane, input, _traceId, context) => updateControlLease(pane, input, false, context),
     releaseControl: (pane, input, _traceId, context) => updateControlLease(pane, input, true, context),
     async dispatchInput(pane, input, _traceId, context) {
@@ -3714,6 +3836,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return responseFor(await dispatchRuntimeInput(pane, input, context), false);
     },
     diagnostics: diagnosticsForPane,
+    vaultTarget: vaultTargetForPane,
+    vaultFill: (pane, request) => vaultFillForPane(pane, request),
     async adoptPaneGoogleProfile(source, context) {
       if (context && (context.holderType !== "OPERATOR" || context.holderId !== source.ownerUserId)) {
         throw new SpaceConflictError("Only the account owner can move a pane's Google sign-in.");
@@ -3779,10 +3903,18 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       if (input.type === "diagnostics") {
         text = browserDiagnosticsText(runtime, input);
       }
+      if (input.type === "press") {
+        await pressBrowserKey(runtime.client, runtime.cdpSessionId, input.key);
+        text = `Pressed ${input.key}.`;
+      }
+      if (input.type === "masked_screenshot") {
+        text = JSON.stringify(await maskedScreenshot(session, runtime));
+      }
       if (input.type === "record") {
         text = await executeActionRecording(session, runtime, input, context);
       }
-      const frame = await captureFrame(session.sessionId);
+      // A masked screenshot returns no unmasked live frame next to it.
+      const frame = input.type === "masked_screenshot" ? null : await captureFrame(session.sessionId);
       const fresh = await store.getPaneBrowserSession(session.sessionId);
       return browserToolActionResultSchema.parse({ session: fresh ?? session, frame, text });
     },

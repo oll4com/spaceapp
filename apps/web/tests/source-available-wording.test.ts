@@ -2,8 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// SpaceApp is source-available (BSL) until its Change Date; the UI must not call it open source
-// (review 2026-10-14: banner, widget and settings texts said "Free & Open Source").
+// SpaceApp is MIT from 1.1.7 (operator decision 2026-10-19); the UI must not call it source-available or BSL any more.
 const webRoot = join(import.meta.dirname, "..");
 function textFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -14,9 +13,9 @@ function textFiles(dir: string): string[] {
 }
 
 describe("licence wording in the web app", () => {
-  it("never calls SpaceApp open source", () => {
+  it("never calls SpaceApp source-available or BSL", () => {
     const offenders = [...textFiles(join(webRoot, "src")), ...textFiles(join(webRoot, "public"))]
-      .filter((file) => /open[\s_-]?source/i.test(readFileSync(file, "utf8")))
+      .filter((file) => /source[\s_-]?available|Business Source License|BUSL-1\.1/i.test(readFileSync(file, "utf8")))
       .map((file) => relative(webRoot, file));
     expect(offenders).toEqual([]);
   });

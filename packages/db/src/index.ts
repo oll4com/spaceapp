@@ -1,6 +1,6 @@
 export { loadMigrations, migrationDirectory } from "./migrations.js";
 export * from "./system-health-repository.js";
-export { PostgresSpaceStore, type PgClientLike, type PgPoolLike } from "./space-store.js";
+export { PostgresSpaceStore, createSpacePgPool, type PgClientLike, type PgPoolLike } from "./space-store.js";
 export { CanonicalMemoryEmbeddings, type CanonicalEmbeddingRow } from "./canonical-memory-embeddings.js";
 export { PostgresTelegramPersistence } from "./telegram-persistence.js";
 export {
@@ -34,6 +34,7 @@ export {
 export {
   InMemorySystemAnalyticsRepository,
   PostgresSystemAnalyticsRepository,
+  type SystemAnalyticsModelEventGroup,
   type SystemAnalyticsModelEventRecord,
   type SystemAnalyticsModelEventStatus,
   type SystemAnalyticsRoute,
@@ -91,8 +92,18 @@ export * from "./connector-accounts-repository.js";
 export * from "./job-apply-repository.js";
 export * from "./space-notifications-repository.js";
 export * from "./council-repository.js";
+export * from "./nous-repository.js";
+export * from "./nous-followups-repository.js";
+export * from "./nous-plan-marks-repository.js";
+export * from "./nous-pane-checks-repository.js";
+export * from "./nous-pane-summaries-repository.js";
+export * from "./nous-away-repository.js";
+export * from "./pane-reports-repository.js";
+export * from "./nous-attachment-repository.js";
 export * from "./mail-copilot-repository.js";
 export * from "./marketing-copilot-repository.js";
+export * from "./design-repository.js";
+export * from "./app-studio-repository.js";
 export * from "./freelance-copilot-repository.js";
 export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";
@@ -108,3 +119,4 @@ export {
   type RoomAgentMonitorRepository,
   type RoomPaneActivityRecord
 } from "./room-agent-monitor-repository.js";
+export * from "./vault-repository.js";

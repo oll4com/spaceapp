@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
-import { countsAsOperatorInput, createBrowserControlActivity, settleEndedOperatorLease, sweepIdleOperatorLeases } from "../src/browser-control-activity.js";
+import { countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, sweepIdleOperatorLeases } from "../src/browser-control-activity.js";
+import { registerVaultFenceHooks } from "../src/vault/fence-hooks.js";
 
 describe("browser control activity", () => {
   it("measures idle time from the last input, the lease start or the API start, whichever is latest", () => {
@@ -19,6 +20,19 @@ describe("browser control activity", () => {
     expect(activity.idleMs(old)).toBe(180_000);
     activity.forget(lease.leaseId);
     expect(activity.idleMs(lease)).toBe(120_000);
+  });
+
+  it("names the last agent pane that drove a browser for 10 minutes, or as long as it stays attached", () => {
+    let now = Date.parse("2026-10-20T10:00:00.000Z");
+    const activity = createBrowserControlActivity(() => now);
+    expect(activity.agentFor("pane:browser")).toBeNull();
+    activity.noteAgent("pane:browser", "pane:codex");
+    activity.noteAgent("pane:browser", "pane:claude");
+    now += 10 * 60_000;
+    expect(activity.agentFor("pane:browser")).toBe("pane:claude");
+    now += 1;
+    expect(activity.agentFor("pane:browser")).toBeNull();
+    expect(activity.agentFor("pane:browser", true)).toBe("pane:claude");
   });
 });
 
@@ -109,6 +123,47 @@ describe("browser control idle release (operator 2026-10-15: back to the agent w
       await settleEndedOperatorLease(third.store, third.sessionId);
       expect(third.store.getBrowserHandoffRequest(third.handoff.handoffRequestId)?.status).toBe("ACCEPTED");
       expect(third.store.getBrowserControlLease(third.lease.leaseId)?.status).toBe("ACTIVE");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fences the pane's page when a handoff completes, before the agent gets the browser back (2026-10-19)", async () => {
+    const start = Date.parse("2026-10-15T12:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: start });
+    try {
+      const steps: string[] = [];
+      // Released by the operator (or the idle sweep): the fence goes up before the host hands control back.
+      const first = await setup();
+      registerVaultFenceHooks(first.store, { fenceHandoff: async (paneId) => { steps.push(`fence ${paneId}`); }, fencedTargets: async () => [] });
+      const releaseControl = first.browserSessionManager.releaseControl;
+      first.browserSessionManager.releaseControl = async (pane, input) => { steps.push("release"); return releaseControl(pane, input); };
+      await releaseBrowserControlLease({ store: first.store, browserSessionManager: first.browserSessionManager, activity: createBrowserControlActivity() } as never,
+        { pane: first.pane, lease: first.lease, traceId: "trace:handoff", auditAction: "pane.browser.control.release" });
+      expect(steps).toEqual([`fence ${first.pane.id}`, "release"]);
+      expect(first.store.getBrowserHandoffRequest(first.handoff.handoffRequestId)?.status).toBe("COMPLETED");
+      // A lease that ran out (the tab stopped heartbeating) fences the same way.
+      steps.length = 0;
+      const second = await setup();
+      registerVaultFenceHooks(second.store, { fenceHandoff: async (paneId) => { steps.push(`fence ${paneId}`); }, fencedTargets: async () => [] });
+      vi.setSystemTime(start + 61_000);
+      await settleEndedOperatorLease(second.store, second.sessionId);
+      expect(steps).toEqual([`fence ${second.pane.id}`]);
+      // No fence without a handoff (the operator took control himself), and a fence that fails never blocks the handoff.
+      steps.length = 0;
+      vi.setSystemTime(start);
+      const third = await setup();
+      registerVaultFenceHooks(third.store, { fenceHandoff: async () => { throw new Error("Browser Host unavailable"); }, fencedTargets: async () => [] });
+      const own = third.store.createBrowserControlLease({ leaseId: "browser_lease:own", sessionId: third.sessionId, paneId: third.pane.id, roomId: third.pane.roomId,
+        holderType: "OPERATOR", holderId: "user:operator", reason: "Direct browser interaction", ttlSeconds: 60 });
+      registerVaultFenceHooks(third.store, { fenceHandoff: async (paneId) => { steps.push(`fence ${paneId}`); }, fencedTargets: async () => [] });
+      await releaseBrowserControlLease({ store: third.store, browserSessionManager: third.browserSessionManager, activity: createBrowserControlActivity() } as never,
+        { pane: third.pane, lease: own, traceId: "trace:own", auditAction: "pane.browser.control.release" });
+      expect(steps).toEqual([]);
+      registerVaultFenceHooks(third.store, { fenceHandoff: async () => { throw new Error("Browser Host unavailable"); }, fencedTargets: async () => [] });
+      vi.setSystemTime(start + 61_000);
+      await settleEndedOperatorLease(third.store, third.sessionId);
+      expect(third.store.getBrowserHandoffRequest(third.handoff.handoffRequestId)?.status).toBe("COMPLETED");
     } finally {
       vi.useRealTimers();
     }

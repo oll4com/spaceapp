@@ -16,6 +16,14 @@ export function youtubeAccountProfileKey(userId: string, profileId: string | nul
   return profileId === null ? undefined : createHash('sha256').update(JSON.stringify([userId, cliAccountProfileIdSchema.parse(profileId)])).digest('hex');
 }
 
+/**
+ * The one Chrome profile every Freelance Copilot pane of the user opens for an account (operator decision 2026-10-17): its
+ * sign-in stays across Freelance panes, and it is never the profile other panes open for the account (Freelance has its own routes).
+ */
+export function freelanceProfileKey(userId: string, profileId: string): string {
+  return createHash('sha256').update(JSON.stringify(['freelance', userId, profileId])).digest('hex');
+}
+
 export function youtubeAccountSignInUrl(email: string | null): string {
   const url = new URL('https://accounts.google.com/ServiceLogin');
   url.searchParams.set('service', 'youtube');

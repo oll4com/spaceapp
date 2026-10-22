@@ -1,11 +1,13 @@
 import { defaultUserSettings } from "@space/contracts";
 import { createDemoFixture, type DemoFixture } from "./demo-fixture.js";
+import { copilotPanes, copilotTasks, copilotsRoom } from "./mock-copilots.js";
 
 export function createCurrentMockFixture(): DemoFixture {
   const fixture = createDemoFixture();
   fixture.auth = {
     isAuthenticated: true, isSetupRequired: false,
-    user: { id: "user:demo-user", email: "demo@spaceapp.dev", role: "USER" },
+    // An operator, like the owner of a self-hosted install, so the Research Council dock can run.
+    user: { id: "user:demo-user", email: "demo@spaceapp.dev", role: "OPERATOR" },
     settings: {
       ...structuredClone(defaultUserSettings),
       modernAppearance: "dark",
@@ -17,6 +19,8 @@ export function createCurrentMockFixture(): DemoFixture {
     }
   };
   fixture.rooms[0]!.name = "Room 1";
+  fixture.rooms.push(copilotsRoom(fixture.rooms[0]!));
+  fixture.taskItems.push(...copilotTasks());
   for (const room of fixture.rooms) {
     room.paneLayoutColumns = 2;
     room.paneLayoutHeight = 1;
@@ -45,7 +49,8 @@ export function createCurrentMockFixture(): DemoFixture {
     { ...structuredClone(researchChat), order: 0 },
     researchPane("pane:demo-video", "Discover Space", "YOUTUBE", 1),
     researchPane("pane:demo-research-browser", "Browser 4", "BROWSER", 2),
-    researchPane("pane:demo-research-files", "Files 4", "FILES", 3)
+    researchPane("pane:demo-research-files", "Files 4", "FILES", 3),
+    ...copilotPanes(template)
   ];
   return fixture;
 }

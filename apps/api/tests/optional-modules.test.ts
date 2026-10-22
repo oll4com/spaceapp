@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
-import { getApiConfig, parseOptionalModules } from "../src/config.js";
+import { getApiConfig, optionalModuleIds, parseOptionalModules } from "../src/config.js";
 
 // Review F14 (operator decision 2026-10-14): public installs start without the modules beyond the
 // coding workspace; SPACE_OPTIONAL_MODULES turns them on.
@@ -10,10 +10,10 @@ let app: Awaited<ReturnType<typeof createApp>> | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
 
 it("defaults to every module on private installs and none on public ones", () => {
-  expect(parseOptionalModules(undefined, false).size).toBe(9);
+  expect(parseOptionalModules(undefined, false).size).toBe(optionalModuleIds.length);
   expect(parseOptionalModules(undefined, true).size).toBe(0);
   expect([...parseOptionalModules("waitlist, games, unknown", true)]).toEqual(["games", "waitlist"]);
-  expect(parseOptionalModules("all", true).size).toBe(9);
+  expect(parseOptionalModules("all", true).size).toBe(optionalModuleIds.length);
   expect(parseOptionalModules("none", false).size).toBe(0);
 });
 

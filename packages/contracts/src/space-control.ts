@@ -4,8 +4,27 @@ import { z } from "zod";
 export const SPACE_CONTROL_VERSION = "space-control-v1";
 const paneCategoryColorSchema = z.enum(["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"]).nullable();
 const id = z.string().trim().min(1).max(200);
-/** Device sizes of the Media Studio capture engine (scripts/space-media-capture.mjs) that space_screenshot may use. */
-export const controlScreenshotViewports = ["desktop", "desktop-hd", "laptop", "tablet", "tablet-landscape", "mobile", "android"] as const;
+/** Device and social sizes of the Media Studio capture engine (scripts/space-media-capture.mjs) that space_screenshot may use. */
+export const controlScreenshotViewports = ["desktop", "desktop-hd", "laptop", "tablet", "tablet-landscape", "mobile", "android", "square", "portrait", "story"] as const;
+/** The desktop titlebar's social aspect ratios as engine sizes; 9:16 is the mobile layout (operator decision 2026-10-17). */
+export const controlCaptureAspects = { "16:9": "desktop-hd", "1:1": "square", "4:5": "portrait", "9:16": "story", full: "desktop" } as const;
+// The engine's DOCKS, SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
+export const controlCaptureDocks = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "source-control", "agent-files",
+  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen"] as const;
+export const controlCaptureSettingsSections = ["appearance", "docks", "panes", "widgets", "notifications", "dots", "plugins", "agent-capabilities",
+  "default-provider", "voice-input", "releases", "cli-pane-controls", "date-time", "image-previews", "prompt-variables", "room-cache", "git-worktrees",
+  "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot"] as const;
+export const controlCaptureHealthSections = ["overview", "topology", "performance", "processes", "services", "ai", "alerts", "usage"] as const;
+const captureView = { dock: z.enum(controlCaptureDocks).optional(), settings: z.enum(controlCaptureSettingsSections).optional(),
+  health: z.enum(controlCaptureHealthSections).optional() };
+/** What a capture shows: a pane (optionally cropped), a dock or a Settings/Health section, and a recorded tour for a video. */
+const controlCaptureFields = {
+  paneId: id.optional(),
+  crop: z.enum(["pane", "dock"]).optional(),
+  ...captureView,
+  video: z.object({ steps: z.array(z.object({ ...captureView, dwellMs: z.number().int().min(500).max(30_000).default(3000) }).strict()).min(1).max(20) })
+    .strict().refine((video) => video.steps.reduce((total, step) => total + step.dwellMs, 0) <= 180_000, "A video lasts at most 180 seconds.").optional()
+};
 const text = z.string().trim().min(1).max(100_000);
 export const controlTargetSchema = z.object({
   paneIds: z.array(id).min(1).max(64).optional(),
@@ -72,7 +91,7 @@ export const controlActionSchema = z.discriminatedUnion("kind", [
     quality:z.number().min(1).max(100).default(80),
     maxWidth:z.number().int().min(320).max(3840).optional(),
     maxHeight:z.number().int().min(240).max(2160).optional(),
-    viewport:z.enum(controlScreenshotViewports).optional()}).strict()
+    viewport:z.enum(controlScreenshotViewports).optional(), ...controlCaptureFields}).strict()
 ]);
 export const controlExecuteSchema = z.object({roomId:id, requestId:id,
   expectedRevision:z.string().regex(/^[a-f0-9]{64}$/).optional(),
@@ -204,6 +223,8 @@ export const controlToolSchemas = {
     maxWidth: z.number().int().min(320).max(3840).optional(),
     maxHeight: z.number().int().min(240).max(2160).optional(),
     viewport: z.enum(controlScreenshotViewports).optional(),
+    aspect: z.enum(["16:9", "1:1", "4:5", "9:16", "full"]).optional(),
+    ...controlCaptureFields,
     query: z.string().max(2000).optional()
   }).strict(),
   space_test_mcp_tools: z.object({
@@ -228,7 +249,7 @@ export const controlToolDescriptions = {
   space_capabilities:"Discover actual Space room controls and runtime support before targeting panes.",
   space_inspect:"Read authoritative room state, positions, times, content and available model/runtime information.",
   space_execute:"Apply one validated batch of Space controls. Preserve task identity on reopen. Returns verified per-target outcomes; pending is not completion.",
-  space_screenshot:"Capture the room as the Space App shows it (read-only, the actor's own account) for vision analysis when the user asks to see or inspect the screen; viewport picks a device size (default desktop). The image is saved in the room's Media.",
+  space_screenshot:"Photo or video of the room as the Space App shows it (read-only, the actor's own account), saved in the room's Media. aspect picks a social size (16:9, 1:1, 4:5, 9:16 mobile, full window), viewport a device size (default desktop); paneId, dock, settings or health pick what is shown, crop cuts the shot to the pane or dock. video {steps:[{dock?,settings?,health?,dwellMs}]} records an MP4 tour (at most 20 steps and 180 s) and returns RUNNING with an operationId: poll space_operations {operation:'get', id:operationId} until COMPLETED for the artifactId.",
   space_operations:"Inspect or cancel durable operations belonging to the authenticated operator.",
   space_schedules:"Create explicit one-shot schedules or inspect/cancel them. Automatic policies are not enabled.",
   space_watches:"Durable room/task completion watch jobs for realtime voice assistant re-engagement, independent verification, and bounded remediation.",
@@ -271,7 +292,7 @@ export const controlInspectSectionCatalog: ControlInspectSectionItem[] = [
   { section: "CLIPBOARD", description: "Operator private clipboard entries (notes, plans, copied content).", scope: "operator" },
   { section: "FILES", description: "Uploaded and published workspace files and documents.", scope: "room" },
   { section: "MEDIA", description: "Images, videos, and screenshots attached to the room.", scope: "room" },
-  { section: "SKILLS", description: "Installed and registered agent skills with markdown guides.", scope: "installation" },
+  { section: "SKILLS", description: "Installed and registered agent skills, one page (offset, limit, query filter) of metadata; skills.read returns a skill's text.", scope: "installation" },
   { section: "SETTINGS", description: "Complete sanitized app settings across CLI, providers, tools, task titles, plugins, voice, and appearance.", scope: "installation" },
   { section: "ROOMS", description: "List of all user rooms with metadata and pane counts.", scope: "workspace" },
   { section: "SYSTEM_HEALTH", description: "Realtime health metrics, CPU/memory, active services, and API error rates.", scope: "installation" },
@@ -488,16 +509,17 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
   },
   {
     domain: "room",
-    action: "room.delete",
-    description: "Delete an empty or retired workspace room (requires confirmation).",
+    // Space Control runs room create, rename and activate only (kind "room"); a room is deleted from the app, not here.
+    action: "room.activate",
+    description: "Switch the operator's app to another workspace room.",
     requiredPermission: "OPERATOR_WRITE",
-    isDestructive: true,
+    isDestructive: false,
     supportsDryRun: true,
     supportsRollback: false,
     parameters: {
-      confirm: { type: "boolean", required: true, description: "Explicit confirmation" }
+      targetRoomId: { type: "string", required: true, description: "Room to activate" }
     },
-    voiceIntents: ["delete this room", "remove closed room"]
+    voiceIntents: ["switch to the release room", "open room debug"]
   },
   {
     domain: "panes",
@@ -565,7 +587,14 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
     supportsRollback: false,
     parameters: {
       format: { type: "string", required: false, description: "jpeg, png, webp" },
-      quality: { type: "number", required: false, description: "Image quality (1-100)" }
+      quality: { type: "number", required: false, description: "Image quality (1-100)" },
+      viewport: { type: "string", required: false, description: "Device or social size: desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android, square, portrait, story" },
+      paneId: { type: "string", required: false, description: "Pane to select (crop: pane cuts the shot to it)" },
+      crop: { type: "string", required: false, description: "pane or dock" },
+      dock: { type: "string", required: false, description: "Dock to open, e.g. media, tasks, settings" },
+      settings: { type: "string", required: false, description: "Settings section to open, e.g. appearance" },
+      health: { type: "string", required: false, description: "Health section to open, e.g. usage" },
+      video: { type: "object", required: false, description: "{steps:[{dock?,settings?,health?,dwellMs}]}: record an MP4 (at most 20 steps, 180 s)" }
     },
     voiceIntents: ["take a screenshot of the app", "look at the screen", "capture current UI"]
   },
@@ -614,7 +643,6 @@ export const controlSecurityPolicy = {
   requiresConfirmation: [
     "settings.rollback",
     "tasks.delete",
-    "room.delete",
     "panes.close_all"
   ],
   rbacMatrix: {

@@ -53,7 +53,7 @@ function driver() {
   temporal.activities = {
     prepareRoomAgentBackgroundContinuation: vi.fn(input => prepareBackgroundContinuation(input, c.store)),
     checkRoomAgentSupervisorTurn: vi.fn(item => supervisorTurnState(item, c.store)),
-    discardRoomAgentSupervisorTurn: vi.fn(({ item, reason }) => discardSupervisorTurn(item, reason, c.store)),
+    discardRoomAgentSupervisorTurn: vi.fn(({ item, reason, errorCode }) => discardSupervisorTurn(item, reason, c.store, errorCode)),
     finishRoomAgentSupervisorTurn: vi.fn(input => finishSupervisorTurn(input, c.store))
   };
   temporal.child.mockImplementation(async (_, { args: [turn] }) => {
@@ -79,6 +79,19 @@ it("executes allocation -> send -> verification in one mission", async () => {
   expect(c.store.listRoomAgentActions(c.initial.mission.id).filter(a => a.actionType === "SEND")).toHaveLength(1);
   expect(c.store.getRoomAgentMission(c.room.id, c.initial.mission.id)?.status).toBe("COMPLETED");
   expect(temporal.activities.finishRoomAgentSupervisorTurn).toHaveBeenCalledOnce();
+});
+
+it.each([
+  ["a plain error", Error("child failed"), "ROOM_AGENT_SUPERVISOR_FAILED"],
+  ["a Temporal timeout", Object.assign(Error("child failed"), { name: "ChildWorkflowFailure", cause: Object.assign(Error("timed out"), { name: "TimeoutFailure" }) }), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
+  ["an application failure type", Object.assign(Error("child failed"), { cause: { type: "CODEX_APP_SERVER_TURN_TIMEOUT" } }), "CODEX_APP_SERVER_TURN_TIMEOUT"]
+])("records a turn failed by %s as FAILED with its cause code, never as superseded", async (_, error, code) => {
+  const c = driver();
+  temporal.child.mockImplementationOnce(async () => { throw error; });
+  await expect(roomAgentSupervisorWorkflow(c.workflowInput)).rejects.toThrow("WORKFLOW_IDLE");
+  expect(c.store.getRoomAgentTurn(c.initial.mission.id, "agent_run:bg-workflow-1")?.run).toMatchObject({ status: "FAILED", errorCode: code });
+  expect(c.store.getRoomAgentMission(c.room.id, c.initial.mission.id)?.status).toBe("FAILED");
+  expect(temporal.activities.finishRoomAgentSupervisorTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "FAILED", errorCode: code }));
 });
 
 it.each(["stop", "follow-up"])("retires a prepared run when %s arrives before the activity reply", async (kind) => {

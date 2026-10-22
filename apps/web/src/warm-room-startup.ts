@@ -61,7 +61,8 @@ export function selectWarmHydrationRoomIds(input: {
   const prioritized = [
     ...input.mruRoomIds,
     activeIndex >= 0 ? input.roomIds[activeIndex + 1] : undefined,
-    activeIndex > 0 ? input.roomIds[activeIndex - 1] : undefined
+    activeIndex > 0 ? input.roomIds[activeIndex - 1] : undefined,
+    ...input.roomIds
   ];
   const selected: string[] = [];
   const seen = new Set([input.activeRoomId]);

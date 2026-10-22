@@ -6,7 +6,20 @@ import type { SpaceApiConfig } from "./config.js";
 export const cliBrowserBridgeTokenHeader = "x-space-cli-browser-token";
 
 const tokenPrefix = "clibrowser.v1";
-const defaultTokenTtlMs = 12 * 60 * 60 * 1000;
+/**
+ * Lifetime of the agent tokens a CLI gets in its environment at launch (bridge, Agent Files, control). A running CLI
+ * never gets a new environment, so the token must outlive its session: every route also checks that the token's CLI
+ * session is still active and belongs to its pane, and closing the pane ends that session, which is the revocation.
+ * shortcut: a fixed 30-day cap; a session older than that loses its tools until it restarts (per-session revocable
+ * tokens with re-mint would lift it).
+ */
+export const agentTokenTtlMs = 30 * 24 * 60 * 60 * 1000;
+
+/** Live for agentTokenTtlMs from issue, whatever exp it carries: tokens minted with the old 12-hour exp revive too. */
+export function agentTokenLive(issuedAtSeconds: number, nowMs = Date.now()): boolean {
+  return nowMs < issuedAtSeconds * 1000 + agentTokenTtlMs;
+}
+const defaultTokenTtlMs = agentTokenTtlMs;
 
 const cliBrowserBridgeTokenPayloadSchema = z.object({
   roomId: idSchema,
@@ -24,8 +37,14 @@ export interface CliBrowserBridgeContext {
   cliSessionId?: string | null;
 }
 
-function signingSecret(config: Pick<SpaceApiConfig, "internalApiToken">): string | null {
-  return config.internalApiToken ? `cli-browser:${config.internalApiToken}` : null;
+/** The root of every agent token (bridge, Agent Files, control): its own secret, else the internal token. */
+export function agentTokenSecret(config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">): string | null {
+  return config.agentTokenSecret || config.internalApiToken || null;
+}
+
+function signingSecret(config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">): string | null {
+  const root = agentTokenSecret(config);
+  return root ? `cli-browser:${root}` : null;
 }
 
 function signPayload(secret: string, encodedPayload: string): string {
@@ -38,12 +57,12 @@ function secureEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-export function cliBrowserBridgeEnabled(config: Pick<SpaceApiConfig, "browserToolBridgeEnabled" | "internalApiToken">): boolean {
-  return Boolean(config.browserToolBridgeEnabled && config.internalApiToken);
+export function cliBrowserBridgeEnabled(config: Pick<SpaceApiConfig, "browserToolBridgeEnabled" | "internalApiToken" | "agentTokenSecret">): boolean {
+  return Boolean(config.browserToolBridgeEnabled && agentTokenSecret(config));
 }
 
 export function issueCliBrowserBridgeToken(
-  config: Pick<SpaceApiConfig, "browserToolBridgeEnabled" | "internalApiToken">,
+  config: Pick<SpaceApiConfig, "browserToolBridgeEnabled" | "internalApiToken" | "agentTokenSecret">,
   context: CliBrowserBridgeContext,
   nowMs = Date.now()
 ): string | null {
@@ -64,7 +83,7 @@ export function issueCliBrowserBridgeToken(
 }
 
 export function verifyCliBrowserBridgeToken(
-  config: Pick<SpaceApiConfig, "internalApiToken">,
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">,
   token: string | null | undefined,
   nowMs = Date.now()
 ): CliBrowserBridgeTokenPayload | null {
@@ -78,7 +97,7 @@ export function verifyCliBrowserBridgeToken(
   if (!secureEqual(expected, signature)) return null;
   try {
     const payload = cliBrowserBridgeTokenPayloadSchema.parse(JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")));
-    if (payload.exp <= Math.floor(nowMs / 1000)) return null;
+    if (!agentTokenLive(payload.iat, nowMs)) return null;
     return payload;
   } catch {
     return null;

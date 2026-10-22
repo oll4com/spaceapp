@@ -65,6 +65,8 @@ async function listenSingleClientUpstream(socketPath: string) {
             ]
           }
         }));
+      } else if ((message.method === "thread/start" || message.method === "thread/fork") && message.params?.ephemeral === true) {
+        socket.send(JSON.stringify({ id: message.id, result: { thread: { id: `${message.method}:ephemeral`, ephemeral: true } } }));
       } else if (message.method === "thread/start") {
         socket.send(JSON.stringify({ id: message.id, result: { thread: { id: "thread:test" } } }));
       } else if (message.method === "thread/list") {
@@ -204,6 +206,27 @@ describe("Codex App Server socket multiplexer", () => {
     expect(upstream.messages.find(message => message.method === "thread/settings/update")?.params).toEqual({
       threadId: "thread:newer", model: "gpt-5.5", effort: "high"
     });
+  });
+
+  it("keeps the TUI's task when the TUI opens an ephemeral side thread", async () => {
+    const root = await mkdtemp(join(unixSocketTestRoot, "space-codex-ephemeral-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const upstreamPath = join(root, "upstream.sock");
+    const listenPath = join(root, "app-server.sock");
+    const upstream = await listenSingleClientUpstream(upstreamPath);
+    const multiplexer = await startCodexAppServerSocketMultiplexer({ upstreamPath, listenPath });
+    cleanups.push(() => multiplexer.close());
+    const primary = await connectInitializedClient(listenPath, "codex-tui");
+    cleanups.push(async () => primary.terminate());
+    const control = createCodexAppServerSocketControlService({ socketPath: listenPath, timeoutMs: 1000 });
+    await rpcRequest(primary, 2, "thread/start");
+    await rpcRequest(primary, 3, "thread/start", { ephemeral: true });
+    await rpcRequest(primary, 4, "thread/fork", { threadId: "thread:test", ephemeral: true });
+    expect(await control.readCurrentThreadId!()).toBe("thread:test");
+    for (const threadId of ["thread/start:ephemeral", "thread/fork:ephemeral"]) {
+      await expect(control.updateThreadSettings({ threadId, model: "gpt-5.5", reasoningEffort: "high", requireCurrentThread: true })).rejects.toThrow();
+    }
+    expect(upstream.messages.filter(message => message.method === "thread/settings/update")).toHaveLength(0);
   });
 
   it("shares one single-client upstream between a persistent TUI and direct control clients", async () => {

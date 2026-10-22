@@ -100,18 +100,50 @@ function centerPositions(positions: Map<string, MemoryGraphPosition>): void {
   }
 }
 
-function removeCollisions(nodes: MemoryGraphNode[], positions: Map<string, MemoryGraphPosition>): void {
+/**
+ * Pushes overlapping nodes apart, pair by pair in id order, up to 48 passes. A grid of cells as wide as the largest
+ * collision distance limits each node's checks to its 3x3 neighbourhood; it visits the same colliding pairs in the same
+ * order as comparing every pair (the old O(n²) loop took 116 s of a 189 s all-months build), so positions are identical.
+ */
+export function removeCollisions(nodes: MemoryGraphNode[], positions: Map<string, MemoryGraphPosition>): void {
   const ordered = [...nodes].sort((left, right) => left.id.localeCompare(right.id));
   const radii = new Float64Array(ordered.length);
   for (let i = 0; i < ordered.length; i += 1) radii[i] = nodeRadius(ordered[i]!);
   const posArray = ordered.map((n) => positions.get(n.id)!);
+  const cellSize = 2 * Math.max(0, ...radii) + 0.65;
+  const cells = new Map<string, Set<number>>();
+  const cellOf = new Array<string>(ordered.length);
+  const keyAt = (position: MemoryGraphPosition, offsetX = 0, offsetY = 0) =>
+    `${Math.floor(position.x / cellSize) + offsetX},${Math.floor(position.y / cellSize) + offsetY}`;
+  const place = (index: number) => {
+    const key = keyAt(posArray[index]!);
+    if (cellOf[index] === key) return;
+    if (cellOf[index] !== undefined) cells.get(cellOf[index]!)!.delete(index);
+    cellOf[index] = key;
+    let cell = cells.get(key);
+    if (!cell) cells.set(key, (cell = new Set()));
+    cell.add(index);
+  };
+  for (let i = 0; i < ordered.length; i += 1) place(i);
+  // Only the two nodes of a pair move while one node is checked, so the candidates change only after a collision.
+  const candidatesAfter = (position: MemoryGraphPosition, after: number) => {
+    const found: number[] = [];
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        for (const index of cells.get(keyAt(position, offsetX, offsetY)) ?? []) if (index > after) found.push(index);
+      }
+    }
+    return found.sort((left, right) => left - right);
+  };
 
   for (let pass = 0; pass < 48; pass += 1) {
     let moved = false;
     for (let leftIndex = 0; leftIndex < ordered.length; leftIndex += 1) {
       const leftPosition = posArray[leftIndex]!;
       const leftRadius = radii[leftIndex]!;
-      for (let rightIndex = leftIndex + 1; rightIndex < ordered.length; rightIndex += 1) {
+      let candidates = candidatesAfter(leftPosition, leftIndex);
+      for (let next = 0; next < candidates.length; next += 1) {
+        const rightIndex = candidates[next]!;
         const minimumDistance = leftRadius + radii[rightIndex]! + 0.65;
         const rightPosition = posArray[rightIndex]!;
         const dx = rightPosition.x - leftPosition.x;
@@ -142,6 +174,10 @@ function removeCollisions(nodes: MemoryGraphNode[], positions: Map<string, Memor
           rightPosition.y += unitY * shift;
         }
         moved = true;
+        place(leftIndex);
+        place(rightIndex);
+        candidates = candidatesAfter(leftPosition, rightIndex);
+        next = -1;
       }
     }
     if (!moved) break;

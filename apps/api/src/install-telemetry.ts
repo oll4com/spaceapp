@@ -125,12 +125,16 @@ export function createInstallTelemetryReporter(options: {
   let lastAttemptAt = -Infinity;
   const done = () => sentFor === "off" || sentFor === period();
 
-  async function run(fields: InstallTelemetryFields) {
+  async function readMarker() {
     if (sentFor === undefined) {
       sentFor = await readFile(options.markerFile, "utf8")
         .then(text => String((JSON.parse(text) as { period?: unknown }).period ?? "once"))
         .catch(() => null);
     }
+  }
+
+  async function run(fields: InstallTelemetryFields) {
+    await readMarker();
     if (done() || now() - lastAttemptAt < RETRY_AFTER_MS) return;
     const current = period();
     const payload = buildInstallTelemetryPing({
@@ -163,7 +167,53 @@ export function createInstallTelemetryReporter(options: {
       sending = true;
       void run(fields).catch(() => undefined).finally(() => { sending = false; });
     },
-    state: () => sending ? "sending" : sentFor === undefined ? "unknown" : done() ? "done" : "pending"
+    state: () => sending ? "sending" : sentFor === undefined ? "unknown" : done() ? "done" : "pending",
+    /** False once the event was sent for this period (its marker included) or telemetry is off. */
+    async pending(): Promise<boolean> {
+      await readMarker();
+      return !done();
+    }
+  };
+}
+
+/**
+ * first_answer seen by the server (1.1.7, task:ONrvI6thyHhh): until the event is sent, each minute reads every room's
+ * agents the way the agents dashboard does (that read reports a finished answer), so the event no longer waits for a
+ * browser to open the dashboard. Stops for good once it is sent, and never starts when telemetry is off.
+ */
+export function createFirstAnswerWatch(input: {
+  reporter: { pending(): Promise<boolean> };
+  rooms: () => Promise<Array<{ id: string }>>;
+  readRoom: (roomId: string) => Promise<unknown>;
+  intervalMs?: number;
+}) {
+  const intervalMs = input.intervalMs ?? 60_000;
+  let timer: NodeJS.Timeout | null = null;
+  let stopped = false;
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => void tick(), intervalMs);
+    timer.unref?.();
+  };
+  async function tick() {
+    timer = null;
+    if (stopped || !(await input.reporter.pending().catch(() => true))) return;
+    for (const room of await input.rooms().catch(() => [])) {
+      await input.readRoom(room.id).catch(() => undefined);
+      if (!(await input.reporter.pending().catch(() => true))) return;
+    }
+    schedule();
+  }
+  return {
+    async start() {
+      stopped = false;
+      if (!timer && await input.reporter.pending().catch(() => true)) schedule();
+    },
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
   };
 }
 

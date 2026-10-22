@@ -32,6 +32,7 @@ import {
   type SystemAnalyticsTokenTotals
 } from "@space/contracts";
 import type {
+  SystemAnalyticsModelEventGroup,
   SystemAnalyticsModelEventRecord,
   SystemAnalyticsRepository,
   SystemAnalyticsResourceBucket,
@@ -495,38 +496,16 @@ function defaultModelForProvider(providerId: string | null | undefined): string 
   }
 }
 
-/**
- * A CLI turn read again after its pane closed is stored under the global key next to its old pane-keyed copy: count
- * each turn once, preferring the copy that knows its route, then the fullest. Gateway requests and Claude messages have
- * unique keys.
- */
-function onePerTurn(events: SystemAnalyticsModelEventRecord[]): SystemAnalyticsModelEventRecord[] {
-  const kept: SystemAnalyticsModelEventRecord[] = [];
-  const byTurn = new Map<string, SystemAnalyticsModelEventRecord>();
-  for (const event of events) {
-    if (event.source === "gateway" || event.source === "claude" || event.source === "session" || !event.turnId) { kept.push(event); continue; }
-    const key = `${event.source}\u0000${event.runtimeId}\u0000${event.turnId}`;
-    const other = byTurn.get(key);
-    const total = (candidate: SystemAnalyticsModelEventRecord) => (candidate.tokensIn ?? 0) + (candidate.tokensOut ?? 0);
-    if (!other || (!other.route && event.route) || (Boolean(other.route) === Boolean(event.route) && total(event) > total(other))) byTurn.set(key, event);
-  }
-  return [...kept, ...byTurn.values()];
-}
-
-function tokenRouteOf(event: SystemAnalyticsModelEventRecord): "GATEWAY" | "DIRECT" {
-  return event.source === "gateway" ? "GATEWAY" : "DIRECT";
-}
-
 const roundUsd = (value: number) => Math.round(value * 1e6) / 1e6;
 
-function tokenTotals(events: SystemAnalyticsModelEventRecord[]): SystemAnalyticsTokenTotals {
+function tokenTotals(groups: SystemAnalyticsModelEventGroup[]): SystemAnalyticsTokenTotals {
   const totals = { tokensIn: 0, tokensOut: 0, tokensReasoning: 0, costUsd: 0, unpricedTurns: 0 };
-  for (const event of events) {
-    totals.tokensIn += event.tokensIn ?? 0;
-    totals.tokensOut += event.tokensOut ?? 0;
-    totals.tokensReasoning += event.tokensReasoning ?? 0;
-    if (event.costUsd !== null && event.costUsd !== undefined) totals.costUsd += event.costUsd;
-    else if ((event.tokensIn ?? 0) + (event.tokensOut ?? 0) > 0) totals.unpricedTurns += Math.max(event.turnCount, 1);
+  for (const group of groups) {
+    totals.tokensIn += group.tokensIn ?? 0;
+    totals.tokensOut += group.tokensOut ?? 0;
+    totals.tokensReasoning += group.tokensReasoning ?? 0;
+    totals.costUsd += group.costUsd ?? 0;
+    totals.unpricedTurns += group.unpricedTurns;
   }
   return { ...totals, costUsd: roundUsd(totals.costUsd) };
 }
@@ -534,7 +513,7 @@ function tokenTotals(events: SystemAnalyticsModelEventRecord[]): SystemAnalytics
 const timelineBucketSeconds: Record<SystemAnalyticsRange, number> = { "10m": 60, "1h": 300, "24h": 3600, "7d": 21_600, "30d": 86_400 };
 
 /** Tokens per bucket (by the time each call ended), oldest first, empty buckets included so the bars stay evenly spaced. */
-function tokenTimeline(events: SystemAnalyticsModelEventRecord[], range: SystemAnalyticsRange, sinceMs: number, nowMs: number) {
+function tokenTimeline(groups: SystemAnalyticsModelEventGroup[], range: SystemAnalyticsRange, sinceMs: number, nowMs: number) {
   const bucketSeconds = timelineBucketSeconds[range];
   const bucketMs = bucketSeconds * 1000;
   const firstMs = Math.floor(sinceMs / bucketMs) * bucketMs;
@@ -543,28 +522,25 @@ function tokenTimeline(events: SystemAnalyticsModelEventRecord[], range: SystemA
   const points = Array.from({ length: count }, (_, index) => ({
     at: new Date(startMs + index * bucketMs).toISOString(), gatewayTokens: 0, directTokens: 0, costUsd: 0
   }));
-  for (const event of events) {
-    const index = Math.floor((Date.parse(event.endedAt ?? event.startedAt) - startMs) / bucketMs);
-    const point = points[index];
+  for (const group of groups) {
+    const point = points[(group.bucketAtMs - startMs) / bucketMs];
     if (!point) continue;
-    const tokens = (event.tokensIn ?? 0) + (event.tokensOut ?? 0);
-    if (tokenRouteOf(event) === "GATEWAY") point.gatewayTokens += tokens;
+    const tokens = (group.tokensIn ?? 0) + (group.tokensOut ?? 0);
+    if (group.gateway) point.gatewayTokens += tokens;
     else point.directTokens += tokens;
-    point.costUsd += event.costUsd ?? 0;
+    point.costUsd += group.costUsd ?? 0;
   }
   return { bucketSeconds, points: points.map((point) => ({ ...point, costUsd: roundUsd(point.costUsd) })) };
 }
 
 /** Input counts include cache reads and writes (as the gateway stores it); what is left is fresh input. */
-function tokenComposition(events: SystemAnalyticsModelEventRecord[]) {
+function tokenComposition(groups: SystemAnalyticsModelEventGroup[]) {
   const totals = { cacheRead: 0, cacheWrite: 0, freshInput: 0, output: 0 };
-  for (const event of events) {
-    const read = event.tokensCacheRead ?? 0;
-    const write = event.tokensCacheWrite ?? 0;
-    totals.cacheRead += read;
-    totals.cacheWrite += write;
-    totals.freshInput += Math.max((event.tokensIn ?? 0) - read - write, 0);
-    totals.output += event.tokensOut ?? 0;
+  for (const group of groups) {
+    totals.cacheRead += group.tokensCacheRead;
+    totals.cacheWrite += group.tokensCacheWrite;
+    totals.freshInput += group.freshInput;
+    totals.output += group.tokensOut ?? 0;
   }
   return totals;
 }
@@ -1578,26 +1554,26 @@ export class SystemAnalyticsService {
   async models(range: SystemAnalyticsRange, route: SystemAnalyticsTokenRoute = "all"): Promise<SystemAnalyticsModelsResponse> {
     const current = await this.ensureFresh();
     if (this.now().getTime() - this.lastModelIngestAt >= modelIngestIntervalMs) await this.ingestModels();
-    const [events, backfill] = await Promise.all([
-      this.repository.listModelEvents(this.since(range)),
+    const currentSessionIds = new Set(current.sessions.map((identity) => identity.live.cliSessionId));
+    // Groups, not events: 30 days are ~300k events on stable (2026-10-19), too many to hold in the API's heap.
+    const [groups, backfill] = await Promise.all([
+      this.repository.summarizeModelEvents({ since: this.since(range), liveSessionIds: [...currentSessionIds], bucketMs: timelineBucketSeconds[range] * 1000 }),
       this.backfillStatus()
     ]);
-    const currentSessionIds = new Set(current.sessions.map((identity) => identity.live.cliSessionId));
-    const visibleEvents = onePerTurn(events.filter(
-      (event) => event.providerId !== "root" && event.runtimeId !== "cli:root" && (event.status !== "RUNNING" || Boolean(event.sessionId && currentSessionIds.has(event.sessionId)))
-    ));
-    const nativeIdentityBySession = new Map<string, { providerId: string; modelId: string }>();
-    for (const event of visibleEvents) {
-      if (!event.sessionId || !currentSessionIds.has(event.sessionId) || event.coverage !== "NATIVE") continue;
-      if (event.status === "RUNNING" || !nativeIdentityBySession.has(event.sessionId)) {
-        nativeIdentityBySession.set(event.sessionId, { providerId: event.providerId, modelId: event.modelId });
+    // A live session's model: its last running event's, else its first event's.
+    const nativeIdentityBySession = new Map<string, { providerId: string; modelId: string; running: boolean; seq: number }>();
+    for (const group of groups) {
+      if (!group.liveSessionId || group.coverage !== "NATIVE") continue;
+      const known = nativeIdentityBySession.get(group.liveSessionId);
+      const running = group.status === "RUNNING";
+      if (running ? !known?.running || group.lastSeq > known.seq : !known) {
+        nativeIdentityBySession.set(group.liveSessionId, { providerId: group.providerId, modelId: group.modelId, running, seq: running ? group.lastSeq : group.firstSeq });
       }
     }
     // Each token once: the gateway's copy of a gateway call, the transcript's copy of a direct one (events stored
     // before routes existed have none and count as before).
-    const countedEvents = visibleEvents.filter((event) => event.source === "gateway" || event.route !== "GATEWAY");
-    const routedEvents = route === "all" ? countedEvents
-      : countedEvents.filter((event) => tokenRouteOf(event) === (route === "gateway" ? "GATEWAY" : "DIRECT"));
+    const countedGroups = groups.filter((group) => group.counted);
+    const routedGroups = route === "all" ? countedGroups : countedGroups.filter((group) => group.gateway === (route === "gateway"));
     const activeSessionsByModel = new Map<string, Set<string>>();
     for (const identity of route === "gateway" ? [] : current.sessions) {
       if (identity.live.runtimeId === "cli:root") continue;
@@ -1639,11 +1615,11 @@ export class SystemAnalyticsService {
       hasCost: boolean;
       unpricedTurns: number;
     }>();
-    for (const event of routedEvents) {
-      const descriptor = findCliRuntimeDescriptor(event.runtimeId);
-      const rawProviderId = event.providerId && event.providerId !== "unknown" ? event.providerId : (descriptor?.providerId || "unknown");
+    for (const group of routedGroups) {
+      const descriptor = findCliRuntimeDescriptor(group.runtimeId);
+      const rawProviderId = group.providerId && group.providerId !== "unknown" ? group.providerId : (descriptor?.providerId || "unknown");
       const providerId = normalizeProviderId(rawProviderId);
-      const rawModelId = event.modelId;
+      const rawModelId = group.modelId;
       const modelId = (!rawModelId || rawModelId === "unknown" || rawModelId.trim() === "")
         ? (descriptor?.defaultModelId || defaultModelForProvider(providerId))
         : rawModelId;
@@ -1652,7 +1628,7 @@ export class SystemAnalyticsService {
         providerId,
         modelId,
         runtimeIds: new Set<string>(),
-        coverage: event.coverage,
+        coverage: group.coverage,
         activeTurns: 0,
         completedTurns: 0,
         abortedTurns: 0,
@@ -1672,41 +1648,37 @@ export class SystemAnalyticsService {
         hasCost: false,
         unpricedTurns: 0
       };
-      entry.runtimeIds.add(event.runtimeId);
-      if (event.costUsd !== null && event.costUsd !== undefined) {
-        entry.costUsd += event.costUsd;
+      entry.runtimeIds.add(group.runtimeId);
+      if (group.costUsd !== null) {
+        entry.costUsd += group.costUsd;
         entry.hasCost = true;
-      } else if ((event.tokensIn ?? 0) + (event.tokensOut ?? 0) > 0) {
-        entry.unpricedTurns += Math.max(event.turnCount, 1);
       }
-      if (coverageRank(event.coverage) > coverageRank(entry.coverage)) entry.coverage = event.coverage;
-      const count = Math.max(event.turnCount, 0);
-      if (event.status === "RUNNING" && (!event.sessionId || currentSessionIds.has(event.sessionId))) entry.activeTurns += count;
-      if (event.status === "COMPLETED") entry.completedTurns += count;
-      if (event.status === "ABORTED") entry.abortedTurns += count;
-      if (event.tokensIn !== null) {
-        entry.tokensIn += event.tokensIn;
+      entry.unpricedTurns += group.unpricedTurns;
+      if (coverageRank(group.coverage) > coverageRank(entry.coverage)) entry.coverage = group.coverage;
+      // RUNNING groups are live sessions only (the repository leaves the others out).
+      if (group.status === "RUNNING") entry.activeTurns += group.turns;
+      if (group.status === "COMPLETED") entry.completedTurns += group.turns;
+      if (group.status === "ABORTED") entry.abortedTurns += group.turns;
+      if (group.tokensIn !== null) {
+        entry.tokensIn += group.tokensIn;
         entry.hasTokensIn = true;
       }
-      if (event.tokensOut !== null) {
-        entry.tokensOut += event.tokensOut;
+      if (group.tokensOut !== null) {
+        entry.tokensOut += group.tokensOut;
         entry.hasTokensOut = true;
       }
-      if (event.tokensReasoning !== null) {
-        entry.tokensReasoning += event.tokensReasoning;
+      if (group.tokensReasoning !== null) {
+        entry.tokensReasoning += group.tokensReasoning;
         entry.hasTokensReasoning = true;
       }
-      if (event.coverage === "NATIVE" && event.ttftMs !== null) {
-        entry.ttftSum += event.ttftMs * Math.max(count, 1);
-        entry.ttftCount += Math.max(count, 1);
+      if (group.coverage === "NATIVE") {
+        entry.ttftSum += group.ttftSum;
+        entry.ttftCount += group.ttftWeight;
+        entry.durationSum += group.durationSum;
+        entry.durationCount += group.durationWeight;
       }
-      if (event.coverage === "NATIVE" && event.durationMs !== null) {
-        entry.durationSum += event.durationMs * Math.max(count, 1);
-        entry.durationCount += Math.max(count, 1);
-      }
-      const lastAt = event.endedAt ?? event.updatedAt ?? event.startedAt;
-      if (!entry.firstActivityAt || event.startedAt < entry.firstActivityAt) entry.firstActivityAt = event.startedAt;
-      if (!entry.lastActivityAt || lastAt > entry.lastActivityAt) entry.lastActivityAt = lastAt;
+      if (!entry.firstActivityAt || group.firstAt < entry.firstActivityAt) entry.firstActivityAt = group.firstAt;
+      if (!entry.lastActivityAt || group.lastAt > entry.lastActivityAt) entry.lastActivityAt = group.lastAt;
       aggregates.set(key, entry);
     }
     for (const [key, sessions] of activeSessionsByModel) {
@@ -1808,43 +1780,43 @@ export class SystemAnalyticsService {
       backfill,
       route,
       routes: {
-        gateway: tokenTotals(countedEvents.filter((event) => tokenRouteOf(event) === "GATEWAY")),
-        direct: tokenTotals(countedEvents.filter((event) => tokenRouteOf(event) === "DIRECT"))
+        gateway: tokenTotals(countedGroups.filter((group) => group.gateway)),
+        direct: tokenTotals(countedGroups.filter((group) => !group.gateway))
       },
-      accounts: await this.tokenAccounts(routedEvents),
-      timeline: tokenTimeline(routedEvents, range, Date.parse(this.since(range)), this.now().getTime()),
-      composition: tokenComposition(routedEvents)
+      accounts: await this.tokenAccounts(routedGroups),
+      timeline: tokenTimeline(routedGroups, range, Date.parse(this.since(range)), this.now().getTime()),
+      composition: tokenComposition(routedGroups)
     });
   }
 
   /** Tokens per account (gateway account or direct CLI profile), largest first, with each account's models. */
-  private async tokenAccounts(events: SystemAnalyticsModelEventRecord[]): Promise<SystemAnalyticsTokenAccount[]> {
+  private async tokenAccounts(groups: SystemAnalyticsModelEventGroup[]): Promise<SystemAnalyticsTokenAccount[]> {
     const providerNames: Record<string, string> = { CLAUDE: "Claude", ANTHROPIC_API: "Claude API", CODEX: "Codex", ANTIGRAVITY: "Google",
       GOOGLE_AI: "Google AI", OPENAI_API: "OpenAI API", COPILOT: "Copilot", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", KIMI: "Kimi", QWEN: "Qwen" };
     const labels = new Map((await this.tokenSources?.gatewayAccounts().catch(() => []) ?? [])
       .map((account) => [account.id, `${account.label} · ${providerNames[account.provider] ?? account.provider}`]));
-    const accounts = new Map<string, { route: "GATEWAY" | "DIRECT"; events: SystemAnalyticsModelEventRecord[] }>();
-    for (const event of events) {
-      if ((event.tokensIn ?? 0) + (event.tokensOut ?? 0) === 0) continue;
-      const route = tokenRouteOf(event);
-      const key = event.accountKey ?? (route === "GATEWAY" ? "space-gateway" : `${event.runtimeId}/${event.providerId}`);
-      const entry = accounts.get(`${route}\u0000${key}`) ?? { route, events: [] };
-      entry.events.push(event);
+    const accounts = new Map<string, { route: "GATEWAY" | "DIRECT"; groups: SystemAnalyticsModelEventGroup[] }>();
+    for (const group of groups) {
+      if (!group.hasTokens) continue;
+      const route = group.gateway ? "GATEWAY" : "DIRECT";
+      const key = group.accountKey ?? (route === "GATEWAY" ? "space-gateway" : `${group.runtimeId}/${group.providerId}`);
+      const entry = accounts.get(`${route}\u0000${key}`) ?? { route, groups: [] };
+      entry.groups.push(group);
       accounts.set(`${route}\u0000${key}`, entry);
     }
     return [...accounts.entries()].map(([id, entry]) => {
       const accountKey = id.slice(id.indexOf("\u0000") + 1);
       const models = new Map<string, { providerId: string; modelId: string; tokensIn: number; tokensOut: number; costUsd: number }>();
-      for (const event of entry.events) {
-        const model = models.get(modelKey(event.providerId, event.modelId))
-          ?? { providerId: event.providerId, modelId: event.modelId, tokensIn: 0, tokensOut: 0, costUsd: 0 };
-        model.tokensIn += event.tokensIn ?? 0;
-        model.tokensOut += event.tokensOut ?? 0;
-        model.costUsd = roundUsd(model.costUsd + (event.costUsd ?? 0));
-        models.set(modelKey(event.providerId, event.modelId), model);
+      for (const group of entry.groups) {
+        const model = models.get(modelKey(group.providerId, group.modelId))
+          ?? { providerId: group.providerId, modelId: group.modelId, tokensIn: 0, tokensOut: 0, costUsd: 0 };
+        model.tokensIn += group.tokensIn ?? 0;
+        model.tokensOut += group.tokensOut ?? 0;
+        model.costUsd = roundUsd(model.costUsd + (group.costUsd ?? 0));
+        models.set(modelKey(group.providerId, group.modelId), model);
       }
       return {
-        accountKey, label: tokenAccountLabel(accountKey, labels), route: entry.route, ...tokenTotals(entry.events),
+        accountKey, label: tokenAccountLabel(accountKey, labels), route: entry.route, ...tokenTotals(entry.groups),
         models: [...models.values()].sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 50)
       };
     }).sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 200);

@@ -133,6 +133,10 @@ const handler: BrowserHostRequestHandler = {
         ) ?? unavailable(method);
       case "diagnostics":
         return manager.diagnostics?.(params.pane as Pane, Boolean(params.includeNetwork), Number(params.limit)) ?? unavailable(method);
+      case "vaultTarget":
+        return manager.vaultTarget?.(params.pane as Pane) ?? unavailable(method);
+      case "vaultFill":
+        return manager.vaultFill?.(params.pane as Pane, params.request, String(params.traceId ?? "")) ?? unavailable(method);
       case "adoptPaneGoogleProfile": {
         const source = params.source as { ownerUserId?: unknown; roomId?: unknown; paneId?: unknown; profileKey?: unknown; accountId?: unknown } | undefined;
         if (typeof source?.ownerUserId !== "string" || typeof source.roomId !== "string" || typeof source.paneId !== "string" ||

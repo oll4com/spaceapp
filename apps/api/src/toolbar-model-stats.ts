@@ -208,34 +208,35 @@ export async function readOpenCodeModelRows(input: {
   windowMinutes: number;
   now: () => Date;
   stateRoot: string;
+  dbPath?: string;
 }): Promise<OpenCodeDbRow[]> {
   const validIds = input.nativeSessionIds.filter((id) => opencodeNativeSessionIdPattern.test(id));
   if (validIds.length === 0) return [];
-  const dbPath = await resolveOpenCodeDbPath(input.stateRoot);
+  const dbPath = input.dbPath ?? await resolveOpenCodeDbPath(input.stateRoot);
   if (!dbPath) return [];
   const windowMs = Math.max(1, input.windowMinutes) * 60_000;
   const sinceMs = input.now().getTime() - windowMs;
   const sessionClause = validIds.map(sqliteQuote).join(", ");
-  const sql = [
-    "select",
-    "s.id as sessionId,",
-    "m.id as messageId,",
-    "json_extract(m.data, '$.modelID') as modelID,",
-    "json_extract(m.data, '$.providerID') as providerID,",
+  // OpenCode 2 only (OpenCode 1 was retired, plan clipboard:kJ1BIeylJRLG); a store it has not opened (no session_v2) has
+  // nothing to count.
+  if (!(await runSqliteJson(dbPath, "select 1 as found from sqlite_master where type = 'table' and name = 'session_v2';")).length) return [];
+  // OpenCode 2 stores one message per step with its own times; emit the step-start/text/step-finish rows from them.
+  return runSqliteJson<OpenCodeDbRow>(dbPath, [
+    "select m.session_id as sessionId, m.id as messageId,",
+    "json_extract(m.data, '$.model.id') as modelID, json_extract(m.data, '$.model.providerID') as providerID,",
     "m.time_created as msgCreated,",
-    "json_extract(m.data, '$.tokens.input') as msgTokensIn,",
-    "json_extract(m.data, '$.tokens.output') as msgTokensOut,",
+    "json_extract(m.data, '$.tokens.input') as msgTokensIn, json_extract(m.data, '$.tokens.output') as msgTokensOut,",
     "json_extract(m.data, '$.tokens.reasoning') as msgTokensReasoning,",
-    "json_extract(p.data, '$.type') as partType,",
-    "p.time_created as partTime",
-    "from message m",
-    "join part p on p.message_id = m.id",
-    "join session s on s.id = m.session_id",
-    `where m.time_created >= ${sinceMs}`,
-    `and s.id in (${sessionClause})`,
-    "order by p.time_created asc"
-  ].join(" ");
-  return runSqliteJson<OpenCodeDbRow>(dbPath, `${sql};`);
+    "k.partType as partType,",
+    "case k.partType when 'step-start' then json_extract(m.data, '$.time.created')",
+    "when 'step-finish' then json_extract(m.data, '$.time.completed')",
+    "else (select min(json_extract(c.value, '$.time.created')) from json_each(m.data, '$.content') c) end as partTime",
+    "from session_message m",
+    "cross join (select 'step-start' as partType union all select 'text' union all select 'step-finish') k",
+    `where m.type = 'assistant' and m.time_created >= ${sinceMs}`,
+    `and m.session_id in (${sessionClause})`,
+    "order by partTime asc;"
+  ].join(" "));
 }
 
 export function parseCodexRolloutStats(

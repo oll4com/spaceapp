@@ -8,7 +8,7 @@ const store = () => new DemoStore(createCurrentMockFixture());
 describe('current public Space mock', () => {
  it('starts with the operator screenshot layouts and an empty Operations room', async () => {
   const s=store();const rooms=(await s.api.rooms()).data;
-  expect(rooms.map(r=>r.name)).toEqual(['Room 1','Research Lab','Operations']);
+  expect(rooms.map(r=>r.name)).toEqual(['Room 1','Research Lab','Operations','Copilots (coming next)']);
   for(const r of rooms)expect(r).toMatchObject({paneLayoutColumns:2,paneLayoutHeight:1});
   const first=(await s.api.panes(rooms[0]!.id)).data.sort((a,b)=>a.order-b.order);
   expect(first.map(p=>p.terminalRuntimeId)).toEqual(['cli:codex','cli:opencode','cli:gemini','cli:claude']);
@@ -39,19 +39,19 @@ describe('current public Space mock', () => {
   expect(fileListResponseSchema.safeParse(await s.api.filesList({path:'/opt/spaceapp'})).success).toBe(true);
   await expect(s.api.filesRead({path:'/opt/spaceapp/../secrets'})).rejects.toMatchObject({code:'INVALID_PATH'});
  });
- it('persists room and file changes and resets to the User fixture',async()=>{
+ it('persists room and file changes and resets to the operator fixture',async()=>{
   const s=store(); const room=await s.api.createRoom('Proof room',0);
   await s.api.filesWrite({path:'/opt/spaceapp/saved.md',content:'durable'});
   const restored=store();restored.restoreSnapshot(s.snapshot());
   expect((await restored.api.rooms()).data.some(r=>r.id===room.id)).toBe(true);
   expect((await restored.api.filesRead({path:'/opt/spaceapp/saved.md'})).content).toBe('durable');
-  restored.reset();expect((await restored.api.me()).user?.role).toBe('USER');
+  restored.reset();expect((await restored.api.me()).user?.role).toBe('OPERATOR');
   await expect(restored.api.filesRead({path:'/opt/spaceapp/saved.md'})).rejects.toMatchObject({code:'NOT_FOUND'});
  });
  it('rejects corrupted workspace snapshots without crashing the current workspace',async()=>{
   const s=store(); s.restoreSnapshot('{"version":1,"rooms":[{"id":"room:bad","name":"bad","paneCap":16}],"panes":[],"settings":{"uiTheme":{}}}');
   expect((await s.api.rooms()).data[0]?.name).toBe('Room 1');
-  s.restoreSnapshot('{}');s.restoreSnapshot('null');expect((await s.api.me()).user?.role).toBe('USER');
+  s.restoreSnapshot('{}');s.restoreSnapshot('null');expect((await s.api.me()).user?.role).toBe('OPERATOR');
  });
  it('stores shared chat and returns contract-valid history',async()=>{
   const s=store();await s.api.sendSharedChatMessage({content:'Hello mock',kind:'message',metadata:{}});

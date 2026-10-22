@@ -55,7 +55,7 @@ export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
   { toolId: "mcp:space_summary_tools", category: "OPERATOR_OPT_IN", capability: "summary" },
   { toolId: "mcp:space_capturelab", category: "NATIVE_PREFERRED", capability: "capture" },
   { toolId: "mcp:context7", category: "EXTERNAL_SERVICE" },
-  ...["space-control", "space_ops", "space_browser", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_freelancecopilot", "space_services", "olla", "mission_control"].map((id) => ({
+  ...["space-control", "space_ops", "space_browser", "space_progress", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_freelancecopilot", "space_design", "space_appstudio", "space_vault", "space_services", "olla", "mission_control"].map((id) => ({
     toolId: `mcp:${id}`, category: "SPACE_EXCLUSIVE" as const
   }))
 ];
@@ -85,11 +85,15 @@ const nativeAgentDenialReasons: Readonly<Record<string, string>> = {
   space_ops: "Tests and deploys are never available to Native agents.",
   "space-control": "Space Control is available through the Dot gateway with Dot attribution.",
   space_browser: "The managed browser is available through the Dot gateway with Dot attribution.",
+  space_progress: "Progress reports to Nous belong to CLI panes, never to a Dot conversation.",
   space_playwright_pane: "Pane browser automation belongs to the CLI session that owns the pane.",
   space_jobapply: "Job Applications tools belong to the CLI session of a Job Applications pane.",
   space_mailcopilot: "Mail Copilot tools belong to the CLI session of a Mail Copilot pane.",
   space_marketingcopilot: "Marketing Copilot tools belong to the CLI session of a Marketing Copilot pane.",
   space_freelancecopilot: "Freelance Copilot tools belong to the CLI session of a Freelance Copilot pane.",
+  space_design: "Design requests and the Design pane's tools belong to CLI sessions; Dots use design.request.",
+  space_appstudio: "App Studio tools belong to the CLI session of an App Studio pane.",
+  space_vault: "Vault fills belong to the CLI session of the pane whose browser they fill.",
   space_services: "Service restarts are operator operations.",
   olla: "Storefront administration is an operator tool.",
   mission_control: "Mission Control changes are operator operations."

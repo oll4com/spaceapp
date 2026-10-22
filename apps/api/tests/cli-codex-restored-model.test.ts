@@ -137,4 +137,77 @@ describe("Restored Codex model settings", () => {
     }
   });
 
+  it.each([false, true])("Space Control configure follows a fresh TUI's live task before it is saved (task switch: %s)", async (switchesTask) => {
+    const commandDir = await mkdtemp(join(tmpdir(), "space-fresh-model-"));
+    await writeFile(join(commandDir, "codex-vscode-parity"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Fresh settings", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Fresh Codex", mode: "TERMINAL", terminalRuntimeId: "cli:codex", cwd: "/new-pane" });
+    const freshThread = "33333333-3333-4333-8333-333333333333";
+    let liveThread = freshThread;
+    // A fresh TUI's thread reaches the DB only after its first turn is saved.
+    const session = store.createPaneCliSession({ sessionId: "cli_session:fresh-settings", paneId: pane.id, roomId: room.id,
+      runtimeId: "cli:codex", providerId: "openai", agentId: "codex", modelId: "gpt-5.5", reasoningEffort: "medium",
+      cwd: "/new-pane", codexThreadId: null, status: "RUNNING", isActive: true });
+    let native = { modelId: "gpt-5.5", reasoningEffort: "medium", cwd: "/new-pane", isTurnActive: false };
+    store.appendPaneCliTranscriptChunk({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, sequence: 0, stream: "stdout",
+      content: "› Improve documentation in @filename\r\ngpt-5.5 medium · /new-pane" });
+    const hostSession = { cliSessionId: session.sessionId, paneId: pane.id, roomId: room.id, runtimeId: session.runtimeId, codexThreadId: null,
+      modelId: "gpt-5.5", reasoningEffort: "medium", generationId: "00000000-0000-4000-8000-000000000033", pid: 5033, status: "RUNNING" as const,
+      statusReason: "Fresh TUI at its prompt.", exitCode: null, signal: null, nextOutputSequence: 0, attachmentCount: 0,
+      startedAt: "2026-10-19T23:44:43.000Z", endedAt: null };
+    // The mode router's /model menu, as cli-runtimes.test.ts drives it.
+    const terminalInputs: string[] = [];
+    let hostListener: ((event: unknown) => void) | undefined;
+    let outputSequence = 0;
+    let stage = 0;
+    const cliHostClient = {
+      health: async () => ({ ok: true, sessions: [] }),
+      resize: async () => undefined,
+      inspect: async () => hostSession,
+      attach: async (_input: unknown, listener: (event: unknown) => void) => {
+        hostListener = listener;
+        return { attachmentId: "attachment:fresh-model-control", session: hostSession, replay: [] };
+      },
+      input: async (_identity: unknown, _attachmentId: unknown, data: string) => {
+        terminalInputs.push(data);
+        const output = data === "/model" ? "/model  Choose what model and reasoning effort to use"
+          : stage++ === 0 ? "› GPT-5.5" : stage === 2 ? "› High\r\n  Medium" : "model changed: gpt-5.5 high";
+        hostListener?.({ type: "output", generationId: hostSession.generationId, sequence: outputSequence++, stream: "stdout", data: output });
+        return { accepted: true, acceptedAtMs: Date.now() };
+      },
+      close: async () => undefined
+    } as unknown as CliHostClient;
+    const { app, cookie, csrfToken } = await authedApp({ store, config: await enabledCliConfig(commandDir), cliHostClient,
+      findCodexThreadId: async () => null,
+      findCodexThreadResumeSettings: async ({ threadId }) => threadId === freshThread ? { modelId: native.modelId, reasoningEffort: native.reasoningEffort } : null,
+      findCurrentCodexCliTurnActivity: async () => ({ status: "IDLE", turnId: null }),
+      codexSessionSocketProbe: async () => true,
+      codexSocketControlFactory: () => ({
+        listModels: async () => [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true, defaultReasoningEffort: "medium", supportedReasoningEfforts: ["medium", "high"] }],
+        readCurrentThreadId: async () => liveThread,
+        readThreadSettings: async (id) => { expect(id).toBe(freshThread); return native; },
+        updateThreadSettings: async input => {
+          if (switchesTask) liveThread = "44444444-4444-4444-8444-444444444444";
+          await input.beforeSend?.(); expect(input.threadId).toBe(freshThread); native = { ...native, reasoningEffort: input.reasoningEffort };
+        },
+        interruptTurn: async () => { throw new Error("Must not interrupt the fresh task"); },
+        startTurn: async () => { throw new Error("Must not submit a prompt"); }
+      })
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/control/v1/commands", headers: { cookie, [csrfHeaderName]: csrfToken },
+        payload: { roomId: room.id, requestId: `fresh-model-${switchesTask}`, actions: [{ kind: "configure", target: { paneIds: [pane.id] }, modelId: "gpt-5.5", reasoningEffort: "high" }] } });
+      expect(response.statusCode).toBe(200);
+      const { status, detail } = response.json().results[0];
+      expect({ status, detail }).toEqual(switchesTask
+        ? { status: "FAILED", detail: "The native Codex thread changed before model control." }
+        : { status: "COMPLETED", detail: "Pane control applied." });
+      expect(native.reasoningEffort).toBe(switchesTask ? "medium" : "high");
+      expect(terminalInputs).toEqual(switchesTask ? [] : ["/model", "\r", "\r", "\r"]);
+    } finally {
+      store.updatePaneCliSession(session.sessionId, { status: "EXITED", isActive: false });
+      await app.close(); await rm(commandDir, { recursive: true, force: true });
+    }
+  });
 });

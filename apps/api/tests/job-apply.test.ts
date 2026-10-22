@@ -109,7 +109,7 @@ async function serviceFixture(mailboxes = fakeMailboxes([{ from: "no-reply@us.gr
   const store = new InMemorySpaceStore();
   const service = createJobApplyService({
     repository: new InMemoryJobApplyRepository(),
-    crypto: createConnectorCrypto("test-secret-with-enough-length-0123456789"),
+    crypto: createConnectorCrypto({ key: "synthetic-connector-key-with-enough-length-0123456789", legacySecrets: ["test-secret-with-enough-length-0123456789"] }),
     store,
     artifactRoot: root,
     jobApplyRoot: join(root, "job-apply"),
@@ -584,9 +584,11 @@ describe("job apply routes", () => {
     const root = await mkdtemp(join(tmpdir(), "space-job-apply-api-"));
     temporaryRoots.push(root);
     const store = new InMemorySpaceStore();
+    // The dedicated connector key file (hardening step 9), synthetic.
+    await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
     const app = await createApp({
       store,
-      config: { ...getApiConfig({ SPACE_ARTIFACT_ROOT: root }), jobApplyRoot: join(root, "job-apply") },
+      config: { ...getApiConfig({ SPACE_ARTIFACT_ROOT: root }), jobApplyRoot: join(root, "job-apply"), connectorKeyFile: join(root, "connector.key") },
       jobApplyMailboxes: fakeMailboxes([{ from: "no-reply@us.greenhouse-mail.io", subject: "Your security code", source: greenhouseMail }]),
       auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false }
     });

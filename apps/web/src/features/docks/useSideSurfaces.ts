@@ -127,7 +127,7 @@ export function useSideSurfaces({
     setIsDesktopSideSurfaceOpen((current) => !current);
   }
 
-  const dockOrder: SideSurface[] = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "agent-files", "clipboard", "tasks", "links", "settings", "cli", "agent-sessions"];
+  const dockOrder: SideSurface[] = ["rooms", "nous", "notifications", "room-agent", "shared-chat", "media", "streaming", "agent-files", "clipboard", "tasks", "vault", "links", "settings", "cli", "agent-sessions"];
   // Source Control works locally without a provider account; personal dock hiding still applies.
   const sourceControlAvailable = runtimeKind === "live" && Boolean(isAuthenticated);
   if (sourceControlAvailable && !isDockHidden("source-control")) dockOrder.splice(dockOrder.indexOf("settings"), 0, "source-control");

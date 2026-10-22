@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemorySpaceStore, SpaceNotFoundError } from "../src/index.js";
+import { InMemorySpaceStore, SpaceConflictError, SpaceNotFoundError } from "../src/index.js";
 
 describe("clipboard store", () => {
   it("deduplicates exact text per user, moves it to the top, and updates occurrence metadata", () => {
@@ -64,6 +64,45 @@ describe("clipboard store", () => {
     expect(page.total).toBe(100);
     expect(page.items[0]?.text).toBe("clip 100");
     expect(page.items.some((item) => item.text === "clip 0")).toBe(false);
+  });
+
+  it("prunes only COPY/PASTE: plans and notes survive the cap and a paste of their text (clipboard loss 2026-10-19)", () => {
+    const store = new InMemorySpaceStore();
+    const kept = [
+      store.upsertClipboardItem({ ownerUserId: "user:one", text: "plan body", source: "PLAN", title: "Plan", minimumModel: "claude-opus-5-5" }),
+      store.upsertClipboardItem({ ownerUserId: "user:one", text: "manual note", source: "MANUAL_NOTE" }),
+      store.upsertClipboardItem({ ownerUserId: "user:one", text: "agent note", source: "AGENT_NOTE" })
+    ];
+    for (let index = 0; index < 150; index += 1) {
+      store.upsertClipboardItem({ ownerUserId: "user:one", text: `clip ${index}`, source: index % 2 ? "COPY" : "PASTE" });
+    }
+    for (const item of kept) store.upsertClipboardItem({ ownerUserId: "user:one", text: item.text, source: "PASTE" });
+    for (let index = 150; index < 300; index += 1) {
+      store.upsertClipboardItem({ ownerUserId: "user:one", text: `clip ${index}`, source: "COPY" });
+    }
+
+    for (const item of kept) {
+      expect(store.getClipboardItem("user:one", item.id)).toMatchObject({ source: item.source, title: item.title });
+    }
+    expect(store.listClipboardItems("user:one", { page: 1, pageSize: 100, source: "COPY" }).total).toBe(100);
+    expect(store.listClipboardItems("user:one", { page: 1, pageSize: 100 }).total).toBe(103);
+    expect(store.deleteClipboardItem("user:one", kept[0]!.id).id).toBe(kept[0]!.id);
+  });
+
+  it("edits a note's text in place: id, source, room, pane and created time stay; plans and clips do not change here", () => {
+    const store = new InMemorySpaceStore();
+    const note = store.upsertClipboardItem({ ownerUserId: "user:one", text: "agent note", source: "AGENT_NOTE", roomId: "room:one", paneId: "pane:one", paneTitle: "Bob" });
+    const copy = store.upsertClipboardItem({ ownerUserId: "user:one", text: "copied", source: "COPY" });
+    const plan = store.upsertClipboardItem({ ownerUserId: "user:one", text: "plan body", source: "PLAN", title: "Plan", minimumModel: "claude-opus-5-5" });
+
+    const edited = store.updateClipboardNoteText("user:one", note.id, "agent note, edited");
+    expect(edited).toMatchObject({ id: note.id, source: "AGENT_NOTE", text: "agent note, edited", roomId: "room:one", paneId: "pane:one", paneTitle: "Bob", createdAt: note.createdAt });
+    expect(store.upsertClipboardItem({ ownerUserId: "user:one", text: "agent note, edited", source: "PASTE" }).id).toBe(note.id);
+    expect(() => store.updateClipboardNoteText("user:one", note.id, "copied")).toThrow(SpaceConflictError);
+    expect(() => store.updateClipboardNoteText("user:one", plan.id, "x")).toThrow(SpaceNotFoundError);
+    expect(() => store.updateClipboardNoteText("user:one", copy.id, "x")).toThrow(SpaceNotFoundError);
+    expect(() => store.updateClipboardNoteText("user:two", note.id, "x")).toThrow(SpaceNotFoundError);
+    expect(store.listClipboardItems("user:one", { page: 1, pageSize: 100 }).total).toBe(3);
   });
 
   it("searches case-insensitively, filters sources, and paginates newest first", () => {

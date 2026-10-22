@@ -7,7 +7,7 @@ import { AccountPool } from "./accounts/account-pool.js";
 import { StickyStore } from "./accounts/sticky-store.js";
 import { registerAccountAdminRoutes } from "./admin/account-admin.js";
 import { antigravityAccountActions, registerAntigravitySignInRoutes } from "./admin/antigravity-sign-in.js";
-import { apiKeyAccountActions, openAiApiAccountActions, registerApiKeyAccountRoutes } from "./admin/api-key-accounts.js";
+import { apiKeyAccountActions, googleAiEntry, openAiApiAccountActions, registerApiKeyAccountRoutes } from "./admin/api-key-accounts.js";
 import { keyPoolProviders, registerKeyPoolRoutes } from "./providers/key-pools/key-pools.js";
 import { claudeAccountActions, registerClaudeSignInRoutes } from "./admin/claude-sign-in.js";
 import { registerCodexSignInRoutes } from "./admin/codex-sign-in.js";
@@ -23,10 +23,12 @@ import { registerCodexModelRoutes } from "./providers/codex/models.js";
 import { createCodexRefresher } from "./providers/codex/credentials.js";
 import { startCodexUsagePoller } from "./providers/codex/usage-refresh.js";
 import { registerAntigravityProxyRoutes } from "./providers/antigravity/antigravity-proxy.js";
+import { registerImageRoutes } from "./providers/images/images-route.js";
 import { createAntigravityRefresher } from "./providers/antigravity/credentials.js";
 import { startAntigravityUsagePoller } from "./providers/antigravity/usage-refresh.js";
 import { registerClaudeProxyRoutes } from "./providers/claude/claude-proxy.js";
 import { apiKeyRefresher, registerEmbeddingsRoute } from "./providers/openai-api/embeddings-proxy.js";
+import { LocalEmbeddings } from "./providers/local/embeddings.js";
 import { createClaudeRefresher } from "./providers/claude/credentials.js";
 import { startClaudeUsagePoller } from "./providers/claude/usage-refresh.js";
 import { CompressionCache, RawBlockRegistry } from "./compression/engine.js";
@@ -36,6 +38,8 @@ import { startWarmupRunner } from "./warmup/warmup-runner.js";
 import { createGatewayServer } from "./server.js";
 import { DRAIN_MESSAGE } from "./supervisor.js";
 import { registerStatsRoute } from "./stats.js";
+import { registerAnthropicAdminRoutes, startAnthropicBillingSync, type AnthropicBillingSync } from "./admin/anthropic-admin.js";
+import { trackKeySettlement } from "./policy.js";
 
 async function readVersion(): Promise<string> {
   try {
@@ -86,6 +90,8 @@ async function main() {
   const openAiApiPool = new AccountPool({ provider: "OPENAI_API", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const openRouterPool = new AccountPool({ provider: "OPENROUTER", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const deepSeekPool = new AccountPool({ provider: "DEEPSEEK", repository, cipher: () => cipher, refresher: apiKeyRefresher });
+  const googleAiPool = new AccountPool({ provider: "GOOGLE_AI", repository, cipher: () => cipher, refresher: apiKeyRefresher });
+  const localEmbeddings = new LocalEmbeddings();
   const onStickyError = (error: unknown) =>
     process.stderr.write(`space-gateway sticky binding storage failed: ${error instanceof Error ? error.message : "unknown"}\n`);
   const promptCacheTtl = () => promptCacheTtlMs;
@@ -95,17 +101,19 @@ async function main() {
     claudeSessions: new StickyStore({ repository, provider: "CLAUDE", kind: "PROMPT_CACHE", onError: onStickyError, ttlMs: promptCacheTtl }),
     antigravitySessions: new StickyStore({ repository, provider: "ANTIGRAVITY", kind: "PROMPT_CACHE", onError: onStickyError, ttlMs: promptCacheTtl })
   };
-  const settleKeyUsage = (keyId: string, usage: Parameters<typeof repository.settleApiKeyUsage>[1]) => repository.settleApiKeyUsage(keyId, usage);
+  const settleKeyUsage = (keyId: string, usage: Parameters<typeof repository.settleApiKeyUsage>[1]) =>
+    trackKeySettlement(keyId, usage, () => repository.settleApiKeyUsage(keyId, usage));
   const compression = { run: compressionPool.run, cache: compressionCache, rawBlocks, record: (rows: Parameters<typeof repository.recordCompression>[0]) => repository.recordCompression(rows),
     recordSignals: (rows: Parameters<typeof repository.recordCompressionSignals>[0]) => repository.recordCompressionSignals(rows) };
   let clientVersion = () => "0.150.1";
   const modelPlans = new CodexModelPlans({ pool: codexPool, clientVersion: () => clientVersion() });
   const webSockets = new CodexWebSocketRegistry();
+  let anthropicBilling: AnthropicBillingSync | null = null;
   const server = createGatewayServer({
     repository, version: await readVersion(), credentialKeyPresent: () => credentialKeyPresent, logger: false, lan: config.lan,
     live: {
       inFlightByAccount: () => Object.assign({}, codexPool.inFlight(), claudePool.inFlight(), antigravityPool.inFlight(), openAiApiPool.inFlight(),
-        openRouterPool.inFlight(), deepSeekPool.inFlight()),
+        openRouterPool.inFlight(), deepSeekPool.inFlight(), googleAiPool.inFlight()),
       activeWebSockets: () => webSockets.active(),
       relayTasks: () => webSockets.relays(),
       compressionQueue: () => compressionPool.queued()
@@ -121,23 +129,27 @@ async function main() {
       const claude = registerClaudeProxyRoutes(app, helpers, { pool: claudePool, logs, settings, settleKeyUsage, compression, sticky: sticky.claudeSessions });
       clientVersion = registerCodexModelRoutes(app, helpers, { pool: codexPool, anthropicModels: claude.models }).clientVersion;
       registerWeeklyRemainingRoute(app, helpers, { pool: codexPool });
-      registerCodexAccountUsageRoute(app, { pool: codexPool });
+      registerCodexAccountUsageRoute(app, { pool: codexPool, internalToken: config.internalToken });
       registerCodexSignInRoutes(app, { repository, pool: codexPool, cipher: () => cipher, internalToken: config.internalToken,
         otherProviders: { CLAUDE: claudeAccountActions({ repository, pool: claudePool }), ANTIGRAVITY: antigravityAccountActions({ repository, pool: antigravityPool }),
           OPENAI_API: openAiApiAccountActions({ pool: openAiApiPool }),
           OPENROUTER: apiKeyAccountActions({ entry: keyPoolProviders.openrouter, pool: openRouterPool }),
-          DEEPSEEK: apiKeyAccountActions({ entry: keyPoolProviders.deepseek, pool: deepSeekPool }) } });
-      registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, logs, settings, settleKeyUsage });
-      registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool, CLAUDE: claudePool },
+          DEEPSEEK: apiKeyAccountActions({ entry: keyPoolProviders.deepseek, pool: deepSeekPool }),
+          GOOGLE_AI: apiKeyAccountActions({ entry: googleAiEntry, pool: googleAiPool }) } });
+      registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, googlePool: googleAiPool, local: localEmbeddings, logs, settings, settleKeyUsage });
+      registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool, CLAUDE: claudePool,
+        GOOGLE_AI: googleAiPool },
         cipher: () => cipher, internalToken: config.internalToken });
       registerKeyPoolRoutes(app, helpers, { pools: { openai: openAiApiPool, openrouter: openRouterPool, deepseek: deepSeekPool }, logs, settings, settleKeyUsage });
       registerAntigravityProxyRoutes(app, { pool: antigravityPool, repository, logs, settings, sticky: sticky.antigravitySessions, compression });
+      registerImageRoutes(app, helpers, { antigravityPool, codexPool, repository, logs, settings, settleKeyUsage, modelPlans });
       registerAntigravitySignInRoutes(app, { repository, pool: antigravityPool, cipher: () => cipher, internalToken: config.internalToken });
       registerClaudeSignInRoutes(app, { repository, pool: claudePool, cipher: () => cipher, internalToken: config.internalToken });
       registerAccountAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken,
         // Under the supervisor a reload starts a new worker that reads the settings, then hands over without dropping streams.
         reload: typeof process.send === "function" ? () => { setTimeout(() => process.kill(process.ppid, "SIGHUP"), 200).unref(); return true; } : undefined });
-      registerStatsRoute(app, { repository, cache: compressionCache, compressionMode: async () => (await settings()).compressionMode });
+      registerStatsRoute(app, { repository, internalToken: config.internalToken, cache: compressionCache, compressionMode: async () => (await settings()).compressionMode });
+      registerAnthropicAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken, sync: () => anthropicBilling });
     }
   });
   await server.app.listen({ host: config.host, port: config.port });
@@ -176,16 +188,17 @@ async function main() {
     startAntigravityUsagePoller({ repository, pool: antigravityPool, intervalMs: config.usagePollIntervalMs, onError: onUsageError })
   ];
 
+  anthropicBilling = startAnthropicBillingSync({ repository, cipher: () => cipher, claudePool, intervalMs: 5 * 60_000,
+    onError: (code) => process.stderr.write(`space-gateway Anthropic billing sync failed: ${code}\n`) });
+  void anthropicBilling.runOnce();
+
   const warmup = startWarmupRunner({ repository, pool: codexPool, modelPlans, logs, settings,
     onError: (error) => process.stderr.write(`space-gateway limit warm-up failed: ${error instanceof Error ? error.message : "unknown"}\n`) });
 
   const retention = setInterval(() => {
     void (async () => {
       await checkKey();
-      const current = await settings();
-      const cutoff = new Date(Date.now() - current.requestLogRetentionDays * 86_400_000).toISOString();
-      const removed = await repository.pruneRequestLogs(cutoff);
-      if (removed > 0) process.stdout.write(`space-gateway retention removed ${removed} request logs\n`);
+      // Request logs are token usage and are never deleted (operator rule 2026-10-18).
       await repository.pruneStickyBindings(new Date().toISOString());
     })().catch((error: unknown) => process.stderr.write(`space-gateway retention failed: ${error instanceof Error ? error.message : "unknown"}\n`));
   }, config.retentionIntervalMs);
@@ -200,6 +213,7 @@ async function main() {
     clearInterval(retention);
     for (const poller of usagePollers) poller.stop();
     warmup.stop();
+    anthropicBilling?.stop();
     const deadline = setTimeout(() => {
       process.stderr.write("space-gateway drain timeout reached; closing remaining connections\n");
       server.app.server.closeAllConnections();

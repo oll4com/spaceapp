@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { initializeInstallation } from "../../packages/run-spaceapp/src/index.mjs";
+import { createDefaultConfig, initializeInstallation, renderRuntimeEnv } from "../../packages/run-spaceapp/src/index.mjs";
 
 const execFileAsync = promisify(execFile);
 const root = resolve(import.meta.dirname, "../..");
@@ -117,5 +117,31 @@ test("generated profiles and access modes have the expected merged Docker Compos
     } finally {
       await rm(installation, { recursive: true, force: true });
     }
+  }
+});
+
+test("SpaceApp images resolve to the version tag, plus the pinned digest when the package carries a lock", async (context) => {
+  try {
+    await execFileAsync("docker", ["compose", "version"], { timeout: 10_000 });
+  } catch {
+    context.skip("Docker Compose is unavailable");
+    return;
+  }
+  const installation = await mkdtemp(join(tmpdir(), "spaceapp-compose-digest-"));
+  try {
+    await initializeInstallation(installation, { version: "0.1.0", profile: "standard", accessMode: "isolated", templateDir: join(root, "packages", "run-spaceapp", "templates") });
+    const images = async () => {
+      const { stdout } = await execFileAsync("docker", ["compose", "--project-directory", installation, "--env-file", join(installation, "runtime.env"),
+        "-f", join(installation, "compose.yml"), "--profile", "standard", "config", "--format", "json"], { timeout: 30_000, maxBuffer: 64 * 1024 });
+      const services = JSON.parse(stdout).services;
+      return ["core", "cli", "browser"].map((target) => services[`spaceapp-${target}`].image);
+    };
+    assert.deepEqual(await images(), ["core", "cli", "browser"].map((target) => `ghcr.io/oll4com/spaceapp-${target}:0.1.0`));
+    const digests = { core: `sha256:${"a".repeat(64)}`, cli: `sha256:${"b".repeat(64)}`, browser: `sha256:${"c".repeat(64)}` };
+    await writeFile(join(installation, "runtime.env"), renderRuntimeEnv(createDefaultConfig({ version: "0.1.0", profile: "standard" }),
+      { schemaVersion: 1, runtimeVersion: "0.1.0", images: digests }));
+    assert.deepEqual(await images(), ["core", "cli", "browser"].map((target) => `ghcr.io/oll4com/spaceapp-${target}:0.1.0@${digests[target]}`));
+  } finally {
+    await rm(installation, { recursive: true, force: true });
   }
 });

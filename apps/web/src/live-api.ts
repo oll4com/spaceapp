@@ -2,9 +2,12 @@ import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionCont
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { LiveRoomContext } from "@space/contracts";
+import type { DesignAsset, DesignBrandKit, DesignBrandKitInput, DesignEvent, DesignFormat, DesignNetwork, DesignPaneMetadata, DesignRequest, DesignRequestCreate, DesignTemplateId, DesignView } from "@space/contracts";
+import type { AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, AppStudioRunStatus } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
+import type { VaultPendingSecret, VaultSignupGrant, VaultSignupGrantRequest, VaultAuditRecord, VaultItemMetadata, VaultItemRecord, VaultItemRecordInput, VaultKdfParams, VaultRecovery, VaultSymmetricEnvelope, VaultTransportEnvelope } from "@space/contracts";
 import type {
   DemoAccountsResponse,
   DemoConnection,
@@ -81,6 +84,11 @@ import type {
   AdminOperationRun,
   AdminUserItem,
   AdminUserListResponse,
+  UserInvite,
+  UserInviteRole,
+  RoomShare,
+  RoomShareListResponse,
+  RoomSharePermission,
   AuditEvent,
   AuthMe,
   AuthUser,
@@ -182,6 +190,18 @@ import type {
   CouncilRun,
   CouncilRunSummary,
   CreateCouncilRunInput,
+  NousDecision,
+  NousDecisionAnswerInput,
+  NousMessage,
+  NousAttachment,
+  NousOverview,
+  NousPaneBoard,
+  NousPaneBoardAnswerInput,
+  NousPaneBoardAnswerResult,
+  NousAway,
+  NousAwayGrant,
+  NousSettings,
+  NousState,
   ListSharedChatMessagesQuery,
   AuditChainEntry,
   ListAuditChainQuery,
@@ -282,6 +302,8 @@ import type {
   GatewaySettingsUpdateRequest,
   GatewayStatus,
   GatewayClaudeApiKeyUse,
+  GatewayAnthropicAdminStatus,
+  GatewayAnthropicBillingReport,
   CodexUsageAccountList,
   AntigravityUsageAccountList,
   ClaudeUsageAccountList,
@@ -679,6 +701,14 @@ export type BrowserCaptureSegmentListPayload = BrowserCaptureSegmentListResponse
 export type BrowserCaptureTimelinePayload = BrowserCaptureTimelineResponse;
 export type BrowserDiagnosticsPayload = BrowserDiagnosticsResponse;
 
+/** `GET /api/artifacts/:id/metadata`: `embedded` holds a PNG's text chunks, `design` its parsed `spaceapp:design` JSON. */
+export interface ArtifactMetadataPayload {
+  artifact: { id: string; filename: string; mimeType: string; byteSize: number; sha256: string; createdAt: string; roomId: string | null; metadata: Record<string, unknown> };
+  image: { width: number; height: number } | null;
+  embedded: Record<string, string>;
+  design: Record<string, unknown> | null;
+}
+
 export interface BrowserRecordingManifestPayload {
   durationMs: number;
   intervalMs?: number;
@@ -901,6 +931,22 @@ function reportCoreApiResponse(response: Response, payload: unknown, requestStar
   if (response.status === 502 || (isApiErrorPayload(payload) && payload.error.code === "UPSTREAM_UNAVAILABLE")) {
     reportCoreApiFailure(requestStartedAt);
   }
+}
+
+/** Per item: when it was added and last changed, and how many successful fills used it. */
+export interface VaultItemStats { addedAt: string; changedAt: string; uses: number; lastUsedAt: string | null }
+
+export interface VaultStateResponse {
+  ownerUserId: string;
+  enrolled: boolean;
+  brokerAvailable: boolean;
+  /** The dock's switch: agents and Nous may use the Vault. */
+  agentAccess: boolean;
+  /** Items the current delegation hands to them. */
+  delegatedItems: number;
+  /** Logins waiting in the inbox until this dock is unlocked. */
+  pendingItems?: number;
+  vault: { vaultId: string; epoch: number; delegationGeneration: number; kdf: VaultKdfParams; unlockKeyVersion: number; hasRecovery: boolean; auditSeq: number } | null;
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -1386,6 +1432,32 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ role })
     }),
+  // Multi-user accounts: these answer 404 MULTI_USER_DISABLED unless SPACE_MULTI_USER_ENABLED=true.
+  listUserInvites: () => request<{ invites: UserInvite[] }>("/api/admin/users/invites"),
+  createUserInvite: (input: { email: string; role: UserInviteRole }) =>
+    request<{ invite: UserInvite; token: string }>("/api/admin/users/invites", { method: "POST", body: JSON.stringify(input) }),
+  revokeUserInvite: (inviteId: string) =>
+    request<{ id: string; revoked: true }>(`/api/admin/users/invites/${encodeURIComponent(inviteId)}`, { method: "DELETE" }),
+  setUserDisabled: (userId: string, disabled: boolean) =>
+    request<{ id: string; disabled: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}/disabled`, {
+      method: "PATCH",
+      body: JSON.stringify({ disabled })
+    }),
+  // Room sharing, also behind SPACE_MULTI_USER_ENABLED; only the room's owner gets an answer.
+  roomShares: (roomId: string) => request<RoomShareListResponse>(`/api/rooms/${encodeURIComponent(roomId)}/shares`),
+  addRoomShare: (roomId: string, email: string, permission: RoomSharePermission) =>
+    request<RoomShare>(`/api/rooms/${encodeURIComponent(roomId)}/shares`, { method: "PUT", body: JSON.stringify({ email, permission }) }),
+  setRoomShare: (roomId: string, userId: string, permission: RoomSharePermission) =>
+    request<RoomShare>(`/api/rooms/${encodeURIComponent(roomId)}/shares/${encodeURIComponent(userId)}`, { method: "PUT", body: JSON.stringify({ permission }) }),
+  removeRoomShare: (roomId: string, userId: string) =>
+    request<{ removed: true }>(`/api/rooms/${encodeURIComponent(roomId)}/shares/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  acceptUserInvite: (token: string, password: string) => {
+    resetCliRuntimeSettingsCache();
+    return request<AuthMe>("/api/auth/invites/accept", {
+      method: "POST",
+      body: JSON.stringify({ token, password })
+    }).then(noteServerModules);
+  },
   clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; paneId?: string; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1428,6 +1500,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  updateClipboardNoteText: (clipboardItemId: string, text: string) =>
+    request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}/text`, {
+      method: "PATCH",
+      body: JSON.stringify({ text })
+    }),
   deleteClipboardItem: (clipboardItemId: string) =>
     request<{ id: string; deleted: true }>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
       method: "DELETE"
@@ -1464,6 +1541,34 @@ export const api = {
   auditVerify: () => request<AuditVerifyResponse>("/api/audit/verify"),
   clearSharedChat: () =>
     request<{ deletedCount: number }>("/api/shared-chat/messages", { method: "DELETE" }),
+  // Vault (plan clipboard:vEYtT6-bEN0J): ciphertext, public keys and metadata only; the dock decrypts locally.
+  vaultState: () => request<VaultStateResponse>("/api/space-vault/state"),
+  vaultBroker: () => request<{ publicKey: string; keyVersion: number }>("/api/space-vault/broker"),
+  vaultEnroll: (body: unknown) => request<{ vaultId: string; epoch: number }>("/api/space-vault/enroll", { method: "POST", body: JSON.stringify(body) }),
+  vaultUnlockChallenge: () => request<{ challenge: string; epoch: number; expiresAt: string; vaultId: string; passwordEnvelope: VaultSymmetricEnvelope; kdf: VaultKdfParams; unlockKeyVersion: number }>(
+    "/api/space-vault/unlock/challenge", { method: "POST", body: "{}" }),
+  vaultUnlock: (body: { challenge: string; replyPublicKey: string; signature: string }) =>
+    request<{ sealedServerShare: VaultTransportEnvelope; epoch: number }>("/api/space-vault/unlock", { method: "POST", body: JSON.stringify(body) }),
+  vaultLock: () => request<{ epoch: number }>("/api/space-vault/lock", { method: "POST", body: "{}" }),
+  vaultItems: () => request<{ items: VaultItemMetadata[]; stats?: Record<string, VaultItemStats> }>("/api/space-vault/items"),
+  vaultItem: (id: string) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(id)}`),
+  vaultSaveItem: (item: VaultItemRecordInput) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(item.metadata.id)}`, { method: "PUT", body: JSON.stringify(item) }),
+  vaultDeleteItem: (id: string) => request<{ deleted: true }>(`/api/space-vault/items/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultRotatePassword: (body: unknown) => request<{ epoch: number }>("/api/space-vault/password", { method: "POST", body: JSON.stringify(body) }),
+  vaultSetRecovery: (recovery: VaultRecovery) => request<{ recovery: true }>("/api/space-vault/recovery", { method: "PUT", body: JSON.stringify(recovery) }),
+  vaultRecovery: () => request<{ recovery: VaultRecovery | null }>("/api/space-vault/recovery"),
+  vaultInbox: () => request<{ inbox: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope } | null }>("/api/space-vault/inbox"),
+  vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope }) => request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
+  vaultPending: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending"),
+  vaultDeletePending: (id: string) => request<{ deleted: true }>(`/api/space-vault/pending/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultSetAgentAccess: (enabled: boolean) => request<{ agentAccess: boolean }>("/api/space-vault/agent-access", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  vaultRevoke: () => request<{ generation: number; epoch: number }>("/api/space-vault/revoke", { method: "POST", body: "{}" }),
+  vaultDelegate: (body: unknown) => request<{ generation: number }>("/api/space-vault/delegations", { method: "POST", body: JSON.stringify(body) }),
+  vaultSignupGrants: () => request<{ grants: VaultSignupGrant[] }>("/api/space-vault/signup-grants"),
+  vaultCreateSignupGrant: (body: VaultSignupGrantRequest) => request<{ grant: VaultSignupGrant }>("/api/space-vault/signup-grants", { method: "POST", body: JSON.stringify(body) }),
+  vaultRevokeSignupGrant: (id: string) => request<{ revoked: true }>(`/api/space-vault/signup-grants/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultAudit: (beforeSeq?: number) => request<{ entries: Array<{ id: string; seq: number; event: VaultAuditRecord; createdAt: string }>; nextBeforeSeq: number | null }>(
+    `/api/space-vault/audit?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ""}`),
   councilModels: () => request<CouncilModelsResponse>("/api/council/models"),
   councilRuns: () => request<{ runs: CouncilRunSummary[] }>("/api/council/runs"),
   councilRun: (id: string) => request<{ run: CouncilRun }>(`/api/council/runs/${encodeURIComponent(id)}`),
@@ -1475,6 +1580,34 @@ export const api = {
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     }),
   deleteCouncilRun: (id: string) => request<void>(`/api/council/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  nous: () => request<{ state: NousState }>("/api/nous"),
+  nousMessages: () => request<{ messages: NousMessage[]; attachments?: Record<string, NousAttachment[]> }>("/api/nous/messages"),
+  sendNousMessage: (content: string, attachmentIds: string[] = []) => request<{ message: NousMessage; attachments?: NousAttachment[] }>("/api/nous/messages",
+    { method: "POST", body: JSON.stringify(attachmentIds.length ? { content, attachmentIds } : { content }) }),
+  uploadNousAttachments: (files: File[]) => {
+    const form = new FormData();
+    files.forEach((file) => form.append("file", file, file.name || "upload"));
+    return request<{ attachments: NousAttachment[] }>("/api/nous/attachments", { method: "POST", body: form });
+  },
+  deleteNousAttachment: (id: string) => request<{ removed: boolean }>(`/api/nous/attachments/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  nousAttachmentUrl: (id: string, mode?: "preview" | "download") =>
+    `/api/nous/attachments/${encodeURIComponent(id)}${mode === "preview" ? "?preview=1" : mode === "download" ? "?download=1" : ""}`,
+  clearNousMessages: () => request<{ cleared: number }>("/api/nous/messages", { method: "DELETE" }),
+  stopNous: () => request<{ stopped: boolean }>("/api/nous/stop", { method: "POST" }),
+  updateNousSettings: (input: Partial<NousSettings>) => request<{ settings: NousSettings }>("/api/nous/settings", { method: "PATCH", body: JSON.stringify(input) }),
+  /** Away mode's Settings switch (plan clipboard:B7eTUHTJYg3X): start or end it, or change its grant. */
+  setNousAway: (input: { away: boolean; grant?: NousAwayGrant[] }) => request<{ away: NousAway | null }>("/api/nous/away", { method: "POST", body: JSON.stringify(input) }),
+  nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview"),
+  nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions"),
+  /** Nous's pane board (plan clipboard:Y9cgKVHFaHrr): every open pane by room with its live line, items and reply box. */
+  nousPaneBoard: () => request<{ board: NousPaneBoard }>("/api/nous/pane-board"),
+  refreshNousPaneBoard: (paneId?: string) => request<{ started: boolean }>("/api/nous/pane-board/refresh", { method: "POST", body: JSON.stringify(paneId ? { paneId } : {}) }),
+  answerNousPane: (paneId: string, input: NousPaneBoardAnswerInput) =>
+    request<NousPaneBoardAnswerResult>(`/api/nous/pane-board/${encodeURIComponent(paneId)}/answer`, { method: "POST", body: JSON.stringify(input) }),
+  answerNousDecision: (id: string, input: NousDecisionAnswerInput) =>
+    request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify(input) }),
+  nousDecisionFeedback: (id: string, couldHaveDecided: boolean) =>
+    request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/feedback`, { method: "POST", body: JSON.stringify({ couldHaveDecided }) }),
   taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1648,6 +1781,9 @@ export const api = {
   ackNotification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/ack`, { method: "POST" }),
   readAllNotifications: () => request<{ read: number }>("/api/notifications/read-all", { method: "POST" }),
   testNotification: () => request<{ notification: import("@space/contracts").SpaceNotification }>("/api/notifications/test", { method: "POST" }),
+  // The Android app's FCM token while "Push notifications on this device" is on; `available` says whether the server can push.
+  registerPushDevice: (device: import("@space/contracts").PushDeviceRegistration) => request<{ registered: true; available: boolean }>("/api/notifications/push-devices", { method: "POST", body: JSON.stringify(device) }),
+  removePushDevice: (token: string) => request<{ removed: boolean }>("/api/notifications/push-devices", { method: "DELETE", body: JSON.stringify({ token }) }),
   codexHistory: (
     input:
       | number
@@ -1794,6 +1930,12 @@ export const api = {
   }),
   gatewayStatus: () => request<GatewayStatus>("/api/admin/gateway/status"),
   gatewayClaudeApiKeyUse: () => request<GatewayClaudeApiKeyUse>("/api/admin/gateway/claude-api-key"),
+  gatewayAnthropicAdmin: () => request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin"),
+  saveGatewayAnthropicAdminKey: (adminKey: string) =>
+    request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin", { method: "PUT", body: JSON.stringify({ adminKey }) }),
+  removeGatewayAnthropicAdminKey: () => request<{ removed: boolean }>("/api/admin/gateway/anthropic-admin", { method: "DELETE" }),
+  syncGatewayAnthropicBilling: () => request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin/sync", { method: "POST", body: JSON.stringify({}) }),
+  gatewayAnthropicBilling: (days: number) => request<GatewayAnthropicBillingReport>(`/api/admin/gateway/anthropic-billing?days=${days}`),
   gatewayAccounts: () => request<GatewayAccountList>("/api/admin/gateway/accounts"),
   setGatewayAccountPaused: (accountId: string, paused: boolean) =>
     request<GatewayAccount>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
@@ -1850,7 +1992,7 @@ export const api = {
     "/api/admin/gateway/antigravity/profiles"),
   importGatewayAntigravityProfile: (profileId: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
     "/api/admin/gateway/antigravity/import", { method: "POST", body: JSON.stringify({ profileId }) }),
-  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
+  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
     request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
       "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
   importGatewayCodexAuthJson: (authJson: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
@@ -2659,6 +2801,12 @@ export const api = {
       method: "POST",
       headers: cliTerminalControlHeaders(paneId)
     }),
+  submitLocalCliDraft: (paneId: string, input: { submissionId: string; expectedSessionId: string; text: string; imagePaths?: string[]; imageOffsets?: number[] }) =>
+    request<{ submissionId: string; sessionId: string; status: "SENT" | "UNCERTAIN" | "REJECTED"; reason?: string }>(`/api/panes/${encodeURIComponent(paneId)}/cli/local-composer/submissions`, {
+      method: "POST", headers: cliTerminalControlHeaders(paneId), body: JSON.stringify(input)
+    }),
+  localCliSubmission: (paneId: string, submissionId: string) =>
+    request<{ submissionId: string; sessionId: string | null; status: "SENT" | "UNCERTAIN" | "REJECTED" | "NOT_FOUND"; reason?: string }>(`/api/panes/${encodeURIComponent(paneId)}/cli/local-composer/submissions/${encodeURIComponent(submissionId)}`),
   uploadCliFiles: (input: { paneId: string; source: PaneCliUploadSource; files: File[] }) => {
     const params = new URLSearchParams({ source: input.source });
     const form = new FormData();
@@ -2729,6 +2877,8 @@ export const api = {
   saveYouTubePlayback: (paneId: string, playback: YouTubePlayback) =>
     request<{ ok: true }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/playback`, { method: "PUT", body: JSON.stringify(playback), keepalive: true }),
   watchYouTube: (paneId: string) => request<{ currentUrl: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/watch`, { method: "POST", body: "{}" }),
+  youtubeVideoText: (paneId: string, videoId: string, kind: "summary" | "transcript") =>
+    request<{ text: string; model: string }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/summary`, { method: "POST", body: JSON.stringify({ videoId, kind }) }),
   browserSession: (paneId: string) => request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/session`),
   startBrowserSession: (
     paneId: string,
@@ -3262,6 +3412,8 @@ export const api = {
     return request<Paginated<Artifact>>(`/api/artifacts${suffix ? `?${suffix}` : ""}`);
   },
   artifactFileUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
+  /** The Details dialog: the record, an image's measured size and the metadata a PNG carries inside. */
+  artifactMetadata: (artifactId: string) => request<ArtifactMetadataPayload>(`/api/artifacts/${encodeURIComponent(artifactId)}/metadata`),
   agentFilePreviewUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/preview`,
   agentFileDownloadUrl: (artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/download`,
   browserRecordingManifest: (artifactId: string) =>
@@ -3331,8 +3483,9 @@ export const api = {
       signal: input.signal
     });
   },
-  uploadAgentFiles: (input: { roomId: string; files: File[] }) => {
+  uploadAgentFiles: (input: { roomId: string; files: File[]; folder?: string }) => {
     const form = new FormData();
+    if (input.folder) form.append("folder", input.folder);
     input.files.forEach((file) => form.append("file", file, file.name || "agent-file"));
     return request<{ artifacts: Artifact[] }>(`/api/rooms/${encodeURIComponent(input.roomId)}/agent-files/uploads`, {
       method: "POST",
@@ -3776,6 +3929,60 @@ export const api = {
     request<{ metadata: MailCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/settings`, { cache: "no-store" }),
   updateMailCopilotSettings: (paneId: string, metadata: MailCopilotPaneMetadata) =>
     request<{ metadata: MailCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  // Design pane: settings and view, the Studio's renders and generations, the library, requests and brand kits.
+  designSettings: (paneId: string) =>
+    request<{ metadata: DesignPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/design/settings`, { cache: "no-store" }),
+  updateDesignSettings: (paneId: string, metadata: DesignPaneMetadata) =>
+    request<{ metadata: DesignPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/design/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  updateDesignView: (paneId: string, view: Partial<Omit<DesignView, "updatedAt">>) =>
+    request<{ view: DesignView }>(`/api/panes/${encodeURIComponent(paneId)}/design/view`, { method: "PUT", body: JSON.stringify(view) }),
+  designFormats: () => request<{ formats: Array<DesignFormat & { networkLabel: string }> }>("/api/design/formats", { cache: "no-store" }),
+  designRender: (paneId: string, input: { templateId: DesignTemplateId; formatId: string; params?: Record<string, unknown>; backgroundAssetId?: string | null; brandKitId?: string | null; requestId?: string | null; label?: string | null }) =>
+    request<{ asset: DesignAsset }>(`/api/panes/${encodeURIComponent(paneId)}/design/render`, { method: "POST", body: JSON.stringify(input) }),
+  designGenerate: (paneId: string, input: { engine: "NANO_BANANA" | "NANO_BANANA_PRO" | "GPT_IMAGE"; prompt: string; formatId: string; requestId?: string | null; label?: string | null }) =>
+    request<{ asset: DesignAsset; text: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/design/generate`, { method: "POST", body: JSON.stringify(input) }),
+  designAssets: (paneId: string, query: { network?: DesignNetwork; formatId?: string; brandKitId?: string; requestId?: string; limit?: number } = {}) =>
+    request<{ assets: DesignAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets?${new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}`, { cache: "no-store" }),
+  uploadDesignAsset: (paneId: string, file: Blob, fields: { formatId: string; label?: string; parentAssetId?: string; requestId?: string }) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) if (value) form.append(key, value);
+    form.append("file", file, "design.png");
+    return request<{ asset: DesignAsset }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets`, { method: "POST", body: form });
+  },
+  designVariants: (paneId: string, assetId: string, input: { formatIds?: string[]; params?: Record<string, unknown>; requestId?: string | null }) =>
+    request<{ assets: DesignAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets/${encodeURIComponent(assetId)}/variants`, { method: "POST", body: JSON.stringify(input) }),
+  deleteDesignAsset: (paneId: string, assetId: string) =>
+    request<{ deleted: true }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" }),
+  designRequests: (paneId: string) =>
+    request<{ requests: DesignRequest[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests`, { cache: "no-store" }),
+  createDesignRequest: (paneId: string, input: Partial<DesignRequestCreate> & { brief: string }) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests`, { method: "POST", body: JSON.stringify(input) }),
+  deliverDesignRequest: (paneId: string, requestId: string, input: { assetIds?: string[]; message?: string | null } = {}) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests/${encodeURIComponent(requestId)}/deliver`, { method: "POST", body: JSON.stringify(input) }),
+  cancelDesignRequest: (paneId: string, requestId: string) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST", body: "{}" }),
+  answerDesignRequest: (paneId: string, requestId: string, answer: string) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  /** A design request from another pane (Marketing Copilot's "Make graphic"), routed to the owner's Design pane. */
+  requestDesignFromPane: (fromPaneId: string, input: Partial<DesignRequestCreate> & { brief: string }) =>
+    request<{ request: DesignRequest; designPaneId: string | null }>("/api/design/requests", { method: "POST", body: JSON.stringify({ ...input, fromPaneId }) }),
+  designEvents: (paneId: string, limit = 100) =>
+    request<{ events: DesignEvent[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/events?limit=${limit}`, { cache: "no-store" }),
+  designBrandKits: () => request<{ brandKits: DesignBrandKit[] }>("/api/design/brand-kits", { cache: "no-store" }),
+  // App Studio pane: settings, everything the pane shows in one read, briefs, answers and the run.
+  appStudioState: (paneId: string) =>
+    request<{ metadata: AppStudioPaneMetadata; run: { status: AppStudioRunStatus; paused: boolean; openQuestions: number; pendingBriefs: number }; previews: AppStudioPreview[]; events: AppStudioEvent[] }>(
+      `/api/panes/${encodeURIComponent(paneId)}/app-studio/state`, { cache: "no-store" }),
+  updateAppStudioSettings: (paneId: string, metadata: AppStudioPaneMetadata) =>
+    request<{ metadata: AppStudioPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  createAppStudioBrief: (paneId: string, text: string) =>
+    request<{ brief: AppStudioEvent; kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/briefs`, { method: "POST", body: JSON.stringify({ text }) }),
+  answerAppStudioQuestion: (paneId: string, questionId: string, answer: string) =>
+    request<{ question: AppStudioEvent }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/questions/${encodeURIComponent(questionId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  createDesignBrandKit: (input: DesignBrandKitInput) => request<{ brandKit: DesignBrandKit }>("/api/design/brand-kits", { method: "POST", body: JSON.stringify(input) }),
+  updateDesignBrandKit: (id: string, input: Partial<DesignBrandKitInput>) =>
+    request<{ brandKit: DesignBrandKit }>(`/api/design/brand-kits/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteDesignBrandKit: (id: string) => request<{ deleted: true }>(`/api/design/brand-kits/${encodeURIComponent(id)}`, { method: "DELETE" }),
   marketingCopilotSettings: (paneId: string) =>
     request<{ metadata: MarketingCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/settings`, { cache: "no-store" }),
   updateMarketingCopilotSettings: (paneId: string, metadata: MarketingCopilotPaneMetadata) =>
@@ -4025,6 +4232,7 @@ export const api = {
   importConfiguration: (input: {
     bundle: unknown;
     mode?: ImportConfigMode;
+    confirmReplace?: boolean;
     targetUserId?: string;
     importApiKeys?: boolean;
     importCredentials?: boolean;

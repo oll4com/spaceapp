@@ -88,9 +88,11 @@ describe("PostgresSpaceStore task history", () => {
     expect(insert?.values).toContain("fallback");
     expect(insert?.values).toContain("OPEN");
     expect(insert?.values).toContain("MANUAL");
-    expect(pool.calls.find((call) => call.sql.includes("NOT IN"))?.sql).toContain("LIMIT 100");
-    // Pending scheduled tasks are never pruned.
-    expect(pool.calls.find((call) => call.sql.includes("NOT IN"))?.sql).toContain("next_run_at IS NULL");
+    const prune = pool.calls.find((call) => call.sql.includes("NOT IN"))?.sql;
+    expect(prune).toContain("LIMIT 100");
+    // Only finished, unscheduled tasks are pruned.
+    expect(prune).toContain("status IN ('DONE', 'ARCHIVED')");
+    expect(prune).toContain("recurrence IS NULL");
   });
 
   it("scopes list, get, update, delete, and clear queries to the authenticated owner", async () => {

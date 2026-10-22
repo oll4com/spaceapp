@@ -833,6 +833,35 @@ describe("model stats MDL badge", () => {
     expect(titles()).toEqual(["lab"]);
   });
 
+  it("shows Anthropic's bill and the last sync on the Claude API key's card", async () => {
+    const client = createClient();
+    client.claudeAccounts = vi.fn(async () => ({
+      data: [{ id: "api", label: "api", email: null, plan: null, status: "API_KEY" as const, fiveHourRemainingPercent: null, fiveHourResetAt: null,
+        weeklyRemainingPercent: null, weeklyResetAt: null, weeklyScope: null, sampledAt: null, apiKeyVerified: true, gatewayFallback: "ON" as const,
+        apiKeyUsage: { requests: 2542, costUsd: 215.08, lastUsedAt: new Date(Date.now() - 8 * 3_600_000).toISOString() } }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }, source: "space-claude-profiles", isStale: false, error: null, checkedAt: sampledAt,
+    }));
+    const day = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+    const row = (daysAgo: number, reported: boolean, organizationUsd: number, gatewayEstimateUsd: number) =>
+      ({ day: day(daysAgo), reported, organizationUsd, workspaceUsd: organizationUsd, gatewayEstimateUsd, gatewayBilledUsd: gatewayEstimateUsd, models: [] });
+    client.anthropicBilling = vi.fn(async () => ({
+      status: { configured: true, keyHint: "…pgAA", savedAt: sampledAt, lastSyncAt: new Date().toISOString(), lastError: "anthropic_http_429", upstream: [] },
+      days: [row(0, false, 0, 1.6864), row(1, true, 128.61, 130.65), row(20, true, 58.42, 0)],
+    }));
+
+    render(<ToolbarMetrics environment={environment} client={client} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    await waitFor(() => expect(client.anthropicBilling).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(panel).getByRole("tab", { name: "Claude" }));
+    const card = (await within(panel).findByText("api", { selector: ".account-quota-title" })).closest("li") as HTMLElement;
+    // The existing line stays; the bill and the sync follow it.
+    expect(within(card).getByText(/Used 2542 times through Space Gateway \(\$215\.08\), last 8h ago\./)).toBeTruthy();
+    await waitFor(() => expect(within(card).getByText(/^Anthropic bill: today \$1\.69 \(estimate\) · 7 days \$130\.30 · this month \$\d+\.\d\d · 31 days \$188\.72\.$/)).toBeTruthy());
+    expect(within(card).getByText(/^Synced \d\d:\d\d /)).toBeTruthy();
+    expect(within(card).getByText("The last sync failed (anthropic_http_429).")).toBeTruthy();
+  });
+
   it("leaves out the 5h cell of an account that has only a weekly limit", () => {
     const entry = (fiveHourRemainingPercent: number | null) => ({
       id: "a", title: "prolite@example.test", details: [], capacity: 100, availability: { state: "available" as const, backAt: null },

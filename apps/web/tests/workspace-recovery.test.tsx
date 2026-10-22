@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceErrorBoundary } from "../src/features/SurfaceErrorBoundary.js";
+import { registerLocalCliDraftReloadGuard } from "../src/features/terminal-pane/local-cli-draft.js";
 import { readDockSession, writeDockSession, WORKSPACE_DOCK_SESSION_KEY } from "../src/features/workspace-session.js";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); sessionStorage.clear(); });
@@ -47,5 +48,17 @@ describe("workspace recovery", () => {
     render(<SurfaceErrorBoundary><Broken /></SurfaceErrorBoundary>);
     expect(screen.getByRole("button", { name: "Reload Space" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it("checks unsaved drafts before reloading a failed surface", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    function Broken(): never { throw Error("Failed to fetch dynamically imported module"); }
+    const guard = vi.fn(() => false);
+    const unregister = registerLocalCliDraftReloadGuard(guard);
+    try {
+      render(<SurfaceErrorBoundary><Broken /></SurfaceErrorBoundary>);
+      fireEvent.click(screen.getByRole("button", { name: "Reload Space" }));
+      await waitFor(() => expect(guard).toHaveBeenCalledOnce());
+    } finally { unregister(); }
   });
 });

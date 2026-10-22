@@ -3,6 +3,7 @@ import type { GatewayRepository, GatewayApiKeyRecord } from "@space/db";
 import { hashGatewayApiKey, readPresentedApiKey } from "./api-keys.js";
 import { gatewayErrors } from "./errors.js";
 import { lanDecision, type LanAccess } from "./lan-access.js";
+import { trackKeyRequest } from "./policy.js";
 
 export interface GatewayRuntimeStatus {
   version: string;
@@ -45,6 +46,8 @@ export interface GatewayServerOptions {
   live?: GatewayLiveActivity;
   now?: () => Date;
   logger?: boolean;
+  /** Requests one API key may start per minute (default 1200). */
+  keyRequestsPerMinute?: number;
 }
 
 export interface GatewayServer {
@@ -69,7 +72,10 @@ declare module "fastify" {
 export function createGatewayServer(options: GatewayServerOptions): GatewayServer {
   const now = options.now ?? (() => new Date());
   const startedAt = now().toISOString();
-  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 64 * 1024 * 1024, trustProxy: false });
+  // 32 MiB, Anthropic's own request cap; the images route sets its own limit.
+  const app = Fastify({ logger: options.logger ?? false, bodyLimit: 32 * 1024 * 1024, trustProxy: false });
+  const keyRequestsPerMinute = options.keyRequestsPerMinute ?? 1200;
+  const keyWindows = new Map<string, { startedAt: number; count: number }>();
   let inFlight = 0;
   let draining = false;
   let listen: string | null = null;
@@ -114,6 +120,8 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   });
 
   /** Non-sensitive runtime state for the Space API; it never includes keys, tokens or account data. */
+  // Left open on loopback (security addendum step 8 review): it carries no keys, tokens, emails or labels, and dev's API
+  // reads the shared gateway with a different internal token.
   app.get("/__space-gateway/status", async () => status());
 
   async function authenticate(request: FastifyRequest, reply: FastifyReply) {
@@ -129,7 +137,16 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     if (!key) return reply.code(401).send(gatewayErrors.invalidApiKey());
     if (!key.isActive) return reply.code(401).send(gatewayErrors.inactiveApiKey());
     if (key.expiresAt && Date.parse(key.expiresAt) <= now().getTime()) return reply.code(401).send(gatewayErrors.expiredApiKey());
+    const at = now().getTime();
+    let window = keyWindows.get(key.id);
+    if (!window || at - window.startedAt >= 60_000) keyWindows.set(key.id, window = { startedAt: at, count: 0 });
+    if (++window.count > keyRequestsPerMinute) {
+      return reply.code(429).header("retry-after", String(Math.max(1, Math.ceil((window.startedAt + 60_000 - at) / 1000))))
+        .send(gatewayErrors.keyRateLimited());
+    }
     request.gatewayApiKey = key;
+    // Running requests hold a cost-cap reserve until they close; a long-lived WebSocket session holds none.
+    if (request.headers.upgrade?.toLowerCase() !== "websocket") reply.raw.once("close", trackKeyRequest(key.id));
   }
 
   options.routes?.(app, {

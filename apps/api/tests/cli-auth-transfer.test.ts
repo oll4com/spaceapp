@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntime } from "@space/contracts";
 import { createCliAuthTransfer, createPublicCredentialHost, type CredentialHost } from "../src/cli-auth-transfer.js";
+import { observeCliRuntimeCredential } from "../src/cli-runtimes.js";
 
 const login = JSON.stringify({ tokens: { refresh_token: "synthetic-refresh-token" } });
 const b64 = (text: string) => Buffer.from(text).toString("base64");
@@ -15,7 +16,7 @@ function transfer(options: { publicDistribution?: boolean; answer?: string; expo
   const warn = vi.fn();
   const invalidateRuntimes = vi.fn();
   const run = vi.fn(async () => ({ exitCode: 0, stdout: options.answer ?? "IMPORTED\n" }));
-  const credentialHost: CredentialHost = { run, status: async () => null, close: async () => undefined };
+  const credentialHost: Pick<CredentialHost, "run"> = { run };
   const instance = createCliAuthTransfer({
     publicDistribution: options.publicDistribution ?? true,
     readRuntimes: async () => [runtime("cli:codex"), runtime("cli:claude"), runtime("cli:gemini", "LOGIN_REQUIRED")],
@@ -91,7 +92,14 @@ describe("CLI login transfer", () => {
       socket.setEncoding("utf8").on("data", (chunk) => { body += chunk; }).on("end", () => {
         const request = JSON.parse(body) as Record<string, string>;
         requests.push(request);
-        socket.end(JSON.stringify({ exitCode: 0, stdout: request.action === "credential-status" ? "READY\n" : "IMPORTED\n" }));
+        const stdout: Record<string, string> = {
+          "credential-status": "READY\n",
+          "credential-smoke": "SPACE_CODEX_OK\n",
+          "credential-observation": `OBSERVATION:${"a".repeat(64)}\n`,
+          "opencode-text": `${JSON.stringify({ type: "step_start" })}\n${JSON.stringify({ type: "text", part: { text: "Agent answer" } })}\n`,
+          "opencode-models": JSON.stringify({ data: [{ id: "big-pickle", providerID: "opencode" }] })
+        };
+        socket.end(JSON.stringify({ exitCode: 0, stdout: stdout[request.action!] ?? "IMPORTED\n" }));
       });
     });
     await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
@@ -108,6 +116,24 @@ describe("CLI login transfer", () => {
         { command: "codex-vscode-parity", action: "credential-status" },
         { command: "codex-vscode-parity", action: "credential-install", input: JSON.stringify({ files: { "auth.json": b64(login) }, conflict: "backup-and-replace" }) }
       ]);
+      // Decision B (1.1.7): the core image has no CLIs, so the smoke, the Room Agent's OpenCode tier and the
+      // model bench run in the CLI container through the same agent.
+      requests.length = 0;
+      expect(await host.execute("/usr/local/bin/codex-vscode-parity", ["credential-smoke"], { encoding: "utf8", env: {}, timeout: 1_000, maxBuffer: 1_024 }))
+        .toEqual({ stdout: "SPACE_CODEX_OK\n" });
+      expect(await observeCliRuntimeCredential(runtime("cli:opencode"), host.execute)).toBe("a".repeat(64));
+      await expect(host.execute("/usr/local/bin/codex-vscode-parity", ["login"], { encoding: "utf8", env: {}, timeout: 1_000, maxBuffer: 1_024 })).rejects.toThrow();
+      expect(await host.openCodeText("opencode/big-pickle", "Hello", 5_000)).toBe("Agent answer");
+      expect(JSON.parse(await host.openCodeModels("opencode")).data[0].id).toBe("big-pickle");
+      expect(requests).toEqual([
+        { command: "codex-vscode-parity", action: "credential-smoke" },
+        { command: "opencode-vscode-parity", action: "credential-observation" },
+        { command: "opencode-vscode-parity", action: "opencode-text", input: JSON.stringify({ modelId: "opencode/big-pickle", prompt: "Hello", timeoutMs: 5_000 }) },
+        { command: "opencode-vscode-parity", action: "opencode-models", input: JSON.stringify({ provider: "opencode" }) }
+      ]);
+      const aborted = new AbortController();
+      aborted.abort();
+      expect(await host.openCodeText("opencode/big-pickle", "Hello", 5_000, aborted.signal)).toBeNull();
       agent.close();
       // No agent (an older public image): the badge stays unverified and imports report it, never write elsewhere.
       expect(await host.status("/usr/local/bin/codex-vscode-parity")).toBeNull();

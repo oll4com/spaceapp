@@ -49,7 +49,9 @@ export const PANE_TYPES = Object.freeze([
   { typeId: "jobs", label: "Job Copilot", aliases: ["job copilot", "job applications", "jobs", "job apply", "applications", "job search"], mode: "JOB_APPLY", runtimeId: null, adapter: "jobapply", readiness: "TERMINAL_INPUT" },
   { typeId: "mail", label: "Mail Copilot", aliases: ["mail copilot", "mail", "email", "e-mail", "gmail", "inbox", "mailbox"], mode: "MAIL_COPILOT", runtimeId: null, adapter: "mailcopilot", readiness: "TERMINAL_INPUT" },
   { typeId: "marketing", label: "Marketing Copilot", aliases: ["marketing copilot", "marketing", "promote", "promotion", "social posts", "launch posts"], mode: "MARKETING_COPILOT", runtimeId: null, adapter: "marketingcopilot", readiness: "TERMINAL_INPUT" },
-  { typeId: "freelance", label: "Freelance Copilot", aliases: ["freelance copilot", "freelance", "freelancing", "upwork", "find clients", "proposals", "gigs"], mode: "FREELANCE_COPILOT", runtimeId: null, adapter: "freelancecopilot", readiness: "TERMINAL_INPUT" }
+  { typeId: "freelance", label: "Freelance Copilot", aliases: ["freelance copilot", "freelance", "freelancing", "upwork", "find clients", "proposals", "gigs"], mode: "FREELANCE_COPILOT", runtimeId: null, adapter: "freelancecopilot", readiness: "TERMINAL_INPUT" },
+  { typeId: "design", label: "Design", aliases: ["graphics", "design studio"], mode: "DESIGN", runtimeId: null, adapter: "design", readiness: "TERMINAL_INPUT" },
+  { typeId: "app-studio", label: "App Studio", aliases: ["app studio", "mobile app", "mobile apps", "android app", "ios app", "iphone app", "expo"], mode: "APP_STUDIO", runtimeId: null, adapter: "appstudio", readiness: "TERMINAL_INPUT" }
 ] as const);
 export type PaneType = typeof PANE_TYPES[number];
 export type PaneTypeId = PaneType["typeId"];

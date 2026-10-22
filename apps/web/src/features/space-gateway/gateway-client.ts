@@ -2,7 +2,7 @@ import type {
   GatewayAccount, GatewayAccountDetail, GatewayAccountUpdateRequest, GatewayApiKey, GatewayApiKeyCreateRequest, GatewayApiKeyCreatedResponse,
   GatewayApiKeyDetail, GatewayApiKeyUpdateRequest, GatewayCompressionStats, GatewayDashboard, GatewayDashboardRange, GatewayHealth, GatewayReport,
   GatewayRequestLog, GatewayRequestLogFacets, GatewayRequestLogFilter, GatewayRequestLogList, GatewaySettings, GatewaySettingsUpdateRequest, GatewayStatus,
-  GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession
+  GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession, GatewayAnthropicAdminStatus, GatewayAnthropicBillingReport
 } from "@space/contracts";
 import { api } from "../../api.js";
 import { announceGatewaySettings } from "./gateway-settings-events.js";
@@ -38,7 +38,7 @@ export interface SpaceGatewayClient {
   importAuthJson(authJson: string): Promise<Connected>;
   startClaudeSignIn(): Promise<{ flowId: string; authorizationUrl: string }>;
   antigravityProfiles(): Promise<{ data: Array<{ profileId: string; email: string | null; inGateway: boolean }> }>;
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
   importAntigravityProfile(profileId: string): Promise<Connected>;
   completeClaudeSignIn(flowId: string, code: string): Promise<Connected>;
   refreshUsage(accountId: string): Promise<{ status: string }>;
@@ -50,6 +50,13 @@ export interface SpaceGatewayClient {
   compressionSession(): Promise<GatewayHeadroomSession>;
   compressionLifetime(): Promise<GatewayHeadroomLifetime>;
   compressionHistory(): Promise<GatewayHeadroomHistory>;
+  /** The operator's Anthropic Admin API key: its hint and last sync only; the key itself goes in once and never comes back. */
+  anthropicAdmin(): Promise<GatewayAnthropicAdminStatus>;
+  saveAnthropicAdminKey(adminKey: string): Promise<GatewayAnthropicAdminStatus>;
+  removeAnthropicAdminKey(): Promise<{ removed: boolean }>;
+  syncAnthropicBilling(): Promise<GatewayAnthropicAdminStatus>;
+  /** Anthropic's bill for the last `days` UTC days, shown on the Claude API-key account. */
+  anthropicBilling?(days: number): Promise<GatewayAnthropicBillingReport>;
 }
 
 export const defaultGatewayClient: SpaceGatewayClient = {
@@ -90,7 +97,12 @@ export const defaultGatewayClient: SpaceGatewayClient = {
   compressionStats: (hours) => api.gatewayCompressionStats(hours),
   compressionSession: () => api.gatewayCompressionSession(),
   compressionLifetime: () => api.gatewayCompressionLifetime(),
-  compressionHistory: () => api.gatewayCompressionHistory()
+  compressionHistory: () => api.gatewayCompressionHistory(),
+  anthropicAdmin: () => api.gatewayAnthropicAdmin(),
+  saveAnthropicAdminKey: (adminKey) => api.saveGatewayAnthropicAdminKey(adminKey),
+  removeAnthropicAdminKey: () => api.removeGatewayAnthropicAdminKey(),
+  syncAnthropicBilling: () => api.syncGatewayAnthropicBilling(),
+  anthropicBilling: (days) => api.gatewayAnthropicBilling(days)
 };
 
 export function errorText(reason: unknown, fallback: string) {

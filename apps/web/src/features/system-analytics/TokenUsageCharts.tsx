@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SystemAnalyticsModelsResponse, SystemAnalyticsRange } from "@space/contracts";
 import { formatUsd } from "./token-totals.js";
 
@@ -28,17 +28,28 @@ function topRounded(x: number, y: number, width: number, height: number): string
   return `M${x},${y + height}V${y + r}Q${x},${y} ${x + r},${y}H${x + width - r}Q${x + width},${y} ${x + width},${y + r}V${y + height}Z`;
 }
 
-// The SVG scales to the dock's width (about 400px): sizes are in 600-wide user units, so 16 renders near 11px.
+// Sizes are user units drawn at the dock's scale (600 units across about 400px, so 16 renders near 11px); a wider
+// plot widens the view box instead of enlarging the text and the height.
 const WIDTH = 600;
+const UNITS_PER_PX = 1.5;
 const HEIGHT = 240;
 const PLOT = { left: 58, right: 10, top: 12, bottom: 30 };
 
 /** Tokens per hour or day, Space Gateway at the base and direct calls on top, with a tooltip per bar. */
 export function TokenTimelineChart({ timeline, range }: { timeline: Timeline; range: SystemAnalyticsRange }) {
   const [active, setActive] = useState<number | null>(null);
+  const [width, setWidth] = useState(WIDTH);
+  const plotRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const plot = plotRef.current;
+    if (!plot || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(WIDTH, Math.round(entry!.contentRect.width * UNITS_PER_PX))));
+    observer.observe(plot);
+    return () => observer.disconnect();
+  }, []);
   const points = timeline.points;
   const max = niceMax(Math.max(...points.map((point) => point.gatewayTokens + point.directTokens), 0));
-  const plotWidth = WIDTH - PLOT.left - PLOT.right;
+  const plotWidth = width - PLOT.left - PLOT.right;
   const plotHeight = HEIGHT - PLOT.top - PLOT.bottom;
   const band = plotWidth / points.length;
   const barWidth = Math.max(Math.min(band * 0.7, 28), 2);
@@ -47,6 +58,7 @@ export function TokenTimelineChart({ timeline, range }: { timeline: Timeline; ra
   const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
   const step = timeline.bucketSeconds >= 86_400 ? "day" : timeline.bucketSeconds >= 3600 ? `${timeline.bucketSeconds / 3600} h` : `${timeline.bucketSeconds / 60} min`;
   const hovered = active === null ? null : points[active] ?? null;
+  const tipAt = active === null ? 0 : ((PLOT.left + active * band + band / 2) / width) * 100;
 
   return <figure className="token-chart" aria-label="Tokens over time">
     <div className="token-chart-legend">
@@ -54,11 +66,11 @@ export function TokenTimelineChart({ timeline, range }: { timeline: Timeline; ra
       <span><i className="series-direct" />Direct <strong>{formatCompact(totals.direct)}</strong></span>
       <small>One bar per {step}</small>
     </div>
-    <div className="token-chart-plot" onMouseLeave={() => setActive(null)}>
-      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img"
+    <div className="token-chart-plot" ref={plotRef} onMouseLeave={() => setActive(null)}>
+      <svg viewBox={`0 0 ${width} ${HEIGHT}`} role="img"
         aria-label={`Tokens per ${step}: ${formatCompact(totals.gateway)} through Space Gateway, ${formatCompact(totals.direct)} direct`}>
         {[0, 0.5, 1].map((share) => <g key={share} className="token-chart-grid">
-          <line x1={PLOT.left} x2={WIDTH - PLOT.right} y1={y(max * share)} y2={y(max * share)} />
+          <line x1={PLOT.left} x2={width - PLOT.right} y1={y(max * share)} y2={y(max * share)} />
           <text x={PLOT.left - 8} y={y(max * share) + 5} textAnchor="end">{formatCompact(max * share)}</text>
         </g>)}
         {points.map((point, index) => {
@@ -81,7 +93,7 @@ export function TokenTimelineChart({ timeline, range }: { timeline: Timeline; ra
           textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}>{bucketLabel(points[index]!.at, range)}</text>)}
       </svg>
       {hovered && active !== null && <div className="token-chart-tooltip" role="status"
-        style={{ left: `${((PLOT.left + active * band + band / 2) / WIDTH) * 100}%` }}>
+        style={{ left: `${tipAt}%`, transform: `translateX(${tipAt > 70 ? -100 : tipAt < 30 ? 0 : -50}%)` }}>
         <strong>{bucketLabel(hovered.at, range)}</strong>
         <span><i className="series-gateway" />Space Gateway {hovered.gatewayTokens.toLocaleString()}</span>
         <span><i className="series-direct" />Direct {hovered.directTokens.toLocaleString()}</span>

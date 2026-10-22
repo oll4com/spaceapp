@@ -72,7 +72,7 @@ describe("pane actions menu in every pane mode", () => {
     }
 
     const modes = new Set(Object.values(inventory).map((entry) => entry.mode));
-    for (const mode of ["HARNESS", "LIVE", "VNC", "YOUTUBE", "FILES", "DEMOS", "BROWSER", "CHAT", "TERMINAL", "REVIEW", "SWARM", "DESIGN", "CODE"]) {
+    for (const mode of ["HARNESS", "LIVE", "VNC", "YOUTUBE", "FILES", "DEMOS", "BROWSER", "CHAT", "TERMINAL", "REVIEW", "SWARM", "CODE"]) {
       expect(modes, `menu inventory for ${mode}`).toContain(mode);
     }
     for (const [title, { items }] of Object.entries(inventory)) {

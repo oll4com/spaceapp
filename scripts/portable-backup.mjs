@@ -104,6 +104,12 @@ export async function runCommand(command, args, {
 // restore keeps the current ones, so a backup never carries the Google OAuth client or bot tokens.
 export const hostSecretEntries = ["google-oauth.json", "telegram"];
 
+// Temporal's own databases (temporalio/auto-setup defaults) exist only with the workflows profile. They are
+// dumped with the app database so a restore brings back workflow histories of the same moment.
+export const temporalDatabases = ["temporal", "temporal_visibility"];
+export const requiredBackupFiles = ["database.dump", "data.tar.gz", "memory.tar.gz"];
+export const optionalBackupFiles = temporalDatabases.map((name) => `${name}.dump`);
+
 export async function createPortableBackup({
   env = process.env,
   stdout = process.stdout,
@@ -133,12 +139,29 @@ export async function createPortableBackup({
       `--file=${databaseDump}`,
       ...database.args
     ], { env: postgresEnv });
+    const present = (await runCommand("psql", [
+      "--no-psqlrc", "--tuples-only", "--no-align",
+      `--command=SELECT datname FROM pg_database WHERE datname IN (${temporalDatabases.map((name) => `'${name}'`).join(", ")}) ORDER BY datname`,
+      ...database.args
+    ], { env: postgresEnv, capture: true })).split(/\r?\n/).filter((name) => temporalDatabases.includes(name));
+    for (const name of present) {
+      await runCommand("pg_dump", [
+        "--format=custom",
+        "--no-owner",
+        "--no-acl",
+        `--file=${join(target, `${name}.dump`)}`,
+        `--dbname=${name}`
+      ], { env: { ...postgresEnv, PGDATABASE: name } });
+    }
     await runCommand("tar", [
       "--create",
       "--gzip",
       `--file=${dataArchive}`,
       `--directory=${dataRoot}`,
       "--exclude=./memory",
+      "--exclude=./.spaceapp-restore-staging",
+      "--exclude=./.spaceapp-restore-rollback",
+      "--exclude=./.spaceapp-restore-previous",
       "--exclude=./artifacts/browser-profiles",
       "--exclude=./browser-profiles",
       ...hostSecretEntries.map((name) => `--exclude=./${name}`),
@@ -149,20 +172,22 @@ export async function createPortableBackup({
       "--gzip",
       `--file=${memoryArchive}`,
       `--directory=${memoryRoot}`,
+      "--exclude=./.spaceapp-restore-staging",
+      "--exclude=./.spaceapp-restore-previous",
       "."
     ]);
 
     const files = Object.fromEntries(await Promise.all(
-      ["database.dump", "data.tar.gz", "memory.tar.gz"].map(async (name) => [
+      [...requiredBackupFiles, ...present.map((name) => `${name}.dump`)].map(async (name) => [
         name,
         await createFileRecord(join(target, name))
       ])
     ));
     const manifest = {
       format: "spaceapp-portable-backup",
-      schemaVersion: 1,
+      schemaVersion: 2,
       createdAt: now.toISOString(),
-      appVersion: env.npm_package_version || "unknown",
+      appVersion: env.SPACE_APP_VERSION || env.npm_package_version || "unknown",
       files
     };
     await writeFile(

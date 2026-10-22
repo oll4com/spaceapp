@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import {
   type AgentFileDocxNormalizer
 } from "../src/cli-agent-files.js";
 import { buildCliEnvironment } from "../src/cli-terminal.js";
+import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig, type SpaceApiConfig } from "../src/config.js";
 import { inspectUploadRecord } from "../src/upload-record.js";
 
@@ -28,9 +29,10 @@ function safeSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180) || "item";
 }
 
-function multipartFiles(parts: Array<{ filename: string; mimeType?: string; body: Buffer | string }>) {
+function multipartFiles(parts: Array<{ filename: string; mimeType?: string; body: Buffer | string }>, fields: Record<string, string> = {}) {
   const boundary = "space-agent-files-test-boundary";
-  const chunks: Buffer[] = [];
+  const chunks: Buffer[] = Object.entries(fields).map(([name, value]) =>
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
   for (const part of parts) {
     chunks.push(Buffer.from(
       `--${boundary}\r\n` +
@@ -131,7 +133,9 @@ describe("Agent Files token and environment", () => {
 
     expect(token).toMatch(/^cliagentfiles\.v1\./);
     expect(verifyCliAgentFilesToken(config, token, 1_000_000)).toMatchObject(context);
-    expect(verifyCliAgentFilesToken(config, token, 1_000_000 + 12 * 60 * 60 * 1000 + 1)).toBeNull();
+    // A token outlives a long session (the routes revoke it when the session ends), but not the 30-day cap.
+    expect(verifyCliAgentFilesToken(config, token, 1_000_000 + 13 * 60 * 60 * 1000)).toMatchObject(context);
+    expect(verifyCliAgentFilesToken(config, token, 1_000_000 + 30 * 24 * 60 * 60 * 1000 + 1)).toBeNull();
     expect(verifyCliAgentFilesToken({ ...config, internalApiToken: "different" }, token, 1_000_000)).toBeNull();
 
     expect(buildCliEnvironment(config, {
@@ -325,6 +329,46 @@ describe("Agent Files API", () => {
     ]));
 
     await app.close();
+  });
+
+  it("publishes images and videos to the pane's room Media dock without a CLI control grant and refuses other files", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "space-agent-files-media-"));
+    temporaryRoots.push(artifactRoot);
+    const store = new InMemorySpaceStore();
+    const { room, pane, session } = createCliFixture(store);
+    const { app, config } = await createTestApp(store, artifactRoot);
+    const token = issueCliAgentFilesToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: session.sessionId })!;
+    const publish = (upload: ReturnType<typeof multipartFiles>) => app.inject({
+      method: "POST", url: "/api/cli/agent-files",
+      headers: { [cliAgentFilesTokenHeader]: token, "content-type": upload.contentType }, payload: upload.payload
+    });
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("png body")]);
+
+    const published = await publish(multipartFiles([
+      { filename: "shot.png", body: png },
+      { filename: "demo.mp4", body: "mp4 body" }
+    ], { collection: "media" }));
+    expect(published.statusCode).toBe(200);
+    const [image, video] = published.json().artifacts;
+    expect(image).toMatchObject({ roomId: room.id, paneId: pane.id, kind: "IMAGE", mimeType: "image/png",
+      metadata: { source: "CLI_AGENT", originalFilename: "shot.png", cliSessionId: session.sessionId } });
+    expect(video).toMatchObject({ kind: "VIDEO", mimeType: "video/mp4" });
+    const listed = (collection: "ROOM_MEDIA" | "AGENT_FILES") =>
+      store.listArtifacts({ roomId: room.id, collection, page: 1, pageSize: 25, sortOrder: "desc" }).map((artifact) => artifact.id);
+    expect(listed("ROOM_MEDIA").sort()).toEqual([image.id, video.id].sort());
+    expect(listed("AGENT_FILES")).toEqual([]);
+    expect(store.listAuditEvents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "room_media.publish", targetId: pane.id })
+    ]));
+
+    // A declared image type is not trusted: SVG or HTML would run as script from the API origin.
+    for (const part of [{ filename: "logo.svg", mimeType: "image/svg+xml", body: "<svg onload=alert(1)>" },
+      { filename: "page.png", mimeType: "image/png", body: "<html>" }, { filename: "notes.txt", body: "text" }]) {
+      const refused = await publish(multipartFiles([part], { collection: "media" }));
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error.code).toBe("UNSUPPORTED_MEDIA_TYPE");
+    }
+    expect(listed("ROOM_MEDIA")).toHaveLength(2);
   });
 
   it("lets an authenticated operator upload own files into Agent Files and rejects unauthenticated or empty uploads", async () => {
@@ -530,6 +574,33 @@ describe("Agent Files API", () => {
     expect((await publish(t3Token(other.id, pane.id))).statusCode).toBe(404);
     store.updatePane(pane.id, { isClosed: true });
     expect((await publish(t3Token(room.id, pane.id))).statusCode).toBe(404);
+  });
+
+  it("keeps a long-running session's tokens working until its session ends (2026-10-19, tokens expired after 12 h)", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "space-agent-files-long-session-"));
+    temporaryRoots.push(artifactRoot);
+    const store = new InMemorySpaceStore();
+    const fixture = createCliFixture(store, "Long session");
+    const { app, config } = await createTestApp(store, artifactRoot);
+    const context = { roomId: fixture.room.id, paneId: fixture.pane.id, cliSessionId: fixture.session.sessionId };
+    const launchedAt = Date.now() - 13 * 60 * 60 * 1000;
+    const tokens = [
+      { [cliAgentFilesTokenHeader]: issueCliAgentFilesToken(config, context, launchedAt)! },
+      { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken({ ...config, browserToolBridgeEnabled: true }, context, launchedAt)! }
+    ];
+    const publish = (headers: Record<string, string>, name: string) => {
+      const upload = multipartFiles([{ filename: name, body: "final" }]);
+      return app.inject({ method: "POST", url: "/api/cli/agent-files", headers: { ...headers, "content-type": upload.contentType }, payload: upload.payload });
+    };
+    // A bridge token minted before the fix (exp 12 h after launch, already past) revives for its live session.
+    const iat = Math.floor(launchedAt / 1000);
+    const legacyPayload = Buffer.from(JSON.stringify({ ...context, iat, exp: iat + 12 * 60 * 60 })).toString("base64url");
+    const legacySignature = createHmac("sha256", `cli-browser:${config.internalApiToken}`).update(legacyPayload).digest("base64url");
+    tokens.push({ [cliBrowserBridgeTokenHeader]: `clibrowser.v1.${legacyPayload}.${legacySignature}` });
+    for (const [index, headers] of tokens.entries()) expect((await publish(headers, `long-${index}.txt`)).statusCode).toBe(200);
+    // Closing the pane ends its session: the same tokens stop at once.
+    store.updatePaneCliSession(fixture.session.sessionId, { status: "EXITED", statusReason: "Pane closed.", isActive: false });
+    for (const [index, headers] of tokens.entries()) expect((await publish(headers, `closed-${index}.txt`)).statusCode).toBe(409);
   });
 
   it("fails closed for missing, cross-room, inactive, login, and over-count publishes", async () => {

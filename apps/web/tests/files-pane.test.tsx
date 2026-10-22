@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
@@ -88,6 +88,23 @@ describe("FilesPane Component", () => {
       expect(screen.getByText("test-file.txt")).toBeDefined();
       expect(screen.getAllByText("test-dir").length).toBeGreaterThanOrEqual(1);
     });
+  });
+
+  it("renders a huge folder in pages of 500 rows", async () => {
+    vi.spyOn(liveRuntime.api, "me").mockResolvedValue({ user: { id: "user:1", role: "ADMIN" } } as any);
+    const entries = Array.from({ length: 1200 }, (_, i) => ({
+      name: `f${i}.txt`, path: `/opt/spaceapp/big/f${i}.txt`, isDirectory: false, size: 1,
+      mtime: "2026-09-21T12:00:00.000Z", permissions: "rw-r--r--", octalPermissions: "644", mimeType: "text/plain"
+    }));
+    vi.spyOn(liveRuntime.api, "filesList").mockResolvedValue({ currentPath: "/opt/spaceapp/big", parentPath: null, canGoUp: false, workspaceRoot: "/opt/spaceapp", entries } as any);
+    const { container } = render(<FilesPane pane={{ id: "pane:big", roomId: "room:test", title: "Files", mode: "FILES" } as any} />);
+    const rows = () => container.querySelectorAll("tr[data-file-entry-path]").length;
+    await waitFor(() => expect(rows()).toBe(500));
+    const more = () => container.querySelector("tbody td[colspan] button") as HTMLButtonElement;
+    expect(more().textContent).toBe("Show 500 more (700 hidden, search to filter)");
+    act(() => more().click());
+    await waitFor(() => expect(rows()).toBe(1000));
+    expect(more().textContent).toBe("Show 200 more (200 hidden, search to filter)");
   });
 
   it("handles empty entries safely", async () => {
@@ -216,7 +233,7 @@ describe("FilesPane Component", () => {
     // Disk storage must have rules to hide on small screens / compact viewports
     expect(cssContent).toContain(".fm-sidebar-scroll-area");
     expect(cssContent).toContain(".fm-sidebar.is-compact .fm-sidebar-disk-section");
-    expect(cssContent).toContain("@media (max-width: 768px), (max-height: 600px)");
+    expect(cssContent).toContain("@media (max-width: 767px), (max-height: 600px)");
     expect(cssContent).toContain("@container filespane (max-width: 768px)");
   });
 });

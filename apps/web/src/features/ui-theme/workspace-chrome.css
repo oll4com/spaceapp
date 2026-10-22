@@ -1808,7 +1808,7 @@
   max-width: 320px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .live-rail-conversation-window {
     left: 8px !important;
     right: 8px !important;
@@ -1989,7 +1989,7 @@
 }
 .space-shell .health-rail-expander { display: none; }
 .space-shell .room-rail-more { display: none; }
-@media (max-height: 900px), (max-width: 768px) {
+@media (max-height: 900px), (max-width: 767px) {
   .space-shell .health-rail-expander { display: inline-grid; }
   .space-shell .health-indicator-rail:not(.is-expanded) .health-rail-items { display: none; }
 }
@@ -2009,7 +2009,7 @@
 .space-shell[data-shell-mode="mobile"] .room-rail-more {
   display: none !important;
 }
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .space-shell .room-toolbar-collapsed > .room-rail-secondary {
     display: inline-grid;
   }
@@ -2066,7 +2066,7 @@
 }
 .pane-title-detail-content > span { flex: 1; min-width: 0; overflow-wrap: anywhere; user-select: text; }
 .pane-title-detail-content > button { flex: none; min-height: 36px; }
-@media (max-width: 768px), (pointer: coarse) {
+@media (max-width: 767px), (pointer: coarse) {
   .pane-title-detail-content > button { min-height: 44px; min-width: 44px; }
   .space-shell .pane-actions-fixed > button,
   .space-shell .pane-actions-fixed > .pane-actions-overflow > button,
@@ -2110,7 +2110,7 @@
   width: auto; flex: 0 0 auto; min-width: 0; padding: 8px 10px; gap: 4px;
 }
 .space-shell .board-toolbar .desktop-navigation .desktop-mode-switch { padding: 8px; min-width: 36px; }
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .space-shell .board-toolbar .desktop-navigation > button { min-height: 44px; }
   .space-shell .board-toolbar .desktop-navigation .desktop-mode-switch { min-width: 44px; }
 }
@@ -2307,9 +2307,11 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   display: flex;
   align-items: center;
   gap: 10px;
+  /* left: 50% alone would cap the width at half the viewport: on a phone the text wrapped into a tall ellipse. */
+  width: max-content;
   max-width: min(92vw, 480px);
   padding: 10px 16px;
-  border-radius: 9999px;
+  border-radius: 18px;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.3;

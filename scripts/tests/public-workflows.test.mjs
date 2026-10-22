@@ -215,6 +215,14 @@ test("release is manual-only on main and publishes only approved sanitized artif
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|npm publish \.\/packages\/run-spaceapp/);
   assert.match(release, /actions\/download-artifact/);
   assert.match(release, /spaceapp-public-export-\$\{\{ inputs\.version \}\}\.tar\.gz/);
+  // External review 2026-10-16 #8: after the images are verified, their digests are pinned into the tested package
+  // and only the pinned tarball is published.
+  const publishNpm = release.match(/\n  publish-npm:\n([\s\S]*)$/)?.[1] || "";
+  assert.match(
+    publishNpm,
+    /Verify npm candidate checksum[\s\S]*docker\/login-action[\s\S]*node scripts\/embed-image-lock\.mjs[\s\S]*--runtime-version "\$\{\{ inputs\.runtime_version \}\}"[\s\S]*node scripts\/publish-npm-candidate\.mjs "\$RUNNER_TEMP\/pinned-npm-candidate\/run-spaceapp-\$\{\{ inputs\.version \}\}\.tgz"/
+  );
+  assert.doesNotMatch(publishNpm, /publish-npm-candidate\.mjs "\$RUNNER_TEMP\/release-artifacts\//);
 });
 
 test("workflow actions use full commit SHA pins with version comments", async () => {

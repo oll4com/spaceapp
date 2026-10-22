@@ -1,4 +1,4 @@
-import { useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
 import type { RailVisibilityMenuState } from "../ui-theme/use-rail-visibility.js";
 
 // Open/closed state of the room toolbar's menus and popovers, the anchors they
@@ -53,6 +53,9 @@ export interface ToolbarPopovers {
   closePaneSpanAllMenu: (restoreFocus?: boolean) => void;
 }
 
+/** Opens the music player from elsewhere (the Nous dock's full-screen launcher, plan clipboard:wr9yNPJwkDrp). */
+export const OPEN_VIBE_MUSIC_EVENT = "space:open-vibe-music";
+
 export function useToolbarPopovers(): ToolbarPopovers {
   const [isThemeMenuOpen, setIsThemeMenuOpen]: Flag = useState(false);
   const [isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen]: Flag = useState(false);
@@ -62,6 +65,11 @@ export function useToolbarPopovers(): ToolbarPopovers {
   const [isCliLauncherOpen, setIsCliLauncherOpen]: Flag = useState(false);
   const [isChatLauncherOpen, setIsChatLauncherOpen]: Flag = useState(false);
   const [isVibeMusicOpen, setIsVibeMusicOpen]: Flag = useState(false);
+  useEffect(() => {
+    const open = () => setIsVibeMusicOpen(true);
+    window.addEventListener(OPEN_VIBE_MUSIC_EVENT, open);
+    return () => window.removeEventListener(OPEN_VIBE_MUSIC_EVENT, open);
+  }, []);
   const [isOskKeyboardOpen, setIsOskKeyboardOpen]: Flag = useState(false);
   const [isQuickLinksOpen, setIsQuickLinksOpen]: Flag = useState(false);
   const [lowerRailVisibilityMenu, setLowerRailVisibilityMenu] = useState<RailVisibilityMenuState>(null);

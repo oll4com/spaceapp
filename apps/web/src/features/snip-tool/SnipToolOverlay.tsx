@@ -8,7 +8,6 @@ import { SnipEditor, type SnipBusy, type SnipDestinationOption, type SnipEdit } 
 import {
   Check, ChevronDown, CircleAlert, Clipboard, Crop, GripVertical, ImagePlus, Loader2, Lock, Monitor, Pencil, Timer, Unlock, X
 } from "../ui-theme/app-icons.js";
-import { SPACE_CLIPBOARD_NOTICE_EVENT } from "../clipboard-dock/clipboard-events.js";
 import {
   DOCK_MARGIN_RIGHT, getRailTopBoundary, loadSnipRailDock, placeSnipOnRail, saveSnipRailDock, SNIP_RAIL_CHANGED_EVENT, type SnipRailDock
 } from "../desktop-widgets/widget-storage.js";
@@ -344,7 +343,6 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     if (dest.clipboard) {
       setBusy("export");
       await copyBlobToClipboard(png, signal);
-      try { window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, { detail: { message: "Image copied to clipboard. Ready to paste with Ctrl+V." } })); } catch {}
       return "Copied to clipboard. Paste with Ctrl+V.";
     }
     setBusy("send");

@@ -181,6 +181,9 @@
 .mc-pane .mc-client .mc-fab:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 24px rgb(0 0 0 / 0.42), 0 2px 4px rgb(0 0 0 / 0.3); }
 .mc-pane .mc-client .mc-fab:disabled { opacity: 0.45; cursor: not-allowed; }
 .mc-fab svg { width: 19px; height: 19px; }
+/* A narrow mailbox keeps the pencil only: the wide Compose button covered the senders and subjects under it. */
+.mc-pane .mc-client[data-stacked="true"] .mc-fab { justify-content: center; width: 52px; padding: 0; gap: 0; }
+.mc-client[data-stacked="true"] .mc-fab > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* Undo snackbar. */
 .mc-snackbar { position: absolute; left: 12px; bottom: 80px; z-index: 4; display: flex; align-items: center; gap: 16px; max-width: calc(100% - 24px); padding: 0 8px 0 16px; min-height: 44px;

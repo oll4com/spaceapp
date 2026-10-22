@@ -15,21 +15,22 @@ function io() {
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'spaceapp-automation-'));
   t.after(() => rm(root, {recursive:true, force:true}));
-  const out = io(); const calls = []; const urls = []; const pings = [];
+  const out = io(); const calls = []; const urls = []; const pings = []; const profileAtUp = [];
   const options = {
     env: {SPACEAPP_HOME:root, SPACEAPP_TELEMETRY:'0'}, platform:'linux',
     stdin:Readable.from([]), stdout:out.stream, stderr:out.stream,
     prepareDockerPath:async()=>{}, ensureDocker:async()=>({code:0}),
     inspectResources:async()=>({cpuCount:4,totalMemoryBytes:8*1024**3,freeDiskBytes:20*1024**3}),
-    execute:async(spec)=>{ calls.push(spec); return 0; }, sleep:async()=>{},
+    execute:async(spec)=>{ calls.push(spec); if(spec.command==='docker' && spec.args.includes('up')) profileAtUp.push(await readFile(join(root,'seccomp-cli.json')).then(()=>true,()=>false)); return 0; }, sleep:async()=>{},
     request:async(url,init)=>{ urls.push(url); if(url.includes('install-ping')) pings.push(JSON.parse(init.body)); return {ok:true,status:200,json:async()=>url.endsWith('/readyz')?{ok:true}:{setupRequired:true,expiresAt:null}}; }
   };
-  return {root,out,calls,urls,pings,options};
+  return {root,out,calls,urls,pings,profileAtUp,options};
 }
 test('explicit unattended install runs the runtime, opens browser, and leaves owner choice to the user', async(t)=>{
   const f=await fixture(t);
   assert.equal(await run(['install','--non-interactive','--answers',JSON.stringify({confirm:true,profile:'light',access:'isolated',companions:false,telemetry:false,open:true})],f.options),0);
   assert.ok(f.calls.some(x=>x.command==='docker' && x.args.includes('up')));
+  assert.ok(f.profileAtUp.length>0 && f.profileAtUp.every(Boolean), 'the CLI seccomp profile is in the project directory when compose starts');
   assert.ok(f.calls.some(x=>x.command==='xdg-open'));
   assert.ok(f.urls.some(x=>x.endsWith('/readyz')));
   assert.ok(!f.urls.some(x=>x.endsWith('/api/setup/claim')));

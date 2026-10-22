@@ -1,10 +1,11 @@
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
-import { createHash } from "node:crypto";
+import { createCipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConnectorAccountRecord, ConnectorAccountsRepository } from "@space/db";
 import {
   completeConnectorCallback,
+  connectorSealContext,
   createConnectorCrypto,
   createConnectorService,
   createGoogleConnector,
@@ -14,7 +15,17 @@ import {
   type ConnectorProviderClient
 } from "../src/dot-connectors.js";
 
-const crypto = createConnectorCrypto("test-secret-with-enough-length-0123456789");
+const SESSION = "test-secret-with-enough-length-0123456789";
+const KEY = "synthetic-connector-key-with-enough-length-0123456789";
+const crypto = createConnectorCrypto({ key: KEY, legacySecrets: [undefined, SESSION] });
+// A value sealed the way connectors were before hardening step 9: v1, no associated data, key from the session secret.
+function sealV1(plain: string, secret = SESSION) {
+  const key = Buffer.from(hkdfSync("sha256", Buffer.from(secret, "utf8"), Buffer.from("space-connectors"), Buffer.from("connector-tokens-v1"), 32));
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  return ["v1", iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), body.toString("base64url")].join(".");
+}
 function repository() {
   const rows = new Map<string, ConnectorAccountRecord>();
   let id = 0;
@@ -54,12 +65,34 @@ function provider(overrides: Partial<ConnectorProviderClient> = {}): ConnectorPr
 
 describe("connector crypto and messages", () => {
   it("seals tokens so they cannot be read or altered without the key", () => {
-    const sealed = crypto.seal("refresh-token-value");
+    const context = connectorSealContext("connector-refresh", "user:1", "GOOGLE", "owner@example.com");
+    const sealed = crypto.seal("refresh-token-value", context);
+    expect(sealed.startsWith("v2.")).toBe(true);
     expect(sealed).not.toContain("refresh-token-value");
-    expect(crypto.open(sealed)).toBe("refresh-token-value");
+    expect(crypto.open(sealed, context)).toBe("refresh-token-value");
     const parts = sealed.split(".");
-    expect(() => crypto.open([parts[0], parts[1], parts[2], Buffer.from("tampered").toString("base64url")].join("."))).toThrow(/Reconnect/);
-    expect(() => createConnectorCrypto("another-secret-with-enough-length-01234").open(sealed)).toThrow(/Reconnect/);
+    expect(() => crypto.open([parts[0], parts[1], parts[2], Buffer.from("tampered").toString("base64url")].join("."), context)).toThrow(/Reconnect/);
+    expect(() => createConnectorCrypto({ key: "another-connector-key-with-enough-length-0123", legacySecrets: [SESSION] }).open(sealed, context)).toThrow(/Reconnect/);
+  });
+  it("binds every value to its record and purpose, opens values sealed before (v1) and never seals without the key (hardening step 9)", () => {
+    const refresh = connectorSealContext("connector-refresh", "user:1", "GOOGLE", "owner@example.com");
+    const sealed = crypto.seal("refresh-token-value", refresh);
+    // Copied to another owner, account or purpose, it does not open.
+    for (const other of [connectorSealContext("connector-refresh", "user:2", "GOOGLE", "owner@example.com"), connectorSealContext("connector-access", "user:1", "GOOGLE", "owner@example.com"),
+      connectorSealContext("connector-refresh", "user:1", "GOOGLE", "other@example.com"), connectorSealContext("freelance-mailbox", "user:1")]) {
+      expect(() => crypto.open(sealed, other)).toThrow(/Reconnect/);
+    }
+    // Old values still open, with the session secret or a SPACE_CONNECTOR_SECRET they were sealed under.
+    expect(crypto.open(sealV1("old-token"), refresh)).toBe("old-token");
+    const pinned = "pinned-connector-secret-with-enough-length-01";
+    expect(createConnectorCrypto({ key: KEY, legacySecrets: [pinned, SESSION] }).open(sealV1("old-token", pinned), refresh)).toBe("old-token");
+    expect(createConnectorCrypto({ key: KEY, legacySecrets: [pinned, SESSION] }).open(sealV1("old-token"), refresh)).toBe("old-token");
+    expect(() => crypto.open(sealV1("old-token", "unknown-secret-with-enough-length-0123456"), refresh)).toThrow(/Reconnect/);
+    // Without the dedicated key nothing new is sealed (no fallback to the session secret); old values still open.
+    const keyless = createConnectorCrypto({ key: null, legacySecrets: [SESSION] });
+    expect(() => keyless.seal("x", refresh)).toThrow(expect.objectContaining({ code: "CONNECTOR_KEY_MISSING" }));
+    expect(keyless.open(sealV1("old-token"), refresh)).toBe("old-token");
+    expect(() => keyless.open(sealed, refresh)).toThrow(/Reconnect/);
   });
   it("builds RFC 822 mail without header injection", () => {
     const raw = Buffer.from(rfc822("me@example.com", { to: ["a@example.com\r\nBcc: evil@example.com"], subject: "Hi\nBcc: x@example.com", body: "Hello" }), "base64url").toString("utf8");
@@ -163,6 +196,23 @@ describe("connector service", () => {
     expect(await service.tool("user:1", "mail.search", { query: "x", account: "other@example.com" })).toMatchObject({ status: "BLOCKED" });
     expect(await service.tool("user:2", "mail.search", { query: "x" })).toMatchObject({ status: "BLOCKED" });
     expect(await service.tool("user:1", "mail.search", { query: "x".repeat(301) })).toMatchObject({ status: "BLOCKED", statusReason: expect.stringMatching(/Invalid mail.search/) });
+  });
+
+  it("re-seals a refresh token stored as v1 with its record's context on the next refresh (hardening step 9)", async () => {
+    const { accounts, rows } = repository();
+    const google = provider({ refresh: vi.fn(async () => ({ accessToken: "access-2", refreshToken: null, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), scopes: [] })) });
+    let clock = Date.now();
+    const service = createConnectorService({ accounts, crypto, google, audit: vi.fn(async () => undefined), now: () => clock });
+    const account = await service.complete("user:1", "GOOGLE", { code: "c", codeVerifier: "v", redirectUri: "x" }, null);
+    const row = rows.get(account.accountId)!;
+    rows.set(account.accountId, { ...row, refreshTokenEncrypted: sealV1("refresh-1"), accessTokenEncrypted: sealV1("access-1") });
+    clock += 2 * 3_600_000;
+    await service.tool("user:1", "mail.search", { query: "x" });
+    expect(google.refresh).toHaveBeenCalledWith("refresh-1");
+    const stored = rows.get(account.accountId)!;
+    expect(stored.refreshTokenEncrypted.startsWith("v2.")).toBe(true);
+    expect(crypto.open(stored.refreshTokenEncrypted, connectorSealContext("connector-refresh", "user:1", "GOOGLE", "owner@example.com"))).toBe("refresh-1");
+    expect(stored.accessTokenEncrypted.startsWith("v2.")).toBe(true);
   });
 
   it("asks to reconnect when refresh fails, and disconnecting revokes and deletes", async () => {

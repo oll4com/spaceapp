@@ -21,6 +21,7 @@ import type { CliPaneReopener } from "./cli-pane-reopen.js";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
 import type { CliTerminalManager } from "./cli-terminal.js";
 import type { SpaceApiConfig } from "./config.js";
+import { publishHarnessAgentTokens } from "./harness-agent-tokens.js";
 import { sendApiError } from "./http-errors.js";
 import { getLatestRoomEvent, getPaneById, isBrowserPane, isCliPane } from "./pane-guards.js";
 import { mayCreatePaneDirectory } from "./project-paths.js";
@@ -222,8 +223,8 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       },
       createdAt: nowIso()
     });
-    try { await store.recordRoomEvent(watchdogEvent); } catch {}
-    eventBus.publish(watchdogEvent);
+    const recorded = await Promise.resolve(store.recordRoomEvent(watchdogEvent)).catch(() => null);
+    eventBus.publish(recorded ?? watchdogEvent);
     return { ok: true, event: watchdogEvent };
   });
   app.post("/api/rooms/:id/commands/:clientRequestId/ack", defaultRouteRateLimitOptions, async (request) => {
@@ -246,7 +247,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
     // keeps it, not the pane row (the Browser Host parses pane rows with the contracts it started with).
     for (const [index, item] of input.panes.entries()) {
       const runtimeId = paneInputs[index]?.terminalRuntimeId;
-      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT" && item.mode !== "FREELANCE_COPILOT") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
+      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT" && item.mode !== "FREELANCE_COPILOT" && item.mode !== "DESIGN" && item.mode !== "APP_STUDIO") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
       if (!await store.getCliAccountProfile(runtimeId, item.accountProfileId)) {
         throw new SpaceConflictError(`CLI account profile ${runtimeId}/${item.accountProfileId} was not found.`);
       }
@@ -424,7 +425,11 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
     const {sessionId}=parseBody(z.object({sessionId:z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/)}),request.body);
     const pane=await getPaneById(store,params.id);
     if(pane.mode!=="HARNESS"||pane.isClosed)throw new SpaceConflictError("A running Harness pane is required.");
-    return taskTitles.bindHarnessSession(pane.id,sessionId);
+    const bound=await taskTitles.bindHarnessSession(pane.id,sessionId);
+    // The session the pane now shows gets its tool tokens at once, not only at the next pane load.
+    if(config.harnessEnabled)await publishHarnessAgentTokens({config},{roomId:pane.roomId,paneId:pane.id,boundSessionId:sessionId})
+      .catch((err)=>app.log.warn({err,paneId:pane.id},"harness agent tokens were not published for the bound session"));
+    return bound;
   });
   app.get("/api/panes/:id/capabilities", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);

@@ -1,3 +1,4 @@
+import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyRequest } from "fastify";
 
 // Session cookies are SameSite=Lax, so a page on another port of the same host still
@@ -18,4 +19,23 @@ export function requiresSameSiteBrowser(request: FastifyRequest, routePath: stri
   const websocket = String(request.headers.upgrade ?? "").toLowerCase() === "websocket";
   return routePath === "/api/auth/csrf" ||
     (routePath.startsWith("/api/") && (websocket || (method !== "GET" && method !== "HEAD" && method !== "OPTIONS")));
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+// The same decision for upgrades handled on the raw HTTP server (the Harness proxy), which never pass
+// through the Fastify hooks (external review 2026-10-16).
+export function isOtherSiteUpgradeRequest(headers: IncomingHttpHeaders, publicOrigins: string[]): boolean {
+  const site = firstHeader(headers["sec-fetch-site"]);
+  if (site === "cross-site" || site === "same-site") return true;
+  const origin = firstHeader(headers.origin);
+  if (site !== undefined || !origin || publicOrigins.includes(origin)) return false;
+  try {
+    const originHost = new URL(origin).host;
+    return originHost !== headers.host && originHost !== firstHeader(headers["x-forwarded-host"]);
+  } catch {
+    return true;
+  }
 }

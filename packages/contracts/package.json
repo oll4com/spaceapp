@@ -21,11 +21,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@noble/curves": "^2.4.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jobApplicationQueueHolds, type AgentRuntimeRegistry, type BrowserHandoffRequest, type JobApplication, type JobApplyEvent, type JobApplyPaneMetadata, type JobApplyProfile, type JobApplyRunView, type JobApplyStats, type Pane, type PaneBrowserSession } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { withRefreshTimeout } from "../copilot-kit/refresh-timeout.js";
 import { subscribeJobApplyLiveEvents } from "./live-events.js";
 
 export interface JobApplyData {
@@ -76,17 +77,6 @@ export function runProgress(view: JobApplyRunView | null): { done: number; total
 /** The browser pane starts its own session on mount; the copilot restarts it only once it has stopped. */
 const BROWSER_RESTART_DELAY_MS = 6_000;
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
-const REFRESH_TIMEOUT_MS = 20_000;
-
-/** Polling waits for each refresh, so one hung request froze the pane (a stale "Take control" card stayed up). */
-function withRefreshTimeout<T>(work: Promise<T>): Promise<T> {
-  let timer: number | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = window.setTimeout(() => reject(new Error("Job Copilot data took too long to load; retrying.")), REFRESH_TIMEOUT_MS);
-  });
-  return Promise.race([work, timeout]).finally(() => window.clearTimeout(timer));
-}
-
 /** Profile, tracker, pane settings, browser session, handoff, CLI runtimes, run state and activity, refreshed while the pane is visible and on live events. */
 export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
   const [profile, setProfile] = useState<JobApplyProfile | null>(null);
@@ -127,7 +117,7 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
           api.jobApplyRun(pane.id).catch(() => null),
           api.jobApplyEvents({ paneId: pane.id, limit: 150 }).catch(() => null),
           api.jobApplyStats(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null)
-        ]));
+        ]), "Job Copilot");
         setProfile(profileResponse.profile);
         setApplicationsState(applicationsResponse.applications);
         setSettings(settingsResponse.metadata);

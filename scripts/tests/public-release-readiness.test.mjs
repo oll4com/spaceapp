@@ -6,7 +6,7 @@ const policy = {
   schemaVersion: 1,
   packages: {
     "@anthropic-ai/claude-code": {
-      version: "2.1.206",
+      version: "2.1.301",
       distribution: "owner-installed-only",
       imageBundled: false
     }
@@ -14,7 +14,7 @@ const policy = {
 };
 
 const notices = [
-  "Claude Code (`@anthropic-ai/claude-code@2.1.206`)",
+  "Claude Code (`@anthropic-ai/claude-code@2.1.301`)",
   "Claude Code is therefore not included in published SpaceApp images.",
   "owner-initiated"
 ].join("\n");
@@ -145,7 +145,7 @@ test("public release readiness requires a positive owner-installed-only Claude r
     requestedVersion: "0.1.0",
     packageVersion: "0.1.0",
     notices: notices.replace("owner-initiated", "manual"),
-    dockerfile: "RUN npm install @anthropic-ai/claude-code@2.1.206\n",
+    dockerfile: "RUN npm install @anthropic-ai/claude-code@2.1.301\n",
     distributionPolicy: {
       ...policy,
       packages: {

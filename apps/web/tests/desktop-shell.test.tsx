@@ -6,6 +6,7 @@ import { createDemoRuntime } from "../src/demo/demo-runtime.js";
 import { SpaceRuntimeProvider } from "../src/runtime/SpaceRuntime.js";
 import { VoiceInputProvider } from "../src/features/voice-input/VoiceInputProvider.js";
 import { workspaceAction } from "./responsive-shell-fixture.js";
+import { SPACE_OPEN_PLAN_PANE_EVENT } from "../src/features/clipboard-dock/plan-assignee.js";
 
 vi.mock("../src/features/terminal-pane/TerminalPane.js", async importOriginal => {
   const original = await importOriginal<typeof import("../src/features/terminal-pane/TerminalPane.js")>();
@@ -148,4 +149,22 @@ it("opens Resources from resource indicators and retains panes through collapsed
   await waitFor(() => expect((within(resources).getByRole("combobox", { name: "Resource view" }) as HTMLSelectElement).value).toBe("ai"));
   expect(document.querySelector(".room-toolbar-collapsed")).toBeTruthy();
   expect(document.querySelector("[data-test-terminal]")).toBe(terminal);
+});
+
+it("opens a plan's room and focuses its pane from the plan's Open pane event", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+  const bundle = createDemoRuntime();
+  render(<SpaceRuntimeProvider runtime={bundle.runtime}><VoiceInputProvider><App /></VoiceInputProvider></SpaceRuntimeProvider>);
+  await waitFor(() => expect(document.querySelector("[data-test-terminal]")).toBeTruthy());
+  expect(bundle.runtime.platform.sessionStorage.getItem("space.selectedRoomId")).not.toBe("room:demo-ops");
+
+  window.dispatchEvent(new CustomEvent(SPACE_OPEN_PLAN_PANE_EVENT, { detail: { roomId: "room:demo-ops", paneId: "pane:demo-ops-cli" } }));
+  await waitFor(() => expect(bundle.runtime.platform.sessionStorage.getItem("space.selectedRoomId")).toBe("room:demo-ops"));
+  await waitFor(() => expect(bundle.runtime.platform.sessionStorage.getItem("space.selectedPaneId")).toBe("pane:demo-ops-cli"));
+  expect(await screen.findByText("Terminal", { selector: '[data-test-terminal="pane:demo-ops-cli"]' })).toBeTruthy();
+
+  // A plan whose pane was closed says so instead of switching rooms.
+  window.dispatchEvent(new CustomEvent(SPACE_OPEN_PLAN_PANE_EVENT, { detail: { roomId: "room:demo-launch", paneId: "pane:gone" } }));
+  expect(await screen.findByText("The pane that ran this plan is closed.")).toBeTruthy();
+  expect(bundle.runtime.platform.sessionStorage.getItem("space.selectedRoomId")).toBe("room:demo-ops");
 });

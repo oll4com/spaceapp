@@ -4,36 +4,51 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentRuntime, ImportConfigResult } from "@space/contracts";
 import type { CliAuthCapture } from "@space/runtime";
-import { parseCredentialStatus, type CliCredentialStatusReader } from "./cli-runtimes.js";
+import { parseCredentialStatus, type CliCredentialCommandExecutor, type CliCredentialStatusReader } from "./cli-runtimes.js";
 import type { SpaceApiConfig } from "./config.js";
+import { openCodeRunAnswer } from "./room-agent-model-resolver.js";
 
 const execFileAsync = promisify(execFile);
 const maxFileBytes = 64 * 1024;
 
-type CredentialAction = "credential-status" | "credential-install";
+type CredentialAction = "credential-status" | "credential-install" | "credential-smoke" | "credential-observation" | "opencode-text" | "opencode-models";
 interface CredentialActionResult { exitCode: number; stdout: string }
+interface CredentialRequestOptions { timeoutMs?: number; signal?: AbortSignal }
+// The public core image has no OpenCode (decision B, 1.1.7): these run the CLI container's `opencode --standalone`.
+const openCodeWrapper = "opencode-vscode-parity";
 
 /** Runs a wrapper's fixed credential action where the CLIs and their logins live. */
 export interface CredentialHost {
-  run(commandPath: string, action: CredentialAction, input?: string): Promise<CredentialActionResult>;
+  run(commandPath: string, action: CredentialAction, input?: string, options?: CredentialRequestOptions): Promise<CredentialActionResult>;
   /** The badge probe: the wrapper's `credential-status`, read in the CLI container. */
   status: CliCredentialStatusReader;
+  /** The wrapper's `credential-smoke` or `credential-observation` in the CLI container, shaped like the local executor. */
+  execute: CliCredentialCommandExecutor;
+  /** `runOpenCodeText` in the CLI container (throwaway home, never the panes' store). */
+  openCodeText(modelId: string, prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null>;
+  /** OpenCode 2's `/api/model` answer for one provider, read in the CLI container. */
+  openCodeModels(provider: string): Promise<string>;
   close(): Promise<void>;
 }
 
 /** One request per connection: a JSON line in, a JSON line out. */
-function credentialAgentRequest(socketPath: string, body: Record<string, string>): Promise<CredentialActionResult> {
+function credentialAgentRequest(socketPath: string, body: Record<string, string>, options: CredentialRequestOptions = {}): Promise<CredentialActionResult> {
   return new Promise((resolve, reject) => {
     let answer = "";
     const socket = createConnection(socketPath, () => socket.end(`${JSON.stringify(body)}\n`));
+    const onAbort = () => socket.destroy(new Error("The CLI credential agent request was aborted."));
+    if (options.signal?.aborted) onAbort();
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     socket.setEncoding("utf8");
-    socket.setTimeout(130_000, () => socket.destroy(new Error("The CLI credential agent did not answer.")));
+    socket.setTimeout(options.timeoutMs ?? 130_000, () => socket.destroy(new Error("The CLI credential agent did not answer.")));
     socket.on("data", (chunk: string) => {
       answer += chunk;
-      if (answer.length > 64 * 1024) socket.destroy(new Error("The CLI credential agent answer is too large."));
+      // A model list or an OpenCode answer is larger than a credential line.
+      if (answer.length > 4 * 1024 * 1024) socket.destroy(new Error("The CLI credential agent answer is too large."));
     });
     socket.on("error", reject);
     socket.on("close", () => {
+      options.signal?.removeEventListener("abort", onAbort);
       try {
         const result = JSON.parse(answer) as CredentialActionResult;
         if (typeof result.exitCode === "number" && typeof result.stdout === "string") resolve(result);
@@ -53,13 +68,30 @@ function credentialAgentRequest(socketPath: string, body: Record<string, string>
 export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicDistribution" | "cliEnabled" | "cliHostSocketPath">): CredentialHost | null {
   if (!config.publicDistribution || !config.cliEnabled) return null;
   const socketPath = join(dirname(config.cliHostSocketPath), "credentials.sock");
-  const run = (commandPath: string, action: CredentialAction, input?: string) =>
-    credentialAgentRequest(socketPath, { command: basename(commandPath), action, ...(input === undefined ? {} : { input }) });
+  const run = (commandPath: string, action: CredentialAction, input?: string, options?: CredentialRequestOptions) =>
+    credentialAgentRequest(socketPath, { command: basename(commandPath), action, ...(input === undefined ? {} : { input }) }, options);
   return {
     run,
     status: async (commandPath) => {
       const answer = await run(commandPath, "credential-status").catch(() => null);
       return answer?.exitCode === 0 ? parseCredentialStatus(answer.stdout) : null;
+    },
+    execute: async (commandPath, args, options) => {
+      const action = args.length === 1 && (args[0] === "credential-smoke" || args[0] === "credential-observation") ? args[0] : null;
+      if (!action) throw new Error("Only credential-smoke and credential-observation run through the CLI credential agent.");
+      // The agent's own limit stops the wrapper; ours only has to outlast it.
+      const answer = await run(commandPath, action, undefined, { timeoutMs: options.timeout + 10_000 });
+      if (answer.exitCode !== 0) throw Object.assign(new Error(`${action} failed in the CLI container.`), { code: answer.exitCode });
+      return { stdout: answer.stdout.slice(0, options.maxBuffer) };
+    },
+    openCodeText: async (modelId, prompt, timeoutMs, signal) => {
+      const answer = await run(openCodeWrapper, "opencode-text", JSON.stringify({ modelId, prompt, timeoutMs }), { timeoutMs: timeoutMs + 10_000, signal }).catch(() => null);
+      return answer ? openCodeRunAnswer(answer.stdout) : null;
+    },
+    openCodeModels: async (provider) => {
+      const answer = await run(openCodeWrapper, "opencode-models", JSON.stringify({ provider }));
+      if (answer.exitCode !== 0) throw new Error("The CLI container could not list OpenCode models.");
+      return answer.stdout;
     },
     close: async () => undefined
   };
@@ -110,7 +142,7 @@ export function createCliAuthTransfer(options: {
   readRuntimes(): Promise<AgentRuntime[]>;
   invalidateRuntimes(): void;
   warn(message: string): void;
-  credentialHost?: CredentialHost | null;
+  credentialHost?: Pick<CredentialHost, "run"> | null;
   /** Operator hosts: runs `<wrapper> credential-export` and returns its stdout. */
   exportThroughWrapper?(commandPath: string): Promise<string>;
 }) {

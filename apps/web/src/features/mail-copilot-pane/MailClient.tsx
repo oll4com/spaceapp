@@ -3,6 +3,7 @@ import { MAIL_SYSTEM_LABELS, mailCopilotConsentUrl, type MailAccountSummary, typ
 import { api } from "../../api.js";
 // The icon pack has no reply/forward glyphs: Undo2 reads as reply, ChevronRight as forward, Mail as the inbox.
 import { Archive, ArrowLeft, Bot, Check, ChevronDown, ChevronRight, ChevronUp, Folder, Mail, Paperclip, Pencil, RefreshCw, Search, Send, Star, Trash2, Undo2, X } from "../ui-theme/app-icons.js";
+import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import type { MailboxState } from "./useMailbox.js";
 
 const SYSTEM_LABEL_ICONS: Partial<Record<string, typeof Mail>> = { INBOX: Mail, STARRED: Star, SENT: Send, DRAFT: Pencil, TRASH: Trash2, ALL: Archive };
@@ -245,7 +246,7 @@ const rowKey = (row: Pick<MailThreadSummary, "account" | "threadId">) => `${row.
  * swipes sideways to archive it (or move it to trash outside the inbox), and every removal can be undone. Tapping a
  * sender avatar selects its conversation; the selection bar then acts on all of them at once.
  */
-export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: string; mailbox: MailboxState; signature: string | null; stacked: boolean }) {
+export function MailClient({ paneId, mailbox, signature, stacked: paneStacked }: { paneId: string; mailbox: MailboxState; signature: string | null; stacked: boolean }) {
   const { accounts, labels, threads, thread, selection, selectedThreadId } = mailbox;
   const [compose, setCompose] = useState<ComposeMode | null>(null);
   // Which messages are open; a conversation starts with only its newest message expanded.
@@ -268,6 +269,8 @@ export function MailClient({ paneId, mailbox, signature, stacked }: { paneId: st
   const defaultAccount = selection.account !== "all" ? selection.account : usable.find((account) => account.access === "full")?.email ?? usable[0]?.email ?? "";
   const listRef = useRef<HTMLDivElement | null>(null);
   const clientRef = useRef<HTMLDivElement | null>(null);
+  // A mailbox narrowed by the rail stacks like a phone's: beside it, the conversation was squeezed to a sliver.
+  const stacked = useCopilotLayout(clientRef) === "stacked" || paneStacked;
   // Wide panes: the list/conversation split is dragged (or moved with the arrow keys) and remembered per pane.
   const [listWidth, setListWidth] = useState<number | null>(() => readListWidth(paneId));
   const [resizing, setResizing] = useState(false);

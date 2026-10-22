@@ -13,6 +13,7 @@ import {
   FolderPlus,
   Grid2X2,
   Images,
+  Info,
   List,
   Music2,
   RefreshCw,
@@ -25,6 +26,7 @@ import {
 import { api } from "../../api.js";
 import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { setArtifactDragData } from "../artifacts/artifact-drag.js";
+import { FileInfoDialog } from "../file-info/FileInfoDialog.js";
 import {
   DATE_TIME_SETTINGS_UPDATED_EVENT,
   formatAppDateTime
@@ -294,36 +296,55 @@ export function getAssignedFolder(artifact: Artifact, folderMap: Record<string, 
   return null;
 }
 
-function getStoredCustomFolders(roomId: string): string[] {
+// Agent Files are shared by every room: one list, one cache and one set of folders.
+const AGENT_FILES_SHARED_KEY = "all";
+const CUSTOM_FOLDERS_PREFIX = "space_agent_files_custom_folders_";
+const FOLDER_MAP_PREFIX = "space_agent_files_folder_map_";
+
+/** The shared value, or, before it was first saved, every per-room value folders were kept in until 2026-10-18. */
+function readStoredFolderValues(prefix: string): unknown[] {
+  if (typeof localStorage === "undefined") return [];
+  const shared = localStorage.getItem(`${prefix}${AGENT_FILES_SHARED_KEY}`);
+  if (shared !== null) return [JSON.parse(shared)];
+  const values: unknown[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    const raw = key?.startsWith(prefix) ? localStorage.getItem(key) : null;
+    if (raw) values.push(JSON.parse(raw));
+  }
+  return values;
+}
+
+function getStoredCustomFolders(): string[] {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`space_agent_files_custom_folders_${roomId}`) : null;
-    return raw ? JSON.parse(raw) : [];
+    const folders = readStoredFolderValues(CUSTOM_FOLDERS_PREFIX).flatMap((value) => (Array.isArray(value) ? value : []));
+    return Array.from(new Set(folders.filter((folder): folder is string => typeof folder === "string"))).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
 }
 
-function setStoredCustomFolders(roomId: string, folders: string[]) {
+function setStoredCustomFolders(folders: string[]) {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(`space_agent_files_custom_folders_${roomId}`, JSON.stringify(folders));
+      localStorage.setItem(`${CUSTOM_FOLDERS_PREFIX}${AGENT_FILES_SHARED_KEY}`, JSON.stringify(folders));
     }
   } catch {}
 }
 
-function getStoredFolderMap(roomId: string): Record<string, string> {
+function getStoredFolderMap(): Record<string, string> {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`space_agent_files_folder_map_${roomId}`) : null;
-    return raw ? JSON.parse(raw) : {};
+    const maps = readStoredFolderValues(FOLDER_MAP_PREFIX).filter((value): value is Record<string, string> => Boolean(value) && typeof value === "object" && !Array.isArray(value));
+    return Object.assign({}, ...maps);
   } catch {
     return {};
   }
 }
 
-function setStoredFolderMap(roomId: string, map: Record<string, string>) {
+function setStoredFolderMap(map: Record<string, string>) {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(`space_agent_files_folder_map_${roomId}`, JSON.stringify(map));
+      localStorage.setItem(`${FOLDER_MAP_PREFIX}${AGENT_FILES_SHARED_KEY}`, JSON.stringify(map));
     }
   } catch {}
 }
@@ -524,9 +545,8 @@ export function clearStoredAgentFilesCache(roomId?: string): void {
   }
 }
 
-function roomHasLoaded(roomId: string | undefined): boolean {
-  if (!roomId) return false;
-  return agentFilesLastFetched.has(roomId) || getStoredAgentFilesCache(roomId).length > 0;
+function sharedFilesLoaded(): boolean {
+  return agentFilesLastFetched.has(AGENT_FILES_SHARED_KEY) || getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY).length > 0;
 }
 
 function kindIcon(kind: AgentFilePreviewKind) {
@@ -541,10 +561,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();
   const filterPanelId = useId();
-  const [artifacts, setArtifacts] = useState<Artifact[]>(() =>
-    activeRoom?.id ? getStoredAgentFilesCache(activeRoom.id) : []
-  );
-  const [hasLoaded, setHasLoaded] = useState(() => roomHasLoaded(activeRoom?.id));
+  const [artifacts, setArtifacts] = useState<Artifact[]>(() => getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY));
+  const [hasLoaded, setHasLoaded] = useState(sharedFilesLoaded);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -568,6 +586,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [fileFolderMap, setFileFolderMap] = useState<Record<string, string>>({});
   const [movingEntry, setMovingEntry] = useState<AgentFileEntry | null>(null);
+  const [detailsEntry, setDetailsEntry] = useState<AgentFileEntry | null>(null);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [newFolderParent, setNewFolderParent] = useState<string>("");
   const [newFolderName, setNewFolderName] = useState("");
@@ -602,6 +621,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const entries = useMemo(() => agentFileEntries(artifacts, paneTitles), [artifacts, paneTitles, dateTimeTick]);
+  const roomFileCount = useMemo(() => entries.filter((entry) => entry.artifact.roomId === activeRoom?.id).length, [entries, activeRoom?.id]);
 
   const allKnownFolders = useMemo(() => {
     const folderSet = new Set<string>();
@@ -772,10 +792,9 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     return () => observer.disconnect();
   }, [displayedEntries.length, filteredEntries.length]);
 
-  async function loadAgentFiles(roomId: string, force = false) {
-    if (activeRoomId.current !== roomId) return;
-    const last = agentFilesLastFetched.get(roomId);
-    const cached = getStoredAgentFilesCache(roomId);
+  async function loadAgentFiles(force = false) {
+    const last = agentFilesLastFetched.get(AGENT_FILES_SHARED_KEY);
+    const cached = getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY);
     if (
       !force &&
       cached.length > 0 &&
@@ -791,7 +810,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setError(null);
     try {
       const firstPage = await api.artifacts({
-        roomId,
         collection: "AGENT_FILES",
         pageSize: 100,
         sortOrder: "desc"
@@ -801,7 +819,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         const remainingPages = await Promise.all(
           Array.from({ length: firstPage.pagination.totalPages - 1 }, (_, i) =>
             api.artifacts({
-              roomId,
               collection: "AGENT_FILES",
               page: i + 2,
               pageSize: 100,
@@ -813,15 +830,15 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
           loaded.push(...payload.data);
         }
       }
-      if (sequence !== loadSequence.current || activeRoomId.current !== roomId) return;
+      if (sequence !== loadSequence.current) return;
       const merged = mergeAgentFiles([], loaded);
-      persistAgentFilesCache(roomId, merged);
-      agentFilesLastFetched.set(roomId, { timestamp: Date.now(), refreshKey });
+      persistAgentFilesCache(AGENT_FILES_SHARED_KEY, merged);
+      agentFilesLastFetched.set(AGENT_FILES_SHARED_KEY, { timestamp: Date.now(), refreshKey });
       setArtifacts(merged);
       setLoadError(null);
       setHasLoaded(true);
     } catch (loadFailure) {
-      if (sequence !== loadSequence.current || activeRoomId.current !== roomId) return;
+      if (sequence !== loadSequence.current) return;
       setLoadError(loadFailure instanceof Error ? loadFailure.message : "Agent Files could not be loaded.");
       setHasLoaded(true);
     } finally {
@@ -830,9 +847,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   }
 
   useEffect(() => {
-    const cached = activeRoom?.id ? getStoredAgentFilesCache(activeRoom.id) : null;
-    setArtifacts(cached && cached.length > 0 ? cached : []);
-    setHasLoaded(roomHasLoaded(activeRoom?.id));
+    setArtifacts(getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY));
+    setHasLoaded(sharedFilesLoaded());
     setSelected(null);
     setTextPreview(null);
     setPreviewError(null);
@@ -852,13 +868,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setShowNewFolderModal(false);
     setDragOver(false);
     setBrokenThumbs(new Set());
-    if (activeRoom?.id) {
-      setCustomFolders(getStoredCustomFolders(activeRoom.id));
-      setFileFolderMap(getStoredFolderMap(activeRoom.id));
-    } else {
-      setCustomFolders([]);
-      setFileFolderMap({});
-    }
+    setCustomFolders(getStoredCustomFolders());
+    setFileFolderMap(getStoredFolderMap());
     if (!activeRoom) setIsFullscreen(false);
     return () => {
       loadSequence.current += 1;
@@ -869,24 +880,23 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
 
   useEffect(() => {
     if (!activeRoom) return;
-    void loadAgentFiles(activeRoom.id);
+    void loadAgentFiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id, refreshKey]);
 
   useEffect(() => {
     function handleArtifactsUpdated(event: Event) {
       if (!(event instanceof CustomEvent) || !isArtifactsUpdatedDetail(event.detail)) return;
-      if (event.detail.roomId !== activeRoom?.id) return;
       setArtifacts((current) => {
         const merged = mergeAgentFiles(current, event.detail.artifacts);
-        if (activeRoom?.id) persistAgentFilesCache(activeRoom.id, merged);
+        persistAgentFilesCache(AGENT_FILES_SHARED_KEY, merged);
         return merged;
       });
       setError(null);
     }
     window.addEventListener(ARTIFACTS_UPDATED_EVENT, handleArtifactsUpdated);
     return () => window.removeEventListener(ARTIFACTS_UPDATED_EVENT, handleArtifactsUpdated);
-  }, [activeRoom?.id]);
+  }, []);
 
   useEffect(() => {
     const handleSettingsUpdate = () => setDateTimeTick((count) => count + 1);
@@ -909,13 +919,17 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   }, [isDockActive, setIsFullscreen]);
 
   // Escape closes the top dialog first; fullscreen waits for the next Escape.
-  const hasOpenDialog = Boolean(selected || movingEntry || showNewFolderModal);
+  const hasOpenDialog = Boolean(selected || movingEntry || showNewFolderModal || detailsEntry);
   useEffect(() => {
     if (!hasOpenDialog || !isDockActive) return;
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       if (event.target instanceof Element && event.target.closest(".dock-kit-confirm")) return;
       event.stopPropagation();
+      if (detailsEntry) {
+        setDetailsEntry(null);
+        return;
+      }
       if (movingEntry) {
         setMovingEntry(null);
         return;
@@ -929,7 +943,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     document.addEventListener("keydown", handleEscape, true);
     return () => document.removeEventListener("keydown", handleEscape, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasOpenDialog, isDockActive, movingEntry, showNewFolderModal]);
+  }, [hasOpenDialog, isDockActive, movingEntry, showNewFolderModal, detailsEntry]);
 
   function handleSetViewMode(mode: "list" | "grid") {
     setViewMode(mode);
@@ -992,7 +1006,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
 
   function handleAddCustomFolder(name: string, parentFolderCandidate?: string | null): string | undefined {
     const trimmed = name.trim();
-    if (!trimmed || !activeRoom?.id) return undefined;
+    if (!trimmed) return undefined;
     let fullPath: string;
     if (trimmed.includes("/")) {
       fullPath = normalizeFolderPath(trimmed);
@@ -1012,24 +1026,22 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     }
     const next = Array.from(nextSet).sort((a, b) => a.localeCompare(b));
     setCustomFolders(next);
-    setStoredCustomFolders(activeRoom.id, next);
+    setStoredCustomFolders(next);
     return fullPath;
   }
 
   async function handleDeleteCustomFolder(name: string) {
-    if (!activeRoom?.id) return;
-    const roomId = activeRoom.id;
     const isParent = allKnownFolders.some((f) => f.startsWith(`${name}/`));
     const accepted = await confirm({
       title: isParent ? "Delete this folder and its subfolders?" : "Delete this folder?",
-      message: `"${getFolderDisplayPath(name)}" will be removed. The files inside stay in this room.`,
+      message: `"${getFolderDisplayPath(name)}" will be removed. The files inside stay in Agent Files.`,
       confirmLabel: "Delete folder"
     });
-    if (!accepted || activeRoomId.current !== roomId) return;
+    if (!accepted) return;
 
     setCustomFolders((current) => {
       const nextFolders = current.filter((f) => f !== name && !f.startsWith(`${name}/`));
-      setStoredCustomFolders(roomId, nextFolders);
+      setStoredCustomFolders(nextFolders);
       return nextFolders;
     });
 
@@ -1048,14 +1060,13 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         }
       }
       if (!changed) return current;
-      setStoredFolderMap(roomId, nextMap);
+      setStoredFolderMap(nextMap);
       return nextMap;
     });
     setActiveFolder((current) => (current === name || current.startsWith(`${name}/`) ? parent || "ALL" : current));
   }
 
   function handleMoveFile(artifactId: string, folderId: string) {
-    if (!activeRoom?.id) return;
     const nextMap = { ...fileFolderMap };
     if (!folderId) {
       delete nextMap[artifactId];
@@ -1063,7 +1074,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       nextMap[artifactId] = normalizeFolderPath(folderId);
     }
     setFileFolderMap(nextMap);
-    setStoredFolderMap(activeRoom.id, nextMap);
+    setStoredFolderMap(nextMap);
   }
 
   function closePreview() {
@@ -1105,15 +1116,11 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       confirmLabel: "Delete"
     });
     if (!accepted) return;
-    const roomId = activeRoom?.id ?? null;
     setDeletingId(entry.artifact.id);
     setError(null);
     try {
       await api.deleteArtifact(entry.artifact.id);
-      // Update the cache of the room the file was deleted from, even after a room switch.
-      if (roomId) {
-        persistAgentFilesCache(roomId, getStoredAgentFilesCache(roomId).filter((artifact) => artifact.id !== entry.artifact.id));
-      }
+      persistAgentFilesCache(AGENT_FILES_SHARED_KEY, getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY).filter((artifact) => artifact.id !== entry.artifact.id));
       setArtifacts((current) => current.filter((artifact) => artifact.id !== entry.artifact.id));
       if (selected?.artifact.id === entry.artifact.id) closePreview();
     } catch (deleteError) {
@@ -1200,12 +1207,13 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     }
   }
 
+  // Clear all removes only the active room's files, so one click never empties every room.
   async function clearAllAgentFiles() {
-    if (!activeRoom || !entries.length) return;
+    if (!activeRoom || !roomFileCount) return;
     const room = activeRoom;
     const accepted = await confirm({
       title: "Clear all Agent Files?",
-      message: `Permanently delete all Agent Files from ${room.name}? This cannot be undone.`,
+      message: `Permanently delete the ${roomFileCount} Agent File${roomFileCount === 1 ? "" : "s"} from ${room.name}? Files from other rooms stay. This cannot be undone.`,
       confirmLabel: "Clear all"
     });
     if (!accepted) return;
@@ -1216,8 +1224,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       const result = await api.deleteRoomAgentFiles(roomId);
       if (activeRoomId.current !== roomId) return;
       closePreview();
-      clearStoredAgentFilesCache(roomId);
-      await loadAgentFiles(roomId, true);
+      clearStoredAgentFilesCache(AGENT_FILES_SHARED_KEY);
+      await loadAgentFiles(true);
       if (activeRoomId.current === roomId && result.failedCount > 0) {
         setError(`${result.failedCount} Agent File${result.failedCount === 1 ? "" : "s"} could not be deleted.`);
       }
@@ -1235,13 +1243,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setError(null);
     try {
       const uploaded = await api.uploadAgentFiles({ roomId, files });
-      if (activeRoomId.current === roomId) {
-        setArtifacts((current) => {
-          const merged = mergeAgentFiles(current, uploaded.artifacts);
-          persistAgentFilesCache(roomId, merged);
-          return merged;
-        });
-      }
       dispatchArtifactsUpdated(roomId, uploaded.artifacts);
     } catch (uploadError) {
       if (activeRoomId.current === roomId) setError(uploadError instanceof Error ? uploadError.message : "The upload failed.");
@@ -1331,7 +1332,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       ? undefined
       : isFiltered || activeFolder !== "ALL"
         ? <><strong>{filteredEntries.length}</strong> of {entries.length} file{entries.length === 1 ? "" : "s"}{filterLabels.length ? ` · ${filterLabels.join(" · ")}` : ""}</>
-        : <><strong>{entries.length}</strong> file{entries.length === 1 ? "" : "s"} in this room</>;
+        : <><strong>{entries.length}</strong> file{entries.length === 1 ? "" : "s"} in all rooms</>;
 
   const movingAssignedFolder = movingEntry ? getAssignedFolder(movingEntry.artifact, fileFolderMap) : null;
 
@@ -1363,14 +1364,14 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             icon={RefreshCw}
             busy={loading && hasLoaded}
             disabled={!activeRoom || loading || clearingAll}
-            onClick={() => activeRoom && void loadAgentFiles(activeRoom.id, true)}
+            onClick={() => activeRoom && void loadAgentFiles(true)}
           />
           <DockIconButton
             label="Clear all Agent Files"
             icon={Trash2}
             tone="danger"
             busy={clearingAll}
-            disabled={!activeRoom || !entries.length || clearingAll || Boolean(deletingId) || Boolean(downloadingId)}
+            disabled={!activeRoom || !roomFileCount || clearingAll || Boolean(deletingId) || Boolean(downloadingId)}
             onClick={() => void clearAllAgentFiles()}
           />
           <DockFullscreenButton name="Agent Files" active={isFullscreen} onToggle={() => setIsFullscreen((current) => !current)} />
@@ -1625,7 +1626,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             kind="error"
             title="Files could not be loaded"
             detail={loadError}
-            action={{ label: "Try again", onClick: () => void loadAgentFiles(activeRoom.id, true) }}
+            action={{ label: "Try again", onClick: () => void loadAgentFiles(true) }}
           />
         ) : isFiltered || activeFolder !== "ALL" ? (
           <DockState
@@ -1640,8 +1641,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             kind="empty"
             icon={Upload}
             className={dragOver ? "is-dragover" : undefined}
-            title="No files in this room yet"
-            detail="Drop files here or use the upload button to add files to this room."
+            title="No Agent Files yet"
+            detail="Drop files here or use the upload button to add files."
             action={{ label: "Upload files", icon: Upload, onClick: openFilePicker }}
           />
         )}
@@ -1717,6 +1718,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 </div>
 
                 <div className="dock-kit-card-actions agent-files-item-actions">
+                  <DockIconButton label={`Details of ${entry.filename}`} icon={Info} onClick={() => setDetailsEntry(entry)} />
                   <DockIconButton
                     label={`Move ${entry.filename} to folder`}
                     icon={FolderPlus}
@@ -1799,6 +1801,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             </div>
           </div>
         ) : null}
+
+        {detailsEntry ? <FileInfoDialog artifactId={detailsEntry.artifact.id} filename={detailsEntry.filename} onClose={() => setDetailsEntry(null)} /> : null}
 
         {movingEntry ? (
           <div

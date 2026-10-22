@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, extname, join } from "node:path";
 import { runNativeMetadataCommand } from "./task-title-native.js";
 import { taskTitleImagesMax } from "./task-title-images.js";
+import { runSqliteJson } from "./toolbar-model-stats.js";
 
 /**
  * OpenCode Zen serves its free tier only to requests that carry OpenCode's
@@ -58,21 +59,12 @@ function isolatedEnvironment(root: string, config: unknown): NodeJS.ProcessEnv {
 const openCodeVersionByBinary = new Map<string, { identity: string; version: string; rejectsPermissionRequests: boolean }>();
 
 /**
- * The title sandbox depends on `opencode run` rejecting permission requests
- * unless `--auto` is passed (verified on 1.19.0: "The user rejected permission
- * to use this specific tool call"). Releases that do not document that switch
- * with a false default are not used, so an update cannot silently weaken it.
+ * The title sandbox depends on `opencode run` rejecting permission requests unless `--auto` is passed: OpenCode 2
+ * auto-rejects them in a non-interactive run (verified on 2.0.31). A release that does not document that switch is not
+ * used, so an update cannot silently weaken it. OpenCode 1 was retired (plan clipboard:kJ1BIeylJRLG).
  */
 export function openCodeRunRejectsPermissionRequests(version: string, runHelp: string): boolean {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!match || match[1] !== "1" || Number(match[2]) < 19) return false;
-  // yargs wraps an option's description onto continuation lines.
-  const options = runHelp.split("\n").reduce<string[]>((blocks, line) => {
-    if (/^\s*-/.test(line) || !blocks.length) blocks.push(line);
-    else blocks[blocks.length - 1] += ` ${line.trim()}`;
-    return blocks;
-  }, []);
-  return options.some((option) => /^\s*--auto\b/.test(option) && /\[default: false\]/.test(option));
+  return /^opencode v2\.\d+\.\d+$/.test(version) && /^\s*--auto\s+Auto-approve permissions\b/m.test(runHelp);
 }
 
 /** yargs prints `run --help` to stderr; read both streams, bounded. */
@@ -165,19 +157,16 @@ export async function resolveNativeOpenCodeRuntime(
     if (root) await rm(await root, { recursive: true, force: true }).catch(() => undefined);
   }
 }
-export function parseNativeOpenCodeModels(
-  output: string,
-): Record<string, unknown> {
+/** OpenCode 2's /api/model as the catalog entries readers use: id, name, status and the highest tier's cost. */
+export function parseOpenCode2Models(output: string): Record<string, unknown> {
+  let data: unknown = [];
+  try { data = (JSON.parse(output) as { data?: unknown }).data ?? []; } catch {}
   const models: Record<string, unknown> = {};
-  const blocks = output.split(/^opencode\//m).slice(1);
-  for (const block of blocks) {
-    const line = block.indexOf("\n");
-    if (line < 0) continue;
-    const id = block.slice(0, line).trim();
-    if (!/^[A-Za-z0-9._-]{1,200}$/.test(id)) continue;
-    try {
-      models[id] = JSON.parse(block.slice(line).trim());
-    } catch {}
+  for (const model of Array.isArray(data) ? data : []) {
+    if (model?.providerID !== "opencode" || model.enabled === false || !/^[A-Za-z0-9._-]{1,200}$/.test(model.id ?? "")) continue;
+    const tiers: Array<{ input?: number; output?: number }> = Array.isArray(model.cost) && model.cost.length ? model.cost : [{}];
+    const highest = (key: "input" | "output") => Math.max(...tiers.map((tier) => typeof tier?.[key] === "number" ? tier[key]! : Number.NaN));
+    models[model.id] = { id: model.id, name: model.name, status: model.status, cost: { input: highest("input"), output: highest("output") } };
   }
   return models;
 }
@@ -202,7 +191,8 @@ async function readNativeOpenCodeModelCatalog(command: string): Promise<NativeOp
   try {
     const output = await runNativeMetadataCommand(
       command,
-      ["models", "opencode", "--verbose"],
+      // OpenCode 2 lists the models as JSON on its API.
+      ["api", "GET", "/api/model", "--standalone"],
       "",
       undefined,
       10000,
@@ -219,7 +209,7 @@ async function readNativeOpenCodeModelCatalog(command: string): Promise<NativeOp
     );
     return {
       providers: [
-        { id: "opencode", models: parseNativeOpenCodeModels(output) },
+        { id: "opencode", models: parseOpenCode2Models(output) },
       ],
     };
   } finally {
@@ -280,6 +270,7 @@ export async function generateNativeOpenCodeTitle(input: {
         input.command,
         [
           "run",
+          "--standalone",
           "--format",
           "json",
           "--model",
@@ -347,10 +338,26 @@ export async function generateNativeOpenCodeTitle(input: {
       if (input.signal.aborted) stop();
       else child.stdin.end(openCodeTitleRequestPreamble + input.prompt);
     });
-    return parseNativeTitleOutput(stdout, maxInputTokens);
+    return parseNativeTitleOutput(await withOpenCode2StepFinish(stdout, root), maxInputTokens);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+/**
+ * An OpenCode 2 standalone run exits without printing its last step_finish (2.0.31, every run), which carries the
+ * cost and token proof. The run's private store holds the same numbers: append them as that event, from the one
+ * assistant message the run may have written; anything else leaves the output to fail the checks as before.
+ */
+async function withOpenCode2StepFinish(stdout: string, root: string): Promise<string> {
+  if (stdout.split("\n").some((line) => line.includes('"type":"step_finish"'))) return stdout;
+  const rows = await runSqliteJson<{ cost: unknown; tokens: unknown }>(join(root, "data", "opencode", "opencode.db"),
+    "select json_extract(data, '$.cost') as cost, json_extract(data, '$.tokens') as tokens from session_message where type = 'assistant';")
+    .catch(() => []);
+  if (rows.length !== 1) return stdout;
+  let tokens: unknown = null;
+  try { tokens = JSON.parse(String(rows[0]!.tokens)); } catch {}
+  return `${stdout.trimEnd()}\n${JSON.stringify({ type: "step_finish", part: { cost: rows[0]!.cost, tokens } })}\n`;
 }
 export function parseNativeTitleOutput(stdout: string, maxInputTokens = openCodeTitleMaxInputTokens): string {
   let text = "",

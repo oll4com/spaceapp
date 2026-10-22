@@ -68,12 +68,13 @@ import {
   type SpaceStore
 } from "@space/runtime";
 import type { SpaceApiConfig } from "./config.js";
+import type { CredentialHost } from "./cli-auth-transfer.js";
 import {
   cliAgentFilesApiBaseUrl,
   cliAgentFilesEnabled,
   issueCliAgentFilesToken
 } from "./cli-agent-files.js";
-import { cliBrowserBridgeApiBaseUrl, cliBrowserBridgeEnabled, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
+import { agentTokenSecret, cliBrowserBridgeApiBaseUrl, cliBrowserBridgeEnabled, issueCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import {
   codexDirectParityCodexHome,
   codexDirectParityCwd,
@@ -101,6 +102,7 @@ import {
   findRecentNullAgentMessageDiagnostic,
   type CodexCliTurnActivity
 } from "./codex-rollout-diagnostics.js";
+import { codexStateDbMissing, findCodexThreadInSessions } from "./codex-sessions.js";
 
 const execFileAsync = promisify(execFile);
 const codexThreadUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -129,6 +131,8 @@ const codexModelNavigationRepaintSettleMs = 25;
 const qwenAuthBootstrapSettleMs = 250;
 const cliHostOutputBatchDelayMs = 20;
 const cliHostOutputBatchMaxBytes = 32 * 1024;
+const cliInputPersistenceMaxFrames = 64;
+const cliInputPersistenceMaxBytes = 64 * 1024;
 const cliTerminalControlLeaseTtlSeconds = 30;
 const cliTerminalControlHeartbeatIntervalMs = 10_000;
 const cliTerminalControlReconnectGraceSeconds = 5;
@@ -257,7 +261,8 @@ export function codexInputReady(output: string): boolean {
 // What each terminal CLI shows once its composer owns input (seen in tmux on 2026-10-14). Text sent to a CLI
 // that has just started arrives before that and is lost: Claude, Droid and Hermes dropped Space Control prompts.
 const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
-  "cli:claude": /\? for shortcuts|shift\+tab to cycle/,
+  // Claude 2.1.302 in a 42-column pane cuts its hints ("⏵⏵ bypass permissions on (shift+tab to"); the mode label stays.
+  "cli:claude": /\? for shortcuts|shift\+tab to cycle|(?:⏵⏵|⏸) [a-z ]+ on\b/,
   "cli:qwen": /type your message/,
   "cli:cursor": /plan, search, build anything|run everything/,
   "cli:omp": /π >|⇧⇥ to change thinking/,
@@ -265,6 +270,17 @@ const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
   "cli:hermes": /─ ready │|❯ try "/,
   "cli:grok": /│\s*❯/
 };
+
+// TUIs that redraw a ticking line every second (OpenCode's animation, Hermes' "─ ready │ … │ 5m 17s" status bar):
+// the 200-chunk DB tail soon holds those deltas alone, so their room screen is read from the host's larger replay.
+const hostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set(["cli:opencode", "cli:hermes"]);
+// Without an API transport (the last browser detached) nothing copies host output into the DB, so its tail stops
+// mid-turn: Qoder pane Cody kept a 14 s spinner for 2.5 h after it had finished. Those sessions read the host too.
+const detachedHostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set([...hostReplayRoomScreenRuntimes, "cli:qoder"]);
+// Codex rewrites only its spinner, one shimmer letter and the timer about 40 times a second, so the tail loses
+// "Working (… esc to interrupt)" within ~6 s (Codex 0.145.0, 1.1.6 lab, 2026-10-18). Where its native turn tracking is
+// off (public installs) the dashboard reads Codex from this screen, so there it comes from the host as well.
+const codexHostReplayRoomScreen = (runtimeId: string, config: SpaceApiConfig) => runtimeId === "cli:codex" && !config.enableCodexTurns;
 
 /** Whether the runtime's composer is open in this output; null when Space knows no marker for the runtime. */
 export function cliComposerReady(runtimeId: string, output: string): boolean | null {
@@ -307,6 +323,7 @@ interface CliTerminalSocketContext {
   requestId: string;
   connectionOrder: number;
   detached: boolean;
+  inputPersistenceFailed?: boolean;
 }
 
 interface CliTerminalResolvedControl {
@@ -357,9 +374,12 @@ interface ManagedCliSession {
   pendingHiddenTailTimer: ReturnType<typeof setTimeout> | null;
   nextTranscriptSequence: number;
   persistQueue: Promise<void>;
+  pendingInputPersistence: Array<{ byteLength: number; completion: Promise<void> }>;
   controlQueue: Promise<void>;
   controlOutput: string;
   controlOutputRevision: number;
+  /** When live output last asked the terminal for a color (OSC 4/10/11/12 "?"). */
+  colorQueryAtMs?: number;
   codexModelControlGeometry?: boolean;
   roomScreenCols: number;
   roomScreenRows: number;
@@ -608,6 +628,8 @@ export interface CliLoginVerificationEvidence {
 export interface CliTerminalManagerOptions {
   store: SpaceStore;
   config: SpaceApiConfig;
+  /** Public installs: runs credential-smoke in the CLI container (cli-auth-transfer.ts). */
+  credentialHost?: Pick<CredentialHost, "execute"> | null;
   discoverRuntimes: () => Promise<AgentRuntimeRegistry>;
   discoverRuntimesForAttach?: () => Promise<AgentRuntimeRegistry>;
   findCodexThreadId?: CodexThreadFinder;
@@ -634,6 +656,18 @@ export interface CliTerminalManagerOptions {
   ) => Promise<void>;
   onTelemetry?: (event: CliTerminalManagerTelemetryEvent) => void;
   onTaskInput?: (paneId: string) => void;
+  /** True when this user may only watch the pane's terminal (shared rooms; operator-approved 2026-10-16). */
+  observeOnly?: (pane: Pane, userId: string) => Promise<boolean>;
+  /**
+   * Per-user pane hosts (multi-user, operator-approved 2026-10-17): user id to that user's host socket, and the user
+   * whose host runs a pane. A pane whose user has no own host keeps the default host and its lanes.
+   */
+  userHostSockets?: Readonly<Record<string, string>> | null;
+  paneHostUser?: (paneId: string) => Promise<string | null>;
+  /** With per-user hosts, whether a user without an own host may use the default one (ADMIN, OPERATOR). */
+  defaultHostAllowed?: (userId: string) => Promise<boolean>;
+  /** Tests replace the per-user host clients. */
+  userHostClient?: (userId: string) => CliHostGateway;
   withOperatorMutation?: <T>(paneId: string, work: () => Promise<T>) => Promise<T>;
   /**
    * The exact native task to resume when a host-lost session of a runtime that declares
@@ -712,6 +746,8 @@ interface FindSafeCodexThreadIdInput {
   paneId: string;
   sessionId: string;
   cwd: string | null;
+  /** The session's start; without a state database only a rollout started after it can be this pane's thread. */
+  startedAt?: string;
 }
 
 export type CodexThreadFinder = (input: FindSafeCodexThreadIdInput) => Promise<string | null>;
@@ -850,7 +886,22 @@ function chunkTerminalOutput(data: string): string[] {
   return chunks.length ? chunks : [data];
 }
 
-function sanitizeCliTerminalInput(runtimeId: string, data: string): string {
+const cliColorQuery = /\u001b\](?:4;\d{1,3}|1[0-2]);\?/;
+const cliColorReply = /\u001b\](?:4;\d{1,3}|1[0-2]);rgb:[0-9a-f]{1,4}(?:\/[0-9a-f]{1,4}){2}(?:\u0007|\u001b\\)/gi;
+const cliColorReplyWindowMs = 1000;
+
+/**
+ * xterm.js answers every color query it parses, including the ones in a transcript it replays on attach or writes
+ * when a hidden pane is shown, long after the CLI stopped waiting. Droid waits 500 ms once at start; a late reply
+ * lands in its prompt as "11;rgb:0909/0b0b/0c0c". A reply passes only shortly after a live query.
+ */
+export function dropStaleCliColorReplies(data: string, queryAtMs: number | undefined, nowMs: number): string {
+  return queryAtMs !== undefined && nowMs - queryAtMs <= cliColorReplyWindowMs ? data : data.replace(cliColorReply, "");
+}
+
+export function sanitizeCliTerminalInput(runtimeId: string, data: string): string {
+  // Droid reads a typed "π" as macOS Option+P (its Plan view) but never a pasted one, so Greek typists could not write π.
+  if (runtimeId === "cli:droid" && data === "π") return "\u001b[200~π\u001b[201~";
   return isCodexDirectParityRuntime(runtimeId) ? data.replaceAll("\0", "") : data;
 }
 
@@ -978,10 +1029,10 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   if (
     runtimeDescriptor?.paneModelLaunchEnv &&
     context.modelId &&
-    context.modelId !== runtimeDescriptor.defaultModelId
+    (context.modelId !== runtimeDescriptor.defaultModelId || runtimeDescriptor.launchesDefaultModel)
   ) {
-    // Codex/Antigravity parity: a pane's own model pick starts the CLI on that model. The wrapper
-    // validates the id and maps it to the CLI's native --model/--effort flags.
+    // Codex/Antigravity parity: a pane's own model pick (or a default Space owns) starts the CLI on
+    // that model. The wrapper validates the id and maps it to the CLI's native --model/--effort flags.
     env.SPACE_CLI_MODEL_ID = context.modelId;
     if (context.reasoningEffort) env.SPACE_CLI_REASONING_EFFORT = context.reasoningEffort;
   }
@@ -1010,8 +1061,8 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
-  // Space Control for CLI panes: Codex (phase one) and Claude Code (operator decision 2026-10-14).
-  const controlToken=context.runtimeId==="cli:codex"||context.runtimeId==="cli:claude"?issueControlToken(config.internalApiToken,context):null;
+  // Space Control for CLI panes: Codex (phase one), Claude Code (operator decision 2026-10-14), Oh My Pi, Hermes, Droid and Qoder (operator requests 2026-10-17).
+  const controlToken=["cli:codex","cli:claude","cli:omp","cli:hermes","cli:droid","cli:qoder"].includes(context.runtimeId ?? "")?issueControlToken(agentTokenSecret(config),context):null;
   if(controlToken){env.SPACE_CONTROL_TOKEN=controlToken;env.SPACE_CONTROL_ENDPOINT=`${cliAgentFilesApiBaseUrl(config)}/api/cli/control/mcp`;}
   const cliAgentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
   if (cliAgentFilesToken) {
@@ -1031,7 +1082,7 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
 export function buildCliSpawnArgs(
   runtime: AgentRuntime,
   session?: CliSpawnSession | null,
-  options: { codexChoosesDefaults?: boolean } = {}
+  options: { codexChoosesDefaults?: boolean; devInstance?: boolean; publicDistribution?: boolean } = {}
 ): string[] {
   const runtimeDescriptor = findCliRuntimeDescriptor(runtime.id);
   if (session?.purpose === "LOGIN") {
@@ -1043,6 +1094,9 @@ export function buildCliSpawnArgs(
     }
     return [runtimeDescriptor.loginAction];
   }
+  // Dev shares stable's OpenCode server and store, and its database is a copy of stable's: a recorded native session
+  // or the newest one in the directory (`--continue`) can be a stable pane's task, so dev always starts a new one.
+  if (options.devInstance && runtime.id === "cli:opencode" && session?.launchMode === "RESUME") return [];
   if (
     session?.launchMode === "RESUME" &&
     runtime.id === "cli:opencode" &&
@@ -1098,6 +1152,9 @@ export function buildCliSpawnArgs(
     return [...runtimeDescriptor.nativeResumeArgs];
   }
   if (runtime.id === "cli:codex" || runtime.commandName === "codex") {
+    // A public install pins Codex in its image, so Codex's own "Update available" menu only blocks a pane's start
+    // (Codex 0.145.0, 1.1.6 lab); updates come with SpaceApp releases there.
+    const pinned = options.publicDistribution ? ["--config", "check_for_update_on_startup=false"] : [];
     const threadId = session?.codexForkThreadId ?? session?.codexThreadId;
     if (threadId) {
       const isFork = Boolean(session?.codexForkThreadId);
@@ -1117,11 +1174,11 @@ export function buildCliSpawnArgs(
           args.push("--config", `model_reasoning_effort=${reasoningEffort}`);
         }
       }
-      args.push("--no-alt-screen", threadId);
+      args.push(...pinned, "--no-alt-screen", threadId);
       return args;
     }
     // Public installs have no Codex app-server to ask: without a pane selection Codex starts on its own default.
-    if (options.codexChoosesDefaults && !session?.modelId) return ["--no-alt-screen"];
+    if (options.codexChoosesDefaults && !session?.modelId) return [...pinned, "--no-alt-screen"];
     if (
       !session?.modelId ||
       !codexModelIdPattern.test(session.modelId) ||
@@ -1138,6 +1195,7 @@ export function buildCliSpawnArgs(
       session.modelId,
       "--config",
       `model_reasoning_effort=${session.reasoningEffort}`,
+      ...pinned,
       "--no-alt-screen"
     ];
   }
@@ -1215,7 +1273,10 @@ export async function findSafeCodexThreadId(input: FindSafeCodexThreadIdInput): 
     const ids = rows.map((row) => (typeof row.id === "string" ? row.id : "")).filter((id) => codexThreadUuidPattern.test(id));
     return ids.length === 1 ? ids[0] ?? null : null;
   } catch {
-    return null;
+    // A public install's API sees only Codex's sessions/ (1.1.7): the thread comes from the rollouts themselves.
+    const sinceMs = Date.parse(input.startedAt ?? "");
+    if (!Number.isFinite(sinceMs) || !(await codexStateDbMissing(codexHome))) return null;
+    return findCodexThreadInSessions({ codexHome, cwd: input.cwd, sinceMs });
   }
 }
 
@@ -1260,13 +1321,15 @@ export async function findAvailableCodexThreadId(input: {
   paneId: string;
   sessionId: string;
   cwd: string | null;
+  startedAt?: string;
   findThreadId?: CodexThreadFinder;
 }): Promise<string | null> {
   const findThreadId = input.findThreadId ?? findSafeCodexThreadId;
   const codexThreadId = await findThreadId({
     paneId: input.paneId,
     sessionId: input.sessionId,
-    cwd: input.cwd
+    cwd: input.cwd,
+    ...(input.startedAt ? { startedAt: input.startedAt } : {})
   });
   if (!codexThreadId) return null;
   const ownership = await input.store.getPaneCliCodexThreadOwnership(codexThreadId);
@@ -1304,6 +1367,10 @@ export class CliTerminalManager {
   private readonly hostClient: CliHostGateway;
   private readonly hostClients: readonly CliHostGateway[];
   private readonly adminHostClient: CliHostGateway;
+  private readonly userHosts = new Map<string, CliHostGateway>();
+  private readonly paneHostUsers = new Map<string, Promise<string | null>>();
+  private readonly resolvedPaneHostUsers = new Map<string, string | null>();
+  private readonly defaultHostUsers = new Map<string, Promise<boolean>>();
   private nextSocketConnectionOrder = 0;
 
   constructor(private readonly options: CliTerminalManagerOptions) {
@@ -1323,6 +1390,12 @@ export class CliTerminalManager {
             })
           )
         ];
+    for (const [userId, socketPath] of Object.entries(options.userHostSockets ?? {})) {
+      this.userHosts.set(userId, options.userHostClient?.(userId) ?? new CliHostClient({
+        socketPath,
+        onTransportClosed: () => this.handleHostTransportClosed(null, userId)
+      }));
+    }
     this.adminHostClient = options.adminHostClient ?? new CliHostClient({
       socketPath: options.config.cliAdminHostSocketPath,
       onTransportClosed: () => this.handleHostTransportClosed(-1)
@@ -1549,13 +1622,17 @@ export class CliTerminalManager {
     const descriptor = findCliRuntimeDescriptor(runtime.id);
     if (!descriptor?.credentialSmokeMarker || !runtime.detectedCommandPath) return false;
     try {
-      const launch = buildCliProcessLaunch(this.options.config, runtime, ["credential-smoke"]);
-      const { stdout } = await execFileAsync(launch.command, launch.args, {
-        encoding: "utf8",
+      const execOptions = {
+        encoding: "utf8" as const,
         env: this.controlledCredentialActionEnvironment(descriptor.environment),
         timeout: cliCredentialSmokeTimeoutMs,
         maxBuffer: 1_024
-      });
+      };
+      const launch = buildCliProcessLaunch(this.options.config, runtime, ["credential-smoke"]);
+      // Public installs: the CLIs and their logins live in the CLI container, not here.
+      const { stdout } = this.options.credentialHost
+        ? await this.options.credentialHost.execute(runtime.detectedCommandPath, ["credential-smoke"], execOptions)
+        : await execFileAsync(launch.command, launch.args, execOptions);
       return stdout === `${descriptor.credentialSmokeMarker}\n` || stdout === `${descriptor.credentialSmokeMarker}\r\n`;
     } catch {
       return false;
@@ -1679,6 +1756,7 @@ export class CliTerminalManager {
   async reapDetachedSessions(): Promise<CliHostReapAggregate> {
     const hosts = [
       { hostId: "main" as const, enabled: this.options.config.cliEnabled, client: this.hostClient },
+      ...[...this.userHosts.values()].map((client) => ({ hostId: "main" as const, enabled: this.options.config.cliEnabled, client })),
       { hostId: "root" as const, enabled: this.options.config.cliRootEnabled, client: this.adminHostClient }
     ].filter((host) => host.enabled);
     const settled = await Promise.all(hosts.map(async (host) => {
@@ -1702,8 +1780,57 @@ export class CliTerminalManager {
 
   private hostForRuntime(runtimeId: string, sessionId?: string): CliHostGateway {
     if (runtimeId === "cli:root") return this.adminHostClient;
-    if (!sessionId || this.hostClients.length === 1) return this.hostClient;
-    return this.hostClients[cliHostLaneIndex(sessionId, this.hostClients.length)] ?? this.hostClient;
+    const lane = !sessionId || this.hostClients.length === 1
+      ? this.hostClient
+      : this.hostClients[cliHostLaneIndex(sessionId, this.hostClients.length)] ?? this.hostClient;
+    return sessionId && this.options.userHostSockets ? this.userRoutedHost(lane) : lane;
+  }
+
+  /** The pane's user, looked up once per pane; null keeps the default host. */
+  private paneHostUser(paneId: string): Promise<string | null> {
+    let user = this.paneHostUsers.get(paneId);
+    if (!user) {
+      // A failed lookup refuses this call and is tried again next time; it never falls back to the default host
+      // (operator-approved 2026-10-17).
+      user = (this.options.paneHostUser?.(paneId) ?? Promise.resolve(null))
+        .then((resolved) => { this.resolvedPaneHostUsers.set(paneId, resolved); return resolved; },
+          (error: unknown) => { this.paneHostUsers.delete(paneId); throw error; });
+      this.paneHostUsers.set(paneId, user);
+    }
+    return user;
+  }
+
+  /**
+   * Every session call goes to the host of its pane's user (by the identity's pane), else to the default lane. A USER
+   * without an own host gets no CLI rather than the owner's container and keys (operator-approved 2026-10-17).
+   */
+  private userRoutedHost(lane: CliHostGateway): CliHostGateway {
+    const pick = async (identity: CliHostIdentity) => {
+      const user = await this.paneHostUser(identity.paneId);
+      const own = user ? this.userHosts.get(user) : undefined;
+      if (own || !user) return own ?? lane;
+      let allowed = this.defaultHostUsers.get(user);
+      if (!allowed) {
+        allowed = (this.options.defaultHostAllowed?.(user) ?? Promise.resolve(false)).catch(() => false);
+        this.defaultHostUsers.set(user, allowed);
+      }
+      if (!await allowed) {
+        throw new SpaceFeatureDisabledError("CLI_USER_HOST_MISSING", "This user has no CLI container yet. The owner adds it with: run-spaceapp user add <user-id>.");
+      }
+      return lane;
+    };
+    return {
+      ...(lane.ping ? { ping: () => lane.ping!() } : {}),
+      ...(lane.reapDetached ? { reapDetached: () => lane.reapDetached!() } : {}),
+      health: () => lane.health(),
+      inspect: async (identity) => (await pick(identity)).inspect(identity),
+      attach: async (input, listener) => (await pick(input.identity)).attach(input, listener),
+      input: async (identity, ...rest) => (await pick(identity)).input(identity, ...rest),
+      resize: async (identity, ...rest) => (await pick(identity)).resize(identity, ...rest),
+      detach: async (identity, attachmentId) => (await pick(identity)).detach(identity, attachmentId),
+      terminate: async (identity) => (await pick(identity)).terminate(identity),
+      close: () => lane.close()
+    };
   }
 
   private pruneSessionAllocations(nowNs = process.hrtime.bigint()): void {
@@ -1716,6 +1843,20 @@ export class CliTerminalManager {
   private sessionAllocationMonotonicNs(sessionId: string): string | undefined {
     this.pruneSessionAllocations();
     return this.sessionAllocations.get(sessionId)?.allocatedAtNs.toString();
+  }
+
+  /** Removing a room share ends that user's terminals in the room at once (operator-approved 2026-10-16). */
+  closeUserRoomSockets(userId: string, roomId: string): number {
+    let closed = 0;
+    for (const managed of this.sessions.values()) {
+      if (managed.roomId !== roomId) continue;
+      for (const [socket, client] of managed.socketClients) {
+        if (client.userId !== userId || !socketIsOpen(socket)) continue;
+        socket.close(1008, "Room share removed");
+        closed += 1;
+      }
+    }
+    return closed;
   }
 
   issueTicket(paneId: string, sessionId: string, ttlMs: number): PaneCliWebSocketToken {
@@ -1747,6 +1888,7 @@ export class CliTerminalManager {
     initialRows?: number;
     userId: string;
     proofScope?: "READ_ONLY";
+    proofSession?: boolean;
     requestId: string;
   }) {
     const connectionPromise = this.openConnection(socket, {
@@ -1783,6 +1925,7 @@ export class CliTerminalManager {
         return this.failLoginSession(sessionId, "CANCELLED", managed, true);
       }
       await this.flushHostOutput(managed);
+      await Promise.all((managed.pendingInputPersistence ?? []).map((pending) => pending.completion));
       if (transcript) {
         await this.appendTranscript(managed, "system", transcript.content, transcript.traceId);
       }
@@ -1897,7 +2040,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -1989,13 +2132,14 @@ export class CliTerminalManager {
     const managed = this.sessions.get(sessionId);
     if (!managed) {
       const session = await this.options.store.getPaneCliSession(sessionId);
-      if (session?.runtimeId === "cli:opencode" && session.purpose === "NORMAL") {
+      if (session && (detachedHostReplayRoomScreenRuntimes.has(session.runtimeId) || codexHostReplayRoomScreen(session.runtimeId, this.options.config)) && session.purpose === "NORMAL") {
         const geometry = session.terminalGeometry;
-        if (!geometry) return { text: "", revision: 0 };
         // A closed observer WebSocket need not leave an API-managed transport.
         // Read the independent host without spawning or taking browser control.
-        return readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
-          geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => ({ text: "", revision: 0 }));
+        const snapshot = geometry ? await readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
+          geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => null) : null;
+        // Hermes and Qoder keep the DB tail as their fallback: an empty screen would read as idle.
+        if (snapshot || session.runtimeId === "cli:opencode") return snapshot ?? { text: "", revision: 0 };
       }
     }
     if (managed?.runtimeId === "cli:opencode" && !managed.roomScreenGeometryKnown) return { text: "", revision: managed.controlOutputRevision };
@@ -2010,7 +2154,7 @@ export class CliTerminalManager {
     // composer from the DB tail. Its existing host has a larger bounded replay.
     // This observer is separate from browser attachment/replay ownership.
     let text: string | null = null;
-    if (managed?.runtimeId === "cli:opencode" && managed.purpose === "NORMAL") {
+    if (managed && (hostReplayRoomScreenRuntimes.has(managed.runtimeId) || codexHostReplayRoomScreen(managed.runtimeId, this.options.config)) && managed.purpose === "NORMAL" && managed.roomScreenGeometryKnown) {
       text = await readRoomHostScreen(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, unwrap, managed.generationId).catch(() => null);
     }
     const hostReadFailed = managed?.runtimeId === "cli:opencode" && text === null;
@@ -2123,11 +2267,11 @@ export class CliTerminalManager {
     };
     let managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
     activateTransport(managed);
-    const roomPromptPaste = isCodexDirectParityRuntime(managed.runtimeId) && turnMarker !== null &&
-      data.includes(`<space-room-action marker="${turnMarker}">`);
+    const roomPromptPaste = turnMarker !== null && data.includes(`<space-room-action marker="${turnMarker}">`);
     // Codex treats a raw multiline burst and the immediately following Enter
-    // as one paste. Delimit the Room Agent prompt explicitly, then let its
-    // paste buffer settle before acknowledging content to the submit phase.
+    // as one paste, and Claude Code can keep it as an unsent draft. Delimit the
+    // Room Agent prompt explicitly, then let its paste buffer settle before
+    // acknowledging content to the submit phase.
     const sanitizedData = sanitizeCliTerminalInput(managed.runtimeId, data);
     const terminalData = roomPromptPaste ? `\u001b[200~${sanitizedData}\u001b[201~` : sanitizedData;
     if (data.length > 0 && terminalData.length === 0) {
@@ -2138,6 +2282,7 @@ export class CliTerminalManager {
     const interruptKey = terminalData === "\u001b" || terminalData === "\u0003";
     if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer);
     await this.flushHostOutput(managed);
+    await Promise.all((managed.pendingInputPersistence ?? []).map((pending) => pending.completion));
 
     const sendToHost = (candidate: ManagedCliSession) => {
       const host = this.hostForRuntime(candidate.runtimeId, candidate.sessionId);
@@ -2431,18 +2576,22 @@ export class CliTerminalManager {
     this.sessions.clear();
     this.tickets.clear();
     await Promise.all(
-      [...new Set([...this.hostClients, this.adminHostClient])].map((client) => client.close())
+      [...new Set([...this.hostClients, this.adminHostClient, ...this.userHosts.values()])].map((client) => client.close())
     );
   }
 
-  private handleHostTransportClosed(hostIndex: number): void {
+  /** A lost default lane (hostIndex) or a lost per-user host (userId) closes the sockets of the sessions it ran. */
+  private handleHostTransportClosed(hostIndex: number | null, userId?: string): void {
     const managedSessions = [...this.sessions.values()];
     for (const managed of managedSessions) {
       if (managed.closed) continue;
+      const user = managed.runtimeId === "cli:root" ? null : this.resolvedPaneHostUsers.get(managed.paneId) ?? null;
+      const onUserHost = user !== null && this.userHosts.has(user);
+      if (userId !== undefined ? !onUserHost || user !== userId : onUserHost) continue;
       const lane = managed.runtimeId === "cli:root" ? -1 : this.hostClients.length === 1
         ? 0
         : cliHostLaneIndex(managed.sessionId, this.hostClients.length);
-      if (lane !== hostIndex) continue;
+      if (userId === undefined && lane !== hostIndex) continue;
       // The host process is gone (e.g. guarded service restart). Do NOT mark
       // the session EXITED in the store: keeping it RUNNING lets clients
       // reattach after the host returns and recreate the process with exact
@@ -2474,6 +2623,7 @@ export class CliTerminalManager {
       initialRows?: number;
       userId: string;
       proofScope?: "READ_ONLY";
+      proofSession?: boolean;
       requestId: string;
       connectionOrder: number;
     }
@@ -2491,7 +2641,13 @@ export class CliTerminalManager {
       throw new SpaceConflictError("CLI session is not active.");
     }
 
-    const readOnlyObserver = input.proofScope === "READ_ONLY";
+    // In a shared room a user who does not own the pane attaches like a read-only proof: no input, no control, never
+    // starts the owner's CLI (operator-approved 2026-10-16).
+    // A proof session (user:operator-proof) controls only in an Agent Proof room; in an operator room it observes and
+    // never resizes the operator's PTY (security addendum clipboard:tmmVA6-ezGzD, Nous Warm approval 2026-10-19).
+    const proofObserver = input.proofSession === true && (await this.options.store.getRoom(pane.roomId))?.kind !== "AGENT_PROOF";
+    const proofScope = input.proofScope ?? (proofObserver || await this.options.observeOnly?.(pane, input.userId) ? "READ_ONLY" as const : undefined);
+    const readOnlyObserver = proofScope === "READ_ONLY";
     const runtime = readOnlyObserver
       ? activeCliSessionObserverRuntime(this.options.config, session.runtimeId)
       : (await (this.options.discoverRuntimesForAttach ?? this.options.discoverRuntimes)()).data.find((candidate) => candidate.id === session.runtimeId);
@@ -2539,11 +2695,11 @@ export class CliTerminalManager {
       browserClientId: input.browserClientId ?? input.clientId ?? null,
       tabLineageId: input.tabLineageId ?? null,
       pageClientId: input.pageClientId ?? null,
-      clientMode: input.proofScope === "READ_ONLY"
+      clientMode: readOnlyObserver
         ? "OBSERVER"
         : input.clientMode ?? "INTERACTIVE",
       requestedLeaseId: input.requestedLeaseId ?? null,
-      proofScope: input.proofScope ?? null,
+      proofScope: proofScope ?? null,
       leaseId: null,
       requestId: input.requestId,
       connectionOrder: input.connectionOrder,
@@ -2558,7 +2714,7 @@ export class CliTerminalManager {
       const shouldReplay = !attach.spawned || attach.restoredTransport || attach.recreatedAfterHostLoss;
       if (shouldReplay) managed.socketReplayBuffers.set(socket, []);
       managed.sockets.add(socket);
-      if (protocolVersion === 1 && (
+      if (protocolVersion === 1 && !readOnlyObserver && (
         !managed.legacyControllerSocket ||
         !socketIsOpen(managed.legacyControllerSocket) ||
         (managed.socketClients.get(managed.legacyControllerSocket)?.connectionOrder ?? -1) <= input.connectionOrder
@@ -2610,6 +2766,7 @@ export class CliTerminalManager {
           () => this.handleClientMessage(managed, socket, client, raw)
         ),
         detach: async () => {
+          await Promise.all(managed.pendingInputPersistence.map((pending) => pending.completion));
           await this.detachClient(managed, socket, client);
           if (managed.sockets.size === 0) await this.detachTransport(managed);
         }
@@ -2826,7 +2983,9 @@ export class CliTerminalManager {
     const processLaunch = inspected ? undefined : buildCliProcessLaunch(
       this.options.config,
       runtime,
-      buildCliSpawnArgs(runtime, spawnSession, { codexChoosesDefaults: this.options.config.publicDistribution === true })
+      buildCliSpawnArgs(runtime, spawnSession, {
+        codexChoosesDefaults: this.options.config.publicDistribution === true, publicDistribution: this.options.config.publicDistribution === true, devInstance: this.options.config.instance === "dev"
+      })
     );
     const attachInput: CliHostAttachInput = {
       identity,
@@ -2929,6 +3088,7 @@ export class CliTerminalManager {
       pendingHiddenTailTimer: null,
       nextTranscriptSequence: (transcript.at(-1)?.sequence ?? -1) + 1,
       persistQueue: Promise.resolve(),
+      pendingInputPersistence: [],
       controlQueue: Promise.resolve(),
       controlOutput: "",
       controlOutputRevision: 0,
@@ -3016,6 +3176,7 @@ export class CliTerminalManager {
       paneId: session.paneId,
       sessionId: session.sessionId,
       cwd: session.cwd ?? codexDirectParityCwd,
+      startedAt: session.startedAt,
       findThreadId: this.options.findCodexThreadId
     });
     if (!codexThreadId) return session;
@@ -3533,6 +3694,11 @@ export class CliTerminalManager {
     mutation: "input" | "resize" | "interrupt"
   ): Promise<boolean> {
     if (client.protocolVersion === 1) {
+      // An observer or read-only client never mutates the terminal on protocol v1 either (operator-approved 2026-10-17).
+      if (client.clientMode === "OBSERVER" || client.proofScope === "READ_ONLY") {
+        this.sendControlDenied(managed, client, socket, "CLI_OBSERVER_MUTATION_DENIED", "Observer clients cannot change this terminal.");
+        return false;
+      }
       if (await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId)) {
         this.sendControlDenied(managed, client, socket, "CLI_CONTROL_REQUIRED", "Terminal control is held by a protocol-v2 page.");
         return false;
@@ -3608,7 +3774,7 @@ export class CliTerminalManager {
     client: CliTerminalSocketContext,
     raw: WebSocket.RawData
   ): Promise<void> {
-    if (client.detached) return;
+    if (client.detached || client.inputPersistenceFailed) return;
     if (managed.closed) {
       this.send(socket, { type: "error", code: "CLI_SESSION_CLOSED", message: "CLI session is closed." });
       return;
@@ -3642,12 +3808,40 @@ export class CliTerminalManager {
     if (parsed.data.type === "input") {
       const message = parsed.data;
       if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
-      const terminalData = sanitizeCliTerminalInput(managed.runtimeId, message.data);
+      const sanitizedInput = sanitizeCliTerminalInput(managed.runtimeId, message.data);
+      const terminalData = message.display === "hidden" ? dropStaleCliColorReplies(sanitizedInput, managed.colorQueryAtMs, Date.now()) : sanitizedInput;
       if (!terminalData) return;
       const receivedAtMs = Date.now();
       const diagnosticSinceMs = receivedAtMs - 1000;
       const hiddenInput = message.display === "hidden";
-      await this.flushHostOutput(managed);
+      const supersedesSchedule = managed.purpose === "NORMAL" && /[\r\n\x03\x1b]/.test(terminalData);
+      const byteLength = Buffer.byteLength(terminalData, "utf8");
+      const deferPersistence = managed.purpose === "NORMAL" && !supersedesSchedule && !message.turnMarker &&
+        byteLength <= cliInputPersistenceMaxBytes;
+      const pendingInputs = managed.pendingInputPersistence ?? (managed.pendingInputPersistence = []);
+      if (deferPersistence) {
+        // Keep normal typing independent of storage latency, but bound the
+        // accepted input waiting to be saved if storage stalls.
+        while (pendingInputs.length > 0 && (
+          pendingInputs.length >= cliInputPersistenceMaxFrames ||
+          pendingInputs.reduce((bytes, pending) => bytes + pending.byteLength, 0) + byteLength > cliInputPersistenceMaxBytes
+        )) {
+          await pendingInputs[0]!.completion;
+          if (client.inputPersistenceFailed) return;
+          if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
+        }
+      } else {
+        const waitedForInput = pendingInputs.length > 0;
+        await Promise.all(pendingInputs.map((pending) => pending.completion));
+        if (client.inputPersistenceFailed) return;
+        if (waitedForInput && !await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
+      }
+      const outputPersistence = this.flushHostOutput(managed);
+      if (deferPersistence) {
+        void outputPersistence.catch(() => this.failInputPersistence(socket, client));
+      } else {
+        await outputPersistence;
+      }
       const writeInput = () => this.withFreshHostAttachment(managed, () =>
         this.hostForRuntime(managed.runtimeId, managed.sessionId).input(
           managed.identity,
@@ -3658,7 +3852,6 @@ export class CliTerminalManager {
       );
       // Only authorized operator submissions/stops supersede queued controls.
       // Run the actual native write in the same critical section as invalidation.
-      const supersedesSchedule = managed.purpose === "NORMAL" && /[\r\n\x03\x1b]/.test(terminalData);
       const inputResult = supersedesSchedule && this.options.withOperatorMutation
         ? await this.options.withOperatorMutation(managed.paneId, writeInput)
         : await writeInput();
@@ -3682,8 +3875,21 @@ export class CliTerminalManager {
         this.scheduleCodexThreadBind(managed, diagnosticSinceMs);
       }
       if (!hiddenInput && managed.purpose !== "LOGIN") {
-        await this.appendTranscript(managed, "stdin", terminalData);
+        if (deferPersistence) {
+          // Capture the output preceding this input now. Draining the entire
+          // output queue later could move subsequent output ahead of it.
+          const flushThrough = managed.hostOutputQueue.at(-1);
+          const transcriptPersistence = this.enqueuePersistence(managed, async () => {
+            if (flushThrough) await this.persistHostOutputThrough(managed, flushThrough);
+            await this.appendTranscriptNow(managed, "stdin", terminalData, "req:cli-terminal");
+          }, managed.persistQueue, false);
+          this.trackInputPersistence(managed, socket, client, byteLength, [outputPersistence, transcriptPersistence]);
+        } else {
+          await this.appendTranscript(managed, "stdin", terminalData);
+        }
         if (/[\r\n]/.test(terminalData)) this.options.onTaskInput?.(managed.paneId);
+      } else if (deferPersistence) {
+        this.trackInputPersistence(managed, socket, client, byteLength, [outputPersistence]);
       }
       if (!hiddenInput && managed.purpose !== "LOGIN" && terminalData.trim()) {
         this.scheduleCodexNullAgentMessageCheck(managed, diagnosticSinceMs, terminalData);
@@ -3727,6 +3933,11 @@ export class CliTerminalManager {
       return;
     }
     if (!await this.authorizeHostMutation(managed, socket, client, parsed.data.leaseId, "interrupt")) return;
+    const pendingInputs = managed.pendingInputPersistence ?? [];
+    const waitedForInput = pendingInputs.length > 0;
+    await Promise.all(pendingInputs.map((pending) => pending.completion));
+    if (client.inputPersistenceFailed) return;
+    if (waitedForInput && !await this.authorizeHostMutation(managed, socket, client, parsed.data.leaseId, "interrupt")) return;
     await this.flushHostOutput(managed);
     if (managed.purpose === "LOGIN") {
       await this.failLoginSession(managed.sessionId, "CANCELLED", managed, true);
@@ -3743,6 +3954,31 @@ export class CliTerminalManager {
     };
     if (this.options.withOperatorMutation) await this.options.withOperatorMutation(managed.paneId, stop);
     else await stop();
+  }
+
+  private failInputPersistence(socket: WebSocket, client: CliTerminalSocketContext): void {
+    if (client.inputPersistenceFailed) return;
+    client.inputPersistenceFailed = true;
+    // Storage errors can contain input or SQL parameters; never send them to
+    // the terminal. A failed writer cannot keep accepting unsaved input.
+    this.closeWithError(socket, new Error("CLI terminal input could not be saved. Reconnect before sending more input."));
+  }
+
+  private trackInputPersistence(
+    managed: ManagedCliSession,
+    socket: WebSocket,
+    client: CliTerminalSocketContext,
+    byteLength: number,
+    operations: Promise<void>[]
+  ): void {
+    const pendingInputs = managed.pendingInputPersistence;
+    const pending = { byteLength, completion: Promise.resolve() };
+    pendingInputs.push(pending);
+    pending.completion = Promise.all(operations.map((operation) =>
+      operation.catch(() => this.failInputPersistence(socket, client))
+    )).then(() => {
+      pendingInputs.splice(pendingInputs.indexOf(pending), 1);
+    });
   }
 
   private async withFreshHostAttachment<T>(managed: ManagedCliSession, operation: () => Promise<T>): Promise<T> {
@@ -4063,6 +4299,7 @@ export class CliTerminalManager {
     if (!data) return;
     managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
     managed.controlOutputRevision += 1;
+    if (cliColorQuery.test(data)) managed.colorQueryAtMs = Date.now();
     this.scheduleQwenAuthBootstrap(managed);
     if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
       managed.startupOutput = `${managed.startupOutput}${data}`.slice(-16_000);

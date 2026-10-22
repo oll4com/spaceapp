@@ -38,14 +38,18 @@ describe("OpenCode Chat state isolation", () => {
   });
 
   it.each(["plan", "default"] as const)("sends %s to the native OpenCode agent selector", async collaborationMode => {
-    let body: Record<string, unknown> = {};
+    const bodies: Record<string, unknown> = {};
     await executeOpenCodeTurnPrompt({ version: 1, spaceSessionId: "agent_session:test", nativeSessionId: "ses_test",
       serverPort: 47047, serverHost: "127.0.0.1", serverUsername: "test", serverPassword: "test", updatedAt: "2026-09-07T00:00:00Z" },
       { prompt: "test", collaborationMode } as DummyTurnInput,
       { enabled: true, stateRoot: "/unused", messageTimeoutMs: 1000 }, undefined,
-      (async (_url, init) => { body = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ parts: [{ type: "text", text: "ok" }] })); }) as typeof fetch);
-    expect(body.agent).toBe(collaborationMode === "plan" ? "plan" : "build");
-    expect(body.parts).toEqual([{ type: "text", text: "test" }]);
+      (async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        if (init?.body) bodies[path] = JSON.parse(String(init.body));
+        return new Response(JSON.stringify(path.endsWith("/prompt") ? { data: { id: "msg_prompt" } } : { data: [] }));
+      }) as typeof fetch);
+    expect(bodies["/api/session/ses_test/agent"]).toEqual({ agent: collaborationMode === "plan" ? "plan" : "build" });
+    expect(bodies["/api/session/ses_test/prompt"]).toEqual({ text: "test" });
   });
 
   it("aborts the isolated native session when the provider request fails", async () => {
@@ -84,8 +88,8 @@ describe("OpenCode Chat state isolation", () => {
       fetchImpl as typeof fetch
     )).rejects.toThrow("upstream failed");
     expect(calls).toEqual([
-      { url: "http://10.254.240.13:47047/session/ses_chat_test/message", method: "POST" },
-      { url: "http://10.254.240.13:47047/session/ses_chat_test/abort", method: "POST" }
+      { url: "http://10.254.240.13:47047/api/session/ses_chat_test/agent", method: "POST" },
+      { url: "http://10.254.240.13:47047/api/session/ses_chat_test/interrupt", method: "POST" }
     ]);
   });
 });

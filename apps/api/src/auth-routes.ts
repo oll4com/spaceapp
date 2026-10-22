@@ -17,7 +17,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { completeConnectorCallback, type ConnectorOAuthStateTools, type ConnectorService } from "./dot-connectors.js";
 import type { GoogleBrowserStatusSummary } from "./google-browser-session-check.js";
 import { sendApiError } from "./http-errors.js";
-import { createDesktopAuthHandoffStore, isValidDesktopAuthHandoffId } from "./desktop-auth-handoffs.js";
+import { createDesktopAuthHandoffStore, decodeDesktopAuthHandoffCookie, desktopAuthHandoffRedirect, encodeDesktopAuthHandoffCookie, parseDesktopAuthHandoffBinding } from "./desktop-auth-handoffs.js";
 import { recordAudit } from "./request-audit.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 
@@ -40,6 +40,9 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
   const { config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef,
     persistRevocation } = options;
+  // Hashes a throwaway password once, so a sign-in for an email without an account costs the same scrypt time and the
+  // answer time does not reveal which emails exist (security review 2026-10-17).
+  let decoyHash: Promise<string> | null = null;
   app.post("/api/auth/login", {
     config: {
       rateLimit: {
@@ -50,18 +53,21 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
   }, async (request, reply) => {
     const input = parseBody(loginInputSchema, request.body);
     const ownerCredentials = await store.getOwnerCredentials();
+    let hashed = false;
+    const verify = (passwordHash: string) => { hashed = true; return verifyPassword(input.password, passwordHash); };
     let user = ownerCredentials &&
       input.email.toLowerCase() === ownerCredentials.user.email.toLowerCase() &&
-      await verifyPassword(input.password, ownerCredentials.passwordHash)
+      await verify(ownerCredentials.passwordHash)
         ? ownerCredentials.user
         : null;
     if (!user && config.multiUserEnabled && store.getPasswordUser) {
       // Invited users sign in with their own password; a disabled user has none here.
       const account = await store.getPasswordUser(input.email);
-      if (account && account.user.id !== ownerCredentials?.user.id && await verifyPassword(input.password, account.passwordHash)) {
+      if (account && account.user.id !== ownerCredentials?.user.id && await verify(account.passwordHash)) {
         user = account.user;
       }
     }
+    if (!user && !hashed && (ownerCredentials || config.multiUserEnabled)) await verify(await (decoyHash ??= hashPassword(randomBytes(16).toString("hex"))));
     if (!user && (auth.devLogin || !ownerCredentials)) {
       user = await authenticateLogin(input, auth);
     }
@@ -127,15 +133,18 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     });
     return { user, isAuthenticated: true, isSetupRequired: false, optionalModules: [...config.optionalModules] };
   });
+  // A revocation takes effect at once; the answer says whether it was saved (external review 2026-10-16).
+  const revocationsSaved = async (...pending: Promise<void>[]) =>
+    (await Promise.allSettled(pending.map(persistRevocation))).every((result) => result.status === "fulfilled");
+  const logoutNotSaved = (reply: FastifyReply) => sendApiError(reply, 503, "LOGOUT_NOT_SAVED",
+    "You are logged out here, but the logout could not be saved yet; Space keeps retrying. Until it is saved, an API restart would accept this session again.");
   app.post("/api/auth/logout", defaultRouteRateLimitOptions, async (request, reply) => {
     const currentToken = request.cookies[cookieName];
-    if (currentToken) {
-      await persistRevocation(defaultSessionRevocationStore.revokeToken(currentToken));
-    }
     const body = (request.body ?? {}) as { revokeAll?: boolean };
-    if (body.revokeAll && request.user) {
-      await persistRevocation(defaultSessionRevocationStore.revokeUser(request.user.id));
-    }
+    const saved = await revocationsSaved(
+      ...(currentToken ? [defaultSessionRevocationStore.revokeToken(currentToken)] : []),
+      ...(body.revokeAll && request.user ? [defaultSessionRevocationStore.revokeUser(request.user.id)] : [])
+    );
     if (request.user) {
       await recordAudit(store, request, {
         action: "auth.logout",
@@ -152,17 +161,18 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       maxAge: 86400 * 30
     });
     reply.clearCookie(cookieName, { path: "/" });
+    if (!saved) return logoutNotSaved(reply);
     return { ok: true };
   });
   app.post("/api/auth/logout-all", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!request.user) {
       return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required to revoke all sessions.");
     }
-    await persistRevocation(defaultSessionRevocationStore.revokeUser(request.user.id));
     const currentToken = request.cookies[cookieName];
-    if (currentToken) {
-      await persistRevocation(defaultSessionRevocationStore.revokeToken(currentToken));
-    }
+    const saved = await revocationsSaved(
+      defaultSessionRevocationStore.revokeUser(request.user.id),
+      ...(currentToken ? [defaultSessionRevocationStore.revokeToken(currentToken)] : [])
+    );
     await recordAudit(store, request, {
       actorUserId: request.user.id,
       action: "auth.logout_all",
@@ -178,13 +188,12 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       maxAge: 86400 * 30
     });
     reply.clearCookie(cookieName, { path: "/" });
+    if (!saved) return logoutNotSaved(reply);
     return { ok: true, message: "All user sessions have been revoked." };
   });
   const handleGetLogout = async (request: FastifyRequest, reply: FastifyReply) => {
     const currentToken = request.cookies[cookieName];
-    if (currentToken) {
-      await persistRevocation(defaultSessionRevocationStore.revokeToken(currentToken));
-    }
+    const saved = await revocationsSaved(...(currentToken ? [defaultSessionRevocationStore.revokeToken(currentToken)] : []));
     if (request.user) {
       await recordAudit(store, request, {
         actorUserId: request.user.id,
@@ -202,6 +211,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       maxAge: 86400 * 30
     });
     reply.clearCookie(cookieName, { path: "/" });
+    if (!saved) return logoutNotSaved(reply);
     return reply.redirect("/?login");
   };
   app.get("/api/auth/logout", defaultRouteRateLimitOptions, handleGetLogout);
@@ -304,15 +314,6 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     return { ok: true };
   });
   const desktopAuthHandoffs = createDesktopAuthHandoffStore();
-  function escapeHtml(str: string): string {
-    return str.replace(/[&<>'"]/g, (tag) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "'": "&#39;",
-      '"': "&quot;"
-    }[tag] || tag));
-  }
   const connectorStatePurpose = (state: string | undefined): string | null => {
     try { return (JSON.parse(Buffer.from(verifyOAuthState(state, auth.sessionSecret) ?? "", "base64url").toString("utf8")) as { purpose?: string }).purpose ?? null; }
     catch { return null; }
@@ -325,6 +326,13 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const linking = query?.link === "true" || request.routeOptions.url === "/api/auth/google/accounts/link";
     if (linking && !request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in before linking a Google account.");
     if (linking && isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot link external accounts.");
+    // A desktop sign-in must name the desktop app's loopback port and PKCE challenge; a bare handoff id would hand the
+    // session to whoever chose it (run-spaceapp 1.1.7 review, Codex finding 1).
+    const desktopBinding = query?.desktopHandoff === undefined ? null
+      : parseDesktopAuthHandoffBinding({ handoffId: query.desktopHandoff, port: query.desktopPort, codeChallenge: query.desktopChallenge });
+    if (query?.desktopHandoff !== undefined && !desktopBinding) {
+      return sendApiError(reply, 400, "DESKTOP_HANDOFF_UNBOUND", "This desktop sign-in link is not bound to a SpaceApp desktop app. Update the desktop app and start the sign-in from it again.");
+    }
     const pkce = generatePkcePair();
     const rawState = Buffer.from(JSON.stringify({
       nonce: randomBytes(16).toString("hex"), expiresAt: Date.now() + 600_000,
@@ -337,7 +345,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const forwardedProto = request.headers["x-forwarded-proto"];
     const forwardedHost = request.headers["x-forwarded-host"];
     const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
     const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
 
     reply.setCookie("space_oauth_state", state, {
@@ -363,9 +371,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       codeChallenge: pkce.codeChallenge
     });
 
-    const desktopHandoff = query?.desktopHandoff;
-    if (isValidDesktopAuthHandoffId(desktopHandoff)) {
-      reply.setCookie("space_oauth_desktop_handoff", desktopHandoff, {
+    if (desktopBinding) {
+      reply.setCookie("space_oauth_desktop_handoff", encodeDesktopAuthHandoffCookie(desktopBinding), {
         httpOnly: true,
         secure: auth.secureCookies,
         sameSite: "lax",
@@ -425,7 +432,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const savedState = request.cookies["space_oauth_state"];
     const pkceCookie = request.cookies["space_oauth_pkce"];
     const linkCookie = request.cookies["space_oauth_link_user"];
-    const desktopHandoff = request.cookies["space_oauth_desktop_handoff"];
+    const desktopHandoff = decodeDesktopAuthHandoffCookie(request.cookies["space_oauth_desktop_handoff"]);
     for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile"]) reply.clearCookie(name, { path: "/" });
     const verifiedState = verifyOAuthState(state, auth.sessionSecret);
     let transaction: { userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number } | null = null;
@@ -458,7 +465,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const forwardedProto = request.headers["x-forwarded-proto"];
     const forwardedHost = request.headers["x-forwarded-host"];
     const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
     const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
 
     try {
@@ -509,40 +516,17 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
         maxAge: operatorSessionTtlSeconds
       });
 
-      if (isValidDesktopAuthHandoffId(desktopHandoff)) {
-        desktopAuthHandoffs.store(desktopHandoff, {
+      if (desktopHandoff) {
+        // The one-time code goes only to the desktop app's loopback listener on this machine; the app redeems it with
+        // the PKCE verifier it kept (POST /api/auth/desktop-handoff).
+        const handoffCode = randomBytes(32).toString("base64url");
+        desktopAuthHandoffs.store(desktopHandoff.handoffId, {
           token,
-          user: { id: user.id, email: user.email, role: user.role }
+          user: { id: user.id, email: user.email, role: user.role },
+          code: handoffCode,
+          codeChallenge: desktopHandoff.codeChallenge
         });
-        reply.type("text/html; charset=utf-8");
-        const safeEmail = escapeHtml(user.email || "operator");
-        return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SpaceApp - Sign In Complete</title>
-  <style>
-    body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 1rem; box-sizing: border-box; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2.5rem; text-align: center; max-width: 440px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
-    h1 { color: #58a6ff; font-size: 1.5rem; margin-top: 0.75rem; margin-bottom: 0.5rem; }
-    p { color: #8b949e; line-height: 1.5; font-size: 0.95rem; }
-    .badge { display: inline-block; padding: 0.35rem 0.85rem; background: #238636; color: #fff; border-radius: 20px; font-weight: 600; font-size: 0.85rem; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">✓ Connected</div>
-    <h1>Signed in successfully</h1>
-    <p>You have signed in to SpaceApp as <strong>${safeEmail}</strong>.</p>
-    <p>You can close this tab and return to your SpaceApp desktop window.</p>
-    <script>
-      try { window.location.href = "spaceapp://auth-complete"; } catch(e) {}
-      setTimeout(() => { try { window.close(); } catch(e) {} }, 4000);
-    </script>
-  </div>
-</body>
-</html>`;
+        return reply.redirect(desktopAuthHandoffRedirect(desktopHandoff, handoffCode));
       }
 
       if (request.cookies["space_oauth_mobile"] === "true") {
@@ -577,14 +561,11 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       return fail(clientMessage);
     }
   });
-  app.get("/api/auth/desktop-handoff", defaultRouteRateLimitOptions, async (request, reply) => {
-    const query = request.query as Record<string, string> | undefined;
-    const handoffId = query?.handoffId;
-    if (!isValidDesktopAuthHandoffId(handoffId)) {
-      return sendApiError(reply, 400, "INVALID_HANDOFF_ID", "A valid handoffId is required.");
-    }
-    // Single use and time-limited: an unclaimed sign-in expires on its own.
-    const entry = desktopAuthHandoffs.take(handoffId);
+  app.post("/api/auth/desktop-handoff", defaultRouteRateLimitOptions, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    // Single use and time-limited: a wrong code or verifier burns the handoff, an unclaimed one expires on its own.
+    const entry = desktopAuthHandoffs.redeem(String(body.handoffId ?? ""), body.code, body.codeVerifier);
     if (!entry) {
       return { authenticated: false };
     }

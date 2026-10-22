@@ -26,7 +26,7 @@ change.
 
 | Runtime | Package and pinned version | Normal owner setup |
 | --- | --- | --- |
-| **OpenCode (first)** | `opencode-ai@1.18.4` (in the image) | no login for free models; starter model `opencode/big-pickle`, checked on first launch; `opencode auth login` for other providers |
+| **OpenCode (first)** | `@opencode/cli@2.0.32` (OpenCode 2, in the image) | no login for free models; starter model `opencode/big-pickle`, checked on first launch; `opencode auth login` for other providers |
 | Codex CLI | `@openai/codex@0.145.0` | official device-code login or API key |
 | Gemini CLI | `@google/gemini-cli@0.52.0` | official Google OAuth or API key |
 | Qwen Code | `@qwen-code/qwen-code@0.20.1` | official `/auth` provider menu or API key |
@@ -45,7 +45,7 @@ volume:
 npx --yes run-spaceapp@latest provider install claude
 ```
 
-That command downloads `@anthropic-ai/claude-code@2.1.206` directly from npm
+That command downloads `@anthropic-ai/claude-code@2.1.301` directly from npm
 as an owner-initiated action. Use remains subject to Anthropic's current terms.
 
 DeepSeek support is **community/experimental**. `run-deepseek-cli` is not an

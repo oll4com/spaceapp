@@ -1,5 +1,5 @@
 import { repositoryListInputSchema, repositoryTargetListInputSchema, createRemoteRepositoryInputSchema, type RepositoryProviderAdapter, type RepositoryProviderId } from "@space/contracts";
-import type { ProviderExchange, ProviderUrlPolicy } from "../providers.js";
+import type { ProviderExchange, ProviderUrlPolicy } from "../provider-transport.js";
 import { GitControlError } from "../errors.js";
 import { ForgeAdapter } from "./forge.js";
 import { GitLabAdapter } from "./gitlab.js";

@@ -13,7 +13,7 @@ export type ClaudeUpstreamAuth = "bearer" | "api-key";
  * `x-api-key` instead, without that beta: Anthropic refuses it on a key.
  */
 export function buildClaudeUpstreamHeaders(inbound: Record<string, string | string[] | undefined>, accessToken: string,
-  accept = "application/json", auth: ClaudeUpstreamAuth = "bearer"): Record<string, string> {
+  accept = "application/json", auth: ClaudeUpstreamAuth = "bearer", extraBetas: string[] = []): Record<string, string> {
   const connectionScoped = new Set(
     String(inbound.connection ?? "").split(",").map((token) => token.trim().toLowerCase()).filter(Boolean)
   );
@@ -26,6 +26,7 @@ export function buildClaudeUpstreamHeaders(inbound: Record<string, string | stri
   }
   const betas = (headers["anthropic-beta"] ?? "").split(",").map((beta) => beta.trim()).filter(Boolean).filter((beta) => beta !== CLAUDE_OAUTH_BETA);
   if (auth === "bearer") betas.push(CLAUDE_OAUTH_BETA);
+  for (const beta of extraBetas) if (!betas.includes(beta)) betas.push(beta);
   if (betas.length > 0) headers["anthropic-beta"] = betas.join(","); else delete headers["anthropic-beta"];
   headers["anthropic-version"] ??= DEFAULT_ANTHROPIC_VERSION;
   if (auth === "bearer") headers.authorization = `Bearer ${accessToken}`; else headers["x-api-key"] = accessToken;

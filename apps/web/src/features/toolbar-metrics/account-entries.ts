@@ -3,7 +3,9 @@ import type {
   AntigravityUsageAccount,
   ClaudeUsageAccount,
   CodexUsageAccount,
+  GatewayAnthropicBillingReport,
 } from "@space/contracts";
+import { browserTimeZone, formatUserTime, readDateTimeSettings, type DateTimeSettings } from "../date-time-settings/date-time-settings.js";
 import { CODEX_EXHAUSTION_THRESHOLD_PERCENT } from "../system-health/health-model.js";
 import type { AccountQuotaEntry, AccountQuotaRow } from "./AccountQuotaCards.js";
 import {
@@ -57,6 +59,31 @@ export function claudeApiKeyUsageText(account: ClaudeUsageAccount, clock: number
   const last = usage.lastUsedAt ? formatAgoShort(usage.lastUsedAt, clock) : null;
   const cost = usage.costUsd >= 0.005 ? ` ($${usage.costUsd.toFixed(2)})` : "";
   return `Used ${usage.requests} ${usage.requests === 1 ? "time" : "times"} through Space Gateway${cost}${last ? `, last ${last}` : ""}.`;
+}
+
+/**
+ * Anthropic's own bill (Admin API, operator request 2026-10-20) for the Claude API-key card, per Anthropic's UTC days: a day
+ * Anthropic has not posted yet counts Space Gateway's list-price estimate. The month is the owner's working time zone's.
+ */
+export function anthropicBillLines(report: GatewayAnthropicBillingReport | null | undefined, clock: number, settings?: DateTimeSettings): string[] {
+  if (!report?.status?.configured) return [];
+  const active = settings ?? readDateTimeSettings();
+  const today = new Date(clock).toISOString().slice(0, 10);
+  const weekStart = new Date(clock - 6 * 86_400_000).toISOString().slice(0, 10);
+  let month = today.slice(0, 7);
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: active.timeZone && active.timeZone !== "system" ? active.timeZone : browserTimeZone(), year: "numeric", month: "2-digit" }).formatToParts(clock);
+    month = `${parts.find((part) => part.type === "year")!.value}-${parts.find((part) => part.type === "month")!.value}`;
+  } catch { /* an unknown zone keeps UTC's month */ }
+  const usd = (day: GatewayAnthropicBillingReport["days"][number]) => (day.reported ? day.organizationUsd : day.gatewayEstimateUsd);
+  const total = (keep: (day: string) => boolean) => `$${report.days.filter((day) => keep(day.day)).reduce((sum, day) => sum + usd(day), 0).toFixed(2)}`;
+  const reported = report.days.find((day) => day.day === today)?.reported ?? false;
+  const { lastSyncAt, lastError } = report.status;
+  return [
+    `Anthropic bill: today ${total((day) => day === today)}${reported ? "" : " (estimate)"} · 7 days ${total((day) => day >= weekStart)} · this month ${total((day) => day.startsWith(month))} · 31 days ${total(() => true)}.`,
+    lastSyncAt ? `Synced ${formatUserTime(lastSyncAt, {}, active)}.` : "Not synced with Anthropic yet.",
+    ...(lastError ? [`The last sync failed (${lastError}).`] : [])
+  ];
 }
 
 function formatAgoShort(value: string, clock: number): string {
@@ -154,7 +181,8 @@ function claudeGatewayEntry(account: ClaudeUsageAccount, pool: NonNullable<Claud
   };
 }
 
-export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: number): AccountQuotaEntry[] {
+/** `bill`: anthropicBillLines for API-key cards. */
+export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: number, bill: string[] = []): AccountQuotaEntry[] {
   return accounts.map((account) => {
     if (account.status === "GATEWAY" && account.pool) return claudeGatewayEntry(account, account.pool, clock);
     const connected = account.status === "CONNECTED";
@@ -165,6 +193,7 @@ export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: numb
       availability: connected ? classifyQuota(account, clock) : offline,
       offlineLabel: claudeStatusLabel(account),
       hint: account.status === "API_KEY" ? claudeApiKeyHint(account, clock) : claudeStatusHint(account),
+      ...(account.status === "API_KEY" && bill.length ? { notes: bill } : {}),
       rows: connected
         ? [{ key: "claude", label: null, quota: account, threshold: ACCOUNT_AVAILABLE_THRESHOLD_PERCENT, weeklyScope: account.weeklyScope }]
         : [],

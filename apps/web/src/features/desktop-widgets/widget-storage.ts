@@ -43,7 +43,7 @@ const DEFAULT_PUSHUP_CONFIG: PushupReminderWidgetConfig = {
 
 const DEFAULT_PROMO_CONFIG: SpaceAppPromoWidgetConfig = {
   headline: "SpaceApp.dev it's FREE!!!",
-  subheadline: "SOURCE-AVAILABLE",
+  subheadline: "OPEN SOURCE",
   platformText: "FOR ALL PLATFORMS",
   url: "https://spaceapp.dev"
 };

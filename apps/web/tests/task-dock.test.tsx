@@ -117,11 +117,11 @@ describe("TaskDock", () => {
     const today = within(screen.getByRole("list", { name: "Today" }));
     expect(today.getByText("Hetzner VAT watch")).toBeTruthy();
     const chip = today.getByText(/every 2 h/);
-    expect(chip.textContent).toMatch(/12:47 · every 2 h/);
+    expect(chip.textContent).toMatch(/12:47 UTC · every 2 h/);
     expect(chip.getAttribute("title")).toBe("Sent to the CLI at 10:47.");
     expect(today.getByText("Claude")).toBeTruthy();
     expect(within(screen.getByRole("list", { name: "Overdue" })).getByText("Pay invoice")).toBeTruthy();
-    expect(within(screen.getByRole("list", { name: "Tomorrow" })).getByText(/18:00 · daily/)).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Tomorrow" })).getByText(/18:00 UTC · daily/)).toBeTruthy();
     expect(screen.queryByText("Old task")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
     expect(within(screen.getByRole("list", { name: "Completed" })).getByText("Old task")).toBeTruthy();
@@ -142,6 +142,7 @@ describe("TaskDock", () => {
     fireEvent.change(screen.getByLabelText("Time"), { target: { value: "18:30" } });
     expect((screen.getByRole("combobox", { name: "Run in" }) as HTMLSelectElement).value).toBe("pane:cli");
     expect(screen.getByText(/Times in Europe\/Athens/)).toBeTruthy();
+    expect(screen.getByText(/does not track whether the CLI finishes it/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save task" }));
     await waitFor(() => expect(mocks.createTaskItem).toHaveBeenCalledWith({
       title: "Backups",

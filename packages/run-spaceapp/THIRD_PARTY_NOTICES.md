@@ -1,18 +1,22 @@
 # Third-party CLI notices
 
-The `run-spaceapp` launcher is Apache-2.0. SpaceApp images integrate independent
+The `run-spaceapp` launcher is MIT (from 1.1.7; up to 1.1.6 it was Apache-2.0). SpaceApp images integrate independent
 CLI packages that retain their own licenses and service terms:
 
 - `@openai/codex@0.145.0` — Apache-2.0
 - `@google/gemini-cli@0.52.0` — Apache-2.0
-- `opencode-ai@1.18.4` — MIT in npm metadata
+- `@opencode/cli@2.0.32` — MIT in npm metadata
 - `@qwen-code/qwen-code@0.20.1` — Apache-2.0
 - `@moonshot-ai/kimi-code@0.29.0` — MIT
 - `@xai-official/grok@0.2.111` — Apache-2.0 in npm metadata
 - `run-deepseek-cli@0.1.1` — MIT; community/experimental and not an official
   DeepSeek CLI
 
-Claude Code (`@anthropic-ai/claude-code@2.1.206`) is governed by Anthropic's
+`templates/seccomp-cli.json` is Docker's default seccomp profile from
+`github.com/moby/profiles` (`seccomp/v0.2.4`, Apache-2.0) with one added rule for
+user namespaces.
+
+Claude Code (`@anthropic-ai/claude-code@2.1.301`) is governed by Anthropic's
 commercial terms and is not included in published SpaceApp images. It is
 available only through the explicit owner-initiated
 `spaceapp provider install claude` flow and remains subject to Anthropic's

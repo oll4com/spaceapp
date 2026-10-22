@@ -73,10 +73,10 @@ export function cliBuildModeState(runtimeId: string, screen: string): 'plan' | '
     if (rail) return /\|\s*plan on\b/i.test(rail) ? 'plan' : 'build';
   }
   if (runtimeId === 'cli:droid') {
-    // Spec mode titles the composer box "╭── Spec ──"; the autonomy rail is always visible.
+    // Spec mode titles the composer box "╭── Spec ──"; the autonomy rail is always visible (narrow panes clip it to "Auto…").
     const recent = lines.slice(-8);
     if (recent.some(line => /^╭─+\s*Spec\s*─/.test(line))) return 'plan';
-    if (recent.some(line => /^Auto \((?:Off|Low|Medium|High)\)\s*·/.test(line))) return 'build';
+    if (recent.some(line => /^Auto(?: \((?:Off|Low|Medium|High)\)\s*·|…)/.test(line))) return 'build';
   }
   if (runtimeId === 'cli:grok') {
     // These TUIs emit mode changes immediately above the empty composer.

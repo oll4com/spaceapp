@@ -2,7 +2,7 @@
   "name": "space",
   "version": "0.2.5",
   "private": true,
-  "license": "BUSL-1.1",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/oll4com/spaceapp.git"

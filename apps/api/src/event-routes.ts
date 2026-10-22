@@ -1,8 +1,9 @@
 import type {} from "./request-context.js";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { idSchema } from "@space/contracts";
+import { idSchema, type Event } from "@space/contracts";
 import type { SpaceEventBus, SpaceStore } from "@space/runtime";
+import type { RoomShareAccess } from "./room-shares.js";
 import { sendApiError } from "./http-errors.js";
 import { parseQuery } from "./route-parsing.js";
 import {
@@ -37,8 +38,30 @@ export function registerEventRoutes(app: FastifyInstance, options: {
   store: SpaceStore;
   eventBus: SpaceEventBus;
   routeOptions: { config: { rateLimit: { max: number; timeWindow: string } } };
+  roomShares?: Pick<RoomShareAccess, "shareOf" | "onRemoved">;
 }) {
-  const { store, eventBus, routeOptions: defaultRouteRateLimitOptions } = options;
+  const { store, eventBus, routeOptions: defaultRouteRateLimitOptions, roomShares } = options;
+  // A USER gets events only of rooms they own or that were shared with them (a roomId in the query is checked
+  // centrally). Events outside every room carry ids only and still reach everyone. null: ADMIN and OPERATOR see
+  // every room, as before. A removed share drops the room from the user's open streams.
+  const ownedRoomEvents = (request: FastifyRequest) => {
+    const user = request.user;
+    if (user?.role !== "USER") return null;
+    const owned = new Map<string, Promise<boolean>>();
+    const visible = (event: Event): Promise<boolean> => {
+      if (!event.roomId) return Promise.resolve(true);
+      const roomId = event.roomId;
+      let known = owned.get(roomId);
+      if (!known) {
+        known = Promise.resolve(store.getRoom(roomId)).then(async (room) =>
+          room.ownerUserId === user.id || (await roomShares?.shareOf(roomId, user.id) ?? null) !== null, () => false);
+        owned.set(roomId, known);
+      }
+      return known;
+    };
+    const forget = roomShares?.onRemoved((roomId, userId) => { if (userId === user.id) owned.set(roomId, Promise.resolve(false)); });
+    return { visible, close: () => forget?.() };
+  };
   app.get("/api/events", defaultRouteRateLimitOptions, async (request, reply) => {
     const parsedQuery = listEventsQuerySchema.safeParse(request.query);
     if (!parsedQuery.success) {
@@ -48,7 +71,8 @@ export function registerEventRoutes(app: FastifyInstance, options: {
     if (query.roomId) {
       await store.getRoom(query.roomId);
     }
-    const events = await store.listEventsPage(query);
+    // The paged list cannot filter by owner, so a USER lists events one room at a time.
+    const events = request.user?.role === "USER" && !query.roomId ? { items: [], total: 0 } : await store.listEventsPage(query);
     return {
       data: events.items,
       pagination: {
@@ -64,7 +88,11 @@ export function registerEventRoutes(app: FastifyInstance, options: {
     if (query.roomId) {
       await store.getRoom(query.roomId);
     }
-    const replayEvents = await loadEventStreamReplay(store, query);
+    const filter = ownedRoomEvents(request);
+    const visible = filter?.visible;
+    const loaded = await loadEventStreamReplay(store, query);
+    const replayEvents = visible ? (await Promise.all(loaded.map(async (event) => (await visible(event)) ? event : null)))
+      .filter((event): event is Event => event !== null) : loaded;
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
@@ -80,17 +108,24 @@ export function registerEventRoutes(app: FastifyInstance, options: {
     const stopHeartbeat = startSseHeartbeat((frame) => {
       if (!isClosed) reply.raw.write(frame);
     });
-    const unsubscribe = eventBus.subscribe((event) => {
+    const send = (event: Event) => {
       if (!isClosed && eventMatchesRoom(event, query.roomId) && !seenEventIds.has(event.id)) {
         trackSeenEventId(seenEventIds, event.id);
         reply.raw.write(formatSseMessage(event.type, event));
       }
+    };
+    // The owner lookups are chained so a USER's stream keeps the event order.
+    let ordered = Promise.resolve();
+    const unsubscribe = eventBus.subscribe((event) => {
+      if (!visible) return send(event);
+      ordered = ordered.then(async () => { if (await visible(event)) send(event); });
     });
     const closeStream = () => {
       if (isClosed) return;
       isClosed = true;
       stopHeartbeat();
       unsubscribe();
+      filter?.close();
     };
     reply.raw.once("close", closeStream);
     request.raw.once("aborted", closeStream);

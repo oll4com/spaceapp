@@ -41,6 +41,109 @@ export interface SystemAnalyticsModelEventRecord {
 /** Fields a later read may not know (a re-read without the route keeps the stored one). */
 const keptModelEventFields = ["route", "accountKey", "costUsd", "tokensCacheRead", "tokensCacheWrite"] as const;
 
+/**
+ * Model events of a window summed per everything the Token usage page splits them by, so the API never holds every
+ * event (stable 2026-10-19: 293k rows for 30 days). Only visible events: not root, RUNNING only in a live session, and
+ * each CLI turn once. Seqs are positions in the listing order the page always used: transcript, gateway and session
+ * events by start, then each CLI turn where it first appeared. Groups come in order of their first event.
+ */
+export interface SystemAnalyticsModelEventGroup {
+  /** The gateway's copy of a gateway call, or a transcript's copy of a direct one: each token once. */
+  counted: boolean;
+  gateway: boolean;
+  runtimeId: string;
+  providerId: string;
+  modelId: string;
+  status: SystemAnalyticsModelEventStatus;
+  coverage: SystemAnalyticsCoverage;
+  accountKey: string | null;
+  /** tokensIn + tokensOut > 0 */
+  hasTokens: boolean;
+  liveSessionId: string | null;
+  /** Start (epoch ms) of the `bucketMs` bucket the events ended in (started in, while running). */
+  bucketAtMs: number;
+  /** Sum of turnCount; unpriced turns, TTFT and duration weigh each event at least 1. */
+  turns: number;
+  unpricedTurns: number;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  tokensReasoning: number | null;
+  costUsd: number | null;
+  ttftSum: number;
+  ttftWeight: number;
+  durationSum: number;
+  durationWeight: number;
+  tokensCacheRead: number;
+  tokensCacheWrite: number;
+  /** Input minus cache reads and writes, at least 0 per event. */
+  freshInput: number;
+  firstAt: string;
+  lastAt: string;
+  firstSeq: number;
+  lastSeq: number;
+}
+
+export interface SystemAnalyticsModelEventSummaryInput {
+  since: string;
+  liveSessionIds: readonly string[];
+  bucketMs: number;
+}
+
+/**
+ * A CLI turn read again after its pane closed is stored under the global key next to its old pane-keyed copy: count
+ * each turn once, preferring the copy that knows its route, then the fullest. Gateway requests and Claude messages have
+ * unique keys. The SQL in PostgresSystemAnalyticsRepository.summarizeModelEvents does the same.
+ */
+export function summarizeModelEventRecords(events: SystemAnalyticsModelEventRecord[], input: SystemAnalyticsModelEventSummaryInput): SystemAnalyticsModelEventGroup[] {
+  const live = new Set(input.liveSessionIds);
+  const kept: SystemAnalyticsModelEventRecord[] = [];
+  const byTurn = new Map<string, SystemAnalyticsModelEventRecord>();
+  const total = (event: SystemAnalyticsModelEventRecord) => (event.tokensIn ?? 0) + (event.tokensOut ?? 0);
+  for (const event of events) {
+    if (event.providerId === "root" || event.runtimeId === "cli:root" || (event.status === "RUNNING" && !(event.sessionId && live.has(event.sessionId)))) continue;
+    if (event.source === "gateway" || event.source === "claude" || event.source === "session" || !event.turnId) { kept.push(event); continue; }
+    const key = `${event.source}\u0000${event.runtimeId}\u0000${event.turnId}`;
+    const other = byTurn.get(key);
+    if (!other || (!other.route && event.route) || (Boolean(other.route) === Boolean(event.route) && total(event) > total(other))) byTurn.set(key, event);
+  }
+  const groups = new Map<string, SystemAnalyticsModelEventGroup>();
+  [...kept, ...byTurn.values()].forEach((event, seq) => {
+    const counted = event.source === "gateway" || event.route !== "GATEWAY";
+    const liveSessionId = event.sessionId && live.has(event.sessionId) ? event.sessionId : null;
+    const bucketAtMs = Math.floor(Date.parse(event.endedAt ?? event.startedAt) / input.bucketMs) * input.bucketMs;
+    const groupKey = JSON.stringify([counted, event.source === "gateway", event.runtimeId, event.providerId, event.modelId, event.status,
+      event.coverage, event.accountKey ?? null, total(event) > 0, liveSessionId, bucketAtMs]);
+    const group = groups.get(groupKey) ?? {
+      counted, gateway: event.source === "gateway", runtimeId: event.runtimeId, providerId: event.providerId, modelId: event.modelId,
+      status: event.status, coverage: event.coverage, accountKey: event.accountKey ?? null, hasTokens: total(event) > 0, liveSessionId, bucketAtMs,
+      turns: 0, unpricedTurns: 0, tokensIn: null, tokensOut: null, tokensReasoning: null, costUsd: null, ttftSum: 0, ttftWeight: 0,
+      durationSum: 0, durationWeight: 0, tokensCacheRead: 0, tokensCacheWrite: 0, freshInput: 0,
+      firstAt: event.startedAt, lastAt: event.endedAt ?? event.updatedAt ?? event.startedAt, firstSeq: seq, lastSeq: seq
+    };
+    const weight = Math.max(event.turnCount, 1);
+    const add = (sum: number | null, value: number | null | undefined) => value === null || value === undefined ? sum : (sum ?? 0) + value;
+    group.turns += Math.max(event.turnCount, 0);
+    if (event.costUsd === null || event.costUsd === undefined) { if (total(event) > 0) group.unpricedTurns += weight; }
+    group.tokensIn = add(group.tokensIn, event.tokensIn);
+    group.tokensOut = add(group.tokensOut, event.tokensOut);
+    group.tokensReasoning = add(group.tokensReasoning, event.tokensReasoning);
+    group.costUsd = add(group.costUsd, event.costUsd);
+    if (event.ttftMs !== null) { group.ttftSum += event.ttftMs * weight; group.ttftWeight += weight; }
+    if (event.durationMs !== null) { group.durationSum += event.durationMs * weight; group.durationWeight += weight; }
+    const read = event.tokensCacheRead ?? 0;
+    const write = event.tokensCacheWrite ?? 0;
+    group.tokensCacheRead += read;
+    group.tokensCacheWrite += write;
+    group.freshInput += Math.max((event.tokensIn ?? 0) - read - write, 0);
+    if (event.startedAt < group.firstAt) group.firstAt = event.startedAt;
+    const lastAt = event.endedAt ?? event.updatedAt ?? event.startedAt;
+    if (lastAt > group.lastAt) group.lastAt = lastAt;
+    group.lastSeq = seq;
+    groups.set(groupKey, group);
+  });
+  return [...groups.values()];
+}
+
 export interface SystemAnalyticsResourceSample {
   sampledAt: string;
   entityType: SystemAnalyticsResourceEntityType;
@@ -79,9 +182,12 @@ export interface SystemAnalyticsResourceBucket extends Omit<SystemAnalyticsResou
 
 export interface SystemAnalyticsRepository {
   upsertModelEvents(events: SystemAnalyticsModelEventRecord[]): Promise<void>;
-  listModelEvents(since: string): Promise<SystemAnalyticsModelEventRecord[]>;
+  /** Model events are token usage and are never deleted (operator rule 2026-10-18); a RUNNING turn not updated for 31 days is an orphan and only leaves the lists. */
+  listModelEvents(since: string, providerIds?: readonly string[]): Promise<SystemAnalyticsModelEventRecord[]>;
+  summarizeModelEvents(input: SystemAnalyticsModelEventSummaryInput): Promise<SystemAnalyticsModelEventGroup[]>;
   insertResourceSamples(samples: SystemAnalyticsResourceSample[]): Promise<void>;
   listResourceBuckets(input: { since: string; resolutionSeconds: 10 | 60 | 900 }): Promise<SystemAnalyticsResourceBucket[]>;
+  /** Rolls up and sweeps resource buckets only; model events are never swept. */
   rollupAndSweep(at: string): Promise<void>;
   getBackfill(): Promise<SystemAnalyticsBackfill>;
   setBackfill(input: SystemAnalyticsBackfill): Promise<void>;
@@ -187,12 +293,18 @@ export class InMemorySystemAnalyticsRepository implements SystemAnalyticsReposit
     }
   }
 
-  async listModelEvents(since: string): Promise<SystemAnalyticsModelEventRecord[]> {
+  async listModelEvents(since: string, providerIds?: readonly string[]): Promise<SystemAnalyticsModelEventRecord[]> {
     const sinceMs = Date.parse(since);
     return [...this.modelEvents.values()]
-      .filter((event) => Date.parse(event.endedAt ?? event.startedAt) >= sinceMs || event.status === "RUNNING")
+      .filter((event) => !providerIds || providerIds.includes(event.providerId))
+      .filter((event) => Date.parse(event.endedAt ?? event.startedAt) >= sinceMs
+        || (event.status === "RUNNING" && Date.parse(event.updatedAt) >= Date.now() - 31 * 24 * 60 * 60 * 1000))
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
       .map(clone);
+  }
+
+  async summarizeModelEvents(input: SystemAnalyticsModelEventSummaryInput): Promise<SystemAnalyticsModelEventGroup[]> {
+    return summarizeModelEventRecords(await this.listModelEvents(input.since), input);
   }
 
   async insertResourceSamples(samples: SystemAnalyticsResourceSample[]): Promise<void> {
@@ -241,11 +353,6 @@ export class InMemorySystemAnalyticsRepository implements SystemAnalyticsReposit
       if (Date.parse(sample.sampledAt) >= cutoff) this.samples[write++] = sample;
     }
     this.samples.length = write;
-    for (const [key, event] of this.modelEvents) {
-      const activityExpired = Date.parse(event.endedAt ?? event.startedAt) < cutoff;
-      const runningUpdateExpired = event.status === "RUNNING" && Date.parse(event.updatedAt) < cutoff;
-      if ((event.status !== "RUNNING" && activityExpired) || runningUpdateExpired) this.modelEvents.delete(key);
-    }
   }
 
   async getBackfill(): Promise<SystemAnalyticsBackfill> {
@@ -400,7 +507,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
     }
   }
 
-  async listModelEvents(since: string): Promise<SystemAnalyticsModelEventRecord[]> {
+  async listModelEvents(since: string, providerIds?: readonly string[]): Promise<SystemAnalyticsModelEventRecord[]> {
     const result = await this.pool.query<Record<string, unknown>>(
       `
         SELECT
@@ -411,10 +518,11 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
           ttft_ms AS "ttftMs", duration_ms AS "durationMs", updated_at AS "updatedAt", route, account_key AS "accountKey",
           cost_usd AS "costUsd", tokens_cache_read AS "tokensCacheRead", tokens_cache_write AS "tokensCacheWrite"
         FROM system_analytics_model_events
-        WHERE COALESCE(ended_at, started_at) >= $1 OR status = 'RUNNING'
+        WHERE (COALESCE(ended_at, started_at) >= $1 OR (status = 'RUNNING' AND updated_at >= now() - interval '31 days'))
+          AND ($2::text[] IS NULL OR provider_id = ANY($2::text[]))
         ORDER BY started_at ASC, event_key ASC
       `,
-      [since]
+      [since, providerIds ? [...providerIds] : null]
     );
     return result.rows.map((row) => ({
       eventKey: String(row.eventKey),
@@ -442,6 +550,94 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       costUsd: numeric(row.costUsd as number | string | null),
       tokensCacheRead: numeric(row.tokensCacheRead as number | string | null),
       tokensCacheWrite: numeric(row.tokensCacheWrite as number | string | null)
+    }));
+  }
+
+  /** summarizeModelEventRecords in SQL: the API receives a few thousand groups instead of every event of the window. */
+  async summarizeModelEvents(input: SystemAnalyticsModelEventSummaryInput): Promise<SystemAnalyticsModelEventGroup[]> {
+    const result = await this.pool.query<Record<string, unknown>>(
+      `
+        WITH visible AS (
+          SELECT *, (source IN ('gateway', 'claude', 'session') OR COALESCE(turn_id, '') = '') AS kept
+          FROM system_analytics_model_events
+          WHERE (COALESCE(ended_at, started_at) >= $1 OR (status = 'RUNNING' AND updated_at >= now() - interval '31 days'))
+            AND provider_id <> 'root' AND runtime_id <> 'cli:root'
+            AND (status <> 'RUNNING' OR session_id = ANY($2::text[]))
+        ), turns AS (
+          SELECT DISTINCT ON (source, runtime_id, turn_id) *,
+            first_value(started_at) OVER turn AS ord_at, first_value(event_key) OVER turn AS ord_key
+          FROM visible
+          WHERE NOT kept
+          WINDOW turn AS (PARTITION BY source, runtime_id, turn_id ORDER BY started_at, event_key)
+          ORDER BY source, runtime_id, turn_id, (route IS NOT NULL) DESC,
+            COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0) DESC, started_at, event_key
+        ), listed AS (
+          SELECT *, row_number() OVER (ORDER BY kind, ord_at, ord_key) AS seq
+          FROM (
+            SELECT source, runtime_id, provider_id, model_id, session_id, status, coverage, turn_count, started_at, ended_at, updated_at,
+              tokens_in, tokens_out, tokens_reasoning, ttft_ms, duration_ms, route, account_key, cost_usd, tokens_cache_read, tokens_cache_write,
+              0 AS kind, started_at AS ord_at, event_key AS ord_key
+            FROM visible WHERE kept
+            UNION ALL
+            SELECT source, runtime_id, provider_id, model_id, session_id, status, coverage, turn_count, started_at, ended_at, updated_at,
+              tokens_in, tokens_out, tokens_reasoning, ttft_ms, duration_ms, route, account_key, cost_usd, tokens_cache_read, tokens_cache_write,
+              1, ord_at, ord_key
+            FROM turns
+          ) events
+        )
+        SELECT
+          source = 'gateway' OR route IS DISTINCT FROM 'GATEWAY' AS counted,
+          source = 'gateway' AS gateway,
+          runtime_id AS "runtimeId", provider_id AS "providerId", model_id AS "modelId", status, coverage, account_key AS "accountKey",
+          COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0) > 0 AS "hasTokens",
+          CASE WHEN session_id = ANY($2::text[]) THEN session_id END AS "liveSessionId",
+          floor(extract(epoch FROM COALESCE(ended_at, started_at)) * 1000 / $3::numeric) * $3::numeric AS "bucketAtMs",
+          sum(turn_count) AS turns,
+          COALESCE(sum(GREATEST(turn_count, 1)) FILTER (WHERE cost_usd IS NULL AND COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0) > 0), 0) AS "unpricedTurns",
+          sum(tokens_in) AS "tokensIn", sum(tokens_out) AS "tokensOut", sum(tokens_reasoning) AS "tokensReasoning", sum(cost_usd) AS "costUsd",
+          COALESCE(sum(ttft_ms * GREATEST(turn_count, 1)), 0) AS "ttftSum",
+          COALESCE(sum(GREATEST(turn_count, 1)) FILTER (WHERE ttft_ms IS NOT NULL), 0) AS "ttftWeight",
+          COALESCE(sum(duration_ms * GREATEST(turn_count, 1)), 0) AS "durationSum",
+          COALESCE(sum(GREATEST(turn_count, 1)) FILTER (WHERE duration_ms IS NOT NULL), 0) AS "durationWeight",
+          sum(COALESCE(tokens_cache_read, 0)) AS "tokensCacheRead", sum(COALESCE(tokens_cache_write, 0)) AS "tokensCacheWrite",
+          sum(GREATEST(COALESCE(tokens_in, 0) - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_write, 0), 0)) AS "freshInput",
+          min(started_at) AS "firstAt", max(COALESCE(ended_at, updated_at, started_at)) AS "lastAt",
+          min(seq) - 1 AS "firstSeq", max(seq) - 1 AS "lastSeq"
+        FROM listed
+        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+        ORDER BY "firstSeq"
+      `,
+      [input.since, [...input.liveSessionIds], input.bucketMs]
+    );
+    return result.rows.map((row) => ({
+      counted: row.counted === true,
+      gateway: row.gateway === true,
+      runtimeId: String(row.runtimeId),
+      providerId: String(row.providerId),
+      modelId: String(row.modelId),
+      status: row.status as SystemAnalyticsModelEventStatus,
+      coverage: row.coverage as SystemAnalyticsCoverage,
+      accountKey: row.accountKey === null ? null : String(row.accountKey),
+      hasTokens: row.hasTokens === true,
+      liveSessionId: row.liveSessionId === null ? null : String(row.liveSessionId),
+      bucketAtMs: Number(row.bucketAtMs),
+      turns: Number(row.turns),
+      unpricedTurns: Number(row.unpricedTurns),
+      tokensIn: numeric(row.tokensIn as number | string | null),
+      tokensOut: numeric(row.tokensOut as number | string | null),
+      tokensReasoning: numeric(row.tokensReasoning as number | string | null),
+      costUsd: numeric(row.costUsd as number | string | null),
+      ttftSum: Number(row.ttftSum),
+      ttftWeight: Number(row.ttftWeight),
+      durationSum: Number(row.durationSum),
+      durationWeight: Number(row.durationWeight),
+      tokensCacheRead: Number(row.tokensCacheRead),
+      tokensCacheWrite: Number(row.tokensCacheWrite),
+      freshInput: Number(row.freshInput),
+      firstAt: iso(row.firstAt as Date | string),
+      lastAt: iso(row.lastAt as Date | string),
+      firstSeq: Number(row.firstSeq),
+      lastSeq: Number(row.lastSeq)
     }));
   }
 
@@ -556,12 +752,6 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 10 AND bucket_at < $1::timestamptz - interval '2 hours'`, [at]);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 60 AND bucket_at < $1::timestamptz - interval '48 hours'`, [at]);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 900 AND bucket_at < $1::timestamptz - interval '31 days'`, [at]);
-      await client.query(
-        `DELETE FROM system_analytics_model_events
-         WHERE (status <> 'RUNNING' AND COALESCE(ended_at, started_at) < $1::timestamptz - interval '31 days')
-            OR (status = 'RUNNING' AND updated_at < $1::timestamptz - interval '31 days')`,
-        [at]
-      );
       await client.query("COMMIT");
       // Advance only after a committed rollup; a failed run is retried from
       // the previous watermark by the next one.

@@ -12,5 +12,5 @@
     "test": "vitest run"
   },
   "devDependencies": { "typescript": "^5.9.3", "vitest": "^4.1.11" },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

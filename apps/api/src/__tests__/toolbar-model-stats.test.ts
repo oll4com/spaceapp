@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import {
   collectOpenCodeStatsFromRows,
   parseCodexRolloutStats,
+  readOpenCodeModelRows,
   readCodexRolloutTail,
   resolveCodexRolloutPaths,
   runSqliteSnapshotFallback
@@ -277,6 +278,34 @@ describe("readCodexRolloutTail", () => {
       expect(tail.startsWith(`${meta}\n`)).toBe(true);
       expect(tail.length).toBeLessThan(8 * 1024 * 1024 + meta.length + 2);
       expect(tail.trimEnd().endsWith('"token_count"}}')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readOpenCodeModelRows on an OpenCode 2 store", () => {
+  it("turns each v2 step message into step-start, first output and step-finish rows", async () => {
+    const execFileAsync = promisify(execFile);
+    const root = mkdtempSync(join(tmpdir(), "space-opencode2-stats-"));
+    const dbPath = join(root, "opencode.db");
+    // Message shape recorded from OpenCode 2.0.31 (2026-10-16).
+    const data = JSON.stringify({ type: "assistant", time: { created: 1_000, streamed: 4_000, completed: 5_000 },
+      model: { id: "big-pickle", providerID: "opencode", variant: "default" },
+      content: [{ type: "reasoning", text: "r", time: { created: 2_500, completed: 3_000 } }, { type: "text", text: "Done." }],
+      tokens: { input: 60, output: 10, reasoning: 40, cache: { read: 0, write: 0 } } });
+    try {
+      await execFileAsync("sqlite3", [dbPath, [
+        "create table session_v2 (id text primary key);",
+        "create table session_message (id text primary key, session_id text, type text, seq integer, time_created integer, time_updated integer, data text);",
+        `insert into session_message values ('msg_a', 'ses_v2stats', 'assistant', 1, 1000, 5000, '${data}');`,
+        `insert into session_message values ('msg_u', 'ses_v2stats', 'user', 0, 900, 900, '{"type":"user","text":"hi"}');`
+      ].join(" ")]);
+      const rows = await readOpenCodeModelRows({ nativeSessionIds: ["ses_v2stats"], windowMinutes: 60, now: () => new Date(6_000), stateRoot: root, dbPath });
+      expect(rows.map((row) => [row.partType, row.partTime])).toEqual([["step-start", 1_000], ["text", 2_500], ["step-finish", 5_000]]);
+      expect([...collectOpenCodeStatsFromRows(rows).values()]).toEqual([expect.objectContaining({
+        modelId: "big-pickle", providerId: "opencode", turns: 1, avgDurationMs: 4_000, tokensIn: 60, tokensOut: 10, tokensReasoning: 40
+      })]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

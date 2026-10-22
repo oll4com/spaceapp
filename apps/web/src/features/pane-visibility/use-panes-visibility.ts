@@ -10,7 +10,9 @@ const PANE_SERVER_MODULE: Partial<Record<NonCliPaneType, string>> = {
   jobs: "job-copilot",
   mail: "mail-copilot",
   marketing: "marketing-copilot",
-  freelance: "freelance-copilot"
+  freelance: "freelance-copilot",
+  design: "design",
+  "app-studio": "app-studio"
 };
 
 export const PANES_HIDDEN_STORAGE_KEY = "space:panes-hidden:v1";
@@ -115,6 +117,20 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     label: "Freelance Copilot",
     description: "An agent and a live browser that find clients on freelance platforms, send proposals and talk to clients until they are ready for you.",
     icon: modeIcons.FREELANCE_COPILOT
+  },
+  {
+    id: "design",
+    actionId: "add-design",
+    label: "Design",
+    description: "A graphics studio: social formats at exact sizes, AI images, templates, brand kits and motion, for you and for any agent that asks.",
+    icon: modeIcons.DESIGN
+  },
+  {
+    id: "app-studio",
+    actionId: "add-app-studio",
+    label: "App Studio",
+    description: "An agent that builds mobile apps for Android and iOS and shows every screen on the most-used phones.",
+    icon: modeIcons.APP_STUDIO
   }
 ];
 
@@ -136,7 +152,9 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-jobs": "jobs",
   "add-mail": "mail",
   "add-marketing": "marketing",
-  "add-freelance": "freelance"
+  "add-freelance": "freelance",
+  "add-design": "design",
+  "add-app-studio": "app-studio"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -153,7 +171,9 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   jobs: "add-jobs",
   mail: "add-mail",
   marketing: "add-marketing",
-  freelance: "add-freelance"
+  freelance: "add-freelance",
+  design: "add-design",
+  "app-studio": "add-app-studio"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";

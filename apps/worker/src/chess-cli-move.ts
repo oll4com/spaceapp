@@ -148,8 +148,16 @@ export async function runChessCliMove(input: ChessCliMoveInput, signal: AbortSig
 
 type MoveRunner = (input: ChessCliMoveInput, signal: AbortSignal) => Promise<string>;
 
-/** POST /move {runtimeId, model, effort, claudeProfile, prompt, timeoutMs} -> 200 {text} | 400/502 {error}. */
-export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: MoveRunner = runChessCliMove): Promise<Server> {
+/** Another request on the same socket (Nous's turns): its own body limit; input errors answer 400, others 502. */
+export interface WorkerSocketRoute {
+  maxBodyBytes: number;
+  isInputError(error: unknown): boolean;
+  handle(body: unknown, signal: AbortSignal): Promise<unknown>;
+}
+
+/** POST /move {runtimeId, model, effort, claudeProfile, prompt, timeoutMs} -> 200 {text} | 400/502 {error}; plus `routes`. */
+export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: MoveRunner = runChessCliMove,
+  routes: Record<string, WorkerSocketRoute> = {}): Promise<Server> {
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o755 });
   await rm(socketPath, { force: true });
   const server = createServer((request, response) => {
@@ -157,7 +165,8 @@ export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: 
       if (response.writableEnded || response.destroyed) return;
       response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(payload));
     };
-    if (request.method !== "POST" || request.url !== "/move") {
+    const route = request.method === "POST" && request.url ? routes[request.url] : undefined;
+    if (request.method !== "POST" || (request.url !== "/move" && !route)) {
       reply(404, { error: "Not found." });
       return;
     }
@@ -165,12 +174,22 @@ export async function startChessMoveServer(socketPath = CHESS_MOVE_SOCKET, run: 
     request.setEncoding("utf8");
     request.on("data", (chunk: string) => {
       body += chunk;
-      if (body.length > MAX_BODY_BYTES) {
-        reply(413, { error: "Move request too large." });
+      if (body.length > (route?.maxBodyBytes ?? MAX_BODY_BYTES)) {
+        reply(413, { error: "Request too large." });
         request.destroy();
       }
     });
     request.on("end", () => {
+      if (route) {
+        const controller = new AbortController();
+        response.on("close", () => { if (!response.writableFinished) controller.abort(); });
+        Promise.resolve().then(() => route.handle(JSON.parse(body), controller.signal)).then(
+          (result) => reply(200, result),
+          (error: unknown) => reply(route.isInputError(error) || error instanceof SyntaxError ? 400 : 502,
+            { error: error instanceof Error ? error.message.slice(0, 300) : "The request failed." })
+        );
+        return;
+      }
       let input: ChessCliMoveInput;
       try {
         input = validateChessCliMoveInput(JSON.parse(body));

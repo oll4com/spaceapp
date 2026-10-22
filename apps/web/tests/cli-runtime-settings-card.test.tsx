@@ -1008,7 +1008,7 @@ describe("CliRuntimeSettingsCard", () => {
     // Open panes need their own confirmation before Disable is available.
     const disable = within(dialog).getByRole("button", { name: "Disable DeepSeek CLI" });
     expect(disable).toHaveProperty("disabled", true);
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Close 3 open panes and stop their work" }));
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Close 3 open panes and stop their work" }));
     expect(disable).toHaveProperty("disabled", false);
     fireEvent.click(disable);
     await waitFor(() => expect(update).toHaveBeenLastCalledWith("cli:deepseek", {
@@ -1143,7 +1143,7 @@ describe("CliRuntimeSettingsCard", () => {
     expect(dialog.textContent).toContain("5 active Room Agent missions will stop");
     expect(dialog.textContent).toContain("6 running Codex processes will be terminated");
 
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: "Close 6 open panes and stop their work" }));
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Close 6 open panes and stop their work" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Disable Codex CLI" }));
     expect(await screen.findByText(/cleanup remains unresolved: 1 CLI sessions, 1 panes, 1 Chat runs\/panes, and 1 Room Agent missions/)).toBeTruthy();
   });

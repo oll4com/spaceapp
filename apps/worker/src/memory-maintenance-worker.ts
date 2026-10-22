@@ -8,6 +8,7 @@ import {
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { createWorkerTracing } from "./worker-tracing.js";
+import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-maintenance-worker";
 
@@ -18,6 +19,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const workflowsPath = fileURLToPath(new URL("./memory-maintenance-workflows.js", import.meta.url));
   const tracing = createWorkerTracing(service);
+  let stopReloadWatch: (() => void) | undefined;
 
   try {
     const connection = await NativeConnection.connect({ address });
@@ -38,6 +40,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       taskQueue: MEMORY_MAINTENANCE_TASK_QUEUE,
       activityConcurrency: memoryMaintenanceWorkerOptions.maxConcurrentActivityTaskExecutions
     }));
+    stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
     await worker.run();
   } catch (error) {
     console.error(JSON.stringify({
@@ -47,6 +50,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
     }));
     process.exitCode = 1;
   } finally {
+    stopReloadWatch?.();
     await tracing.close();
   }
 }

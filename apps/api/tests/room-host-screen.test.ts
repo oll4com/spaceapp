@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { readRoomHostScreen } from "../src/room-host-screen.js";
-import { projectRoomTerminalScreen, roomTerminalMode, restoreRoomTerminalGeometry } from "../src/room-terminal-screen.js";
+import { projectRoomTerminalScreen, roomTerminalMode, roomTerminalState, restoreRoomTerminalGeometry } from "../src/room-terminal-screen.js";
 import { CliTerminalManager } from "../src/cli-terminal.js";
 import { getApiConfig } from "../src/config.js";
+import { dashboardScreenState } from "../src/agents-dashboard.js";
 import { InMemorySpaceStore } from "@space/runtime";
 
 const identity = { cliSessionId: "cli_session:proof", paneId: "pane:proof", roomId: "room:proof", runtimeId: "cli:opencode", codexThreadId: null, modelId: null, reasoningEffort: null };
@@ -34,6 +35,87 @@ describe("Room Agent host screen observer", () => {
     expect(host.input).not.toHaveBeenCalled();
     expect(host.resize).not.toHaveBeenCalled();
     expect(host.terminate).not.toHaveBeenCalled();
+  });
+  it("reads Hermes from its host once the DB tail holds only its status-bar timer, and falls back to that tail", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Hermes", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Leo", mode: "TERMINAL", terminalRuntimeId: "cli:hermes" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:hermes", providerId: "hermes", agentId: "hermes", status: "RUNNING" });
+    // Observed 2026-10-17 (pane Leo): Hermes rewrites only the changed part of its status bar every second.
+    const frame = "\x1b[2J\x1b[27;2H ┊  Provider said: HTTP 429\x1b[29;2H─ ready │ big pickle │ 5m 16s │ ✓ 5m 4s │ voice off\x1b[30;2H❯ ";
+    const ticks = Array.from({ length: 250 }, (_, i) => `\x1b[29;23H${5 + Math.floor(i / 60)}m ${i % 60}s │ ✓ 5m 5s │ voice of`);
+    for (const content of [frame, ...ticks]) store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content });
+    const host = {
+      attach: vi.fn(async () => ({ attachmentId: "observer", session: { generationId: "hermes-host", nextOutputSequence: 251 },
+        replay: [frame, ...ticks].map((data) => ({ data })) })),
+      detach: vi.fn(async () => true), input: vi.fn(), resize: vi.fn(), terminate: vi.fn()
+    };
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), hostClient: host as never, discoverRuntimes: vi.fn() });
+    // Without confirmed geometry the DB tail stays the source: deltas alone are not a state.
+    expect(roomTerminalState((await manager.observeRoomScreen(session.sessionId)).text)).toBe("UNKNOWN");
+    expect(host.attach).not.toHaveBeenCalled();
+    store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: "hermes-host", cols: 99, rows: 30 });
+    const observation = await manager.observeRoomScreen(session.sessionId);
+    expect(roomTerminalState(observation.text)).toBe("IDLE");
+    expect(observation.text).toContain("─ ready │ big pickle");
+    host.attach.mockRejectedValueOnce(new Error("host unavailable"));
+    expect(roomTerminalState((await manager.observeRoomScreen(session.sessionId)).text)).toBe("UNKNOWN");
+    expect(host.input).not.toHaveBeenCalled();
+    expect(host.resize).not.toHaveBeenCalled();
+  });
+  it("reads Codex from its host where its native turn tracking is off (public installs), and the DB tail where it is on", async () => {
+    // Recorded 2026-10-18 (Codex 0.145.0, 1.1.6 lab): about 40 writes a second while working, each rewriting only the
+    // spinner, one shimmer letter and the seconds digit, so within ~6 s the 256-chunk tail no longer holds
+    // "(… esc to interrupt)" and the dashboard reads the running turn as idle.
+    const frame = "\x1b[2J\x1b[40;1H• Working (0s • esc to interrupt)\x1b[42;1H› Run /review on my current changes\x1b[44;3Hgpt-5.6-sol default · /workspaces/room";
+    const ticks = Array.from({ length: 300 }, (_, i) =>
+      `\x1b[?2026h\x1b[40;34H\x1b[K\x1b[40;1H\x1b[1m•\x1b[40;${3 + (i % 7)}H${"Working"[i % 7]}\x1b[0m\x1b[40;12H\x1b[2m${Math.floor(i / 40) % 10}\x1b[0m\x1b[?2026l`);
+    const setup = (env: Record<string, string>) => {
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: "Codex", initialPaneCount: 0 });
+      const pane = store.createPane({ roomId: room.id, title: "Andy", mode: "TERMINAL", terminalRuntimeId: "cli:codex" });
+      const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING" });
+      for (const content of [frame, ...ticks]) store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content });
+      store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: "codex-host", cols: 120, rows: 45 });
+      const host = {
+        attach: vi.fn(async () => ({ attachmentId: "observer", session: { generationId: "codex-host", nextOutputSequence: 301 },
+          replay: [frame, ...ticks].map((data) => ({ data })) })),
+        detach: vi.fn(async () => true), input: vi.fn(), resize: vi.fn(), terminate: vi.fn()
+      };
+      return { session, host, manager: new CliTerminalManager({ store, config: getApiConfig(env), hostClient: host as never, discoverRuntimes: vi.fn() }) };
+    };
+    const tail = await projectRoomTerminalScreen([frame, ...ticks].slice(-256), 120, 45);
+    expect(dashboardScreenState(tail).state).not.toBe("RUNNING");
+    const publicInstall = setup({});
+    expect(dashboardScreenState((await publicInstall.manager.observeRoomScreen(publicInstall.session.sessionId)).text).state).toBe("RUNNING");
+    expect(publicInstall.host.attach).toHaveBeenCalledTimes(1);
+    expect(publicInstall.host.input).not.toHaveBeenCalled();
+    const stable = setup({ SPACE_ENABLE_CODEX_TURNS: "true" });
+    await stable.manager.observeRoomScreen(stable.session.sessionId);
+    expect(stable.host.attach).not.toHaveBeenCalled();
+  });
+
+  it("reads a detached Qoder from its host, not the DB tail that stopped at its spinner", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Qoder", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Cody", mode: "TERMINAL", terminalRuntimeId: "cli:qoder" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:qoder", providerId: "qoder", agentId: "qoder", status: "RUNNING" });
+    store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: "qoder-host", cols: 100, rows: 30 });
+    // Observed 2026-10-17 (pane Cody): the browser detached mid-turn, so the DB kept this frame for 2.5 h.
+    const spinner = "\x1b[2J\x1b[1;2H⠦ Generating... (esc to cancel, 14s)          ? for shortcuts\x1b[4;2H*   Type your message or @path/to/file";
+    store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content: spinner });
+    const done = "\x1b[2J\x1b[1;2H▪ PASS: MCP dispatcher\x1b[3;2HShift+Tab to Accept Edits\x1b[5;2H>   Type your message or @path/to/file\x1b[7;2HClaude Opus 5.5 (API credits) (space-gateway-claude) Model · Extra High · ctx 3% · /etc";
+    const host = {
+      attach: vi.fn(async () => ({ attachmentId: "observer", session: { generationId: "qoder-host", nextOutputSequence: 2 }, replay: [{ data: spinner }, { data: done }] })),
+      detach: vi.fn(async () => true), input: vi.fn(), resize: vi.fn(), terminate: vi.fn()
+    };
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), hostClient: host as never, discoverRuntimes: vi.fn() });
+    expect(roomTerminalState(await projectRoomTerminalScreen([spinner]))).toBe("RUNNING");
+    const observation = await manager.observeRoomScreen(session.sessionId);
+    expect(roomTerminalState(observation.text)).toBe("IDLE");
+    expect(observation.text).toContain("Claude Opus 5.5 (API credits) (space-gateway-claude) Model");
+    expect(host.input).not.toHaveBeenCalled();
+    expect(host.resize).not.toHaveBeenCalled();
   });
   it("restores confirmed tall-pane dimensions after API restart and rejects another host generation", async () => {
     const persisted = { generationId: "host-generation", cols: 61, rows: 74 };

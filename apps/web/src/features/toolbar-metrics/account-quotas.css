@@ -202,6 +202,12 @@
   white-space: nowrap;
 }
 
+/* Wraps on a phone-width dock; the figures stay in the card's own text colour. */
+.account-quota-note {
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
 .account-quota-meta button {
   flex: none;
   border: 1px solid #3e5551;

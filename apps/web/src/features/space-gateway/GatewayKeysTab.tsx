@@ -3,6 +3,7 @@ import {
   gatewayPooledRemaining, type GatewayAccount, type GatewayApiKey, type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayCompressionMode,
   type GatewayLimitType, type GatewayLimitWindow, type GatewayOutputPolicy, type GatewayReasoningEffort, type GatewaySettings, type GatewayTrafficClass
 } from "@space/contracts";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { CopyButton } from "./gateway-add-account.js";
 import { Donut, LimitBar, RemainingBar, TrendChart } from "./gateway-charts.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
@@ -115,15 +116,15 @@ function KeyForm({ initial, accounts, submitLabel, busy, onSubmit, onCancel }: {
       <fieldset className="gw-checks">
         <legend>Allowed reasoning efforts <span className="space-gateway-note">(none selected: all)</span></legend>
         {efforts.map((effort) => (
-          <label key={effort}><input type="checkbox" checked={draft.efforts.includes(effort)}
-            onChange={(event) => set("efforts", event.target.checked ? [...draft.efforts, effort] : draft.efforts.filter((item) => item !== effort))} />{effort}</label>
+          <SpaceToggle key={effort} compact label={effort} checked={draft.efforts.includes(effort)}
+            onChange={(checked) => set("efforts", checked ? [...draft.efforts, effort] : draft.efforts.filter((item) => item !== effort))} />
         ))}
       </fieldset>
       <fieldset className="gw-checks">
         <legend>Accounts <span className="space-gateway-note">(none selected: every account)</span></legend>
         {accounts.length === 0 ? <span className="space-gateway-note">No accounts yet.</span> : accounts.map((account) => (
-          <label key={account.id}><input type="checkbox" checked={draft.accountIds.includes(account.id)}
-            onChange={(event) => set("accountIds", event.target.checked ? [...draft.accountIds, account.id] : draft.accountIds.filter((item) => item !== account.id))} />{accountName(account)}</label>
+          <SpaceToggle key={account.id} compact label={accountName(account)} checked={draft.accountIds.includes(account.id)}
+            onChange={(checked) => set("accountIds", checked ? [...draft.accountIds, account.id] : draft.accountIds.filter((item) => item !== account.id))} />
         ))}
       </fieldset>
       <fieldset className="gw-limits">
@@ -267,7 +268,7 @@ function KeyDetail({ apiKey, accounts, client, settings, now, onChanged }: {
                 {(["tokens", "cost"] as const).map((item) => <button key={item} type="button" role="tab" aria-selected={measure === item}
                   className={`filter-tab${measure === item ? " active" : ""}`} onClick={() => setMeasure(item)}>{item === "tokens" ? "Tokens" : "Cost"}</button>)}
               </div>
-              <label className="gw-check-inline"><input type="checkbox" checked={accumulated} onChange={(event) => setAccumulated(event.target.checked)} />Accumulated</label>
+              <SpaceToggle compact label="Accumulated" checked={accumulated} onChange={setAccumulated} />
             </div>
             <TrendChart label={`${apiKey.name} ${measure} per hour`} timeFormat={timeFormat}
               formatValue={(value) => (measure === "tokens" ? formatTokens(Math.round(value)) : formatCostPrecise(value))}

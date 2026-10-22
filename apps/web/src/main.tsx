@@ -43,6 +43,8 @@ async function mount() {
     await import("./features/ui-theme/motion-theme.css");
     await import("./features/ui-theme/aurora-theme.css");
     await import("./features/ui-theme/liquid-glass-theme.css");
+    await import("./features/ui-theme/jarvis-theme.css");
+    await import("./features/ui-theme/aira-theme.css");
     const { DemoSpaceApp } = await import("./demo/DemoSpaceApp.js");
     root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
@@ -69,6 +71,8 @@ async function mount() {
     await import("./features/ui-theme/motion-theme.css");
     await import("./features/ui-theme/aurora-theme.css");
     await import("./features/ui-theme/liquid-glass-theme.css");
+    await import("./features/ui-theme/jarvis-theme.css");
+    await import("./features/ui-theme/aira-theme.css");
   }
   await iconPackReady;
   if (route === "app") {

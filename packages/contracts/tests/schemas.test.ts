@@ -683,7 +683,7 @@ describe("Space contracts", () => {
         mode: "CHAT",
         terminalRuntimeId: "cli:root"
       })
-    ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT mode");
+    ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO mode");
     expect(updatePaneInputSchema.parse({ terminalRuntimeId: "cli:root" })).toEqual({
       terminalRuntimeId: "cli:root"
     });
@@ -1509,6 +1509,14 @@ describe("Space contracts", () => {
       }).content
     ).toHaveLength(32 * 1024);
     expect(redactPersistedTranscriptContent("before\0after")).toBe("beforeafter");
+    // Space Control tokens (space-control-token.ts) are self-identifying; redact them even when a CLI (Codex, Claude
+    // Code, Oh My Pi) echoes the SPACE_CONTROL_TOKEN= env name — "_TOKEN=" has no \b, so the labeled pattern misses it.
+    const controlTokenValue = "spacecontrol.v1.eyJyIjoicm9vbSJ9.ZmFrZV9zaWduYXR1cmVfdmFsdWVfbm90X3JlYWw";
+    expect(redactPersistedTranscriptContent(`SPACE_CONTROL_TOKEN=${controlTokenValue}`)).toBe("SPACE_CONTROL_TOKEN=[REDACTED]");
+    expect(redactPersistedTranscriptContent(`the token is ${controlTokenValue} ok`)).toBe("the token is [REDACTED] ok");
+    expect(redactPersistedTranscriptContent(controlTokenValue)).not.toContain(controlTokenValue.split(".")[2]);
+    // The bare version marker in prose is not a token and stays.
+    expect(redactPersistedTranscriptContent("see spacecontrol.v1 docs")).toBe("see spacecontrol.v1 docs");
     const websocket = paneCliWebSocketTokenSchema.parse({
       paneId: session.paneId,
       sessionId: session.sessionId,
@@ -1869,12 +1877,12 @@ describe("Space contracts", () => {
       profileId: "profile:room-browser-1:pane-browser-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/room_browser_1/pane_browser_1/browser_session_test",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/"
+      targetUrl: "https://www.google.com/"
     });
     const session = paneBrowserSessionSchema.parse({
       sessionId: "browser_session:test-1",
       ...createInput,
-      currentUrl: "https://www.example.invalid/",
+      currentUrl: "https://www.google.com/",
       title: "Olla",
       status: "READY",
       statusReason: "Page ready.",
@@ -1890,7 +1898,7 @@ describe("Space contracts", () => {
       roomId: session.roomId,
       status: "READY",
       viewport: "desktop",
-      currentUrl: "https://www.example.invalid/",
+      currentUrl: "https://www.google.com/",
       title: "Olla",
       screenshotDataUrl: "data:image/png;base64,aGVsbG8=",
       capturedAt: timestamp
@@ -1904,7 +1912,7 @@ describe("Space contracts", () => {
     const response = paneBrowserSessionResponseSchema.parse({ session, frame, websocket });
     const startRequest = createPaneBrowserSessionRequestSchema.parse({
       viewport: "mobile",
-      targetUrl: "https://www.example.invalid/"
+      targetUrl: "https://www.google.com/"
     });
     const click = browserToolActionInputSchema.parse({ type: "click", x: 10, y: 20 });
     const diagnostics = browserToolActionInputSchema.parse({ type: "diagnostics" });
@@ -1930,7 +1938,7 @@ describe("Space contracts", () => {
     expect(diagnostics).toMatchObject({ type: "diagnostics", includeNetwork: true, limit: 100 });
     expect(recording).toMatchObject({ type: "record", durationMs: 500, intervalMs: 250, format: "both" });
     expect(extract.text).toContain("Observed");
-    expect(streamMessage.frame.currentUrl).toBe("https://www.example.invalid/");
+    expect(streamMessage.frame.currentUrl).toBe("https://www.google.com/");
     expect(() => browserToolActionInputSchema.parse({ type: "click", x: -1, y: 20 })).toThrow();
     expect(() => paneBrowserSessionSchema.parse({ ...session, viewport: "invalid-viewport" })).toThrow();
     expect(JSON.stringify(response)).not.toMatch(new RegExp("api[_-]?key|sec" + "ret\\s*[:=]|pass" + "word\\s*[:=]|sk-", "i"));
@@ -2122,7 +2130,7 @@ describe("Space contracts", () => {
         {
           toolId: "browser:navigate",
           targetPaneId: "pane:browser-1",
-          action: { type: "navigate", url: "https://www.example.invalid/" }
+          action: { type: "navigate", url: "https://www.google.com/" }
         },
         {
           toolId: "browser:extract_text",
@@ -2156,7 +2164,7 @@ describe("Space contracts", () => {
             roomId: "room:browser-1",
             actionType: "extract_text",
             viewport: "desktop",
-            currentUrl: "https://www.example.invalid/",
+            currentUrl: "https://www.google.com/",
             title: "Olla",
             text: "Observed page text",
             capturedAt: "2026-07-05T00:00:00.000Z"
@@ -2207,14 +2215,14 @@ describe("Space contracts", () => {
           agentNumber: 1,
           viewport: "desktop",
           status: "READY",
-          currentUrl: "https://www.example.invalid/",
+          currentUrl: "https://www.google.com/",
           title: "Olla",
           lastFrameAt: "2026-07-05T00:00:00.000Z"
         }
       ]
     });
     const startRequest = spaceCliBrowserSessionStartRequestSchema.parse({
-      targetUrl: "https://www.example.invalid/"
+      targetUrl: "https://www.google.com/"
     });
     const startResponse = spaceCliBrowserSessionStartResponseSchema.parse({
       session: context.browserSessions[0]
@@ -2240,7 +2248,7 @@ describe("Space contracts", () => {
             roomId: "room:browser-1",
             actionType: "extract_text",
             viewport: "desktop",
-            currentUrl: "https://www.example.invalid/",
+            currentUrl: "https://www.google.com/",
             title: "Olla",
             text: "Observed page text",
             capturedAt: "2026-07-05T00:00:00.000Z"

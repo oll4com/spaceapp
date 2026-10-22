@@ -568,3 +568,7 @@
   border-radius: var(--dock-radius-sm);
   font-size: var(--dock-font-sm);
 }
+
+/* Sent to Nous (plan clipboard:xEQOrVRQgeAn): read, not waiting for the operator. */
+.room-agent-dock .room-agent-system-status.is-nous { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--dock-muted); }
+.room-agent-dock .room-agent-system-status.is-nous svg { width: 0.85rem; height: 0.85rem; }

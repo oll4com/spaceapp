@@ -31,11 +31,14 @@
   width: 100%;
   height: 100%;
   min-height: 0;
-  container-type: inline-size;
+  container: jc-pane / inline-size;
   background: var(--jc-bg);
   color: var(--jc-text);
   font-size: 12px;
 }
+/* styles.css keeps every `.pane-card strong` on one line (an old pane-title rule): copilot text wraps, so a long lead or
+   post title no longer widens its panel past the pane. Rules below that want one line set it again. */
+.jc-pane strong { overflow: visible; white-space: normal; text-overflow: clip; }
 
 /* ---- command bar ------------------------------------------------------- */
 .jc-bar {
@@ -118,7 +121,7 @@
 .jc-run-queue { color: var(--jc-muted); }
 
 .jc-counters { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; white-space: nowrap; }
-.jc-counter { color: var(--jc-muted); }
+.jc-counter { color: var(--jc-muted); white-space: nowrap; }
 .jc-counter strong { color: var(--jc-text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .jc-counter.ok strong { color: var(--jc-ok); }
 .jc-counter.warn strong { color: var(--jc-warn); }
@@ -172,7 +175,7 @@
   min-width: 0;
   min-height: 0;
   background: var(--jc-bg);
-  container-type: inline-size;
+  container: jc-rail / inline-size;
 }
 /* Tabs are pills like the mailbox's label chips: tinted on hover, accent-tinted when selected. */
 .jc-rail-tabs { display: flex; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--jc-border); overflow-x: auto; scrollbar-width: none; }
@@ -261,6 +264,8 @@
   resize: vertical;
 }
 .jc-queue-add textarea:focus-visible, .jc-field input:focus-visible, .jc-field select:focus-visible, .jc-field textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--jc-accent) 70%, transparent); outline-offset: 1px; }
+/* The select's background is translucent, so the browser draws the open list on its own light popup: give the options opaque colours. */
+.jc-field select :is(option, optgroup) { background: var(--jc-bg); color: var(--jc-text); }
 .jc-queue-add-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 :is(.jc-pane, .jc-launch) .jc-queue-add-actions .jc-icon-button { margin-left: auto; }
 .jc-queue-csv { display: grid; gap: 6px; }
@@ -279,7 +284,7 @@
 
 /* ---- setup wizard ------------------------------------------------------ */
 .jc-setup { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
-.jc-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 8px 10px 0; }
+.jc-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 8px 10px 0; container: jc-steps / inline-size; }
 :is(.jc-pane, .jc-launch) .jc-step {
   display: inline-flex;
   align-items: center;
@@ -419,7 +424,6 @@
 /* A not-ready runtime's reason wraps: phones have no tooltip to read a cut-off line. */
 .jc-launch-option-copy small { color: var(--room-muted, #9aa3a0); white-space: normal; overflow-wrap: anywhere; }
 .jc-launch-check { width: 14px; height: 14px; color: var(--room-accent, #6db7aa); }
-.jc-launch-profile { max-width: min(20rem, 100%); }
 .jc-launch-remember { min-width: 0; }
 .jc-launch-state { margin: 0; color: var(--room-muted, #9aa3a0); }
 .jc-launch-state.error { color: #f08a8a; }
@@ -433,13 +437,19 @@
 .jc-launch .jc-button.primary { border-color: color-mix(in srgb, var(--room-accent, #6db7aa) 70%, transparent); background: color-mix(in srgb, var(--room-accent, #6db7aa) 22%, transparent); }
 
 /* ---- narrow panes: rail stacks under the browser ----------------------- */
-@container (max-width: 900px) {
-  .jc-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 3fr) 6px minmax(0, 2fr); }
+/* Named: unnamed, the collapsed rail's tabs measured the rail itself (44px), so a wide pane's collapsed rail turned
+   its icon column into a row that showed one tab. */
+@container jc-pane (max-width: 900px) {
+  /* The rail keeps at least 240px (60% of a short pane): at two fifths of a short pane its panel was a sliver. */
+  .jc-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 3fr) 6px minmax(min(240px, 60%), 2fr); }
   .jc-pane[data-rail="collapsed"] .jc-body { grid-template-rows: minmax(0, 1fr) 0 auto; }
   .jc-rail-handle { cursor: default; border-left: 0; border-top: 1px solid var(--jc-border); }
   .jc-rail[data-collapsed="true"] .jc-rail-tabs { flex-direction: row; }
   :is(.jc-pane, .jc-launch) .jc-rail[data-collapsed="true"] .jc-rail-tab { width: auto; height: 32px; padding: 0 10px; border-radius: 16px; }
   .jc-counters { margin-left: 0; }
+}
+/* Forms in a rail (never wider than 720px) keep one column. */
+@container (max-width: 900px) {
   .jc-form-grid, .jc-caps { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -497,8 +507,9 @@
 .jc-event-body { display: grid; gap: 5px; min-width: 0; padding-top: 6px; }
 .jc-event-body p { margin: 0; color: var(--jc-text); overflow-wrap: anywhere; }
 .jc-event-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 11.5px; }
-:is(.jc-pane, .jc-launch) .jc-event-link { display: inline-flex; align-items: center; height: 24px; min-height: 0; padding: 0 10px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--jc-accent) 14%, transparent);
+:is(.jc-pane, .jc-launch) .jc-event-link { display: inline-flex; align-items: center; gap: 5px; height: 24px; text-decoration: none; min-height: 0; padding: 0 10px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--jc-accent) 14%, transparent);
   color: var(--jc-accent); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease-out; }
+:is(.jc-pane, .jc-launch) .jc-event-link svg { flex: none; width: 13px; height: 13px; }
 :is(.jc-pane, .jc-launch) .jc-event-link:hover { background: color-mix(in srgb, var(--jc-accent) 26%, transparent); }
 :is(.jc-pane, .jc-launch) .jc-event-link:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
 .jc-event-shot { display: block; max-width: 220px; margin-top: 4px; border: 1px solid var(--jc-border); border-radius: 6px; overflow: hidden; background: rgba(0, 0, 0, 0.3); }
@@ -591,14 +602,17 @@
 .jc-pane[data-layout="stacked"] .jc-toggle { font-size: 11px; }
 .jc-pane[data-layout="stacked"] .jc-toggle svg { width: 15px; height: 15px; margin-right: 0; }
 .jc-pane[data-layout="stacked"] .jc-run-controls { grid-area: 2 / 1; }
-.jc-pane[data-layout="stacked"] .jc-run-pill { grid-area: 2 / 2; gap: 5px; min-width: 0; padding-inline: 7px; overflow: hidden; }
+.jc-pane[data-layout="stacked"] .jc-run-pill { grid-area: 2 / 2 / 3 / 4; justify-self: start; gap: 5px; min-width: 0; max-width: 100%; padding-inline: 7px; overflow: hidden; }
 .jc-pane[data-layout="stacked"] .jc-run-ring { width: 16px; height: 16px; flex: 0 0 auto; }
 .jc-pane[data-layout="stacked"] .jc-run-pill > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A 390px phone leaves about 300px for the bar: the run state is already the Start / Pause / Resume
    button, so the pill keeps the ring, the queue count and the needs-you badge. */
 .jc-pane[data-layout="stacked"] .jc-run-label { display: none; }
 .jc-pane[data-layout="stacked"] .jc-agent-chip { gap: 6px; padding-right: 8px; }
-.jc-pane[data-layout="stacked"] .jc-counters { grid-area: 2 / 3; justify-self: end; gap: 6px; margin-left: 0; font-size: 11px; }
+/* The counters get a row of their own: beside the run controls they squeezed the pill to its ring and pushed the
+   pause switch out of the pane. */
+.jc-pane[data-layout="stacked"] .jc-counters { grid-area: 3 / 1 / 4 / -1; justify-self: start; flex-wrap: wrap; gap: 2px 10px; margin-left: 0; font-size: 11px; }
+.jc-pane[data-layout="stacked"] .jc-counters:empty { display: none; }
 .jc-pane[data-layout="stacked"] .jc-menu { max-width: calc(100vw - 24px); }
 
 .jc-pane[data-layout="stacked"] .jc-body {
@@ -636,7 +650,8 @@
   font-weight: 600;
   letter-spacing: 0;
 }
-.jc-pane[data-layout="stacked"] .jc-rail-tab svg { box-sizing: content-box; width: 18px; height: 18px; padding: 4px 16px; border-radius: 14px; transition: background-color 140ms ease-out; }
+/* The icon pill narrows with its tab (padding % reads the tab's width): eight tabs on a phone no longer push the strip wider than the pane. */
+.jc-pane[data-layout="stacked"] .jc-rail-tab svg { box-sizing: content-box; width: 18px; height: 18px; padding: 4px min(16px, calc(50% - 13px)); border-radius: 14px; transition: background-color 140ms ease-out; }
 .jc-pane[data-layout="stacked"] .jc-rail-tab:hover svg { background: var(--jc-tint); }
 .jc-pane[data-layout="stacked"] .jc-rail-tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .jc-pane[data-layout="stacked"] .jc-rail-tab.selected { color: var(--jc-text); }
@@ -720,3 +735,36 @@
 .jc-rail .jc-step.selected { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); color: var(--jc-text); }
 .jc-rail .jc-step-index { width: 20px; height: 20px; }
 .jc-rail .jc-step.selected .jc-step-index { background: var(--jc-accent); color: var(--jc-on-accent); }
+
+/* ---- crowded strips ---------------------------------------------------- */
+/* A narrow Setup puts each step's label under its disc, where it may wrap: side by side, "Google account" ran into the
+   next step. */
+@container jc-steps (max-width: 520px) {
+  :is(.jc-pane, .jc-launch) .jc-step { flex-direction: column; gap: 3px; height: auto; padding: 5px 2px; border-radius: 12px; font-size: 11px; line-height: 1.2; text-align: center; white-space: normal; }
+}
+/* A split rail fits its labelled tabs only from about 560px (five tabs, Mail), 650px (six, Job) or 820px (seven,
+   Marketing and Freelance), and the strip hid the last ones (its scrollbar is hidden): until then the selected tab keeps
+   its label and the others show their icon (the label stays for assistive tech and the tooltip). Narrower than 500px
+   every tab is an icon (rule above). */
+@container jc-rail (min-width: 501px) and (max-width: 820px) { .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); } }
+@container jc-rail (min-width: 501px) and (max-width: 650px) { .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs:has(> :nth-child(6)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); } }
+@container jc-rail (min-width: 501px) and (max-width: 560px) { .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs:has(> :nth-child(5)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); } }
+/* The phone tab bar: with eight tabs under 560px (seven under 380px) labels were cut to "Platfor…" and "Bookm…".
+   Then only the selected tab shows its label; it may run under its neighbours' icons, which have none. */
+@container jc-pane (max-width: 560px) {
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { visibility: hidden; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab.selected .jc-rail-tab-label { max-width: none; overflow: visible; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab.selected:first-child .jc-rail-tab-label { align-self: flex-start; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab.selected:last-child .jc-rail-tab-label { align-self: flex-end; }
+}
+@container jc-pane (max-width: 380px) {
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { visibility: hidden; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab.selected .jc-rail-tab-label { max-width: none; overflow: visible; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab.selected:first-child .jc-rail-tab-label { align-self: flex-start; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab.selected:last-child .jc-rail-tab-label { align-self: flex-end; }
+}
+/* Pause and Stop side by side become icon buttons on a phone-width bar (their titles and text still name them), so
+   the run pill keeps its words. */
+@container jc-pane (max-width: 420px) {
+  .jc-pane[data-layout="stacked"] .jc-run-controls:has(> :nth-child(2)) .jc-button { justify-content: center; gap: 0; padding-inline: 8px; font-size: 0; }
+}

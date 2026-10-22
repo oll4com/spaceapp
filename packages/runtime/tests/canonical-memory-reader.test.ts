@@ -16,6 +16,22 @@ async function fixture() {
 }
 const query={page:1,pageSize:25,sortOrder:'desc' as const,searchMode:'keyword' as const};
 describe('canonical production retrieval',()=>{
+ it('never returns provider secrets a memory file holds (security addendum step 1)',async()=>{
+  // Assembled at runtime: no secret-shaped literal in the source. Synthetic values only.
+  const stripe=['sk','live','51Synthetic'+'X'.repeat(30)+'z2k0'].join('_');
+  const restricted=['rk','test','Synthetic'+'Y'.repeat(20)].join('_');
+  const webhook='whsec'+'_'+'Synthetic'+'Z'.repeat(24);
+  const aws='AKIA'+'SYNTHETIC0000000';
+  const {bridge,paths}=await fixture();
+  await appendFile(paths.monthlyPath,`\n## 2026-09-04 - StripeSwitchProof\n\n- Verified the new live Secret Key \`${stripe}\` and \`${restricted}\`, webhook secret ${webhook}, AWS ${aws}\n`);
+  const [entry]=await bridge.list({...query,q:'StripeSwitchProof'});
+  const text=JSON.stringify(entry);
+  for(const secret of [stripe,restricted,webhook,aws]) expect(text).not.toContain(secret);
+  expect(text).toContain('[REDACTED Stripe key]');
+  expect(redactMemoryText(`pk_live_${'P'.repeat(24)}`)).toContain('pk_live_');
+  expect(redactMemoryText(`aws_secret_access_key = ${'a'.repeat(40)}`)).toBe('aws_secret_access_key = [REDACTED]');
+  expect(redactMemoryText(redactMemoryText(text))).toBe(redactMemoryText(text));
+ });
  it('round trips marker, timestamp and room without leaking another room',async()=>{
   const {bridge}=await fixture();
   const saved=await bridge.save({scope:'ROOM',roomId:'room:alpha',title:'Isolated fact',body:'Durable audit body',provenance:'test'});

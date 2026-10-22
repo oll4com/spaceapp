@@ -28,6 +28,8 @@ import {
   type UpdateMemoryConsolidationOperationInput,
   type UpdateMemoryConsolidationRunInput
 } from "@space/contracts";
+// Static on purpose: a lazy import after a deploy mixed the new build with the modules already loaded (plan clipboard:yAtbVyHE5s4T).
+import { PostgresSpaceStore } from "@space/db";
 import {
   ALL_MONTHS_SNAPSHOT_FILENAME,
   buildMemoryGraphSnapshot,
@@ -155,7 +157,6 @@ async function resolveCacheStore(options: RefreshMemoryGraphSnapshotOptions): Pr
   const databaseUrl = (options.env ?? process.env).SPACE_DATABASE_URL;
   if (!databaseUrl) return null;
   if (cachedStore && cachedDatabaseUrl === databaseUrl) return cachedStore;
-  const { PostgresSpaceStore } = await import("@space/db");
   cachedDatabaseUrl = databaseUrl;
   cachedStore = PostgresSpaceStore.fromConnectionString(databaseUrl);
   return cachedStore;
@@ -166,7 +167,6 @@ async function resolveConsolidationStore(options: ExecuteMemoryConsolidationOpti
   const databaseUrl = (options.env ?? process.env).SPACE_DATABASE_URL;
   if (!databaseUrl) throw new Error("SPACE_DATABASE_URL is required for durable memory consolidation.");
   if (cachedConsolidationStore && cachedConsolidationDatabaseUrl === databaseUrl) return cachedConsolidationStore;
-  const { PostgresSpaceStore } = await import("@space/db");
   cachedConsolidationDatabaseUrl = databaseUrl;
   cachedConsolidationStore = PostgresSpaceStore.fromConnectionString(databaseUrl);
   return cachedConsolidationStore;

@@ -4,6 +4,7 @@ import { executePersistedMemoryChangeSet } from "./memory-mutation-activity.js";
 import { MEMORY_MUTATION_TASK_QUEUE, memoryMutationsEnabled, memoryMutationWorkerOptions } from "./memory-mutation-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { createWorkerTracing } from "./worker-tracing.js";
+import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-mutation-worker";
 
@@ -14,6 +15,7 @@ if (!memoryMutationsEnabled(process.env)) {
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const connection = await NativeConnection.connect({ address });
   const tracing = createWorkerTracing(service);
+  let stopReloadWatch: (() => void) | undefined;
   try {
     const worker = await Worker.create({
       connection,
@@ -25,8 +27,10 @@ if (!memoryMutationsEnabled(process.env)) {
       ...tracing.workerOptions
     });
     console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
+    stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
     await worker.run();
   } finally {
+    stopReloadWatch?.();
     await tracing.close();
   }
 }

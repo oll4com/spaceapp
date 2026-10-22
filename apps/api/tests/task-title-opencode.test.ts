@@ -7,7 +7,7 @@ import {
   openCodeTitleRequestPreamble,
   parseNativeTitleOutput,
   resolveNativeOpenCodeRuntime,
-  parseNativeOpenCodeModels,
+  parseOpenCode2Models,
 } from "../src/task-title-opencode.js";
 import { mkdtemp, writeFile, rm, access, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -37,13 +37,6 @@ describe("native title usage boundary", () => {
       await expect(access(extra)).rejects.toThrow();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("parses only valid native model metadata records", () => {
-    expect(
-      parseNativeOpenCodeModels(
-        'opencode/small-free\n{"cost":{"input":0,"output":0}}\nopencode/other\nnot json\nopencode/../../path\n{}',
-      ),
-    ).toEqual({ "small-free": { cost: { input: 0, output: 0 } } });
-  });
   it("accepts one confirmed free text turn", () =>
     expect(parseNativeTitleOutput(output())).toBe('{"title":"Task title"}'));
   it.each([
@@ -72,18 +65,26 @@ describe("native title usage boundary", () => {
     ).toThrow();
   });
   it("runs only where `opencode run` rejects permission requests without --auto", () => {
-    // OpenCode 1.19.0 `run --help` wraps the default onto a continuation line.
-    const help = [
-      "  -i, --interactive  run in direct interactive split-footer mode          [boolean] [default: false]",
-      "      --auto         auto-approve permissions that are not explicitly denied (dangerous!)",
-      "                                                                          [boolean] [default: false]",
-    ].join("\n");
-    expect(openCodeRunRejectsPermissionRequests("1.19.0", help)).toBe(true);
-    expect(openCodeRunRejectsPermissionRequests("1.20.4", help)).toBe(true);
-    expect(openCodeRunRejectsPermissionRequests("1.18.35", help)).toBe(false);
-    expect(openCodeRunRejectsPermissionRequests("2.0.0", help)).toBe(false);
-    expect(openCodeRunRejectsPermissionRequests("1.19.0", help.replace(/default: false\]$/, "default: true]"))).toBe(false);
-    expect(openCodeRunRejectsPermissionRequests("1.19.0", help.split("\n")[0]!)).toBe(false);
+    // OpenCode 1 was retired: its yargs help never qualifies.
+    const v1Help = "      --auto         auto-approve permissions that are not explicitly denied (dangerous!)\n                                                                          [boolean] [default: false]";
+    expect(openCodeRunRejectsPermissionRequests("1.19.0", v1Help)).toBe(false);
+    // OpenCode 2.0.31 `opencode --version` and `run --help`; a v2 run rejects requests unless --auto is passed.
+    const v2Help = "FLAGS\n  --standalone            Run with a private server instead of the background service\n  --auto                  Auto-approve permissions that are not explicitly denied\n";
+    expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help)).toBe(true);
+    expect(openCodeRunRejectsPermissionRequests("opencode v2.0.31", v2Help.replace(/  --auto.*\n/, ""))).toBe(false);
+    expect(openCodeRunRejectsPermissionRequests("opencode v3.0.0", v2Help)).toBe(false);
+  });
+  it("reads OpenCode 2's model API as the catalog entries with the highest tier's cost", () => {
+    const output = JSON.stringify({ data: [
+      { id: "big-pickle", providerID: "opencode", name: "Big Pickle", status: "active", enabled: true, cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] },
+      { id: "tiered", providerID: "opencode", name: "Tiered", status: "active", cost: [{ input: 0, output: 0 }, { input: 1, output: 4 }] },
+      { id: "off", providerID: "opencode", enabled: false, cost: [{ input: 0, output: 0 }] },
+      { id: "kimi", providerID: "legacy", cost: [{ input: 0, output: 0 }] }
+    ] });
+    expect(parseOpenCode2Models(output)).toEqual({
+      "big-pickle": { id: "big-pickle", name: "Big Pickle", status: "active", cost: { input: 0, output: 0 } },
+      tiered: { id: "tiered", name: "Tiered", status: "active", cost: { input: 1, output: 4 } }
+    });
   });
   it("keeps every tool behind a permission request and attaches copies of the images", async () => {
     const root = await mkdtemp(join(tmpdir(), "title-attach-"));
@@ -108,14 +109,14 @@ describe("native title usage boundary", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each([
-    ["1.19.0", "[boolean] [default: false]", true],
-    ["1.19.0", "[boolean] [default: true]", false],
-    ["1.18.31", "[boolean] [default: false]", false],
+    ["opencode v2.0.32", "  --auto                  Auto-approve permissions that are not explicitly denied", true],
+    ["opencode v2.0.32", "", false],
+    ["1.19.0", "      --auto         auto-approve permissions that are not explicitly denied (dangerous!) [boolean] [default: false]", false],
   ])("reads the native run help from stderr before trusting OpenCode %s (%s)", async (version, auto, trusted) => {
     const root = await mkdtemp(join(tmpdir(), "title-runtime-"));
     const command = join(root, "opencode");
     try {
-      const help = `opencode run [message..]\n      --auto         auto-approve permissions that are not explicitly denied (dangerous!)\n                                                                          ${auto}\n`;
+      const help = `opencode run [message..]\nFLAGS\n${auto}\n`;
       await writeFile(command, `#!/usr/bin/env node\nconst a=process.argv.slice(2).join(' ');\nif(a==='--version')process.stdout.write(${JSON.stringify(version + "\n")});\nelse if(a==='run --help')process.stderr.write(${JSON.stringify(help)});\nelse process.exit(2);\n`, { mode: 0o700 });
       expect(await resolveNativeOpenCodeRuntime(command)).toBe(trusted ? command : null);
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -134,11 +135,11 @@ describe("native title usage boundary", () => {
     const root = await mkdtemp(join(tmpdir(), "title-catalog-"));
     const command = join(root, "opencode"), calls = join(root, "calls");
     try {
-      await writeFile(command, `#!/usr/bin/env node\nconst fs=require('node:fs');\nfs.appendFileSync(${JSON.stringify(calls)},'x');\nprocess.stdout.write('opencode/small-free\\n{"cost":{"input":0,"output":0}}\\n');\n`, { mode: 0o700 });
+      await writeFile(command, `#!/usr/bin/env node\nconst fs=require('node:fs');\nfs.appendFileSync(${JSON.stringify(calls)},'x');\nprocess.stdout.write(process.argv.slice(2).join(' ')==='api GET /api/model --standalone'?'{"data":[{"id":"small-free","providerID":"opencode","cost":[{"input":0,"output":0}]}]}':'');\n`, { mode: 0o700 });
       const first = await nativeOpenCodeModelCatalog(command);
       const second = await nativeOpenCodeModelCatalog(command);
       expect(second).toBe(first);
-      expect(first.providers[0]?.models).toEqual({ "small-free": { cost: { input: 0, output: 0 } } });
+      expect(first.providers[0]?.models).toEqual({ "small-free": { id: "small-free", cost: { input: 0, output: 0 } } });
       expect(await readFile(calls, "utf8")).toBe("x");
     } finally { await rm(root, { recursive: true, force: true }); }
   });

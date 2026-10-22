@@ -8,7 +8,7 @@ import { outputPolicyText, requestOutputPolicy, withAnthropicOutputPolicy } from
 import { effectiveCompression, requestCompressionMode } from "../../compression/provider-settings.js";
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { gatewayError, gatewayErrors, type GatewayErrorEnvelope } from "../../errors.js";
-import { checkKeyLimits, PolicyRejection } from "../../policy.js";
+import { assertModelAllowed, checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { claudeCostUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
 import { requestOrigin } from "../../client-detect.js";
@@ -81,6 +81,19 @@ function parseClaudeError(text: string, status: number, headers: Headers | null)
   else if (status >= 500 || code === "overloaded_error" || code === "api_error") kind = "transient";
   else kind = "surface";
   return { kind, status, code, message, error: upstreamError, body: text || null };
+}
+
+export const THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01";
+
+/**
+ * The request with Anthropic told to drop the thinking blocks an edited history invalidated (preserved thinking), or
+ * null when thinking is off or the client chose its own binding behaviour. Omitted thinking runs adaptive on the
+ * models that run this check.
+ */
+export function withStaleThinkingDropped(body: Record<string, unknown>): Record<string, unknown> | null {
+  const thinking = (body.thinking ?? { type: "adaptive" }) as Record<string, unknown>;
+  if (typeof thinking !== "object" || (thinking.type !== "adaptive" && thinking.type !== "enabled") || thinking.block_binding !== undefined) return null;
+  return { ...body, thinking: { ...thinking, block_binding: { prefix_mismatch_behavior: "drop_block" } } };
 }
 
 /** Claude Code sends a session id header; older clients carry the session in `metadata.user_id`. */
@@ -177,10 +190,10 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const body: Record<string, unknown> = { ...(input as Record<string, unknown>) };
     if (key.enforcedModel) body.model = key.enforcedModel;
     const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
+    // These models 400 on thinking "disabled" (Qoder's WebFetch side call sends it); without the field they run adaptive.
+    if (model && /^claude-(fable-5|mythos-5|opus-5-5|sonnet-5-5)/.test(model) && (body.thinking as { type?: unknown } | undefined)?.type === "disabled") delete body.thinking;
     try {
-      if (key.allowedModels.length > 0 && model !== null && !key.allowedModels.includes(model)) {
-        throw new PolicyRejection(403, gatewayError("model_not_allowed", `This API key does not have access to model '${model}'`, "invalid_request_error"));
-      }
+      assertModelAllowed(key, model);
       checkKeyLimits(key, model, new Date(startedAt).toISOString());
     } catch (error) {
       if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(anthropicError(error.envelope));
@@ -224,7 +237,8 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
       outgoing = withPolicy;
       detail = { ...(detail ?? { strategies: [], waste: {} }), outputPolicy };
     }
-    const upstreamBody = JSON.stringify(outgoing);
+    let upstreamBody = JSON.stringify(outgoing);
+    let extraBetas: string[] = [];
     // A conversation that already has a cache binding: a large cache write now means its cached prefix was lost.
     const continuing = stickyHash ? (await stickyAccounts.get(stickyHash)) !== undefined : false;
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
@@ -278,7 +292,8 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
       try {
         upstream = await fetchImpl(upstreamUrl, {
           method: "POST", body: upstreamBody, signal: controller.signal,
-          headers: buildClaudeUpstreamHeaders(request.headers, credentials.accessToken, body.stream === true ? "text/event-stream" : "application/json", authFor(account))
+          headers: buildClaudeUpstreamHeaders(request.headers, credentials.accessToken, body.stream === true ? "text/event-stream" : "application/json", authFor(account),
+            extraBetas)
         });
       } catch (error) {
         if (controller.signal.aborted) return reply;
@@ -300,6 +315,17 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
         lastFailure = failure;
         // Used-up prepaid credits: the key leaves routing as any used-up quota does, and Anthropic's answer goes to the client.
         if (fallback && claudeCreditsExhausted(failure.status, failure.message)) await options.pool.markQuotaExceeded(account, failure.error);
+        // A client that edits its history (Qoder) would fail every later turn the same way: once more on the same
+        // account, with the stale thinking blocks dropped as the error itself suggests.
+        const dropped = extraBetas.length === 0 && failure.status === 400 && failure.message.includes("bound to a different conversation")
+          ? withStaleThinkingDropped(outgoing) : null;
+        if (dropped) {
+          upstreamBody = JSON.stringify(dropped);
+          extraBetas = [THINKING_BINDING_BETA];
+          retryWith = { account, fallback };
+          attempt -= 1;
+          continue;
+        }
         if (failure.kind === "surface") break;
         const renewed = await recordFailure(account, failure);
         // The same account once more, with its refreshed token: it does not count as another attempt.
@@ -448,6 +474,14 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const accounts = await usableAccounts(scope);
     let body: Record<string, unknown> = request.body && typeof request.body === "object" ? { ...(request.body as Record<string, unknown>) } : {};
     if (key.enforcedModel) body.model = key.enforcedModel;
+    // Counting is free upstream, but it still names a model: the key's allowlist and spent limits apply as on /v1/messages.
+    try {
+      assertModelAllowed(key, typeof body.model === "string" && body.model.trim() ? body.model.trim() : null);
+      checkKeyLimits(key, typeof body.model === "string" ? body.model.trim() || null : null, new Date().toISOString());
+    } catch (error) {
+      if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(anthropicError(error.envelope));
+      throw error;
+    }
     // The count must match what /v1/messages sends, so Claude Code's context accounting includes the output policy.
     const policyText = outputPolicyText(requestOutputPolicy({ policy: effectiveCompression(await options.settings(), "CLAUDE").outputPolicy, key,
       clientName: requestOrigin(request).clientName, headerValue: header(request, "x-space-gateway-output-policy") }));

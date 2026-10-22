@@ -1,7 +1,7 @@
 import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import type { RoomAgentTimelineMessage } from "@space/contracts";
 import {
-  ArrowDown, Blend, Check, CircleAlert, CircleHelp, Clock, ExternalLink, Loader2, ShieldAlert, AlertTriangle, Wrench, X
+  ArrowDown, Blend, Check, CircleAlert, CircleHelp, Clock, ExternalLink, Loader2, Nous, ShieldAlert, AlertTriangle, Wrench, X
 } from "../ui-theme/app-icons.js";
 import { DockIconButton } from "../dock-kit/DockKit.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
@@ -58,7 +58,8 @@ const eventStatusLabels: Record<string, string> = {
 
 export function roomAgentRowNeedsOperator(message: RoomAgentTimelineMessage): boolean {
   const status = text(message.meta, "status");
-  return message.kind === "SYSTEM" && text(message.meta, "severity") === "ATTENTION" && (status === "OPEN" || status === "ESCALATED");
+  // Sent to Nous: while it works on the operator's behalf the event is its own, read here and never "new".
+  return message.kind === "SYSTEM" && text(message.meta, "severity") === "ATTENTION" && (status === "OPEN" || status === "ESCALATED") && message.meta?.sentToNous !== true;
 }
 
 function SystemRow({ message, onAnswer, onDismiss, onOpenPane }: {
@@ -106,7 +107,8 @@ function SystemRow({ message, onAnswer, onDismiss, onOpenPane }: {
         </form>
       ) : null}
       <div className="room-agent-system-actions">
-        <span className="room-agent-system-status">{eventStatusLabels[status] ?? status}</span>
+        {meta?.sentToNous === true ? <span className="room-agent-system-status is-nous"><Nous aria-hidden="true" />Sent to Nous</span>
+          : <span className="room-agent-system-status">{eventStatusLabels[status] ?? status}</span>}
         {onAnswer && eventId && paneId && needsYou && !answering ? (
           <>
             <button type="button" className="dock-kit-chip" disabled={sending} onClick={() => { setAnswering(true); setDraft(""); }}>Answer</button>

@@ -19,7 +19,7 @@ repository's historical objects.
 ## Decision
 
 Publish a sanitized clean-history repository as `oll4com/spaceapp` under
-Apache License 2.0. Keep the application workspaces non-publishable and publish
+the MIT License (from 1.1.7; Apache-2.0 up to v1.0.2 and the Business Source License 1.1 for v1.0.31 to 1.1.6). Keep the application workspaces non-publishable and publish
 one npm launcher package, `run-spaceapp`, whose executable is `spaceapp`.
 
 The launcher manages a versioned Docker Compose application:

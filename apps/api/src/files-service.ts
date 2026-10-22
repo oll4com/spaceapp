@@ -1,4 +1,4 @@
-import { lstat, readdir, open, writeFile, mkdir, rename, chmod, rm } from "node:fs/promises";
+import { lstat, readdir, open, writeFile, mkdir, rename, chmod, rm, realpath } from "node:fs/promises";
 import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -220,6 +220,9 @@ export function assertAccessAllowed(
   return { resolvedPath, isAdmin: false };
 }
 
+// localeCompare with options builds a collator per call: 50k names took ~5 s and blocked the API.
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 export async function listDirectory(options: {
   targetPath?: string;
   showHidden?: boolean;
@@ -278,7 +281,7 @@ export async function listDirectory(options: {
     entries.sort((a, b) => {
       if (a.isDirectory && !b.isDirectory) return -1;
       if (!a.isDirectory && b.isDirectory) return 1;
-      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      return nameCollator.compare(a.name, b.name);
     });
 
     const parentPath = resolvedPath === "/" ? null : path.dirname(resolvedPath);
@@ -495,13 +498,15 @@ export async function deleteEntry(options: {
 
   // Host mode stays an operator feature, but the system roots, their direct children (/etc/passwd,
   // /var/lib, /srv) and the Space workspace with its parents are never deleted through it (review 2026-10-14).
+  // Real paths count too: rm follows symlinked ancestors such as /var/run -> /run, but not the last component
+  // (external review 2026-10-16).
   const workspace = path.resolve(root);
-  if (
-    PROTECTED_SYSTEM_PATHS.has(resolvedPath) ||
-    PROTECTED_SYSTEM_PATHS.has(path.dirname(resolvedPath)) ||
-    workspace === resolvedPath ||
-    workspace.startsWith(`${resolvedPath}/`)
-  ) {
+  const realWorkspace = await realpath(workspace).catch(() => workspace);
+  const realParent = await realpath(path.dirname(resolvedPath)).catch(() => path.dirname(resolvedPath));
+  const realTarget = path.join(realParent, path.basename(resolvedPath));
+  const isProtected = (target: string, ws: string) => PROTECTED_SYSTEM_PATHS.has(target) ||
+    PROTECTED_SYSTEM_PATHS.has(path.dirname(target)) || ws === target || ws.startsWith(`${target}/`);
+  if ([resolvedPath, realTarget].some((target) => isProtected(target, workspace) || isProtected(target, realWorkspace))) {
     throw new FilesystemError(`Deleting protected system directory (${resolvedPath}) is prohibited.`, 403);
   }
 

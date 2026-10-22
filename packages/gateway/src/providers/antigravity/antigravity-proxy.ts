@@ -13,10 +13,10 @@ import type { TokenizerKind } from "../../compression/tokenizer.js";
 import { geminiCostUsd } from "../../pricing/pricing.js";
 import { hashKey, header, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
-import { selectAccount } from "../../router/balancer.js";
-import { CODE_ASSIST_BASE_URL, quotaGroupForModel, type AntigravityQuotaGroup } from "./code-assist.js";
+import { CODE_ASSIST_BASE_URL, quotaGroupForModel } from "./code-assist.js";
 import { ANTIGRAVITY_CLIENT_ID } from "./oauth.js";
-import { CodeAssistStreamInspector, parseResetsIn, type GeminiUsage } from "./stream.js";
+import { createAntigravityPoolAccess } from "./pool-access.js";
+import { CodeAssistStreamInspector, type GeminiUsage } from "./stream.js";
 
 /**
  * Antigravity through Space Gateway. The CLI is pointed here with `CLOUD_CODE_URL=http://127.0.0.1:4920/antigravity`.
@@ -96,6 +96,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
   const sticky = options.sticky ?? new StickyStore({ provider: "ANTIGRAVITY", kind: "PROMPT_CACHE" });
   const verify = options.verifyIdentity ?? ((token: string) => googleTokenInfo(token, fetchImpl));
   const identities = new Map<string, { at: number; allowed: boolean }>();
+  const { pick, ...access } = createAntigravityPoolAccess({ pool: options.pool, repository: options.repository, sticky, now });
 
   /** Whether the client's Google sign-in is one of the pool's accounts (and was issued to the Antigravity client). */
   async function pooled(token: string): Promise<boolean> {
@@ -136,6 +137,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
       }
     }
     reply.raw.end();
+    inspector?.end();
     if (inspector) {
       let requested: string | null = null;
       try { const model = (JSON.parse(body!.toString("utf8")) as Json).model; requested = typeof model === "string" ? model : null; } catch { /* not JSON */ }
@@ -152,21 +154,6 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
       });
     }
     return reply;
-  }
-
-  async function pick(group: AntigravityQuotaGroup, tried: Set<string>, stickyHash: string | null, settings: GatewaySettings): Promise<GatewayAccountRecord | undefined> {
-    const accounts = (await options.pool.accounts()).filter((account) => !tried.has(account.id));
-    const states = accounts.map((account) => options.pool.toBalancerState(account, group));
-    const stickyId = stickyHash ? await sticky.get(stickyHash) : undefined;
-    const stickyState = stickyId ? states.find((state) => state.accountId === stickyId) : undefined;
-    if (stickyState) {
-      const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false });
-      const used = Math.max(stickyState.usedPercent ?? 0, stickyState.secondaryUsedPercent ?? 0);
-      if (check.account && used < settings.stickyReallocationBudgetThresholdPercent) return accounts.find((account) => account.id === stickyState.accountId);
-    }
-    const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset });
-    for (const state of states) options.pool.absorb(state);
-    return result.account ? accounts.find((account) => account.id === result.account!.accountId) : undefined;
   }
 
   /**
@@ -319,6 +306,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         return reply;
       }
       if (movedOn) continue;
+      inspector.end();
       if (!committed) commit();
       reply.raw.end();
       const failed = inspector.errorStatus !== null && !inspector.outputStarted;
@@ -339,35 +327,15 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
 
     /** Notes what the failure says about the account; returns whether another account may serve the request. */
     async function recordFailure(account: GatewayAccountRecord, status: number, text: string): Promise<boolean> {
-      let message = "";
-      try { message = String(((JSON.parse(text) as Json).error as Json | undefined)?.message ?? ""); } catch { message = text.slice(0, 300); }
-      if (status === 429) {
-        const resetIn = parseResetsIn(message);
-        const quota = /quota|RESOURCE_EXHAUSTED/i.test(message) || text.includes("RESOURCE_EXHAUSTED");
-        if (quota) {
-          await options.repository.saveUsageWindows(account.id, [{ quotaKey: group, window: "PRIMARY", usedPercent: 100,
-            resetAt: new Date(now() + (resetIn ?? 3600) * 1000).toISOString(), windowMinutes: 300 }]);
-          options.pool.invalidate();
-        } else {
-          options.pool.markTransientError(account.id);
-        }
-        return true;
-      }
-      if (status === 401) {
-        retryWith = await options.pool.refreshRejectedToken(account, "token_invalidated");
-        return true;
-      }
-      if (status === 403 || status >= 500) {
-        options.pool.markTransientError(account.id);
-        return true;
-      }
-      return false;
+      const outcome = await access.recordFailure(account, group, status, text);
+      if (outcome.retryWith !== undefined) retryWith = outcome.retryWith;
+      return outcome.failover;
     }
   }
 
   app.register(async (scope) => {
     scope.removeAllContentTypeParsers();
-    scope.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 64 * 1024 * 1024 }, (_request, payload, done) => done(null, payload));
+    scope.addContentTypeParser("*", { parseAs: "buffer", bodyLimit: 32 * 1024 * 1024 }, (_request, payload, done) => done(null, payload));
     scope.all("/antigravity/*", handle);
   });
 }

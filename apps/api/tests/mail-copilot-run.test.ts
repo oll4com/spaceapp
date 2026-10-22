@@ -144,6 +144,11 @@ describe("mail copilot run loop", () => {
       expect(raw).toContain("In-Reply-To: <m1@mail.example>");
       expect(raw.includes("here it is again") || raw.includes(Buffer.from("Hi Anna, here it is again. Thanks, Me", "utf8").toString("base64"))).toBe(true);
       expect((await app.inject({ method: "POST", url: `${cli}/review/wait`, headers: agent, payload: { reviewId, waitMs: 0 } })).json()).toMatchObject({ decided: true, decision: "edit", sent: { threadId: "t1" } });
+      // One decision, one send (stable 2026-10-17: one approval reached Hetzner twice): a repeat answers the recorded decision.
+      const sends = () => gmail.writes.filter((write) => write.path === "/messages/send").length;
+      const before = sends();
+      expect((await app.inject({ method: "POST", url: `${paneUrl}/review`, headers, payload: { reviewId, decision: "approve" } })).json()).toMatchObject({ decision: "edit", sent: { threadId: "t1" } });
+      expect(sends()).toBe(before);
       const lessons = await app.inject({ method: "POST", url: `${cli}/memory/recall`, headers: agent, payload: { contactEmail: "anna@acme.com" } });
       expect(lessons.json().memories).toEqual([expect.objectContaining({ kind: "LESSON", source: "LEARNED", contactEmail: "anna@acme.com", domain: "acme.com" })]);
       expect(lessons.json().memories[0].text).toContain("Operator's version");
@@ -163,6 +168,11 @@ describe("mail copilot run loop", () => {
       expect(roomEvents.some((event) => (event.payload as { type: string }).type === "REVIEW_REQUESTED")).toBe(true);
       // The lesson counts a use when recalled and another when the report names it.
       expect((await app.inject({ method: "GET", url: "/api/mail-copilot/memory?kinds=LESSON", headers })).json().memories[0].uses).toBe(2);
+      // Two approvals of one review racing each other send once.
+      const second = (await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: { draft, summary: "Second reply", reasoning: "race test" } })).json().reviewId as string;
+      const raced = await Promise.all([1, 2].map(() => app.inject({ method: "POST", url: `${paneUrl}/review`, headers, payload: { reviewId: second, decision: "approve" } })));
+      expect(raced.map((response) => response.statusCode)).toEqual([200, 200]);
+      expect(sends()).toBe(before + 1);
     } finally {
       await app.close();
     }

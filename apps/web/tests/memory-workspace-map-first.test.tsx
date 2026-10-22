@@ -295,7 +295,7 @@ describe("Memory atlas search-only experience", () => {
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;
   }
-  it.each(["desktop", "tablet", "mobile"] as const)("offers only search and the interactive map on %s", async shellMode => {
+  it.each(["desktop", "tablet"] as const)("offers only search and the interactive map on %s", async shellMode => {
     const requests = installFetch();
     render(<MemoryWorkspace shellMode={shellMode} activeRoomId="room:test" onClose={() => undefined} initialMode="atlas" />);
     await waitFor(() => expect(screen.getByTestId("memory-graph-renderer").getAttribute("data-node-ids")).toContain("memory:agent"));

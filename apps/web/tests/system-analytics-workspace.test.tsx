@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   resources: vi.fn(),
   processes: vi.fn(),
   sessions: vi.fn(),
-  installs: vi.fn()
+  installs: vi.fn(),
+  anthropicBilling: vi.fn()
 }));
 
 vi.mock("../src/api.js", () => ({
@@ -19,7 +20,8 @@ vi.mock("../src/api.js", () => ({
     systemAnalyticsResources: mocks.resources,
     systemAnalyticsProcesses: mocks.processes,
     systemAnalyticsCliSessions: mocks.sessions,
-    systemAnalyticsInstalls: mocks.installs
+    systemAnalyticsInstalls: mocks.installs,
+    gatewayAnthropicBilling: mocks.anthropicBilling
   }
 }));
 
@@ -72,7 +74,10 @@ describe("SystemAnalyticsWorkspace", () => {
     const summary = await screen.findByRole("region", { name: "Period token totals" });
     expect(within(summary).getByText("$1.50")).toBeTruthy();
     expect(within(summary).getByText("3 turns have no price")).toBeTruthy();
-    expect(within(summary).getByText("1,005 · 160")).toBeTruthy();
+    // Space Gateway and direct each show their tokens and API value under one split bar.
+    const routes = summary.querySelector(".token-route-split")!;
+    expect([...routes.querySelectorAll("dl > div")].map(part => part.textContent)).toEqual(["Space Gateway1,005$1.25", "Direct160$0.25"]);
+    expect(routes.querySelectorAll(".token-split-bar i")).toHaveLength(2);
     expect(screen.getByText("API value $1.50", { selector: ".system-analytics-provider-card small" })).toBeTruthy();
 
     // Tokens over time: one bar per hour, a tooltip per bar, and the same figures as a table.
@@ -98,6 +103,34 @@ describe("SystemAnalyticsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Direct" }));
     await waitFor(() => expect(mocks.models).toHaveBeenLastCalledWith("24h", "direct"));
     expect((await screen.findAllByText("100 in / 10 out", { exact: false })).length).toBeGreaterThan(0);
+  });
+
+  it("shows Anthropic's bill next to the gateway estimate, asks for a key when none is saved, and stays hidden for non-admins", async () => {
+    const status = { configured: true, keyHint: "…aaaa", savedAt: "2027-01-15T06:00:00.000Z", lastSyncAt: "2027-01-15T07:55:00.000Z", lastError: null,
+      upstream: [{ accountId: `gw_account:${"d".repeat(32)}`, apiKeyId: "apikey_gateway", keyName: "Space Gateway", workspaceId: "" }] };
+    mocks.anthropicBilling.mockResolvedValue({ status, days: [{ day: "2027-01-16", reported: false, organizationUsd: 0, workspaceUsd: 0, gatewayEstimateUsd: 0, gatewayBilledUsd: 0, models: [] },
+      { day: "2027-01-15", reported: true, organizationUsd: 20, workspaceUsd: 13, gatewayEstimateUsd: 10, gatewayBilledUsd: 12,
+      models: [{ model: "claude-opus-5-5", billedUsd: 12, listUsd: 10, factor: 1.2, gatewayEstimateUsd: 10, gatewayBilledUsd: 12 }] }] });
+    const view = render(<SystemAnalyticsWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={() => undefined} />);
+    const panel = await screen.findByRole("region", { name: "Anthropic bill" });
+    expect(mocks.anthropicBilling).toHaveBeenLastCalledWith(1);
+    expect(within(panel).getByText("Space Gateway real charge").parentElement?.textContent).toContain("$12.00");
+    expect(within(panel).getByText("Space Gateway estimate").parentElement?.textContent).toContain("$10.00");
+    expect(within(within(panel).getByRole("table", { name: "Anthropic bill by model" })).getByText("×1.20")).toBeTruthy();
+    expect(within(panel).getByText(/Anthropic has not posted 2027-01-16 yet/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+    await waitFor(() => expect(mocks.anthropicBilling).toHaveBeenLastCalledWith(7));
+    view.unmount();
+
+    mocks.anthropicBilling.mockResolvedValue({ status: { ...status, configured: false, keyHint: null, upstream: [] }, days: [] });
+    const empty = render(<SystemAnalyticsWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={() => undefined} />);
+    expect(await screen.findByText(/Save an Anthropic Admin API key in Space Gateway/)).toBeTruthy();
+    empty.unmount();
+
+    mocks.anthropicBilling.mockRejectedValue(new Error("Administrator permissions are required."));
+    render(<SystemAnalyticsWorkspace shellMode="desktop" initialTab="models" modelsOnly onClose={() => undefined} />);
+    expect(await screen.findAllByText("gpt-5.6-sol")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Anthropic bill" })).toBeNull();
   });
 
   it("sums models across providers, excludes duplicate reasoning, and updates the selected model across periods", async () => {
@@ -179,6 +212,7 @@ describe("SystemAnalyticsWorkspace", () => {
     mocks.processes.mockResolvedValue(fixture.systemAnalyticsProcesses);
     mocks.sessions.mockImplementation(async (range) => ({ ...fixture.systemAnalyticsCliSessions, range }));
     mocks.installs.mockResolvedValue(noInstalls);
+    mocks.anthropicBilling.mockRejectedValue(new Error("Administrator permissions are required."));
   });
 
   it("opens the detailed CPU/RAM process view without selecting a room", async () => {

@@ -431,7 +431,7 @@
       "status": "confirmed",
       "reproduction": "failure-matrix.md",
       "evidence": "docs/quality/restore-and-migrations.md; scripts/restore-drill.mjs (+ scripts/tests/restore-drill.test.mjs); scripts/space-db-backup.mjs (+ tests); reports /var/lib/spaceapp-user/agent-workspace/reports/20261011-restore-drill/",
-      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8.",
+      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8. External review 2026-10-16 #3: the portable backup runs while writers continue and leaves out the Temporal databases; the installer change (pause, Temporal dumps, staged restore) is planned for the next run-spaceapp release. Public overlay 56ceb06 (did not ship in 1.1.6: the 1.1.6 re-cut from f8803d5d96 did not take it; ships in run-spaceapp 1.1.7): spaceapp backup pauses core, CLI, browser and Temporal and also dumps the Temporal databases; restore stages the files and restores each database in its own transaction before swapping them in; run-spaceapp 1.1.7 (rc3) first copies the current databases aside and, when a later database or the file swap fails, puts every database and the files back, or prints the command per database when that fails too (internal review 1.1.7, Codex #2: separate transactions are not one restore). Drill 2026-10-16 with spaceapp-core 1.1.6, PostgreSQL 17 with pgvector and Temporal 1.29: backup and restore exact; a restore that fails in the database leaves database, Temporal and files untouched, where the 1.1.6 restore had already replaced the files. A schemaVersion 2 backup cannot be restored by an older SpaceApp.",
       "resolution": "partial"
     },
     {
@@ -581,7 +581,7 @@
     {
       "id": "PRODUCT-001",
       "reviewerSection": "D/K/Q §scope",
-      "observation": "Single-owner, multi-tenancy, HA and BSL limitations",
+      "observation": "Single-owner, multi-tenancy and HA limitations",
       "observationSource": "Supplied roadmap synthesis; not a freshly retrieved verbatim reviewer quotation",
       "reviewedShas": {
         "D": "89559e0620e065b2d552043a9655d215c1c08f25",
@@ -1634,9 +1634,9 @@
       "dependency": 3,
       "status": "confirmed",
       "reproduction": "node scripts/domain-boundaries.mjs without the 2026-10-11 baseline entries",
-      "evidence": "docs/quality/domain-boundaries.json notes",
-      "disposition": "Baselined (not fixed) because the feature is under active development by another session; the ratchet still rejects any further cycle. Break by moving shared provider types into a leaf module.",
-      "resolution": "open"
+      "evidence": "docs/quality/domain-boundaries.json notes; node scripts/domain-boundaries.mjs (3 cyclic components, no source-control edges)",
+      "disposition": "Baselined (not fixed) because the feature is under active development by another session; the ratchet still rejects any further cycle. Break by moving shared provider types into a leaf module. Fixed 2026-10-18: the HTTP transport and URL policy moved to the leaf apps/api/src/source-control/provider-transport.ts (providers.ts re-exports it), so the adapters and git-credentials.ts no longer import providers.ts; the 13 edges left the baseline.",
+      "resolution": "fixed"
     },
     {
       "id": "REL-001",
@@ -2071,7 +2071,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": "packages/run-spaceapp/templates/compose.yml; launcher suite 164/164",
-      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7.",
+      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7. External review 2026-10-16 #8. 2026-10-17: public overlay 219b4c0 (ships in run-spaceapp 1.1.7, with the codex-sessions-init service pinned too): after the images are published and verified, the release writes their digests into the tested npm package (templates/images.lock.json, the only allowed difference) and the launcher pulls name:version@sha256; the devtest probe accepts pinned images. Proven only by the next real publish.",
       "resolution": "partial"
     },
     {
@@ -2091,7 +2091,7 @@
       "status": "confirmed",
       "reproduction": "apps/api/tests/databases-service.test.ts",
       "evidence": "apps/api/tests/databases-service.test.ts",
-      "disposition": "fd98d0c7f5: HKDF(session secret, 'space:databases:credentials:v2'), no fallback; legacy payloads still read and rewritten on save.",
+      "disposition": "fd98d0c7f5: HKDF(session secret, 'space:databases:credentials:v2'), no fallback; legacy payloads still read and rewritten on save. 713905324f: decryption requires the full 16-byte GCM tag (external review 2026-10-16).",
       "resolution": "fixed"
     },
     {
@@ -2137,7 +2137,7 @@
     {
       "id": "EXT-C-F9",
       "reviewerSection": "Claude Opus 5.5 (claude-opus-5-5)",
-      "observation": "400-day stateless sessions; the token's role stands when no user record exists",
+      "observation": "Stateless sessions (30 days, renewed on use since 2026-10-19; older 400-day cookies move to 30 days on their next request); the token's role stands when no user record exists",
       "observationSource": "Independent review of the v1.1.4 snapshot (public 837e0b0), 2026-10-14",
       "reviewedShas": {
         "public": "837e0b034be977c116444b539f77409cb87642c8"
@@ -2271,7 +2271,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": "scripts/public-test-exclusions.json (public); npm run test:public",
-      "disposition": "Measured 2026-10-14 on the export of 67ec80863a with every test included: 1,215 application and package test files; on the exported tree runtime 204/204, gateway 744/745, web 3,607/3,622, API 3,347/3,690 tests pass. Public bc47400/bc6332703c: every application and package test is exported except 110 files listed with their reason in scripts/public-test-exclusions.json (private deploy files or scripts, host tools, PostgreSQL, maintainers scratch path, export rewrites, Temporal), and test:public runs every workspace suite; the release workflow tests the candidate before it publishes. Open: the first public CI run that shows them green, and fixing excluded tests that could run publicly.",
+      "disposition": "Measured 2026-10-14 on the export of 67ec80863a with every test included: 1,215 application and package test files; on the exported tree runtime 204/204, gateway 744/745, web 3,607/3,622, API 3,347/3,690 tests pass. Public bc47400/bc6332703c: every application and package test is exported except the files listed with their reason in scripts/public-test-exclusions.json (private deploy files or scripts, host tools, PostgreSQL, maintainers scratch path, export rewrites, Temporal), and test:public runs every workspace suite; the release workflow tests the candidate before it publishes. Open: the first public CI run that shows them green, and fixing excluded tests that could run publicly. External review 2026-10-16 #4 counted 117 exclusions, 35 of them failing on the exported tree; they are to be fixed or given a precise reason. 2026-10-16 (external review #4): none of the 34 \"fails on the exported tree\" exclusions was a product defect; they failed on rewritten fixtures, private paths and setups that read the host. 8a156edb3e with public overlay fe203af and 39eca70 brings 30 back into the public suite; four stay excluded with their exact need (real Chrome and Xvfb, Docker, a script the export does not ship, a git checkout). Open: regex literals in TerminalPane.tsx and packages/cli-host session-registry still hide /opt/spaceapp from the export rewrite (Warm and pane host: needs the operator). run-spaceapp 1.1.7: 23 previously excluded tests pass on the exported tree and run in the public suite (external review 2026-10-16 #4); 93 reviewed exclusions remain, each with its reason, three of them new since 1.1.6 because they need host-only files (the merge queue's operator-grant script, the nginx configuration).",
       "resolution": "partial"
     },
     {
@@ -2411,7 +2411,7 @@
       "status": "confirmed",
       "reproduction": "apps/api/src/__tests__/files.test.ts",
       "evidence": "apps/api/src/__tests__/files.test.ts",
-      "disposition": "e851e2f128: system roots, their direct children and the workspace with its parents are refused; every Admin Mode change is audited. Host mode itself stays an operator feature (FS-004). Internal review 1.1.5 Codex #11.",
+      "disposition": "e851e2f128: system roots, their direct children and the workspace with its parents are refused; every Admin Mode change is audited. Host mode itself stays an operator feature (FS-004). Internal review 1.1.5 Codex #11. 713905324f: the guard also compares real paths, so a symlinked ancestor cannot reach a protected directory (external review 2026-10-16).",
       "resolution": "partial"
     },
     {
@@ -2451,7 +2451,7 @@
       "status": "confirmed",
       "reproduction": "scripts/tests/composition-root-size.test.mjs",
       "evidence": "scripts/tests/composition-root-size.test.mjs",
-      "disposition": "b87ab3f03d: size ratchet (composition-root-budget.json); getting back under the 60% target remains open (ARCH-001). Internal review 1.1.5 Codex #2.",
+      "disposition": "b87ab3f03d: size ratchet (composition-root-budget.json); getting back under the 60% target remains open (ARCH-001). Internal review 1.1.5 Codex #2. External review 2026-10-16 #5.",
       "resolution": "open"
     },
     {
@@ -2471,7 +2471,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "See OBS-001, OBS-006, OBS-007 and observability.md 'Not covered'. Internal review 1.1.5 Codex #6. 2026-10-16: missions and task runs carry trace_id and error_code (migration 0206, f5007ed3e4); the trace lookup returns them and follows background continuations; worker and memory-worker activities export OTLP spans under the caller's traceparent and the memory workers record activities (38e446c065). Still open per observability.md 'Not covered': supervisor failure codes, CLI task ids, host spans, Temporal-only workflow faults, no collector.",
+      "disposition": "See OBS-001, OBS-006, OBS-007 and observability.md 'Not covered'. Internal review 1.1.5 Codex #6. 2026-10-16: missions and task runs carry trace_id and error_code (migration 0206, f5007ed3e4); the trace lookup returns them and follows background continuations; worker and memory-worker activities export OTLP spans under the caller's traceparent and the memory workers record activities (38e446c065). Still open per observability.md 'Not covered': supervisor failure codes, CLI task ids, host spans, Temporal-only workflow faults, no collector. External review 2026-10-16 #6: 31e2d2ef23 records a failed Room Agent supervisor turn as FAILED with a safe cause code (previously INTERRUPTED/ROOM_AGENT_SUPERSEDED).",
       "resolution": "partial"
     },
     {
@@ -2491,7 +2491,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "See ADAPTER-001 and ADAPTER-006; the canary timer needs the operator's install. 2026-10-16: canary timer installed and run (Codex 0.163.0 PASS, Gemini 1.4.0 PASS, Qwen 0.25.2 BLOCKED); live proofs on stable for Codex and Claude (start, send, reattach), Codex resume picker and OpenCode (start, send, interrupt); a failed Codex interrupt was fixed (4e26ebc452). Gemini, the disabled runtimes and host-loss resume remain unproven (runtime-compatibility.md). Also internal review 1.1.5 Codex #3.",
+      "disposition": "See ADAPTER-001 and ADAPTER-006; the canary timer needs the operator's install. 2026-10-16: canary timer installed and run (Codex 0.163.0 PASS, Gemini 1.4.0 PASS, Qwen 0.25.2 BLOCKED); live proofs on stable for Codex and Claude (start, send, reattach), Codex resume picker and OpenCode (start, send, interrupt); a failed Codex interrupt was fixed (4e26ebc452). Gemini, the disabled runtimes and host-loss resume remain unproven (runtime-compatibility.md). Also internal review 1.1.5 Codex #3. External review 2026-10-16 #7: cee2e8d0b1 the Tasks dock says Space does not track whether the CLI finishes a scheduled task.",
       "resolution": "partial"
     },
     {
@@ -2531,7 +2531,7 @@
       "status": "confirmed",
       "reproduction": "apps/api/tests/cors-origin-guard.test.ts",
       "evidence": "apps/api/tests/cors-origin-guard.test.ts",
-      "disposition": "dbb253756e: every /api WebSocket upgrade gets the same-site Origin check. The VNC proxy stays a tunnel by design, limited to private IPv4 targets (assertSafeVncTarget).",
+      "disposition": "dbb253756e: every /api WebSocket upgrade gets the same-site Origin check. The VNC proxy stays a tunnel by design, limited to private IPv4 targets (assertSafeVncTarget). 713905324f: the Harness proxy's raw WebSocket upgrades, which bypass the Fastify hooks, get the same check (external review 2026-10-16).",
       "resolution": "fixed"
     },
     {
@@ -2551,7 +2551,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "A public install has one owner and every pane is that owner's; the boundary is the CLI container, not the pane. Per-pane isolation changes the CLI host, which ships only with a guarded host restart; tracked for a later release.",
+      "disposition": "A public install has one owner and every pane is that owner's; the boundary is the CLI container, not the pane. Multi-user installs run one CLI container per user (core f5ad82792d, 3cb67847e9; launcher run-spaceapp 1.1.6, opt-in with user enable); per-pane isolation within one user stays a later release.",
       "resolution": "accepted-tradeoff"
     },
     {
@@ -2691,7 +2691,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "Planned for 1.1.7: report every tree file missing from the manifest and list the public-owned ones in it.",
+      "disposition": "Moved to 1.1.8 (operator decision through Nous, 2026-10-19): it changes the export manifest format (the manifest must also list the public repository's own files). Known issue in the 1.1.7 CHANGELOG.",
       "resolution": "open"
     },
     {
@@ -2790,9 +2790,9 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": null,
-      "disposition": "Planned for 1.1.7 with first-party digest pinning (EXT-C-F5): Cursor checksum, provider lockfiles without install scripts, Docker apt key fingerprint.",
-      "resolution": "open"
+      "evidence": "packages/run-spaceapp/tests/prerequisites.test.mjs, scripts/tests/provider-install.test.mjs (public repository)",
+      "disposition": "run-spaceapp 1.1.7: Docker's apt and rpm repository keys are trusted only with Docker's published fingerprints (dnf imports the checked key before installing, so dnf -y never accepts a key itself); the Cursor agent archive is pinned by sha256 per architecture and refused before unpacking otherwise; first-party images are pulled by digest (EXT-C-F5). Open, planned for 1.1.8: per-provider npm lockfiles for the CLIs installed on first use (known issue in the 1.1.7 CHANGELOG).",
+      "resolution": "partial"
     },
     {
       "id": "INT5-C-F15",
@@ -2830,9 +2830,9 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": null,
-      "disposition": "Overlay wording fix, planned for 1.1.7.",
-      "resolution": "open"
+      "evidence": "scripts/tests/public-package-metadata.test.mjs (public repository)",
+      "disposition": "run-spaceapp 1.1.7: the six .trivyignore entries that no longer matched anything are removed, the one with the wrong boolean trustProxy rationale included; Trivy 0.70.0 with the 2026-10-19 database found only GHSA-2mjx-qc3c-rqvc (rustls in the Temporal bridge, ignored with its reason until 2026-11-10) in the 1.1.6 images and nothing in the source.",
+      "resolution": "fixed"
     },
     {
       "id": "INT5-C-F17",
@@ -2930,9 +2930,9 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": null,
-      "disposition": "Containers read them as other uids (PostgreSQL as 999); the launcher creates the 0700 parent. Checking a pre-existing parent's mode is a 1.1.7 candidate.",
-      "resolution": "accepted-tradeoff"
+      "evidence": "packages/run-spaceapp/tests/config.test.mjs (public repository)",
+      "disposition": "Containers read them as other uids (PostgreSQL as 999), so the files stay 0644 behind an owner-only folder. run-spaceapp 1.1.7: install, init and every command that writes the runtime files (update, up, repair) make a secrets folder that already existed 0700 on Linux and macOS.",
+      "resolution": "fixed"
     },
     {
       "id": "INT5-C-F22",
@@ -3033,6 +3033,266 @@
       "evidence": null,
       "disposition": "Non-idempotent provider calls are not replayed blindly; ambiguity is surfaced to the operator (recovery docs).",
       "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "EXT-1016-F1",
+      "observationSource": "External review of public v1.1.5 (8a3e1f0), 2026-10-16 (model not stated)",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "External reviewer (model not stated)",
+      "reviewerSection": "External review 2026-10-16",
+      "dependency": null,
+      "status": "confirmed",
+      "observation": "A logged-out session cookie with an appended segment ('.x') authenticated again: revocation hashed the last segment, verification the second",
+      "affected": "apps/api/src/auth.ts",
+      "severity": "P1",
+      "reproduction": "apps/api/tests/review-2026-10-16-regressions.test.ts",
+      "evidence": "apps/api/tests/review-2026-10-16-regressions.test.ts",
+      "disposition": "713905324f: verifySession and verifyOAuthState refuse tokens without exactly two segments, and revocation keys on the same signature segment; stored revocation hashes stay valid. External review 2026-10-16 #1.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "EXT-1016-F2",
+      "observationSource": "External review of public v1.1.5 (8a3e1f0), 2026-10-16 (model not stated)",
+      "reviewedShas": {
+        "public": "8a3e1f0"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "External reviewer (model not stated)",
+      "reviewerSection": "External review 2026-10-16",
+      "dependency": null,
+      "status": "confirmed",
+      "observation": "Logout and logout-all answered 200 when the revocation could not be persisted, and sessions were accepted while persisted revocations had not loaded",
+      "affected": "apps/api/src/auth.ts; apps/api/src/auth-routes.ts; apps/api/src/app.ts; apps/api/src/health-routes.ts",
+      "severity": "P1",
+      "reproduction": "apps/api/tests/review-2026-10-16-regressions.test.ts",
+      "evidence": "apps/api/tests/review-2026-10-16-regressions.test.ts",
+      "disposition": "713905324f: sessions are refused until the persisted revocations load (/readyz sessionRevocations, retry every 5 s); a refused write stays queued and is retried every minute, and the logout routes answer 503 LOGOUT_NOT_SAVED. Open by design: a write still unsaved when the API restarts is lost, which the 503 message says. External review 2026-10-16 #2.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "MU-001",
+      "reviewerSection": "Security review of the multi-user change (space-claude-security)",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "b042e04c23"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "apps/api/tests/room-shares.test.ts (closed features, flag on and off); apps/api/tests/auth-route-guards.test.ts",
+      "observation": "With SPACE_MULTI_USER_ENABLED off, a USER account (for example a Google sign-in) still reads installation-wide data: /api/admin/audit, /api/audit/entries, /api/activity-log, /api/agent/sessions, /api/cli/tasks, /api/codex/*, /api/tasks and /api/providers",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "A USER reaches only the allowlisted route families, with the multi-user flag on or off (operator decision 2026-10-17); everything else answers 404. Admin routes answer a USER 404 instead of 403.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "MU-002",
+      "reviewerSection": "Security review of the multi-user change (space-claude-security)",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "b042e04c23"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "apps/api/tests/cli-user-hosts.test.ts, task-title-service.test.ts, room-agent-chat.test.ts (MU-002 cases)",
+      "observation": "Core one-shot CLI runs (task titles, Room Agent, Council, chess) use the owner's model accounts and Space Gateway even for a USER's panes",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "2026-10-18: core model runs that bill the owner's accounts no longer run for a USER: task summaries skip a USER's panes (they keep their local title) and the Room Agent conversation in a USER's room answers ROOM_AGENT_CHAT_UNAVAILABLE (cli-user-hosts ownerModels). Council and games are not reachable by a USER. Running them on the user's own keys needs a one-shot operation on the user's CLI host; not built.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "MU-003",
+      "reviewerSection": "Security review of the multi-user change (space-claude-security)",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "b042e04c23"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "packages/db/tests/room-shares-postgres.test.ts",
+      "observation": "rooms.owner_user_id is still nullable; a room without an owner belongs to the operator",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "Operator decision 2026-10-17: migration 0219 gives every WORKSPACE room without an owner the first administrator and adds CHECK rooms_workspace_owner_required; Agent Proof and CLI Recovery rooms stay as they are (no proof or Warm change). The Getting Started room re-created for the owner now carries the owner.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "MU-004",
+      "reviewerSection": "Security review of the multi-user change (space-claude-security)",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "b042e04c23"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "agent-workspace/reports/20261018-lab-recheck/summary.json; launcher tests/multi-user.test.mjs",
+      "observation": "run-spaceapp backup does not include a user's own CLI container volumes (CLI logins and settings, memory, files); keys are never in backups",
+      "severity": "P3",
+      "status": "confirmed",
+      "disposition": "Fixed in the launcher branch feat/multi-user-cli-containers (0fb9462, 8f5542a): a backup keeps each user's CLI settings and Space Memory (never keys or logins); restore puts them back for users that exist and 'user restore <id>' for users added again. Lab-verified on public-host 2026-10-18. Ships in run-spaceapp 1.1.6.",
+      "resolution": "partial"
+    },
+    {
+      "id": "MU-005",
+      "reviewerSection": "Security review of the multi-user change (space-claude-security)",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "b042e04c23"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": null,
+      "observation": "An invite link can be claimed by whoever holds it for 7 days; the invitee's email is not verified",
+      "severity": "P3",
+      "status": "confirmed",
+      "disposition": "The owner sends the link to the person; it works once and can be revoked. Email verification needs outbound mail, which public installs do not have.",
+      "resolution": "accepted-tradeoff"
+    },
+    {
+      "id": "MU-006",
+      "reviewerSection": "Security review of the multi-user change (space-claude-security)",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "b042e04c23"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": null,
+      "observation": "An invite with the OPERATOR role gets owner-level access, including every room and the owner's CLI container",
+      "severity": "P3",
+      "status": "product-decision",
+      "disposition": "The operator's account model (plan step 3): OPERATOR is a trusted co-administrator; invite untrusted members as USER.",
+      "resolution": "product-decision"
+    },
+    {
+      "id": "MU-007",
+      "reviewerSection": "Three-user rehearsal on Linux, Windows 11 and macOS",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "a883f90eed"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "agent-workspace/reports/20261017-multiuser-isolation/rehearsal-windows.json",
+      "observation": "A user with a VIEW share still sees 'Add panes to <room>' and Create in the shared room",
+      "severity": "P3",
+      "status": "confirmed",
+      "disposition": "Room write controls are hidden for a VIEW share (on dev since 2026-10-17: Add panes, Create, Rename room, pane layout, sticky notes, room settings). The pane cards' own buttons (close, minimize, menu) are HELD (operator decision via Nous 2026-10-18): the approved change 3b92892529 touches the Warm path and needs real-browser room-switch evidence, but the room-switch capture fails on dev after warm hydration (the Debug switch and the App diagnostics action menu are covered). SPACE_MULTI_USER_ENABLED is off, so no user sees this today; the server refuses those writes.",
+      "resolution": "partial"
+    },
+    {
+      "id": "MU-008",
+      "reviewerSection": "MU-002 follow-up",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-18",
+      "reviewedShas": {
+        "source": "77d9269628"
+      },
+      "verifiedSourceSha": "280707eff2",
+      "affected": "apps/api/src/room-agent.ts (dispatchRequest: /api/rooms/:id/room-agent/messages, /api/rooms/:id/commands)",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": "apps/api/tests/room-agent-chat.test.ts (MU-008 case)",
+      "evidence": "apps/api/tests/room-agent-chat.test.ts; room-agent, multi-user and auth-route-guards suites 147/147",
+      "observation": "The Room Agent's tools and its routed commands (mentions, control phrases, quick commands) act with the operator's identity; in a USER's own room they need a review of what that identity allows",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "280707eff2 (2026-10-18): review: the direct paths (mentions, control phrases, quick and typed commands) act as the requesting user, not the operator, but reach Space Control (404 for a USER everywhere else) and room commands, which record no pane owner (a pane a member opens in a shared room would run in the room owner's container) and check no pane ownership; the conversation also ran for a member in a room the operator shares. Missions, stop/control, the monitor and auto-answer switches and event answers were already ADMIN-only. Fix: dispatchRequest refuses an actor whose role is USER with ROOM_AGENT_UNAVAILABLE before any executor or model; the operator's rooms are unchanged. The Room Agent tools are reached only through those paths or by Nous (operator). CLI control tokens are MU-009.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "MU-009",
+      "reviewerSection": "MU-008 follow-up",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-18",
+      "reviewedShas": {
+        "source": "11786e207a"
+      },
+      "verifiedSourceSha": "80967e68aa",
+      "affected": "apps/api/src/app.ts (/api/cli/control/mcp control-token authentication), apps/api/src/cli-user-hosts.ts (controlActorAllowed)",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": "apps/api/tests/space-control-auth.test.ts (MU-009 case)",
+      "evidence": "apps/api/tests/space-control-auth.test.ts, cli-user-hosts.test.ts; control-auth, harness tokens, room shares, multi-user and auth-route-guards suites green",
+      "observation": "The CLI control MCP acts as the room's grant actor (normally the operator) for every eligible CLI pane in the room, including a pane a member opened in a shared room (running in the member's own container) or a USER's pane in a room the operator granted",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "80967e68aa (2026-10-18): /api/cli/control/mcp refuses the token with 403 CONTROL_PANE_NOT_GRANTED unless the pane's opener (its recorded owner, else the room's owner) is unset, the grant actor, or an ADMIN/OPERATOR account. A member's pane in a shared room and a USER's own room no longer get the operator's identity. The operator's rooms (owner user:operator or none) and panes are unchanged.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "IR117-C-F6",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md, 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "open",
+      "affected": "scripts/portable-restore.mjs (public launcher), docs/operations.md (rollback, then restore the pre-update backup)",
+      "reproduction": null,
+      "evidence": "Reasoned from PostgreSQL semantics by the reviewer; not executed",
+      "observation": "Restoring a backup from an older SpaceApp onto a newer, already-migrated database fails when the newer release added tables that reference existing ones: pg_restore --clean cannot drop the referenced tables",
+      "disposition": "Open (1.1.8, task:X9Sc-Jou67Nh). The failed restore changes nothing (1.1.7 rc3 puts every database back), but 'rollback, then restore the pre-update backup' does not work across such releases. 1.1.7 rc3 records the SpaceApp version in each backup; restoring into an emptied schema is planned."
+    },
+    {
+      "id": "IR117-C-F7",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md, 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "open",
+      "affected": "scripts/release-evidence.mjs, scripts/embed-image-lock.mjs, scripts/verify-published-containers.mjs (public release workflow)",
+      "reproduction": null,
+      "evidence": "release/acceptance.json limitations; reviewer read of the release workflow",
+      "observation": "The release gate binds the acceptance evidence to the source digest; the published images are rebuilt by the release workflow and pinned by the digests it resolves afterwards, not the image IDs the lab tested, and attestation checks verify predicate types only",
+      "disposition": "Open (1.1.8, task:6sCDD1rdjPyC). Users run images built from the tested source, not the tested image bytes; recording the tested digests and refusing or re-testing on a mismatch is planned."
     }
   ]
 }

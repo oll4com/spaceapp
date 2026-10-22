@@ -41,10 +41,11 @@ describe("LAN access rules", () => {
   });
 
   it("serves the LAN only the proxy routes, to allowed sources", () => {
-    for (const path of ["/health", "/v1/chat/completions", "/v1/models?x=1", "/backend-api/codex/responses", "/antigravity/v1internal:generateContent", "/api/codex/weekly-remaining"]) {
+    for (const path of ["/health", "/v1/chat/completions", "/v1/models?x=1", "/backend-api/codex/responses", "/api/codex/weekly-remaining"]) {
       expect(lanPathAllowed(path)).toBe(true);
     }
-    for (const path of ["/stats", "/readyz", "/__space-gateway/status", "/__space-gateway/admin/codex/device", "/v10", "/"]) {
+    // The Antigravity relay takes no gateway key, so it stays on loopback.
+    for (const path of ["/antigravity/v1internal:generateContent", "/stats", "/readyz", "/__space-gateway/status", "/__space-gateway/admin/codex/device", "/v10", "/"]) {
       expect(lanPathAllowed(path)).toBe(false);
     }
     expect(lanDecision("127.0.0.1", "10.254.240.11", "/stats", lan)).toBe("allow");

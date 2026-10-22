@@ -126,12 +126,14 @@ export function createCachedModelSelection(options: ResolveAdvancedMissionModelO
   };
 }
 
+
 /** One answer from `opencode run` (text only, no tools). Null when it fails or does not answer in time. */
 export function runOpenCodeText(modelId: string, prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
     let stdout = "";
     let settled = false;
-    const child = spawn("opencode", ["run", "--format", "json", "--model", modelId, prompt], {
+    // --standalone: OpenCode 2 would otherwise start its per-user background service for the run.
+    const child = spawn("opencode", ["run", "--standalone", "--format", "json", "--model", modelId, prompt], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...childProcessEnv(), LANG: "C.UTF-8" }
     });
@@ -149,15 +151,20 @@ export function runOpenCodeText(modelId: string, prompt: string, timeoutMs: numb
     child.on("error", () => finish(null));
     child.on("close", (code) => {
       if (code !== 0 && !stdout.trim()) return finish(null);
-      let extracted = "";
-      for (const line of stdout.split("\n")) {
-        try {
-          const parsed = JSON.parse(line.trim());
-          if (parsed.type === "text" && typeof parsed.part?.text === "string") extracted += parsed.part.text;
-        } catch {}
-      }
-      // Only text events are an answer: an error event ({"type":"error",...}) must never reach the operator raw.
-      finish(extracted.trim() || null);
+      finish(openCodeRunAnswer(stdout));
     });
   });
+}
+
+/** The answer in `opencode run --format json` output. */
+export function openCodeRunAnswer(stdout: string): string | null {
+  let extracted = "";
+  for (const line of stdout.split("\n")) {
+    try {
+      const parsed = JSON.parse(line.trim());
+      if (parsed.type === "text" && typeof parsed.part?.text === "string") extracted += parsed.part.text;
+    } catch {}
+  }
+  // Only text events are an answer: an error event ({"type":"error",...}) must never reach the operator raw.
+  return extracted.trim() || null;
 }

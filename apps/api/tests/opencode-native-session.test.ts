@@ -53,7 +53,7 @@ describe("OpenCode native session mapping", () => {
     await expect(readOpenCodeNativeSessionId("cli_session:missing", stateRoot)).resolves.toBeNull();
   });
 
-  it("recovers one exact native OpenCode task from a legacy live process tree", async () => {
+  it("ignores a retired OpenCode 1 attach process", async () => {
     const procRoot = await mkdtemp(join(tmpdir(), "space-opencode-proc-"));
     roots.push(procRoot);
     await mkdir(join(procRoot, "4101", "task", "4101"), { recursive: true });
@@ -66,7 +66,19 @@ describe("OpenCode native session mapping", () => {
     );
     await writeFile(join(procRoot, "4102", "task", "4102", "children"), "");
 
-    await expect(readOpenCodeNativeSessionIdFromProcessTree(4101, procRoot)).resolves.toBe("ses_exactLegacyTask123");
+    await expect(readOpenCodeNativeSessionIdFromProcessTree(4101, procRoot)).resolves.toBeNull();
+  });
+
+  it("recovers the native task of an OpenCode 2 TUI, which connects with --server", async () => {
+    const procRoot = await mkdtemp(join(tmpdir(), "space-opencode-proc-v2-"));
+    roots.push(procRoot);
+    await mkdir(join(procRoot, "4301", "task", "4301"), { recursive: true });
+    // Command line recorded from OpenCode 2.0.31.
+    await writeFile(join(procRoot, "4301", "cmdline"),
+      Buffer.from("/opt/spaceapp/var/cli-versions/opencode/current/node_modules/.bin/opencode\0--server\0http://127.0.0.1:47047\0--session\0ses_v2Task123\0/etc\0"));
+    await writeFile(join(procRoot, "4301", "task", "4301", "children"), "");
+
+    await expect(readOpenCodeNativeSessionIdFromProcessTree(4301, procRoot)).resolves.toBe("ses_v2Task123");
   });
 
   it("fails closed when a process tree contains multiple native OpenCode tasks", async () => {

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packages": {
     "@anthropic-ai/claude-code": {
-      "version": "2.1.206",
+      "version": "2.1.301",
       "distribution": "owner-installed-only",
       "imageBundled": false
     }

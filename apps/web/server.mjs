@@ -394,6 +394,33 @@ const demoWorkspaceContentSecurityPolicy = [
   "manifest-src 'self'"
 ].join("; ");
 
+// The app shell has no inline script; the YouTube player loads its IFrame API from www.youtube.com.
+const operatorAppScriptPolicy = "script-src 'self' https://www.youtube.com; object-src 'none'; base-uri 'self'; report-uri /csp-report";
+
+let cspReportWindow = { startedAt: 0, count: 0 };
+/** Logs CSP violation reports (directive and blocked source only, capped) so the report-only policy can be reviewed. */
+function receiveCspReport(request, response) {
+  let size = 0;
+  const chunks = [];
+  request.on("data", (chunk) => {
+    size += chunk.length;
+    if (size <= 16 * 1024) chunks.push(chunk);
+  });
+  request.on("end", () => {
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    const now = Date.now();
+    if (now - cspReportWindow.startedAt > 60_000) cspReportWindow = { startedAt: now, count: 0 };
+    if (size > 16 * 1024 || ++cspReportWindow.count > 60) return;
+    try {
+      const report = JSON.parse(Buffer.concat(chunks).toString("utf8"))?.["csp-report"] ?? {};
+      const field = (value) => String(value ?? "").replace(/[?#].*$/, "").replace(/[^\x20-\x7e]/g, "").slice(0, 200);
+      console.log(JSON.stringify({ event: "CSP_REPORT", directive: field(report["violated-directive"] ?? report["effective-directive"]),
+        blocked: field(report["blocked-uri"]), page: field(report["document-uri"]), source: field(report["source-file"]) }));
+    } catch {}
+  });
+}
+
 function publicHomepageSecurityHeaders(request, filePath) {
   if (path.extname(filePath) !== ".html") return {};
   const pathname = new URL(request.url ?? "/", "http://space.local").pathname.replace(/\/+$/, "") || "/";
@@ -407,8 +434,16 @@ function publicHomepageSecurityHeaders(request, filePath) {
       "x-frame-options": "SAMEORIGIN"
     };
   }
-  // The operator app: no framing by other sites (1.1.5 review F12). A script policy needs a browser proof of every pane first.
-  if (pathname !== "/homepage") return { "content-security-policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'self'", "x-frame-options": "SAMEORIGIN" };
+  // The operator app: no framing by other sites (1.1.5 review F12). Its script policy is report-only until the reports
+  // from every pane are clean (security addendum step 7); HSTS comes from the TLS proxy (deploy/nginx/space-oll4.conf).
+  if (pathname !== "/homepage") {
+    return {
+      "content-security-policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'self'",
+      "content-security-policy-report-only": operatorAppScriptPolicy,
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "x-frame-options": "SAMEORIGIN"
+    };
+  }
   return {
     "content-security-policy": publicHomepageContentSecurityPolicy,
     "cross-origin-opener-policy": "same-origin",
@@ -496,6 +531,10 @@ const server = http.createServer((request, response) => {
   }
   if (shouldProxy(requestUrl.pathname)) {
     proxyRequest(request, response, requestUrl);
+    return;
+  }
+  if (requestUrl.pathname === "/csp-report" && request.method === "POST") {
+    receiveCspReport(request, response);
     return;
   }
 

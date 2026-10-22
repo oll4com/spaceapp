@@ -55,6 +55,12 @@ describe('canonical semantic index',()=>{
  it('rejects incomplete batches without storing partial mappings',async()=>{
   const f=fixture();f.embed.mockResolvedValueOnce([]);await expect(f.service.sync()).rejects.toThrow();expect(f.repository.upsert).not.toHaveBeenCalled();
  });
+ it('drops hits below the model\'s noise floor: 0.4 by default, 0.55 for the local bge-m3',async()=>{
+  const search=(model:string,similarity:number)=>new CanonicalMemorySearch({canonical:{list:async()=>[entry],save:async()=>entry},provider:'codex-lb',model,
+   ready:async()=>true,embed:async()=>[],repository:{list:async()=>[],upsert:async()=>{},close:async()=>{},search:async()=>[{id:entry.id,inputHash:canonicalEmbeddingHash(entry),similarity}]}})
+   .search({...query,q:undefined},[]);
+  expect([(await search('text-embedding-3-small',.45)).length,(await search('bge-m3',.45)).length,(await search('bge-m3',.6)).length]).toEqual([1,0,1]);
+ });
  it('includes visibility changes in the embedding fingerprint',()=>{
   expect(canonicalEmbeddingHash(entry)).not.toBe(canonicalEmbeddingHash({...entry,scope:'SYSTEM',roomId:null}));
  });
