@@ -121,8 +121,9 @@ jobs:
         run: cd "$HOME/spaceapp" && PATH="$(cat "$HOME/node-path"):$PATH" npm ci
 
       - name: npm run dev:stack end to end
+        # WSL does not inherit the runner's environment; GITHUB_ACTIONS lets the e2e mask the setup token in the log.
         run: |
           cd "$HOME/spaceapp"
           export PATH="$(cat "$HOME/node-path"):$PATH"
           node --test scripts/tests/dev-stack.test.mjs
-          SPACEAPP_DEV_E2E_START_TIMEOUT_MS=1800000 node scripts/dev-stack-e2e.mjs
+          GITHUB_ACTIONS=true SPACEAPP_DEV_E2E_START_TIMEOUT_MS=1800000 node scripts/dev-stack-e2e.mjs
