@@ -43,7 +43,7 @@ jobs:
         arch:
           - amd64
           - arm64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # free 4-CPU public runner; matrix already splits one target x arch per job
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,6 +66,16 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
 
+
+      - name: Smoke check target helper
+        run: node deploy/docker/container-smoke-check.mjs "${{ matrix.target }}"
+
+      - name: Smoke check core readyz (amd64 only)
+        if: matrix.target == 'core' && matrix.arch == 'amd64'
+        run: |
+          docker run -d --name smoke-core spaceapp-ci:core-amd64
+          sleep 10; docker exec smoke-core wget -qO- http://127.0.0.1:4911/readyz || true
+          docker rm -f smoke-core
       - name: Enforce container size budget
         run: >-
           node scripts/container-image-size-budget.mjs

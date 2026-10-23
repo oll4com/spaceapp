@@ -72,7 +72,31 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
          ln -s /usr/local/bin/spaceapp-cli-wrapper "/usr/local/bin/${name}-vscode-parity"; \
        done
 
-FROM runtime-base AS core
+# ---- per-target production dependency closures (issue #64) ----
+# Each stage keeps only the workspaces its target runs, then rebuilds the production closure.
+
+FROM runtime-base AS core-closure
+ARG TARGETARCH
+COPY --from=build /app /app
+RUN node deploy/docker/prepare-container-targets.mjs --target core --target-arch "${TARGETARCH:-amd64}" --deploy-dir /app \
+  && rm -rf /app/apps/api/browser-host /app/packages/cli-host \
+  && node -e "const{execSync}=require('node:child_process');execSync('npm prune --omit=dev',{cwd:'/app',stdio:'inherit'})"
+
+FROM runtime-base AS browser-closure
+ARG TARGETARCH
+COPY --from=build /app /app
+RUN node deploy/docker/prepare-container-targets.mjs --target browser --target-arch "${TARGETARCH:-amd64}" --deploy-dir /app \
+  && rm -rf /app/apps/worker /app/apps/web /app/packages/cli-host /app/packages/db \
+  && node -e "const{execSync}=require('node:child_process');execSync('npm prune --omit=dev',{cwd:'/app',stdio:'inherit'})"
+
+FROM runtime-base AS cli-closure
+ARG TARGETARCH
+COPY --from=build /app /app
+RUN node deploy/docker/prepare-container-targets.mjs --target cli --target-arch "${TARGETARCH:-amd64}" --deploy-dir /app \
+  && rm -rf /app/apps/api /app/apps/worker /app/apps/web \
+  && node -e "const{execSync}=require('node:child_process');execSync('npm prune --omit=dev',{cwd:'/app',stdio:'inherit'})"
+
+FROM core-closure AS core
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -84,7 +108,7 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:4911/readyz').then(async r=>{const body=await r.json();if(!r.ok||body.ok !== true)process.exit(1)}).catch(()=>process.exit(1))"]
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
-FROM runtime-base AS browser
+FROM browser-closure AS browser
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
@@ -96,7 +120,7 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
     SPACE_BROWSER_SESSIONS_CHROME_PATH=/usr/bin/chromium
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
-FROM runtime-base AS cli
+FROM cli-closure AS cli
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md
