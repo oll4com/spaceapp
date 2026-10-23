@@ -90,8 +90,8 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 ### Prerequisites
 - **Node.js**: Follow the selected `run-spaceapp` launcher version's `engines` requirement. Development of this monorepo requires **>=22.12 <23**; see [Contributing](CONTRIBUTING.md).
 - **Hardware**:
-  - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
-  - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
+  - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 5.5 GiB free disk.
+  - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 9.5 GiB free disk.
 - **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
 
 ### Run the Installation Command
@@ -242,9 +242,9 @@ The launcher selects the largest profile that fits the available CPU, RAM, and f
 
 | Profile | Target System | Allocated Services | Minimum Hardware |
 | :--- | :--- | :--- | :--- |
-| `small` | Laptops / Small VMs | `spaceapp-core`, `spaceapp-cli`, `postgres` | 4 CPUs, 7 GiB RAM, 6.5 GiB disk |
-| `medium` | Standard Dev PC | Small stack + `temporal` (background workers & automated workflows) | 4 CPUs, 11 GiB RAM, 8 GiB disk |
-| `large` | Workstations / Servers | Medium stack + `spaceapp-browser` (Chromium browser sessions in a separate service) | 8 CPUs, 15 GiB RAM, 11 GiB disk |
+| `small` | Laptops / Small VMs | `spaceapp-core`, `spaceapp-cli`, `postgres` | 4 CPUs, 7 GiB RAM, 5.5 GiB disk |
+| `medium` | Standard Dev PC | Small stack + `temporal` (background workers & automated workflows) | 4 CPUs, 11 GiB RAM, 7 GiB disk |
+| `large` | Workstations / Servers | Medium stack + `spaceapp-browser` (Chromium browser sessions in a separate service) | 8 CPUs, 15 GiB RAM, 9.5 GiB disk |
 
 ---
 
