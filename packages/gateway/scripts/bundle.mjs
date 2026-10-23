@@ -22,7 +22,7 @@ const common = {
     name: "external-dependencies",
     setup(context) {
       const bundled = new Set(["@space/contracts", "@space/db"]);
-      context.onResolve({ filter: /^[^./]/ }, (args) => (bundled.has(args.path) ? undefined : { path: args.path, external: true }));
+      context.onResolve({ filter: /^[^./]/ }, (args) => (args.kind === "entry-point" || bundled.has(args.path) ? undefined : { path: args.path, external: true }));
     }
   }]
 };
