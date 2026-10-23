@@ -22,7 +22,7 @@ test("inspectSystemResources walks up when the install root and its parent do no
   assert.ok(Number.isFinite(resources.totalMemoryBytes));
 });
 const config = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   version: "0.1.0",
   previousVersion: null,
   bindHost: "127.0.0.1",
@@ -30,6 +30,7 @@ const config = {
   telemetry: false,
   profile: "standard",
   accessMode: "isolated",
+  engine: "docker",
   companionsEnabled: false,
   workspaces: [
     {
@@ -43,17 +44,23 @@ const config = {
 };
 
 test("compose actions map to fixed commands and never invoke a shell", () => {
-  const command = composeCommand("up", home);
-  assert.equal(command.command, "docker");
-  assert.deepEqual(command.args.slice(0, 5), [
+  const docker = composeCommand("up", home);
+  assert.equal(docker.command, "docker");
+  assert.ok(docker.args.includes("up"));
+
+  const podman = composeCommand("up", home, { engine: "podman" });
+  assert.equal(podman.command, "podman");
+  assert.ok(podman.args.includes("up"));
+  assert.equal(podman.args.indexOf("--project-directory"), docker.args.indexOf("--project-directory"));
+  assert.deepEqual(docker.args.slice(0, 5), [
     "compose",
-    "--project-name", command.args[2],
+    "--project-name", docker.args[2],
     "--project-directory", home
   ]);
-  assert.match(command.args[2], /^spaceapp-[a-f0-9]{12}$/);
-  assert.deepEqual(command.args.slice(-3), ["up", "-d", "--remove-orphans"]);
+  assert.match(docker.args[2], /^spaceapp-[a-f0-9]{12}$/);
+  assert.deepEqual(docker.args.slice(-3), ["up", "-d", "--remove-orphans"]);
   assert.notEqual(
-    command.args[2],
+    docker.args[2],
     composeCommand("up", resolve(tmpdir(), "another-spaceapp-home")).args[2],
     "different installation roots must use different Compose projects"
   );

@@ -50,6 +50,15 @@ import {
 } from "./index.mjs";
 import { inspectStoragePlan, storageChecks } from "./storage.mjs";
 import {
+  defaultEngine,
+  detectAvailableEngine,
+  engineInfoFlags,
+  engineProbeSpecs,
+  isSupportedEngine,
+  normalizeEngine,
+  parseEngineVersion
+} from "./engine.mjs";
+import {
   ensureDockerAvailable,
   prepareDockerCliPath,
   windowsPowerShellArgs
@@ -678,6 +687,7 @@ async function installCommand(args, {
   const {
     requestedProfile,
     requestedAccessMode,
+    requestedEngine,
     noOpen,
     companionsEnabled,
     telemetryEnabled,
@@ -696,6 +706,22 @@ async function installCommand(args, {
       "Host-root access is disabled for this launcher-only candidate because its runtime images were not rebuilt. Use --access isolated."
     );
   }
+  const targetEngine = requestedEngine ?? existingConfig?.engine ?? defaultEngine();
+  if (accessMode === "host-root" && normalizeEngine(targetEngine) === "podman") {
+    throw new Error(
+      "Host-root access is not supported with Podman. Podman rootless containers cannot safely expose the entire host root filesystem. Use --access isolated or --engine docker."
+    );
+  }
+  if (
+    existingConfig &&
+    requestedEngine !== undefined &&
+    normalizeEngine(existingConfig.engine ?? defaultEngine()) !== normalizeEngine(requestedEngine)
+  ) {
+    throw new Error(
+      `Cannot change engine from ${existingConfig.engine ?? defaultEngine()} to ${requestedEngine} ` +
+      `without reinstalling. Run backup, uninstall --purge-data, then install --engine ${requestedEngine}.`
+    );
+  }
   await prepareDockerPath({ platform, env });
   const resources = await inspectResources(root);
   let profile = requestedProfile === "auto" && existingConfig
@@ -709,6 +735,7 @@ async function installCommand(args, {
     version: runtimeVersion,
     profile,
     accessMode,
+    engine: targetEngine,
     ...(companionsEnabled ? { companionsEnabled } : {})
   });
   // The stored choice also drives the app's first_answer event after later updates, so an explicit
@@ -757,7 +784,8 @@ async function installCommand(args, {
       stdin,
       inspectResources,
       resources,
-      profile, operation
+      profile, operation,
+      engine: targetEngine
     });
     stderr.write(
       `Installation stopped before downloading images. Fix the failed checks and run "${UNIVERSAL_COMMAND} install" again.\n`
@@ -774,6 +802,7 @@ async function installCommand(args, {
     stdout,
     stderr,
     execute,
+    engine: targetEngine,
     installArgs: { root, requestedProfile, requestedAccessMode, noOpen, autoConfirm: true }
   });
   if (prerequisiteResult.reexecuted) {
@@ -788,14 +817,14 @@ async function installCommand(args, {
 
   stage = "doctor";
 
-  let storagePlan = await inspectStoragePlan({ root, config: result.config, existingConfig, resources, execute, operation });
+  let storagePlan = await inspectStoragePlan({ root, config: result.config, existingConfig, resources, execute, operation, engine: targetEngine });
   if (requestedProfile === "auto" && !existingConfig) {
     const engineProfile = resolveInstallProfile("auto", storagePlan.resources);
     if (engineProfile !== profile) {
       profile = engineProfile;
       result.config = { ...result.config, profile };
       stdout.write(`Docker resources select profile: ${profile}.\n`);
-      storagePlan = await inspectStoragePlan({ root, config: result.config, resources: storagePlan.resources, execute, operation });
+      storagePlan = await inspectStoragePlan({ root, config: result.config, resources: storagePlan.resources, execute, operation, engine: targetEngine });
     }
   }
   const doctorCode = await doctor({
@@ -808,6 +837,7 @@ async function installCommand(args, {
     inspectResources,
     resources,
     profile,
+    engine: targetEngine,
     dockerReady: true, operation, storagePlan
   });
   if (doctorCode !== 0) {
@@ -1102,6 +1132,7 @@ async function planInteractiveSetup({
     return {
       requestedProfile: actions.profile ?? "auto",
       requestedAccessMode: actions.accessMode,
+      requestedEngine: actions.engine,
       noOpen: actions.noOpen !== false,
       companionsEnabled: actions.companionsEnabled ?? false,
       telemetryEnabled: actions.telemetry ?? false,
@@ -1122,6 +1153,18 @@ async function planInteractiveSetup({
       { label: "isolated (recommended; no host access)", value: "isolated" },
       { label: "host-root (Linux only; CLI sessions can read and modify the whole host)", value: "host-root" }
     ], { defaultIndex: parsed.requestedAccessMode === "host-root" ? 1 : 0, answerKey: "access" });
+
+    let engineChoice = parsed.requestedEngine;
+    if (!engineChoice) {
+      engineChoice = await promptChoice(stdin, stdout, "Which container engine?", [
+        { label: "docker (default)", value: "docker" },
+        { label: "podman (rootless; Linux only, experimental)", value: "podman" }
+      ], { defaultIndex: 0, answerKey: "engine" });
+    }
+    if (accessChoice === "host-root" && engineChoice === "podman") {
+      throw new Error("Host-root access is not supported with Podman. Use --access isolated or choose Docker.");
+    }
+
     const companionsChoice = await promptYesNo(stdin, stdout, "Enable companion integrations (Claude Code, browser companions)?", { defaultYes: parsed.companionsEnabled, answerKey: "companions" });
     stdout.write(
       "Anonymous telemetry sends spaceapp.dev a random install ID with the OS and its version, CPUs, RAM, profile,\n" +
@@ -1146,6 +1189,7 @@ async function planInteractiveSetup({
       `Runtime image version: not installed -> ${runtimeVersion}`,
       `Profile: ${profileChoice === "auto" ? `auto (${resolved})` : profileChoice}`,
       `Access mode: ${accessChoice}`,
+      `Engine: ${engineChoice}`,
       `Companions: ${companionsChoice ? "enabled" : "disabled"}`,
       `Telemetry: ${telemetryChoice ? "enabled" : "disabled"}`,
       `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`,
@@ -1159,6 +1203,7 @@ async function planInteractiveSetup({
       await offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, {
         profile: profileChoice,
         accessMode: accessChoice,
+        engine: engineChoice,
         companionsEnabled: companionsChoice,
         telemetry: telemetryChoice,
         installId,
@@ -1168,6 +1213,7 @@ async function planInteractiveSetup({
     return {
       requestedProfile: profileChoice,
       requestedAccessMode: accessChoice,
+      requestedEngine: engineChoice,
       noOpen: !openBrowserChoice,
       companionsEnabled: companionsChoice,
       telemetryEnabled: telemetryChoice,
@@ -1238,6 +1284,7 @@ async function planInteractiveSetup({
     await offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, {
       profile: parsed.requestedProfile,
       accessMode: parsed.requestedAccessMode,
+      engine: parsed.requestedEngine,
       companionsEnabled: parsed.companionsEnabled,
       noOpen: parsed.noOpen
     });
@@ -1245,6 +1292,7 @@ async function planInteractiveSetup({
   return {
     requestedProfile: parsed.requestedProfile,
     requestedAccessMode: parsed.requestedAccessMode,
+    requestedEngine: parsed.requestedEngine,
     noOpen: parsed.noOpen,
     companionsEnabled: parsed.companionsEnabled,
     telemetryEnabled: false
@@ -1258,6 +1306,12 @@ function hasRequestedConfigChange(rawExisting, parsed) {
   if (
     parsed.requestedAccessMode !== undefined &&
     rawExisting.accessMode !== parsed.requestedAccessMode
+  ) {
+    return true;
+  }
+  if (
+    parsed.requestedEngine !== undefined &&
+    rawExisting.engine !== parsed.requestedEngine
   ) {
     return true;
   }
@@ -1318,6 +1372,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
     ...plan.actions.map((action) => action.detail)
   ])) return 1;
   const prerequisites = await ensureDocker({platform, arch, env, stdin, stdout, stderr, execute, sleep: sleep || wait,
+    engine: repaired.engine ?? defaultEngine(),
     installArgs: {root,requestedProfile:repaired.profile,requestedAccessMode:repaired.accessMode,noOpen:true,autoConfirm:true}});
   if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   config = repaired;
@@ -1716,6 +1771,7 @@ async function restoreRuntimeAfterFailedInstall({
 function parseInstallArgs(args) {
   let requestedProfile = "auto";
   let requestedAccessMode;
+  let requestedEngine;
   let noOpen = false;
   let companionsEnabled = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -1746,8 +1802,17 @@ function parseInstallArgs(args) {
       requestedAccessMode = argument.slice("--access=".length);
       continue;
     }
+    if (argument === "--engine" && index + 1 < args.length) {
+      requestedEngine = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--engine=")) {
+      requestedEngine = argument.slice("--engine=".length);
+      continue;
+    }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--engine docker|podman] [--with-companions] [--no-open]`
     );
   }
   if (
@@ -1755,13 +1820,17 @@ function parseInstallArgs(args) {
     (
       requestedAccessMode !== undefined &&
       !["isolated", "host-root"].includes(requestedAccessMode)
+    ) ||
+    (
+      requestedEngine !== undefined &&
+      !isSupportedEngine(requestedEngine)
     )
   ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--engine docker|podman] [--with-companions] [--no-open]`
     );
   }
-  return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled };
+  return { requestedProfile, requestedAccessMode, requestedEngine, noOpen, companionsEnabled };
 }
 
 async function loadExistingInstallation(root) {
@@ -2362,12 +2431,13 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
     }
   }
   const prerequisites = await ensureDocker({ platform, arch, env, stdin, stdout, stderr, execute,
+    engine: config.engine ?? defaultEngine(),
     installArgs: { root, requestedProfile: config.profile, noOpen: true, autoConfirm: true } });
   if (prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   const resources = await inspectResources(root);
-  const storagePlan = await inspectStoragePlan({ root, config: { ...config, version: targetVersion }, existingConfig: config, resources, execute, operation: "upgrade" });
+  const storagePlan = await inspectStoragePlan({ root, config: { ...config, version: targetVersion }, existingConfig: config, resources, execute, operation: "upgrade", engine: config.engine ?? defaultEngine() });
   if (await doctor({ root, platform, stdout, stderr, execute, stdin, inspectResources, resources,
-    profile: config.profile, dockerReady: true, operation: "upgrade", storagePlan }) !== 0) return 1;
+    profile: config.profile, engine: config.engine ?? defaultEngine(), dockerReady: true, operation: "upgrade", storagePlan }) !== 0) return 1;
   return performUpdate({
     root,
     config,
@@ -2386,7 +2456,7 @@ async function updateCommand(args, { root, config, version, platform, stdin, std
 
 async function verifyStorage({ root, config, existingConfig, operation, inspectResources, execute, stdout, stderr }) {
   const resources = await inspectResources(root);
-  const plan = await inspectStoragePlan({ root, config, existingConfig, operation, resources, execute });
+  const plan = await inspectStoragePlan({ root, config, existingConfig, operation, resources, execute, engine: config.engine ?? defaultEngine() });
   const checks = storageChecks(plan, resources);
   for (const check of checks) (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
   if (checks.some((check) => !check.ok)) {
@@ -2408,8 +2478,10 @@ async function doctor({
   profile,
   operation,
   storagePlan,
+  engine: requestedEngine,
   dockerReady = false
 }) {
+  const engine = requestedEngine ?? await loadConfig(root).then((cfg) => cfg.engine).catch(() => defaultEngine());
   const configuration = profile ? { ok: true, detail: "Prepared installation configuration" } : await loadConfig(root).then(() => ({ ok: true, detail: root })).catch((error) => ({ ok: false, detail: `${error.message}. Run install for a new setup, or doctor --fix for an existing setup.` }));
   const detectedResources = resources ?? await inspectResources(root);
   let resolvedProfile = profile;
@@ -2433,51 +2505,51 @@ async function doctor({
     ...resourceChecks.filter((check) => !storagePlan || check.name !== "Free disk"),
     ...(storagePlan ? storageChecks(storagePlan, detectedResources) : [])
   ];
-  const dockerResults = [];
-  for (const probe of [
-    { name: "Docker CLI", command: "docker", args: ["--version"] },
-    { name: "Docker Compose", command: "docker", args: ["compose", "version"] },
-    { name: "Docker Engine", command: "docker", args: ["info"] }
-  ]) {
+  const engineResults = [];
+  const binary = engine === "podman" ? "podman" : "docker";
+  for (const probe of engineProbeSpecs(engine)) {
     const code = dockerReady
       ? 0
       : await execute(probe, { stdin, stdout: null, stderr: null });
-    dockerResults.push({ ...probe, code });
+    engineResults.push({ ...probe, code });
   }
-  const [dockerCli, dockerCompose, dockerEngine] = dockerResults;
+  const [engineCli, engineCompose, engineInfo] = engineResults;
+  const cliLabel = `${binary === "podman" ? "Podman" : "Docker"} CLI`;
+  const composeLabel = `${binary === "podman" ? "Podman" : "Docker"} Compose`;
+  const infoLabel = `${binary === "podman" ? "Podman" : "Docker"} Engine`;
   checks.push({
-    name: dockerCli.name,
-    ok: dockerCli.code === 0,
-    detail: dockerCli.code === 0
+    name: engineCli.name.replace(`${binary} CLI`, cliLabel),
+    ok: engineCli.code === 0,
+    detail: engineCli.code === 0
       ? "available"
-      : dockerCli.code === 127
+      : engineCli.code === 127
         ? "not found on PATH"
-        : `unavailable (exit ${dockerCli.code})`
+        : `unavailable (exit ${engineCli.code})`
   });
   checks.push({
-    name: dockerCompose.name,
-    ok: dockerCompose.code === 0,
-    detail: dockerCompose.code === 0
+    name: engineCompose.name.replace(`${binary} Compose`, composeLabel),
+    ok: engineCompose.code === 0,
+    detail: engineCompose.code === 0
       ? "available"
-      : dockerCli.code !== 0
-        ? "not available because Docker CLI is missing"
-        : `plugin unavailable (exit ${dockerCompose.code})`
+      : engineCli.code !== 0
+        ? `not available because ${binary} CLI is missing`
+        : `plugin unavailable (exit ${engineCompose.code})`
   });
   checks.push({
-    name: dockerEngine.name,
-    ok: dockerEngine.code === 0,
-    detail: dockerEngine.code === 0
+    name: engineInfo.name.replace(`${binary} Engine`, infoLabel),
+    ok: engineInfo.code === 0,
+    detail: engineInfo.code === 0
       ? "available"
-      : dockerCli.code === 0
+      : engineCli.code === 0
         ? "installed but not running or inaccessible"
-        : "not reachable because Docker CLI is missing"
+        : `not reachable because ${binary} CLI is missing`
   });
   for (const check of checks) {
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
   }
-  if (dockerCli.code !== 0 || dockerCompose.code !== 0) {
+  if (engineCli.code !== 0 || engineCompose.code !== 0) {
     stderr.write(`${dockerInstallHelp(platform)}\n`);
-  } else if (dockerEngine.code !== 0) {
+  } else if (engineInfo.code !== 0) {
     stderr.write(`${dockerEngineHelp(platform)}\n`);
   }
   return checks.every((check) => check.ok) ? 0 : 1;
@@ -2657,6 +2729,7 @@ function spawnTrustedCommand(spec, options) {
     case "docker": return spawn("docker", args, options);
     case "hdiutil": return spawn("hdiutil", args, options);
     case "open": return spawn("open", args, options);
+    case "podman": return spawn("podman", args, options);
     case "powershell.exe":
       return spawn("powershell.exe", windowsPowerShellArgs(spec.operation), options);
     case "sg": return spawn("sg", args, options);

@@ -10,6 +10,15 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import {
+  defaultEngine,
+  engineProbeSpecs,
+  inspectPodmanMachine,
+  listPodmanMachines,
+  normalizeEngine,
+  podmanMachineResizeGuidance,
+  podmanMachineResourceInfo
+} from "./engine.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -133,9 +142,26 @@ export async function ensureDockerAvailable({
   sleep = wait,
   osRelease,
   installArgs,
+  engine: requestedEngine,
   scheduleResume = scheduleWindowsInstallResume,
   confirmRestart = confirmWindowsRestart
 }) {
+  const engine = normalizeEngine(requestedEngine ?? defaultEngine());
+  if (engine === "podman") {
+    if (await engineIsReady("podman", execute)) {
+      return { code: 0, reexecuted: false };
+    }
+    if (platform === "darwin") {
+      const machineDiag = await diagnosePodmanMachine(execute);
+      stderr.write(machineDiag.message);
+      return { code: 1, reexecuted: false };
+    }
+    stderr.write(
+      "Podman was selected but is not available. Install Podman (>= 4.9) and the docker-compose v2 provider, " +
+      "or rerun with --engine docker.\n"
+    );
+    return { code: 1, reexecuted: false };
+  }
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
   }
@@ -665,6 +691,66 @@ async function dockerIsReady(execute) {
     }
   }
   return true;
+}
+
+async function engineIsReady(engine, execute) {
+  for (const spec of engineProbeSpecs(engine)) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function diagnosePodmanMachine(execute) {
+  const machines = await listPodmanMachines(execute);
+  const running = machines.find((machine) => machine?.Running === true);
+  if (!machines.length) {
+    return {
+      message:
+        "Podman was selected but no Podman machine exists on macOS. " +
+        "Create and start one with:\n" +
+        "  podman machine init\n" +
+        "  podman machine start\n" +
+        "Then rerun this command, or use --engine docker.\n"
+    };
+  }
+  if (!running) {
+    return {
+      message:
+        "Podman was selected but no Podman machine is running. " +
+        `Start it with: podman machine start ${machines[0]?.Name ?? ""}\n` +
+        "Then rerun this command, or use --engine docker.\n"
+    };
+  }
+  const machine = await inspectPodmanMachine(execute, running.Name);
+  const resources = podmanMachineResourceInfo(machine);
+  if (!resources) {
+    return {
+      message:
+        `Podman machine "${running.Name}" is running but its resources could not be read. ` +
+        "Verify it with: podman machine inspect " + running.Name + "\n"
+    };
+  }
+  const lines = [
+    `Podman machine "${running.Name}" resources: ${resources.cpuCount} CPUs, ` +
+    `${formatGibibytes(resources.memoryBytes)} GiB memory, ${formatGibibytes(resources.diskBytes)} GiB disk.`
+  ];
+  const issues = [];
+  if (resources.cpuCount < 4) issues.push("at least 4 CPUs");
+  if (resources.memoryBytes > 0 && resources.memoryBytes < 7 * 1024 ** 3) issues.push("at least 7 GiB memory");
+  if (resources.diskBytes > 0 && resources.diskBytes < 15 * 1024 ** 3) issues.push("at least 15 GiB disk");
+  if (issues.length) {
+    lines.push("The machine is below the recommended size for SpaceApp: " + issues.join(", ") + ".");
+    lines.push(podmanMachineResizeGuidance(running.Name));
+  }
+  lines.push("Then rerun this command, or use --engine docker.");
+  return { message: lines.join("\n") + "\n" };
+}
+
+function formatGibibytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "unknown";
+  return (bytes / (1024 ** 3)).toFixed(2);
 }
 
 async function installLinuxDockerEngine({

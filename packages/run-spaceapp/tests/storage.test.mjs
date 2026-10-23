@@ -30,7 +30,7 @@ test("small omits optional services, medium keeps workflows, large includes brow
     const args = composeCommand("up", tmpdir(), {profile}).args;
     assert.equal(args.includes("workflows"), workflows);
     assert.equal(args.includes("standard"), browser);
-    const env = renderRuntimeEnv({schemaVersion:4,version:"1.0.28",previousVersion:null,bindHost:"127.0.0.1",port:4911,telemetry:false,profile,accessMode:"isolated",companionsEnabled:false,workspaces:[]});
+    const env = renderRuntimeEnv({schemaVersion:5,version:"1.0.28",previousVersion:null,bindHost:"127.0.0.1",port:4911,telemetry:false,profile,accessMode:"isolated",engine:"docker",companionsEnabled:false,optionalModules:"none",workspaces:[]});
     assert.match(env, new RegExp(`SPACEAPP_WORKFLOWS_ENABLED=${workflows}`));
   }
 });
@@ -94,6 +94,20 @@ test("Docker CPU and memory allocations constrain the host's resources",async(t)
   assert.equal(plan.resources.engineMemoryBytes,8*GiB);
   assert.equal(plan.resources.totalMemoryBytes,resources.totalMemoryBytes);
   assert.equal(installResourceChecks({...plan.resources,engineMemoryBytes:2*GiB},"small").find(x=>x.name==="Docker memory").ok,false);
+});
+
+test("inspectStoragePlan uses the configured container engine binary", async (t) => {
+  const f = await fixture(t, true);
+  const config = { ...JSON.parse(await readFile(join(f.root, "config.json"))), engine: "podman" };
+  const commands = [];
+  const execute = async (spec, io) => {
+    commands.push(spec.command);
+    if (spec.args[0] === "info") { io.stdout.write(JSON.stringify({ NCPU: 4, MemTotal: 8 * GiB })); return 0; }
+    return f.execute(spec, io);
+  };
+  await inspectStoragePlan({ root: f.root, config, resources, execute, operation: "repair" });
+  assert.ok(commands.includes("podman"));
+  assert.equal(commands.includes("docker"), false);
 });
 
 test("an installation that pulled its images by digest is inspected by digest, since it has no local version tags", async (t) => {

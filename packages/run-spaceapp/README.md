@@ -1,6 +1,7 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for SpaceApp.
+Cross-platform container launcher for SpaceApp. The default engine is Docker;
+Podman is also supported on Linux and on macOS through a Podman machine.
 
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
@@ -39,6 +40,25 @@ second command. Headless Windows sessions (SSH, CI services, session 0) also
 work: during image pulls the launcher switches Docker to a temporary
 credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
+
+### Container engine selection
+
+Docker is the default engine. To use Podman instead, install Podman (>= 4.9)
+and a Compose v2 provider such as `docker-compose-plugin`, then run:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+On Linux, Podman runs rootless by default and works with the `small` profile
+on a 4 CPU / 7 GiB system. Host-root access is not available with Podman
+because rootless containers cannot safely expose the entire host root
+filesystem; use `--access isolated` (the default) or switch to Docker.
+
+On macOS, Podman requires a running Podman machine with at least 4 CPUs,
+7 GiB memory and 15 GiB disk. The install wizard detects the machine and
+reports its resources; if they are too small it prints the exact
+`podman machine set` command to resize it.
 
 The launcher selects `small`, `medium`, or `large` automatically using CPU,
 RAM and free disk. Docker's CPU and RAM allocation is checked as well.

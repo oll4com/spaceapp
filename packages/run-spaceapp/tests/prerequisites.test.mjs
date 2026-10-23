@@ -1016,3 +1016,49 @@ test('Linux waits for a stopped engine to become ready without unnecessarily cha
   assert.ok(calls.some(s=>s.args.includes('systemctl')));
   assert.ok(!calls.some(s=>s.args.includes('usermod')));
 });
+
+test("macOS Podman engine reports missing Podman machine", async () => {
+  const stderr = capture();
+  const result = await ensureDockerAvailable({
+    platform: "darwin",
+    env: { USER: "tester", PATH: "/usr/bin:/bin" },
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    engine: "podman",
+    execute: async (spec) => {
+      if (spec.command === "podman" && spec.args[0] === "machine" && spec.args[1] === "list") {
+        return 1;
+      }
+      return 127;
+    }
+  });
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.match(stderr.value(), /Podman was selected/);
+  assert.match(stderr.value(), /no Podman machine exists/);
+});
+
+test("macOS Podman engine reports under-resourced running machine", async () => {
+  const stderr = capture();
+  const result = await ensureDockerAvailable({
+    platform: "darwin",
+    env: { USER: "tester", PATH: "/usr/bin:/bin" },
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    engine: "podman",
+    execute: async (spec, io) => {
+      if (spec.command === "podman" && spec.args[0] === "machine" && spec.args[1] === "list") {
+        io.stdout.write(JSON.stringify([{ Name: "podman-machine-default", Running: true }]));
+        return 0;
+      }
+      if (spec.command === "podman" && spec.args[0] === "machine" && spec.args[1] === "inspect") {
+        io.stdout.write(JSON.stringify({ Name: "podman-machine-default", CPUs: 2, Memory: 4096, DiskSize: 32768 }));
+        return 0;
+      }
+      return 127;
+    }
+  });
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.match(stderr.value(), /Podman machine/);
+  assert.match(stderr.value(), /below the recommended size/);
+  assert.match(stderr.value(), /podman machine set/);
+});
