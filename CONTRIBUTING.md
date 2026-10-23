@@ -73,6 +73,19 @@ offline smoke is not a substitute for them.
 
 ## Checks before a commit
 
+### Temporal sandbox and replay tests
+
+The worker suites exercise production workflows in the real time-skipping
+Temporal sandbox with stub activities, without Docker, PostgreSQL or provider
+accounts. The SDK downloads a local test-server executable on its first run.
+`npm test -w @space/worker` also replays committed synthetic histories and checks
+that a deliberately incompatible test-only workflow fails determinism checks.
+See [the workflow history guide](apps/worker/tests/fixtures/workflow-histories/README.md)
+for initial recording and the rules for re-recording with a reviewed `patched()`
+change. Do not refresh histories to hide replay failures.
+
+### Full workspace checks
+
 After `npm ci`, these commands work in this order, also on a fresh clone:
 
 ```sh

@@ -1,0 +1,821 @@
+{
+  "workflowId": "maintenance:f028b874-92f8-4f9e-aa28-3310f168e5a4",
+  "history": {
+    "events": [
+      {
+        "eventId": "1",
+        "eventTime": {
+          "seconds": "1792637177",
+          "nanos": 813000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+        "workflowExecutionStartedEventAttributes": {
+          "workflowType": {
+            "name": "memoryMaintenanceWorkflow"
+          },
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "input": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzY2hlZHVsZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInRyYWNlSWQiOiJ0cmFjZTptZW1vcnktc2FuZGJveCJ9"
+              }
+            ]
+          },
+          "workflowExecutionTimeout": {
+            "seconds": "315360000"
+          },
+          "workflowRunTimeout": {
+            "seconds": "315360000"
+          },
+          "workflowTaskTimeout": {
+            "seconds": "10"
+          },
+          "originalExecutionRunId": "b0b6a561-38d2-4446-8e56-11b46be58fd8",
+          "identity": "spaceapp-synthetic-tests",
+          "firstExecutionRunId": "b0b6a561-38d2-4446-8e56-11b46be58fd8",
+          "attempt": 1,
+          "firstWorkflowTaskBackoff": {},
+          "header": {}
+        }
+      },
+      {
+        "eventId": "2",
+        "eventTime": {
+          "seconds": "1792637177",
+          "nanos": 813000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "3",
+        "eventTime": {
+          "seconds": "1792637177",
+          "nanos": 814000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "2",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "370"
+        }
+      },
+      {
+        "eventId": "4",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 208000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "2",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {
+            "coreUsedFlags": [
+              1,
+              3,
+              2
+            ],
+            "sdkName": "temporal-typescript",
+            "sdkVersion": "1.24.0"
+          },
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "5",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 208000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+        "activityTaskScheduledEventAttributes": {
+          "activityId": "1",
+          "activityType": {
+            "name": "refreshMemoryGraphSnapshot"
+          },
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "header": {},
+          "input": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzY2hlZHVsZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInRyYWNlSWQiOiJ0cmFjZTptZW1vcnktc2FuZGJveCJ9"
+              }
+            ]
+          },
+          "scheduleToCloseTimeout": {
+            "seconds": "315360000"
+          },
+          "scheduleToStartTimeout": {
+            "seconds": "315360000"
+          },
+          "startToCloseTimeout": {
+            "seconds": "600"
+          },
+          "heartbeatTimeout": {},
+          "workflowTaskCompletedEventId": "3",
+          "retryPolicy": {
+            "initialInterval": {
+              "seconds": "1"
+            },
+            "backoffCoefficient": 2,
+            "maximumInterval": {
+              "seconds": "100"
+            },
+            "maximumAttempts": 3
+          }
+        }
+      },
+      {
+        "eventId": "6",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 208000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+        "activityTaskStartedEventAttributes": {
+          "scheduledEventId": "5",
+          "identity": "spaceapp-synthetic-tests",
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "7",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 225000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+        "activityTaskCompletedEventAttributes": {
+          "result": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzdGF0dXMiOiJSRUZSRVNIRUQiLCJnZW5lcmF0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInNvdXJjZUhhc2giOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicHJldmlvdXNTb3VyY2VIYXNoIjpudWxsLCJzdW1tYXJ5Ijp7InNvdXJjZUNvdW50IjoxLCJyZWNvcmRDb3VudCI6Miwibm9kZUNvdW50IjoyLCJlZGdlQ291bnQiOjAsImlzc3VlQ291bnQiOjB9LCJkdXJhdGlvbk1zIjoxfQ=="
+              }
+            ]
+          },
+          "scheduledEventId": "5",
+          "startedEventId": "6",
+          "identity": "spaceapp-synthetic-tests"
+        }
+      },
+      {
+        "eventId": "8",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 225000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "9",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 226000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "8",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "1283"
+        }
+      },
+      {
+        "eventId": "10",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 237000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "8",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {},
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "11",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 237000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+        "activityTaskScheduledEventAttributes": {
+          "activityId": "2",
+          "activityType": {
+            "name": "refreshAllMonthsMemoryGraphSnapshot"
+          },
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "header": {},
+          "input": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzY2hlZHVsZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInRyYWNlSWQiOiJ0cmFjZTptZW1vcnktc2FuZGJveCJ9"
+              }
+            ]
+          },
+          "scheduleToCloseTimeout": {
+            "seconds": "315360000"
+          },
+          "scheduleToStartTimeout": {
+            "seconds": "315360000"
+          },
+          "startToCloseTimeout": {
+            "seconds": "600"
+          },
+          "heartbeatTimeout": {},
+          "workflowTaskCompletedEventId": "9",
+          "retryPolicy": {
+            "initialInterval": {
+              "seconds": "1"
+            },
+            "backoffCoefficient": 2,
+            "maximumInterval": {
+              "seconds": "100"
+            },
+            "maximumAttempts": 3
+          }
+        }
+      },
+      {
+        "eventId": "12",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 237000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+        "activityTaskStartedEventAttributes": {
+          "scheduledEventId": "11",
+          "identity": "spaceapp-synthetic-tests",
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "13",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 240000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+        "activityTaskCompletedEventAttributes": {
+          "result": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzdGF0dXMiOiJSRUZSRVNIRUQiLCJnZW5lcmF0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInNvdXJjZUhhc2giOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicHJldmlvdXNTb3VyY2VIYXNoIjpudWxsLCJzdW1tYXJ5Ijp7InNvdXJjZUNvdW50IjoxLCJyZWNvcmRDb3VudCI6Miwibm9kZUNvdW50IjoyLCJlZGdlQ291bnQiOjAsImlzc3VlQ291bnQiOjB9LCJkdXJhdGlvbk1zIjoxfQ=="
+              }
+            ]
+          },
+          "scheduledEventId": "11",
+          "startedEventId": "12",
+          "identity": "spaceapp-synthetic-tests"
+        }
+      },
+      {
+        "eventId": "14",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 240000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "15",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 240000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "14",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "2169"
+        }
+      },
+      {
+        "eventId": "16",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 246000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "14",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {},
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "17",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 246000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+        "activityTaskScheduledEventAttributes": {
+          "activityId": "3",
+          "activityType": {
+            "name": "reconcileStaleSpaceAgentSessions"
+          },
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "header": {},
+          "input": {},
+          "scheduleToCloseTimeout": {
+            "seconds": "315360000"
+          },
+          "scheduleToStartTimeout": {
+            "seconds": "315360000"
+          },
+          "startToCloseTimeout": {
+            "seconds": "600"
+          },
+          "heartbeatTimeout": {},
+          "workflowTaskCompletedEventId": "15",
+          "retryPolicy": {
+            "initialInterval": {
+              "seconds": "1"
+            },
+            "backoffCoefficient": 2,
+            "maximumInterval": {
+              "seconds": "100"
+            },
+            "maximumAttempts": 3
+          }
+        }
+      },
+      {
+        "eventId": "18",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 246000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+        "activityTaskStartedEventAttributes": {
+          "scheduledEventId": "17",
+          "identity": "spaceapp-synthetic-tests",
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "19",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 248000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+        "activityTaskCompletedEventAttributes": {
+          "result": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "MA=="
+              }
+            ]
+          },
+          "scheduledEventId": "17",
+          "startedEventId": "18",
+          "identity": "spaceapp-synthetic-tests"
+        }
+      },
+      {
+        "eventId": "20",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 248000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "21",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 248000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "20",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "2674"
+        }
+      },
+      {
+        "eventId": "22",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 254000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "20",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {},
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "23",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 254000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+        "activityTaskScheduledEventAttributes": {
+          "activityId": "4",
+          "activityType": {
+            "name": "createScheduledMemoryAudit"
+          },
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "header": {},
+          "input": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzY2hlZHVsZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInRyYWNlSWQiOiJ0cmFjZTptZW1vcnktc2FuZGJveCIsInNvdXJjZUhhc2giOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIn0="
+              }
+            ]
+          },
+          "scheduleToCloseTimeout": {
+            "seconds": "315360000"
+          },
+          "scheduleToStartTimeout": {
+            "seconds": "315360000"
+          },
+          "startToCloseTimeout": {
+            "seconds": "600"
+          },
+          "heartbeatTimeout": {},
+          "workflowTaskCompletedEventId": "21",
+          "retryPolicy": {
+            "initialInterval": {
+              "seconds": "1"
+            },
+            "backoffCoefficient": 2,
+            "maximumInterval": {
+              "seconds": "100"
+            },
+            "maximumAttempts": 3
+          }
+        }
+      },
+      {
+        "eventId": "24",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 254000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+        "activityTaskStartedEventAttributes": {
+          "scheduledEventId": "23",
+          "identity": "spaceapp-synthetic-tests",
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "25",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 256000000
+        },
+        "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+        "activityTaskCompletedEventAttributes": {
+          "result": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJpZCI6InJ1bjozNmEzYjRhOC0wMGYwLTQ4MDQtYTUwMi1jOTg5OTIxMWMyYTIiLCJtb2RlIjoiQVVESVQiLCJ0cmlnZ2VyS2luZCI6IlNDSEVEVUxFRCIsInN0YXR1cyI6IlNVQ0NFRURFRCIsIndvcmtmbG93SWQiOiJtZW1vcnktY2hpbGQ6ODZlZmU3MGQtODg0ZC00YjE3LTk0ZDUtNjY0MzE0NTkzZTM4IiwiZGVkdXBlS2V5Ijoic2NoZWR1bGVkOjdkNmQ3ZDI1LThhZTAtNGQ2Yy04YTk3LThmMmQ2YjJlYmRmNyIsInNvdXJjZUhhc2giOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwiYWN0b3JVc2VySWQiOm51bGwsInByb2dyZXNzQ29tcGxldGVkIjowLCJwcm9ncmVzc1RvdGFsIjowLCJmaW5kaW5nQ291bnQiOjAsImFwcGxpZWRPcGVyYXRpb25Db3VudCI6MCwic2tpcHBlZE9wZXJhdGlvbkNvdW50IjowLCJmYWlsZWRPcGVyYXRpb25Db3VudCI6MCwibWV0cmljcyI6e30sIm1vZGVsSWQiOm51bGwsImFpVmVyaWZpZWQiOmZhbHNlLCJhaUV2aWRlbmNlIjp7fSwic3RhdHVzUmVhc29uIjpudWxsLCJjcmVhdGVkQXQiOiIyMDI2LTA3LTEzVDAyOjE1OjAwLjAwMFoiLCJzdGFydGVkQXQiOiIyMDI2LTA3LTEzVDAyOjE1OjAwLjAwMFoiLCJjb21wbGV0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInVwZGF0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiJ9"
+              }
+            ]
+          },
+          "scheduledEventId": "23",
+          "startedEventId": "24",
+          "identity": "spaceapp-synthetic-tests"
+        }
+      },
+      {
+        "eventId": "26",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 256000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "27",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 256000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "26",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "4074"
+        }
+      },
+      {
+        "eventId": "28",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 267000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "26",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {},
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "29",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 267000000
+        },
+        "eventType": "EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED",
+        "startChildWorkflowExecutionInitiatedEventAttributes": {
+          "namespace": "default",
+          "workflowId": "memory-child:86efe70d-884d-4b17-94d5-664314593e38",
+          "workflowType": {
+            "name": "memoryConsolidationWorkflow"
+          },
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "input": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJydW5JZCI6InJ1bjozNmEzYjRhOC0wMGYwLTQ4MDQtYTUwMi1jOTg5OTIxMWMyYTIiLCJ0cmFjZUlkIjoidHJhY2U6bWVtb3J5LXNhbmRib3gifQ=="
+              }
+            ]
+          },
+          "workflowExecutionTimeout": {},
+          "workflowRunTimeout": {},
+          "workflowTaskTimeout": {
+            "seconds": "10"
+          },
+          "workflowTaskCompletedEventId": "27",
+          "header": {},
+          "memo": {}
+        }
+      },
+      {
+        "eventId": "30",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 267000000
+        },
+        "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED",
+        "childWorkflowExecutionStartedEventAttributes": {
+          "namespace": "default",
+          "initiatedEventId": "29",
+          "workflowExecution": {
+            "workflowId": "memory-child:86efe70d-884d-4b17-94d5-664314593e38",
+            "runId": "5e4b3d3b-ea93-4c0f-94b8-7bab74990afd"
+          },
+          "workflowType": {
+            "name": "memoryConsolidationWorkflow"
+          }
+        }
+      },
+      {
+        "eventId": "31",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 267000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "32",
+        "eventTime": {
+          "seconds": "1792637179",
+          "nanos": 267000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "31",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "4742"
+        }
+      },
+      {
+        "eventId": "33",
+        "eventTime": {
+          "seconds": "1792637180",
+          "nanos": 561000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "31",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {},
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "34",
+        "eventTime": {
+          "seconds": "1792637180",
+          "nanos": 572000000
+        },
+        "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED",
+        "childWorkflowExecutionCompletedEventAttributes": {
+          "result": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJpZCI6InJ1bjozNmEzYjRhOC0wMGYwLTQ4MDQtYTUwMi1jOTg5OTIxMWMyYTIiLCJtb2RlIjoiQVVESVQiLCJ0cmlnZ2VyS2luZCI6IlNDSEVEVUxFRCIsInN0YXR1cyI6IlNVQ0NFRURFRCIsIndvcmtmbG93SWQiOiJtZW1vcnktY2hpbGQ6ODZlZmU3MGQtODg0ZC00YjE3LTk0ZDUtNjY0MzE0NTkzZTM4IiwiZGVkdXBlS2V5Ijoic2NoZWR1bGVkOjdkNmQ3ZDI1LThhZTAtNGQ2Yy04YTk3LThmMmQ2YjJlYmRmNyIsInNvdXJjZUhhc2giOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwiYWN0b3JVc2VySWQiOm51bGwsInByb2dyZXNzQ29tcGxldGVkIjowLCJwcm9ncmVzc1RvdGFsIjowLCJmaW5kaW5nQ291bnQiOjAsImFwcGxpZWRPcGVyYXRpb25Db3VudCI6MCwic2tpcHBlZE9wZXJhdGlvbkNvdW50IjowLCJmYWlsZWRPcGVyYXRpb25Db3VudCI6MCwibWV0cmljcyI6e30sIm1vZGVsSWQiOm51bGwsImFpVmVyaWZpZWQiOmZhbHNlLCJhaUV2aWRlbmNlIjp7fSwic3RhdHVzUmVhc29uIjpudWxsLCJjcmVhdGVkQXQiOiIyMDI2LTA3LTEzVDAyOjE1OjAwLjAwMFoiLCJzdGFydGVkQXQiOiIyMDI2LTA3LTEzVDAyOjE1OjAwLjAwMFoiLCJjb21wbGV0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInVwZGF0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiJ9"
+              }
+            ]
+          },
+          "namespace": "default",
+          "workflowExecution": {
+            "workflowId": "memory-child:86efe70d-884d-4b17-94d5-664314593e38",
+            "runId": "5e4b3d3b-ea93-4c0f-94b8-7bab74990afd"
+          },
+          "workflowType": {
+            "name": "memoryConsolidationWorkflow"
+          },
+          "initiatedEventId": "29",
+          "startedEventId": "30"
+        }
+      },
+      {
+        "eventId": "35",
+        "eventTime": {
+          "seconds": "1792637180",
+          "nanos": 572000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+        "workflowTaskScheduledEventAttributes": {
+          "taskQueue": {
+            "name": "space-memory-maintenance",
+            "kind": "TASK_QUEUE_KIND_NORMAL"
+          },
+          "startToCloseTimeout": {
+            "seconds": "10"
+          },
+          "attempt": 1
+        }
+      },
+      {
+        "eventId": "36",
+        "eventTime": {
+          "seconds": "1792637180",
+          "nanos": 572000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+        "workflowTaskStartedEventAttributes": {
+          "scheduledEventId": "35",
+          "identity": "spaceapp-synthetic-tests",
+          "historySizeBytes": "5887"
+        }
+      },
+      {
+        "eventId": "37",
+        "eventTime": {
+          "seconds": "1792637180",
+          "nanos": 585000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+        "workflowTaskCompletedEventAttributes": {
+          "scheduledEventId": "35",
+          "identity": "spaceapp-synthetic-tests",
+          "binaryChecksum": "@temporalio/worker@1.24.0+e2875c64b053eaa7c4280ad5a4466d35bfe5de44c0884ffe68a0a06bd5f8ceaf",
+          "sdkMetadata": {},
+          "meteringMetadata": {}
+        }
+      },
+      {
+        "eventId": "38",
+        "eventTime": {
+          "seconds": "1792637180",
+          "nanos": 585000000
+        },
+        "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+        "workflowExecutionCompletedEventAttributes": {
+          "result": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJzdGF0dXMiOiJSRUZSRVNIRUQiLCJnZW5lcmF0ZWRBdCI6IjIwMjYtMDctMTNUMDI6MTU6MDAuMDAwWiIsInNvdXJjZUhhc2giOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwicHJldmlvdXNTb3VyY2VIYXNoIjpudWxsLCJzdW1tYXJ5Ijp7InNvdXJjZUNvdW50IjoxLCJyZWNvcmRDb3VudCI6Miwibm9kZUNvdW50IjoyLCJlZGdlQ291bnQiOjAsImlzc3VlQ291bnQiOjB9LCJkdXJhdGlvbk1zIjoxfQ=="
+              }
+            ]
+          },
+          "workflowTaskCompletedEventId": "36"
+        }
+      }
+    ]
+  }
+}
