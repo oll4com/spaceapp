@@ -50,6 +50,62 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+Contributors can run the complete SpaceApp stack locally from source with a single command without installing global tools or colliding with production/operator instances.
+
+### Prerequisites
+
+- **Node.js**: `>=22.12 <23` and npm.
+- **Docker Engine**: Docker Desktop, Rancher Desktop, Colima (macOS), or native Linux Docker with Compose plugin (`docker compose`).
+  - *Linux*: Native Docker daemon with compose plugin.
+  - *macOS*: Docker Desktop or Colima.
+  - *Windows 11*: WSL2 with Docker Desktop WSL2 backend or Docker Engine inside WSL2.
+
+### Starting the stack
+
+```sh
+npm run dev:stack
+```
+
+This single command:
+1. Validates prerequisites (`node`, `docker`, and docker compose plugin).
+2. Generates an isolated state directory in `.dev-stack/` with secure 0600 credentials.
+3. Automatically pins and starts containerized dependencies (`pgvector/pgvector:pg16` and `temporalio/auto-setup`).
+4. Installs the pinned OpenCode CLI locally in `.dev-stack/opencode` (with VS Code parity) without polluting global `PATH`.
+5. Builds internal monorepo packages (`@space/*`).
+6. Runs database migrations against the isolated development database.
+7. Starts the background Temporal worker, API service, and Vite web development server with hot-module replacement.
+
+### Development service endpoints
+
+| Service | Local Endpoint | Description |
+| --- | --- | --- |
+| **Web UI** | `http://127.0.0.1:5911` | Vite web frontend with HMR & API proxy |
+| **API Server** | `http://127.0.0.1:5910` | Fastify API backend (`/readyz`, `/api/*`) |
+| **PostgreSQL** | `127.0.0.1:54329` | Isolated pgvector database |
+| **Temporal UI / gRPC** | `127.0.0.1:57233` | Temporal workflow engine |
+
+### Stopping and resetting the stack
+
+- **Stop stack (preserves database state)**:
+  Press `Ctrl+C` in the terminal where `dev:stack` is running, or execute:
+  ```sh
+  npm run dev:stack -- down
+  ```
+- **Reset stack (purges database and ephemeral secrets)**:
+  ```sh
+  npm run dev:stack -- reset
+  ```
+
+### Watching monorepo packages
+
+When modifying code in `packages/*`, run the package builder in watch mode in a separate terminal:
+```sh
+npm run watch:packages
+```
+This automatically rebuilds `@space/*` packages on changes so the running API server and worker pick up updates.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
