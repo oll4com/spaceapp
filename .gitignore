@@ -30,6 +30,7 @@ agent-skills/**/__pycache__/
 
 # Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
 secrets/
+.dev-stack/
 backups/
 bin/
 !packages/run-spaceapp/bin/
