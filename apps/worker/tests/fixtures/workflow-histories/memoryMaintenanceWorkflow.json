@@ -1,0 +1,103 @@
+{
+  "workflowType": "memoryMaintenanceWorkflow",
+  "workflowId": "replay:memoryMaintenanceWorkflow",
+  "bundle": "memory-maintenance-workflows",
+  "events": [
+    {
+      "eventId": 1,
+      "eventTime": {
+        "seconds": 1700000000,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "memoryMaintenanceWorkflow"
+        },
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0cmlnZ2VyIjoic2NoZWR1bGVkIiwidHJhY2VJZCI6InJlcTptZW0xMjM0NTY3ODkifQ=="
+            }
+          ]
+        },
+        "workflowTaskTimeout": {
+          "seconds": 10,
+          "nanos": 0
+        },
+        "originalExecutionRunId": "run-mm-1",
+        "firstExecutionRunId": "run-mm-1"
+      }
+    },
+    {
+      "eventId": 2,
+      "eventTime": {
+        "seconds": 1700000001,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        }
+      }
+    },
+    {
+      "eventId": 3,
+      "eventTime": {
+        "seconds": 1700000002,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 2
+      }
+    },
+    {
+      "eventId": 4,
+      "eventTime": {
+        "seconds": 1700000003,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 2,
+        "startedEventId": 3
+      }
+    },
+    {
+      "eventId": 5,
+      "eventTime": {
+        "seconds": 1700000004,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "refreshMemoryGraphSnapshot"
+        },
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ0cmlnZ2VyIjoic2NoZWR1bGVkIiwidHJhY2VJZCI6InJlcTptZW0xMjM0NTY3ODkifQ=="
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": 4
+      }
+    }
+  ]
+}

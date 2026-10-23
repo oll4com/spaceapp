@@ -1,0 +1,290 @@
+{
+  "workflowType": "dummyTurnWorkflow",
+  "workflowId": "replay:dummyTurnWorkflow",
+  "bundle": "workflows",
+  "events": [
+    {
+      "eventId": 1,
+      "eventTime": {
+        "seconds": 1700000000,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "dummyTurnWorkflow"
+        },
+        "taskQueue": {
+          "name": "space-default"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyb29tSWQiOiJyb29tOjEiLCJwYW5lSWQiOiJwYW5lOjEiLCJwcm9tcHQiOiJTeW50aGV0aWMgdGVzdCBwcm9tcHQiLCJhcnRpZmFjdElkcyI6W10sImFnZW50UnVuSWQiOiJhZ2VudF9ydW46MSIsInBlcm1pc3Npb25Nb2RlIjpudWxsLCJjb2xsYWJvcmF0aW9uTW9kZSI6ImRlZmF1bHQiLCJ0cmFjZUlkIjoicmVxOjEyMzQ1Njc4OTBhYiJ9"
+            }
+          ]
+        },
+        "workflowTaskTimeout": {
+          "seconds": 10,
+          "nanos": 0
+        },
+        "originalExecutionRunId": "run-dummyTurnWorkflow-1",
+        "firstExecutionRunId": "run-dummyTurnWorkflow-1"
+      }
+    },
+    {
+      "eventId": 2,
+      "eventTime": {
+        "seconds": 1700000001,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-default"
+        }
+      }
+    },
+    {
+      "eventId": 3,
+      "eventTime": {
+        "seconds": 1700000002,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 2
+      }
+    },
+    {
+      "eventId": 4,
+      "eventTime": {
+        "seconds": 1700000003,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 2,
+        "startedEventId": 3
+      }
+    },
+    {
+      "eventId": 5,
+      "eventTime": {
+        "seconds": 1700000004,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "recordDummyTurnStarted"
+        },
+        "taskQueue": {
+          "name": "space-default"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyb29tSWQiOiJyb29tOjEiLCJwYW5lSWQiOiJwYW5lOjEiLCJwcm9tcHQiOiJTeW50aGV0aWMgdGVzdCBwcm9tcHQiLCJhcnRpZmFjdElkcyI6W10sImFnZW50UnVuSWQiOiJhZ2VudF9ydW46MSIsInBlcm1pc3Npb25Nb2RlIjpudWxsLCJjb2xsYWJvcmF0aW9uTW9kZSI6ImRlZmF1bHQiLCJ0cmFjZUlkIjoicmVxOjEyMzQ1Njc4OTBhYiJ9"
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": 4
+      }
+    },
+    {
+      "eventId": 6,
+      "eventTime": {
+        "seconds": 1700000005,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": 5
+      }
+    },
+    {
+      "eventId": 7,
+      "eventTime": {
+        "seconds": 1700000006,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "scheduledEventId": 5,
+        "startedEventId": 6,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJvayI6dHJ1ZX0="
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eventId": 8,
+      "eventTime": {
+        "seconds": 1700000007,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-default"
+        }
+      }
+    },
+    {
+      "eventId": 9,
+      "eventTime": {
+        "seconds": 1700000008,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 8
+      }
+    },
+    {
+      "eventId": 10,
+      "eventTime": {
+        "seconds": 1700000009,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 8,
+        "startedEventId": 9
+      }
+    },
+    {
+      "eventId": 11,
+      "eventTime": {
+        "seconds": 1700000010,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "2",
+        "activityType": {
+          "name": "recordDummyTurnCompleted"
+        },
+        "taskQueue": {
+          "name": "space-default"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyb29tSWQiOiJyb29tOjEiLCJwYW5lSWQiOiJwYW5lOjEiLCJwcm9tcHQiOiJTeW50aGV0aWMgdGVzdCBwcm9tcHQiLCJhcnRpZmFjdElkcyI6W10sImFnZW50UnVuSWQiOiJhZ2VudF9ydW46MSIsInBlcm1pc3Npb25Nb2RlIjpudWxsLCJjb2xsYWJvcmF0aW9uTW9kZSI6ImRlZmF1bHQiLCJ0cmFjZUlkIjoicmVxOjEyMzQ1Njc4OTBhYiJ9"
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": 10
+      }
+    },
+    {
+      "eventId": 12,
+      "eventTime": {
+        "seconds": 1700000011,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": 11
+      }
+    },
+    {
+      "eventId": 13,
+      "eventTime": {
+        "seconds": 1700000012,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "scheduledEventId": 11,
+        "startedEventId": 12,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJzdGF0dXMiOiJDT01QTEVURUQiLCJtZXNzYWdlIjoib2sifQ=="
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eventId": 14,
+      "eventTime": {
+        "seconds": 1700000013,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-default"
+        }
+      }
+    },
+    {
+      "eventId": 15,
+      "eventTime": {
+        "seconds": 1700000014,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 14
+      }
+    },
+    {
+      "eventId": 16,
+      "eventTime": {
+        "seconds": 1700000015,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 14,
+        "startedEventId": 15
+      }
+    },
+    {
+      "eventId": 17,
+      "eventTime": {
+        "seconds": 1700000016,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "workflowTaskCompletedEventId": 16,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJzdGF0dXMiOiJDT01QTEVURUQiLCJtZXNzYWdlIjoib2sifQ=="
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

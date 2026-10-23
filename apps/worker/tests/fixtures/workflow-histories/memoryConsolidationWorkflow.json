@@ -1,0 +1,193 @@
+{
+  "workflowType": "memoryConsolidationWorkflow",
+  "workflowId": "replay:memoryConsolidationWorkflow",
+  "bundle": "memory-maintenance-workflows",
+  "events": [
+    {
+      "eventId": 1,
+      "eventTime": {
+        "seconds": 1700000000,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "memoryConsolidationWorkflow"
+        },
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJydW5JZCI6Im1jX3J1bjoxIiwidHJhY2VJZCI6InJlcToxMjM0NTY3ODkwYWIifQ=="
+            }
+          ]
+        },
+        "workflowTaskTimeout": {
+          "seconds": 10,
+          "nanos": 0
+        },
+        "originalExecutionRunId": "run-memoryConsolidationWorkflow-1",
+        "firstExecutionRunId": "run-memoryConsolidationWorkflow-1"
+      }
+    },
+    {
+      "eventId": 2,
+      "eventTime": {
+        "seconds": 1700000001,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        }
+      }
+    },
+    {
+      "eventId": 3,
+      "eventTime": {
+        "seconds": 1700000002,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 2
+      }
+    },
+    {
+      "eventId": 4,
+      "eventTime": {
+        "seconds": 1700000003,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 2,
+        "startedEventId": 3
+      }
+    },
+    {
+      "eventId": 5,
+      "eventTime": {
+        "seconds": 1700000004,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "prepareMemoryConsolidation"
+        },
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJydW5JZCI6Im1jX3J1bjoxIiwidHJhY2VJZCI6InJlcToxMjM0NTY3ODkwYWIifQ=="
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": 4
+      }
+    },
+    {
+      "eventId": 6,
+      "eventTime": {
+        "seconds": 1700000005,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": 5
+      }
+    },
+    {
+      "eventId": 7,
+      "eventTime": {
+        "seconds": 1700000006,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "scheduledEventId": 5,
+        "startedEventId": 6,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJjaGFuZ2VTZXRJZCI6bnVsbCwicnVuIjp7ImlkIjoibWNfcnVuOjEiLCJzdGF0dXMiOiJOT19DSEFOR0VTIn19"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eventId": 8,
+      "eventTime": {
+        "seconds": 1700000007,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-memory-maintenance"
+        }
+      }
+    },
+    {
+      "eventId": 9,
+      "eventTime": {
+        "seconds": 1700000008,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 8
+      }
+    },
+    {
+      "eventId": 10,
+      "eventTime": {
+        "seconds": 1700000009,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 8,
+        "startedEventId": 9
+      }
+    },
+    {
+      "eventId": 11,
+      "eventTime": {
+        "seconds": 1700000010,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "workflowTaskCompletedEventId": 10,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJpZCI6Im1jX3J1bjoxIiwic3RhdHVzIjoiTk9fQ0hBTkdFUyJ9"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,193 @@
+{
+  "workflowType": "dotGoalWorkflow",
+  "workflowId": "replay:dotGoalWorkflow",
+  "bundle": "workflows",
+  "events": [
+    {
+      "eventId": 1,
+      "eventTime": {
+        "seconds": 1700000000,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "dotGoalWorkflow"
+        },
+        "taskQueue": {
+          "name": "space-default"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJnb2FsSWQiOiJnb2FsOjEifQ=="
+            }
+          ]
+        },
+        "workflowTaskTimeout": {
+          "seconds": 10,
+          "nanos": 0
+        },
+        "originalExecutionRunId": "run-dotGoalWorkflow-1",
+        "firstExecutionRunId": "run-dotGoalWorkflow-1"
+      }
+    },
+    {
+      "eventId": 2,
+      "eventTime": {
+        "seconds": 1700000001,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-default"
+        }
+      }
+    },
+    {
+      "eventId": 3,
+      "eventTime": {
+        "seconds": 1700000002,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 2
+      }
+    },
+    {
+      "eventId": 4,
+      "eventTime": {
+        "seconds": 1700000003,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 2,
+        "startedEventId": 3
+      }
+    },
+    {
+      "eventId": 5,
+      "eventTime": {
+        "seconds": 1700000004,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "dotGoalStep"
+        },
+        "taskQueue": {
+          "name": "space-default"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "ImdvYWw6MSI="
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": 4
+      }
+    },
+    {
+      "eventId": 6,
+      "eventTime": {
+        "seconds": 1700000005,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": 5
+      }
+    },
+    {
+      "eventId": 7,
+      "eventTime": {
+        "seconds": 1700000006,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "scheduledEventId": 5,
+        "startedEventId": 6,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJzdGF0ZSI6IkRPTkUiLCJnb2FsU3RhdHVzIjoiQ09NUExFVEVEIiwicnVuSWQiOm51bGx9"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eventId": 8,
+      "eventTime": {
+        "seconds": 1700000007,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "space-default"
+        }
+      }
+    },
+    {
+      "eventId": 9,
+      "eventTime": {
+        "seconds": 1700000008,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": 8
+      }
+    },
+    {
+      "eventId": 10,
+      "eventTime": {
+        "seconds": 1700000009,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": 8,
+        "startedEventId": 9
+      }
+    },
+    {
+      "eventId": 11,
+      "eventTime": {
+        "seconds": 1700000010,
+        "nanos": 0
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "workflowTaskCompletedEventId": 10,
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJnb2FsU3RhdHVzIjoiQ09NUExFVEVEIn0="
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
