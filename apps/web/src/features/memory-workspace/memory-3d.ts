@@ -1,5 +1,6 @@
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
 import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
+import { layoutMemoryNetwork3DIncremental } from "./memory-3d-incremental.js";
 export type MemoryPoint3D = { x: number; y: number; z: number };
 export type MemoryCamera3D = { yaw: number; pitch: number; zoom: number };
 export const DEFAULT_MEMORY_CAMERA: MemoryCamera3D = { yaw: 0.3, pitch: -0.15, zoom: 1 };
@@ -12,6 +13,10 @@ const unit = (seed: string) => {
   hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b);
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
+
+export function layoutMemoryNetwork3DStreaming(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], onStep: (positions: Map<string, MemoryPoint3D>, step: number, total: number) => void): Map<string, MemoryPoint3D> {
+  return layoutMemoryNetwork3DIncremental(nodes, edges, onStep);
+}
 
 /** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
 export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
