@@ -20,7 +20,7 @@ const CANONICAL_INDEX_STYLE: MemoryGraphVisualStyle = { color: "#e8c05f", size: 
 
 /** The agent core rules file, the root of the memory atlas: space.md (legacy gemini.md). */
 export function isMemoryCoreLabel(label: string): boolean {
-  return /^(?:space|gemini)\.md$/.test(label);
+  return label === "space.md" || label === "gemini.md";
 }
 
 /** The Space Memory index: space_memory.md (legacy gemini_history.md). */
@@ -28,6 +28,12 @@ export function isMemoryIndexLabel(label: string | null | undefined): boolean {
   return /^(?:space_memory|gemini_history)\.md$/.test(label ?? "");
 }
 
+/**
+ * Determines whether a memory graph node represents the canonical index source file.
+ *
+ * @param node Memory graph node to evaluate.
+ * @returns True if the node is a source node corresponding to an index document.
+ */
 export function isCanonicalIndexNode(node: MemoryGraphNode): boolean {
   return node.type === "SOURCE" && (
     isMemoryIndexLabel(node.label) ||
