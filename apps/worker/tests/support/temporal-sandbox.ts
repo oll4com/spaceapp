@@ -10,8 +10,9 @@ const workflowsPath = fileURLToPath(new URL("./temporal-workflows.ts", import.me
 const fixtureDirectory = fileURLToPath(new URL("../fixtures/workflow-histories/", import.meta.url));
 let bundle: ReturnType<typeof bundleWorkflowCode> | undefined;
 
-export function workflowBundle() {
-  return bundle ??= bundleWorkflowCode({
+/** Bundle either entrypoint directly from source, including on a clean checkout. */
+export function bundleWorkflows(workflowsPath: string) {
+  return bundleWorkflowCode({
     workflowsPath,
     logger: new DefaultLogger("ERROR"),
     webpackConfigHook: config => ({
@@ -25,6 +26,10 @@ export function workflowBundle() {
       }
     })
   });
+}
+
+export function workflowBundle() {
+  return bundle ??= bundleWorkflows(workflowsPath);
 }
 
 export async function history(handle: Pick<WorkflowHandle, "fetchHistory">) {

@@ -5,7 +5,7 @@ import { expect, it } from "vitest";
 import { Worker } from "@temporalio/worker";
 import { DeterminismViolationError } from "@temporalio/workflow";
 import { temporal } from "@temporalio/proto";
-import { workflowBundle } from "./support/temporal-sandbox.js";
+import { bundleWorkflows, workflowBundle } from "./support/temporal-sandbox.js";
 
 const fixtureDirectory = fileURLToPath(new URL("./fixtures/workflow-histories/", import.meta.url));
 const requiredWorkflows = [
@@ -61,6 +61,6 @@ it("rejects a real history when a test-only workflow adds an incompatible timer"
     history.events[0].workflowExecutionStartedEventAttributes.workflowType.name === "dummyTurnWorkflow");
   expect(fixture, "Missing dummy-turn history for the negative replay proof").toBeDefined();
   await expect(Worker.runReplayHistory({
-    workflowsPath: fileURLToPath(new URL("./support/temporal-incompatible-workflow.ts", import.meta.url))
+    workflowBundle: await bundleWorkflows(fileURLToPath(new URL("./support/temporal-incompatible-workflow.ts", import.meta.url)))
   }, temporal.api.history.v1.History.fromObject(fixture!.history), fixture!.workflowId)).rejects.toBeInstanceOf(DeterminismViolationError);
 }, 60_000);
