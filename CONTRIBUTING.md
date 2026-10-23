@@ -94,6 +94,16 @@ check also refuse to run on `main`.
 Opt-in database and authenticated provider proofs require separate isolated
 fixtures; skipped proofs are not passing evidence.
 
+The worker suite includes real Temporal time-skipping contract tests and stored
+history replay for all eight workflow exports. After `npm run check`, run the
+focused gate with `npm run test:temporal -w @space/worker`. It needs no Docker,
+database or provider credentials; the SDK may download its test-server binary
+on first use. See [the history fixture guide](apps/worker/tests/fixtures/workflow-histories/README.md)
+for the synthetic provenance, legacy coverage and deliberately explicit
+recording procedure. Ordinary tests never rewrite histories. Preserve old
+histories when versioning workflows; do not regenerate them to hide a replay
+failure.
+
 In the maintainers' source repository, `npm run check:claims` compares the
 version, licence, Node requirement, runtime list and key constants stated in
 the README and `docs/` with the code, and rejects unqualified latency or

@@ -1,0 +1,324 @@
+[
+  {
+    "file": "dummy-retry-success.json",
+    "sha256": "30bf5be59a3bf8f168b6f5d79d3def2869c84fe9d1f1508d8625006e5beabf06",
+    "workflowId": "synthetic-b860aa0b-f7f2-4b92-ae2b-eb1a3256d12e",
+    "workflowType": "dummyTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "dummy-exhausted-start.json",
+    "sha256": "963b7cc4317f4baa649bd77f70a0884f37559b77974a54fd95e8d9aa4bcee6be",
+    "workflowId": "synthetic-dc3f1164-6fa9-4ffa-990c-c5c7b72cf043",
+    "workflowType": "dummyTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "goal-timer-paths.json",
+    "sha256": "6cb76d3422662c411707878d69eaff3fe6a7568aa0207a67617a8638eeac9f91",
+    "workflowId": "synthetic-5ab38ea7-86f5-4720-ace5-2c2a4803b5c6",
+    "workflowType": "dotGoalWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "goal-latched-and-timer-wakes.json",
+    "sha256": "83c5ecbae4d2bd18d355ad754e07ace4091a8e98d9974cd261d00a9384fd86db",
+    "workflowId": "synthetic-6c91507c-c2f6-4f2b-ad0b-0521050bf4e1",
+    "workflowType": "dotGoalWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "goal-retry-policy.json",
+    "sha256": "66a7bd153663818145d86346417a31e6ec0fc396c0ed7e95e947a070bbc5b5d1",
+    "workflowId": "synthetic-20fe4eae-1454-4c7b-81ca-85b1b42d49c9",
+    "workflowType": "dotGoalWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "goal-300-iteration-first-run.json",
+    "sha256": "abba19d66805524a00bae25c44f456e1bababb14efb99ce58e2c9de3c1a7d657",
+    "workflowId": "synthetic-5e7c1d2a-878c-4b28-b0c8-dde634ddc4c5",
+    "workflowType": "dotGoalWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "goal-300-iteration-next-run.json",
+    "sha256": "70b30deb7fe395c0ce7cd8cd5bbf2a63c998abe336ad91ca8de8e87e18494479",
+    "workflowId": "synthetic-5e7c1d2a-878c-4b28-b0c8-dde634ddc4c5",
+    "workflowType": "dotGoalWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-route-opencode.json",
+    "sha256": "87515ea045b183eaea3b72a0caf2f2cf0143518d31ce63be511e518dab8f6a06",
+    "workflowId": "synthetic-a61a6fad-f29c-4eac-bc49-42f60ccc8f8a",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-route-cli.json",
+    "sha256": "4ddd845abb009c9b6cef7d228c0061151179519d48731ef11733cc54d606d231",
+    "workflowId": "synthetic-1ebd0a41-2b79-4d8a-a2a3-6a8e3d0f8ea2",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-route-native.json",
+    "sha256": "a2dff8e73abbf09e740c2d6ecf7661bb133beebf5a654df3a0949dfec1675a51",
+    "workflowId": "synthetic-4f0edbf3-e60d-4286-ba95-ff4478a118de",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-route-room.json",
+    "sha256": "e1d2a927df813f8a48c7b9c2ff4caf55273c276c6a66a3c899a9acd1af4f734f",
+    "workflowId": "synthetic-13c1c471-94b3-4b57-968f-fdbe48278868",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-route-missing-native-message.json",
+    "sha256": "54ed7a6978f16377d8cf6190624fa82461f7b3a954861b8d433ddb171f762013",
+    "workflowId": "synthetic-f8b49d60-9c2f-4de7-afae-764e7e3c5075",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-route-missing-native-session.json",
+    "sha256": "18a8ff756973eb6107a281ea07076803621cee9d3fd1a95e783ebdecf72dfae5",
+    "workflowId": "synthetic-a4b26733-a9e3-47aa-94aa-97565ed2d91e",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-failure-opencode.json",
+    "sha256": "5553541888421ea5115d93a7c996bff3b49f7bec3c7b8e60da7e6feefdc3edc8",
+    "workflowId": "synthetic-490685ea-fac5-4081-9733-bf8f98bbc24e",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-failure-cli.json",
+    "sha256": "4dd5ae07114e196905eb863500b6f9b3382b8bc15e7694146905179ef6147af0",
+    "workflowId": "synthetic-a40ecd0a-5d8d-49bf-b976-38fe7078679d",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "turn-failure-room.json",
+    "sha256": "c78bd04a5490b6b873f416838ef89379d25ed60cdb338a8ec98cfa4699e23bc3",
+    "workflowId": "synthetic-db5ae520-f09c-4454-ab41-ac8947c7ea66",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "action-success.json",
+    "sha256": "49f35e7d0fe9d261eee8ffc383bba42e967056220b496badced07e8383caf14f",
+    "workflowId": "synthetic-9df06dd0-1140-486b-aa5f-adffb59ffaf2",
+    "workflowType": "roomAgentActionWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "action-failure-cleanup.json",
+    "sha256": "d4e6d5ac99d1510e079f86a63dc923c306e6a9096f9d1652b8a67832ac428059",
+    "workflowId": "space-room-action:action:failed",
+    "workflowType": "roomAgentActionWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "action-cancellation-cleanup.json",
+    "sha256": "640090c52f90450bbca791e02d027a2825133ecf4249ec63f087db1f8aeaf0d3",
+    "workflowId": "space-room-action:derived-trace-action",
+    "workflowType": "roomAgentActionWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-success.json",
+    "sha256": "f7a27640af570d3cdd12d5d654c72d635f5581a08df5a3b4ad4b9d9700d9f85f",
+    "workflowId": "synthetic-9c05b18b-40ca-48a3-be18-e64340e79a2a",
+    "workflowType": "memoryMaintenanceWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-success-child.json",
+    "sha256": "73b7132500f18b46608c2f42b3f36a87d91cae57b6474cc3fafce9f3ea4918dc",
+    "workflowId": "memory-child:success",
+    "workflowType": "memoryConsolidationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-best-effort.json",
+    "sha256": "dc1a18fae47f8c45203986ebdf5d880461980b85b10ba5da47d7c21fea8c4521",
+    "workflowId": "synthetic-f09099e3-0a39-44bc-bb11-d55505a8a12f",
+    "workflowType": "memoryMaintenanceWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-best-effort-child.json",
+    "sha256": "26f786dddc1c2307c75825a1f0ab17cb26fb765ceae9a01cf4a98ac3fdadb7aa",
+    "workflowId": "memory-child:best-effort",
+    "workflowType": "memoryConsolidationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-required-snapshot-failure.json",
+    "sha256": "679d42f70384c4223135c421df48b62b23bc205e6a7ba75a680e1882a402dec2",
+    "workflowId": "synthetic-f30d8c38-d2a4-4e81-a088-b41bbcc81073",
+    "workflowType": "memoryMaintenanceWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-child-failure.json",
+    "sha256": "6f8ef6ffa778e8bf4e0f9d2911e3adcf33fea100039c3177ea0d495872118ea6",
+    "workflowId": "synthetic-11408372-a3fa-4b72-affa-0de8501bfaeb",
+    "workflowType": "memoryMaintenanceWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "maintenance-failed-child.json",
+    "sha256": "28949f4192e00fbea64f8a8045b3aa34adab10ddc28ac2a1d449bb9439f27dba",
+    "workflowId": "memory-child:failed",
+    "workflowType": "memoryConsolidationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "consolidation-no-change-set.json",
+    "sha256": "40150a8d8e8215d76d6a76848a7f850692a13ea7155722a773ba3b0e16448aa0",
+    "workflowId": "synthetic-97a90e31-5fdb-4ee9-8c0f-1ddab5207573",
+    "workflowType": "memoryConsolidationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "consolidation-mutation-exhausted.json",
+    "sha256": "d17a43bdd7b736ad8b74a55bd29530aa27c36123e4701037fb83af3645a8ce6e",
+    "workflowId": "synthetic-fdec76b8-cbe4-4c5e-b570-ee1f8288aeb9",
+    "workflowType": "memoryConsolidationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "mutation-applied.json",
+    "sha256": "44163003fee3202ae478f495e27f096d7a690c9b8ae0bf812afef9a05b624b18",
+    "workflowId": "synthetic-9de4eb5d-b546-4e6b-a6c8-cce914ab516b",
+    "workflowType": "memoryMutationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "mutation-operator-required.json",
+    "sha256": "2f1a3275d5db127ab96af3e322ce95d7694feeb9c6d2f07a12d5d5560afd955c",
+    "workflowId": "synthetic-2f01a7bd-fcef-4b37-85c4-55549a2048f7",
+    "workflowType": "memoryMutationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "mutation-exhausted.json",
+    "sha256": "7b85ec25e19f11a112288e8c2fafd9131689d1b4f227fad22fa0237fa0771826",
+    "workflowId": "synthetic-4a7fd76e-0720-4bb4-a322-a6228de6e7c3",
+    "workflowType": "memoryMutationWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "current-signal-cancellation.json",
+    "sha256": "76dc6a91f59a0c1661c2112b9e4f85c912c3b4cfd166fab1484c91fb339971ec",
+    "workflowId": "synthetic-8d4a22bf-5a13-4e95-a64f-fa32fab03e5c",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "current-cancelled-child.json",
+    "sha256": "caea105c26c7f223d8ed6329f2161e772579a0f6130eb0da89182a1fab511183",
+    "workflowId": "workflow:codex-app-server:room:trace-contract:pane:trace-contract:trace:contract-active",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "legacy-signal-cancellation.json",
+    "sha256": "1ecaac0f6a39a0727624ee8e40aa3975d4461eb7ec850b429bdb1fce0f8c798d",
+    "workflowId": "synthetic-c6aafacd-0f31-4a9f-9c22-0cd8a91f2d29",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "legacy"
+  },
+  {
+    "file": "legacy-cancelled-child.json",
+    "sha256": "8bbae9de04c4c7445d922ee38ee5121fadd6ce3bebed5f1889cda8b5a080f9ca",
+    "workflowId": "workflow:codex-app-server:room:trace-contract:pane:trace-contract:trace:contract-active",
+    "workflowType": "codexAppServerTurnWorkflow",
+    "mode": "legacy"
+  },
+  {
+    "file": "current-fifty-processed.json",
+    "sha256": "16975b710aa7c5ed0af9e92e595807ebd592e1de19cfc1881272da939d79fced",
+    "workflowId": "synthetic-aa774bf7-8893-4e42-be6a-eb975373b7dd",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "legacy-fifty-processed.json",
+    "sha256": "a4a3cbba1392baa3a6acd086b706b2258bfaaf9bb518e08c0d274ce303ba9ff7",
+    "workflowId": "synthetic-9a073412-ba53-45f5-9c49-e9f3e9a18868",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "legacy"
+  },
+  {
+    "file": "current-250-polls.json",
+    "sha256": "6f312df4914c79d9e54931bec66c812a5f83006b319f2cdbbec09480046463c7",
+    "workflowId": "synthetic-fcdbf6be-ac86-4c75-ba18-1d6e475a9a0d",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "legacy-250-polls.json",
+    "sha256": "195db3b4c9800e71ebd3e0dbc1c447934f78bd417d73d1ded74d064047f9a176",
+    "workflowId": "synthetic-fc8ace1e-e26e-4600-b369-5e86a3f60538",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "legacy"
+  },
+  {
+    "file": "allocation-send-verification.json",
+    "sha256": "fb27d2bf5e9bf198c80315e9148cee76813a3374328af8d8c9a0c8acc27e359b",
+    "workflowId": "synthetic-0f5be2ba-a7ec-4feb-b626-1b6d236c2e53",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "prepared-continuation-before-rollover.json",
+    "sha256": "08e0a6b7bd0441214653a0299ed38c27fd7d49bfbe84757aad6d1524b5459d94",
+    "workflowId": "synthetic-55a29e8d-3887-4eaa-88fc-26698b81e9fc",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "prepared-continuation-after-rollover.json",
+    "sha256": "aac0105e96d9ec0fba428802c831cca9242e1acc383c19bdfed4c55d22799296",
+    "workflowId": "synthetic-55a29e8d-3887-4eaa-88fc-26698b81e9fc",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "prepared-continuation-stop-race.json",
+    "sha256": "88d92cf8c18168ea0471149e1f8ac929cac5dc2ce6eef918acf81d3c916858b4",
+    "workflowId": "synthetic-2a788d1a-9f1f-492e-88f4-2f1b48044957",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "prepared-continuation-follow-up-race.json",
+    "sha256": "64e327aa13c5ba598b405d36c28f9b3a335654d462a7dc703898040d45e48ed0",
+    "workflowId": "synthetic-9d3d18af-0060-407e-b4af-9f3aa2751bd8",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "queue-105-defers-until-100.json",
+    "sha256": "e0c89ce296bfa2a296ac410f4a01741c979debfa2ba7920259389cc3bb325a96",
+    "workflowId": "synthetic-e55583ce-6706-4781-8eb0-cebbab21bf79",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "current"
+  },
+  {
+    "file": "authentic-20260820-supervisor.json",
+    "sha256": "275215376868845130f7f73f45ff53b03eaf30f0e1fc8e4739ef0413d5c641fe",
+    "workflowId": "synthetic-5646b844-e433-458d-8dd6-03f3d6293dc7",
+    "workflowType": "roomAgentSupervisorWorkflow",
+    "mode": "historical"
+  }
+]
