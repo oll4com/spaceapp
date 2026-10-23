@@ -434,6 +434,53 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("honors the limit query parameter for the 3D full-graph budget (#62)", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 3000 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));
+    graphSnapshot.edges = [];
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const def = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(def.statusCode).toBe(200);
+    expect(def.json().data.nodes).toHaveLength(2000);
+    expect(def.json().data.truncated).toBe(true);
+
+    const full = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(full.statusCode).toBe(200);
+    expect(full.json().data.nodes).toHaveLength(3000);
+    expect(full.json().data.truncated).toBe(false);
+    expect(full.json().data.totalMatchingNodes).toBe(3000);
+
+    const partial = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=100", headers: { cookie } });
+    expect(partial.statusCode).toBe(200);
+    expect(partial.json().data.nodes).toHaveLength(100);
+    expect(partial.json().data.truncated).toBe(true);
+
+    const tooBig = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(tooBig.statusCode).toBe(422);
+    await app.close();
+  });
+
+  it("scales the edge budget with the node limit", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2100 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));
+    graphSnapshot.edges = Array.from({ length: 9000 }, (_, index) => ({
+      id: `edge:budget-${String(index).padStart(5, "0")}`,
+      source: `memory:${String(index % 2100).padStart(4, "0")}`,
+      target: `memory:${String((index + 1) % 2100).padStart(4, "0")}`,
+      type: "SEMANTICALLY_RELATED" as const,
+      origin: "EMBEDDING" as const,
+      confidence: 0.9,
+      evidence: "Synthetic similarity for the edge-budget test."
+    }));
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    const def = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(def.json().data.edges.length).toBeLessThanOrEqual(6000);
+    const full = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(full.json().data.edges.length).toBeGreaterThan(6000);
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;

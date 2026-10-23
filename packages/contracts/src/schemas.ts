@@ -7256,8 +7256,8 @@ export const memoryGraphPayloadSchema = z.object({
 export const memoryGraphOverviewPayloadSchema = memoryGraphPayloadSchema
   .omit({ nodes: true, edges: true })
   .extend({
-    nodes: z.array(memoryGraphNodeSchema).max(2000),
-    edges: z.array(memoryGraphEdgeSchema).max(6000),
+    nodes: z.array(memoryGraphNodeSchema).max(50000),
+    edges: z.array(memoryGraphEdgeSchema).max(150000),
     totalMatchingNodes: z.number().int().min(0),
     totalMatchingEdges: z.number().int().min(0),
     truncated: z.boolean()
@@ -7288,6 +7288,10 @@ export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema.omi
   pageSize: true,
   sortBy: true,
   sortOrder: true
+}).extend({
+  // 3D view budget (#62): default keeps the 2,000-node sample, the 3D view can
+  // request the full graph up to the hard server maximum of 50,000 nodes.
+  limit: z.coerce.number().int().min(1).max(50000).default(2000)
 });
 
 export const memoryCalendarQuerySchema = z.object({

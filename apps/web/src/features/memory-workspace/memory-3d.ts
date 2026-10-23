@@ -15,6 +15,53 @@ const unit = (seed: string) => {
 
 /** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
 export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  return runMemoryLayout3D(nodes, edges);
+}
+
+export type MemoryLayout3DChunk = {
+  /** 0-based simulation step that just finished. */
+  step: number;
+  /** Total steps the run will take. */
+  totalSteps: number;
+  /** Node ids in the same order as the positions array. */
+  order: string[];
+  /** Interleaved xyz positions, length order.length * 3. */
+  positions: Float32Array;
+};
+
+/**
+ * Same deterministic simulation as layoutMemoryNetwork3D, but `onChunk` is
+ * called every `chunkEvery` steps (and once at the end) with a snapshot of
+ * the current positions. Chunk positions are Float32Array (float32 precision);
+ * the returned Map keeps full float64 precision and equals
+ * layoutMemoryNetwork3D for the same input.
+ */
+export function layoutMemoryNetwork3DStream(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  onChunk: (chunk: MemoryLayout3DChunk) => void,
+  chunkEvery = 12
+): Map<string, MemoryPoint3D> {
+  return runMemoryLayout3D(nodes, edges, (step, totalSteps, order, points) => {
+    if ((step + 1) % chunkEvery === 0 || step === totalSteps - 1) {
+      const positions = new Float32Array(order.length * 3);
+      for (let i = 0; i < order.length; i++) {
+        positions[i * 3] = points[i]!.x;
+        positions[i * 3 + 1] = points[i]!.y;
+        positions[i * 3 + 2] = points[i]!.z;
+      }
+      onChunk({ step, totalSteps, order, positions });
+    }
+  });
+}
+
+const LAYOUT_3D_STEPS = 180;
+
+function runMemoryLayout3D(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  onStep?: (step: number, totalSteps: number, order: string[], points: Array<{ x: number; y: number; z: number }>) => void
+): Map<string, MemoryPoint3D> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
@@ -41,8 +88,12 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       y: parent.y + (unit(`${id}:dy`) - 0.5) * 70, z: parent.z + (unit(`${id}:dz`) - 0.5) * 70 };
   }
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
+  const order = ordered.map(node => node.id);
+  // Very large graphs bound the repulsion work per node (fixed iteration order
+  // keeps it deterministic). Below the threshold the simulation is unchanged.
+  const pairCap = count > 10000 ? 64 : Infinity;
   // Bounded spatial-grid repulsion and link springs act equally on all three axes.
-  for (let step = 0; step < 180; step++) {
+  for (let step = 0; step < LAYOUT_3D_STEPS; step++) {
     fx.fill(0); fy.fill(0); fz.fill(0);
     const grid = new Map<string, number[]>();
     for (let i = 0; i < count; i++) {
@@ -52,14 +103,17 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
     }
     for (let i = 0; i < count; i++) {
       const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
-      for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
+      let pairs = 0;
+      for (let x = gx - 1; x <= gx + 1 && pairs < pairCap; x++) for (let y = gy - 1; y <= gy + 1 && pairs < pairCap; y++) for (let z = gz - 1; z <= gz + 1 && pairs < pairCap; z++) {
         for (const j of grid.get(`${x},${y},${z}`) ?? []) {
           if (j <= i) continue;
+          if (pairs >= pairCap) break;
           const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
           const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
           const strength = (ordered[i]!.type === "SOURCE" || ordered[j]!.type === "SOURCE" ? 28 : 12) / distanceSquared;
           fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
           fx[j]! -= dx * strength; fy[j]! -= dy * strength; fz[j]! -= dz * strength;
+          pairs++;
         }
       }
     }
@@ -78,6 +132,7 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
+    onStep?.(step, LAYOUT_3D_STEPS, order, points);
   }
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));
 }

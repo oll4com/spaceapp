@@ -29,6 +29,18 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
   const [graph, setGraph] = useState<MemoryGraphOverviewResponse | null>(null);
+  const [fullGraph, setFullGraph] = useState(false);
+  // #62: benchmark hook — /demo-workspace?syntheticSize=50000 generates a
+  // deterministic synthetic graph in DemoStore without a backend.
+  const syntheticSize = useMemo(() => {
+    try {
+      const raw = new URLSearchParams(window.location.search).get("syntheticSize");
+      const n = raw ? parseInt(raw, 10) : 0;
+      return n > 0 ? Math.min(100000, n) : undefined;
+    } catch {
+      return undefined;
+    }
+  }, []);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [detail, setDetail] = useState<MemoryGraphNodeDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,12 +87,14 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     setError(null);
     closeDetail();
     // Search covers the entire archive; removing the month picker must not hide old memories.
-    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS" })
+    // The 3D view can opt into the full graph (up to 50,000 nodes, #62).
+    // #62: keep the 50k graph out of the 2D path; reload when the view changes.
+    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS", limit: view3D && fullGraph ? 50000 : undefined, syntheticSize })
       .then(payload => { if (active) setGraph(payload); })
       .catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Memory could not be loaded."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [workspaceMode, query, closeDetail]);
+  }, [workspaceMode, query, fullGraph, syntheticSize, view3D, closeDetail]);
 
   useEffect(() => () => { detailRequest.current++; }, []);
   const selectNode = useCallback((nodeId: string) => {
@@ -100,15 +114,35 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
-      const coordinates = new Map(event.data.positions);
-      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
-      worker.terminate();
+    let active = true;
+    const applyFinal = (depthEntries: Array<[string, MemoryPoint3D]>, positionEntries: Array<[string, { x: number; y: number }]>) => {
+      const coordinates = new Map(positionEntries);
+      setLayout({ atlas, depth: new Map(depthEntries), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
     };
-    worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
-    worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
-    return () => worker.terminate();
-  }, [workspaceMode, atlas]);
+    worker.onmessage = (event: MessageEvent<any>) => {
+      if (!active) return;
+      const data = event.data;
+      if (data?.type === "layout-3d-chunk") {
+        // Incremental 3D layout (#62): stream positions while converging.
+        const order: string[] = data.order;
+        const flat: Float32Array = data.positions;
+        const depth = new Map<string, MemoryPoint3D>();
+        for (let i = 0; i < order.length; i++) {
+          depth.set(order[i]!, { x: flat[i * 3]!, y: flat[i * 3 + 1]!, z: flat[i * 3 + 2]! });
+        }
+        setLayout({ atlas, depth, positions: atlas.positions });
+      } else if (data?.type === "layout-done") {
+        applyFinal(data.depth, data.positions);
+        worker.terminate();
+      } else {
+        applyFinal(data.depth, data.positions);
+        worker.terminate();
+      }
+    };
+    worker.onerror = event => { if (active) setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
+    worker.postMessage(view3D ? { nodes: atlas.nodes, edges: atlas.edges, stream: "3d" } : { nodes: atlas.nodes, edges: atlas.edges });
+    return () => { active = false; worker.terminate(); };
+  }, [workspaceMode, atlas, view3D]);
   const layoutPending = typeof Worker !== "undefined" && atlas.nodes.length > 0 && layout?.atlas !== atlas;
   const atlasPositions = layout?.atlas === atlas ? layout.positions : atlas.positions;
   const summary = graph?.data.summary;
@@ -160,6 +194,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
             <div className="memory-atlas-view-controls" aria-label="Memory view controls">
               <button type="button" aria-label="Toggle 3D memory view" aria-pressed={view3D} onClick={() => setView3D(value => !value)}><span aria-hidden="true">◇</span> {view3D ? "2D" : "3D"}</button>
               <button type="button" aria-label="Toggle memory titles" aria-pressed={showTitles} onClick={() => setShowTitles(value => !value)}>Aa <span>Titles</span></button>
+              {view3D ? <button type="button" aria-label="Toggle full memory graph" aria-pressed={fullGraph} title={fullGraph ? "Back to the 2,000-node sample" : "Load up to 50,000 nodes instead of the 2,000-node sample"} onClick={() => setFullGraph(value => !value)}>⤢ <span>{fullGraph ? "Sample" : "Full"}</span></button> : null}
               {view3D ? <button type="button" aria-label="Reset 3D memory view" onClick={() => setReset3D(value => value + 1)}>↺</button> : null}
             </div>
           ) : null}

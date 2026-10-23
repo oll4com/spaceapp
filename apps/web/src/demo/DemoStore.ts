@@ -21,6 +21,7 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryGraphEdge,
   MemoryGraphNode,
   MemoryGraphPayload,
   Pane,
@@ -148,7 +149,74 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  /** #62: generate a deterministic synthetic graph of this many nodes for benchmarking. */
+  syntheticSize?: number;
 };
+
+/** Deterministic PRNG for the synthetic benchmark graph. */
+function mulberry32(seed: number) {
+  let state = seed >>> 0;
+  return () => {
+    state |= 0; state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * #62: synthetic memory graph of a given size for the 3D benchmark.
+ * Deterministic for the same size (seeded), so traces are reproducible.
+ * Mix: ~8% SOURCE files, ~70% MEMORY records, ~12% TOPIC tags, ~10% ROOMs;
+ * ~3 edges per node (CONTAINS, TAGGED_WITH, SEMANTICALLY_RELATED, DERIVED_FROM).
+ */
+export function generateSyntheticMemoryGraph(size: number): { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] } {
+  const random = mulberry32(0x62de0 + size);
+  const nodes: MemoryGraphNode[] = [];
+  const edges: MemoryGraphEdge[] = [];
+  const topics = ["architecture", "api-design", "testing", "performance", "security", "refactor", "docs", "ci-cd", "ux", "data-model", "caching", "observability"];
+  const sourceCount = Math.max(1, Math.round(size * 0.08));
+  const topicCount = Math.max(1, Math.round(size * 0.12));
+  const roomCount = Math.max(1, Math.round(size * 0.05));
+  const sourceIds: string[] = [];
+  const topicIds: string[] = [];
+  const memoryIds: string[] = [];
+  for (let i = 0; i < sourceCount; i++) {
+    const id = `synthetic:source-${String(i).padStart(5, "0")}`;
+    sourceIds.push(id);
+    nodes.push({ id, type: "SOURCE", label: `notes-${i}.md`, sourcePath: `/demo/notes/notes-${i}.md`, recordId: null, clusterId: null });
+  }
+  for (let i = 0; i < topicCount; i++) {
+    const id = `synthetic:topic-${String(i).padStart(5, "0")}`;
+    topicIds.push(id);
+    nodes.push({ id, type: "TOPIC", label: topics[i % topics.length]!, sourcePath: null, recordId: null, clusterId: null });
+  }
+  for (let i = 0; i < roomCount; i++) {
+    const id = `synthetic:room-${String(i).padStart(5, "0")}`;
+    nodes.push({ id, type: "ROOM", label: `room-${i}`, sourcePath: null, recordId: null, clusterId: null });
+  }
+  let edgeSeq = 0;
+  const link = (type: MemoryGraphEdge["type"], source: string, target: string, extra: Partial<MemoryGraphEdge> = {}) => {
+    edges.push({ id: `synthetic:edge-${String(edgeSeq++).padStart(6, "0")}`, type, source, target, ...extra });
+  };
+  for (let i = 1; i < sourceCount; i++) link("DERIVED_FROM", sourceIds[i]!, sourceIds[Math.floor(random() * i)!]!);
+  const memoryTarget = size - nodes.length;
+  for (let i = 0; i < memoryTarget; i++) {
+    const id = `synthetic:memory-${String(i).padStart(6, "0")}`;
+    const source = sourceIds[Math.floor(random() * sourceIds.length)!]!;
+    memoryIds.push(id);
+    nodes.push({ id, type: "MEMORY", label: `memory ${i} about ${topics[i % topics.length]}`, sourcePath: `/demo/notes/${source.split("-").pop()}.md`, recordId: id, clusterId: null });
+    link("CONTAINS", source, id);
+    const tagCount = 1 + Math.floor(random() * 3);
+    for (let t = 0; t < tagCount; t++) {
+      link("TAGGED_WITH", id, topicIds[Math.floor(random() * topicIds.length)!]!, { origin: random() < 0.4 ? "EXPLICIT_TAG" : "DERIVED_TFIDF" });
+    }
+    if (i > 0 && random() < 0.6) {
+      link("SEMANTICALLY_RELATED", id, memoryIds[Math.floor(random() * i)!]!, { confidence: 0.5 + random() * 0.5 });
+    }
+  }
+  return { nodes, edges };
+}
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
   const { beforeSnapshot: _before, afterSnapshot: _after, ...summary } = changeSet;
@@ -215,6 +283,9 @@ export class DemoStore {
   private agentMessages = new Map<string, AgentPaneSession["messages"]>();
   private agentSelectedToolIds = new Map<string, string[]>();
   private resetRedemptions = new Map<string, CodexResetCreditRedemptionResponse>();
+  // #62: last synthetic benchmark graph (?syntheticSize), for node detail lookups.
+  private syntheticNodes = new Map<string, MemoryGraphNode>();
+  private syntheticEdges: MemoryGraphEdge[] = [];
   private setupConnectionResults = initialSetupConnectionResults();
   private setupCheckRuns = new Map<string, DemoSetupCheckRunState>();
   private setupCheckSequence = 0;
@@ -669,6 +740,26 @@ export class DemoStore {
   }
 
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
+    // #62: deterministic synthetic graph for the 3D benchmark (?syntheticSize=50000).
+    if (query.syntheticSize && query.syntheticSize > 0) {
+      const size = Math.min(100000, Math.floor(query.syntheticSize));
+      const { nodes, edges } = generateSyntheticMemoryGraph(size);
+      this.syntheticNodes = new Map(nodes.map(node => [node.id, node]));
+      this.syntheticEdges = edges;
+      const base = this.fixture.memoryWorkspace.graph;
+      return {
+        ...structuredClone(base),
+        summary: {
+          sourceCount: nodes.filter(n => n.type === "SOURCE").length,
+          recordCount: nodes.filter(n => n.recordId).length,
+          nodeCount: nodes.length,
+          edgeCount: edges.length,
+          issueCount: 0
+        },
+        nodes: structuredClone(nodes),
+        edges: structuredClone(edges)
+      };
+    }
     const base = this.fixture.memoryWorkspace.graph;
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
@@ -1575,8 +1666,19 @@ export class DemoStore {
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
-        if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
-        return Promise.resolve(structuredClone(detail));
+        if (detail) return Promise.resolve(structuredClone(detail));
+        // #62: synthetic benchmark nodes (?syntheticSize) have no fixture detail; synthesize one.
+        const synthetic = roomId ? this.syntheticNodes.get(roomId) : undefined;
+        if (synthetic) {
+          return Promise.resolve(structuredClone({
+            node: synthetic,
+            record: null,
+            relatedNodes: [],
+            relatedEdges: this.syntheticEdges.filter(edge => edge.source === roomId || edge.target === roomId),
+            issues: []
+          }));
+        }
+        throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
       }
       case "memoryChangeSets": {
         const query = (args[0] ?? {}) as { kind?: string; status?: string; sourcePath?: string; recordId?: string; issueId?: string; page?: number; pageSize?: number };

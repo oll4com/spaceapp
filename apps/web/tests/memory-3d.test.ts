@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
+import { layoutMemoryNetwork3D, layoutMemoryNetwork3DStream, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 
 describe("3D memory projection", () => {
@@ -58,5 +58,29 @@ describe("3D memory projection", () => {
     const plane = Array.from({ length: 100 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10), z: i % 10 + Math.floor(i / 10) }));
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
+  });
+  it("streams chunks whose final positions are identical to the one-shot layout", () => {
+    const { nodes, edges } = fixture();
+    const chunks: Array<{ step: number; totalSteps: number; order: string[]; positions: Float32Array }> = [];
+    const result = layoutMemoryNetwork3DStream(nodes, edges, chunk => chunks.push(chunk), 30);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks[chunks.length - 1]!.step).toBe(chunks[chunks.length - 1]!.totalSteps - 1);
+    const last = chunks[chunks.length - 1]!;
+    expect(last.positions.length).toBe(nodes.length * 3);
+    for (let i = 0; i < last.order.length; i++) {
+      const p = result.get(last.order[i]!)!;
+      // Chunks travel as Float32Array; equal within float32 precision.
+      expect(last.positions[i * 3]).toBeCloseTo(p.x, 4);
+      expect(last.positions[i * 3 + 1]).toBeCloseTo(p.y, 4);
+      expect(last.positions[i * 3 + 2]).toBeCloseTo(p.z, 4);
+    }
+    // Same as the non-streaming layout, exactly.
+    const direct = layoutMemoryNetwork3D(nodes, edges);
+    expect([...result]).toEqual([...direct]);
+    // Chunk steps are ordered and every chunk carries the full node order.
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i]!.step).toBeGreaterThan(chunks[i - 1]!.step);
+      expect(chunks[i]!.order).toEqual(chunks[0]!.order);
+    }
   });
 });
