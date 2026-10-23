@@ -414,6 +414,59 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("opts in to a larger admin-only 3D overview without weakening the default cap, redaction, or ETags", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 3_001 }, (_, index) => ({
+      id: `memory:expanded-${index}`,
+      type: "MEMORY" as const,
+      label: `Expanded memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 6_301 }, (_, index) => ({
+      id: `edge:expanded-${index}`,
+      type: "SEMANTICALLY_RELATED" as const,
+      source: graphSnapshot.nodes[index % 3_001]!.id,
+      target: graphSnapshot.nodes[(index + 1) % 3_001]!.id,
+      origin: "DETERMINISTIC_TFIDF" as const,
+      confidence: 0.8,
+      evidence: "Private token=never-expose"
+    }));
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: 3_001, edgeCount: 6_301 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    const request = (path: string, headers = { cookie }) => app.inject({
+      method: "GET", url: `/api/admin/memory/graph/overview${path}`, headers
+    });
+
+    const defaultView = await request("");
+    expect(defaultView.statusCode).toBe(200);
+    expect(defaultView.json().data.nodes).toHaveLength(2_000);
+    expect(defaultView.json().data.edges.length).toBeLessThanOrEqual(6_000);
+    expect(defaultView.json().data.truncated).toBe(true);
+
+    const expanded = await request("?limit=3001");
+    expect(expanded.statusCode).toBe(200);
+    expect(expanded.json().data.nodes).toHaveLength(3_001);
+    expect(expanded.json().data.edges).toHaveLength(6_301);
+    expect(expanded.json().data.truncated).toBe(false);
+    expect(expanded.headers.etag).not.toBe(defaultView.headers.etag);
+    expect(expanded.body).not.toContain("token=never-expose");
+
+    const notModified = await request("?limit=3001", { cookie, "if-none-match": expanded.headers.etag });
+    expect(notModified.statusCode).toBe(304);
+    const distinctView = await request("", { cookie, "if-none-match": expanded.headers.etag });
+    expect(distinctView.statusCode).toBe(200);
+
+    const capped = await request("?limit=50000");
+    expect(capped.statusCode).toBe(200);
+    expect(capped.json().data.nodes).toHaveLength(3_001);
+    const invalid = await request("?limit=50001");
+    expect(invalid.statusCode).toBe(422);
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000" });
+    expect(unauthenticated.statusCode).toBe(401);
+    await app.close();
+  });
+
   it("retains real tags and their neighbors when an archive exceeds the overview cap", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     graphSnapshot.nodes = Array.from({ length: 2200 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));
