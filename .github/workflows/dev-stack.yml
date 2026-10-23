@@ -1,0 +1,53 @@
+name: Contributor dev stack
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack*.mjs"
+      - "scripts/tests/dev-stack*.test.mjs"
+      - "apps/**"
+      - "packages/**"
+      - "Dockerfile"
+      - "package*.json"
+      - ".github/workflows/dev-stack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install contributor prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep sqlite3
+      - name: Install locked dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - name: Check smoke failure detection
+        run: node --test scripts/tests/dev-stack*.test.mjs
+      - name: Start from source and exercise owner and CLI flows
+        timeout-minutes: 25
+        run: |
+          npm run dev:stack > "$RUNNER_TEMP/dev-stack.log" 2>&1 &
+          node scripts/dev-stack-smoke.mjs --report "$RUNNER_TEMP/dev-stack-proof.json"
+      - name: Remove owned resources
+        if: always()
+        run: npm run dev:stack -- reset
+      - name: Prove cleanup
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/dev-stack-proof.json" ]; then
+            node scripts/dev-stack-smoke.mjs --verify-cleanup "$RUNNER_TEMP/dev-stack-proof.json"
+          fi
