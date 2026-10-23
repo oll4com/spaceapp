@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "c067c535c2626f5041b9705eebbe22f5c31ac75f",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 394,
   "files": [
     {
       "path": ".gitignore",
@@ -22622,8 +22622,8 @@
     {
       "path": "packages/cli-host/src/node-pty-spawn.ts",
       "sourceObjectId": "47f18bfadd5b4ce8afd1da7c166362e8fcc94640",
-      "sha256": "9040fe7bd0fc4fd6554f071fdf918b3d3600de59607c123fa5546b3c99fd96f6",
-      "size": 726
+      "sha256": "531954bb5c37b7cb9d157bdf538c7cbc49e7c9598646f4143417d446ecd7b2b7",
+      "size": 756
     },
     {
       "path": "packages/cli-host/src/server.ts",

@@ -1,4 +1,3 @@
-import { spawn } from "node-pty";
 import type { CliHostSpawn } from "./types.js";
 
 /**
@@ -8,11 +7,13 @@ import type { CliHostSpawn } from "./types.js";
  * CLI tree and the pane exits. Admin-initiated termination (SIGTERM/SIGHUP)
  * and app-level exits (Ctrl-D, /exit) are unaffected.
  */
-export const spawnNodePty: CliHostSpawn = (spec) =>
-  spawn("/bin/sh", ["-c", '/usr/bin/stty -isig; exec "$@"', "space-cli-host", spec.command, ...spec.args], {
+export const spawnNodePty: CliHostSpawn = async (spec) => {
+  const { spawn } = await import("node-pty");
+  return spawn("/bin/sh", ["-c", '/usr/bin/stty -isig; exec "$@"', "space-cli-host", spec.command, ...spec.args], {
     name: "xterm-256color",
     cols: spec.cols,
     rows: spec.rows,
     cwd: spec.cwd,
     env: spec.env
   });
+};

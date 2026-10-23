@@ -76,6 +76,72 @@ test("container matrices load each image and enforce the public size budgets", a
   }
 });
 
+test("container startup smoke check validates core /readyz, cli socket ping, and browser host + headless Chromium", async () => {
+  const {
+    parseSmokeArgs,
+    smokeCheckBrowser,
+    smokeCheckCli,
+    smokeCheckCore
+  } = await import("../../deploy/docker/container-smoke-check.mjs");
+
+  assert.deepEqual(
+    parseSmokeArgs(["--target", "core", "--arch", "amd64", "--image", "spaceapp-ci:core-amd64"]),
+    { target: "core", arch: "amd64", image: "spaceapp-ci:core-amd64" }
+  );
+  assert.throws(() => parseSmokeArgs(["--target", "unknown", "--arch", "amd64", "--image", "x"]), /Unsupported container smoke target/);
+  assert.throws(() => parseSmokeArgs(["--target", "core", "--arch", "s390x", "--image", "x"]), /Unsupported container smoke architecture/);
+  assert.throws(() => parseSmokeArgs(["--target", "core", "--arch", "amd64"]), /requires --image/);
+
+  const coreCalls = [];
+  await smokeCheckCore({
+    image: "spaceapp-ci:core-amd64",
+    arch: "amd64",
+    runId: "test",
+    delayMs: 1,
+    runCommand: async (cmd, args) => {
+      coreCalls.push([cmd, ...args].join(" "));
+      return { stdout: "", stderr: "" };
+    }
+  });
+  assert.ok(coreCalls.some((c) => c.includes("pg_isready -U spaceapp -d spaceapp")));
+  assert.ok(coreCalls.some((c) => c.includes("http://127.0.0.1:4911/readyz")));
+  assert.ok(coreCalls.some((c) => c.includes("docker rm -f spaceapp-smoke-core-amd64-test")));
+
+  const cliCalls = [];
+  await smokeCheckCli({
+    image: "spaceapp-ci:cli-arm64",
+    arch: "arm64",
+    runId: "test",
+    delayMs: 1,
+    runCommand: async (cmd, args) => {
+      cliCalls.push([cmd, ...args].join(" "));
+      return { stdout: "", stderr: "" };
+    }
+  });
+  assert.ok(cliCalls.some((c) => c.includes("/run/spaceapp-cli/host.sock") && c.includes("smoke-ping")));
+  assert.ok(cliCalls.some((c) => c.includes("docker rm -f spaceapp-smoke-cli-arm64-test")));
+
+  const browserCalls = [];
+  await smokeCheckBrowser({
+    image: "spaceapp-ci:browser-amd64",
+    arch: "amd64",
+    runId: "test",
+    delayMs: 1,
+    runCommand: async (cmd, args) => {
+      const joined = [cmd, ...args].join(" ");
+      browserCalls.push(joined);
+      if (joined.includes("/usr/bin/chromium")) {
+        return { stdout: "<html><head></head><body></body></html>\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    }
+  });
+  assert.ok(browserCalls.some((c) => c.includes("/app/packages/db/dist/migrate.js")));
+  assert.ok(browserCalls.some((c) => c.includes("BrowserHostSocketClient")));
+  assert.ok(browserCalls.some((c) => c.includes("/usr/bin/chromium --headless")));
+  assert.ok(browserCalls.some((c) => c.includes("docker rm -f spaceapp-smoke-browser-amd64-test")));
+});
+
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
   const security = await workflow("security.yml");
 

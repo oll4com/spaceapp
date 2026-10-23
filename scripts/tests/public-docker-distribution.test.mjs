@@ -329,3 +329,284 @@ test("core seeds generic starter memory only when mutable owner memory is absent
   assert.match(starter, /^# SpaceApp Memory/m);
   assert.doesNotMatch(starter, /\/etc\/docs|\/srv\/space|spaceapp-user|oll4\.com/i);
 });
+
+test("Dockerfile stages isolated per-service runtime trees instead of copying the full monorepo into runtime-base", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const buildStage = dockerfile.match(/FROM [^\n]+ AS build([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const runtimeBaseStage =
+    dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const coreStage = dockerfile.match(/FROM runtime-base AS core([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const browserStage =
+    dockerfile.match(/FROM runtime-base AS browser([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+
+  assert.match(
+    buildStage,
+    /node \/app\/deploy\/docker\/prepare-container-targets\.mjs --target-arch "\$\{TARGETARCH:-amd64\}"/
+  );
+  assert.doesNotMatch(runtimeBaseStage, /COPY --from=build[^\n]*\/app\/(?:node_modules|packages|apps|agent-skills|starter-memory)\b/);
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/targets\/core\/ \/app\//);
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/starter-memory \/opt\/spaceapp\/starter-memory/);
+  assert.match(browserStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/targets\/browser\/ \/app\//);
+  assert.doesNotMatch(browserStage, /starter-memory|reset-owner-password|rotate-owner-setup-token|portable-backup|portable-restore/);
+  assert.match(cliStage, /COPY --from=build --chown=spaceapp:spaceapp \/app\/targets\/cli\/ \/app\//);
+  assert.doesNotMatch(cliStage, /starter-memory|reset-owner-password|rotate-owner-setup-token|portable-backup|portable-restore/);
+});
+
+test("prepareContainerTargets stages only each service's runtime closure and target-arch native binaries", async () => {
+  const { access, mkdir, mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const {
+    coreOperatorScripts,
+    coreWorkspacePackages,
+    parseTargetArch,
+    prepareContainerTargets
+  } = await import("../../deploy/docker/prepare-container-targets.mjs");
+
+  assert.equal(parseTargetArch(["--target-arch", "amd64"]), "amd64");
+  assert.equal(parseTargetArch(["--target-arch=arm64"]), "arm64");
+  assert.throws(() => parseTargetArch(["--target-arch", "riscv64"]), /Unsupported target architecture/);
+
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "spaceapp-targets-fixture-"));
+  try {
+    const writeJson = async (relPath, value) => {
+      const fullPath = join(fixtureRoot, relPath);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    };
+    const writeText = async (relPath, content) => {
+      const fullPath = join(fixtureRoot, relPath);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, content, "utf8");
+    };
+    const exists = async (relPath) => {
+      try {
+        await access(join(fixtureRoot, relPath));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    await writeJson("package.json", { name: "space", version: "0.2.5", private: true });
+    await writeText("agent-skills/space-superpowers/SKILL.md", "# Skill\n");
+    for (const scriptRel of coreOperatorScripts) {
+      await writeText(scriptRel, "export const ok = true;\n");
+    }
+
+    for (const wsRel of coreWorkspacePackages) {
+      const shortName = wsRel.split("/")[1];
+      const pkgName = `@space/${shortName}`;
+      const deps =
+        wsRel === "apps/api"
+          ? {
+              "@space/browser-host": "0.2.5",
+              "@space/cli-host": "0.2.5",
+              "@space/contracts": "0.2.5",
+              "@space/db": "0.2.5",
+              "@space/runtime": "0.2.5",
+              "@t3-oss/env-core": "^0.13.11",
+              "@temporalio/client": "1.24.0",
+              fastify: "5.12.5",
+              nanoid: "^5.1.6",
+              "node-pty": "^1.1.0",
+              "pdfjs-dist": "6.3.289",
+              zod: "^4.2.1"
+            }
+          : wsRel === "apps/worker"
+            ? {
+                "@space/contracts": "0.2.5",
+                "@space/db": "0.2.5",
+                "@temporalio/worker": "1.24.0"
+              }
+            : wsRel === "packages/db"
+              ? {
+                  "@space/contracts": "0.2.5",
+                  "@space/runtime": "0.2.5",
+                  pg: "^8.22.0"
+                }
+              : wsRel === "packages/runtime"
+                ? {
+                    "@space/contracts": "0.2.5",
+                    "@space/memory-graph": "0.2.5",
+                    nanoid: "^5.1.6",
+                    zod: "^4.2.1"
+                  }
+                : wsRel === "packages/memory-graph"
+                  ? {
+                      "@space/contracts": "0.2.5",
+                      graphology: "0.26.0"
+                    }
+                  : wsRel === "packages/cli-host"
+                    ? {
+                        "node-pty": "^1.1.0"
+                      }
+                    : {};
+      await writeJson(`${wsRel}/package.json`, { name: pkgName, version: "0.2.5", type: "module", dependencies: deps });
+      await writeText(`${wsRel}/dist/index.js`, "export const ready = true;\n");
+      await writeText(`${wsRel}/dist/index.js.map`, "{}\n");
+      await writeText(`${wsRel}/dist/index.d.ts`, "export declare const ready: boolean;\n");
+      await writeText(`${wsRel}/src/index.ts`, "export const ready = true;\n");
+    }
+
+    await writeText("packages/db/migrations/0001_init.sql", "SELECT 1;\n");
+    await writeText("packages/gateway/grammars/tree-sitter-javascript.wasm", "wasm");
+    await writeText(
+      "apps/api/dist/server.js",
+      'import { CliHostClient } from "@space/cli-host";\nexport const server = Boolean(CliHostClient);\n'
+    );
+    await writeText("apps/api/dist/__tests__/server.test.js", 'import "vitest";\n');
+    await writeText(
+      "apps/api/dist/browser-host-main.js",
+      'import "@space/browser-host";\nimport "@space/contracts";\nimport "@space/db";\nimport { getApiConfig } from "./config.js";\nimport { createBrowserSessions } from "./browser-sessions.js";\nexport { getApiConfig, createBrowserSessions };\n'
+    );
+    await writeText(
+      "apps/api/dist/config.js",
+      'import "@t3-oss/env-core";\nimport "zod";\nexport const getApiConfig = () => ({});\n'
+    );
+    await writeText(
+      "apps/api/dist/browser-sessions.js",
+      'import "nanoid";\nimport "@space/runtime";\nexport const createBrowserSessions = () => ({});\n'
+    );
+
+    await writeJson("apps/web/package.json", {
+      name: "@space/web",
+      version: "0.2.5",
+      dependencies: { "lucide-react": "^0.562.0", "react-dom": "^19.3.0" }
+    });
+    await writeText("apps/web/server.mjs", "export const web = true;\n");
+    await writeText("apps/web/server-routing.mjs", "export const routing = true;\n");
+    await writeText("apps/web/dist/index.html", "<!doctype html><html></html>\n");
+    await writeText("apps/web/src/App.tsx", "export default function App() {}\n");
+
+    const npmPackages = {
+      "@modelcontextprotocol/sdk": {},
+      ws: {},
+      "@t3-oss/env-core": {
+        peerDependencies: { typescript: ">=5.0.0" },
+        peerDependenciesMeta: { typescript: { optional: true } }
+      },
+      "@temporalio/client": {},
+      "@temporalio/worker": { dependencies: { "@temporalio/core-bridge": "1.24.0" } },
+      "@temporalio/core-bridge": {},
+      fastify: {},
+      nanoid: {},
+      "node-pty": { dependencies: { "node-addon-api": "^7.1.0" } },
+      "node-addon-api": {},
+      "pdfjs-dist": { optionalDependencies: { "@napi-rs/canvas": "^1.0.9" } },
+      "@napi-rs/canvas": {
+        optionalDependencies: {
+          "@napi-rs/canvas-linux-x64-gnu": "1.0.9",
+          "@napi-rs/canvas-linux-arm64-gnu": "1.0.9"
+        }
+      },
+      "@napi-rs/canvas-linux-x64-gnu": {},
+      "@napi-rs/canvas-linux-arm64-gnu": {},
+      pg: {},
+      graphology: {},
+      zod: {},
+      "lucide-react": {},
+      "react-dom": {},
+      typescript: {}
+    };
+
+    for (const [name, meta] of Object.entries(npmPackages)) {
+      await writeJson(`node_modules/${name}/package.json`, { name, version: "1.0.0", ...meta });
+      await writeText(`node_modules/${name}/index.js`, "export default {};\n");
+    }
+
+    await writeText("node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu/index.node", "x64");
+    await writeText("node_modules/@temporalio/core-bridge/releases/aarch64-unknown-linux-gnu/index.node", "arm64");
+    await writeText("node_modules/@temporalio/core-bridge/releases/x86_64-apple-darwin/index.node", "mac");
+    await writeText("node_modules/@temporalio/core-bridge/sdk-core/Cargo.toml", "[package]\n");
+    await writeText("node_modules/node-pty/prebuilds/linux-x64/pty.node", "x64");
+    await writeText("node_modules/node-pty/prebuilds/darwin-arm64/pty.node", "mac");
+    await writeText("node_modules/node-pty/third_party/conpty.cc", "// win\n");
+
+    await prepareContainerTargets({
+      rootDir: fixtureRoot,
+      outputDir: join(fixtureRoot, "targets"),
+      targetArch: "amd64"
+    });
+
+    // Core checks
+    assert.equal(await exists("targets/core/apps/api/dist/server.js"), true);
+    assert.equal(await exists("targets/core/apps/api/dist/__tests__/server.test.js"), false);
+    assert.equal(await exists("targets/core/apps/api/dist/index.js.map"), false);
+    assert.equal(await exists("targets/core/apps/api/src/index.ts"), false);
+    assert.equal(await exists("targets/core/apps/web/server.mjs"), true);
+    assert.equal(await exists("targets/core/apps/web/dist/index.html"), true);
+    assert.equal(await exists("targets/core/apps/web/src/App.tsx"), false);
+    assert.equal(await exists("targets/core/packages/db/migrations/0001_init.sql"), true);
+    assert.equal(await exists("targets/core/packages/gateway/grammars/tree-sitter-javascript.wasm"), true);
+    assert.equal(await exists("targets/core/packages/cli-host/dist/index.js"), true);
+    assert.equal(await exists("targets/core/node_modules/node-pty"), false);
+    assert.equal(await exists("targets/core/node_modules/lucide-react"), false);
+    assert.equal(await exists("targets/core/node_modules/react-dom"), false);
+    assert.equal(await exists("targets/core/node_modules/typescript"), false);
+    assert.equal(
+      await exists("targets/core/node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu/index.node"),
+      true
+    );
+    assert.equal(
+      await exists("targets/core/node_modules/@temporalio/core-bridge/releases/aarch64-unknown-linux-gnu"),
+      false
+    );
+    assert.equal(
+      await exists("targets/core/node_modules/@temporalio/core-bridge/sdk-core"),
+      false
+    );
+    assert.equal(await exists("targets/core/node_modules/@napi-rs/canvas-linux-x64-gnu"), true);
+    assert.equal(await exists("targets/core/node_modules/@napi-rs/canvas-linux-arm64-gnu"), false);
+
+    // Browser checks
+    assert.equal(await exists("targets/browser/apps/api/dist/browser-host-main.js"), true);
+    assert.equal(await exists("targets/browser/apps/api/dist/config.js"), true);
+    assert.equal(await exists("targets/browser/apps/api/dist/browser-sessions.js"), true);
+    assert.equal(await exists("targets/browser/apps/api/dist/server.js"), false);
+    assert.equal(await exists("targets/browser/packages/browser-host/dist/index.js"), true);
+    assert.equal(await exists("targets/browser/packages/db/migrations/0001_init.sql"), true);
+    assert.equal(await exists("targets/browser/node_modules/pg/package.json"), true);
+    assert.equal(await exists("targets/browser/node_modules/nanoid/package.json"), true);
+    assert.equal(await exists("targets/browser/node_modules/zod/package.json"), true);
+    assert.equal(await exists("targets/browser/node_modules/@temporalio"), false);
+    assert.equal(await exists("targets/browser/node_modules/pdfjs-dist"), false);
+    assert.equal(await exists("targets/browser/node_modules/@napi-rs"), false);
+    assert.equal(await exists("targets/browser/node_modules/node-pty"), false);
+    assert.equal(await exists("targets/browser/apps/web"), false);
+    assert.equal(await exists("targets/browser/apps/worker"), false);
+
+    // CLI checks
+    assert.equal(await exists("targets/cli/packages/cli-host/dist/index.js"), true);
+    assert.equal(await exists("targets/cli/agent-skills/space-superpowers/SKILL.md"), true);
+    assert.equal(await exists("targets/cli/node_modules/node-pty/package.json"), true);
+    assert.equal(await exists("targets/cli/node_modules/node-addon-api/package.json"), true);
+    assert.equal(await exists("targets/cli/node_modules/node-pty/prebuilds/linux-x64/pty.node"), true);
+    assert.equal(await exists("targets/cli/node_modules/node-pty/prebuilds/darwin-arm64"), false);
+    assert.equal(await exists("targets/cli/node_modules/node-pty/third_party"), false);
+    assert.equal(await exists("targets/cli/apps"), false);
+    assert.equal(await exists("targets/cli/packages/db"), false);
+    assert.equal(await exists("targets/cli/node_modules/pg"), false);
+    assert.equal(await exists("targets/cli/node_modules/@temporalio"), false);
+
+    // Verify arm64 pruning keeps arm64 native binaries instead of amd64
+    await prepareContainerTargets({
+      rootDir: fixtureRoot,
+      outputDir: join(fixtureRoot, "targets-arm64"),
+      targetArch: "arm64"
+    });
+    assert.equal(
+      await exists("targets-arm64/core/node_modules/@temporalio/core-bridge/releases/aarch64-unknown-linux-gnu/index.node"),
+      true
+    );
+    assert.equal(
+      await exists("targets-arm64/core/node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu"),
+      false
+    );
+    assert.equal(await exists("targets-arm64/core/node_modules/@napi-rs/canvas-linux-arm64-gnu"), true);
+    assert.equal(await exists("targets-arm64/core/node_modules/@napi-rs/canvas-linux-x64-gnu"), false);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
