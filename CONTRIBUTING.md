@@ -71,6 +71,23 @@ exit, and check cleanup after both. Restore the intended behavior before
 submitting a change. Use the tests for the affected workspace as well; the
 offline smoke is not a substitute for them.
 
+The Temporal sandbox and replay tests use a disposable test server and stubbed
+activities, without Docker, a database or provider credentials. After
+`npm run check` builds the internal prerequisites, run the focused suite:
+
+```sh
+npm test -w @space/worker -- tests/workflow-core-sandbox.test.ts tests/workflow-supervisor-sandbox.test.ts tests/workflow-replay.test.ts
+```
+
+These core tests can run on native Windows; the offline smoke's WSL requirement
+above still applies. The separate `Temporal workflow tests` CI job runs this suite
+on Ubuntu with a three-minute limit on the test step. Committed histories are
+immutable: re-record only alongside a workflow change protected by `patched()`,
+retaining the older compatibility histories. Never re-record to hide a replay
+failure. The command is `npm run temporal:record-histories -w @space/worker`;
+see [the fixture guide](apps/worker/tests/fixtures/workflow-histories/README.md)
+for the pinned SDK, prerequisites and synthetic-history recording procedure.
+
 ## Checks before a commit
 
 After `npm ci`, these commands work in this order, also on a fresh clone:

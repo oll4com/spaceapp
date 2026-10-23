@@ -1,0 +1,53 @@
+name: Temporal workflow tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-workflows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  temporal-workflows:
+    name: Real workflow sandbox and replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Build prerequisites and typecheck
+        run: npm run check
+
+      - name: Run workflow sandbox and replay tests within three minutes
+        timeout-minutes: 3
+        run: >-
+          npm test -w @space/worker --
+          tests/workflow-core-sandbox.test.ts
+          tests/workflow-supervisor-sandbox.test.ts
+          tests/workflow-replay.test.ts
+
+      - name: Worker regression suite
+        run: npm test -w @space/worker
+
+      - name: Production build
+        run: npm run build
