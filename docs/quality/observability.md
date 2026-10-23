@@ -336,9 +336,12 @@ No credential or transcript export was added.
   the lookup also returns the Space-native agent runs (`space_agent_runs`) of the
   trace's workflows, joined by workflow id, with their status and error code, and
   names a failed run's code as the cause when no event carries one.
-- **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
-  spans and worker activity spans (the worker and both memory workers); the CLI
-  and Browser Hosts still join traces through log lines only.
+- **Hosts emit no spans.** Since 2026-10-23 the OTLP exporter sends API SERVER
+  spans, workflow execution spans (with replay-safe sinks and OTLP span links
+  for continue-as-new and background continuations), and worker activity
+  attempt spans across `worker.ts`, `memory-maintenance-worker.ts` and
+  `memory-mutation-worker.ts`; the CLI and Browser Hosts still join traces
+  through log lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
 - **Worker endpoints are not scraped yet.** Stable's `deploy/space-worker.service`

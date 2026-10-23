@@ -11,6 +11,12 @@
  * request.
  */
 
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -20,8 +26,59 @@ export interface ServerSpan {
   endTimeUnixNano: bigint;
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
+  /** OTLP span kind; SERVER (2) unless given. Worker workflows/activities use INTERNAL (1). */
   kind?: number;
+  /** OTLP span links (e.g. continue-as-new or background continuation lineage). */
+  links?: readonly SpanLink[];
+}
+
+export const ALLOWED_SPAN_ATTRIBUTE_KEYS = new Set([
+  "http.request.method",
+  "http.route",
+  "http.response.status_code",
+  "space.request_id",
+  "space.trace_id",
+  "space.parent_trace_id",
+  "space.workflow_type",
+  "space.workflow_id",
+  "space.run_id",
+  "space.parent_workflow_id",
+  "space.parent_run_id",
+  "space.activity_type",
+  "space.activity_id",
+  "space.attempt",
+  "space.outcome",
+  "space.reason_code",
+  "space.category",
+  "space.room_id",
+  "space.pane_id",
+  "space.mission_id",
+  "space.turn_id",
+  "space.goal_id",
+  "space.dot_id",
+  "space.action_id",
+  "space.agent_run_id",
+  "space.agent_session_id",
+  "space.duration_ms",
+  "space.queue_ms",
+  "space.continuation_of"
+]);
+
+const SAFE_ATTR_VALUE_PATTERN = /^[A-Za-z0-9:/._-]{1,240}$/;
+
+export function sanitizeSpanAttributes(
+  attributes: Readonly<Record<string, string | number>>
+): Record<string, string | number> {
+  const clean: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    if (!ALLOWED_SPAN_ATTRIBUTE_KEYS.has(key)) continue;
+    if (typeof value === "number") {
+      if (Number.isFinite(value)) clean[key] = value;
+    } else if (typeof value === "string" && SAFE_ATTR_VALUE_PATTERN.test(value)) {
+      clean[key] = value;
+    }
+  }
+  return clean;
 }
 
 export interface SpanExporterStats {
@@ -84,7 +141,25 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           kind: span.kind ?? 2,
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
-          attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          attributes: Object.entries(sanitizeSpanAttributes(span.attributes)).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links && span.links.length > 0
+            ? {
+                links: span.links
+                  .filter(l => traceIdPattern.test(l.traceId) && spanIdPattern.test(l.spanId))
+                  .map(l => ({
+                    traceId: l.traceId,
+                    spanId: l.spanId,
+                    ...(l.attributes
+                      ? {
+                          attributes: Object.entries(sanitizeSpanAttributes(l.attributes)).map(([k, v]) => ({
+                            key: k,
+                            value: attributeValue(v)
+                          }))
+                        }
+                      : {})
+                  }))
+              }
+            : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))

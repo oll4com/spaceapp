@@ -11,6 +11,7 @@ import {
   type FailureCategory
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
+import { lookupRegisteredWorkflowSpanId } from "./workflow-observability.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -196,14 +197,34 @@ export async function observeActivityExecution<T>(
     });
     const parent = dependencies.spans ? activityTraceparent(args) : null;
     if (parent) {
+      const wfSpanId = lookupRegisteredWorkflowSpanId(
+        info.workflowExecution?.workflowId ?? null,
+        info.workflowExecution?.runId ?? null
+      );
+      const spanAttrs: Record<string, string | number> = {
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.duration_ms": durationMs
+      };
+      if (queueMs !== null) spanAttrs["space.queue_ms"] = queueMs;
+      if (info.workflowType) spanAttrs["space.workflow_type"] = info.workflowType;
+      if (info.workflowExecution?.workflowId) spanAttrs["space.workflow_id"] = info.workflowExecution.workflowId;
+      if (info.workflowExecution?.runId) spanAttrs["space.run_id"] = info.workflowExecution.runId;
+      if (reasonCode && isSafeErrorCode(reasonCode)) spanAttrs["space.reason_code"] = reasonCode;
+      if (category) spanAttrs["space.category"] = category;
+      if (typeof base.traceId === "string") spanAttrs["space.trace_id"] = base.traceId;
+      if (typeof base.roomId === "string") spanAttrs["space.room_id"] = base.roomId;
+      if (typeof base.paneId === "string") spanAttrs["space.pane_id"] = base.paneId;
+      if (typeof base.missionId === "string") spanAttrs["space.mission_id"] = base.missionId;
       dependencies.spans!.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
+        parentSpanId: wfSpanId ?? parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: spanAttrs,
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
