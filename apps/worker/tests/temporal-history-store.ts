@@ -36,6 +36,7 @@ export async function createHistoryRecorder(options: {
     for (const result of results) {
       if (result.error) throw new Error(`Existing history replay failed (${result.fixture ?? "unknown fixture"}): ${result.error.message}; nothing recorded`);
     }
+    console.info(`Replayed ${baseline.length} existing histories successfully before recording any additions.`);
   }
   return async (histories: RecordedHistory[]) => {
     const paths = new Set<string>();

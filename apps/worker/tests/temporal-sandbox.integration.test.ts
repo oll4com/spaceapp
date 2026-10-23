@@ -6,11 +6,16 @@ import { assertReplay, createHistoryRecorder, loadHistories, runScenario, workfl
 
 // Isolate time-skipping locks and production memory queues between scenarios.
 describe.sequential("real Temporal sandbox and replay compatibility", () => {
+  const recording = process.env.SPACE_RECORD_TEMPORAL_HISTORIES === "1";
+  // An alternate corpus is supported only for explicit recording. Ordinary CI
+  // always replays the committed baseline, regardless of this environment value.
+  const replayDirectory = recording ? process.env.SPACE_TEMPORAL_HISTORY_DIRECTORY || undefined : undefined;
   let recordHistories: Awaited<ReturnType<typeof createHistoryRecorder>> | undefined;
   beforeAll(async () => {
     await Promise.all([workflowBundle(), workflowBundle("legacy")]);
-    if (process.env.SPACE_RECORD_TEMPORAL_HISTORIES === "1") {
+    if (recording) {
       recordHistories = await createHistoryRecorder({
+        directory: replayDirectory,
         version: process.env.SPACE_TEMPORAL_HISTORY_VERSION || undefined,
         replay: assertReplay
       });
@@ -33,7 +38,7 @@ describe.sequential("real Temporal sandbox and replay compatibility", () => {
   }
 
   it("replays every committed synthetic history against current production code", async () => {
-    const histories = await loadHistories();
+    const histories = await loadHistories(replayDirectory);
     const results = await assertReplay(histories);
     expect(results).toHaveLength(histories.length);
     for (const result of results) {
@@ -42,7 +47,7 @@ describe.sequential("real Temporal sandbox and replay compatibility", () => {
   }, 60_000);
 
   it("rejects an incompatible extra timer with a determinism error", async () => {
-    const histories = (await loadHistories()).filter(entry => entry.name.startsWith("dot-"));
+    const histories = (await loadHistories(replayDirectory)).filter(entry => entry.name.startsWith("dot-"));
     expect(histories.length).toBeGreaterThan(0);
     const results = await assertReplay(histories, "negative");
     expect(results.some(result => result.error?.name === "DeterminismViolationError"),

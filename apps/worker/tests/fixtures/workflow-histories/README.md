@@ -26,6 +26,13 @@ names such as `dot-wake-signals--goal-v2.json`. Existing files are never replace
 a reused version/name fails. The original filenames and older patched-branch
 histories remain part of subsequent replay tests. Normal tests do not record.
 
+For an isolated recorder check, copy the existing JSON corpus to a temporary
+directory and add `--output-dir /absolute/path/to/copied-corpus` to the recording
+command. Both the pre-recording replay and the final replay then use that copy;
+the final replay covers its retained and newly added histories. This option does
+not redirect ordinary test runs away from the committed baseline. Inspect the
+new histories before deliberately adding an approved patched version to Git.
+
 After the initial baseline, re-recording is allowed only together with a reviewed
 `patched()` workflow change. Preserve histories for older branches while adding
 new ones. Never re-record a failing history to make a replay incompatibility pass.
