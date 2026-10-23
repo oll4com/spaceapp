@@ -11,6 +11,12 @@
  * request.
  */
 
+export interface OtlpSpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -20,9 +26,13 @@ export interface ServerSpan {
   endTimeUnixNano: bigint;
   attributes: Readonly<Record<string, string | number>>;
   error: boolean;
-  /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
+  /** OTLP span kind; SERVER (2) unless given. Worker workflows and activities use INTERNAL (1). */
   kind?: number;
+  /** Optional OTLP span links to connected or continued runs. */
+  links?: readonly OtlpSpanLink[];
 }
+
+export type OtlpSpan = ServerSpan;
 
 export interface SpanExporterStats {
   exported: number;
@@ -86,7 +96,18 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
-          status: { code: span.error ? 2 : 0 }
+          status: { code: span.error ? 2 : 0 },
+          ...(span.links && span.links.length > 0 ? {
+            links: span.links
+              .filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId))
+              .map(link => ({
+                traceId: link.traceId,
+                spanId: link.spanId,
+                ...(link.attributes ? {
+                  attributes: Object.entries(link.attributes).map(([key, value]) => ({ key, value: attributeValue(value) }))
+                } : {})
+              }))
+          } : {})
         }))
       }]
     }]
@@ -120,17 +141,20 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
       stats.failed += batch.length;
     }
   };
-  const flush = (): Promise<void> => {
-    if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          while (queue.length) await flushOnce();
-        } finally {
-          inFlight = null;
-        }
-      })();
+  const drain = async (): Promise<void> => {
+    try {
+      while (queue.length) await flushOnce();
+    } finally {
+      inFlight = null;
     }
-    return inFlight;
+  };
+  const flush = async (): Promise<void> => {
+    while (inFlight) {
+      await inFlight;
+    }
+    if (!queue.length) return;
+    inFlight = drain();
+    await inFlight;
   };
   const timer = setInterval(() => void flush(), options.flushIntervalMs ?? 5000);
   timer.unref?.();

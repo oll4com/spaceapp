@@ -13,6 +13,13 @@ import {
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import {
+  allowlistSpanAttributes,
+  decodeTraceCarrierHeader,
+  runIdToSpanId,
+  type TraceCarrierHeader
+} from "./otlp-attributes.js";
+import { getActiveWorkflowTraceId } from "./otlp-workflow-interceptors.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -135,8 +142,17 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity attempt. */
   spans?: SpanExporter | null;
+  spanExporter?: SpanExporter | null;
+  traceCarrier?: TraceCarrierHeader | null;
+}
+
+function generateSpanId(): string {
+  for (;;) {
+    const id = randomBytes(8).toString("hex");
+    if (!/^0+$/.test(id)) return id;
+  }
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -153,11 +169,20 @@ export async function observeActivityExecution<T>(
 ): Promise<T> {
   const metrics = dependencies.metrics ?? workerMetrics;
   const now = dependencies.now ?? Date.now;
+  const spanExporter = dependencies.spans ?? dependencies.spanExporter ?? null;
   const activityType = logIdentifier(info.activityType) ?? "unknown";
   const startedAt = now();
   const queueMs = Number.isFinite(info.currentAttemptScheduledTimestampMs)
     ? Math.max(0, startedAt - info.currentAttemptScheduledTimestampMs)
     : null;
+  const correlation = activityCorrelation(args);
+  const carrierTp = parseTraceparent(dependencies.traceCarrier?.traceparent);
+  if (carrierTp && !correlation.w3cTraceId) {
+    correlation.w3cTraceId = carrierTp.traceId;
+  }
+  if (!correlation.traceId && dependencies.traceCarrier?.spaceTraceId) {
+    correlation.traceId = dependencies.traceCarrier.spaceTraceId;
+  }
   const base: Record<string, WorkerLogValue> = {
     activityType,
     activityId: info.activityId,
@@ -165,7 +190,7 @@ export async function observeActivityExecution<T>(
     workflowId: info.workflowExecution?.workflowId ?? null,
     temporalRunId: info.workflowExecution?.runId ?? null,
     attempt: info.attempt,
-    ...activityCorrelation(args)
+    ...correlation
   };
   const labels = { activity_type: activityType };
   if (info.attempt > 1) metrics.activityRetries.inc(labels);
@@ -194,19 +219,82 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
+    if (spanExporter) {
+      const parent = carrierTp ?? activityTraceparent(args);
+      const temporalRunId = info.workflowExecution?.runId ?? null;
+      const activeWorkflowTraceId = getActiveWorkflowTraceId(temporalRunId);
+      const w3cTraceId =
+        parent?.traceId ??
+        (typeof correlation.w3cTraceId === "string" && /^[0-9a-f]{32}$/.test(correlation.w3cTraceId)
+          ? correlation.w3cTraceId
+          : null) ??
+        activeWorkflowTraceId;
+
+      if (w3cTraceId) {
+        try {
+          const isUuidRunId = Boolean(temporalRunId && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(temporalRunId));
+          const workflowParentSpanId =
+            carrierTp?.parentId ??
+            (temporalRunId && (activeWorkflowTraceId || isUuidRunId) ? runIdToSpanId(temporalRunId) : null);
+          const resolvedParentSpanId = workflowParentSpanId ?? parent?.parentId ?? null;
+          const startNs = BigInt(Math.max(0, Math.round(startedAt))) * 1_000_000n;
+          const endNs = BigInt(Math.max(0, Math.round(startedAt + durationMs))) * 1_000_000n;
+
+          const rawAttributes: Record<string, unknown> = {
+            "space.activity_type": activityType,
+            "space.activity_id": info.activityId,
+            "space.attempt": info.attempt,
+            "space.outcome": outcome,
+            "space.duration_ms": durationMs,
+            "space.w3c_trace_id": w3cTraceId,
+            "temporal.activity_type": activityType,
+            "temporal.activity_id": info.activityId,
+            "temporal.attempt": info.attempt
+          };
+          if (queueMs !== null) rawAttributes["space.queue_ms"] = queueMs;
+          if (reasonCode) rawAttributes["space.reason_code"] = reasonCode;
+          if (category) rawAttributes["space.category"] = category;
+          if (info.workflowType) {
+            rawAttributes["space.workflow_type"] = info.workflowType;
+            rawAttributes["temporal.workflow_type"] = info.workflowType;
+          }
+          if (info.workflowExecution?.workflowId) {
+            rawAttributes["space.workflow_id"] = info.workflowExecution.workflowId;
+            rawAttributes["temporal.workflow_id"] = info.workflowExecution.workflowId;
+          }
+          if (temporalRunId) {
+            rawAttributes["space.run_id"] = temporalRunId;
+            rawAttributes["temporal.run_id"] = temporalRunId;
+          }
+          if (correlation.traceId) rawAttributes["space.trace_id"] = correlation.traceId;
+          if (correlation.parentTraceId) rawAttributes["space.parent_trace_id"] = correlation.parentTraceId;
+          if (correlation.roomId) rawAttributes["space.room_id"] = correlation.roomId;
+          if (correlation.paneId) rawAttributes["space.pane_id"] = correlation.paneId;
+          if (correlation.missionId) rawAttributes["space.mission_id"] = correlation.missionId;
+          if (correlation.agentRunId) rawAttributes["space.agent_run_id"] = correlation.agentRunId;
+          if (correlation.agentSessionId) rawAttributes["space.agent_session_id"] = correlation.agentSessionId;
+          if (correlation.actionId) rawAttributes["space.action_id"] = correlation.actionId;
+          if (correlation.goalId) rawAttributes["space.goal_id"] = correlation.goalId;
+          if (correlation.dotId) rawAttributes["space.dot_id"] = correlation.dotId;
+          if (correlation.turnId) rawAttributes["space.turn_id"] = correlation.turnId;
+          if (correlation.cliTaskId) rawAttributes["space.cli_task_id"] = correlation.cliTaskId;
+          if (correlation.revisionId) rawAttributes["space.revision_id"] = correlation.revisionId;
+
+          spanExporter.record({
+            traceId: w3cTraceId,
+            spanId: generateSpanId(),
+            parentSpanId: resolvedParentSpanId,
+            name: `activity ${activityType}`,
+            startTimeUnixNano: startNs,
+            endTimeUnixNano: endNs >= startNs ? endNs : startNs,
+            attributes: allowlistSpanAttributes(rawAttributes),
+            error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+            kind: 1
+          });
+        } catch {
+          // Best-effort: exporter errors must never disrupt activity execution.
+        }
+      }
     }
   };
 
@@ -229,6 +317,9 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        traceCarrier: decodeTraceCarrierHeader(
+          input.headers as Readonly<Record<string, { data?: Uint8Array | null } | undefined>> | undefined
+        ),
         cancelled: () => context.cancellationSignal.aborted
       })
     }

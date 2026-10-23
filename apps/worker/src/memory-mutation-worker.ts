@@ -6,6 +6,8 @@ import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constant
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
+import { createOtlpWorkflowSinks } from "./otlp-workflow-sink.js";
+import { resolveWorkflowInterceptorsPath } from "./worker-otlp.js";
 
 const service = "space-memory-mutation-worker";
 
@@ -23,7 +25,11 @@ if (!memoryMutationsEnabled(process.env)) {
     workflowsPath: fileURLToPath(new URL("./memory-mutation-workflows.js", import.meta.url)),
     activities: { executePersistedMemoryChangeSet },
     ...memoryMutationWorkerOptions,
-    interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+    ...(spans ? { sinks: createOtlpWorkflowSinks(spans) } : {}),
+    interceptors: {
+      activity: [createActivityObservabilityInterceptors({ spans })],
+      workflowModules: spans ? [resolveWorkflowInterceptorsPath()] : []
+    }
   });
   console.log(JSON.stringify({ service, status: "running", address, namespace, taskQueue: MEMORY_MUTATION_TASK_QUEUE }));
   const stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
