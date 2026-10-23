@@ -48,6 +48,7 @@ jobs:
             deploy/docker \
             starter-memory \
             Dockerfile \
+            scripts/stage-container-runtime.mjs \
             package-lock.json; then
             echo "required=false" >> "$GITHUB_OUTPUT"
           else

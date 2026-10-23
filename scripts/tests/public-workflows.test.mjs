@@ -54,7 +54,7 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /push: false/);
 });
 
-test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {
+test("launcher-only sources do not trigger images but runtime packaging and smoke changes do", async () => {
   const containers = await workflow("containers.yml");
   const trigger = containers.match(/\non:\n([\s\S]*?)\npermissions:/)?.[1] || "";
 
@@ -62,7 +62,29 @@ test("launcher-only source and workflow changes cannot trigger the container mat
   assert.match(trigger, /push:[\s\S]*branches:[\s\S]*- main[\s\S]*paths:/);
   assert.match(trigger, /- "packages\/\*\*"/);
   assert.match(trigger, /- "!packages\/run-spaceapp\/\*\*"/);
-  assert.doesNotMatch(trigger, /\.github\/workflows\/containers\.yml/);
+  assert.match(trigger, /scripts\/container-\*\.mjs/);
+  assert.match(trigger, /scripts\/stage-container-runtime\.mjs/);
+  assert.match(trigger, /\.github\/workflows\/containers\.yml/);
+  assert.doesNotMatch(trigger, /\.github\/workflows\/\*\*/);
+});
+
+test("all six container cells smoke their loaded service image on native runners", async () => {
+  const containers = await workflow("containers.yml");
+  const release = await workflow("release.yml");
+  const matrix = containers.match(/matrix:\s+target:\s+([\s\S]*?)\s+arch:\s+([\s\S]*?)\s+runs-on:/);
+  const entries = (section) => [...section.matchAll(/^\s*- ([a-z0-9]+)\s*$/gm)].map((match) => match[1]);
+  assert.ok(matrix, "Container workflow must declare the target/architecture matrix");
+  assert.deepEqual(entries(matrix[1]), ["core", "browser", "cli"]);
+  assert.deepEqual(entries(matrix[2]), ["amd64", "arm64"]);
+  assert.match(containers, /runs-on: \$\{\{ matrix\.arch == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/);
+  assert.doesNotMatch(containers, /setup-qemu-action|exclude:|include:|continue-on-error:/);
+  const smoke = containers.match(/- name: Smoke the service entrypoint and runtime\n([\s\S]*)$/)?.[1] || "";
+  assert.match(smoke, /node scripts\/container-service-smoke\.mjs/);
+  assert.match(smoke, /--target "\$\{\{ matrix\.target \}\}"/);
+  assert.match(smoke, /--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
+  assert.match(smoke, /--arch "\$\{\{ matrix\.arch \}\}"/);
+  assert.doesNotMatch(smoke, /\bif:/);
+  assert.match(release, /docker\/setup-qemu-action@/);
 });
 
 test("container matrices load each image and enforce the public size budgets", async () => {
@@ -80,6 +102,7 @@ test("security workflow scans secrets, dependencies, source, images, and emits a
   const security = await workflow("security.yml");
 
   assert.match(security, /container-changes:[\s\S]*outputs:[\s\S]*required:/);
+  assert.match(security, /git diff --quiet[\s\S]*scripts\/stage-container-runtime\.mjs[\s\S]*package-lock\.json; then/);
   assert.match(
     security,
     /git diff --quiet[\s\S]*':\(exclude\)packages\/run-spaceapp\/\*\*'/

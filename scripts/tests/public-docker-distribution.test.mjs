@@ -38,14 +38,20 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   );
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
-  assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
+  assert.match(dockerfile, /scripts\/stage-container-runtime\.mjs --output \/runtime/);
+  const runtimeStaging = await readFile(join(root, "scripts", "stage-container-runtime.mjs"), "utf8");
+  assert.match(runtimeStaging, /rotate-owner-setup-token\.mjs/);
   assert.match(dockerfile, /@opencode\/cli@2\.0\.32/);
   assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
   const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   assert.match(installer, /@openai\/codex@0\.145\.0/);
   assert.match(installer, /Unsupported optional provider/);
   assert.doesNotMatch(dockerfile, /docker\.sock/);
-  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
+  for (const target of ["core", "browser", "cli"]) {
+    assert.ok(dockerfile.includes(`COPY --from=build --chown=spaceapp:spaceapp /runtime/${target}/ ./`), `${target} needs its independent runtime tree`);
+  }
+  const runtimeBase = dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  assert.doesNotMatch(runtimeBase, /COPY --from=build[^\n]*\/app\/(?:node_modules|apps|packages)/, "shared layers must not embed the full monorepo");
 });
 
 test("public container images identify their repository and license for GHCR", async () => {
