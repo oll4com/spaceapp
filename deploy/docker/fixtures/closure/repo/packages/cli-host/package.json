@@ -1,0 +1,1 @@
+{"name":"@space/cli-host","version":"0.2.5","type":"module","main":"dist/index.js","dependencies":{"node-pty":"1.0.0"}}

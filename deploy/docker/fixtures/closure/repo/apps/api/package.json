@@ -1,0 +1,1 @@
+{"name":"@space/api","version":"1.0.0","type":"module","dependencies":{"@space/cli-host":"*","@space/contracts":"*","express":"1.0.0"}}

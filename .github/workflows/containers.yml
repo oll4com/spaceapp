@@ -43,7 +43,7 @@ jobs:
         arch:
           - amd64
           - arm64
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,4 +70,11 @@ jobs:
         run: >-
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke test
+        run: >-
+          node deploy/docker/container-smoke.mjs
+          --target "${{ matrix.target }}"
+          --arch "${{ matrix.arch }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"

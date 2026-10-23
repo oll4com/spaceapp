@@ -1,5 +1,7 @@
 import "./publish-npm-candidate.test.mjs";
 import "./container-image-size-budget.test.mjs";
+import "../../deploy/docker/container-target-closure.test.mjs";
+import "../../deploy/docker/container-smoke.test.mjs";
 import "./mcp-hono-compatibility.test.mjs";
 import "./portable-backup-restore.test.mjs";
 import "./published-container-verification.test.mjs";

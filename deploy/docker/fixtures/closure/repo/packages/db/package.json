@@ -1,0 +1,1 @@
+{"name":"@space/db","version":"1.0.0","type":"module","main":"dist/index.js","dependencies":{"@space/contracts":"*","@space/runtime":"*","pg":"1.0.0"}}
