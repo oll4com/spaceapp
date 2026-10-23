@@ -21,7 +21,7 @@
     "@fastify/websocket": "11.2.0",
     "@space/contracts": "0.2.5",
     "@space/db": "0.2.5",
-    "fastify": "5.12.5",
+    "fastify": "5.12.7",
     "js-tiktoken": "1.0.21",
     "pg": "^8.22.0",
     "web-tree-sitter": "0.25.10",
