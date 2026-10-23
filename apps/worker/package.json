@@ -10,7 +10,13 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test:prepare": "npm run build -w @space/contracts && npm run build -w @space/streaming && npm run build -w @space/opencode-control && npm run build -w @space/memory-graph && npm run build -w @space/codex-app-server && npm run build -w @space/runtime && npm run build -w @space/db",
+    "pretest": "npm run test:prepare",
+    "test": "vitest run",
+    "pretemporal:record-histories": "npm run test:prepare",
+    "temporal:record-histories": "node scripts/record-workflow-histories.mjs",
+    "pretemporal:test": "npm run test:prepare",
+    "temporal:test": "vitest run tests/temporal-core-real.test.ts tests/temporal-supervisor-real.test.ts tests/temporal-replay-real.test.ts --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -26,6 +32,9 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/common": "1.24.0",
+    "@temporalio/proto": "1.24.0",
+    "@temporalio/testing": "1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },
