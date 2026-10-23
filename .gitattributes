@@ -1,0 +1,2 @@
+# Real, synthetic Temporal histories are generated compatibility baselines.
+apps/worker/tests/fixtures/workflow-histories/*.json linguist-generated=true

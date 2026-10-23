@@ -148,6 +148,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyFeedback = useRef<{ mounted: boolean; timer: number | null }>({ mounted: false, timer: null });
   const [isFullscreen, setIsFullscreen] = useDockFullscreen();
   const [isAdding, setIsAdding] = useState(false);
   const [manualText, setManualText] = useState("");
@@ -157,6 +158,16 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   const isFiltered = Boolean(search.trim()) || sourceFilter !== "ALL";
   const insertTarget = activePaneLabel ?? "active pane";
   const roomNames = useRoomNames(isDockActive);
+
+  useEffect(() => {
+    const feedback = copyFeedback.current;
+    feedback.mounted = true;
+    return () => {
+      feedback.mounted = false;
+      if (feedback.timer !== null) window.clearTimeout(feedback.timer);
+      feedback.timer = null;
+    };
+  }, []);
 
   const handleOpenStickyNote = useCallback((item?: ClipboardItem | null) => {
     if (onOpenStickyNote) {
@@ -272,8 +283,15 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
     try {
       if (!runtime.platform.clipboard) throw new DOMException("Clipboard access is unavailable.", "NotSupportedError");
       await runtime.platform.clipboard.writeText(item.text);
-      setCopiedId(item.id);
-      window.setTimeout(() => setCopiedId((current) => (current === item.id ? null : current)), 1_500);
+      const feedback = copyFeedback.current;
+      if (feedback.mounted) {
+        setCopiedId(item.id);
+        if (feedback.timer !== null) window.clearTimeout(feedback.timer);
+        feedback.timer = window.setTimeout(() => {
+          feedback.timer = null;
+          setCopiedId((current) => (current === item.id ? null : current));
+        }, 1_500);
+      }
       await captureClipboardText({
         text: item.text,
         source: item.source === "AGENT_NOTE" ? "COPY" : item.source,
@@ -285,7 +303,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
         paneTitle: item.paneTitle
       });
     } catch {
-      setError("Clipboard access was unavailable. Select the text and copy it manually.");
+      if (copyFeedback.current.mounted) setError("Clipboard access was unavailable. Select the text and copy it manually.");
     }
   }
 
