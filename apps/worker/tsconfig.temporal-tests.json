@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "tests/temporal-*.test.ts",
+    "tests/support/temporal-*.ts",
+    "scripts/record-temporal-histories.ts"
+  ]
+}

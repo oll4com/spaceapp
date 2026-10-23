@@ -9,8 +9,11 @@
     "dev": "npm run build && node dist/worker.js",
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "check": "tsc -p tsconfig.json --noEmit && npm run temporal:check",
+    "test": "node scripts/test-temporal-workflows.mjs --all",
+    "temporal:record-histories": "tsx scripts/record-temporal-histories.ts",
+    "temporal:test": "node scripts/test-temporal-workflows.mjs",
+    "temporal:check": "tsc -p tsconfig.temporal-tests.json"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -26,6 +29,7 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/testing": "1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },

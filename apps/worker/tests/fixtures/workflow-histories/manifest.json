@@ -1,0 +1,60 @@
+{
+  "sdkVersion": "1.24.0",
+  "histories": [
+    {
+      "file": "dummy-turn.json",
+      "workflowType": "dummyTurnWorkflow",
+      "workflowId": "history:dummy-turn",
+      "sha256": "0999508ade04402547cf3a29d8452667782034e3b37e119e786d94081713a2ce"
+    },
+    {
+      "file": "codex-turn.json",
+      "workflowType": "codexAppServerTurnWorkflow",
+      "workflowId": "history:codex-turn",
+      "sha256": "d2e6d2827aa0d1714691270b949b832afba8463153198ecc6f5c6223b05755bf"
+    },
+    {
+      "file": "dot-goal.json",
+      "workflowType": "dotGoalWorkflow",
+      "workflowId": "history:dot-goal",
+      "sha256": "929b87b571a0f71a2a6e85a838042854ac9ab55d3b73d4e2b2bb3bee3eac5930"
+    },
+    {
+      "file": "supervisor-current.json",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "workflowId": "history:supervisor-current",
+      "sha256": "8d5c8e38335f59c8b31a2d704fbf5532a644e1b6fda1dec617b24dc72e0d3a09"
+    },
+    {
+      "file": "supervisor-pre-patch.json",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "workflowId": "history:supervisor-pre-patch",
+      "sha256": "d4d65bc3039306f2859da17dddcb5c9b8e0f09d2a735456088bb576512787df8",
+      "branch": "pre-patch"
+    },
+    {
+      "file": "room-action-failure.json",
+      "workflowType": "roomAgentActionWorkflow",
+      "workflowId": "history:room-action-failure",
+      "sha256": "86a5503817230488a2ae0bd858e519b2a3832817fc640307b46839aa17e2d0f6"
+    },
+    {
+      "file": "memory-maintenance.json",
+      "workflowType": "memoryMaintenanceWorkflow",
+      "workflowId": "history:memory-maintenance",
+      "sha256": "f07eecd74e73043f956b0a1cf3ba2e46ecca2aa23eecad67b78e56fa8ff9ccfb"
+    },
+    {
+      "file": "memory-consolidation.json",
+      "workflowType": "memoryConsolidationWorkflow",
+      "workflowId": "history:memory-consolidation",
+      "sha256": "ff5a723c27e869c3d1968b1189206c2a8ee2f7929cec2acf2f314f3dd1dcbc50"
+    },
+    {
+      "file": "memory-mutation.json",
+      "workflowType": "memoryMutationWorkflow",
+      "workflowId": "history:memory-mutation",
+      "sha256": "ebc98eecdcb106c5dc2e2ab2c24f66843153de89fd6e8963c0b7df5d02d39471"
+    }
+  ]
+}
