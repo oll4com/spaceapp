@@ -13,8 +13,13 @@ const unit = (seed: string) => {
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
 
-/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+/** Independent XYZ force layout with streaming progress support. */
+export function layoutMemoryNetwork3DIncremental(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  onProgress?: (positions: Map<string, MemoryPoint3D>, step: number, done: boolean) => void,
+  batchSteps = 20
+): Map<string, MemoryPoint3D> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
@@ -78,8 +83,17 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
+    if (onProgress && ((step + 1) % batchSteps === 0 || step === 179)) {
+      const intermediate = new Map(ordered.map((node, idx) => [node.id, { ...points[idx]! }]));
+      onProgress(intermediate, step + 1, step === 179);
+    }
   }
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));
+}
+
+/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
+export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  return layoutMemoryNetwork3DIncremental(nodes, edges);
 }
 
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {
