@@ -52,6 +52,7 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { generateSyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
@@ -148,7 +149,11 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  limit?: number;
+  graphSize?: number;
 };
+
+export { generateSyntheticMemoryGraph };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
   const { beforeSnapshot: _before, afterSnapshot: _after, ...summary } = changeSet;
@@ -668,8 +673,27 @@ export class DemoStore {
     };
   }
 
+  /**
+   * Demo URL override for scale benchmarks: ?demoGraphSize=50000 renders a
+   * synthetic graph of that size instead of the fixture graph.
+   * @returns The requested node count, or undefined for a missing/invalid value.
+   */
+  private demoGraphSizeFromUrl(): number | undefined {
+    try {
+      if (typeof window === "undefined") return undefined;
+      const value = Number(new URLSearchParams(window.location.search).get("demoGraphSize"));
+      return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+    const graphSize = query.graphSize ?? this.demoGraphSizeFromUrl();
+    const synthetic = graphSize ? generateSyntheticMemoryGraph(graphSize) : null;
+    const base = synthetic
+      ? { ...this.fixture.memoryWorkspace.graph, nodes: synthetic.nodes, edges: synthetic.edges }
+      : this.fixture.memoryWorkspace.graph;
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
@@ -1496,8 +1520,18 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
-        return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const graph = this.memoryGraph(query);
+        const limit = query.limit;
+        if (!limit || graph.nodes.length <= limit) {
+          return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        }
+        const nodes = graph.nodes.slice(0, limit);
+        const visibleIds = new Set(nodes.map((node) => node.id));
+        const edges = graph.edges
+          .filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
+          .slice(0, Math.min(150000, limit * 3));
+        return Promise.resolve({ data: { ...graph, nodes, edges, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: true } });
       }
       case "memoryCalendar": {
         const query = (args[0] ?? {}) as { year?: number; month?: string; date?: string };

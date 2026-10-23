@@ -434,6 +434,43 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("honors the overview limit up to the hard maximum and keeps the default unchanged", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2600 }, (_, index) => ({
+      id: `memory:limit-${index}`,
+      type: "MEMORY" as const,
+      label: `Limit memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = [];
+    graphSnapshot.summary = {
+      ...graphSnapshot.summary,
+      nodeCount: graphSnapshot.nodes.length,
+      edgeCount: 0
+    };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const fallback = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(fallback.statusCode).toBe(200);
+    expect(fallback.json().data.nodes).toHaveLength(2000);
+    expect(fallback.json().data.truncated).toBe(true);
+    expect(fallback.json().data.totalMatchingNodes).toBe(2600);
+
+    const raised = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=2600", headers: { cookie } });
+    expect(raised.statusCode).toBe(200);
+    expect(raised.json().data.nodes).toHaveLength(2600);
+    expect(raised.json().data.truncated).toBe(false);
+
+    const maximum = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    expect(maximum.statusCode).toBe(200);
+    expect(maximum.json().data.nodes).toHaveLength(2600);
+
+    const beyond = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(beyond.statusCode).toBe(422);
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;
