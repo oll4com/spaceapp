@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 
@@ -47,6 +50,28 @@ async function loginCookie(app: Awaited<ReturnType<typeof createApp>>): Promise<
 const APP_TEST_TIMEOUT_MS = 60_000;
 
 describe("public profile storage warning", () => {
+  it("inspects the configured installation root without requiring /opt/spaceapp", async () => {
+    const installRoot = await mkdtemp(join(tmpdir(), "space-dev-storage-"));
+    expect(getApiConfig({}).installRoot).toBe("/opt/spaceapp");
+    const app = await createApp({
+      config: getApiConfig({ SPACE_INSTALL_ROOT: installRoot, SPACE_BROWSER_SESSIONS_ENABLED: "false" }),
+      auth: { sessionSecret: "storage-path-test-session-secret", devLogin: true, secureCookies: false }
+    });
+    try {
+      const headers = { cookie: await loginCookie(app) };
+      const storage = await app.inject({ method: "GET", url: "/api/admin/storage", headers });
+      expect(storage.statusCode).toBe(200);
+      expect(storage.json()).toMatchObject({ app: { path: installRoot }, minimumRecommendedFreeBytes: 20 * 1024 ** 3 });
+      expect(storage.json().dedicatedAppVolume).toBe(storage.json().root.deviceId !== storage.json().app.deviceId);
+      const admin = await app.inject({ method: "GET", url: "/api/admin", headers });
+      expect(admin.statusCode).toBe(200);
+      expect(admin.json().storageWarning).toBe("");
+    } finally {
+      await app.close();
+      await rm(installRoot, { recursive: true, force: true });
+    }
+  }, APP_TEST_TIMEOUT_MS);
+
   it("does not show the browser-heavy storage banner when browser sessions are disabled", async () => {
     const app = await createApp({
       config: getApiConfig({

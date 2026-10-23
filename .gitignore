@@ -1,6 +1,7 @@
 # Generated outputs and local tool reports. These are safe to regenerate; do
 # not commit them, and clean them only with an allowlist.
 node_modules/
+.dev-stack/
 dist/
 dist-mock/
 dist-types/
