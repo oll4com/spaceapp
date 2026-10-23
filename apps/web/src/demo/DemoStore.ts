@@ -52,6 +52,7 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { createSyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
@@ -148,6 +149,8 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  /** Node budget; above the default 2,000 the demo returns a deterministic synthetic graph. */
+  limit?: number;
 };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -1496,7 +1499,17 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        if (query.limit && query.limit > 2000) {
+          // Demo mode synthesizes the requested graph size, so the 50k benchmark runs without a backend.
+          const graph = createSyntheticMemoryGraph(query.limit);
+          const needle = query.q?.trim().toLowerCase();
+          const nodes = needle ? graph.nodes.filter(node => node.label.toLowerCase().includes(needle)) : graph.nodes;
+          const ids = new Set(nodes.map(node => node.id));
+          const edges = graph.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target));
+          return Promise.resolve({ data: { ...graph, nodes, edges, totalMatchingNodes: nodes.length, totalMatchingEdges: edges.length, truncated: false } });
+        }
+        const graph = this.memoryGraph(query);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {

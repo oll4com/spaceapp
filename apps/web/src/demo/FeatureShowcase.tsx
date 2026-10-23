@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 import { LivePane } from "../features/live-pane/LivePane.js";
 import { MemoryGraph3D } from "../features/memory-workspace/MemoryGraph3D.js";
-import { createMemoryAtlas } from "../features/memory-workspace/memory-atlas.js";
-import { layoutMemoryNetwork3D } from "../features/memory-workspace/memory-3d.js";
+import { createMemoryAtlas, type MemoryAtlasPosition } from "../features/memory-workspace/memory-atlas.js";
+import { layoutMemoryNetwork3D, type MemoryPoint3D } from "../features/memory-workspace/memory-3d.js";
+import { createSyntheticMemoryGraph } from "./synthetic-memory-graph.js";
 import { createShowcaseFixture } from "./showcase-fixture.js";
 import "../features/memory-workspace/memory-atlas.css";
 import "./feature-showcase.css";
@@ -106,7 +107,7 @@ export function createFeatureGraph() {
     });
   return { nodes, edges };
 }
-const graph = createFeatureGraph();
+const showcaseGraph = createFeatureGraph();
 
 function VoiceExample({ step }: { step: number }) {
   // The mock has document-local Storage. Seed before mounting the actual Live pane.
@@ -146,30 +147,71 @@ export function FeatureShowcase({ kind }: { kind: "voice" | "memory" }) {
   const [running, setRunning] = useState(false);
   const [angle, setAngle] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
+  // Demo mode: ?graphSize=N renders a deterministic synthetic graph of any size,
+  // with the 3D layout streamed in by the layout worker so the main thread stays free.
+  const synthetic = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const size = Number(new URLSearchParams(window.location.search).get("graphSize"));
+    return Number.isFinite(size) && size >= 2 ? createSyntheticMemoryGraph(Math.min(50000, Math.round(size))) : null;
+  }, []);
+  const graph = synthetic ?? showcaseGraph;
+  const [demoLayout, setDemoLayout] = useState<{ positions: Map<string, MemoryAtlasPosition>; coordinates: Map<string, MemoryPoint3D> } | null>(null);
   const atlas = useMemo(
     () => createMemoryAtlas(graph.nodes, graph.edges, false),
-    [],
+    [synthetic],
   );
   const base = useMemo(
     () =>
-      kind === "memory"
+      kind === "memory" && !synthetic
         ? layoutMemoryNetwork3D(graph.nodes, graph.edges)
         : new Map(),
-    [kind],
+    [kind, synthetic],
   );
+  useEffect(() => {
+    if (!synthetic || typeof Worker === "undefined") return;
+    const worker = new Worker(new URL("../features/memory-workspace/memory-network-layout.worker.ts", import.meta.url), { type: "module" });
+    const orderedIds = [...atlas.nodes].map(node => node.id).sort((left, right) => left.localeCompare(right));
+    const mergedPositions = (base: Map<string, { x: number; y: number }>) =>
+      new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...base.get(id) }]));
+    let basePositions: Map<string, { x: number; y: number }> | null = null;
+    worker.onmessage = (event: MessageEvent) => {
+      const message = event.data as { type: "positions"; positions: Array<[string, { x: number; y: number }]> } | { type: "depth-progress"; fraction: number; depth: Float32Array } | { type: "depth"; depth: Array<[string, MemoryPoint3D]> };
+      if (message.type === "positions") {
+        basePositions = new Map(message.positions);
+        setDemoLayout({ positions: mergedPositions(basePositions), coordinates: new Map() });
+        return;
+      }
+      if (message.type === "depth-progress") {
+        if (!basePositions) return;
+        const coordinates = new Map<string, MemoryPoint3D>();
+        const count = Math.min(orderedIds.length, Math.floor(message.depth.length / 3));
+        for (let i = 0; i < count; i++) coordinates.set(orderedIds[i]!, { x: message.depth[i * 3]!, y: message.depth[i * 3 + 1]!, z: message.depth[i * 3 + 2]! });
+        setDemoLayout({ positions: mergedPositions(basePositions), coordinates });
+        return;
+      }
+      if (!basePositions) return;
+      setDemoLayout({ positions: mergedPositions(basePositions), coordinates: new Map(message.depth) });
+      worker.terminate();
+    };
+    worker.onerror = () => worker.terminate();
+    worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
+    return () => worker.terminate();
+  }, [atlas, synthetic]);
   const coordinates = useMemo(
     () =>
-      new Map(
-        [...base].map(([id, p]) => [
-          id,
-          {
-            x: p.x * Math.cos(angle) - p.z * Math.sin(angle),
-            y: p.y,
-            z: p.x * Math.sin(angle) + p.z * Math.cos(angle),
-          },
-        ]),
-      ),
-    [base, angle],
+      synthetic
+        ? demoLayout?.coordinates ?? new Map()
+        : new Map(
+            [...base].map(([id, p]) => [
+              id,
+              {
+                x: p.x * Math.cos(angle) - p.z * Math.sin(angle),
+                y: p.y,
+                z: p.x * Math.sin(angle) + p.z * Math.cos(angle),
+              },
+            ]),
+          ),
+    [base, angle, demoLayout, synthetic],
   );
   useEffect(() => {
     const send = (payload: object) =>
@@ -215,10 +257,10 @@ export function FeatureShowcase({ kind }: { kind: "voice" | "memory" }) {
     return () => window.removeEventListener("message", receive);
   }, [kind]);
   useEffect(() => {
-    if (!running || kind !== "memory") return;
+    if (!running || kind !== "memory" || synthetic) return;
     const timer = setInterval(() => setAngle((v) => v + 0.012), 50);
     return () => clearInterval(timer);
-  }, [kind, running]);
+  }, [kind, running, synthetic]);
   return (
     <div
       className={`feature-showcase feature-${kind}`}
@@ -239,7 +281,7 @@ export function FeatureShowcase({ kind }: { kind: "voice" | "memory" }) {
           <MemoryGraph3D
             nodes={graph.nodes}
             edges={graph.edges}
-            positions={atlas.positions}
+            positions={synthetic ? demoLayout?.positions ?? new Map() : atlas.positions}
             coordinates={coordinates}
             showTitles={step > 0}
             selectedNodeId={selected}

@@ -176,6 +176,7 @@
 .memory-3d-surface canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline-offset: -3px; }
 .memory-3d-surface canvas:active { cursor: grabbing; }
 .memory-3d-hint { position: absolute; bottom: 26px; left: 0; right: 0; text-align: center; font-size: 10px; color: #95aec2; pointer-events: none; }
+.memory-3d-surface canvas.memory-3d-labels { position: absolute; inset: 0; pointer-events: none; }
 #memory-atlas .memory-atlas-topics { max-height: min(38%, 320px); overflow: auto; scrollbar-width: thin; }
 @media (max-width: 700px) {
   .memory-3d-surface { inset: 165px 0 135px; }

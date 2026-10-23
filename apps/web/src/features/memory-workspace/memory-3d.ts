@@ -13,16 +13,32 @@ const unit = (seed: string) => {
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
 
+export const MEMORY_LAYOUT_3D_STEPS = 180;
+
+export interface MemoryLayout3DOptions {
+  /**
+   * Incremental layout: called every `progressInterval` steps and once at the end with
+   * fraction 1, carrying a packed XYZ buffer of the current positions. The simulation
+   * itself is unchanged, so the final result stays deterministic for the same input.
+   */
+  onProgress?: (fraction: number, positions: Float32Array, count: number) => void;
+  progressInterval?: number;
+}
+
 /** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], options: MemoryLayout3DOptions = {}): Map<string, MemoryPoint3D> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
   const count = ordered.length;
+  // Scale the initial cloud with archive size: the repulsion grid stays sparse for
+  // 50k nodes instead of packing them into the 2k-sized box (deterministic: a pure
+  // function of the node count; archives at or below 2000 nodes are unchanged).
+  const spread = 260 * Math.max(1, Math.cbrt(count / 2000));
   const points = ordered.map(node => ({
-    x: (unit(`${node.id}:x`) - 0.5) * 260,
-    y: (unit(`${node.id}:y`) - 0.5) * 260,
-    z: (unit(`${node.id}:z`) - 0.5) * 260
+    x: (unit(`${node.id}:x`) - 0.5) * spread,
+    y: (unit(`${node.id}:y`) - 0.5) * spread,
+    z: (unit(`${node.id}:z`) - 0.5) * spread
   }));
   if (root >= 0) points[root] = { x: 0, y: 0, z: 0 };
   const links = [...edges].sort((a, b) => a.id.localeCompare(b.id)).flatMap(edge => {
@@ -42,7 +58,14 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
   }
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
   // Bounded spatial-grid repulsion and link springs act equally on all three axes.
-  for (let step = 0; step < 180; step++) {
+  const progressInterval = options.progressInterval ?? 15;
+  const progressBuffer = options.onProgress ? new Float32Array(count * 3) : null;
+  const reportProgress = (step: number) => {
+    if (!options.onProgress || !progressBuffer) return;
+    for (let i = 0; i < count; i++) { progressBuffer[i * 3] = points[i]!.x; progressBuffer[i * 3 + 1] = points[i]!.y; progressBuffer[i * 3 + 2] = points[i]!.z; }
+    options.onProgress(Math.min(1, (step + 1) / 180), progressBuffer, count);
+  };
+  for (let step = 0; step < MEMORY_LAYOUT_3D_STEPS; step++) {
     fx.fill(0); fy.fill(0); fz.fill(0);
     const grid = new Map<string, number[]>();
     for (let i = 0; i < count; i++) {
@@ -78,7 +101,9 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
+    if ((step + 1) % progressInterval === 0) reportProgress(step);
   }
+  if (options.onProgress && (180 % progressInterval !== 0)) reportProgress(179);
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));
 }
 

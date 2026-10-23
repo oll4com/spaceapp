@@ -60,3 +60,57 @@ describe("3D memory projection", () => {
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
   });
 });
+
+import type { MemoryPoint3D } from "../src/features/memory-workspace/memory-3d.js";
+
+describe("3D layout streaming", () => {
+  const streamFixture = () => {
+    const nodes: MemoryGraphNode[] = [{ id: "root", label: "gemini.md", type: "SOURCE", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null }];
+    const edges: MemoryGraphEdge[] = [];
+    for (let file = 0; file < 10; file++) {
+      const id = `source-${file}`;
+      nodes.push({ id, label: `${id}.md`, type: "SOURCE", sourcePath: `/opt/spaceapp/docs/${id}.md`, recordId: null });
+      edges.push({ id: `file-${file}`, type: "DERIVED_FROM", source: "root", target: id });
+      for (let item = 0; item < 25; item++) {
+        const memory = `${id}-memory-${item}`;
+        nodes.push({ id: memory, label: memory, type: "MEMORY", sourcePath: `/opt/spaceapp/docs/${id}.md`, recordId: memory });
+        edges.push({ id: memory, type: "CONTAINS", source: id, target: memory });
+      }
+    }
+    return { nodes, edges };
+  };
+
+  it("streams converging previews and ends at the deterministic result", () => {
+    const { nodes, edges } = streamFixture();
+    const reference = layoutMemoryNetwork3D(nodes, edges);
+    const fractions: number[] = [];
+    const previews: Array<Map<string, MemoryPoint3D>> = [];
+    const ids = [...nodes].map(node => node.id).sort((left, right) => left.localeCompare(right));
+    const streamed = layoutMemoryNetwork3D(nodes, edges, {
+      onProgress: (fraction, buffer, count) => {
+        fractions.push(fraction);
+        const preview = new Map<string, MemoryPoint3D>();
+        for (let i = 0; i < count; i++) preview.set(ids[i]!, { x: buffer[i * 3]!, y: buffer[i * 3 + 1]!, z: buffer[i * 3 + 2]! });
+        previews.push(preview);
+      }
+    });
+    expect(fractions.length).toBe(12);
+    expect(fractions[0]).toBeCloseTo(15 / 180, 10);
+    expect(fractions.every((fraction, index) => index === 0 || fraction > fractions[index - 1]!)).toBe(true);
+    expect(fractions.at(-1)).toBeCloseTo(1, 10);
+    expect(previews[0]!.get("root")).toEqual({ x: 0, y: 0, z: 0 });
+    // The first preview is still converging; the streamed run ends at the reference layout.
+    expect([...previews[0]!.values()]).not.toEqual([...reference.values()]);
+    expect([...streamed]).toEqual([...reference]);
+  });
+
+  it("keeps streaming deterministic for the same input", () => {
+    const { nodes, edges } = streamFixture();
+    const collect = () => {
+      const collected: number[] = [];
+      layoutMemoryNetwork3D(nodes, edges, { progressInterval: 45, onProgress: (fraction, buffer) => { collected.push(fraction, buffer[0]!); } });
+      return collected;
+    };
+    expect(collect()).toEqual(collect());
+  });
+});
