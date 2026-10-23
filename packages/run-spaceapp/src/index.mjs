@@ -989,7 +989,7 @@ export async function readRecordedDigests(root) {
   return parseRecordedDigests(await readFile(join(root, "image-digests.json"), "utf8").catch(() => "{}"));
 }
 
-export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_LOCK, verifyImages = verifyLockedImages) {
+export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_LOCK, verifyImages = verifyLockedImages, { projectRoot = root } = {}) {
   validateHome(root);
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -1014,7 +1014,7 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
     }
   }
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config, imageLock, recorded));
-  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable(), root }));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable(), root: projectRoot }));
   // The core reads it as uid 10001 through a read-only bind mount.
   await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
   for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });
@@ -1144,7 +1144,7 @@ export async function commitInstallation(root, config, {
   await atomicWrite(join(root, "compose.yml"), composeTemplate);
   await mkdir(projectRoot, { recursive: true, mode: 0o700 });
   await atomicWrite(join(projectRoot, "seccomp-cli.json"), await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8"));
-  await writeRuntimeFiles(root, config);
+  await writeRuntimeFiles(root, config, undefined, undefined, { projectRoot });
   if (persistConfig) await saveConfig(root, config);
 }
 

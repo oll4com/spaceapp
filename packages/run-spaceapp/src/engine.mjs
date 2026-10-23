@@ -15,7 +15,7 @@ export function selectedEngine({ flag, answer, saved, available }) {
 
 export async function detectEngines(execute) {
   const available = async (command, args) => {
-    try { return await execute({ command, args }, { stdin: null, stdout: null, stderr: null }) === 0; }
+    try { return await execute({ command, args, timeoutMs: 15000 }, { stdin: null, stdout: null, stderr: null }) === 0; }
     catch { return false; }
   };
   return {
