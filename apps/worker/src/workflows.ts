@@ -140,7 +140,7 @@ export async function roomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorI
   return continuingRoomAgentSupervisorWorkflow(rawInput);
 }
 
-async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
+export async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   const input = roomAgentSupervisorInputSchema.parse(rawInput);
   let pending = [...input.pending];
   let interrupted: Array<{ item: RoomAgentSupervisorQueueItem; reason: string }> = [];

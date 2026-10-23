@@ -94,6 +94,36 @@ check also refuse to run on `main`.
 Opt-in database and authenticated provider proofs require separate isolated
 fixtures; skipped proofs are not passing evidence.
 
+## Temporal workflow sandbox and replay compatibility
+
+The worker's `real-temporal-bounty.test.ts` suite executes all eight production
+Temporal workflows on `TestWorkflowEnvironment.createTimeSkipping()` with
+stubbed activities and **no database, AI provider, Docker or external Temporal
+server**. It covers signal-driven goal wake-ups, retry exhaustion, child
+workflows, supervisor stop and its current/legacy 50-item continuation as well
+as the 250-poll history boundary. The checked-in JSON histories under
+`apps/worker/tests/fixtures/workflow-histories/` contain only synthetic test
+values. When the fixture recorder is explicitly enabled, its serializer
+replaces recorded worker PID/hostname identities and failure stack traces
+with synthetic placeholders before writing JSON. It preserves event IDs,
+payloads and failure codes so the replay guard cannot conceal nondeterminism.
+The suite rejects native home-directory paths and recorder identities in
+committed histories. The suite replays every history using the current workflow bundle, and
+the test-only `bounty-replay-broken.ts` verifies that adding an unversioned
+timer produces a real `DeterminismViolationError`.
+
+The normal command is `npm test -w @space/worker`. On Linux or WSL with Node
+22, run only this focused suite with
+`npm test -w @space/worker -- real-temporal-bounty`.
+
+When a deliberate, reviewed workflow behavior change uses `patched()`, the
+maintainer may explicitly re-record the affected fixture histories using
+`npm run temporal:record-histories -w @space/worker`. Inspect the before/after
+history diff, confirm synthetic-only contents, and include the new fixtures
+and the associated versioned workflow change in the same PR. **Never re-record
+histories merely to make a failing replay test pass.** Preserve at least one
+pre-patch supervisor history permanently for compatibility with running users.
+
 In the maintainers' source repository, `npm run check:claims` compares the
 version, licence, Node requirement, runtime list and key constants stated in
 the README and `docs/` with the code, and rejects unqualified latency or
