@@ -10,7 +10,8 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "temporal:record-histories": "node scripts/record-temporal-histories.mjs"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -26,6 +27,9 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/common": "1.24.0",
+    "@temporalio/proto": "1.24.0",
+    "@temporalio/testing": "1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },
