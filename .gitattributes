@@ -1,0 +1,3 @@
+# Recorded server histories are generated; keep the manifest visible in reviews.
+apps/worker/tests/fixtures/workflow-histories/*.json linguist-generated=true
+apps/worker/tests/fixtures/workflow-histories/manifest.json linguist-generated=false

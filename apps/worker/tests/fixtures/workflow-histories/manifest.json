@@ -1,0 +1,174 @@
+{
+  "sdkVersion": "1.24.0",
+  "sourceRevision": "8a3e1f00f1dc52a2ca0dff160e8520d6c2b2ab2e",
+  "histories": [
+    {
+      "file": "dot-timeout-and-observe--1.json",
+      "workflowId": "synthetic:dot-timeout-and-observe",
+      "runId": "bbbdb45b-c689-4cec-9f9d-d04c4e16e7e3",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot-timeout-and-observe",
+      "prePatch": false
+    },
+    {
+      "file": "dot-continues-unfinished--1.json",
+      "workflowId": "synthetic:dot-continues-unfinished",
+      "runId": "aafeb816-f0f2-47a8-8832-7d950004cc60",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot-continues-unfinished",
+      "prePatch": false
+    },
+    {
+      "file": "dot-continues-unfinished--2.json",
+      "workflowId": "synthetic:dot-continues-unfinished",
+      "runId": "e76e5ae7-0ac1-4b79-b7f2-9a257b90e73c",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot-continues-unfinished",
+      "prePatch": false
+    },
+    {
+      "file": "dummy-turn-retries--1.json",
+      "workflowId": "synthetic:dummy-turn-retries",
+      "runId": "4174d1c6-2d47-471c-ae23-d267851a1141",
+      "workflowType": "dummyTurnWorkflow",
+      "scenario": "dummy-turn-retries",
+      "prePatch": false
+    },
+    {
+      "file": "codex-turn-default--1.json",
+      "workflowId": "synthetic:codex-turn-default",
+      "runId": "7f7bcd0e-844d-455f-9474-7e1922d4398c",
+      "workflowType": "codexAppServerTurnWorkflow",
+      "scenario": "codex-turn-default",
+      "prePatch": false
+    },
+    {
+      "file": "background-action-exhausts-retries--1.json",
+      "workflowId": "space-room-action:synthetic:background-action-exhausts-retries",
+      "runId": "13c67a00-5056-4992-a4a6-bedb58021bc4",
+      "workflowType": "roomAgentActionWorkflow",
+      "scenario": "background-action-exhausts-retries",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-current-signals-interrupt--1.json",
+      "workflowId": "synthetic:supervisor-current-signals-interrupt",
+      "runId": "59a78319-3f78-4157-8ed5-8d405fdd1596",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-current-signals-interrupt",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-current-signals-interrupt--2.json",
+      "workflowId": "workflow:codex-app-server:room:synthetic:pane:synthetic:trace:synthetic:supervisor-current-signals-interrupt-active",
+      "runId": "f2b2e807-afc2-444e-8299-faf7b6548a97",
+      "workflowType": "codexAppServerTurnWorkflow",
+      "scenario": "supervisor-current-signals-interrupt",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-current-250-polls--1.json",
+      "workflowId": "synthetic:supervisor-current-250-polls",
+      "runId": "91a24314-71d4-4e40-82fd-30dc77050536",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-current-250-polls",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-current-250-polls--2.json",
+      "workflowId": "synthetic:supervisor-current-250-polls",
+      "runId": "aef98ab3-b247-4f09-b3e6-b2d88622d06b",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-current-250-polls",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-legacy-signals-interrupt--1.json",
+      "workflowId": "synthetic:supervisor-legacy-signals-interrupt",
+      "runId": "5eb51bfb-3ca7-4d05-9fba-3ba8fa0dee15",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-legacy-signals-interrupt",
+      "prePatch": true
+    },
+    {
+      "file": "supervisor-legacy-signals-interrupt--2.json",
+      "workflowId": "workflow:codex-app-server:room:synthetic:pane:synthetic:trace:synthetic:supervisor-legacy-signals-interrupt-active",
+      "runId": "18af619b-9ec1-4c9e-9359-ab5d632f2a93",
+      "workflowType": "codexAppServerTurnWorkflow",
+      "scenario": "supervisor-legacy-signals-interrupt",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-legacy-250-polls--1.json",
+      "workflowId": "synthetic:supervisor-legacy-250-polls",
+      "runId": "4c98b48b-27a7-43f4-a2ad-773fe891558f",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-legacy-250-polls",
+      "prePatch": true
+    },
+    {
+      "file": "supervisor-legacy-250-polls--2.json",
+      "workflowId": "synthetic:supervisor-legacy-250-polls",
+      "runId": "474aa939-c5f1-41fc-bc94-5817061b9419",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-legacy-250-polls",
+      "prePatch": true
+    },
+    {
+      "file": "supervisor-prepared-turn-carried-once--1.json",
+      "workflowId": "synthetic:supervisor-prepared-turn-carried-once",
+      "runId": "0b10c0a3-29bd-47bf-881c-31484d501c57",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-prepared-turn-carried-once",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-prepared-turn-carried-once--2.json",
+      "workflowId": "synthetic:supervisor-prepared-turn-carried-once",
+      "runId": "7706c9d7-2078-495d-9cc4-05d7d998aa3b",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "supervisor-prepared-turn-carried-once",
+      "prePatch": false
+    },
+    {
+      "file": "supervisor-prepared-turn-carried-once--3.json",
+      "workflowId": "workflow:codex-app-server:room:2olM8OiLH5lp:pane:qckNO2j9aIpH:trace:bg-5ee8328b-ebc9-4f14-9e59-d2117b16345d",
+      "runId": "b420a5fe-02ed-4587-a53d-372ae2671319",
+      "workflowType": "codexAppServerTurnWorkflow",
+      "scenario": "supervisor-prepared-turn-carried-once",
+      "prePatch": false
+    },
+    {
+      "file": "memory-maintenance-survives-failures--1.json",
+      "workflowId": "synthetic:memory-maintenance-survives-failures",
+      "runId": "55d1b1df-010d-45f3-ba45-ab328b894cb4",
+      "workflowType": "memoryMaintenanceWorkflow",
+      "scenario": "memory-maintenance-survives-failures",
+      "prePatch": false
+    },
+    {
+      "file": "memory-maintenance-survives-failures--2.json",
+      "workflowId": "memory-consolidation:synthetic:memory-maintenance-survives-failures",
+      "runId": "6e351e2a-bc1f-4eab-b6c5-cb4ba314bfd2",
+      "workflowType": "memoryConsolidationWorkflow",
+      "scenario": "memory-maintenance-survives-failures",
+      "prePatch": false
+    },
+    {
+      "file": "memory-consolidation-retries-preparation--1.json",
+      "workflowId": "synthetic:memory-consolidation-retries-preparation",
+      "runId": "71ab345c-2172-4180-956f-d8d9286af926",
+      "workflowType": "memoryConsolidationWorkflow",
+      "scenario": "memory-consolidation-retries-preparation",
+      "prePatch": false
+    },
+    {
+      "file": "memory-mutation-retries--1.json",
+      "workflowId": "synthetic:memory-mutation-retries",
+      "runId": "88011946-e31e-4a58-a112-889595ceec93",
+      "workflowType": "memoryMutationWorkflow",
+      "scenario": "memory-mutation-retries",
+      "prePatch": false
+    }
+  ]
+}
