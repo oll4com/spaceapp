@@ -295,6 +295,8 @@ describe("roomAgentSupervisorWorkflow (real sandbox)", () => {
           workflowId: "wf:supervisor:legacy-continue"
         });
         await env.sleep("600 seconds");
+        const description = await handle.describe();
+        expect(description.runId).not.toBe(handle.firstExecutionRunId);
         await handle.cancel();
         await expect(handle.result()).rejects.toThrow();
       }
