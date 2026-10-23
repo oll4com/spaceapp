@@ -173,12 +173,12 @@ async function promptChoice(stdin, stdout, question, options, { defaultIndex = 0
   }
 }
 
-async function finalConfirmation(stdin, stdout, lines, { automated = false } = {}) {
+async function finalConfirmation(stdin, stdout, lines) {
   stdout.write("SpaceApp setup plan:\n");
   for (const line of lines) {
     stdout.write(`  - ${line}\n`);
   }
-  const approved = await promptYesNo(stdin, stdout, "Apply this plan?", { defaultYes: automated, answerKey: "confirm" });
+  const approved = await promptYesNo(stdin, stdout, "Apply this plan?", { defaultYes: false, answerKey: "confirm" });
   if (!approved) {
     stdout.write("Cancelled. No changes were made.\n");
   }
@@ -1072,7 +1072,7 @@ async function planInteractiveSetup({
   const answerEngine = controller?.answers?.engine;
   if (answerEngine !== undefined && !["docker", "podman"].includes(answerEngine)) throw new Error("--answers engine must be docker or podman.");
   let requestedEngine = selectedEngine({ flag: parsed.requestedEngine, answer: answerEngine, saved: rawExisting?.engine });
-  if (!requestedEngine && !rawExisting && autoDetectEngines) {
+  if (!requestedEngine && !rawExisting && autoDetectEngines && platform !== "win32") {
     const available = await detectEngines(execute);
     requestedEngine = available.docker || !available.podman ? "docker" : await promptChoice(stdin, stdout,
       "Docker is unavailable. Use rootless Podman?", [{ label: "Podman", value: "podman" }, { label: "Install Docker", value: "docker" }],
@@ -1161,7 +1161,7 @@ async function planInteractiveSetup({
       `${requestedEngine === "podman" ? "Podman installation: manual (never automatic)" : `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`}`,
       `Open browser afterwards: ${openBrowserChoice ? "yes" : "no"}`,
       `Future refreshes preserve data, workspaces, credentials, secrets, and persistent ${requestedEngine === "podman" ? "Podman" : "Docker"} volumes.`
-    ], { automated: controller?.nonInteractive === true && requestedEngine === "podman" });
+    ]);
     if (!approved) {
       return { exit: 0 };
     }
@@ -1241,7 +1241,7 @@ async function planInteractiveSetup({
       ? "Runtime: preserve/recreate (containers are recreated without touching data volumes)."
       : "Runtime: staged upgrade with a verified checkpoint; a failure after cutover preserves current data for recovery with doctor --fix.",
     `Preserved: data, workspaces, credentials, secrets, and persistent ${requestedEngine === "podman" ? "Podman" : "Docker"} volumes.`
-  ], { automated: controller?.nonInteractive === true && requestedEngine === "podman" });
+  ]);
   if (!approved) {
     return { exit: 0 };
   }

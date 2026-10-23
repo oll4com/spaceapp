@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable, Writable } from "node:stream";
 import { checkPodman, composeProviderSupported, delegatedControllers, detectEngines, podmanFacts, podmanMachineResize, selectedEngine } from "../src/engine.mjs";
-import { addUser, addWorkspace, composeCommand, createDefaultConfig, initializeInstallation, prepareInstallation, renderWorkspaceCompose, saveConfig, userSlug, validateConfig } from "../src/index.mjs";
+import { addUser, addWorkspace, commitInstallation, composeCommand, createDefaultConfig, initializeInstallation, prepareInstallation, renderWorkspaceCompose, saveConfig, userSlug, validateConfig } from "../src/index.mjs";
 import { executeCommand, run } from "../src/cli.mjs";
 import { inspectStoragePlan } from "../src/storage.mjs";
 
@@ -19,6 +19,7 @@ test("engine detection handles Docker, Podman, both, and neither", async () => {
     const found = await detectEngines(async (spec) => { calls.push(spec); return spec.command === "docker" ? Number(!docker) : Number(!podman); });
     assert.deepEqual(found, { docker, podman });
     assert.deepEqual(calls.map((call) => call.command), ["docker", "podman"]);
+    assert.ok(calls.every((call) => call.timeoutMs === 15000));
     assert.equal(selectedEngine({ available: found }), docker || !podman ? "docker" : "podman");
   }
 });
@@ -111,6 +112,37 @@ test("a missing Podman workspace reports the existing-directory requirement", as
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = { ...createDefaultConfig({ version: "1.1.6", profile: "small" }), engine: "podman" };
   await assert.rejects(addWorkspace(config, join(root, "missing")), /Workspace path must be an existing directory\./);
+});
+
+test("non-interactive Podman install on a TTY without confirm does not auto-approve the plan", async (t) => {
+  const root = await mkdtemp(join(fixtureParent, "spaceapp-podman-no-auto-approve-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stdin = Readable.from([]);
+  stdin.isTTY = true;
+  stdin.setRawMode = () => {};
+  let output = "";
+  const stdout = new Writable({ write(chunk, _encoding, done) { output += chunk; done(); } });
+  const code = await run(["install", "--engine", "podman", "--profile", "small", "--non-interactive", "--no-open"], {
+    env: { SPACEAPP_HOME: root }, platform: "linux", stdin, stdout,
+    stderr: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+    execute: async () => { throw new Error("Install must not execute commands without explicit confirmation."); },
+    inspectResources: async () => ({ cpuCount: 8, totalMemoryBytes: 16 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 })
+  });
+  assert.equal(code, 0);
+  assert.match(output, /Cancelled\. No changes were made\./);
+  await assert.rejects(readFile(join(root, "config.json"), "utf8"), /ENOENT/);
+});
+
+test("staged Podman install references the seccomp profile written to the project root", async (t) => {
+  const projectRoot = await mkdtemp(join(fixtureParent, "spaceapp-podman-project-"));
+  const stagedRoot = await mkdtemp(join(fixtureParent, "spaceapp-podman-staged-"));
+  t.after(() => Promise.all([rm(projectRoot, { recursive: true, force: true }), rm(stagedRoot, { recursive: true, force: true })]));
+  const config = { ...createDefaultConfig({ version: "1.1.6", profile: "small" }), engine: "podman" };
+  await commitInstallation(stagedRoot, config, { projectRoot });
+  const compose = await readFile(join(stagedRoot, "compose.workspaces.yml"), "utf8");
+  assert.ok(compose.includes(`seccomp=${join(projectRoot, "seccomp-cli.json")}`));
+  assert.ok(!compose.includes(join(stagedRoot, "seccomp-cli.json")));
+  assert.ok((await readFile(join(projectRoot, "seccomp-cli.json"), "utf8")).length > 0);
 });
 
 test("unattended Podman install requires an explicit confirmation answer", async (t) => {
