@@ -102,6 +102,38 @@ results and known failures are indexed there in `docs/quality/README.md`, and
 its `AGENTS.md` describes the guidance to read before changing session
 attachment, room retention, control, readiness, polling or deployment.
 
+## Temporal workflow tests and the replay determinism gate
+
+`apps/worker` runs every Temporal workflow on the real time-skipping test
+server (`@temporalio/testing`, `TestWorkflowEnvironment.createTimeSkipping`)
+with fully stubbed activities; see `apps/worker/tests/temporal-sandbox/`.
+These tests need no network, database, Docker, Temporal cluster or AI
+provider:
+
+```sh
+npm test -w @space/worker
+```
+
+The same directory contains the replay determinism gate
+(`apps/worker/tests/temporal-sandbox/replay-gate.test.ts`). It replays the
+synthetic workflow histories recorded under
+`apps/worker/tests/fixtures/workflow-histories/` through
+`Worker.runReplayHistories`, so a workflow change that is not replay
+compatible fails CI with `DeterminismViolationError`. A negative test also
+replays one history against a deliberately incompatible workflow variant
+to prove the gate detects it.
+
+Re-record histories only when a workflow legitimately changes its command
+sequence, for example after shipping a new `patched()` change:
+
+```sh
+npm run temporal:record-histories -w @space/worker
+```
+
+Never re-record just to make a failing replay pass - that is exactly the
+class of non-deterministic workflow change the gate exists to catch. The
+fixtures README documents the rules.
+
 Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.
