@@ -7,7 +7,7 @@ export function continuationFixture(actionType: "OPEN_TYPES" | "CONFIGURE_PANE" 
   const pane = store.getOrCreateRoomAgentPane(room.id);
   const session = store.createSpaceAgentSession({ paneId: pane.id, roomId: room.id, title: "Room Agent",
     selectedProviderId: null, selectedModelId: null, selectedModelConfigId: null,
-    selectedProviderName: null, selectedModelName: null, selectedReasoningKey: null });
+    selectedProviderName: null, selectedModelName: null, selectedReasoningKey: null, selectedToolIds: null });
   function enqueue(suffix: string, prompt = "Open CLI and Chat, then send a story to both.") {
     const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: "mission:continuation", turn: {
       roomId: room.id, paneId: pane.id, prompt, roomAgentOperatorRequest: prompt,
