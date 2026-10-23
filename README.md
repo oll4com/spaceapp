@@ -92,7 +92,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 - **Hardware**:
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
-- **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Docker or Podman**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux), or offers to use an existing Podman 5+ setup on Linux and macOS (`npx --yes run-spaceapp@latest install --engine podman`).
 
 ### Run the Installation Command
 
@@ -183,6 +183,7 @@ By default, the SpaceApp containers get no bind mount of your host filesystem: a
 
 - `--plan`: Dry-run mode. Displays what actions would be executed without making any changes.
 - `--profile <auto|small|medium|large>`: Explicitly select the resource allocation profile.
+- `--engine <docker|podman>`: Select the container engine on `install` (rootless Podman 5+ supported on Linux and macOS; saved in `config.json` for all subsequent commands).
 - `--non-interactive`: Automated headless execution for CI/CD or scripted environments.
 - `--answers <json|path>`: Pre-seeds wizard responses for silent installation.
 - `--json`: Outputs structured JSON data for scripting and integration.
@@ -300,6 +301,21 @@ Ensure your user is in the `docker` group. Run the diagnostic repair tool:
 npx --yes run-spaceapp@latest doctor --fix
 ```
 Log out and log back in for group changes to take effect.
+</details>
+
+<details>
+<summary><b>Can I run SpaceApp with rootless Podman instead of Docker?</b></summary>
+<br>
+Yes, on Linux and macOS with Podman 5 or newer (`podman compose` backed by `docker-compose` v2 or `podman-compose`):
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+The selected engine is saved in `config.json` and used automatically by all subsequent commands.
+- **Linux rootless**: Requires cgroup v2 (`cpu` and `memory` controllers delegated for resource limits). Registered workspaces automatically apply SELinux `:z` labels and `userns_mode: "keep-id:uid=10001,gid=10001"`.
+- **macOS (`podman machine`)**: Requires a running `podman machine` sized for the selected profile (`podman machine stop && podman machine set --cpus ... --memory ... --disk-size ... && podman machine start`).
+- **Limits**: `--engine podman` is not supported on Windows (`win32`), `--access host-root` is refused on Podman, and switching engines in place on an existing installation requires `backup` / `restore` because Docker and Podman do not share volumes.
 </details>
 
 <details>

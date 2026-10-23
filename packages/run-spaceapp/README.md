@@ -114,9 +114,40 @@ before enabling it:
 npx --yes run-spaceapp@latest install --access host-root
 ```
 
-Host-root is supported only on Linux. Run
+Host-root is supported only on Linux with Docker. Run
 `npx --yes run-spaceapp@latest install --access isolated` to remove the host
 mount while keeping SpaceApp data and volumes.
+
+### Rootless Podman Support (Linux & macOS)
+
+On Linux and macOS, you can run SpaceApp on rootless Podman 5 or newer instead
+of Docker:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+If Docker is missing on Linux or macOS and Podman 5+ with `podman compose` is
+already ready, interactive `install` offers to use Podman instead of installing
+Docker. The selected engine (`"docker"` or `"podman"`) is saved in `config.json`
+and used automatically by all subsequent commands (`up`, `down`, `status`,
+`logs`, `update`, `rollback`, `backup`, `restore`, `doctor`, `repair`,
+`provider install`, `credentials`, `owner`, `uninstall`, and `factory-reset`).
+
+- **Linux rootless**: Requires Podman >= 5 with `podman compose` (`docker-compose`
+  v2 or `podman-compose`) and cgroup v2 (`cpu` and `memory` controllers delegated
+  for resource limits). Registered workspaces (`workspace add`) and internal
+  mounts automatically configure SELinux shared labels (`:z`) and
+  `userns_mode: "keep-id:uid=10001,gid=10001"` so container UID `10001` maps to
+  your host user without root privileges.
+- **macOS (`podman machine`)**: Requires a running Podman machine with enough
+  CPU, RAM, and disk for the chosen profile. If the machine is undersized, the
+  launcher prints the exact `podman machine stop && podman machine set --cpus ... --memory ... --disk-size ... && podman machine start`
+  command needed to resize it.
+- **Podman limitations**:
+  - Windows (`win32`) is not supported with `--engine podman`; use Docker Desktop on Windows 11.
+  - `--access host-root` is refused on Podman because rootless user namespaces do not map host root `/`.
+  - Switching engines in place on an existing installation is refused because Docker and Podman maintain separate volume stores. To migrate engines, run `npx --yes run-spaceapp@latest backup`, `npx --yes run-spaceapp@latest uninstall --purge-data`, `npx --yes run-spaceapp@latest install --engine podman`, and `npx --yes run-spaceapp@latest restore <archive>`.
 
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in

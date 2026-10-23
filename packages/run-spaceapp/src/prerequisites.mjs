@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parseEngineInfo } from "./index.mjs";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
@@ -136,8 +137,34 @@ export async function ensureDockerAvailable({
   scheduleResume = scheduleWindowsInstallResume,
   confirmRestart = confirmWindowsRestart
 }) {
-  if (await dockerIsReady(execute)) {
+  const requestedEngine = installArgs?.requestedEngine ?? installArgs?.engine;
+  if (requestedEngine === "podman") {
+    return ensurePodmanAvailable({
+      platform,
+      stdin,
+      stdout,
+      stderr,
+      execute
+    });
+  }
+  const dockerState = await checkDockerState(execute);
+  if (dockerState.ready) {
     return { code: 0, reexecuted: false };
+  }
+  if (
+    !requestedEngine &&
+    platform !== "win32" &&
+    dockerState.cliMissing &&
+    (Boolean(stdin?.isTTY) || Boolean(installArgs?.offerPodmanFallback) || stdin?._spaceappPromptController?.answers?.engine !== undefined)
+  ) {
+    if (await podmanIsReady(execute, platform, { requireVersionOutput: !installArgs?.offerPodmanFallback })) {
+      stdout.write("Docker Engine was not found, but Podman is ready on this host.\n");
+      const usePodman = await confirmPodmanFallback({ stdin, stdout });
+      if (usePodman) {
+        stdout.write("Using Podman as the container engine.\n");
+        return { code: 0, reexecuted: false, engine: "podman" };
+      }
+    }
   }
   if (platform === "win32") {
     return ensureWindowsDocker({
@@ -630,16 +657,60 @@ async function confirmWindowsRestart({ stdin, stdout, question }) {
   return confirmQuestion({ stdin, stdout, question });
 }
 
-async function confirmQuestion({ stdin, stdout, question }) {
+async function confirmQuestion({ stdin, stdout, question, defaultYes = false }) {
   const readline = createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) });
   try {
-    const answer = await readline.question(question);
-    return /^(?:y|yes)$/i.test(answer.trim());
+    const answer = (await readline.question(question)).trim();
+    if (answer === "") {
+      return defaultYes;
+    }
+    return /^(?:y|yes|true|podman)$/i.test(answer);
   } catch {
     return false;
   } finally {
     readline.close();
   }
+}
+
+async function confirmPodmanFallback({ stdin, stdout }) {
+  const prompt = "Use Podman instead of installing Docker? [Y/n] ";
+  if (stdin?._spaceappPromptController) {
+    const answer = String(await stdin._spaceappPromptController.readLine(prompt, {
+      mask: false,
+      answerKey: "engine",
+      defaultValue: "y"
+    })).trim().toLowerCase();
+    if (answer === "" || answer === "y" || answer === "yes" || answer === "true" || answer === "podman") {
+      return true;
+    }
+    return false;
+  }
+  return confirmQuestion({ stdin, stdout, question: prompt, defaultYes: true });
+}
+
+async function captureOutput(execute, spec) {
+  let output = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      if (output.length < 1024 * 1024) output += chunk.toString();
+      callback();
+    }
+  });
+  const code = await execute(spec, { stdout, stderr: null });
+  return { code, output: output.trim() };
+}
+
+async function checkDockerState(execute) {
+  if (await execute({ command: "docker", args: ["--version"] }, { stdout: null, stderr: null }) !== 0) {
+    return { ready: false, cliMissing: true };
+  }
+  if (await execute({ command: "docker", args: ["compose", "version"] }, { stdout: null, stderr: null }) !== 0) {
+    return { ready: false, cliMissing: false };
+  }
+  if (await execute({ command: "docker", args: ["info"] }, { stdout: null, stderr: null }) !== 0) {
+    return { ready: false, cliMissing: false };
+  }
+  return { ready: true, cliMissing: false };
 }
 
 async function dockerCliAndComposeAreAvailable(execute) {
@@ -655,16 +726,109 @@ async function dockerCliAndComposeAreAvailable(execute) {
 }
 
 async function dockerIsReady(execute) {
-  for (const spec of [
-    { command: "docker", args: ["--version"] },
-    { command: "docker", args: ["compose", "version"] },
-    { command: "docker", args: ["info"] }
-  ]) {
-    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
-      return false;
-    }
+  return (await checkDockerState(execute)).ready;
+}
+
+export async function podmanIsReady(execute, platform = process.platform, { requireVersionOutput = false } = {}) {
+  if (platform === "win32") {
+    return false;
+  }
+  const versionProbe = await captureOutput(execute, { command: "podman", args: ["--version"] });
+  if (versionProbe.code !== 0) {
+    return false;
+  }
+  if (requireVersionOutput && !/\b(?:[5-9]|\d{2,})\.\d+/.test(versionProbe.output)) {
+    return false;
+  }
+  if (await execute({ command: "podman", args: ["compose", "version"] }, { stdout: null, stderr: null }) !== 0) {
+    return false;
+  }
+  const infoProbe = await captureOutput(execute, { command: "podman", args: ["info"] });
+  if (infoProbe.code !== 0) {
+    return false;
+  }
+  const info = parseEngineInfo({
+    engine: "podman",
+    versionOutput: versionProbe.output,
+    infoOutput: infoProbe.output,
+    platform
+  });
+  if (info.majorVersion !== null && info.majorVersion < 5) {
+    return false;
+  }
+  if (platform === "linux" && info.cgroupVersion === "v1") {
+    return false;
+  }
+  if (platform === "linux" && (!info.limitsDelegated.cpu || !info.limitsDelegated.memory)) {
+    return false;
   }
   return true;
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stdin = process.stdin,
+  stderr = process.stderr,
+  execute
+}) {
+  if (platform === "win32") {
+    stderr.write("Podman is not supported on Windows. Use --engine docker on Windows.\n");
+    return { code: 1, reexecuted: false };
+  }
+  const versionProbe = await captureOutput(execute, { command: "podman", args: ["--version"] });
+  if (versionProbe.code !== 0) {
+    stderr.write(
+      platform === "darwin"
+        ? "Podman (>= 5) is required when using --engine podman, and podman was not found on PATH. Install Podman (`brew install podman`), run `podman machine init && podman machine start`, and rerun the command.\n"
+        : "Podman (>= 5) is required when using --engine podman, and podman was not found on PATH. Install Podman 5.0 or newer with Compose support and rerun the command.\n"
+    );
+    return { code: versionProbe.code, reexecuted: false };
+  }
+  const composeCode = await execute(
+    { command: "podman", args: ["compose", "version"] },
+    { stdin, stdout: null, stderr: null }
+  );
+  if (composeCode !== 0) {
+    stderr.write(
+      "Podman Compose (`podman compose`) is required when using --engine podman. Install docker-compose v2 or podman-compose so `podman compose version` succeeds, then rerun the command.\n"
+    );
+    return { code: composeCode, reexecuted: false };
+  }
+  const infoProbe = await captureOutput(execute, { command: "podman", args: ["info"] });
+  if (infoProbe.code !== 0) {
+    stderr.write(
+      platform === "darwin"
+        ? "Podman is installed, but the Podman machine is not running or not reachable. Run `podman machine init && podman machine start` and rerun the command.\n"
+        : "Podman is installed, but `podman info` failed. Verify rootless Podman (`subuid`/`subgid` and user runtime directory) and rerun the command.\n"
+    );
+    return { code: infoProbe.code, reexecuted: false };
+  }
+  const info = parseEngineInfo({
+    engine: "podman",
+    versionOutput: versionProbe.output,
+    infoOutput: infoProbe.output,
+    platform
+  });
+  if (info.majorVersion !== null && info.majorVersion < 5) {
+    stderr.write(
+      `Podman >= 5 is required (found ${info.version || "under 5.0"}). Upgrade Podman to 5.0 or newer and rerun the command.\n`
+    );
+    return { code: 1, reexecuted: false };
+  }
+  if (platform === "linux" && info.cgroupVersion === "v1") {
+    stderr.write(
+      "Rootless Podman on Linux requires cgroup v2, capability was reported as cgroup v1. Enable unified cgroup v2 hierarchy on the host and rerun the command.\n"
+    );
+    return { code: 1, reexecuted: false };
+  }
+  if (platform === "linux" && (!info.limitsDelegated.cpu || !info.limitsDelegated.memory)) {
+    const missing = [!info.limitsDelegated.cpu && "cpu", !info.limitsDelegated.memory && "memory"].filter(Boolean).join(", ");
+    stderr.write(
+      `Rootless Podman requires cgroup v2 ${missing} controller delegation to enforce service limits. Delegate cpu and memory controllers via systemd user slice (\`Delegate=cpu cpuset io memory pids\`) and rerun the command.\n`
+    );
+    return { code: 1, reexecuted: false };
+  }
+  return { code: 0, reexecuted: false };
 }
 
 async function installLinuxDockerEngine({

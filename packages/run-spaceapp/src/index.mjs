@@ -116,6 +116,9 @@ const ALL_PROVIDERS = new Set(Object.values(PROVIDERS).flat());
 export const CLI_SETTINGS_FILES = Object.freeze([
   "claude/settings.json", "claude/.claude.json", "codex/config.toml", "opencode/config/opencode/opencode.json"
 ]);
+export const SUPPORTED_ENGINES = Object.freeze(["docker", "podman"]);
+export const DEFAULT_ENGINE = "docker";
+const ENGINE_SET = new Set(SUPPORTED_ENGINES);
 const CONFIG_KEYS = new Set([
   "schemaVersion",
   "version",
@@ -125,6 +128,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -192,6 +196,168 @@ export function resolveInstallAccessMode(requestedMode, existingMode = "isolated
     return requestedMode;
   }
   throw new Error("Install access mode must be isolated or host-root.");
+}
+
+export function resolveContainerEngine(requestedEngine, existingEngine = DEFAULT_ENGINE) {
+  const fallback = ENGINE_SET.has(existingEngine) ? existingEngine : DEFAULT_ENGINE;
+  if (requestedEngine === undefined || requestedEngine === null || requestedEngine === "") {
+    return fallback;
+  }
+  if (ENGINE_SET.has(requestedEngine)) {
+    return requestedEngine;
+  }
+  throw new Error("Container engine must be docker or podman.");
+}
+
+export function podmanMachineResizeHint(profile = "small") {
+  const requirements = PROFILE_REQUIREMENTS[profile] ?? PROFILE_REQUIREMENTS.small;
+  const cpus = requirements.cpuCount;
+  const memoryMiB = Math.ceil(requirements.memoryBytes / (1024 ** 2)) + 1024;
+  const diskGiB = Math.max(20, Math.ceil(requirements.freshDiskBytes / (1024 ** 3)) * 2);
+  return `Resize the Podman machine with: podman machine stop && podman machine set --cpus ${cpus} --memory ${memoryMiB} --disk-size ${diskGiB} && podman machine start`;
+}
+
+export function parseEngineInfo({
+  engine = DEFAULT_ENGINE,
+  versionOutput = "",
+  infoOutput = "",
+  platform = process.platform
+} = {}) {
+  const resolvedEngine = resolveContainerEngine(engine);
+  const rawVersion = String(versionOutput || "");
+  const rawInfo = String(infoOutput || "");
+  let parsedJson = null;
+  if (rawInfo.trim().startsWith("{")) {
+    try {
+      parsedJson = JSON.parse(rawInfo);
+    } catch {
+      parsedJson = null;
+    }
+  }
+
+  let version =
+    (typeof parsedJson?.version?.Version === "string" && parsedJson.version.Version.trim()) ||
+    (typeof parsedJson?.ServerVersion === "string" && parsedJson.ServerVersion.trim()) ||
+    null;
+  if (!version) {
+    const versionMatch =
+      /(?:podman|docker)\s+version\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.+_-]+)?)/i.exec(rawVersion) ||
+      /^\s*(?:Server\s+)?Version:\s*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.+_-]+)?)\s*$/im.exec(rawInfo) ||
+      /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.+_-]+)?)\b/.exec(rawVersion);
+    if (versionMatch) {
+      version = versionMatch[1];
+    }
+  }
+  const majorVersion = version ? Number(version.split(".")[0]) : null;
+
+  let rootless;
+  if (typeof parsedJson?.host?.security?.rootless === "boolean") {
+    rootless = parsedJson.host.security.rootless;
+  } else if (Array.isArray(parsedJson?.SecurityOptions)) {
+    rootless = parsedJson.SecurityOptions.some((entry) => String(entry).toLowerCase().includes("rootless"));
+  } else {
+    const rootlessYaml = /^\s*rootless:\s*(true|false)\s*$/im.exec(rawInfo);
+    if (rootlessYaml) {
+      rootless = rootlessYaml[1].toLowerCase() === "true";
+    } else if (/name=rootless/i.test(rawInfo)) {
+      rootless = true;
+    } else {
+      rootless = resolvedEngine === "podman";
+    }
+  }
+  const mode = rootless ? "rootless" : "rootful";
+
+  let cgroupVersion = null;
+  const rawCgroup =
+    parsedJson?.host?.cgroupVersion ??
+    parsedJson?.CgroupVersion ??
+    /^\s*(?:cgroupVersion|Cgroup Version):\s*(v?[12])\s*$/im.exec(rawInfo)?.[1] ??
+    null;
+  if (rawCgroup !== null && rawCgroup !== undefined) {
+    const normalized = String(rawCgroup).trim().toLowerCase();
+    if (normalized === "2" || normalized === "v2") {
+      cgroupVersion = "v2";
+    } else if (normalized === "1" || normalized === "v1") {
+      cgroupVersion = "v1";
+    }
+  }
+  if (!cgroupVersion) {
+    cgroupVersion = "v2";
+  }
+
+  let cgroupControllers = null;
+  if (Array.isArray(parsedJson?.host?.cgroupControllers)) {
+    cgroupControllers = parsedJson.host.cgroupControllers.map((entry) => String(entry).trim().toLowerCase()).filter(Boolean);
+  } else {
+    const blockMatch = /^\s*cgroupControllers:\s*(?:\[\s*\]|\r?\n((?:\s*-\s*[a-z0-9_.-]+\s*(?:\r?\n|$))*))/im.exec(rawInfo);
+    if (blockMatch) {
+      cgroupControllers = blockMatch[1]
+        ? Array.from(blockMatch[1].matchAll(/^\s*-\s*([a-z0-9_.-]+)\s*$/gim), (m) => m[1].toLowerCase())
+        : [];
+    }
+  }
+
+  let cpuDelegated = true;
+  let memoryDelegated = true;
+  let pidsDelegated = true;
+  if (Array.isArray(cgroupControllers)) {
+    // On macOS podman machine, the Linux VM may run rootless or rootful with cgroup v2;
+    // when cgroupControllers is explicitly reported by the engine, verify cpu and memory.
+    cpuDelegated = cgroupControllers.includes("cpu");
+    memoryDelegated = cgroupControllers.includes("memory");
+    pidsDelegated = cgroupControllers.includes("pids");
+  } else {
+    if (parsedJson?.CPUShares === false || parsedJson?.CPUSet === false || /WARNING:\s*No cpu cfs quota support/i.test(rawInfo)) {
+      cpuDelegated = false;
+    }
+    if (parsedJson?.MemoryLimit === false || /WARNING:\s*No memory limit support/i.test(rawInfo)) {
+      memoryDelegated = false;
+    }
+    if (resolvedEngine === "podman" && rootless && cgroupVersion === "v1") {
+      cpuDelegated = false;
+      memoryDelegated = false;
+      pidsDelegated = false;
+    }
+  }
+
+  const resolvedControllers = Array.isArray(cgroupControllers)
+    ? cgroupControllers
+    : [
+        ...(cpuDelegated ? ["cpu"] : []),
+        ...(memoryDelegated ? ["memory"] : []),
+        ...(pidsDelegated ? ["pids"] : [])
+      ];
+
+  const issues = [];
+  if (resolvedEngine === "podman" && Number.isFinite(majorVersion) && majorVersion < 5) {
+    issues.push(`Podman ${version} is unsupported; Podman 5.0 or newer is required.`);
+  }
+  if (resolvedEngine === "podman" && rootless && cgroupVersion === "v1") {
+    issues.push("cgroup v1 detected; rootless Podman requires cgroup v2 to enforce service CPU and memory limits.");
+  }
+  if (!cpuDelegated || !memoryDelegated) {
+    const missing = [!cpuDelegated && "cpu", !memoryDelegated && "memory"].filter(Boolean).join(", ");
+    issues.push(
+      `cgroup ${missing} limit controller is not delegated (${platform === "darwin" && resolvedEngine === "podman" ? "check podman machine cgroup v2 configuration" : "delegate cpu and memory in systemd user slice: Delegate=cpu cpuset io memory pids"}); Compose cpus/mem_limit cannot be applied.`
+    );
+  }
+
+  return {
+    engine: resolvedEngine,
+    version: version || "unknown",
+    majorVersion,
+    rootless,
+    mode,
+    cgroupVersion,
+    cgroupControllers: resolvedControllers,
+    limitsDelegated: {
+      cpu: cpuDelegated,
+      memory: memoryDelegated,
+      pids: pidsDelegated
+    },
+    ok: issues.length === 0,
+    issues
+  };
 }
 
 export function versionTuple(version) {
@@ -270,7 +436,12 @@ export async function inspectSystemResources(root) {
   };
 }
 
-export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
+export function installResourceChecks(resources, profile = "small", {
+  requiredDiskBytes,
+  operation = "fresh",
+  engine = DEFAULT_ENGINE,
+  platform = process.platform
+} = {}) {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
@@ -279,28 +450,45 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
   }
   const requirements = PROFILE_REQUIREMENTS[profile];
   if (!requirements) throw new Error("Unknown installation profile.");
+  const resolvedEngine = resolveContainerEngine(engine);
+  const engineLabel = resolvedEngine === "podman" ? "Podman" : "Docker";
+  const resizeHint = resolvedEngine === "podman" && platform === "darwin"
+    ? `. ${podmanMachineResizeHint(profile)}`
+    : "";
   const minFreeDisk = requiredDiskBytes ?? (operation === "fresh" ? requirements.freshDiskBytes : 512 * 1024 ** 2);
   const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
+  const requiredEngineCpu = resolvedEngine === "podman" ? requirements.cpuCount : 4;
   return [
     {
       name: "CPU",
       ok: cpuCount >= requirements.cpuCount,
-      detail: `${cpuCount} available; ${requirements.cpuCount} required`
+      detail: `${cpuCount} available; ${requirements.cpuCount} required${cpuCount < requirements.cpuCount ? resizeHint : ""}`
     },
     {
       name: "Memory",
       ok: totalMemoryBytes >= requirements.memoryBytes,
-      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${formatGibibytes(requirements.memoryBytes)} GiB usable${requirements.memoryBytes === 7 * 1024 ** 3 ? " (8 GB-class system)" : ""} required`
+      detail: `${formatGibibytes(totalMemoryBytes)} GiB available; ${formatGibibytes(requirements.memoryBytes)} GiB usable${requirements.memoryBytes === 7 * 1024 ** 3 ? " (8 GB-class system)" : ""} required${totalMemoryBytes < requirements.memoryBytes ? resizeHint : ""}`
     },
     {
       name: "Free disk",
       ok: freeDiskBytes >= minFreeDisk,
-      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
+      detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}${freeDiskBytes < minFreeDisk ? resizeHint : ""}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
-      detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
-      detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
+    ...(resources.engineMemoryBytes > 0 ? [{
+      name: `${engineLabel} memory`,
+      ok: resources.engineMemoryBytes >= engineMemoryBytes,
+      detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}${resources.engineMemoryBytes < engineMemoryBytes ? `. ${podmanMachineResizeHint(profile)}` : ""}`
+    }] : []),
+    ...(resources.engineCpuCount > 0 ? [{
+      name: `${engineLabel} CPU`,
+      ok: resources.engineCpuCount >= requiredEngineCpu,
+      detail: `${resources.engineCpuCount} allocated; ${requiredEngineCpu} required${resources.engineCpuCount < requiredEngineCpu ? `. ${podmanMachineResizeHint(profile)}` : ""}`
+    }] : []),
+    ...(resolvedEngine === "podman" && resources.engineDiskBytes > 0 ? [{
+      name: "Podman disk",
+      ok: resources.engineDiskBytes >= minFreeDisk,
+      detail: `${formatGibibytes(resources.engineDiskBytes)} GiB allocated; ${formatGibibytes(minFreeDisk)} GiB required${resources.engineDiskBytes < minFreeDisk ? `. ${podmanMachineResizeHint(profile)}` : ""}`
+    }] : [])
   ];
 }
 
@@ -308,13 +496,15 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  const resolvedEngine = engine === undefined ? undefined : resolveContainerEngine(engine);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -324,6 +514,7 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    ...(resolvedEngine === undefined ? {} : { engine: resolvedEngine }),
     companionsEnabled,
     optionalModules: "none",
     workspaces: []
@@ -363,6 +554,12 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !ENGINE_SET.has(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Host-root access (--access host-root) is not supported with Podman because host-root relies on rootful container semantics that do not apply to rootless Podman.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -673,17 +870,51 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
+  const isPodman = resolveContainerEngine(config.engine) === "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman ? [
+      "        bind:",
+      "          selinux: z"
+    ] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
   if (config.users === undefined) {
-    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
+    if (!isPodman) {
+      return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
+    }
+    const coreVolumes = [
+      "      - ./backups:/backups:z",
+      ...mounts
+    ];
+    const cliVolumes = [
+      "      - ./secrets/providers:/run/spaceapp-secrets/providers:ro,z",
+      ...mounts
+    ];
+    return [
+      "services:",
+      "  spaceapp-core:",
+      '    user: "0:0"',
+      '    userns_mode: "keep-id:uid=10001,gid=10001"',
+      "    volumes:",
+      ...coreVolumes,
+      "  spaceapp-cli:",
+      '    user: "0:0"',
+      '    userns_mode: "keep-id:uid=10001,gid=10001"',
+      "    volumes:",
+      ...cliVolumes,
+      ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
+      "  spaceapp-browser:",
+      '    profiles: ["standard"]',
+      '    user: "0:0"',
+      '    userns_mode: "keep-id:uid=10001,gid=10001"',
+      ""
+    ].join("\n");
   }
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
@@ -785,6 +1016,7 @@ export function composeCommand(action, root, options = {}) {
   validateHome(root);
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
+  const engine = resolveContainerEngine(options.engine);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
   const base = [
@@ -905,7 +1137,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -952,11 +1184,36 @@ export async function writeRuntimeFiles(root, config) {
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
 }
 
+export function assertEngineNotSwitched(existingConfigOrEngine, requestedEngine) {
+  if (
+    existingConfigOrEngine === undefined ||
+    existingConfigOrEngine === null ||
+    requestedEngine === undefined ||
+    requestedEngine === null ||
+    requestedEngine === ""
+  ) {
+    return;
+  }
+  const existingEngine =
+    typeof existingConfigOrEngine === "object"
+      ? existingConfigOrEngine.engine
+      : existingConfigOrEngine;
+  const current = resolveContainerEngine(existingEngine);
+  const target = resolveContainerEngine(requestedEngine);
+  if (current !== target) {
+    throw new Error(
+      `Cannot switch container engine from "${current}" to "${target}" on an existing installation because Docker volumes are not visible to Podman (and vice versa). ` +
+      `To migrate your data, run "${UNIVERSAL_COMMAND} backup" on the current "${current}" installation, then "${UNIVERSAL_COMMAND} uninstall --purge-data" (or choose a new SPACEAPP_HOME), install with "--engine ${target}", and run "${UNIVERSAL_COMMAND} restore".`
+    );
+  }
+}
+
 export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -969,8 +1226,10 @@ export async function prepareInstallation(root, {
     ? undefined
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
   let config;
+  let existingInstalled = false;
   try {
     config = await loadConfig(root);
+    existingInstalled = true;
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -979,8 +1238,12 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine
     });
+  }
+  if (existingInstalled && engine !== undefined) {
+    assertEngineNotSwitched(config.engine, engine);
   }
   if (config.version !== version) {
     config = {
@@ -995,6 +1258,12 @@ export async function prepareInstallation(root, {
   const resolvedAccessMode = resolveInstallAccessMode(accessMode, config.accessMode);
   if (config.accessMode !== resolvedAccessMode) {
     config = { ...config, accessMode: resolvedAccessMode };
+  }
+  if (engine !== undefined) {
+    const resolvedEngine = resolveContainerEngine(engine, config.engine);
+    if (config.engine !== resolvedEngine) {
+      config = { ...config, engine: resolvedEngine };
+    }
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };

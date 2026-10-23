@@ -147,11 +147,50 @@ npx --yes run-spaceapp@latest install --access isolated
 ```
 
 Host-root is supported only on Linux; the launcher refuses it on macOS and
-Windows.
+Windows, and refuses it when `--engine podman` is selected.
 
 The `npx` command is the universal one-command installer. To retain a global
 launcher for later operations, optionally run `npm install -g run-spaceapp`;
 this is not required for the first install.
+
+## Podman support
+
+On Linux and macOS, SpaceApp supports rootless Podman 5 or newer as an
+alternative to Docker:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+If `install` is run without `--engine` on Linux or macOS when Docker is missing
+and Podman 5+ with `podman compose` is ready, the interactive installer offers
+to use Podman instead of installing Docker. The chosen engine (`"docker"` or
+`"podman"`) is saved in `config.json` and used automatically by every subsequent
+launcher command (`up`, `down`, `status`, `logs`, `update`, `rollback`,
+`backup`, `restore`, `doctor`, `doctor --fix`, `repair`, `provider install`,
+`credentials`, `owner`, `uninstall`, and `factory-reset`).
+
+- **Compose (`podman compose`)**: Uses `podman compose`, which requires Podman
+  5 or newer with `docker-compose` v2 or `podman-compose` installed.
+- **Linux rootless**: Requires cgroup v2 with `cpu` and `memory` controllers
+  delegated to the user slice so Compose CPU and memory limits can be applied.
+  Registered workspaces (`workspace add`, both read-write and `--read-only`) and
+  internal bind mounts automatically include SELinux shared labels (`:z`) and
+  configure `user: "0:0"` with `userns_mode: "keep-id:uid=10001,gid=10001"` so
+  container UID `10001` maps to the host user under enforcing SELinux.
+- **macOS (`podman machine`)**: Requires a running `podman machine` with enough
+  CPU, memory, and disk for the chosen profile (`small`, `medium`, or `large`).
+  If the machine is smaller than the profile requires, the launcher prints the
+  exact `podman machine stop && podman machine set --cpus ... --memory ... --disk-size ... && podman machine start`
+  resize command.
+- **Diagnostics (`doctor` and `support-bundle`)**: Reports the active engine,
+  version, rootless vs. rootful mode, cgroup version (`v2` vs. `v1`), and
+  whether CPU and memory limits are delegated, failing early with a clear fix
+  when cgroup v2 or controller delegation is missing on rootless Podman.
+- **Limitations**:
+  - Windows (`win32`) is not supported with `--engine podman`; use Docker Desktop on Windows 11.
+  - `--access host-root` is refused on Podman because rootless user namespaces do not provide host-root filesystem mapping.
+  - Switching engines in place (`install --engine podman` on an existing Docker installation or vice versa) is refused because Docker volumes are not visible to Podman. To migrate engines, run `npx --yes run-spaceapp@latest backup`, `npx --yes run-spaceapp@latest uninstall --purge-data`, `npx --yes run-spaceapp@latest install --engine podman`, and `npx --yes run-spaceapp@latest restore <archive>`.
 
 ## Disk usage
 
