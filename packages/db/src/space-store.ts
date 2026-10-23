@@ -10550,7 +10550,7 @@ export class PostgresSpaceStore implements SpaceStore {
             updated_at,
             ended_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $20, NULL)
           ON CONFLICT (session_id)
           DO UPDATE SET
             pane_id = EXCLUDED.pane_id,
@@ -10617,7 +10617,8 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.status ?? "IDLE",
           parsed.statusReason ?? null,
           isActive,
-          timestamp
+          parsed.startedAt ?? timestamp,
+          parsed.updatedAt ?? parsed.startedAt ?? timestamp
         ]
       );
       const stored = mapPaneCliSession(firstOrNotFound(result.rows, `CLI session ${sessionId} was not stored.`));
