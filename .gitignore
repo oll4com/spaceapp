@@ -52,3 +52,6 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Contributor dev stack state
+.dev-stack/

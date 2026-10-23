@@ -50,6 +50,33 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+After `ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci`, start the complete SpaceApp stack from source with hot reload:
+
+```sh
+npm run dev:stack
+```
+
+This command:
+1. Starts digest-pinned PostgreSQL (`pgvector`) and Temporal containers in Docker using an isolated Compose project and `.dev-stack/` state directory (so it never collides with an installed SpaceApp on ports `4910`/`4911`).
+2. Generates mode `0600` secrets inside `.dev-stack/secrets/` and runs database migrations (`npm run db:migrate`).
+3. Installs the pinned `opencode-ai` version from the root `Dockerfile` into `.dev-stack/cli-state/vendor/opencode` and creates the local `opencode-vscode-parity` wrapper.
+4. Starts `packages/cli-host`, `@space/api` (`tsx watch`), `@space/worker` (`tsx watch`), and the Vite web dev server (`@space/web`) bound strictly to `127.0.0.1` (default web port `14911`, API port `14910`, Postgres `15432`, Temporal `17233`; override with `SPACE_DEV_WEB_PORT`, `SPACE_DEV_API_PORT`, `SPACE_DEV_POSTGRES_PORT`, `SPACE_DEV_TEMPORAL_PORT`).
+5. Prints the local web URL (`http://127.0.0.1:14911`) and the one-time owner setup token.
+
+To stop the stack or wipe its isolated containers, volumes, and `.dev-stack/` directory:
+
+```sh
+npm run dev:stack -- down
+npm run dev:stack -- reset
+```
+
+Platform notes:
+- **Linux:** Runs directly against local Docker Engine or rootless Docker.
+- **macOS:** Start Docker Desktop or Colima (`colima start --cpu 4 --memory 8`) before running `npm run dev:stack`.
+- **Windows 11 (WSL2):** Run `npm run dev:stack` inside your WSL2 Linux distribution with Docker Desktop WSL2 integration enabled.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
