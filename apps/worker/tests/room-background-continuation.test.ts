@@ -1,11 +1,50 @@
 import { describe, expect, it, vi } from "vitest";
-import { roomAgentSupervisorInputSchema } from "@space/contracts";
+import { formatTraceparent, parseTraceparent, roomAgentSupervisorInputSchema } from "@space/contracts";
 import { continuationEvidence, discardSupervisorTurn, finishSupervisorTurn, prepareBackgroundContinuation, supervisorTurnState } from "../src/room-background-continuation.js";
+import { runWithActivityTraceContext } from "../src/activity-trace-context.js";
 
 import { continuationFixture } from "./room-continuation-fixture.js";
 import { runCodexAppServerTurn } from "../src/activities.js";
 
 describe("durable background continuation", () => {
+  it("starts a new trace linked to the actual workflow and reuses it after an activity retry", async () => {
+    const c = continuationFixture();
+    const prior = { traceId: "1".repeat(32), spanId: "2".repeat(16), flags: "01" };
+    const stale = { traceId: "3".repeat(32), spanId: "4".repeat(16) };
+    c.initial.queueItem.turn.traceparent = formatTraceparent(stale.traceId, stale.spanId);
+    c.initial.queueItem.turn.traceLinks = [stale];
+    const prepared = await runWithActivityTraceContext(prior, () => prepareBackgroundContinuation(c.input, c.store));
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceId).toBe(`trace:bg-${c.input.continuationId}`);
+    expect(parseTraceparent(prepared.item.turn.traceparent)?.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(parseTraceparent(prepared.item.turn.traceparent)?.traceId).not.toBe(prior.traceId);
+    expect(prepared.item.turn.traceLinks).toEqual([{ traceId: prior.traceId, spanId: prior.spanId }]);
+    const retried = await runWithActivityTraceContext({ ...prior, spanId: "5".repeat(16) }, () => prepareBackgroundContinuation(c.input, c.store));
+    expect(retried).toEqual(prepared);
+    const durable = roomAgentSupervisorInputSchema.parse(JSON.parse(JSON.stringify({ roomId: c.room.id, pending: [prepared.item] })));
+    expect(durable.pending[0]!.turn.traceparent).toBe(prepared.item.turn.traceparent);
+    expect(durable.pending[0]!.turn.traceLinks).toEqual(prepared.item.turn.traceLinks);
+  });
+
+  it("links to the source request context when no activity context is available", async () => {
+    const c = continuationFixture();
+    const prior = { traceId: "6".repeat(32), spanId: "7".repeat(16) };
+    c.initial.queueItem.turn.traceparent = formatTraceparent(prior.traceId, prior.spanId);
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceLinks).toEqual([prior]);
+    expect(parseTraceparent(prepared.item.turn.traceparent)?.traceId).not.toBe(prior.traceId);
+  });
+
+  it("omits links when no source exists instead of copying an unrelated ancestor", async () => {
+    const c = continuationFixture();
+    c.initial.queueItem.turn.traceLinks = [{ traceId: "8".repeat(32), spanId: "9".repeat(16) }];
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(parseTraceparent(prepared.item.turn.traceparent)).not.toBeNull();
+    expect(prepared.item.turn).not.toHaveProperty("traceLinks");
+  });
+
   it("includes the actual failure reason when resuming after a parsed background action", () => {
     const c = continuationFixture();
     const evidence = JSON.parse(continuationEvidence([{ ...c.action, status: "FAILED",

@@ -105,6 +105,71 @@ describe("ClipboardDock", () => {
     vi.useRealTimers();
   });
 
+  it("disposes copy feedback when the dock unmounts", async () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy clip text" }));
+    await act(async () => {});
+    expect(screen.getByText("Copied", { selector: ".clipboard-copied" })).toBeTruthy();
+
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+  });
+
+  it("does not start copy feedback after a pending clipboard write outlives the dock", async () => {
+    vi.useFakeTimers();
+    let finishCopy!: () => void;
+    const copied = new Promise<void>((resolve) => { finishCopy = resolve; });
+    vi.mocked(navigator.clipboard.writeText).mockReturnValue(copied);
+    const { unmount } = render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy clip text" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(item.text);
+    unmount();
+    await act(async () => { finishCopy(); await copied; });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    expect(mocks.createClipboardItem).toHaveBeenCalledWith(expect.objectContaining({ text: item.text, source: "COPY" }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("restarts copy feedback without leaving the previous timer behind", async () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    await act(async () => {});
+    const copy = screen.getByRole("button", { name: "Copy clip text" });
+
+    fireEvent.click(copy);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    fireEvent.click(copy);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.getByText("Copied", { selector: ".clipboard-copied" })).toBeTruthy();
+
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps copy feedback visible for one and a half seconds", async () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy clip text" }));
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_499); });
+    expect(screen.getByText("Copied", { selector: ".clipboard-copied" })).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.queryByText("Copied", { selector: ".clipboard-copied" })).toBeNull();
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("loads, copies, drags, filters, and inserts a private clip", async () => {
     const onInsert = vi.fn();
     render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={onInsert} />);

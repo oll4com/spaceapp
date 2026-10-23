@@ -1,0 +1,16 @@
+{
+  "name": "@space/observability",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": { "typescript": "^5.9.3", "vitest": "^4.1.11" },
+  "license": "MIT"
+}

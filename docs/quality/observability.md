@@ -4,7 +4,8 @@ Plan package 5. This page covers the shared ID that leads from a failed task to
 its causal error, the local metrics, the lightweight trace context, the error
 categories, and the gaps that are still open. Nothing here needs an external
 collector: logs go to journald, metrics are Prometheus text over HTTP, and
-traces are IDs in logs and in Temporal memos.
+trace context remains available in logs and Temporal memos. When configured,
+the API and all three worker processes also export spans over OTLP/HTTP.
 
 Earlier work that this page builds on: `/livez`, the database check in
 `/readyz` (`?strict=1` returns 503), the `x-request-id` header, nested log
@@ -215,46 +216,82 @@ Without the endpoint, every activity still writes `activity.started` and
 
 ## Traces (W3C trace context)
 
-The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
-SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
-2026-10-16 the worker and both memory workers use the same exporter (services
-`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+Trace export is off by default. Set `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` to a
+collector base URL in the API and each worker process that should export. The
+shared `@space/observability` package sends OTLP/HTTP JSON to `<base>/v1/traces`;
+the API's previous exporter module is a compatibility re-export. This uses the
+existing Temporal SDK and adds no external tracing SDK.
+
+The current `@space/runtime` export and original API module path both re-export
+this transport; they do not create a second exporter or interceptor.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
-  An invalid or missing header gets a new trace ID. Every API log line carries
-  `w3cTraceId` (Fastify `childLoggerFactory`).
-- **Propagation into turns:** API turn starters and the Room Agent coordinator add
-  the request's `traceparent` to the turn input (an optional contract field) and
-  to the Temporal memo. A bounded in-memory map from request ID to trace context
-  (`apps/api/src/trace-context.ts`) does this without passing the request object
-  through every service.
-- **Worker:** worker logs read the trace ID from the activity input. Internal
-  room-action calls from the worker send a child `traceparent`, so the internal
-  API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+  An invalid or missing header gets a new trace ID. Each completed HTTP request
+  emits a SERVER span with method, route template, status and request ID. API
+  logs retain `w3cTraceId` (Fastify `childLoggerFactory`).
+- **API-to-workflow parent:** the propagated `traceparent` names the API SERVER
+  span actually emitted, rather than an unrecorded intermediate span. Turn
+  inputs and Temporal memos carry it; Room Agent, Dot and memory starts also
+  populate memo where their input schemas do not carry trace context.
+- **Workflow runs:** `workflow-tracing.ts` installs SDK interceptors and emits
+  an INTERNAL `workflow.<type>` span when execution returns or throws. Its span
+  ID is derived from the Temporal run ID without consuming workflow randomness
+  or adding workflow commands. The interceptor reads headers, then known input
+  fields or decoded memo; without context it starts a root trace from the run ID.
+- **Activity attempts:** `worker-tracing.ts` emits an INTERNAL `activity.<type>`
+  span for each workflow-associated activity attempt, including retries with
+  distinct span IDs. Its parent is the workflow span. The existing activity
+  observer supplies outcome, safe reason code and category, including a FAILED
+  result that returns without throwing.
+- **All worker processes:** `space-worker`, `space-memory-maintenance-worker`
+  and `space-memory-mutation-worker` use the same tracing factory. The memory
+  feature flags and concurrency settings still apply. Existing activity logs
+  and metrics remain active when trace export is off.
+- **Children and signals:** ordinary child workflows inherit the actual parent
+  workflow span. A supervisor may adopt its initial signal's context before it
+  schedules work; later signal requests add bounded links without changing the
+  parent of activities already scheduled.
+  Operator turns queued later under that supervisor use their own API span and
+  link to the supervisor, including when two requests share the same trace ID.
+- **Continuations:** continue-as-new retains the original trace and parent,
+  creates a new run span and adds an OTLP link to the previous run. The SDK's
+  continue-as-new control exception is a successful continuation outcome.
+  Background turns retain their application `trace:bg-<uuid>` ID but start a
+  fresh W3C root trace with an OTLP link to the source workflow when available.
+  The context carrier's span ID is not treated as an emitted parent.
+
+Worker attributes pass the central allowlist in `tracing-protocol.ts` both in
+the workflow and at the host sink. They contain bounded workflow/activity types,
+IDs, attempt numbers, outcomes, safe reason codes and failure categories. Links
+contain validated nonzero trace/span IDs only. Prompts, outputs, arbitrary error
+messages, stack traces, paths, URLs and arbitrary attributes are excluded. The
+shared transport validates span/link IDs; each service owns its attribute policy.
+
+The exporter defaults to 256 spans per batch, 4096 queued spans, a 5-second
+flush interval and a 3-second deadline per HTTP POST. A full or closed queue
+drops new spans; rejected, failed or timed-out batches increment its failure
+count. `stats()` exposes exported, dropped and failed counts to callers; these
+are not new Prometheus metrics. Export is not awaited by requests, workflows or
+activities. Worker shutdown closes the queue and drains it using the same
+per-request deadlines. An unset or invalid endpoint creates no exporter, flush
+timer or tracing workflow interceptor. Logs and local metrics still work.
 
 ### Replay compatibility
 
-No file under `apps/worker/src` that the workflow bundle imports was changed
-(`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
-`dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base
-commit and for this change and compared after normalizing paths and webpack
-module numbers. The only differences are in `@space/contracts`:
-- the new `observability` module;
-- the optional `traceparent` turn-input field;
-- the optional file search and readiness fields.
+Production workflow business logic is unchanged. The tracing module uses
+deterministic IDs and timestamps, propagation headers and a sink; it performs
+no workflow I/O and schedules no tracing activities or timers. The host
+registers `tracing.record` with `callDuringReplay: false`, so replay does not
+re-export completed spans. Memo is read at execution time because the SDK
+decodes it after constructing interceptor factories.
 
-A history without `traceparent` parses exactly as before. Activity inputs are
-not part of Temporal's determinism check.
-
-The read-only live replay (`node scripts/temporal-replay-check.mjs --limit 30`)
-could not be run from the agent sandbox that made this change. Its network
-namespace has no route to the Temporal container (`172.18.0.5:7233`), and
-`127.0.0.1:7233` refuses connections. Run it before deploying this change.
+`apps/worker/tests/otlp-tracing.integration.test.ts` runs real production
+workflows against a disposable Temporal test server and a real loopback HTTP
+collector. It replays captured histories, including both runs of a 300-step
+continue-as-new sequence, and asserts that the collector and export counters
+receive no additional spans. These fixtures do not establish compatibility
+with every deployed history. Run the deployment's read-only replay check
+(`node scripts/temporal-replay-check.mjs --limit 30`) against its own Temporal
+service before deployment.
 
 ## Redaction policy
 
@@ -273,6 +310,9 @@ Tests that prove these properties:
 | `packages/runtime/tests/metrics-registry.test.ts` | Unsafe label values never appear |
 | `apps/api/tests/observability-metrics.test.ts` | Secrets, prompts, paths and user IDs sent in URLs, headers and bodies never reach `/metrics` |
 | `apps/worker/tests/activity-observability.test.ts` | Prompts and thrown messages never reach worker logs or metrics |
+| `apps/worker/tests/workflow-tracing-protocol.test.ts` | Header/ID validation, bounded links and attribute allowlisting |
+| `apps/worker/tests/otlp-tracing.integration.test.ts` | Actual emitted workflow/activity payloads omit prompt, path and error sentinels |
+| `apps/worker/tests/otlp-api-trace.integration.test.ts` | Actual API-to-Temporal trace omits prompt, output and error sentinels |
 | `apps/api/tests/trace-correlation.test.ts` | The trace lookup omits messages and metadata |
 | `apps/api/tests/observability-fault-injection.test.ts` | Checks all of the above end to end |
 
@@ -292,6 +332,29 @@ No credential or transcript export was added.
 | `apps/api/tests/files-search-routes.test.ts` | The HTTP error envelope |
 | `apps/worker/tests/activity-observability.test.ts` | Interceptor records, outcomes, categories, metrics, loopback endpoint |
 | `apps/api/tests/observability-fault-injection.test.ts` | Four injected executor faults and one Temporal start failure, end to end |
+| `packages/observability/tests/otlp-span-exporter.test.ts` | Shared OTLP encoding, kinds, links, bounded queue, counters and transport deadlines |
+| `apps/worker/tests/workflow-tracing.test.ts` | Memo initialization, propagation, child promise semantics, outcomes and continuation links |
+| `apps/worker/tests/otlp-tracing.integration.test.ts` | Real Temporal retries, failed results, action failure, memory queues, cancellation, continuations, replay, disabled export and unavailable collectors |
+| `apps/worker/tests/otlp-api-trace.integration.test.ts` | Real loopback API login/CSRF/turn submission, real SDK starter, production workflow and retried synthetic activity; exact SERVER-to-workflow-to-attempt parent IDs |
+
+Isolated local validation on 2026-10-16 passed all eight Temporal/HTTP tracing
+integration cases and the separate API-to-Temporal proof. The latter also
+forwarded its actual sanitized payloads to a local Jaeger collector. The API and
+workflow execution were real; activity implementations were synthetic and did
+not contact a model provider. This is component validation, not a claim that
+the complete repository suite passed or that an operator deployment was tested.
+
+After building the internal dependencies, run the focused integration proofs:
+
+```sh
+npm test -w @space/worker -- tests/otlp-tracing.integration.test.ts tests/otlp-api-trace.integration.test.ts
+```
+
+To inspect the same real API trace in a local Jaeger UI, run the API proof with
+`SPACE_TEST_JAEGER_ENDPOINT=http://127.0.0.1:4318` and a running collector. The
+optional test setting accepts only an unauthenticated loopback HTTP origin. The
+test prints `OTLP_API_TRACE_PROOF` with the emitted trace ID; normal test runs
+use only their disposable loopback collector.
 
 ## Not covered
 
@@ -316,6 +379,8 @@ No credential or transcript export was added.
   indexed by migration 0206, at most 50 generations and the row limit) and
   marks it with `continuationOf`. Its events and logs remain under its own
   trace ID. Chat-pane sends from room actions use `<actionId>:chat`.
+  Background turn spans also carry a separate W3C trace and an OTLP link to
+  their source workflow when available; application trace identifiers stay unchanged.
 - **CLI terminal task IDs are not linked.** `cliTaskId` and `revisionId` are not
   tied to request IDs.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
@@ -336,9 +401,10 @@ No credential or transcript export was added.
   the lookup also returns the Space-native agent runs (`space_agent_runs`) of the
   trace's workflows, joined by workflow id, with their status and error code, and
   names a failed run's code as the cause when no event carries one.
-- **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
-  spans and worker activity spans (the worker and both memory workers); the CLI
-  and Browser Hosts still join traces through log lines only.
+- **Span coverage is bounded.** API requests, workflow runs and their activity
+  attempts are instrumented. CLI Host, Browser Host, standalone activities and
+  outbound HTTP client calls do not gain spans. This does not add OTLP metrics,
+  an OpenTelemetry SDK or configurable sampling.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.
 - **Worker endpoints are not scraped yet.** Stable's `deploy/space-worker.service`

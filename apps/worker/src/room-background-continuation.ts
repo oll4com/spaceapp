@@ -8,6 +8,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { roomActionSummary } from "./room-action-summary.js";
+import { createBackgroundTraceContext } from "./activity-trace-context.js";
 import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
 
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
@@ -52,6 +53,10 @@ function recordedTokenUsage(executionState: Record<string, unknown>): MissionTok
     : null;
 }
 
+/**
+ * Prepare a durable, budget-checked continuation linked to the settled source
+ * turn. Retrying the same continuation ID reuses its stored item and trace.
+ */
 export async function prepareBackgroundContinuation(input: {
   roomId: string; missionId: string; continuationId: string;
 }, store: SpaceStore, maxContinuations = DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS,
@@ -122,8 +127,14 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const continuationTrace = createBackgroundTraceContext(source.queueItem.turn.traceparent);
+  const sourceTurn = { ...source.queueItem.turn };
+  // A link belongs to this continuation, not an ancestor of its source turn.
+  delete sourceTurn.traceLinks;
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
-    ...source.queueItem.turn,
+    ...sourceTurn,
+    traceparent: continuationTrace.traceparent,
+    ...(continuationTrace.traceLinks.length ? { traceLinks: continuationTrace.traceLinks } : {}),
     prompt, roomAgentOperatorRequest: request,
     roomAgentContinuation: { sourceRunId: source.run.runId, generation },
     artifactIds: [], agentRunId: runId,
