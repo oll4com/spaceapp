@@ -237,6 +237,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     await wedgedPromise;
 
     // Also test recording room event directly in store
+    // Latest-event ordering uses (createdAt, id), not insertion order. Give this
+    // explicit fixture a later time even when room/pane creation took <1 ms.
+    const alertCreatedAt = new Date(Date.parse(store.getLatestEvent(room.id)!.createdAt) + 1).toISOString();
     const watchdogEvent: Event = {
       id: "event:watchdog-test",
       roomId: room.id,
@@ -255,7 +258,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         durationMs: 8000,
         killedAt: new Date().toISOString()
       },
-      createdAt: new Date().toISOString()
+      createdAt: alertCreatedAt
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
