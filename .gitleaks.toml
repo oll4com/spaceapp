@@ -1,10 +1,38 @@
 # Default gitleaks rules, minus documentation placeholders such as
-# DOUBAO_TTS_API_KEY=<your_api_key> in third-party skill guides (Security workflow, 1.1.4).
-# The generic rule captures the line after the placeholder as its "secret", so the match is checked.
+# DOUBAO_TTS_API_KEY=<your_api_key> in third-party skill guides (Security workflow, 1.1.4),
+# test fixtures with placeholder tokens/keys, and non-secret public identifiers.
+# See issue #211.
+title = "SpaceApp gitleaks config"
+
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders, not credentials"
+description = "Documentation placeholders, test fixtures, and public non-secret identifiers"
+
+# Ignore false positive matches in test directories and documentation status notes
+paths = [
+  '''apps/[^/]+/tests?/.*''',
+  '''packages/[^/]+/tests?/.*''',
+  '''docs/quality/.*''',
+  '''(?i)\.(md|mdx)$''',
+]
+
 regexTarget = "match"
-regexes = ['''^your_[a-z_]+>''']
+regexes = [
+  '''^your_[a-z_]+>''',
+  '''phc_[a-zA-Z0-9]+''',                         # PostHog public telemetry client key
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''',     # Public Claude OAuth client ID
+  '''(?i)idempotency[_-]?key''',
+  '''(?i)sec-websocket-key''',
+  '''(?i)test[_-]?(secret|token|key|password)''',
+  '''(?i)demo[_-]?password''',
+]
+
+stopwords = [
+  "placeholder",
+  "test-secret",
+  "dummy",
+  "idempotency",
+  "cache_key",
+]
