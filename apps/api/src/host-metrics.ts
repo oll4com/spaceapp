@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import type { CliHostHealth } from "@space/cli-host";
+import type { CliHostHealth } from "@space/cli-host/client";
 import type { BrowserHostHealth } from "@space/browser-host";
 import { apiDomainMetrics } from "./api-metrics.js";
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 import { encodeLengthPrefixedJson, LengthPrefixedJsonDecoder } from "./framing.js";
-import { CliHostError } from "./session-registry.js";
+import { CliHostError } from "./errors.js";
 import type {
   CliHostAttachInput,
   CliHostAttachResult,

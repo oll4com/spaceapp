@@ -1,4 +1,4 @@
-import type { CliHostIdentity } from "@space/cli-host";
+import type { CliHostIdentity } from "@space/cli-host/client";
 import type { CliHostGateway } from "./cli-terminal.js";
 import { projectRoomTerminalScreen } from "./room-terminal-screen.js";
 
