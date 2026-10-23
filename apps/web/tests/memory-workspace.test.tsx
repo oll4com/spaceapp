@@ -25,6 +25,19 @@ describe("Memory atlas data integrity", () => {
     expect(atlas.positions).toEqual(createMemoryAtlas([...nodes].reverse(), []).positions);
     expect([...atlas.positions.values()].every(p => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
   });
+  it("filters structural node types and dangling edges in the large-atlas fast path", () => {
+    const memories = Array.from({ length: 5_001 }, (_, i) => node(`memory:${i}`));
+    const nodes = [...memories, node("source", "SOURCE"), node("room", "ROOM"), node("section", "SECTION"), node("provenance", "PROVENANCE")];
+    const atlas = createMemoryAtlas(nodes, [
+      edge("visible", "source", "memory:0", "CONTAINS"),
+      edge("hidden-source", "section", "memory:0", "CONTAINS"),
+      edge("hidden-target", "memory:0", "provenance", "DERIVED_FROM")
+    ], false);
+    expect(atlas.nodes).toHaveLength(memories.length + 2);
+    expect(atlas.nodes.map(item => item.id)).toEqual(expect.arrayContaining(["source", "room"]));
+    expect(atlas.nodes.some(item => item.type === "SECTION" || item.type === "PROVENANCE")).toBe(false);
+    expect(atlas.edges.map(item => item.id)).toEqual(["visible"]);
+  });
   it("derives positions from real edges and anchors the actual entrypoint", () => {
     const root = { ...node("root", "SOURCE"), label: "gemini.md" };
     const nodes = [root, node("a"), node("b")];

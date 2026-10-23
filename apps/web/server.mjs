@@ -390,7 +390,7 @@ const demoWorkspaceContentSecurityPolicy = [
   "img-src 'self' data: blob:",
   "media-src 'none'",
   "connect-src 'none'",
-  "worker-src 'none'",
+  "worker-src 'self'",
   "manifest-src 'self'"
 ].join("; ");
 

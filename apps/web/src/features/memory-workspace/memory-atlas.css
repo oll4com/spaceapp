@@ -173,8 +173,11 @@
 .memory-atlas-2d { height: 100%; }
 .memory-atlas-2d[hidden] { display: none; }
 .memory-3d-surface { position: absolute; inset: 0 3% 55px 22%; }
-.memory-3d-surface canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline-offset: -3px; }
-.memory-3d-surface canvas:active { cursor: grabbing; }
+.memory-3d-surface canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.memory-3d-interaction-canvas { z-index: 2; touch-action: none; cursor: grab; outline-offset: -3px; }
+.memory-3d-interaction-canvas:active { cursor: grabbing; }
+.memory-3d-fallback-canvas { z-index: 1; pointer-events: none; }
+.memory-3d-label-canvas { z-index: 3; pointer-events: none; }
 .memory-3d-hint { position: absolute; bottom: 26px; left: 0; right: 0; text-align: center; font-size: 10px; color: #95aec2; pointer-events: none; }
 #memory-atlas .memory-atlas-topics { max-height: min(38%, 320px); overflow: auto; scrollbar-width: thin; }
 @media (max-width: 700px) {

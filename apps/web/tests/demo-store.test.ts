@@ -429,6 +429,24 @@ describe("Space deterministic demo store", () => {
     expect(unchangedChangeSet).toEqual(changeSet);
   });
 
+  it("generates a synthetic memory graph only when the benchmark size is explicit", async () => {
+    const previousUrl = window.location.href;
+    try {
+      window.history.replaceState({}, "", "/demo-workspace");
+      const store = new DemoStore();
+      const curated = await store.api.memoryGraphOverview({ limit: 100 });
+      expect(curated.data.nodes.some(node => node.id === "memory:demo-public-launch")).toBe(true);
+      expect(curated.data.nodes.some(node => node.id.startsWith("memory:synthetic-"))).toBe(false);
+
+      window.history.replaceState({}, "", "/demo-workspace?memoryGraphSize=100");
+      const synthetic = await store.api.memoryGraphOverview({ limit: 100 });
+      expect(synthetic.data.nodes).toHaveLength(100);
+      expect(synthetic.data.nodes.some(node => node.id.startsWith("memory:synthetic-"))).toBe(true);
+    } finally {
+      window.history.replaceState({}, "", previousUrl);
+    }
+  });
+
   it("keeps Links and Clipboard CRUD local, deterministic, and contract-valid", async () => {
     const store = new DemoStore();
 
