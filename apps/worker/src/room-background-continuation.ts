@@ -125,7 +125,12 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
-    roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    roomAgentContinuation: {
+      sourceRunId: source.run.runId,
+      generation,
+      sourceTraceId: source.queueItem.turn.traceId,
+      sourceTraceparent: source.queueItem.turn.traceparent
+    },
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
