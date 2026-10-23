@@ -84,7 +84,11 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
     googleClientSecret = ANTIGRAVITY_CLIENT_SECRET;
   }
   return {
-    sessionSecret: env.SPACE_SESSION_SECRET ?? "",
+    sessionSecret:
+      env.SPACE_SESSION_SECRET ||
+      (env.SPACE_SESSION_SECRET_FILE && existsSync(env.SPACE_SESSION_SECRET_FILE)
+        ? readFileSync(env.SPACE_SESSION_SECRET_FILE, "utf8").trim()
+        : ""),
     operatorEmail: env.SPACE_OPERATOR_EMAIL,
     operatorPasswordHash: env.SPACE_OPERATOR_PASSWORD_HASH,
     devLogin: env.NODE_ENV !== "production" && env.SPACE_DEV_LOGIN === "true",
