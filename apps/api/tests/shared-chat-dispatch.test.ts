@@ -1,5 +1,5 @@
 import { cliToggleRuntimeIds } from "@space/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, makeSpaceId } from "@space/runtime";
 import {
   buildSharedChatDispatchPrompt,
@@ -114,15 +114,24 @@ describe("pickSharedChatDispatchTarget", () => {
   });
 
   it("picks the most recently updated eligible pane for the requested runtime", async () => {
-    const store = new InMemorySpaceStore();
-    const older = createIdleDeepseekPane(store, "Deepseek A");
-    const newer = createIdleDeepseekPane(store, "Deepseek B");
-    createRunningSession(store, older.room.id, older.pane.id, "cli:deepseek", "2026-08-15T09:00:00.000Z");
-    createRunningSession(store, newer.room.id, newer.pane.id, "cli:deepseek", "2026-08-15T10:00:00.000Z");
+    // The in-memory store stamps sessions at creation, ignoring input.updatedAt.
+    // Give the two sessions distinct clock times instead of racing one millisecond.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const store = new InMemorySpaceStore();
+      vi.setSystemTime(new Date("2026-08-15T09:00:00.000Z"));
+      const older = createIdleDeepseekPane(store, "Deepseek A");
+      createRunningSession(store, older.room.id, older.pane.id, "cli:deepseek", "2026-08-15T09:00:00.000Z");
+      vi.setSystemTime(new Date("2026-08-15T10:00:00.000Z"));
+      const newer = createIdleDeepseekPane(store, "Deepseek B");
+      createRunningSession(store, newer.room.id, newer.pane.id, "cli:deepseek", "2026-08-15T10:00:00.000Z");
 
-    const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
-    expect(target).not.toBeNull();
-    expect(target!.pane.id).toBe(newer.pane.id);
+      const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
+      expect(target).not.toBeNull();
+      expect(target!.pane.id).toBe(newer.pane.id);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("only considers the requested runtime", async () => {

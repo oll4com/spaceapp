@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["tests/temporal-sandbox-helpers.ts", "tests/temporal-workflow-sandbox.test.ts", "tests/fixtures/incompatible-dot-workflow.ts"]
+}
