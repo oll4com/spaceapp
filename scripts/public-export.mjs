@@ -135,14 +135,22 @@ const publicScripts = new Set([
   "scripts/tests/quality-known-limitations.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
-  "scripts/tests/contributor-smoke.test.mjs"
+  "scripts/tests/contributor-smoke.test.mjs",
+  "scripts/dev-stack.mjs",
+  "scripts/ci-dev-stack-gate.mjs",
+  "scripts/watch-packages.mjs",
+  "scripts/tests/dev-stack.test.mjs"
 ]);
 
 // Root package.json scripts may name only files in the public tree: exported
 // source files plus these files that the public repository maintains itself.
 const publicRepositoryScripts = new Set([
   "scripts/public-export.mjs",
-  "scripts/tests/public-suite.test.mjs"
+  "scripts/tests/public-suite.test.mjs",
+  "scripts/dev-stack.mjs",
+  "scripts/ci-dev-stack-gate.mjs",
+  "scripts/watch-packages.mjs",
+  "scripts/tests/dev-stack.test.mjs"
 ]);
 const publicRepositoryWorkspaces = new Set(["run-spaceapp"]);
 // The public tree carries only the reviewed public tests, so its npm test is
@@ -641,7 +649,15 @@ export async function createPublicExport({
       if (metadata?.mode && !/^100(?:644|755)$/.test(metadata.mode)) {
         throw new Error(`Public export accepts regular Git files only: ${path}`);
       }
-      const original = await readFile(sourcePath);
+      let original = await readFile(sourcePath);
+      if (metadata?.objectId && gitObjectHash(original, metadata.objectId) !== metadata.objectId) {
+        if (isText(original) && original.includes("\r\n")) {
+          const normalizedEol = Buffer.from(original.toString("utf8").replaceAll("\r\n", "\n"), "utf8");
+          if (gitObjectHash(normalizedEol, metadata.objectId) === metadata.objectId) {
+            original = normalizedEol;
+          }
+        }
+      }
       if (metadata?.objectId && gitObjectHash(original, metadata.objectId) !== metadata.objectId) {
         throw new Error(`Tracked file does not match ${sourceCommit}: ${path}`);
       }

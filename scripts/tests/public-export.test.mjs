@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -251,6 +252,38 @@ test("public export binds worktree bytes to the declared Git object", async () =
     /does not match/i
   );
   await assert.rejects(() => stat(outputRoot), /ENOENT/);
+});
+
+test("public export normalizes worktree CRLF endings to match declared Git object hash", async () => {
+  const sourceRoot = await mkdtemp(join(tmpdir(), "spaceapp-public-crlf-source-"));
+  const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-crlf-output-")), "export");
+  const contentLf = "# SpaceApp CRLF Test\n\nVerified clean.\n";
+  const contentCrlf = "# SpaceApp CRLF Test\r\n\r\nVerified clean.\r\n";
+  const gitSha1 = createHash("sha1")
+    .update(Buffer.from(`blob ${Buffer.byteLength(contentLf)}\0`))
+    .update(Buffer.from(contentLf, "utf8"))
+    .digest("hex");
+
+  await writeFile(join(sourceRoot, "README.md"), contentCrlf, "utf8");
+
+  const result = await createPublicExport({
+    sourceRoot,
+    outputRoot,
+    trackedPaths: ["README.md"],
+    sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+    trackedMetadata: new Map([
+      ["README.md", {
+        mode: "100644",
+        objectId: gitSha1
+      }]
+    ])
+  });
+
+  assert.equal(result.manifest.fileCount, 1);
+  const exported = await readFile(join(outputRoot, "README.md"), "utf8");
+  assert.equal(exported.includes("\r\n"), false, "Exported file must not contain CRLF");
+  await rm(outputRoot, { recursive: true, force: true });
+  await rm(sourceRoot, { recursive: true, force: true });
 });
 
 test("public overlay preserves dynamic model discovery and removes anonymous owner login", () => {

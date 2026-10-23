@@ -50,6 +50,94 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+Contributors can run the complete SpaceApp stack locally from source with a single command without installing global tools or colliding with production/operator instances.
+
+### Prerequisites
+
+- **Node.js**: `>=22.12 <23` and npm.
+- **Docker Engine**: Docker Desktop, Rancher Desktop, Colima (macOS), or native Linux Docker with Compose plugin (`docker compose`).
+  - *Linux*: Native Docker daemon with compose plugin.
+  - *macOS*: Docker Desktop or Colima.
+  - *Windows 11*: WSL2 with Docker Desktop WSL2 backend or Docker Engine inside WSL2.
+
+### Starting the stack
+
+```sh
+npm run dev:stack
+```
+
+This single command:
+1. Generates an isolated state directory in `.dev-stack/` with secure 0600 credentials.
+2. Automatically extracts and starts containerized dependencies using the pinned image digests from the compose template.
+3. Installs the pinned OpenCode CLI locally in `.dev-stack/opencode` providing a fully isolated terminal interface without polluting global `PATH`.
+4. Builds internal monorepo packages (`@space/*`).
+5. Runs database migrations against the isolated development database.
+6. Starts the background Temporal worker, API service, and Vite web development server with hot-module replacement.
+
+### Development service endpoints
+
+| Service | Local Endpoint | Description |
+| --- | --- | --- |
+| **Web UI** | `http://127.0.0.1:5911` | Vite web frontend with HMR & API proxy |
+| **API Server** | `http://127.0.0.1:5910` | Fastify API backend (`/readyz`, `/api/*`) |
+| **PostgreSQL** | `127.0.0.1:54329` | Isolated pgvector database |
+| **Temporal gRPC** | `127.0.0.1:57233` | Temporal workflow engine gRPC endpoint |
+
+### Stopping, inspecting, and resetting the stack
+
+- **Check status**:
+  ```sh
+  npm run dev:stack -- status
+  ```
+- **Verify health endpoints**:
+  ```sh
+  npm run dev:stack -- verify
+  ```
+- **Stop stack (preserves database state)**:
+  Press `Ctrl+C` in the terminal where `dev:stack` is running, or execute:
+  ```sh
+  npm run dev:stack -- down
+  ```
+- **Reset stack (purges database and ephemeral secrets)**:
+  ```sh
+  npm run dev:stack -- reset
+  ```
+
+### Configuration & Environment Overrides
+
+The development stack runs isolated defaults out of the box, but can be customized with environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SPACE_DEV_WEB_PORT` | `5911` | Host port bound to Vite Web UI |
+| `SPACE_DEV_API_PORT` | `5910` | Host port bound to Fastify API server |
+| `SPACE_DEV_POSTGRES_PORT` | `54329` | Host loopback port for PostgreSQL |
+| `SPACE_DEV_TEMPORAL_PORT` | `57233` | Host loopback port for Temporal gRPC |
+| `SPACE_DEV_STATE_DIR` | `.dev-stack` | Root directory for isolated secrets, logs, and runtimes |
+
+### Package development and hot reload
+
+- **Frontend (Web UI)**: Vite provides instant Hot Module Replacement (HMR) for edits in `apps/web`.
+- **Internal packages (`packages/*`)**: To continuously compile `@space/*` packages while making changes across packages, run:
+  ```sh
+  npm run watch:packages
+  ```
+  Because the background worker and CLI host run plain Node.js, they load compiled modules at process startup. After modifying monorepo packages, apply the updates across all running services by restarting the stack:
+  ```sh
+  npm run dev:stack -- down && npm run dev:stack
+  ```
+
+### Troubleshooting
+
+- **Docker daemon / Compose**: Ensure Docker is running (`docker info`) and the compose plugin is accessible (`docker compose version`). On Linux, ensure your user belongs to the `docker` group or has permission to communicate with the Docker socket.
+- **Port conflicts**: By default, `dev:stack` binds loopback ports `5911` (Web), `5910` (API), `54329` (Postgres), and `57233` (Temporal). If a port is occupied by another application, override it using environment variables (e.g. `SPACE_DEV_WEB_PORT=5921 SPACE_DEV_API_PORT=5920 npm run dev:stack`).
+- **Permissions and state directory**: State and credentials reside in `.dev-stack/` with owner-only `0600` permissions. If you encounter permission errors or need a fresh state, run `npm run dev:stack -- reset`.
+- **Service readiness timeouts**: On slower machines or initial image pull, container initialization may take longer. You can monitor container logs via `docker compose -p <project-name> -f .dev-stack/docker-compose.yml logs -f` using the project name displayed at startup or via `npm run dev:stack -- status` (default: `spaceapp-dev-<hash>`).
+- **macOS (Colima / Docker Desktop)**: Ensure port forwarding and loopback bindings `127.0.0.1` are enabled. If using Colima, verify `colima status` and ensure adequate memory allocation (>= 4GB recommended).
+- **Windows 11 (WSL2)**: Run `npm run dev:stack` inside your WSL2 Linux distribution (e.g. Ubuntu) with Docker Desktop WSL2 integration enabled or Docker Engine running inside WSL2. Native Windows command prompt lacks POSIX permission primitives for 0600 secret files.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
