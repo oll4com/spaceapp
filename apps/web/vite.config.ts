@@ -17,6 +17,11 @@ export function manualChunkForModule(moduleId: string): string | undefined {
   return undefined;
 }
 
+// The API the dev server proxies to. Defaults to an installed SpaceApp on
+// 4910; the from-source dev stack (npm run dev:stack) sets SPACE_API_PORT
+// (or a full SPACE_API_ORIGIN) so the proxy follows its isolated API port.
+const apiProxyTarget = process.env.SPACE_API_ORIGIN ?? `http://127.0.0.1:${process.env.SPACE_API_PORT ?? "4910"}`;
+
 export default defineConfig({
   plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
   // The icon package ships as source; the alias keeps worktrees (which share live node_modules) resolving this checkout.
@@ -34,11 +39,11 @@ export default defineConfig({
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      "/api": apiProxyTarget,
+      "/plugins": apiProxyTarget,
+      "/healthz": apiProxyTarget,
+      "/readyz": apiProxyTarget,
+      "/version": apiProxyTarget
     }
   },
   test: {

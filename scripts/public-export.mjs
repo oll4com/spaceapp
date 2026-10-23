@@ -82,6 +82,11 @@ const publicScripts = new Set([
   "scripts/cli-render-fixture.mjs",
   // Maintained here; listed so the CI re-export of this repository keeps them.
   "scripts/public-test-exclusions.json",
+  // The from-source contributor dev stack (npm run dev:stack), its CI gate
+  // and its unit tests.
+  "scripts/dev-stack.mjs",
+  "scripts/dev-stack/ci-gate.mjs",
+  "scripts/tests/dev-stack.test.mjs",
   "scripts/verify-export-provenance.mjs",
   "scripts/tests/verify-export-provenance.test.mjs",
   "scripts/publish-npm-candidate.mjs",
