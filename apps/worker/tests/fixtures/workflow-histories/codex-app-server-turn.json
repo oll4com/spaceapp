@@ -1,0 +1,255 @@
+{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": {
+        "seconds": "2423028612",
+        "nanos": 488000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "codexAppServerTurnWorkflow"
+        },
+        "taskQueue": {
+          "name": "test-main",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyb29tSWQiOiJyb29tOnJlY29yZCIsInBhbmVJZCI6InBhbmU6cmVjb3JkIiwicHJvbXB0IjoiUmVjb3JkLiIsInByb3ZpZGVySWQiOm51bGwsInRyYWNlSWQiOiJ0cmFjZTpyZWNvcmQtdHVybiJ9"
+            }
+          ]
+        },
+        "workflowExecutionTimeout": {
+          "seconds": "315360000"
+        },
+        "workflowRunTimeout": {
+          "seconds": "315360000"
+        },
+        "workflowTaskTimeout": {
+          "seconds": "10"
+        },
+        "originalExecutionRunId": "1d33138b-c392-44ef-94a3-b8831680e88f",
+        "identity": "30999@htch-runtime",
+        "firstExecutionRunId": "1d33138b-c392-44ef-94a3-b8831680e88f",
+        "attempt": 1,
+        "firstWorkflowTaskBackoff": {},
+        "header": {}
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": {
+        "seconds": "2423028612",
+        "nanos": 488000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "test-main",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": {
+          "seconds": "10"
+        },
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": {
+        "seconds": "2423028612",
+        "nanos": 488000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "30999@htch-runtime",
+        "historySizeBytes": "379"
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 220000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "30999@htch-runtime",
+        "binaryChecksum": "@temporalio/worker@1.24.0+7292a748760ea479b121fa045ead48dbfc84b2b821ba2d922230e7a32b2dc248",
+        "sdkMetadata": {
+          "coreUsedFlags": [
+            3,
+            2,
+            1
+          ],
+          "sdkName": "temporal-typescript",
+          "sdkVersion": "1.24.0"
+        },
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "5",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 220000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "runCodexAppServerTurn"
+        },
+        "taskQueue": {
+          "name": "test-main",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyb29tSWQiOiJyb29tOnJlY29yZCIsInBhbmVJZCI6InBhbmU6cmVjb3JkIiwicHJvbXB0IjoiUmVjb3JkLiIsInByb3ZpZGVySWQiOm51bGwsInRyYWNlSWQiOiJ0cmFjZTpyZWNvcmQtdHVybiJ9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": {
+          "seconds": "315360000"
+        },
+        "scheduleToStartTimeout": {
+          "seconds": "315360000"
+        },
+        "startToCloseTimeout": {
+          "seconds": "86400"
+        },
+        "heartbeatTimeout": {
+          "seconds": "15"
+        },
+        "workflowTaskCompletedEventId": "3",
+        "retryPolicy": {
+          "initialInterval": {
+            "seconds": "1"
+          },
+          "backoffCoefficient": 2,
+          "maximumInterval": {
+            "seconds": "100"
+          },
+          "maximumAttempts": 5
+        }
+      }
+    },
+    {
+      "eventId": "6",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 220000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "5",
+        "identity": "30999@htch-runtime",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "7",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 224000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ3b3JrZmxvd0lkIjoidHVybjp0cmFjZTpyZWNvcmQtdHVybiIsInJvb21JZCI6InJvb206cmVjb3JkIiwicGFuZUlkIjoicGFuZTpyZWNvcmQiLCJ0cmFjZUlkIjoidHJhY2U6cmVjb3JkLXR1cm4iLCJzdGF0dXMiOiJDT01QTEVURUQiLCJtZXNzYWdlIjoic3R1YiBDT01QTEVURUQifQ=="
+            }
+          ]
+        },
+        "scheduledEventId": "5",
+        "startedEventId": "6",
+        "identity": "30999@htch-runtime"
+      }
+    },
+    {
+      "eventId": "8",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 224000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "test-main",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": {
+          "seconds": "10"
+        },
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 224000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "30999@htch-runtime",
+        "historySizeBytes": "1181"
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 231000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "30999@htch-runtime",
+        "binaryChecksum": "@temporalio/worker@1.24.0+7292a748760ea479b121fa045ead48dbfc84b2b821ba2d922230e7a32b2dc248",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": {
+        "seconds": "2423028613",
+        "nanos": 231000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJ3b3JrZmxvd0lkIjoidHVybjp0cmFjZTpyZWNvcmQtdHVybiIsInJvb21JZCI6InJvb206cmVjb3JkIiwicGFuZUlkIjoicGFuZTpyZWNvcmQiLCJ0cmFjZUlkIjoidHJhY2U6cmVjb3JkLXR1cm4iLCJzdGF0dXMiOiJDT01QTEVURUQiLCJtZXNzYWdlIjoic3R1YiBDT01QTEVURUQifQ=="
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": "9"
+      }
+    }
+  ]
+}

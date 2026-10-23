@@ -140,7 +140,12 @@ export async function roomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorI
   return continuingRoomAgentSupervisorWorkflow(rawInput);
 }
 
-async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
+/**
+ * Pre-patch supervisor branch. Exported (no behavior change) so Temporal
+ * sandbox tests and workflow-history replay fixtures can run the legacy
+ * branch directly and prove old histories still replay against it.
+ */
+export async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   const input = roomAgentSupervisorInputSchema.parse(rawInput);
   let pending = [...input.pending];
   let interrupted: Array<{ item: RoomAgentSupervisorQueueItem; reason: string }> = [];
