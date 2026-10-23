@@ -50,6 +50,54 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+To run the complete application stack (PostgreSQL with pgvector, Temporal orchestration engine, API, Vite dev server, worker, and CLI host) locally from source:
+
+```sh
+npm run dev:stack
+```
+
+This command orchestrates dependencies matching the production composition template:
+- Uses pinned immutable container digests for PostgreSQL (`pgvector`) and Temporal extracted dynamically from `packages/run-spaceapp/templates/compose.yml`.
+- Automatically initializes secure development secrets with strict file permissions (`0600`) in `.dev-stack/secrets/`.
+- Runs isolated from an installed SpaceApp using isolated container and network namespaces (`spaceapp-dev-stack`) and dedicated ports.
+- Binds all exposed ports strictly to `127.0.0.1`.
+
+### Ports and environment overrides
+
+| Service | Default Port | Override Environment Variable |
+|---|---|---|
+| Web UI | `49110` | `SPACEAPP_DEV_WEB_PORT` |
+| PostgreSQL | `54329` | `SPACEAPP_DEV_PG_PORT` |
+| Temporal | `72339` | `SPACEAPP_DEV_TEMPORAL_PORT` |
+
+### Stopping and resetting
+
+To stop running containers and services without losing data:
+
+```sh
+npm run dev:stack -- down
+```
+
+To stop containers, remove persistent volumes, and wipe `.dev-stack/`:
+
+```sh
+npm run dev:stack -- reset
+```
+
+### Platform notes
+
+- **Linux:** Requires Docker Engine with socket permissions (`docker` group) or rootless Docker.
+- **macOS:** Compatible with Docker Desktop or Colima (`colima start`).
+- **Windows 11:** Run inside WSL2 with Docker Desktop WSL2 integration enabled or a native WSL2 Docker engine.
+
+### Troubleshooting
+
+- **Port in use:** Set the relevant `SPACEAPP_DEV_*_PORT` environment variable before running `dev:stack`.
+- **Docker permission denied:** Ensure your local user is in the `docker` group or the Docker daemon is accessible.
+- **Stale container state:** Run `npm run dev:stack -- reset` to perform a clean wipe.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
