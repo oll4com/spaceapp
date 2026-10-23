@@ -19,6 +19,11 @@ export const MEMORY_CORE_FILE_PATTERN = /^(?:space|gemini)\.md$/;
 /** Core and domain reference files that recall searches beside the monthly files. */
 export const MEMORY_REFERENCE_FILE_PATTERN = /^(?:space|gemini|(?:space|gemini)_core(?:_[a-z_]+)?|agent_task_policies)\.md$/;
 
+/** Resolve the canonical memory directory for this process (source stacks set SPACE_MEMORY_ROOT). */
+export function spaceMemoryDirectory(env: Record<string, string | undefined> = process.env): string {
+  return env.SPACE_MEMORY_ROOT || SPACE_MEMORY_DIRECTORY;
+}
+
 export const isMonthlyMemoryFile = (name: string) => MONTHLY_MEMORY_FILE_PATTERN.test(name);
 export const isMemoryIndexFile = (name: string) => MEMORY_INDEX_FILE_PATTERN.test(name);
 export const isMemoryCoreFile = (name: string) => MEMORY_CORE_FILE_PATTERN.test(name);
@@ -29,19 +34,19 @@ export function monthOfMemoryFile(path: string): string | null {
 }
 
 /** True until the index has been renamed to space_memory.md. */
-export function usesLegacyMemoryFiles(directory = SPACE_MEMORY_DIRECTORY): boolean {
+export function usesLegacyMemoryFiles(directory = spaceMemoryDirectory()): boolean {
   return !existsSync(join(directory, SPACE_MEMORY_INDEX_FILENAME));
 }
 
 /** The agent core rules file: space.md once renamed, gemini.md until then. */
-export function spaceAgentCorePath(directory = SPACE_MEMORY_DIRECTORY): string {
+export function spaceAgentCorePath(directory = spaceMemoryDirectory()): string {
   return join(directory, existsSync(join(directory, "space.md")) ? "space.md" : "gemini.md");
 }
 
-export function spaceMemoryIndexPath(directory = SPACE_MEMORY_DIRECTORY): string {
+export function spaceMemoryIndexPath(directory = spaceMemoryDirectory()): string {
   return join(directory, usesLegacyMemoryFiles(directory) ? LEGACY_MEMORY_INDEX_FILENAME : SPACE_MEMORY_INDEX_FILENAME);
 }
 
-export function spaceMemoryMonthlyPath(month: string, directory = SPACE_MEMORY_DIRECTORY): string {
+export function spaceMemoryMonthlyPath(month: string, directory = spaceMemoryDirectory()): string {
   return join(directory, `${usesLegacyMemoryFiles(directory) ? "gemini_history" : "space_memory"}_${month}.md`);
 }

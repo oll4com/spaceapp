@@ -41,9 +41,9 @@ import {
 } from "@space/memory-graph";
 import {
   MONTHLY_MEMORY_FILE_PATTERN,
-  SPACE_MEMORY_DIRECTORY,
   redactMemoryText,
   resolveCanonicalSpaceMemoryPaths,
+  spaceMemoryDirectory,
   spaceMemoryIndexPath,
   spaceMemoryMonthlyPath
 } from "@space/runtime";
@@ -713,7 +713,7 @@ export async function refreshAllMonthsMemoryGraphSnapshot(
   const now = options.now ?? (() => new Date());
   const generatedAt = now().toISOString();
   const indexPath = options.indexPath ?? spaceMemoryIndexPath();
-  const memoryDir = options.memoryDir ?? SPACE_MEMORY_DIRECTORY;
+  const memoryDir = options.memoryDir ?? spaceMemoryDirectory();
   const rootDir = options.rootDir ?? process.env.SPACE_MEMORY_GRAPH_ROOT ?? DEFAULT_GRAPH_ROOT;
   const indexContent = await readFile(indexPath, "utf8");
   const monthlyPaths = await listMonthlyMemoryPaths(memoryDir);

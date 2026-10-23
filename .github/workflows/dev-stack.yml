@@ -1,0 +1,340 @@
+name: Dev stack from source
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/dev-stack.yml"
+      - ".nvmrc"
+      - "Dockerfile"
+      - "package.json"
+      - "package-lock.json"
+      - "CONTRIBUTING.md"
+      - "apps/api/**"
+      - "apps/web/**"
+      - "apps/worker/**"
+      - "packages/**"
+      - "deploy/docker/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-stack-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-stack-linux:
+    name: Real source stack lifecycle (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Unit-test dev-stack contracts
+        run: npm run test:dev-stack
+
+      - name: Start full stack without a TTY
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/dev-stack-initial.exit"
+          (
+            set +e
+            npm run dev:stack >"$RUNNER_TEMP/dev-stack.log" 2>&1
+            code=$?
+            printf '%s\n' "$code" >"$RUNNER_TEMP/dev-stack-initial.exit.tmp"
+            mv "$RUNNER_TEMP/dev-stack-initial.exit.tmp" "$RUNNER_TEMP/dev-stack-initial.exit"
+            exit "$code"
+          ) &
+          echo $! >"$RUNNER_TEMP/dev-stack-shell.pid"
+          echo "source stack launched in background"
+
+      - name: Verify readiness, owner setup, and OpenCode pane
+        run: npm run verify:dev-stack
+
+      - name: Verify a running shared-package rebuild
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          probe="dev_stack_rebuild_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          before_pid="$(node -e 'const fs=require("node:fs"); process.stdout.write(String(JSON.parse(fs.readFileSync(".dev-stack/supervisor.pid","utf8")).pid))')"
+          export SPACE_DEV_EXPECTED_PACKAGE_PROBE="$probe"
+          echo "SPACE_DEV_EXPECTED_PACKAGE_PROBE=$probe" >> "$GITHUB_ENV"
+          git diff --exit-code -- packages/contracts/src/index.ts
+          node --input-type=module <<'NODE'
+          import { mkdtemp } from "node:fs/promises";
+          import { join } from "node:path";
+          import { editSource } from "./deploy/docker/dev-stack-hotreload.mjs";
+          const backupRoot = await mkdtemp(join(process.env.RUNNER_TEMP, "dev-stack-source-backup-"));
+          const receiptRoot = join(process.env.RUNNER_TEMP, "dev-stack-source-edit-receipts");
+          await editSource("packages/contracts/src/index.ts", source =>
+            source + `\nexport const __devStackRebuildProbe = ${JSON.stringify(process.env.SPACE_DEV_EXPECTED_PACKAGE_PROBE)};\n`,
+            backupRoot, process.cwd(), receiptRoot);
+          NODE
+          api_url="$(node -e 'const fs=require("node:fs"); process.stdout.write(`http://127.0.0.1:${JSON.parse(fs.readFileSync(".dev-stack/config.json","utf8")).ports.api}`)')"
+
+          npm run dev:stack -- rebuild
+
+          rebuilt=0
+          for attempt in $(seq 1 240); do
+            ready=0
+            if curl -fsS "$api_url/readyz" | node -e '
+              let input="";
+              process.stdin.on("data", (chunk) => { input += chunk; });
+              process.stdin.on("end", () => {
+                try {
+                  const body = JSON.parse(input);
+                  process.exit(body.ok === true && body.dependencies?.database === "RUNNING" && body.dependencies?.worker === "RUNNING" && body.dependencies?.cliHost === "RUNNING" ? 0 : 1);
+                } catch { process.exit(1); }
+              });
+            '; then
+              ready=1
+            fi
+            if grep -Fq "$probe" packages/contracts/dist/index.js && [ "$ready" -eq 1 ] && grep -Fq "Rebuild complete; source services are ready." "$RUNNER_TEMP/dev-stack.log"; then
+              rebuilt=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$rebuilt" -ne 1 ]; then
+            echo "shared-package rebuild did not become observable in the running stack" >&2
+            tail -200 "$RUNNER_TEMP/dev-stack.log" >&2 || true
+            exit 1
+          fi
+          after_pid="$(node -e 'const fs=require("node:fs"); process.stdout.write(String(JSON.parse(fs.readFileSync(".dev-stack/supervisor.pid","utf8")).pid))')"
+          test "$before_pid" = "$after_pid"
+          echo "shared-package rebuild was picked up by supervisor $after_pid"
+
+      - name: Verify API watch and real browser hot reload
+        timeout-minutes: 6
+        env:
+          SPACE_DEV_ACCEPTANCE_MUTATIONS: "1"
+        run: node deploy/docker/dev-stack-hotreload.mjs --repo "$GITHUB_WORKSPACE"
+
+      - name: Verify worker failure and explicit normal restart
+        timeout-minutes: 10
+        env:
+          SPACE_DEV_ACCEPTANCE_MUTATIONS: "1"
+          SPACE_DEV_INITIAL_EXIT_FILE: ${{ runner.temp }}/dev-stack-initial.exit
+        run: node deploy/docker/dev-stack-worker-probe.mjs --repo "$GITHUB_WORKSPACE"
+
+      - name: Stop and reset owned resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { resolveConfig } from "./deploy/docker/dev-stack-lib.mjs";
+          const config = await resolveConfig();
+          const records = existsSync(config.processFile) ? JSON.parse(readFileSync(config.processFile, "utf8")).groups : [];
+          writeFileSync(join(process.env.RUNNER_TEMP, "dev-stack-cleanup-inventory.json"), JSON.stringify({
+            stateRoot: config.stateRoot, socketPath: config.socketPath, groups: records.map(record => record.pgid)
+          }), { mode: 0o600 });
+          NODE
+          inventory_status=$?
+          npm run dev:stack -- down
+          down_status=$?
+          npm run dev:stack -- reset
+          reset_status=$?
+
+          process_status=0
+          for pid_file in dev-stack-shell.pid dev-stack-recovery-shell.pid; do
+            shell_pid="$(cat "$RUNNER_TEMP/$pid_file" 2>/dev/null || true)"
+            attempt=0
+            while [ "$attempt" -lt 50 ] && [ -n "$shell_pid" ]; do
+              state="$(ps -p "$shell_pid" -o stat= 2>/dev/null | xargs)"
+              if [ -z "$state" ] || [[ "$state" = Z* ]]; then break; fi
+              attempt=$((attempt + 1))
+              sleep 0.1
+            done
+            if [ -n "$shell_pid" ] && [ -n "$state" ] && [[ "$state" != Z* ]]; then
+              echo "dev-stack launcher $shell_pid is still alive after reset" >&2
+              process_status=1
+            fi
+          done
+
+          npm run --silent dev:stack -- status >"$RUNNER_TEMP/dev-stack-final-status.json"
+          status_status=$?
+          cat "$RUNNER_TEMP/dev-stack-final-status.json"
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { existsSync, readFileSync } from "node:fs";
+          import { join } from "node:path";
+          const inventory = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, "dev-stack-cleanup-inventory.json"), "utf8"));
+          const status = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, "dev-stack-final-status.json"), "utf8"));
+          assert.equal(status.running, false);
+          for (const type of ["containers", "volumes", "networks"]) assert.deepEqual(status.docker[type], []);
+          assert(!existsSync(inventory.stateRoot), "Owned state directory remains after reset.");
+          assert(!existsSync(inventory.socketPath), "Owned Unix socket remains after reset.");
+          const groups = new Set(inventory.groups);
+          for (const line of execFileSync("ps", ["-axo", "pid=,pgid=,stat="], { encoding: "utf8" }).trim().split(/\r?\n/)) {
+            const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)$/);
+            assert(match, "Could not parse final process inventory.");
+            assert(!groups.has(Number(match[2])) || match[3].startsWith("Z"), `Owned group ${match[2]} still contains live PID ${match[1]}.`);
+          }
+          console.log("PASS no owned processes, containers, volumes, networks, state or Unix socket remain");
+          NODE
+          resource_status=$?
+
+          # Recover all source mutations, including interrupted probe processes,
+          # after services stop so normal worker recovery need not rebuild again.
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { existsSync, readFileSync, readdirSync } from "node:fs";
+          import { basename, dirname, join, resolve } from "node:path";
+          import { restoreSourceEdit } from "./deploy/docker/dev-stack-hotreload.mjs";
+          const receiptRoot = join(process.env.RUNNER_TEMP, "dev-stack-source-edit-receipts");
+          const sources = ["apps/api/src/health-routes.ts", "apps/web/src/features/auth/LoginScreen.tsx", "packages/contracts/src/index.ts"];
+          for (const name of existsSync(receiptRoot) ? readdirSync(receiptRoot) : []) {
+            const source = sources.find(candidate => `${candidate.replaceAll("/", "__")}.json` === name);
+            assert(source, "Unexpected source recovery receipt; refusing overwrite.");
+            const file = join(receiptRoot, name);
+            const receipt = JSON.parse(readFileSync(file, "utf8"));
+            assert.equal(receipt.receiptFile, file);
+            assert.equal(receipt.path, resolve(source));
+            assert.equal(dirname(dirname(receipt.backup)), process.env.RUNNER_TEMP);
+            assert(basename(dirname(receipt.backup)).startsWith("dev-stack-source-backup-"));
+            assert.equal(basename(receipt.backup), source.replaceAll("/", "__"));
+            await restoreSourceEdit(receipt);
+            console.log(`PASS interrupted source edit restored sha256=${receipt.originalHash}`);
+          }
+          NODE
+          restore_status=$?
+          git diff --exit-code -- packages/contracts/src/index.ts apps/api/src/health-routes.ts apps/web/src/features/auth/LoginScreen.tsx
+          diff_status=$?
+          echo "--- dev-stack log ---"
+          cat "$RUNNER_TEMP/dev-stack.log" 2>/dev/null || true
+          for result in "$inventory_status" "$down_status" "$reset_status" "$process_status" "$status_status" "$resource_status" "$restore_status" "$diff_status"; do
+            if [ "$result" -ne 0 ]; then exit 1; fi
+          done
+
+      - name: Preserve limited acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dev-stack-linux-acceptance
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/dev-stack-acceptance-evidence/hmr-*.png
+            ${{ runner.temp }}/dev-stack-acceptance-evidence/*-receipt.json
+
+  source-stack-macos:
+    name: Real source stack lifecycle (macOS, Colima)
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install Docker CLI and Colima
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          brew install colima docker docker-compose
+          mkdir -p "$HOME/.docker/cli-plugins"
+          ln -sfn "$(brew --prefix docker-compose)/bin/docker-compose" "$HOME/.docker/cli-plugins/docker-compose"
+
+      - name: Start Colima
+        timeout-minutes: 25
+        run: |
+          colima start --cpu 2 --memory 6
+          docker version
+          docker compose version
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: Unit-test dev-stack contracts
+        run: npm run test:dev-stack
+
+      - name: Start full stack without a TTY
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run dev:stack >"$RUNNER_TEMP/dev-stack.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/dev-stack-shell.pid"
+          echo "source stack launched in background"
+
+      - name: Verify readiness, owner setup, and OpenCode pane
+        env:
+          # Cold Colima/image startup plus one full source build can exceed 15m.
+          # Keep fresh-checkout startup under test; readiness assertions stay intact.
+          SPACE_DEV_VERIFY_READY_TIMEOUT_MS: "1800000"
+          SPACE_DEV_VERIFY_CLI_TIMEOUT_MS: "300000"
+        run: npm run verify:dev-stack
+
+      - name: Stop and reset owned resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          npm run dev:stack -- down
+          down_status=$?
+          npm run dev:stack -- reset
+          reset_status=$?
+
+          shell_pid="$(cat "$RUNNER_TEMP/dev-stack-shell.pid" 2>/dev/null || true)"
+          attempt=0
+          while [ "$attempt" -lt 50 ]; do
+            if [ -z "$shell_pid" ] || ! kill -0 "$shell_pid" 2>/dev/null; then
+              break
+            fi
+            attempt=$((attempt + 1))
+            sleep 0.1
+          done
+          process_status=0
+          if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
+            echo "dev-stack launcher process $shell_pid is still alive after reset" >&2
+            process_status=1
+            kill "$shell_pid" 2>/dev/null || true
+          fi
+
+          status_json="$(npm run --silent dev:stack -- status 2>/dev/null)"
+          echo "$status_json"
+          if echo "$status_json" | grep -q '"running": true'; then
+            echo "dev-stack supervisor still reports running after reset" >&2
+            process_status=1
+          fi
+          if ! echo "$status_json" | grep -q '"containers": \[\]'; then
+            echo "dev-stack containers remain after reset" >&2
+            process_status=1
+          fi
+          if ! echo "$status_json" | grep -q '"volumes": \[\]'; then
+            echo "dev-stack volumes remain after reset" >&2
+            process_status=1
+          fi
+
+          echo "--- dev-stack log ---"
+          cat "$RUNNER_TEMP/dev-stack.log" 2>/dev/null || true
+          colima stop >/dev/null 2>&1 || true
+          if [ "$down_status" -ne 0 ] || [ "$reset_status" -ne 0 ] || [ "$process_status" -ne 0 ]; then
+            exit 1
+          fi

@@ -34,4 +34,16 @@ describe("pane model pick at CLI launch", () => {
       expect(buildCliEnvironment(config, { runtimeId, modelId: "provider/picked-model" }).SPACE_CLI_MODEL_ID, runtimeId).toBeUndefined();
     }
   });
+
+  it("passes the configured source-stack memory root to OpenCode", () => {
+    const previousRoot = process.env.SPACE_MEMORY_ROOT;
+    process.env.SPACE_MEMORY_ROOT = "/tmp/source-opencode-memory";
+    try {
+      const env = buildCliEnvironment(config, { runtimeId: "cli:opencode" });
+      expect(env.SPACE_MEMORY_ROOT).toBe("/tmp/source-opencode-memory");
+    } finally {
+      if (previousRoot === undefined) delete process.env.SPACE_MEMORY_ROOT;
+      else process.env.SPACE_MEMORY_ROOT = previousRoot;
+    }
+  });
 });

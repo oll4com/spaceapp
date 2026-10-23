@@ -993,6 +993,7 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     SPACE_CLI_SESSION_ID: context.cliSessionId ?? undefined,
     SPACE_CODEX_PER_SESSION_APP_SERVER: directCodexParity ? "1" : undefined,
     SPACE_CLI_WORKSPACE: context.cwd ?? undefined,
+    SPACE_MEMORY_ROOT: process.env.SPACE_MEMORY_ROOT,
     SPACE_PANE_ID: context.paneId ?? undefined,
     SPACE_ROOM_ID: context.roomId ?? undefined,
     SHELL: shell,

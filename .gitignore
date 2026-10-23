@@ -37,6 +37,8 @@ bin/
 var/
 projects/
 /lost+found/
+.dev-stack/
+.dev-stack*/
 
 # Local credentials and machine-specific environment.
 .env

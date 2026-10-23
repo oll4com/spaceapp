@@ -16,7 +16,7 @@ import {
   type UpdateCodexGoalTaskInput
 } from "@space/contracts";
 import { createCanonicalMemoryReader, type CanonicalMemoryReaderOptions } from "./canonical-memory-reader.js";
-import { monthOfMemoryFile, spaceMemoryIndexPath, spaceMemoryMonthlyPath } from "./space-memory-files.js";
+import { monthOfMemoryFile, spaceMemoryDirectory, spaceMemoryIndexPath, spaceMemoryMonthlyPath } from "./space-memory-files.js";
 import { nowIso, redactMemoryText } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -53,7 +53,7 @@ function athensMonthFor(date: Date): string {
 }
 
 export function defaultCanonicalSpaceMemoryPaths(date = new Date()): CanonicalSpaceMemoryPaths {
-  return resolveCanonicalSpaceMemoryPaths({}, date);
+  return resolveCanonicalSpaceMemoryPaths(process.env, date);
 }
 
 /**
@@ -66,10 +66,11 @@ export function resolveCanonicalSpaceMemoryPaths(
   env: Record<string, string | undefined>,
   date = new Date()
 ): Required<CanonicalSpaceMemoryPaths> {
+  const memoryDirectory = spaceMemoryDirectory(env);
   const monthlyPath = env.SPACE_MEMORY_MONTHLY_PATH || env.SPACE_GEMINI_MEMORY_MONTHLY_PATH ||
-    spaceMemoryMonthlyPath(athensMonthFor(date));
+    spaceMemoryMonthlyPath(athensMonthFor(date), memoryDirectory);
   return {
-    indexPath: env.SPACE_MEMORY_INDEX_PATH || env.SPACE_GEMINI_MEMORY_INDEX_PATH || spaceMemoryIndexPath(),
+    indexPath: env.SPACE_MEMORY_INDEX_PATH || env.SPACE_GEMINI_MEMORY_INDEX_PATH || spaceMemoryIndexPath(memoryDirectory),
     monthlyPath,
     lockPath: env.SPACE_MEMORY_LOCK_PATH || env.SPACE_GEMINI_MEMORY_LOCK_PATH || `${monthlyPath}.lock`
   };

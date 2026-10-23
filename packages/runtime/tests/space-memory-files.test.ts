@@ -8,6 +8,7 @@ import {
   isMonthlyMemoryFile,
   monthOfMemoryFile,
   spaceAgentCorePath,
+  spaceMemoryDirectory,
   spaceMemoryIndexPath,
   spaceMemoryMonthlyPath,
   usesLegacyMemoryFiles
@@ -23,6 +24,22 @@ async function directory() {
 const query = { page: 1, pageSize: 25, sortOrder: "desc" as const, searchMode: "keyword" as const };
 
 describe("Space Memory files", () => {
+  it("resolves process helpers from an owned Space Memory root", async () => {
+    const root = await directory();
+    const previousRoot = process.env.SPACE_MEMORY_ROOT;
+    await writeFile(join(root, "gemini_history.md"), "# History\n");
+    await writeFile(join(root, "gemini.md"), "# Core\n");
+    process.env.SPACE_MEMORY_ROOT = root;
+    try {
+      expect(spaceMemoryDirectory()).toBe(root);
+      expect(spaceMemoryIndexPath()).toBe(join(root, "gemini_history.md"));
+      expect(spaceAgentCorePath()).toBe(join(root, "gemini.md"));
+    } finally {
+      if (previousRoot === undefined) delete process.env.SPACE_MEMORY_ROOT;
+      else process.env.SPACE_MEMORY_ROOT = previousRoot;
+    }
+  });
+
   it("keeps the legacy gemini_history files until the index is renamed", async () => {
     const root = await directory();
     await writeFile(join(root, "gemini_history.md"), "# History\n");

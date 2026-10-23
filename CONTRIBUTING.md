@@ -50,6 +50,108 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the complete app from source
+
+With Docker Engine or Docker Desktop available, start the contributor stack:
+
+```sh
+npm run dev:stack
+```
+
+The command starts digest-pinned PostgreSQL with pgvector and Temporal in an
+isolated Compose project, builds the workspace before migrations on a fresh
+checkout, installs the `opencode-ai` version pinned by `Dockerfile` into local
+state, and launches the CLI host, worker, API and Vite web server from this
+checkout. The API uses normal single-owner setup: `SPACE_DEV_LOGIN` stays off.
+When `/readyz` reports the database, worker and CLI host as running, the command
+prints the local Web URL. It queries the API's owner setup status and prints the
+one-time setup token **only** if an owner has not been claimed and that token is
+still valid. On an ordinary restart after owner creation, it prints a sign-in
+instruction instead; an expired or unavailable setup token is not displayed.
+If the API setup status cannot be verified, startup fails rather than logging a
+possibly consumed token. Do not use `reset` merely to recover a setup token:
+`reset` deletes this checkout's persistent dev data.
+
+The default source-stack ports are deliberately separate from an installed
+SpaceApp: API `5910`, Web `5911`, PostgreSQL `55432`, and Temporal `57233`.
+Docker-published ports bind to `127.0.0.1`. Runtime state and generated secrets
+live under the git-ignored `.dev-stack/`; secret files are mode `0600`. Provider
+API keys and GitHub tokens inherited by the shell are not passed to source
+services.
+
+Useful lifecycle commands are:
+
+```sh
+npm run dev:stack -- status
+npm run dev:stack -- rebuild
+npm run dev:stack -- down
+npm run dev:stack -- reset
+```
+
+`rebuild` rebuilds workspace packages and restarts the source services under the
+same supervisor. `down` stops only this checkout's supervised processes and
+Compose project. `reset` additionally removes this checkout's Compose volumes
+and state directory; if Docker cannot remove an owned volume, reset fails and
+keeps the state needed to retry cleanup instead of reporting success. Lifecycle
+commands verify the recorded supervisor start identity and checkout hash before
+sending a signal, so a stale PID file cannot target a reused unrelated PID.
+
+The isolated ports can be overridden with `SPACE_DEV_API_PORT`,
+`SPACE_DEV_WEB_PORT`, `SPACE_DEV_POSTGRES_PORT`, and
+`SPACE_DEV_TEMPORAL_PORT`. The state directory and Compose project identity are
+derived from this checkout and intentionally cannot be overridden, so lifecycle
+commands cannot target another checkout's resources. The runner also rejects
+installed-instance ports `4910` and `4911`, duplicate ports, unsafe state roots,
+and symlink state roots.
+
+For an automated end-to-end proof after the stack is ready, run:
+
+```sh
+npm run verify:dev-stack
+```
+
+That proof performs normal owner setup, points the Getting Started room at the
+current checkout rather than `/opt/spaceapp`, starts its OpenCode terminal pane
+through the real CLI host, attaches the same terminal WebSocket transport used
+by the web UI, requires a running CLI session plus real terminal output, and
+verifies that the stack remains ready. The dedicated GitHub Actions workflow
+runs this lifecycle on Linux and on an Intel macOS runner using Colima. Windows
+11 contributors should use WSL2 with Docker Desktop's WSL integration or a
+Docker engine running inside WSL2; that path follows the Linux host model.
+These host paths are contributor environments, not installer-release
+certification.
+
+The Linux lifecycle job also edits and restores source files in its disposable
+checkout: it checks API watch restarts, imports a rebuilt package marker through
+the running API, and verifies Vite updates a real Chrome page without navigation
+or losing form state. It then stops the owned worker, requires a clear failure
+and nonzero supervisor exit, and exercises an explicit normal restart with the
+same owner data. These mutation probes are CI-only and are not needed for normal
+contributor startup. Their screenshots include only the anonymous login heading;
+state directories, credentials, browser profiles and source backups are not
+uploaded. The final cleanup restores original source bytes and checks owned
+processes, containers, volumes, networks, state and the Unix socket are gone.
+
+### Troubleshooting the source stack
+
+- If Docker is unavailable, run `docker compose version` first and start Docker
+  Desktop, Colima, or the Docker daemon before `npm run dev:stack`.
+- If a default dev port is occupied, set the corresponding
+  `SPACE_DEV_*_PORT` variable rather than reusing installed ports `4910/4911`.
+- If a package change is not reflected in a running source service, run
+  `npm run dev:stack -- rebuild`; Vite handles `apps/web/src` edits directly
+  and the API runs under `tsx watch`.
+- If startup is interrupted, `npm run dev:stack -- down` stops the owned
+  supervisor and Compose project. Use `npm run dev:stack -- reset` for a clean
+  database and state directory; a failed volume removal is reported and leaves
+  the state in place so cleanup can be retried safely.
+- On macOS, `npm run dev:stack` repairs the execute bits on node-pty's published
+  `prebuilds/darwin-*/spawn-helper` before the CLI host starts. If you launch
+  the CLI host outside this workflow and a terminal remains `IDLE` with an
+  `EACCES` spawn error, repair that helper's execute permission first.
+- Unix socket paths are automatically shortened under the system temporary
+  directory when `.dev-stack` would exceed the platform socket-path limit.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
