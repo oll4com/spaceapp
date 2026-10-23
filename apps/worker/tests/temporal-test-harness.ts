@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkflowHandle } from "@temporalio/client";
 import { temporal } from "@temporalio/proto";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { bundleWorkflowCode, DefaultLogger, Worker, type WorkflowBundleWithSourceMap } from "@temporalio/worker";
+import type { RecordedHistory } from "./temporal-history-store.js";
+export { createHistoryRecorder, loadHistories } from "./temporal-history-store.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const historyDirectory = resolve(here, "fixtures/workflow-histories");
 export interface ScenarioContext {
   env: TestWorkflowEnvironment;
   taskQueue: string;
@@ -21,7 +21,6 @@ export interface Scenario {
   activities: Record<string, (...args: any[]) => any>;
   run(ctx: ScenarioContext): Promise<void>;
 }
-export interface RecordedHistory { name: string; workflowId: string; history: unknown }
 const bundles = new Map<string, Promise<WorkflowBundleWithSourceMap>>();
 
 export function workflowBundle(variant: "current" | "legacy" | "negative" = "current") {
@@ -92,19 +91,6 @@ export async function runScenario(env: TestWorkflowEnvironment, scenario: Scenar
   await Promise.all(running);
   if (!histories.length) throw new Error(`${scenario.name} did not capture a real history`);
   return histories;
-}
-
-export async function saveHistories(histories: RecordedHistory[]) {
-  await mkdir(historyDirectory, { recursive: true });
-  for (const entry of histories) {
-    await writeFile(resolve(historyDirectory, `${entry.name}.json`), JSON.stringify({ workflowId: entry.workflowId, history: entry.history }, null, 2) + "\n");
-  }
-}
-
-export async function loadHistories(): Promise<RecordedHistory[]> {
-  const files = (await readdir(historyDirectory)).filter(file => file.endsWith(".json")).sort();
-  if (!files.length) throw new Error("No recorded histories: replay must never silently pass without fixtures");
-  return Promise.all(files.map(async file => ({ name: file.slice(0, -5), ...JSON.parse(await readFile(resolve(historyDirectory, file), "utf8")) })));
 }
 
 export async function assertReplay(histories: RecordedHistory[], variant: "current" | "negative" = "current") {

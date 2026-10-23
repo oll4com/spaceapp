@@ -2,12 +2,19 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { basicScenarios } from "./temporal-basic-scenarios.js";
 import { supervisorScenarios } from "./temporal-supervisor-scenarios.js";
-import { assertReplay, loadHistories, runScenario, saveHistories, workflowBundle } from "./temporal-test-harness.js";
+import { assertReplay, createHistoryRecorder, loadHistories, runScenario, workflowBundle } from "./temporal-test-harness.js";
 
 // Isolate time-skipping locks and production memory queues between scenarios.
 describe.sequential("real Temporal sandbox and replay compatibility", () => {
+  let recordHistories: Awaited<ReturnType<typeof createHistoryRecorder>> | undefined;
   beforeAll(async () => {
     await Promise.all([workflowBundle(), workflowBundle("legacy")]);
+    if (process.env.SPACE_RECORD_TEMPORAL_HISTORIES === "1") {
+      recordHistories = await createHistoryRecorder({
+        version: process.env.SPACE_TEMPORAL_HISTORY_VERSION || undefined,
+        replay: assertReplay
+      });
+    }
   }, 60_000);
 
   for (const scenario of [...basicScenarios(), ...supervisorScenarios()]) {
@@ -15,8 +22,8 @@ describe.sequential("real Temporal sandbox and replay compatibility", () => {
       const env = await TestWorkflowEnvironment.createTimeSkipping({ client: { identity: "synthetic-test-client" } });
       try {
         const histories = await runScenario(env, scenario);
-        // Ordinary tests never overwrite the compatibility baseline.
-        if (process.env.SPACE_RECORD_TEMPORAL_HISTORIES === "1") await saveHistories(histories);
+        // Recording only adds new names after the existing corpus passed replay.
+        if (recordHistories) await recordHistories(histories);
         // Replay the committed corpus once below. Replaying the same scenarios
         // here doubles the compatibility work without adding a baseline.
       } finally {

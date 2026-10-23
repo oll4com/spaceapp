@@ -5,13 +5,26 @@ server with production workflows and in-memory stub activities. They contain
 synthetic identifiers only. No operator database, provider, Docker or credentials
 are used. Normal tests replay these files and never overwrite them.
 
-To record the initial baselines, or deliberately add histories for a new patched
-workflow version:
+To record an initial baseline into an empty corpus:
 
 ```sh
 npm run temporal:record-histories -w @space/worker
 npm test -w @space/worker
 ```
+
+To add histories for a reviewed `patched()` workflow change, use a new version
+label (lowercase letters, digits and single hyphens):
+
+```sh
+npm run temporal:record-histories -w @space/worker -- --version goal-v2
+npm test -w @space/worker
+```
+
+Before running recording scenarios, the recorder replays every existing history
+against the current workflow bundle and stops on any failure. New histories use
+names such as `dot-wake-signals--goal-v2.json`. Existing files are never replaced;
+a reused version/name fails. The original filenames and older patched-branch
+histories remain part of subsequent replay tests. Normal tests do not record.
 
 After the initial baseline, re-recording is allowed only together with a reviewed
 `patched()` workflow change. Preserve histories for older branches while adding
