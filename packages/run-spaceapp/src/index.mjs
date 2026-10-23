@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -120,6 +121,7 @@ const CONFIG_KEYS = new Set([
   "schemaVersion",
   "version",
   "previousVersion",
+  "engine",
   "bindHost",
   "port",
   "telemetry",
@@ -306,6 +308,7 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
 
 export function createDefaultConfig({
   version,
+  engine,
   profile = "light",
   accessMode = "isolated",
   companionsEnabled = false
@@ -319,6 +322,7 @@ export function createDefaultConfig({
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
     previousVersion: null,
+    ...(engine !== undefined ? { engine } : {}),
     bindHost: "127.0.0.1",
     port: 4911,
     telemetry: false,
@@ -349,6 +353,9 @@ export function validateConfig(config) {
   if (config.previousVersion !== null) {
     assertVersion(config.previousVersion);
   }
+  if (config.engine !== undefined && config.engine !== "docker" && config.engine !== "podman") {
+    throw new Error("engine must be docker or podman.");
+  }
   if (config.bindHost !== "127.0.0.1" && config.bindHost !== "0.0.0.0") {
     throw new Error("bindHost must be 127.0.0.1 or 0.0.0.0.");
   }
@@ -363,6 +370,9 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.accessMode === "host-root" && config.engine === "podman") {
+    throw new Error("Host-root access is not supported with rootless Podman. Use accessMode: isolated or Docker.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -671,13 +681,15 @@ export async function userNamespacesUsable(platform = process.platform, read = (
 // mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
 const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
 
-export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
+export function renderWorkspaceCompose(config, { cliSandbox = false, selinux = false } = {}) {
   validateConfig(config);
+  const selinuxOpt = selinux || (config.engine === "podman" && process.platform === "linux");
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(selinuxOpt ? ["        bind:", "          selinux: z"] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -692,7 +704,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(selinuxOpt ? ["        bind:", "          selinux: z"] : [])
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -787,6 +800,19 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
+  let engine = options.engine ?? options.config?.engine;
+  if (engine === undefined) {
+    try {
+      const cfgPath = join(stateRoot, "config.json");
+      const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
+      engine = raw.engine || "docker";
+    } catch {
+      engine = "docker";
+    }
+  }
+  if (engine !== "docker" && engine !== "podman") {
+    throw new Error("engine must be docker or podman.");
+  }
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
@@ -905,7 +931,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -954,6 +980,7 @@ export async function writeRuntimeFiles(root, config) {
 
 export async function prepareInstallation(root, {
   version,
+  engine,
   profile,
   accessMode,
   companionsEnabled
@@ -977,6 +1004,7 @@ export async function prepareInstallation(root, {
     }
     config = createDefaultConfig({
       version,
+      engine,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
       companionsEnabled
@@ -988,6 +1016,15 @@ export async function prepareInstallation(root, {
       version,
       previousVersion: config.version
     };
+  }
+  const currentEngine = config.engine || "docker";
+  if (engine !== undefined && currentEngine !== engine) {
+    throw new Error(
+      `Switching container engines on an existing installation from ${currentEngine} to ${engine} is refused. Docker volumes and Podman volumes are distinct. Back up your installation, reinstall with --engine ${engine}, and restore.`
+    );
+  }
+  if (engine !== undefined && config.engine !== engine) {
+    config = { ...config, engine };
   }
   if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };

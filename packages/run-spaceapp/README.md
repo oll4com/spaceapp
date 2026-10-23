@@ -183,3 +183,18 @@ npx --yes run-spaceapp@latest uninstall      # Stop and remove containers (prese
 Uninstall retains data by default and prints the separate
 `npm uninstall -g run-spaceapp` command for removing an optional global
 launcher.
+
+### Podman Support (Rootless)
+
+SpaceApp provides rootless Podman support as an alternative container engine on Linux (development / PR candidate for #63; requires local or branched installation prior to general package release):
+
+```bash
+node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman
+```
+
+Requirements & Security Policies for Podman:
+- **Engine**: Podman >= 5.0 with `podman compose` (or Compose plugin) configured and available on PATH.
+- **Rootless Namespaces**: Unprivileged user namespaces must be enabled (`subuid` and `subgid` allocated).
+- **Access Mode**: Podman installations require `--access isolated`. Host-root access (`--access host-root`) is strictly rejected with rootless Podman to prevent container-to-host privilege confusion.
+- **Volume Isolation & Engine Immutability**: Docker volumes and Podman rootless storage are completely separate. Existing Docker installations cannot be switched in-place to Podman without a backup and clean reinstall.
+- **SELinux**: On distributions with enforcing SELinux (e.g., Fedora, RHEL), shared workspace bind mounts automatically apply `:z` volume labeling.

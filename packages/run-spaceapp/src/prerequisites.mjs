@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -654,7 +655,7 @@ async function dockerCliAndComposeAreAvailable(execute) {
   return true;
 }
 
-async function dockerIsReady(execute) {
+export async function dockerIsReady(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] },
@@ -1183,4 +1184,245 @@ function launchDetachedCommand(spec) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] }
+  ]) {
+    try {
+      if (await execute(spec, { stdin: null, stdout: null, stderr: null }) !== 0) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function verifyPodmanPrerequisites(execute, { stderr = process.stderr, platform = process.platform, requestedProfile = "small" } = {}) {
+  // 1. Podman binary and version check (enforce podman >= 5.0, fail-closed on unparsable/invalid version)
+  let versionOutput = "";
+  const versionStdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (versionOutput.length < 65536) {
+        versionOutput += chunk.toString();
+      }
+      done();
+    }
+  });
+  try {
+    const code = await execute({ command: "podman", args: ["--version"] }, {
+      stdin: null,
+      stdout: versionStdout,
+      stderr: null
+    });
+    if (code !== 0) {
+      stderr?.write("Podman is not available on PATH or exited with non-zero status.\n");
+      return { ok: false, code: code || 1, reason: "podman_missing" };
+    }
+    const match = versionOutput.match(/(?:podman\s+version\s+|version\s+)?([0-9]+)\.([0-9]+)(?:\.([0-9]+))?/i);
+    if (!match) {
+      stderr?.write(`Podman version could not be parsed: "${versionOutput.trim()}".\n`);
+      return { ok: false, code: 1, reason: "podman_version_unparseable" };
+    }
+    const major = parseInt(match[1], 10);
+    if (major < 5) {
+      stderr?.write(`Podman version 5.0+ is required; detected version ${match[1]}.${match[2]}.\n`);
+      return { ok: false, code: 1, reason: "podman_version_unsupported" };
+    }
+  } catch (err) {
+    stderr?.write(`Podman execution error: ${err.message}\n`);
+    return { ok: false, code: 1, reason: "podman_execution_error" };
+  }
+
+  // 2. Podman Compose provider check (enforce provider presence, name and version)
+  let composeOutput = "";
+  const composeStdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (composeOutput.length < 65536) {
+        composeOutput += chunk.toString();
+      }
+      done();
+    }
+  });
+  try {
+    const composeCode = await execute({ command: "podman", args: ["compose", "version"] }, {
+      stdin: null, stdout: composeStdout, stderr: null
+    });
+    if (composeCode !== 0) {
+      stderr?.write("Podman Compose provider is not configured. Install podman-compose or compose plugin.\n");
+      return { ok: false, code: composeCode, reason: "podman_compose_missing" };
+    }
+    const trimmedCompose = composeOutput.trim();
+    if (!trimmedCompose) {
+      stderr?.write("Podman Compose provider returned empty version response.\n");
+      return { ok: false, code: 1, reason: "podman_compose_empty" };
+    }
+
+    const podmanProvider = trimmedCompose.match(/^podman-compose(?:\s+version)?\s+v?(\d+)\.(\d+)\.(\d+)(?:\b|$)/i);
+    const dockerProvider = trimmedCompose.match(/^docker compose version\s+v?(\d+)\.(\d+)\.(\d+)(?:\b|$)/i);
+    if (!podmanProvider && !dockerProvider) {
+      stderr?.write(`Unknown or unparseable Podman Compose provider response: "${trimmedCompose}".\n`);
+      return { ok: false, code: 1, reason: "podman_compose_provider_unsupported" };
+    }
+    const provider = podmanProvider || dockerProvider;
+    const [major, minor, patch] = provider.slice(1).map(Number);
+    const supported = podmanProvider
+      ? major > 1 || (major === 1 && minor >= 6)
+      : major >= 2;
+    if (!supported) {
+      const name = podmanProvider ? "podman-compose" : "Docker Compose";
+      const minimum = podmanProvider ? "1.6.0" : "2.0.0";
+      stderr?.write(`${name} version >= ${minimum} is required; detected ${major}.${minor}.${patch}.\n`);
+      return { ok: false, code: 1, reason: podmanProvider
+        ? "podman_compose_unsupported_version"
+        : "docker_compose_unsupported_version" };
+    }
+  } catch (err) {
+    stderr?.write(`Podman compose error: ${err.message}\n`);
+    return { ok: false, code: 1, reason: "podman_compose_error" };
+  }
+
+  // 3. Podman info / rootless verification (fail-closed)
+  let infoOutput = "";
+  const infoStdout = new Writable({
+    write(chunk, _encoding, done) {
+      if (infoOutput.length < 1048576) {
+        infoOutput += chunk.toString();
+      }
+      done();
+    }
+  });
+  try {
+    const infoCode = await execute({ command: "podman", args: ["info", "--format", "{{json .}}"] }, {
+      stdin: null, stdout: infoStdout, stderr: null
+    });
+    if (infoCode !== 0) {
+      stderr?.write("Podman formatted info probe failed.\n");
+      return { ok: false, code: infoCode, reason: "podman_info_failed" };
+    }
+    const trimmed = infoOutput.trim();
+    if (!trimmed) {
+      stderr?.write("Podman info probe produced empty output.\n");
+      return { ok: false, code: 1, reason: "podman_info_empty" };
+    }
+    let info;
+    try {
+      info = JSON.parse(trimmed);
+    } catch {
+      stderr?.write("Podman info probe produced invalid JSON.\n");
+      return { ok: false, code: 1, reason: "podman_info_invalid_json" };
+    }
+
+    if (!info || typeof info !== "object" || !info.host) {
+      stderr?.write("Podman info host details missing.\n");
+      return { ok: false, code: 1, reason: "podman_info_missing_host" };
+    }
+
+    // Both Linux and macOS guest must run rootless
+    if (info.host.security?.rootless !== true) {
+      stderr?.write("Podman is not running rootless. SpaceApp requires rootless Podman execution.\n");
+      return { ok: false, code: 1, reason: "podman_not_rootless" };
+    }
+
+    // Both Linux host and macOS Podman machine guest must provide cgroup v2
+    if (info.host.cgroupVersion !== "v2") {
+      stderr?.write(`Podman cgroup version is "${info.host.cgroupVersion}". SpaceApp requires cgroup v2.\n`);
+      return { ok: false, code: 1, reason: "podman_cgroup_unsupported" };
+    }
+
+    if (platform === "darwin") {
+      // macOS uses Podman machine VM: verify machine guest sizing (fail-closed if missing)
+      const req = PROFILE_REQUIREMENTS[requestedProfile] || PROFILE_REQUIREMENTS.small;
+      const cpus = info.host.cpus || info.host.nproc;
+      if (typeof cpus !== "number" || cpus <= 0) {
+        stderr?.write("Podman machine CPU count could not be determined. SpaceApp requires verified CPU resources.\n");
+        return { ok: false, code: 1, reason: "podman_machine_missing_cpus" };
+      }
+      if (cpus < req.cpuCount) {
+        stderr?.write(`Podman machine has ${cpus} CPUs; ${req.cpuCount} CPUs required for ${requestedProfile} profile. Run: podman machine stop && podman machine set --cpus ${req.cpuCount} && podman machine start\n`);
+        return { ok: false, code: 1, reason: "podman_machine_insufficient_cpus" };
+      }
+
+      const mem = info.host.memTotal;
+      if (typeof mem !== "number" || mem <= 0) {
+        stderr?.write("Podman machine memory could not be determined. SpaceApp requires verified memory resources.\n");
+        return { ok: false, code: 1, reason: "podman_machine_missing_memory" };
+      }
+      if (mem < req.memoryBytes * 0.9) {
+        const gib = Math.round(req.memoryBytes / (1024 ** 3));
+        stderr?.write(`Podman machine memory is insufficient for ${requestedProfile} profile (${gib} GiB required). Run: podman machine stop && podman machine set --memory ${gib * 1024} && podman machine start\n`);
+        return { ok: false, code: 1, reason: "podman_machine_insufficient_memory" };
+      }
+
+      // Check disk capacity via podman machine inspect (or info store fallback)
+      let diskBytes = null;
+      let machineOutput = "";
+      const machineStdout = new Writable({
+        write(chunk, _encoding, done) {
+          if (machineOutput.length < 65536) machineOutput += chunk.toString();
+          done();
+        }
+      });
+      try {
+        const mCode = await execute({ command: "podman", args: ["machine", "inspect", "--format", "{{json .}}"] }, {
+          stdin: null, stdout: machineStdout, stderr: null
+        });
+        if (mCode === 0 && machineOutput.trim()) {
+          try {
+            const mInfo = JSON.parse(machineOutput.trim());
+            const item = Array.isArray(mInfo) ? mInfo[0] : mInfo;
+            const sz = item?.DiskSize || item?.Resources?.DiskSize;
+            if (typeof sz === "number") {
+              // Podman machine inspect reports DiskSize in GiB
+              diskBytes = sz * (1024 ** 3);
+            } else if (typeof sz === "string") {
+              const num = parseFloat(sz);
+              if (Number.isFinite(num)) {
+                if (/tb?/i.test(sz)) diskBytes = num * (1024 ** 4);
+                else if (/gb?/i.test(sz)) diskBytes = num * (1024 ** 3);
+                else if (/mb?/i.test(sz)) diskBytes = num * (1024 ** 2);
+                else diskBytes = num * (1024 ** 3); // bare number defaults to GiB
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+
+      if (diskBytes === null || diskBytes <= 0) {
+        const freeDisk = info.store?.graphStatus?.["Disk Available"] || info.store?.diskFree;
+        if (typeof freeDisk === "number") {
+          diskBytes = freeDisk;
+        } else if (typeof freeDisk === "string") {
+          const m = freeDisk.match(/^([0-9.]+)\s*([A-Za-z]+)?/);
+          if (m) {
+            const val = parseFloat(m[1]);
+            const unit = (m[2] || "").toLowerCase();
+            if (unit.startsWith("g") || unit.startsWith("gb")) diskBytes = val * (1024 ** 3);
+            else if (unit.startsWith("m") || unit.startsWith("mb")) diskBytes = val * (1024 ** 2);
+            else if (unit.startsWith("t") || unit.startsWith("tb")) diskBytes = val * (1024 ** 4);
+            else diskBytes = val;
+          }
+        }
+      }
+
+      if (diskBytes === null || diskBytes <= 0) {
+        stderr?.write("Podman machine disk capacity could not be determined. SpaceApp requires verified disk resources.\n");
+        return { ok: false, code: 1, reason: "podman_machine_missing_disk" };
+      }
+      if (diskBytes < req.freshDiskBytes * 0.9) {
+        const gib = Math.round(req.freshDiskBytes / (1024 ** 3));
+        stderr?.write(`Podman machine disk is insufficient for ${requestedProfile} profile (${gib} GiB required). Run: podman machine stop && podman machine set --disk-size ${gib + 10} && podman machine start\n`);
+        return { ok: false, code: 1, reason: "podman_machine_insufficient_disk" };
+      }
+    }
+  } catch (err) {
+    stderr?.write(`Podman info error: ${err.message}\n`);
+    return { ok: false, code: 1, reason: "podman_info_error" };
+  }
+
+  return { ok: true, code: 0 };
 }

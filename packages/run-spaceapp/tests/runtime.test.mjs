@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -76,6 +77,22 @@ test("compose actions map to fixed commands and never invoke a shell", () => {
   );
   assert.equal(removeBrowser.args.includes("--volumes"), false);
   assert.throws(() => composeCommand("arbitrary", home), /unsupported/i);
+});
+
+test("composeCommand rejects invalid engine sources before selecting an executable", async () => {
+  assert.throws(() => composeCommand("up", home, { engine: "sudo" }), /engine must be docker or podman/);
+  assert.throws(() => composeCommand("up", home, { config: { engine: "sg" } }), /engine must be docker or podman/);
+  assert.equal(composeCommand("up", home, { engine: "podman" }).command, "podman");
+
+  const stateRoot = await mkdtemp(join(tmpdir(), "spaceapp-invalid-engine-"));
+  try {
+    await writeFile(join(stateRoot, "config.json"), JSON.stringify({ engine: "sudo" }));
+    assert.throws(() => composeCommand("up", home, { stateRoot }), /engine must be docker or podman/);
+    await writeFile(join(stateRoot, "config.json"), JSON.stringify({ engine: "podman" }));
+    assert.equal(composeCommand("up", home, { stateRoot }).command, "podman");
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+  }
 });
 
 test("compose project identity is stable for the same installation root", () => {

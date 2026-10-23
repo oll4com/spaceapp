@@ -39,6 +39,19 @@ starts the service. Before adding the current user to the `docker` group, it
 explains that the group grants root-level privileges, adds the user
 automatically, and continues in the same command.
 
+
+### Podman Support (Rootless Linux)
+
+On Linux distributions where Docker is unavailable or rootless containers are required (e.g., Fedora, RHEL, or user environments without root privileges), SpaceApp supports rootless Podman:
+
+- Requires Podman >= 5.0 and `podman-compose` provider installed.
+- Until a general package release explicitly includes Podman support, use a local checkout of a branch containing this support and run from the repository root:
+  ```bash
+  node packages/run-spaceapp/bin/spaceapp.mjs install --engine podman
+  ```
+- Rootless Podman requires `--access isolated` (host-root access is disabled).
+- Engine changes are not supported in an existing `SPACEAPP_HOME`; `config.json` records the engine and backups are stored under that home. To move a Docker installation to Podman, create a backup with `spaceapp backup`, copy the backup file outside the existing home, install to a new `SPACEAPP_HOME` with `--engine podman`, copy the backup into the new home’s `backups` directory, then restore it there. Keep the original installation and external backup until you have independently verified the restored data; this procedure does not guarantee a successful migration.
+
 ## macOS
 
 Install Node.js 20.11 or newer, then run in Terminal:
