@@ -50,5 +50,6 @@ projects/
 .autohand/
 .config/
 .local/
+.dev-stack/
 
 run-spaceapp-*.tgz

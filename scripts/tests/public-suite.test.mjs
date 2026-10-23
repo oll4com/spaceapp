@@ -18,6 +18,7 @@ import "./reset-owner-password.test.mjs";
 import "./rotate-owner-setup-token.test.mjs";
 import "./trivy-report-summary.test.mjs";
 import "./verify-export-provenance.test.mjs";
+import "./dev-stack.test.mjs";
 
 import './opencode-first-run.test.mjs';
 import './opencode-standalone.test.mjs';
