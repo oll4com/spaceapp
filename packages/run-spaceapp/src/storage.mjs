@@ -32,7 +32,7 @@ async function configurationBytes(root) {
     }
   }
   await walk(join(root, "secrets"));
-  for (const file of ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml", "compose.host-access.yml"]) {
+  for (const file of ["config.json", "runtime.env", "compose.yml", "compose.workspaces.yml", "compose.host-access.yml", "compose.podman.yml"]) {
     bytes += (await stat(join(root, file)).catch(() => ({ size: 0 }))).size;
   }
   return bytes;
@@ -95,8 +95,9 @@ async function installedImageDigests(root, version) {
   return digests;
 }
 
-export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, fetch = globalThis.fetch }) {
-  const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
+export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, platform = process.platform, fetch = globalThis.fetch }) {
+  const engineName = config.engine || "docker";
+  const dockerInfo = await captureProbe(execute, { command: engineName, args: ["info", "--format", "{{json .}}"] });
   let engine = null;
   try { engine = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
   const cachedLayers = new Set();
@@ -104,7 +105,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const existingDigests = await installedImageDigests(root, existingConfig.version);
     for (const type of ["core", "cli", "browser"]) {
       for (const ref of localImageRefs(type, existingConfig.version, existingDigests[type])) {
-        const output = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
+        const output = await captureProbe(execute, { command: engineName, args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
         try { for (const layer of JSON.parse(output)) cachedLayers.add(layer); break; } catch {}
       }
     }
@@ -126,15 +127,15 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const refs = ["core", "cli", "browser"].includes(type) ? localImageRefs(type, config.version) : [image];
     let cached = null;
     for (const ref of refs) {
-      cached = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{.Id}}", ref] });
-      if (/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) break;
+      cached = await captureProbe(execute, { command: engineName, args: ["image", "inspect", "--format", "{{.Id}}", ref] });
+      if (/^(sha256:)?[a-f0-9]{64}$/.test(cached ?? "")) break;
     }
-    if (!/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) {
+    if (!/^(sha256:)?[a-f0-9]{64}$/.test(cached ?? "")) {
       missingImages.push(image);
       let reserve = imageReserve[type] ?? GiB;
       if (engine && existingConfig && cachedLayers.size && typeof fetch === "function") {
         try {
-          const metadata = await registryLayers(image, /arm|aarch64/.test(engine.Architecture ?? "") ? "arm64" : "amd64", fetch);
+          const metadata = await registryLayers(image, /arm|aarch64/.test(engine.Architecture ?? engine.host?.arch ?? "") ? "arm64" : "amd64", fetch);
           if (metadata) { reserve = estimateMissingLayers(metadata.layers, metadata.diffIds, cachedLayers); sharedLayersEstimated = true; }
         } catch { /* Offline/private registry: retain the full conservative reserve. */ }
       }
@@ -154,16 +155,33 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const free = await captureProbe(execute, composeCommand("storageFree", root, existingConfig));
     if (/^\d+$/.test(free ?? "")) dockerFreeDiskBytes = Number(free);
   }
-  // Linux can measure the Docker filesystem directly even on a fresh install.
-  if (engine?.DockerRootDir && process.platform === "linux") {
+  // Linux can measure the engine storage filesystem directly even on a fresh install.
+  const storageRootDir = engine?.DockerRootDir || engine?.store?.graphRoot;
+  if (storageRootDir && platform === "linux") {
     const { inspectSystemResources } = await import("./index.mjs");
-    try { dockerFreeDiskBytes = (await inspectSystemResources(engine.DockerRootDir)).freeDiskBytes; } catch {}
+    try { dockerFreeDiskBytes = (await inspectSystemResources(storageRootDir)).freeDiskBytes; } catch {}
   }
-  return { ...plan, missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
+  // On macOS with Podman, probe available space inside the selected machine.
+  if (engineName === "podman" && platform === "darwin" && dockerFreeDiskBytes === null) {
+    try {
+      const dfOutput = await captureProbe(execute, { command: "podman", args: ["machine", "ssh", "df -k /var/lib/containers/storage 2>/dev/null || df -k /"] });
+      if (dfOutput) {
+        const lines = dfOutput.trim().split(/\r?\n/);
+        if (lines.length > 1) {
+          const parts = lines[1].trim().split(/\s+/);
+          const availableKb = Number(parts[3]);
+          if (!Number.isNaN(availableKb) && availableKb > 0) {
+            dockerFreeDiskBytes = availableKb * 1024;
+          }
+        }
+      }
+    } catch {}
+  }
+  return { ...plan, engineName, platform, missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
     resources: { ...resources,
       freeDiskBytes: dockerFreeDiskBytes === null ? resources.freeDiskBytes : Math.min(resources.freeDiskBytes, dockerFreeDiskBytes),
-      engineCpuCount: engine?.NCPU,
-      engineMemoryBytes: engine?.MemTotal
+      engineCpuCount: engine?.NCPU ?? engine?.host?.cpus,
+      engineMemoryBytes: engine?.MemTotal ?? engine?.host?.memTotal
     } };
 }
 

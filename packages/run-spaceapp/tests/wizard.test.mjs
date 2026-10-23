@@ -153,7 +153,7 @@ test("fresh install cancelled at final confirmation creates no installation stat
     platform: "linux",
     stdout: stdout.stream,
     stderr: stderr.stream,
-    stdin: ttyStdin("", "", "", "", "", "n"),
+    stdin: ttyStdin("", "", "", "", "", "", "n"),
     inspectResources: async () => eightGigabyteClassLinuxGuest,
     ensureDocker: async () => ({ code: 0, reexecuted: false }),
     prepareDockerPath: async () => null,

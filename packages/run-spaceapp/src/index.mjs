@@ -124,6 +124,7 @@ const CONFIG_KEYS = new Set([
   "port",
   "telemetry",
   "profile",
+  "engine",
   "accessMode",
   "workspaces",
   "companionsEnabled",
@@ -304,17 +305,26 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
   ];
 }
 
+export const SUPPORTED_ENGINES = Object.freeze(["docker", "podman"]);
+
 export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  if (engine !== undefined && !SUPPORTED_ENGINES.includes(engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (engine === "podman" && resolvedAccessMode === "host-root") {
+    throw new Error("host-root access is not supported with the podman engine.");
+  }
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -326,6 +336,7 @@ export function createDefaultConfig({
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
+    ...(engine !== undefined ? { engine } : {}),
     workspaces: []
   };
 }
@@ -361,8 +372,14 @@ export function validateConfig(config) {
   if (!INSTALL_PROFILES.includes(config.profile)) {
     throw new Error("profile must be small, medium, large, light, or standard.");
   }
+  if (config.engine !== undefined && !SUPPORTED_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("host-root access is not supported with the podman engine.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -673,11 +690,18 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
+  const isPodman = config.engine === "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman
+      ? [
+          "        bind:",
+          '          selinux: "z"'
+        ]
+      : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -752,6 +776,20 @@ export function renderCliHosts(config) {
     [user.id, `/run/spaceapp-cli-users/${userSlug(user.id)}/host.sock`])), null, 2)}\n`;
 }
 
+export function renderPodmanCompose(config = { engine: "podman" }) {
+  if (config && config.engine !== "podman") return "";
+  return [
+    "services:",
+    "  spaceapp-core:",
+    '    userns_mode: "keep-id:uid=10001,gid=10001"',
+    "  spaceapp-cli:",
+    '    userns_mode: "keep-id:uid=10001,gid=10001"',
+    "  spaceapp-browser:",
+    '    userns_mode: "keep-id:uid=10001,gid=10001"',
+    ""
+  ].join("\n");
+}
+
 export function renderHostAccessCompose(config) {
   validateConfig(config);
   if (config.accessMode === "isolated") {
@@ -787,6 +825,7 @@ export function composeCommand(action, root, options = {}) {
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
+  const engine = options.engine ?? (options.config?.engine || "docker");
   const base = [
     "compose",
     "--project-name", composeProjectName(root),
@@ -795,10 +834,12 @@ export function composeCommand(action, root, options = {}) {
     "-f", join(stateRoot, "compose.yml"),
     "-f", join(stateRoot, "compose.workspaces.yml"),
     "-f", join(stateRoot, "compose.host-access.yml"),
+    ...(engine === "podman" ? ["-f", join(stateRoot, "compose.podman.yml")] : []),
     ...(settings.browserEnabled ? ["--profile", "standard"] : []),
     ...(settings.temporalEnabled ? ["--profile", "workflows"] : []),
     ...(options.companionsEnabled ? ["--profile", "companions"] : [])
   ];
+  const backupRestoreUser = engine === "podman" ? "10001:10001" : "0:0";
   const actions = {
     up: ["up", "-d", "--remove-orphans"],
     down: ["down"],
@@ -834,7 +875,7 @@ export function composeCommand(action, root, options = {}) {
     ],
     // The backup runs in a one-off container while the writers are paused (backupWithWritersPaused in cli.mjs).
     backup: [
-      "run", "--rm", "--no-deps", "--user", "0:0",
+      "run", "--rm", "--no-deps", "--user", backupRestoreUser,
       "--env", "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
       "--entrypoint", "node", "spaceapp-core", "scripts/portable-backup.mjs"
     ],
@@ -887,7 +928,7 @@ export function composeCommand(action, root, options = {}) {
       "--rm",
       "--no-deps",
       "--user",
-      "0:0",
+      backupRestoreUser,
       "--env",
       "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
       "--entrypoint",
@@ -905,7 +946,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -950,11 +991,19 @@ export async function writeRuntimeFiles(root, config) {
   await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
   for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
+  if (config.engine === "podman") {
+    await atomicWrite(join(root, "compose.podman.yml"), renderPodmanCompose(config));
+  } else {
+    try {
+      await rm(join(root, "compose.podman.yml"), { force: true });
+    } catch {}
+  }
 }
 
 export async function prepareInstallation(root, {
   version,
   profile,
+  engine,
   accessMode,
   companionsEnabled
 }) {
@@ -971,6 +1020,12 @@ export async function prepareInstallation(root, {
   let config;
   try {
     config = await loadConfig(root);
+    const existingEngine = config.engine || "docker";
+    if (engine !== undefined && engine !== existingEngine) {
+      throw new Error(
+        `Switching container engine from "${existingEngine}" to "${engine}" is not supported on an existing installation. Back up your data with "${UNIVERSAL_COMMAND} backup", reinstall with --engine ${engine}, and restore with "${UNIVERSAL_COMMAND} restore".`
+      );
+    }
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -978,6 +1033,7 @@ export async function prepareInstallation(root, {
     config = createDefaultConfig({
       version,
       profile: resolvedProfile ?? "light",
+      engine: engine ?? "docker",
       accessMode: resolveInstallAccessMode(accessMode),
       companionsEnabled
     });
@@ -991,6 +1047,9 @@ export async function prepareInstallation(root, {
   }
   if (resolvedProfile !== undefined) {
     config = { ...config, profile: resolvedProfile };
+  }
+  if (engine !== undefined) {
+    config = { ...config, engine };
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode, config.accessMode);
   if (config.accessMode !== resolvedAccessMode) {

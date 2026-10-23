@@ -1184,3 +1184,192 @@ function launchDetachedCommand(spec) {
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
+
+export async function podmanIsReady(execute, { platform = process.platform } = {}) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export async function detectAvailableEngines(execute) {
+  const [docker, podman] = await Promise.all([
+    dockerIsReady(execute),
+    podmanIsReady(execute)
+  ]);
+  return { docker, podman };
+}
+
+export function podmanInstallHelp(platform) {
+  if (platform === "darwin") {
+    return [
+      "Podman (v5 or newer) and a Compose provider (docker-compose v2 or podman-compose) are required.",
+      "Install Podman on macOS using Homebrew:",
+      "  brew install podman docker-compose",
+      "Initialize and start the Podman machine:",
+      "  podman machine init --cpus 4 --memory 8192 --disk-size 60",
+      "  podman machine start"
+    ].join("\n");
+  }
+  if (platform === "linux") {
+    return [
+      "Podman (v5 or newer) and a Compose provider (docker-compose v2 or podman-compose) are required.",
+      "Install Podman and Compose using your distribution's package manager:",
+      "  Fedora/RHEL/CentOS: sudo dnf install -y podman docker-compose",
+      "  Ubuntu/Debian:       sudo apt-get update && sudo apt-get install -y podman docker-compose-v2",
+      "  Arch Linux:          sudo pacman -S --noconfirm podman docker-compose"
+    ].join("\n");
+  }
+  return "Podman on Windows is not supported. Please use Docker Desktop.";
+}
+
+export async function checkPodmanMachineResources(execute, { profile = "small" } = {}) {
+  const requirements = {
+    small: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 6.5 * 1024 ** 3 },
+    medium: { cpuCount: 4, memoryBytes: 11 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
+    large: { cpuCount: 8, memoryBytes: 15 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 },
+    light: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
+    standard: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 }
+  }[profile] || { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 6.5 * 1024 ** 3 };
+
+  let output = "";
+  const stdout = new (await import("node:stream")).Writable({
+    write(chunk, _encoding, done) {
+      output += chunk.toString();
+      done();
+    }
+  });
+
+  try {
+    const code = await execute(
+      { command: "podman", args: ["machine", "inspect"] },
+      { stdout, stderr: null }
+    );
+    if (code !== 0) return { ok: true };
+    const machines = JSON.parse(output);
+    const machine = Array.isArray(machines) ? machines.find((m) => m.Running || m.State === "running") || machines[0] : machines;
+    if (!machine) return { ok: true };
+
+    const cpus = machine.Resources?.CPUs ?? machine.CPUs ?? 4;
+    let memoryMB = machine.Resources?.Memory ?? (typeof machine.Memory === "number" ? machine.Memory : 4096);
+    if (memoryMB > 0 && memoryMB < 128) {
+      memoryMB = memoryMB * 1024;
+    }
+    const memoryBytes = memoryMB * 1024 * 1024;
+    let diskBytes = machine.Resources?.DiskSize ?? (typeof machine.DiskSize === "number" ? machine.DiskSize : 60 * 1024 ** 3);
+    if (diskBytes > 0 && diskBytes < 10000) {
+      diskBytes = diskBytes * 1024 ** 3;
+    }
+
+    const cpuOk = cpus >= requirements.cpuCount;
+    const memOk = memoryBytes >= requirements.memoryBytes;
+    const diskOk = diskBytes >= requirements.freshDiskBytes;
+    const ok = cpuOk && memOk && diskOk;
+
+    let resizeHelp = "";
+    if (!ok) {
+      const targetCpus = Math.max(cpus, requirements.cpuCount);
+      const targetMemMB = Math.max(memoryMB, Math.ceil(requirements.memoryBytes / (1024 * 1024)));
+      const targetDiskGB = Math.max(Math.ceil(diskBytes / (1024 ** 3)), Math.ceil(requirements.freshDiskBytes / (1024 ** 3)));
+      resizeHelp = `\nTo resize your Podman machine for profile "${profile}":\n  podman machine stop\n  podman machine set --cpus ${targetCpus} --memory ${targetMemMB} --disk-size ${targetDiskGB}\n  podman machine start`;
+    }
+
+    return {
+      ok,
+      cpus,
+      memoryBytes,
+      diskBytes,
+      detail: ok ? "Podman machine resources sufficient" : `Insufficient Podman machine resources (${cpus} CPUs, ${Math.round(memoryBytes / (1024 ** 3))} GiB RAM, ${Math.round(diskBytes / (1024 ** 3))} GiB Disk).${resizeHelp}`
+    };
+  } catch {
+    return { ok: true };
+  }
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  profile = "small"
+}) {
+  if (platform === "win32") {
+    stderr.write("Podman on Windows is not supported. Please use Docker Desktop.\n");
+    return { code: 1, reexecuted: false };
+  }
+  const ready = await podmanIsReady(execute, { platform });
+  if (!ready) {
+    stderr.write(`${podmanInstallHelp(platform)}\n`);
+    return { code: 1, reexecuted: false };
+  }
+
+  if (platform === "darwin") {
+    const resourceCheck = await checkPodmanMachineResources(execute, { profile });
+    if (!resourceCheck.ok) {
+      stderr.write(`${resourceCheck.detail}\n`);
+      return { code: 1, reexecuted: false };
+    }
+  }
+
+  return { code: 0, reexecuted: false };
+}
+
+export async function ensureEngineAvailable({
+  engine = "docker",
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute,
+  launch,
+  download,
+  pathExists,
+  sleep,
+  osRelease,
+  installArgs,
+  scheduleResume,
+  confirmRestart,
+  profile = "small"
+}) {
+  if (engine === "podman") {
+    return ensurePodmanAvailable({
+      platform,
+      arch,
+      env,
+      stdin,
+      stdout,
+      stderr,
+      execute,
+      profile
+    });
+  }
+  return ensureDockerAvailable({
+    platform,
+    arch,
+    env,
+    stdin,
+    stdout,
+    stderr,
+    execute,
+    launch,
+    download,
+    pathExists,
+    sleep,
+    osRelease,
+    installArgs,
+    scheduleResume,
+    confirmRestart
+  });
+}
+
