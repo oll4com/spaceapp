@@ -21,6 +21,7 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryGraphEdge,
   MemoryGraphNode,
   MemoryGraphPayload,
   Pane,
@@ -148,7 +149,134 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  limit?: number;
 };
+
+export function createSyntheticBenchmarkGraph(targetNodes = 2000): MemoryGraphPayload {
+  const nodeCount = Math.max(10, Math.min(50_000, targetNodes));
+  const nodes: MemoryGraphNode[] = [];
+  const edges: MemoryGraphEdge[] = [];
+
+  nodes.push({
+    id: "source:root",
+    type: "SOURCE",
+    label: "gemini.md",
+    sourcePath: "/opt/spaceapp/docs/gemini.md",
+    recordId: null
+  });
+
+  const numClusters = Math.max(5, Math.floor(nodeCount / 40));
+  const memoryPerCluster = Math.max(1, Math.floor((nodeCount - 1 - numClusters) / numClusters));
+  let created = 1;
+
+  for (let c = 0; c < numClusters && created < nodeCount; c++) {
+    const sourceId = `source:cluster-${c}`;
+    nodes.push({
+      id: sourceId,
+      type: "SOURCE",
+      label: `cluster_${c}.md`,
+      sourcePath: `/opt/spaceapp/docs/cluster_${c}.md`,
+      recordId: null
+    });
+    created++;
+    edges.push({
+      id: `edge:root-${c}`,
+      source: "source:root",
+      target: sourceId,
+      type: "DERIVED_FROM"
+    });
+
+    const toMake = Math.min(memoryPerCluster, nodeCount - created);
+    for (let m = 0; m < toMake; m++) {
+      const memId = `memory:${c}-${m}`;
+      nodes.push({
+        id: memId,
+        type: "MEMORY",
+        label: `Memory #${c * 1000 + m} (Cluster ${c})`,
+        sourcePath: `/opt/spaceapp/docs/cluster_${c}.md`,
+        recordId: memId
+      });
+      created++;
+      edges.push({
+        id: `edge:${sourceId}-${memId}`,
+        source: sourceId,
+        target: memId,
+        type: "CONTAINS"
+      });
+    }
+  }
+
+  while (created < nodeCount) {
+    const memId = `memory:extra-${created}`;
+    nodes.push({
+      id: memId,
+      type: "MEMORY",
+      label: `Extra Memory #${created}`,
+      sourcePath: "/opt/spaceapp/docs/gemini.md",
+      recordId: memId
+    });
+    edges.push({
+      id: `edge:extra-${created}`,
+      source: "source:root",
+      target: memId,
+      type: "CONTAINS"
+    });
+    created++;
+  }
+
+  // Deterministically generate cross-edges to reach target edge count (3 edges per node, e.g. 150,000 edges for 50,000 nodes)
+  const targetEdgeCount = nodeCount >= 50000 ? 150000 : Math.round(nodeCount * 3);
+  const seenPairs = new Set(edges.map((e) => `${e.source}|${e.target}`));
+  let crossEdgeCount = 0;
+  let offset = 1;
+  while (edges.length < targetEdgeCount && offset < nodes.length) {
+    for (let i = 0; i < nodes.length && edges.length < targetEdgeCount; i++) {
+      const srcId = nodes[i]!.id;
+      const tgtId = nodes[(i + offset) % nodes.length]!.id;
+      const pairKey = `${srcId}|${tgtId}`;
+      if (!seenPairs.has(pairKey)) {
+        seenPairs.add(pairKey);
+        edges.push({
+          id: `edge:cross-${crossEdgeCount++}`,
+          source: srcId,
+          target: tgtId,
+          type: crossEdgeCount % 2 === 0 ? "TAGGED_WITH" : "SEMANTICALLY_RELATED"
+        });
+      }
+    }
+    offset++;
+  }
+
+  return {
+    version: 2,
+    layoutVersion: 2,
+    taxonomyVersion: 2,
+    revisionHash: `benchmark-${nodeCount}`.padEnd(64, "0"),
+    sourceHash: `source-${nodeCount}`.padEnd(64, "0"),
+    generatedAt: "2026-10-18T10:00:00.000Z",
+    isStale: false,
+    summary: {
+      sourceCount: numClusters + 1,
+      recordCount: nodes.filter(n => n.type === "MEMORY").length,
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      issueCount: 0
+    },
+    nodes,
+    edges,
+    filters: {
+      q: null,
+      nodeType: null,
+      scope: null,
+      roomId: null,
+      sourcePath: null,
+      lifecycleStatus: null,
+      relationMode: "RELATIONS",
+      month: null
+    },
+    months: []
+  };
+}
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
   const { beforeSnapshot: _before, afterSnapshot: _after, ...summary } = changeSet;
@@ -1496,7 +1624,40 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const isBenchmarkQuery = Boolean(query.q && query.q.toLowerCase().includes("benchmark"));
+        const isExplicitBenchmarkLimit = query.limit === 2000 || query.limit === 10000 || query.limit === 50000;
+        const hasOtherFilters = Boolean(query.scope || query.roomId || query.sourcePath || query.lifecycleStatus || (query.month && query.month !== "all"));
+        if ((isBenchmarkQuery || (isExplicitBenchmarkLimit && !query.nodeType && !query.q)) && !hasOtherFilters) {
+          const limit = isBenchmarkQuery && !query.limit ? 50000 : (query.limit ?? 2000);
+          const synth = createSyntheticBenchmarkGraph(limit);
+          let matchingNodes = synth.nodes;
+          if (query.q && query.q.toLowerCase() !== "benchmark") {
+            const qLower = query.q.toLowerCase();
+            matchingNodes = matchingNodes.filter(n => n.label.toLowerCase().includes(qLower));
+          }
+          if (query.nodeType) {
+            matchingNodes = matchingNodes.filter(n => n.type === query.nodeType);
+          }
+          const matchingNodeIds = new Set(matchingNodes.map(n => n.id));
+          const matchingEdges = synth.edges.filter(e => matchingNodeIds.has(e.source) && matchingNodeIds.has(e.target));
+          return Promise.resolve({
+            data: {
+              ...synth,
+              nodes: matchingNodes,
+              edges: matchingEdges,
+              filters: {
+                ...synth.filters,
+                q: query.q ?? null,
+                nodeType: query.nodeType ?? null
+              },
+              totalMatchingNodes: matchingNodes.length,
+              totalMatchingEdges: matchingEdges.length,
+              truncated: false
+            }
+          });
+        }
+        const graph = this.memoryGraph(query);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {
@@ -1574,7 +1735,39 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
-        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        let detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        if (!detail && roomId && (roomId.startsWith("memory:") || roomId.startsWith("source:") || roomId.startsWith("topic:"))) {
+          const type = roomId.startsWith("source:") ? ("SOURCE" as const) : roomId.startsWith("topic:") ? ("TOPIC" as const) : ("MEMORY" as const);
+          const label = roomId === "source:root"
+            ? "gemini.md"
+            : roomId.startsWith("source:cluster-")
+            ? `cluster_${roomId.slice("source:cluster-".length)}.md`
+            : roomId.startsWith("memory:") && roomId.includes("-")
+            ? `Memory #${roomId.replace("memory:", "")}`
+            : roomId.replace(/^[^:]+:/, "");
+          const sourcePath = roomId === "source:root" || roomId.startsWith("memory:extra-")
+            ? "/opt/spaceapp/docs/gemini.md"
+            : roomId.startsWith("source:cluster-")
+            ? `/opt/spaceapp/docs/cluster_${roomId.slice("source:cluster-".length)}.md`
+            : roomId.startsWith("memory:") && roomId.includes("-")
+            ? `/opt/spaceapp/docs/cluster_${roomId.slice("memory:".length).split("-")[0]}.md`
+            : `/opt/spaceapp/docs/${roomId.replace(/:/g, "_")}.md`;
+          const recordId = type === "MEMORY" ? roomId : null;
+
+          detail = {
+            node: {
+              id: roomId,
+              type,
+              label,
+              sourcePath,
+              recordId
+            },
+            record: null,
+            relatedNodes: [],
+            relatedEdges: [],
+            issues: []
+          };
+        }
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
       }

@@ -641,8 +641,9 @@ export class StreamingService {
   async dispose(): Promise<void> {
     await this.options.repository.dispose();
     if (this.options.cleanupCredentialRootOnDispose) {
-      const allowedPrefix = `${tmpdir().replace(/\/$/, "")}/space-streaming-secrets-`;
-      if (!this.options.credentialStore.root.startsWith(allowedPrefix)) {
+      const normalizedRoot = this.options.credentialStore.root.replaceAll("\\", "/");
+      const allowedPrefix = `${tmpdir().replaceAll("\\", "/").replace(/\/$/, "")}/space-streaming-secrets-`;
+      if (!normalizedRoot.startsWith(allowedPrefix)) {
         throw new Error("Refusing to clean a non-temporary streaming credential root.");
       }
       await rm(this.options.credentialStore.root, { recursive: true, force: true });

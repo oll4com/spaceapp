@@ -14,6 +14,11 @@ const sessionToken = signSession(
   sessionSecret
 );
 const cookie = `space_session=${sessionToken}`;
+const adminToken = signSession(
+  { id: "user:admin", email: "admin@space.test", role: "ADMIN" },
+  sessionSecret
+);
+const adminCookie = `space_session=${adminToken}`;
 const csrfToken = createCsrfToken(sessionToken, sessionSecret)!;
 const mutationHeaders = {
   cookie,
@@ -431,6 +436,34 @@ describe("Memory graph API", () => {
     expect(data.edges).toContainEqual(expect.objectContaining({ id: "edge:tag" }));
     expect(data.truncated).toBe(true);
     expect(data.totalMatchingNodes).toBe(2202);
+    await app.close();
+  });
+
+  it("honors the limit query param up to 50,000 nodes for large archives and enforces admin role", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2200 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));
+    graphSnapshot.nodes.push({ id: "topic:important", type: "TOPIC", label: "Important", sourcePath: null, recordId: null });
+    graphSnapshot.nodes.push({ id: "source:root", type: "SOURCE", label: "gemini.md", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null });
+    graphSnapshot.edges = [{ id: "edge:tag", source: "memory:2199", target: "topic:important", type: "TAGGED_WITH", origin: "EXPLICIT_TAG", confidence: 1, evidence: "Explicit tag in canonical memory." }];
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    // Non-admin (OPERATOR) requesting > 2,000 nodes is rejected
+    const operatorResponse = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=3000", headers: { cookie } });
+    expect(operatorResponse.statusCode).toBe(403);
+    expect(operatorResponse.json().error.code).toBe("ADMIN_REQUIRED");
+
+    // ADMIN requesting > 2,000 nodes succeeds
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=3000", headers: { cookie: adminCookie } });
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data.nodes).toHaveLength(2202);
+    expect(data.truncated).toBe(false);
+    expect(data.totalMatchingNodes).toBe(2202);
+
+    // Reserved nodes do not exceed requested limit even when multiple sources/topics exist
+    const smallResponse = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=1", headers: { cookie } });
+    expect(smallResponse.statusCode).toBe(200);
+    expect(smallResponse.json().data.nodes).toHaveLength(1);
     await app.close();
   });
 

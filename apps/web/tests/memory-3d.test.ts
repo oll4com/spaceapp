@@ -59,4 +59,56 @@ describe("3D memory projection", () => {
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
   });
+
+  it("streams incremental layout updates with deterministic final state", () => {
+    const { nodes, edges } = fixture();
+    const steps: number[] = [];
+    let lastPoints: Map<string, any> | null = null;
+    let finalDone = false;
+    const finalLayout = layoutMemoryNetwork3D(nodes, edges, (points, step, done) => {
+      steps.push(step);
+      lastPoints = points;
+      if (done) finalDone = true;
+    });
+
+    expect(steps.length).toBeGreaterThan(1);
+    expect(steps).toContain(0);
+    expect(steps).toContain(179);
+    expect(finalDone).toBe(true);
+    expect(lastPoints).not.toBeNull();
+    expect(lastPoints!.size).toBe(nodes.length);
+    expect([...lastPoints!.entries()]).toEqual([...finalLayout.entries()]);
+  });
 });
+
+describe("Synthetic benchmark graph generator", () => {
+  it("generates synthetic memory graphs at 2k, 10k, and 50k nodes with valid topologies and exact 150k edges target", async () => {
+    const { createSyntheticBenchmarkGraph, DemoStore } = await import("../src/demo/DemoStore.js");
+
+    const g2k = createSyntheticBenchmarkGraph(2000);
+    expect(g2k.nodes).toHaveLength(2000);
+    expect(g2k.edges).toHaveLength(6000);
+    expect(g2k.summary.nodeCount).toBe(2000);
+    expect(g2k.nodes[0]!.id).toBe("source:root");
+
+    const g10k = createSyntheticBenchmarkGraph(10000);
+    expect(g10k.nodes).toHaveLength(10000);
+    expect(g10k.edges).toHaveLength(30000);
+
+    const g50k = createSyntheticBenchmarkGraph(50000);
+    expect(g50k.nodes).toHaveLength(50000);
+    expect(g50k.edges).toHaveLength(150000);
+
+    // Verify benchmark queries without explicit limit default to benchmark size
+    const store = new DemoStore();
+    const overviewRes = await (store.api as any).memoryGraphOverview({ q: "benchmark" });
+    expect(overviewRes.data.nodes).toHaveLength(50000);
+    expect(overviewRes.data.edges).toHaveLength(150000);
+
+    // Verify detail request for benchmark node succeeds
+    const nodeDetailRes = await (store.api as any).memoryGraphNode("memory:0-0");
+    expect(nodeDetailRes.node.id).toBe("memory:0-0");
+    expect(nodeDetailRes.node.type).toBe("MEMORY");
+  });
+});
+

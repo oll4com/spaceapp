@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { StreamingOAuthProvider, StreamingProviderReadiness } from "@space/contracts";
 
 export interface StreamingProviderClient {
@@ -84,7 +84,7 @@ export class StreamingCredentialStore {
   private readonly credentialDirectory: string;
 
   constructor(readonly root: string) {
-    if (!root.startsWith("/")) throw new Error("SPACE_STREAMING_SECRET_ROOT must be an absolute path.");
+    if (!isAbsolute(root) && !root.startsWith("/")) throw new Error("SPACE_STREAMING_SECRET_ROOT must be an absolute path.");
     this.credentialDirectory = join(root, "credentials");
   }
 

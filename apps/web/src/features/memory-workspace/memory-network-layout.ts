@@ -8,7 +8,11 @@ const unit = (value: string) => {
 };
 
 /** Bounded force relaxation driven by actual edges; color never affects geometry. */
-export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]) {
+export function layoutMemoryNetwork(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  onStep?: (positions: Map<string, { x: number; y: number }>, step: number, done: boolean) => void
+) {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const sources = ordered.filter(node => node.type === "SOURCE");
@@ -68,6 +72,9 @@ export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraph
       const p = points[i]!;
       p.x += Math.max(-4, Math.min(4, fx[i]! - p.x * 0.0004)) * cooling;
       p.y += Math.max(-4, Math.min(4, fy[i]! - p.y * 0.0004)) * cooling;
+    }
+    if (onStep && (step % 20 === 0 || step === 149)) {
+      onStep(new Map(ordered.map((node, i) => [node.id, { x: points[i]!.x, y: points[i]!.y }])), step, step === 149);
     }
   }
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));

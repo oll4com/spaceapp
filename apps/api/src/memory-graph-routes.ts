@@ -46,6 +46,7 @@ import {
   type SpaceStore
 } from "@space/runtime";
 import type { SpaceApiConfig } from "./config.js";
+import { sendApiError } from "./http-errors.js";
 import type { MemoryGraphApiService } from "./memory-graph-service.js";
 import {
   buildMemoryCommandResourceId,
@@ -313,8 +314,8 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
 }
 
 // Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
-export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
-  if (nodes.length <= 2000) return nodes;
+export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], limit = 2000): MemoryGraphNode[] {
+  if (nodes.length <= limit) return nodes;
   const members = new Map<string, Set<string>>();
   const explicit = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -324,19 +325,26 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     members.get(edge.target)!.add(edge.source);
     if (edge.origin === "EXPLICIT_TAG") explicit.add(edge.target);
   }
+  const maxTopics = Math.min(Math.round(limit * 0.08), Math.max(0, limit - 1));
+  const maxSources = Math.min(Math.round(limit * 0.06), Math.max(0, limit - maxTopics));
   const topics = nodes.filter(node => members.has(node.id)).sort((a, b) =>
     Number(explicit.has(b.id)) - Number(explicit.has(a.id)) ||
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
-  ).slice(0, 160);
-  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
-  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
-  // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
+  ).slice(0, Math.min(limit, Math.max(1, maxTopics)));
+  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, Math.min(Math.max(0, limit - topics.length), Math.max(1, maxSources)));
+  const selected = new Map<string, MemoryGraphNode>();
+  for (const node of [...sources, ...topics]) {
+    if (selected.size >= limit) break;
+    selected.set(node.id, node);
+  }
+  // Give every reserved topic a real visible neighbor if budget permits
   for (const topic of topics) {
+    if (selected.size >= limit) break;
     const first = [...members.get(topic.id)!].sort()[0];
-    if (first) selected.set(first, byId.get(first)!);
+    if (first && byId.has(first)) selected.set(first, byId.get(first)!);
   }
   for (const node of nodes) {
-    if (selected.size >= 2000) break;
+    if (selected.size >= limit) break;
     selected.set(node.id, node);
   }
   return [...selected.values()];
@@ -356,6 +364,9 @@ export function registerMemoryGraphRoutes(
   app.get("/api/admin/memory/graph/overview", async (request, reply) => {
     requireMemoryGraph(options.config);
     const query = listMemoryGraphOverviewQuerySchema.parse(request.query);
+    if (query.limit && query.limit > 2000 && request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Overview graph limits above 2,000 nodes require the ADMIN role.");
+    }
     const snapshotData = query.month
       ? await (options.service.getArchiveSnapshotState?.() ?? options.service.getArchiveSnapshot().then(snapshot => ({ snapshot, isStale: false })))
       : await options.service.getSnapshot();
@@ -385,12 +396,14 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
+    const limit = query.limit ?? 2000;
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges, limit);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+    const edgeLimit = Math.max(6000, limit * 3);
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
       .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
-      .slice(0, 6000);
+      .slice(0, edgeLimit);
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
       layoutVersion: snapshot.layoutVersion,

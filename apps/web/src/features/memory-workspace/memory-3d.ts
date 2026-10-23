@@ -14,7 +14,11 @@ const unit = (seed: string) => {
 };
 
 /** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+export function layoutMemoryNetwork3D(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  onStep?: (points: Map<string, MemoryPoint3D>, step: number, done: boolean) => void
+): Map<string, MemoryPoint3D> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
@@ -77,6 +81,9 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const dx = fx[i]! - p.x * 0.0005, dy = fy[i]! - p.y * 0.0005, dz = fz[i]! - p.z * 0.0005;
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
+    }
+    if (onStep && (step % 20 === 0 || step === 179)) {
+      onStep(new Map(ordered.map((node, i) => [node.id, { ...points[i]! }])), step, step === 179);
     }
   }
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));
