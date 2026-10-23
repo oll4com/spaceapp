@@ -131,6 +131,9 @@ describe("Space Control screenshot capture", () => {
       await vi.advanceTimersByTimeAsync(6000);
       const running = await started as { status: string; operationId: string };
       expect(running).toMatchObject({ status: "RUNNING", operationId: expect.any(String) });
+      // RUNNING can win the response timer while mkdir is still pending.
+      // Wait for the engine request, rather than assuming real I/O has finished.
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
       expect(requests[1]).toMatchObject({ viewport: "story" });
       release();
       await vi.waitFor(async () => expect(await service.operations(actor, room.id, running.operationId)).toMatchObject({ status: "COMPLETED" }));

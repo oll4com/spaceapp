@@ -51,7 +51,9 @@ describe("credential cipher", () => {
     expect(() => createCredentialCipher(Buffer.alloc(16))).toThrow();
     const envelope = cipher.encrypt("x", "a");
     const parts = envelope.split(".");
-    parts[3] = Buffer.from("y").toString("base64url");
+    const ciphertext = Buffer.from(parts[3]!, "base64url");
+    ciphertext[0] = ciphertext[0]! ^ 1;
+    parts[3] = ciphertext.toString("base64url");
     expect(() => cipher.decrypt(parts.join("."), "a")).toThrow();
   });
 });

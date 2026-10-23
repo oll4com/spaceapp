@@ -236,7 +236,10 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     resolveLock();
     await wedgedPromise;
 
-    // Also test recording room event directly in store
+    // Also test recording room event directly in store. Latest events sort by
+    // (createdAt, id), so this fixture must be strictly later than the pane event;
+    // a wall-clock millisecond tie would instead depend on its random event id.
+    const watchdogAt = new Date(Date.parse(store.getLatestEvent(room.id)!.createdAt) + 1).toISOString();
     const watchdogEvent: Event = {
       id: "event:watchdog-test",
       roomId: room.id,
@@ -253,9 +256,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         paneTitle: pane.title,
         runtimeId: "cli:gemini",
         durationMs: 8000,
-        killedAt: new Date().toISOString()
+        killedAt: watchdogAt
       },
-      createdAt: new Date().toISOString()
+      createdAt: watchdogAt
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
