@@ -52,3 +52,20 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` turns on span export over OTLP/HTTP (JSON).
+Set it to the collector's base URL, for example `http://127.0.0.1:4318`; spans
+go to `<base>/v1/traces`. It is off when unset, and when the value is not a plain `http(s)` URL (no credentials, query or fragment). The API
+reads it and so do the three Temporal workers (`worker.ts`,
+`memory-maintenance-worker.ts`, `memory-mutation-worker.ts`); set it for each
+process that should export. The API sends its SERVER spans, the workers send
+one span per workflow run and one per activity attempt, all in the trace of the
+request that started the work. Without the variable the workers register no
+workflow interceptor or sink and send nothing. Export is best effort and needs
+no extra dependency: a bounded queue drops and counts spans, each POST has a
+timeout, and a slow or failing collector never delays or fails a request,
+workflow or activity. Span attributes come from an allowlist of ids, types,
+attempts, outcomes, error codes and durations; see
+[observability](quality/observability.md).

@@ -7,6 +7,7 @@ import {
   type MemoryMutationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { requestWorkflowMemo } from "./trace-context.js";
 
 export { MEMORY_MUTATION_TASK_QUEUE, MEMORY_MUTATION_WORKFLOW_TYPE, buildMemoryMutationWorkflowId };
 
@@ -38,6 +39,11 @@ function isAlreadyStarted(error: unknown): boolean {
   return error instanceof Error && error.name === "WorkflowExecutionAlreadyStartedError";
 }
 
+/**
+ * Starts the memory mutation workflow for a change set, or reports
+ * ALREADY_SCHEDULED when it already runs. The memo carries the request's
+ * traceparent when it is known, so the workflow span joins the request's trace.
+ */
 export async function scheduleMemoryMutation(
   rawInput: MemoryMutationWorkflowInput,
   startWorkflow: MemoryMutationWorkflowStarter,
@@ -45,13 +51,16 @@ export async function scheduleMemoryMutation(
 ): Promise<MemoryMutationStartResult> {
   const input = memoryMutationWorkflowInputSchema.parse(rawInput);
   const workflowId = buildMemoryMutationWorkflowId(input.changeSetId, commandHash);
+  // The workflow span joins the request's trace when the request is known.
+  const memo = requestWorkflowMemo(input.traceId);
   try {
     const handle = await startWorkflow(MEMORY_MUTATION_WORKFLOW_TYPE, {
       args: [input],
       taskQueue: MEMORY_MUTATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
-      workflowIdConflictPolicy: "USE_EXISTING"
+      workflowIdConflictPolicy: "USE_EXISTING",
+      ...(memo ? { memo } : {})
     });
     return { status: "SCHEDULED", workflowId: handle.workflowId, runId: handle.firstExecutionRunId ?? null };
   } catch (error) {

@@ -74,7 +74,7 @@ import { executeSkillActionBridge, parseSkillActionBlock } from "./skill-action-
 import { ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS } from "./room-supervisor-state.js";
 import { isCliChatQuotaError, isCliChatTurnProviderId, isNativeChatTurn } from "./turn-runtime-policy.js";
 import { evaluateCompletedTaskResult } from "./task-result-evaluation.js";
-import { noteActivityFailureReason } from "./activity-observability.js";
+import { activeActivityTraceparent, noteActivityFailureReason } from "./activity-observability.js";
 import { observeTurnActivity, recordTurnStatePersistenceFailure } from "./turn-observability.js";
 import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIdentity, handleDotToolCall, nativeChatThreadConfig } from "./dot-tool-gateway.js";
 import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
@@ -459,7 +459,9 @@ async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown
   const config = getCodexAppServerTurnActivityConfig();
   if (!config.internalApiToken) throw new Error("Dot Goals require internal API authentication.");
   const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/goals/${path}`, {
-    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken,
+      // The internal request joins the trace under this activity attempt's span when spans are exported.
+      ...(activeActivityTraceparent() ? { traceparent: activeActivityTraceparent()! } : {}) },
     body: JSON.stringify(body), signal: AbortSignal.timeout(90_000)
   });
   const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;

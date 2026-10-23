@@ -5,6 +5,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Observability
+
+- With `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` set, the worker and both memory
+  workers export a span per workflow run and per activity attempt over
+  OTLP/HTTP, in the trace of the API request that started the work. Child
+  workflows nest under their parent; continue-as-new runs and Room Agent
+  background continuations carry a span link to the run they continue. Spans
+  carry only allowlisted ids, codes and durations. Unset, the workers export
+  nothing, as before.
+- The OTLP exporter no longer stops sending after a flush interval with an
+  empty queue.
+
 ## [1.1.7] - 2026-10-21
 
 Source: sanitized Space app @ c067c535c2 (4729 files: SpaceApp 77d00f6895 with

@@ -1,6 +1,8 @@
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
+  formatTraceparent,
+  parseTraceparent,
   roomAgentSupervisorQueueItemSchema,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
@@ -8,6 +10,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { roomActionSummary } from "./room-action-summary.js";
+import { workflowRunSpanId } from "./workflow-trace-context.js";
 import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
 
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
@@ -52,6 +55,22 @@ function recordedTokenUsage(executionState: Record<string, unknown>): MissionTok
     : null;
 }
 
+/**
+ * W3C context of the turn workflow run a continuation continues: the source
+ * turn's trace and the span id that run exports (derived from its workflow
+ * id), so the continuation's workflow span links to it. Null without a trace.
+ */
+export function continuedRunTraceparent(source: RoomAgentSupervisorQueueItem["turn"]): string | null {
+  const parsed = parseTraceparent(source.traceparent);
+  if (!parsed) return null;
+  return formatTraceparent(parsed.traceId, workflowRunSpanId({ workflowId: buildCodexAppServerTurnWorkflowId(source) }), parsed.flags);
+}
+
+/**
+ * Prepares the next background continuation of a Room Agent mission, or says
+ * why there is none (WAITING or DONE, including the continuation and token
+ * limits). The new turn carries a link to the turn run it continues.
+ */
 export async function prepareBackgroundContinuation(input: {
   roomId: string; missionId: string; continuationId: string;
 }, store: SpaceStore, maxContinuations = DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS,
@@ -122,8 +141,12 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const continues = continuedRunTraceparent(source.queueItem.turn);
+  const sourceTurn: Partial<RoomAgentSupervisorQueueItem["turn"]> = { ...source.queueItem.turn };
+  delete sourceTurn.continuesTraceparent;
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
-    ...source.queueItem.turn,
+    ...sourceTurn,
+    ...(continues ? { continuesTraceparent: continues } : {}),
     prompt, roomAgentOperatorRequest: request,
     roomAgentContinuation: { sourceRunId: source.run.runId, generation },
     artifactIds: [], agentRunId: runId,

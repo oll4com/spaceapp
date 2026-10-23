@@ -8,7 +8,7 @@ import {
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
-import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workerTracingOptions } from "./worker-tracing.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-maintenance-worker";
@@ -30,7 +30,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      ...workerTracingOptions(spans)
     });
     console.log(JSON.stringify({
       service,

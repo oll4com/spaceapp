@@ -16,6 +16,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { DotGoalsRepository, DotsRepository } from "@space/db";
+import { requestWorkflowMemo } from "./trace-context.js";
 
 /**
  * Space Dots Stage 4: Goals.
@@ -26,7 +27,8 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string): Promise<void>;
+  /** traceId: the Space request that created the Goal, so the workflow joins its trace. */
+  start(goalId: string, traceId?: string | null): Promise<void>;
   wake(goalId: string): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
   ensure?(goalId: string): Promise<boolean>;
@@ -38,11 +40,18 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string) {
+  /**
+   * Starts the Goal's workflow once (a duplicate start is ignored). With a known
+   * request id the workflow memo carries that request's traceparent, so the
+   * worker's workflow span joins the request's trace.
+   */
+  start(goalId: string, traceId?: string | null) {
+    // The Goal's workflow span joins the request's trace when the request is known.
+    const memo = requestWorkflowMemo(traceId);
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE" });
+          args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE", ...(memo ? { memo } : {}) });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
@@ -97,6 +106,11 @@ function requestKeyFor(goalId: string, step: number): string {
   return `goal-${createHash("sha256").update(`${goalId}:${step}`).digest("hex").slice(0, 40)}`;
 }
 
+/**
+ * Space Dots Goals service: create, control, steer, step, observe, tool and
+ * reconcile, over the Goals repository, the Space store and the Goal workflow
+ * coordinator.
+ */
 export function createDotGoalService(deps: DotGoalServiceDeps) {
   async function activeSession(goal: DotGoal) {
     const session = await deps.store.getSpaceAgentSession(goal.sessionId);
@@ -106,6 +120,11 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return (await deps.goals.transition(goal.goalId, ["ACTIVE", "PAUSED"], status, reason)) ?? goal;
   }
 
+  /**
+   * Creates a Goal for the Dot's open conversation and starts its workflow,
+   * passing the Space request id when there is one so the workflow joins that
+   * request's trace. A failed start marks the Goal FAILED and throws 503.
+   */
   async function create(owner: string, dotId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const input = createDotGoalInputSchema.parse(raw);
     if (!deps.workflow) throw new DotGoalError(503, "DOT_GOALS_UNAVAILABLE", "Goals need the Space worker runtime.");
@@ -125,7 +144,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       if ((error as { code?: string }).code === "DOT_GOAL_OPEN") throw new DotGoalError(409, "DOT_GOAL_OPEN", "This conversation already has an open Goal.");
       throw error;
     }
-    try { await deps.workflow.start(goal.goalId); }
+    try { await (request?.requestIdForSpace ? deps.workflow.start(goal.goalId, request.requestIdForSpace) : deps.workflow.start(goal.goalId)); }
     catch {
       goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");

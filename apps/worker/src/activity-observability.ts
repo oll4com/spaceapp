@@ -2,16 +2,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import { defaultPayloadConverter } from "@temporalio/client";
 import {
   categorizeFailureCode,
   formatTraceparent,
   isSafeErrorCode,
   parseTraceparent,
   traceIdFromTraceparent,
-  type FailureCategory
+  type FailureCategory,
+  type ParsedTraceparent
 } from "@space/contracts";
-import type { SpanExporter } from "@space/runtime";
+import type { SpanExporter, SpanLink } from "@space/runtime";
+import { outcomeAttributes, workerSpanAttributes } from "./otlp-span-attributes.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
+import { TRACEPARENT_HEADER, activityAttemptSpanId, traceparentInArgs } from "./workflow-trace-context.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
 /**
@@ -30,6 +34,8 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  /** traceparent naming this attempt's span when it is exported, else null. */
+  traceparent?: string | null;
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
@@ -53,6 +59,15 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
   if (existing) return { promise: execute(), reasonCode: () => existing.reasonCode };
   const observation: ActivityObservation = { reasonCode: null };
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
+}
+
+/**
+ * traceparent naming the running activity attempt's exported span, so an
+ * outbound call (for example the internal room-action request) nests under it.
+ * Null outside an observed activity or when spans are not exported.
+ */
+export function activeActivityTraceparent(): string | null {
+  return observations.getStore()?.traceparent ?? null;
 }
 
 /** traceparent for an outbound call: same W3C trace, new span id; null if none. */
@@ -135,16 +150,43 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /**
+   * OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity
+   * attempt, under the workflow span named in the Temporal header, or under
+   * the traceparent in the activity input when the workflow sent none.
+   */
   spans?: SpanExporter | null;
+  /** traceparent of the scheduling workflow's span (Temporal header). */
+  workflowTraceparent?: ParsedTraceparent | null;
 }
 
-function activityTraceparent(args: readonly unknown[]) {
-  const found: Partial<Record<CorrelationKey, string>> = {};
-  for (const arg of args) readCorrelation(arg, found, 2);
-  return parseTraceparent(found.traceparent);
+/** The workflow span traceparent that the workflow interceptor put into the activity's headers. */
+export function headerTraceparent(headers: Readonly<Record<string, unknown>> | undefined): ParsedTraceparent | null {
+  const payload = headers?.[TRACEPARENT_HEADER];
+  if (!payload) return null;
+  try {
+    return parseTraceparent(defaultPayloadConverter.fromPayload(payload as never));
+  } catch {
+    return null;
+  }
 }
 
+const spanCorrelationKeys: Readonly<Record<string, string>> = {
+  traceId: "space.trace_id",
+  parentTraceId: "space.parent_trace_id",
+  roomId: "space.room_id",
+  paneId: "space.pane_id",
+  missionId: "space.mission_id",
+  agentRunId: "space.agent_run_id",
+  goalId: "space.goal_id"
+};
+
+/**
+ * Runs one activity attempt with its log records, metrics and, when spans are
+ * exported, one OTLP span under the workflow span from the Temporal header (or
+ * the traceparent in the input). Export is best effort: it never changes the
+ * activity's result or error.
+ */
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],
@@ -172,8 +214,17 @@ export async function observeActivityExecution<T>(
   if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
   metrics.activitiesInFlight.inc(labels);
   workerLog("info", "activity.started", { ...base, queueMs });
-  const observation: ActivityObservation = { reasonCode: null };
+  const requestParent = dependencies.spans ? traceparentInArgs(args) : null;
+  const parent = dependencies.spans ? dependencies.workflowTraceparent ?? requestParent : null;
+  const spanId = parent
+    ? activityAttemptSpanId(info.workflowExecution?.runId ?? "", info.activityId ?? activityType, info.attempt)
+    : null;
+  const observation: ActivityObservation = {
+    reasonCode: null,
+    traceparent: parent && spanId ? formatTraceparent(parent.traceId, spanId, parent.flags) : null
+  };
 
+  /** Records the attempt's outcome once: metrics, the finished log record and the attempt's span. */
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
     const durationMs = Math.max(0, now() - startedAt);
     metrics.activitiesInFlight.inc(labels, -1);
@@ -194,19 +245,41 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
+    if (parent && spanId) {
+      const correlation = activityCorrelation(args);
+      const links: SpanLink[] = [];
+      // A supervisor activity for a request from another trace links to that request.
+      if (requestParent && requestParent.traceId !== parent.traceId) {
+        links.push({ traceId: requestParent.traceId, spanId: requestParent.parentId, attributes: { "space.link": "REQUEST" } });
+      }
+      try {
+        dependencies.spans!.record({
+          traceId: parent.traceId,
+          spanId,
+          parentSpanId: parent.parentId,
+          name: `activity ${activityType}`,
+          startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
+          endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
+          attributes: workerSpanAttributes({
+            "space.activity_type": activityType,
+            "space.activity_id": info.activityId,
+            "space.attempt": info.attempt,
+            "space.workflow_type": info.workflowType,
+            "space.workflow_id": info.workflowExecution?.workflowId,
+            "space.run_id": info.workflowExecution?.runId,
+            ...outcomeAttributes(outcome, reasonCode),
+            "space.queue_ms": queueMs,
+            ...Object.fromEntries(Object.entries(correlation)
+              .filter(([key]) => spanCorrelationKeys[key])
+              .map(([key, value]) => [spanCorrelationKeys[key], value]))
+          }),
+          error: outcome === "FAILED" || outcome === "FAILED_RESULT",
+          kind: 1,
+          ...(links.length ? { links } : {})
+        });
+      } catch {
+        // Span export is best effort and never fails the activity.
+      }
     }
   };
 
@@ -224,12 +297,13 @@ export async function observeActivityExecution<T>(
 }
 
 /** Temporal worker interceptor factory: register in Worker.create({ interceptors }). */
-export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled"> = {}): ActivityInterceptorsFactory {
+export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled" | "workflowTraceparent"> = {}): ActivityInterceptorsFactory {
   return (context) => ({
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
-        cancelled: () => context.cancellationSignal.aborted
+        cancelled: () => context.cancellationSignal.aborted,
+        workflowTraceparent: dependencies.spans ? headerTraceparent(input.headers) : null
       })
     }
   });

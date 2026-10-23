@@ -10,7 +10,7 @@ import {
   type SpaceAgentRoomActionEnvelope,
   type SpaceRoomToolId
 } from "@space/contracts";
-import { childTraceparent } from "./activity-observability.js";
+import { activeActivityTraceparent, childTraceparent } from "./activity-observability.js";
 import type { SpaceAgentRoomActionBridgeRequest } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import { cancellationSignal } from "@temporalio/activity";
@@ -327,6 +327,12 @@ function bridgeMessage(status: "BLOCKED" | "FAILED", reason: string): string {
   return `Space room action bridge result:\n- ${status} reason=${redactMemoryText(reason).slice(0, 700)}`;
 }
 
+/**
+ * Runs the room actions requested in an assistant reply through the internal
+ * API and returns the cleaned reply and the tool message. The internal request
+ * carries this activity attempt's span as its traceparent when spans are
+ * exported.
+ */
 export async function executeRoomActionBridge(input: {
   turnInput: DummyTurnInput;
   assistantContent: string;
@@ -374,7 +380,8 @@ export async function executeRoomActionBridge(input: {
   let response: Pick<Response, "ok" | "status" | "json">;
   try {
     const url = `${input.config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`;
-    const traceparent = childTraceparent(input.turnInput.traceparent);
+    // Under the exported span of this activity attempt when spans are exported.
+    const traceparent = activeActivityTraceparent() ?? childTraceparent(input.turnInput.traceparent);
     const headers: Record<string, string> = {
       "content-type": "application/json",
       "x-space-internal-token": input.config.internalApiToken,

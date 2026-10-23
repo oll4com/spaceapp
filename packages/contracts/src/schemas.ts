@@ -6807,6 +6807,9 @@ export const dummyTurnInputSchema = z.object({
   // Optional W3C trace context of the originating request (additive; see
   // docs/quality/observability.md). Never part of a workflow id.
   traceparent: traceparentSchema.optional(),
+  // Optional W3C context of the turn workflow run that a background
+  // continuation continues; exported as a span link only (additive).
+  continuesTraceparent: traceparentSchema.optional(),
   // Space Dots Stage 3 (additive): a gateway-enabled native Chat turn.
   dotId: dotIdSchema.optional(),
   toolGateway: z.literal("space-dot-tools-v1").optional(),
