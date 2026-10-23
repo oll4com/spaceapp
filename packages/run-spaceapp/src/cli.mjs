@@ -2775,10 +2775,10 @@ Options:
   --answers <json|path>             Pre-seed answers; automation requires confirm:true
 
 Profiles (auto uses CPU, RAM and free disk, then checks Docker resources):
-  small:  4 CPUs, 7 GiB usable RAM, 6.5 GiB fresh space; SpaceApp + OpenCode.
+  small:  4 CPUs, 7 GiB usable RAM, 5.5 GiB fresh space; SpaceApp + OpenCode.
           Background integration workers and managed browser are disabled.
-  medium: 4 CPUs, 11 GiB usable RAM, 8 GiB fresh space; adds background workers.
-  large:  8 CPUs, 15 GiB usable RAM, 11 GiB fresh space; adds managed browser.
+  medium: 4 CPUs, 11 GiB usable RAM, 7 GiB fresh space; adds background workers.
+  large:  8 CPUs, 15 GiB usable RAM, 9.5 GiB fresh space; adds managed browser.
   light/standard: compatibility settings for existing installations.
 Upgrades keep the installed profile unless you explicitly choose another one.
 Upgrade space: missing layers + database checkpoint + 0.5 GiB reserve.

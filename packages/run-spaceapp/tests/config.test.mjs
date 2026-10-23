@@ -63,8 +63,8 @@ test("automatic profile selection uses CPU, memory and disk while legacy choices
   assert.equal(resolveInstallProfile("auto", resources), "large");
   assert.equal(resolveInstallProfile("auto", {...resources,cpuCount:4}), "medium");
   assert.equal(resolveInstallProfile("auto", {...resources,totalMemoryBytes:8*GiB}), "small");
-  assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:7*GiB}), "small");
-  assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:8*GiB}), "medium");
+  assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:6*GiB}), "small");
+  assert.equal(resolveInstallProfile("auto", {...resources,freeDiskBytes:7*GiB}), "medium");
   assert.equal(resolveInstallProfile("auto", 64*GiB), "small");
   assert.equal(resolveInstallProfile("light", resources), "light");
   assert.equal(resolveInstallProfile("standard", resources), "standard");

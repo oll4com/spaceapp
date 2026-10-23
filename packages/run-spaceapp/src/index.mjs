@@ -81,12 +81,12 @@ const PROFILE_RUNTIME_SETTINGS = Object.freeze({
 });
 export const INSTALL_PROFILES = Object.freeze(["small", "medium", "large", "light", "standard"]);
 export const PROFILE_REQUIREMENTS = Object.freeze({
-  small: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 6.5 * 1024 ** 3 },
-  medium: { cpuCount: 4, memoryBytes: 11 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
-  large: { cpuCount: 8, memoryBytes: 15 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 },
+  small: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 5.5 * 1024 ** 3 },
+  medium: { cpuCount: 4, memoryBytes: 11 * 1024 ** 3, freshDiskBytes: 7 * 1024 ** 3 },
+  large: { cpuCount: 8, memoryBytes: 15 * 1024 ** 3, freshDiskBytes: 9.5 * 1024 ** 3 },
   // Existing installations keep their settings and background integrations.
-  light: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
-  standard: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 }
+  light: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 7 * 1024 ** 3 },
+  standard: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 9.5 * 1024 ** 3 }
 });
 
 export function profileRuntimeSettings(profile) {

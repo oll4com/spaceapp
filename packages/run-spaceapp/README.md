@@ -16,7 +16,7 @@ npm install -g run-spaceapp
 ```
 
 The smallest profile requires Node.js 20.11 or newer, 4 CPUs, 8 GB-class RAM
-(7 GiB usable), and 6.5 GiB free for a fresh installation. Keep `@latest` in the command so npm resolves the current release instead
+(7 GiB usable), and 5.5 GiB free for a fresh installation. Keep `@latest` in the command so npm resolves the current release instead
 of matching an existing local launcher. If Docker is missing, the universal
 install command automatically installs it from official Docker sources on
 Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
@@ -45,9 +45,9 @@ RAM and free disk. Docker's CPU and RAM allocation is checked as well.
 
 | Profile | CPU | Usable RAM | Fresh free space | Services |
 | --- | --- | --- | --- | --- |
-| small | 4 | 7 GiB | 6.5 GiB | SpaceApp, OpenCode, PostgreSQL |
-| medium | 4 | 11 GiB | 8 GiB | small + background workflow/integration workers |
-| large | 8 | 15 GiB | 11 GiB | medium + managed Chromium, larger limits |
+| small | 4 | 7 GiB | 5.5 GiB | SpaceApp, OpenCode, PostgreSQL |
+| medium | 4 | 11 GiB | 7 GiB | small + background workflow/integration workers |
+| large | 8 | 15 GiB | 9.5 GiB | medium + managed Chromium, larger limits |
 
 Use `install --profile small|medium|large` to choose explicitly. Existing
 `light` and `standard` profiles remain compatible. Upgrades preserve the installed

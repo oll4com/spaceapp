@@ -12,14 +12,14 @@ Minimum (the `small` profile):
 - 4 CPU cores;
 - 8 GB-class system RAM (the launcher requires at least 7 GiB reported by the
   operating system);
-- 6.5 GiB free disk for a fresh installation;
+- 5.5 GiB free disk for a fresh installation;
 - Node.js 20.11 or newer.
 
 The `large` profile, which adds managed browser sessions, requires:
 
 - 8 CPU cores;
 - 15 GiB RAM;
-- 11 GiB free disk.
+- 9.5 GiB free disk.
 
 ## Linux
 
@@ -93,9 +93,9 @@ The universal install command defaults to `--profile auto`:
 
 | Profile | Services | CPU | Usable RAM | Fresh free disk |
 | --- | --- | --- | --- | --- |
-| `small` | core, OpenCode, PostgreSQL | 4 | 7 GiB | 6.5 GiB |
-| `medium` | small + Temporal/background integration workers | 4 | 11 GiB | 8 GiB |
-| `large` | medium + managed Chromium, larger resource limits | 8 | 15 GiB | 11 GiB |
+| `small` | core, OpenCode, PostgreSQL | 4 | 7 GiB | 5.5 GiB |
+| `medium` | small + Temporal/background integration workers | 4 | 11 GiB | 7 GiB |
+| `large` | medium + managed Chromium, larger resource limits | 8 | 15 GiB | 9.5 GiB |
 
 Auto chooses the largest profile that fits all three resources, then checks
 Docker's allocation. Existing installations preserve their profile during an
@@ -155,7 +155,7 @@ this is not required for the first install.
 
 ## Disk usage
 
-Fresh installations use profile-specific free-space checks (6.5/8/11 GiB).
+Fresh installations use profile-specific free-space checks (5.5/7/9.5 GiB).
 The installer does not preallocate this space.
 Upgrades require only missing image layers, a database checkpoint and 0.5 GiB
 headroom. Target images already cached need no extra image space. Registry layer
