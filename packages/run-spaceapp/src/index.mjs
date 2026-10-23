@@ -19,8 +19,13 @@ import {
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 import { imageDigestEnv, PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
+import {
+  composeBinary,
+  defaultEngine,
+  normalizeEngine
+} from "./engine.mjs";
 
-const CONFIG_SCHEMA_VERSION = 4;
+const CONFIG_SCHEMA_VERSION = 5;
 const CONTAINER_SECRET_MODE = 0o644;
 export const MIN_INSTALL_FREE_DISK_BYTES_STANDARD = 15 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES_LIGHT = 7 * 1024 ** 3;
@@ -125,6 +130,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -308,6 +314,7 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
+  engine = defaultEngine(),
   companionsEnabled = false
 }) {
   assertVersion(version);
@@ -324,6 +331,7 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    engine: normalizeEngine(engine),
     companionsEnabled,
     optionalModules: "none",
     workspaces: []
@@ -364,6 +372,7 @@ export function validateConfig(config) {
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
   }
+  normalizeEngine(config.engine ?? defaultEngine());
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
   }
@@ -439,19 +448,28 @@ export async function loadConfig(root) {
 }
 
 function migrateConfig(config) {
-  if (config?.schemaVersion === 2) {
+  if (config?.schemaVersion === 4) {
     return {
       ...config,
       schemaVersion: CONFIG_SCHEMA_VERSION,
-      accessMode: "isolated",
-      companionsEnabled: false
+      engine: config.engine ?? defaultEngine()
     };
   }
   if (config?.schemaVersion === 3) {
     return {
       ...config,
       schemaVersion: CONFIG_SCHEMA_VERSION,
+      engine: config.engine ?? defaultEngine(),
       ...(config.companionsEnabled === undefined ? { companionsEnabled: false } : {})
+    };
+  }
+  if (config?.schemaVersion === 2) {
+    return {
+      ...config,
+      schemaVersion: CONFIG_SCHEMA_VERSION,
+      accessMode: "isolated",
+      companionsEnabled: false,
+      engine: defaultEngine()
     };
   }
   if (config?.schemaVersion !== 1) {
@@ -466,7 +484,8 @@ function migrateConfig(config) {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     profile: legacyProfiles[config.profile] ?? config.profile,
     accessMode: "isolated",
-    companionsEnabled: false
+    companionsEnabled: false,
+    engine: defaultEngine()
   };
 }
 
@@ -677,7 +696,9 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    "        bind:",
+    '          selinux: "Z"'
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -692,7 +713,9 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    "        bind:",
+    '          selinux: "Z"'
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -786,6 +809,7 @@ export function composeCommand(action, root, options = {}) {
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
+  const engine = options.engine ?? defaultEngine();
   const settings = profileRuntimeSettings(profile);
   const base = [
     "compose",
@@ -905,7 +929,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: composeBinary(engine), args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -956,6 +980,7 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
+  engine,
   companionsEnabled
 }) {
   validateHome(root);
@@ -979,6 +1004,7 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
+      engine: engine ?? defaultEngine(),
       companionsEnabled
     });
   }
@@ -995,6 +1021,10 @@ export async function prepareInstallation(root, {
   const resolvedAccessMode = resolveInstallAccessMode(accessMode, config.accessMode);
   if (config.accessMode !== resolvedAccessMode) {
     config = { ...config, accessMode: resolvedAccessMode };
+  }
+  const resolvedEngine = engine ?? config.engine ?? defaultEngine();
+  if (config.engine !== resolvedEngine) {
+    config = { ...config, engine: normalizeEngine(resolvedEngine) };
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };

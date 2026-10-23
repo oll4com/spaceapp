@@ -34,7 +34,7 @@ test("resolves an explicit home before platform defaults", () => {
 test("default config is versioned, loopback-only, and contains no secret fields", () => {
   const config = createDefaultConfig({ version: "0.1.0" });
   assert.deepEqual(config, {
-    schemaVersion: 4,
+    schemaVersion: 5,
     version: "0.1.0",
     previousVersion: null,
     bindHost: "127.0.0.1",
@@ -42,6 +42,7 @@ test("default config is versioned, loopback-only, and contains no secret fields"
     telemetry: false,
     profile: "light",
     accessMode: "isolated",
+    engine: "docker",
     companionsEnabled: false,
     optionalModules: "none",
     workspaces: []
@@ -86,7 +87,7 @@ test("loads legacy full and core profiles through the stable schema migration", 
     })}\n`);
 
     assert.deepEqual(await loadConfig(root), {
-      schemaVersion: 4,
+      schemaVersion: 5,
       version: "0.1.0",
       previousVersion: null,
       bindHost: "127.0.0.1",
@@ -94,6 +95,7 @@ test("loads legacy full and core profiles through the stable schema migration", 
       telemetry: false,
       profile: stableProfile,
       accessMode: "isolated",
+      engine: "docker",
       companionsEnabled: false,
       workspaces: []
     });
@@ -114,7 +116,7 @@ test("loads schema 2 installations as isolated without changing durable settings
   })}\n`);
 
   assert.deepEqual(await loadConfig(root), {
-    schemaVersion: 4,
+    schemaVersion: 5,
     version: "0.1.14",
     previousVersion: "0.1.10",
     bindHost: "127.0.0.1",
@@ -122,6 +124,7 @@ test("loads schema 2 installations as isolated without changing durable settings
     telemetry: false,
     profile: "light",
     accessMode: "isolated",
+    engine: "docker",
     companionsEnabled: false,
     workspaces: []
   });

@@ -2,6 +2,7 @@ import { Writable } from "node:stream";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { composeCommand, profileRuntimeSettings, PROFILE_REQUIREMENTS } from "./index.mjs";
+import { composeBinary } from "./engine.mjs";
 import { localImageRefs } from "./image-lock.mjs";
 
 const GiB = 1024 ** 3;
@@ -95,16 +96,17 @@ async function installedImageDigests(root, version) {
   return digests;
 }
 
-export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, fetch = globalThis.fetch }) {
-  const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
+export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, fetch = globalThis.fetch, engine: engineName }) {
+  const binary = composeBinary(engineName ?? config.engine ?? "docker");
+  const engineInfo = await captureProbe(execute, { command: binary, args: ["info", "--format", "{{json .}}"] });
   let engine = null;
-  try { engine = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
+  try { engine = JSON.parse(engineInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
   const cachedLayers = new Set();
   if (engine && existingConfig) {
     const existingDigests = await installedImageDigests(root, existingConfig.version);
     for (const type of ["core", "cli", "browser"]) {
       for (const ref of localImageRefs(type, existingConfig.version, existingDigests[type])) {
-        const output = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
+        const output = await captureProbe(execute, { command: binary, args: ["image", "inspect", "--format", "{{json .RootFS.Layers}}", ref] });
         try { for (const layer of JSON.parse(output)) cachedLayers.add(layer); break; } catch {}
       }
     }
@@ -126,7 +128,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const refs = ["core", "cli", "browser"].includes(type) ? localImageRefs(type, config.version) : [image];
     let cached = null;
     for (const ref of refs) {
-      cached = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{.Id}}", ref] });
+      cached = await captureProbe(execute, { command: binary, args: ["image", "inspect", "--format", "{{.Id}}", ref] });
       if (/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) break;
     }
     if (!/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) {
