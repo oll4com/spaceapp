@@ -140,7 +140,12 @@ export async function roomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorI
   return continuingRoomAgentSupervisorWorkflow(rawInput);
 }
 
-async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
+/**
+ * The pre-`room-background-continuation-v1` branch. Exported so the real
+ * workflow sandbox can exercise it directly: a fresh execution always takes the
+ * patched branch, so only a historical replay used to reach this code.
+ */
+export async function legacyRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   const input = roomAgentSupervisorInputSchema.parse(rawInput);
   let pending = [...input.pending];
   let interrupted: Array<{ item: RoomAgentSupervisorQueueItem; reason: string }> = [];
