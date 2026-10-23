@@ -54,17 +54,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
-COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
-COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
-COPY --from=build --chown=spaceapp:spaceapp /app/THIRD_PARTY_LICENSES ./THIRD_PARTY_LICENSES
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
+
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -72,7 +62,20 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
          ln -s /usr/local/bin/spaceapp-cli-wrapper "/usr/local/bin/${name}-vscode-parity"; \
        done
 
+# Per-service dependency closures. The build stage has the full source and
+# production node_modules; each prune stage materialises only what its entrypoints
+# need, so the final images stop carrying the whole monorepo.
+FROM build AS prune-core
+RUN node scripts/prune-image-deps.mjs --target core --out /pruned-core
+
+FROM build AS prune-browser
+RUN node scripts/prune-image-deps.mjs --target browser --out /pruned-browser
+
+FROM build AS prune-cli
+RUN node scripts/prune-image-deps.mjs --target cli --out /pruned-cli
+
 FROM runtime-base AS core
+COPY --from=prune-core --chown=spaceapp:spaceapp /pruned-core/ /app/
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -85,6 +88,7 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
+COPY --from=prune-browser --chown=spaceapp:spaceapp /pruned-browser/ /app/
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
@@ -97,6 +101,7 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --from=prune-cli --chown=spaceapp:spaceapp /pruned-cli/ /app/
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md

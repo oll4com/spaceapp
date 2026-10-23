@@ -38,14 +38,25 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   );
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
-  assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
   assert.match(dockerfile, /@opencode\/cli@2\.0\.32/);
   assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
   const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   assert.match(installer, /@openai\/codex@0\.145\.0/);
   assert.match(installer, /Unsupported optional provider/);
   assert.doesNotMatch(dockerfile, /docker\.sock/);
-  assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
+  // Each final image draws its runtime tree from a per-service prune stage, and
+  // the prune script ships the core owner scripts and the legal notices that
+  // used to be copied straight into runtime-base.
+  assert.match(dockerfile, /^FROM build AS prune-core$/m);
+  assert.match(dockerfile, /^FROM build AS prune-browser$/m);
+  assert.match(dockerfile, /^FROM build AS prune-cli$/m);
+  assert.match(dockerfile, /COPY --from=prune-core --chown=spaceapp:spaceapp \/pruned-core\/ \/app\//);
+  assert.match(dockerfile, /COPY --from=prune-browser --chown=spaceapp:spaceapp \/pruned-browser\/ \/app\//);
+  assert.match(dockerfile, /COPY --from=prune-cli --chown=spaceapp:spaceapp \/pruned-cli\/ \/app\//);
+  const prune = await readFile(join(root, "scripts/prune-image-deps.mjs"), "utf8");
+  assert.match(prune, /rotate-owner-setup-token\.mjs/);
+  assert.match(prune, /THIRD_PARTY_NOTICES\.md/);
+  assert.match(prune, /THIRD_PARTY_LICENSES/);
 });
 
 test("public container images identify their repository and license for GHCR", async () => {
