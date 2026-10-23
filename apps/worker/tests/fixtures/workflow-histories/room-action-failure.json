@@ -1,0 +1,442 @@
+{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": {
+        "seconds": "1826025583",
+        "nanos": 363000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "roomAgentActionWorkflow"
+        },
+        "taskQueue": {
+          "name": "spaceapp-test-881dbae9-bf1b-4701-b437-155a814f280e",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJicmlkZ2UiOnsicm9vbUlkIjoicm9vbTpwcm9vZiIsIm1pc3Npb25JZCI6Im1pc3Npb246cHJvb2YifSwidHJhY2VJZCI6InRyYWNlOnByb29mIn0="
+            }
+          ]
+        },
+        "workflowExecutionTimeout": {
+          "seconds": "2592000"
+        },
+        "workflowRunTimeout": {
+          "seconds": "2592000"
+        },
+        "workflowTaskTimeout": {
+          "seconds": "10"
+        },
+        "originalExecutionRunId": "c063e490-9d49-417c-8780-a4137eac2ffd",
+        "identity": "spaceapp-workflow-test-client",
+        "firstExecutionRunId": "c063e490-9d49-417c-8780-a4137eac2ffd",
+        "attempt": 1,
+        "firstWorkflowTaskBackoff": {},
+        "header": {}
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": {
+        "seconds": "1826025583",
+        "nanos": 363000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "spaceapp-test-881dbae9-bf1b-4701-b437-155a814f280e",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": {
+          "seconds": "10"
+        },
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": {
+        "seconds": "1826025583",
+        "nanos": 363000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "spaceapp-workflow-test-worker",
+        "historySizeBytes": "437"
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": {
+        "seconds": "1826025584",
+        "nanos": 283000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "spaceapp-workflow-test-worker",
+        "binaryChecksum": "@temporalio/worker@1.24.0+a915c292602c5b8ec8130fe62acac63f7ffe8d093ce302c1ed7995e539c51b83",
+        "sdkMetadata": {
+          "coreUsedFlags": [
+            2,
+            3,
+            1
+          ],
+          "sdkName": "temporal-typescript",
+          "sdkVersion": "1.24.0"
+        },
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "5",
+      "eventTime": {
+        "seconds": "1826025584",
+        "nanos": 283000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "runRoomAgentBackgroundAction"
+        },
+        "taskQueue": {
+          "name": "spaceapp-test-881dbae9-bf1b-4701-b437-155a814f280e",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJicmlkZ2UiOnsicm9vbUlkIjoicm9vbTpwcm9vZiIsIm1pc3Npb25JZCI6Im1pc3Npb246cHJvb2YifSwidHJhY2VJZCI6InRyYWNlOnByb29mIn0="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": {
+          "seconds": "2592000"
+        },
+        "scheduleToStartTimeout": {
+          "seconds": "2592000"
+        },
+        "startToCloseTimeout": {
+          "seconds": "86400"
+        },
+        "heartbeatTimeout": {
+          "seconds": "15"
+        },
+        "workflowTaskCompletedEventId": "3",
+        "retryPolicy": {
+          "initialInterval": {
+            "seconds": "1"
+          },
+          "backoffCoefficient": 2,
+          "maximumInterval": {
+            "seconds": "100"
+          },
+          "maximumAttempts": 5
+        }
+      }
+    },
+    {
+      "eventId": "6",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 294000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "5",
+        "identity": "spaceapp-workflow-test-worker",
+        "attempt": 5
+      }
+    },
+    {
+      "eventId": "7",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 296000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_FAILED",
+      "activityTaskFailedEventAttributes": {
+        "failure": {
+          "message": "synthetic transport failed",
+          "source": "TypeScriptSDK",
+          "stackTrace": "Error: synthetic transport failed",
+          "applicationFailureInfo": {
+            "type": "Error"
+          }
+        },
+        "scheduledEventId": "5",
+        "startedEventId": "6",
+        "identity": "spaceapp-workflow-test-worker",
+        "retryState": "RETRY_STATE_MAXIMUM_ATTEMPTS_REACHED"
+      }
+    },
+    {
+      "eventId": "8",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 296000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "spaceapp-test-881dbae9-bf1b-4701-b437-155a814f280e",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": {
+          "seconds": "10"
+        },
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 297000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "spaceapp-workflow-test-worker",
+        "historySizeBytes": "1239"
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 313000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "spaceapp-workflow-test-worker",
+        "binaryChecksum": "@temporalio/worker@1.24.0+a915c292602c5b8ec8130fe62acac63f7ffe8d093ce302c1ed7995e539c51b83",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 313000000
+      },
+      "eventType": "EVENT_TYPE_MARKER_RECORDED",
+      "markerRecordedEventAttributes": {
+        "markerName": "core_patch",
+        "details": {
+          "patch-data": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJpZCI6InJvb20tYmFja2dyb3VuZC1hY3Rpb24tZmFpbHVyZS12MSIsImRlcHJlY2F0ZWQiOmZhbHNlfQ=="
+              }
+            ]
+          }
+        },
+        "workflowTaskCompletedEventId": "9"
+      }
+    },
+    {
+      "eventId": "12",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 313000000
+      },
+      "eventType": "EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES",
+      "upsertWorkflowSearchAttributesEventAttributes": {
+        "workflowTaskCompletedEventId": "9",
+        "searchAttributes": {
+          "indexedFields": {
+            "TemporalChangeVersion": {
+              "metadata": {
+                "type": "S2V5d29yZExpc3Q=",
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "WyJyb29tLWJhY2tncm91bmQtYWN0aW9uLWZhaWx1cmUtdjEiXQ=="
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "13",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 313000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "2",
+        "activityType": {
+          "name": "failRoomAgentBackgroundAction"
+        },
+        "taskQueue": {
+          "name": "spaceapp-test-881dbae9-bf1b-4701-b437-155a814f280e",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJyb29tSWQiOiJyb29tOnByb29mIiwibWlzc2lvbklkIjoibWlzc2lvbjpwcm9vZiIsImFjdGlvbklkIjoiYWN0aW9uOmxlZ2FjeSIsImNhbmNlbGxlZCI6ZmFsc2V9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": {
+          "seconds": "2592000"
+        },
+        "scheduleToStartTimeout": {
+          "seconds": "2592000"
+        },
+        "startToCloseTimeout": {
+          "seconds": "60"
+        },
+        "heartbeatTimeout": {},
+        "workflowTaskCompletedEventId": "9",
+        "retryPolicy": {
+          "initialInterval": {
+            "seconds": "1"
+          },
+          "backoffCoefficient": 2,
+          "maximumInterval": {
+            "seconds": "100"
+          },
+          "maximumAttempts": 5
+        }
+      }
+    },
+    {
+      "eventId": "14",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 313000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "13",
+        "identity": "spaceapp-workflow-test-worker",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "15",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 316000000
+      },
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "YmluYXJ5L251bGw="
+              }
+            }
+          ]
+        },
+        "scheduledEventId": "13",
+        "startedEventId": "14",
+        "identity": "spaceapp-workflow-test-worker"
+      }
+    },
+    {
+      "eventId": "16",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 316000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "spaceapp-test-881dbae9-bf1b-4701-b437-155a814f280e",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": {
+          "seconds": "10"
+        },
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "17",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 316000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "16",
+        "identity": "spaceapp-workflow-test-worker",
+        "historySizeBytes": "2228"
+      }
+    },
+    {
+      "eventId": "18",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 323000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "16",
+        "identity": "spaceapp-workflow-test-worker",
+        "binaryChecksum": "@temporalio/worker@1.24.0+a915c292602c5b8ec8130fe62acac63f7ffe8d093ce302c1ed7995e539c51b83",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "19",
+      "eventTime": {
+        "seconds": "1826025599",
+        "nanos": 323000000
+      },
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_FAILED",
+      "workflowExecutionFailedEventAttributes": {
+        "failure": {
+          "message": "Activity task failed",
+          "cause": {
+            "message": "synthetic transport failed",
+            "source": "TypeScriptSDK",
+            "stackTrace": "Error: synthetic transport failed",
+            "applicationFailureInfo": {
+              "type": "Error"
+            }
+          },
+          "activityFailureInfo": {
+            "scheduledEventId": "5",
+            "startedEventId": "6",
+            "identity": "spaceapp-workflow-test-worker",
+            "activityType": {
+              "name": "runRoomAgentBackgroundAction"
+            },
+            "activityId": "1",
+            "retryState": "RETRY_STATE_MAXIMUM_ATTEMPTS_REACHED"
+          }
+        },
+        "workflowTaskCompletedEventId": "17"
+      }
+    }
+  ]
+}

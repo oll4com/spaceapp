@@ -151,43 +151,58 @@ describe("StreamingDock", () => {
   });
 
   it("supports native drag ordering, accessible move buttons, per-tile periods, preview, and explicit save", async () => {
-    const { api } = renderDock();
+    const { api, unmount } = renderDock();
     await screen.findByLabelText("Streaming controls");
-    fireEvent.click(screen.getByRole("button", { name: "Expand YouTube" }));
-    fireEvent.click(screen.getByRole("switch", { name: "Period views" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Display" }));
-    const order = screen.getByRole("list", { name: "Streaming overlay tile order" });
-    let rows = within(order).getAllByRole("listitem");
-    fireEvent.dragStart(rows[0]!);
-    fireEvent.dragOver(rows[2]!);
-    fireEvent.drop(rows[2]!);
-    rows = within(order).getAllByRole("listitem");
-    expect(within(rows[2]!).getByText("Rooms")).toBeTruthy();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Expand YouTube" }));
+      fireEvent.click(screen.getByRole("switch", { name: "Period views" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Display" }));
+      const order = screen.getByRole("list", { name: "Streaming overlay tile order" });
+      let rows = within(order).getAllByRole("listitem");
+      fireEvent.dragStart(rows[0]!);
+      fireEvent.dragOver(rows[2]!);
+      fireEvent.drop(rows[2]!);
+      rows = within(order).getAllByRole("listitem");
+      expect(within(rows[2]!).getByText("Rooms")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Move Rooms earlier" }));
-    rows = within(order).getAllByRole("listitem");
-    expect(within(rows[1]!).getByText("Rooms")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Move Rooms earlier" }));
+      rows = within(order).getAllByRole("listitem");
+      expect(within(rows[1]!).getByText("Rooms")).toBeTruthy();
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Period" }), { target: { value: "90" } });
-    fireEvent.click(screen.getByRole("switch", { name: "Custom footer text" }));
-    fireEvent.change(screen.getByLabelText("Streaming overlay custom text"), { target: { value: "Line one\nLine two\nLine three" } });
-    expect((screen.getByLabelText("Streaming overlay custom text") as HTMLTextAreaElement).value).toBe("Line one\nLine two");
+      fireEvent.change(screen.getByRole("combobox", { name: "Period" }), { target: { value: "90" } });
+      fireEvent.click(screen.getByRole("switch", { name: "Custom footer text" }));
+      fireEvent.change(screen.getByLabelText("Streaming overlay custom text"), { target: { value: "Line one\nLine two\nLine three" } });
+      expect((screen.getByLabelText("Streaming overlay custom text") as HTMLTextAreaElement).value).toBe("Line one\nLine two");
 
-    fireEvent.click(screen.getByRole("switch", { name: "Draft preview" }));
-    expect(await screen.findByLabelText("Streaming overlay draft preview")).toBeTruthy();
-    await waitFor(() => expect(api.streamingOverlaySnapshot).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("switch", { name: "Draft preview" }));
+      });
+      expect(screen.getByLabelText("Streaming overlay draft preview")).toBeTruthy();
+      expect(api.streamingOverlaySnapshot).toHaveBeenCalledTimes(1);
+      expect(api.updateStreamingOverlaySettings).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Save overlay" }));
-    await waitFor(() => expect(api.updateStreamingOverlaySettings).toHaveBeenCalledTimes(1));
-    expect(api.updateStreamingOverlaySettings).toHaveBeenCalledWith(expect.objectContaining({
-      expectedVersion: 3,
-      customTextEnabled: true,
-      customText: "Line one\nLine two",
-      tiles: expect.arrayContaining([expect.objectContaining({
-        metricKey: "youtube.analytics.views",
-        analyticsPeriod: 90
-      })])
-    }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Save overlay" }));
+      });
+      expect(api.updateStreamingOverlaySettings).toHaveBeenCalledTimes(1);
+      expect(api.updateStreamingOverlaySettings).toHaveBeenCalledWith(expect.objectContaining({
+        expectedVersion: 3,
+        customTextEnabled: true,
+        customText: "Line one\nLine two",
+        tiles: expect.arrayContaining([expect.objectContaining({
+          metricKey: "youtube.analytics.views",
+          analyticsPeriod: 90
+        })])
+      }));
+
+      // Saving explicitly cancels the pending 400ms autosave.
+      await act(async () => { vi.advanceTimersByTime(400); });
+      expect(api.updateStreamingOverlaySettings).toHaveBeenCalledTimes(1);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("uses session-only activation and refreshes the catalog after an optimistic 409", async () => {

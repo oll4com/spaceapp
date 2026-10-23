@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "sdkVersion": "1.24.0",
+  "sourceCommit": "98bcb3859778b85951c6f15902fe82f156562f9e",
+  "sourceHashes": {
+    "workflows.ts": "49c0d2781261925b3a99158fd581b0c565d34afb5f87ecfc41c1aac2d3030984",
+    "dot-goal-loop.ts": "61c6563cf177be79a58e92b27207e95646c703838a252ff9daa085d69fc0729e",
+    "room-supervisor-state.ts": "b13cc04f540ef04cde103e5e0afada9925a79c54b597f1fa4a1db977fd48312e",
+    "memory-maintenance-workflows.ts": "db61e2340e30954f7366b819df46aafe5446092f48b9fba838b947c19a00b23b",
+    "memory-mutation-workflows.ts": "e3883d5bc2bce62aa6cf31aa91c0148444f71b74ec506ac0be0dc09d4da79453"
+  },
+  "histories": [
+    {
+      "file": "dummy-retries.json",
+      "workflowId": "spaceapp-test-dummyTurnWorkflow-e65bff6e-0c80-44dc-b8ed-dffc76feb606",
+      "workflowType": "dummyTurnWorkflow",
+      "scenario": "dummy ordering, forwarded input and transient retries",
+      "legacy": false,
+      "sha256": "dd0481659daeca3f33914f19fdb10b717cc2d8502d5e950638f4d1c858ec70b6"
+    },
+    {
+      "file": "native-turn.json",
+      "workflowId": "spaceapp-test-codexAppServerTurnWorkflow-195305d1-f26d-46ce-a08c-c0457febe321",
+      "workflowType": "codexAppServerTurnWorkflow",
+      "scenario": "turn native routes and forwards result",
+      "legacy": false,
+      "sha256": "1fcb7a63335e1fb483465ca12d67c280c6e31968a721c1ff7ab6bcc372f9a0c8"
+    },
+    {
+      "file": "dot-durable-timers.json",
+      "workflowId": "spaceapp-test-dotGoalWorkflow-0be0398b-7f28-48e1-8123-5c66a72664a0",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot durable paused, waiting and observation timers with retries",
+      "legacy": false,
+      "sha256": "970413ba60290e0e7880edc60c95c5ce0c250c560222e5092ec6c0e32e2240b9"
+    },
+    {
+      "file": "dot-wake-during-activity.json",
+      "workflowId": "spaceapp-test-dotGoalWorkflow-022a2ebd-ad40-4627-90f1-3c1399bba975",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot wake during activity is retained without a timer",
+      "legacy": false,
+      "sha256": "4d18ec8398e32e571099fda797931a4a57be2bb5027151b9e1ba8c1ae7895504"
+    },
+    {
+      "file": "dot-continue-as-new.json",
+      "workflowId": "spaceapp-test-dotGoalWorkflow-df8b69bc-0ff8-4099-8691-0aad5a3d78e4",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot continues after 300 unfinished iterations with the same goal",
+      "legacy": false,
+      "sha256": "ea8c61d8eabd5dd65cc809b7f28689841e8865f61636f8f294d11cd7fb0f3298"
+    },
+    {
+      "file": "memory-maintenance-child.json",
+      "workflowId": "spaceapp-test-memoryMaintenanceWorkflow-082a209e-aae0-4919-9a7b-9465331057f8",
+      "workflowType": "memoryMaintenanceWorkflow",
+      "scenario": "maintenance continues after secondary failures and runs real consolidation child",
+      "legacy": false,
+      "sha256": "1c8f2237a3b46d98619559a8198ac458b75cae9a4be71676163028d1e792052e"
+    },
+    {
+      "file": "memory-consolidation-noop.json",
+      "workflowId": "spaceapp-test-memoryConsolidationWorkflow-550d8a13-aebb-4474-aad8-f6fbd08e8f7e",
+      "workflowType": "memoryConsolidationWorkflow",
+      "scenario": "consolidation without change set",
+      "legacy": false,
+      "sha256": "46f90febd2e53d0e38ec8427f470de00d226f2fde6fa428c28210cb0bebafba1"
+    },
+    {
+      "file": "memory-consolidation-mutation.json",
+      "workflowId": "spaceapp-test-memoryConsolidationWorkflow-a777e09b-69fc-4977-b265-93aa476b3c7a",
+      "workflowType": "memoryConsolidationWorkflow",
+      "scenario": "consolidation mutation and finalize with retry",
+      "legacy": false,
+      "sha256": "27e4686cb52587456020cfd19da9e53938a00db1b578c53e07bbd0ebffe38a35"
+    },
+    {
+      "file": "memory-mutation-retry.json",
+      "workflowId": "spaceapp-test-memoryMutationWorkflow-bb3acc66-3785-4596-b922-366270931fba",
+      "workflowType": "memoryMutationWorkflow",
+      "scenario": "mutation retries and forwards",
+      "legacy": false,
+      "sha256": "028d7d0b57ba58c952bf5c55f8df1d8580774b9e74a175843fb439c5ff2639df"
+    },
+    {
+      "file": "room-action-failure.json",
+      "workflowId": "space-room-action:action:legacy",
+      "workflowType": "roomAgentActionWorkflow",
+      "scenario": "action retry exhaustion preserves legacy-id failure persistence",
+      "legacy": false,
+      "sha256": "f98f96175b74bba963caff6960b3f9f0cba7a974a82ab76560cb90cefa13ae34"
+    },
+    {
+      "file": "supervisor-current.json",
+      "workflowId": "spaceapp-test-roomAgentSupervisorWorkflow-28dcae4d-a99a-4530-896c-14c1708885ad",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "allocation send and verification stay in one mission",
+      "legacy": false,
+      "sha256": "3bd7a9658e5e88cbf44bca56f9cff083ff8574fc1a919375aa417ffca63ee452"
+    },
+    {
+      "file": "supervisor-current-continued.json",
+      "workflowId": "spaceapp-test-roomAgentSupervisorWorkflow-bf96e050-520f-4d5d-901f-9730d6ada295",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "prepared continuation carried into next run and executed once",
+      "legacy": false,
+      "sha256": "a0cdaad6a94982f666621ede523b7e55cfff5ef4adcf5623b218b0c4bb3a2aa1"
+    },
+    {
+      "file": "supervisor-prepatch.json",
+      "workflowId": "spaceapp-test-roomAgentSupervisorWorkflow-481293f0-d0b0-42df-9ce8-017d19807226",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "prepatch supervisor retains boolean settle contract",
+      "legacy": true,
+      "sha256": "f6ff96aaff6835c3863e3aa290be1bcbba216471bf8a53363c7c4d2933130f4b"
+    },
+    {
+      "file": "dot-wake-pending-timer.json",
+      "workflowId": "spaceapp-test-dotGoalWorkflow-2ab482b9-f4df-4ffd-a8e9-886636a3da78",
+      "workflowType": "dotGoalWorkflow",
+      "scenario": "dot wake cancels an already scheduled durable wait",
+      "legacy": false,
+      "sha256": "106f76877135215b5b5af74f2af6e6f062e23108211a76b569eeec55df2f003e"
+    },
+    {
+      "file": "supervisor-paused.json",
+      "workflowId": "spaceapp-test-roomAgentSupervisorWorkflow-3408f452-65f8-454e-be01-6e7cdbacfe3b",
+      "workflowType": "roomAgentSupervisorWorkflow",
+      "scenario": "paused supervisor waits durably before checking the same turn again",
+      "legacy": false,
+      "sha256": "ba1bca590bacce5fad5a1fbcc64f68525fb190a7807ddad1602eb3cdfd5144a0"
+    }
+  ]
+}

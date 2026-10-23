@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["tests/support/*.ts", "tests/workflows-time-skipping.test.ts", "tests/workflow-replay.test.ts", "tests/workflow-history-integrity.test.ts", "tests/record-workflow-histories.ts"]
+}

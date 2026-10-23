@@ -302,6 +302,7 @@ describe("BrowserPane", () => {
     apiMock.createBrowserCapture.mockRejectedValue(new Error("legacy browser host"));
     apiMock.stopBrowserCapture.mockRejectedValue(new Error("legacy browser host"));
     apiMock.cancelBrowserCapture.mockRejectedValue(new Error("legacy browser host"));
+    apiMock.browserCapture.mockRejectedValue(new Error("legacy browser host"));
     apiMock.browserCaptureSegments.mockRejectedValue(new Error("legacy browser host"));
     apiMock.browserCaptureTimeline.mockRejectedValue(new Error("legacy browser host"));
     apiMock.browserDiagnostics.mockRejectedValue(new Error("legacy browser host"));
@@ -1335,6 +1336,7 @@ describe("BrowserPane", () => {
   });
 
   it("captures evidence and exposes diagnostics with frame-by-frame playback", async () => {
+    const intervals = vi.spyOn(window, "setInterval");
     const captureArtifact: Artifact = {
       id: "artifact:proof",
       roomId: "room:browser-proof",
@@ -1402,6 +1404,15 @@ describe("BrowserPane", () => {
     fireEvent.click(within(recordingControls).getByRole("button", { name: "Start browser recording Research Browser" }));
     await waitFor(() => expect(apiMock.createBrowserCapture).toHaveBeenNthCalledWith(2, "pane:browser-proof", { options: { kind: "RECORDING", format: "WEBM", maxDurationMs: 60000, maxBytes: 1073741824, frameIntervalMs: 100 } }));
     expect(await within(recordingControls).findByRole("progressbar", { name: "Browser recording progress" })).toBeTruthy();
+
+    const capturePoll = intervals.mock.calls.find(([, delay]) => delay === 1500)?.[0];
+    expect(capturePoll).toBeTypeOf("function");
+    await act(async () => {
+      if (typeof capturePoll !== "function") throw new Error("Expected the active capture poll callback");
+      capturePoll();
+    });
+    expect(apiMock.browserCapture).toHaveBeenCalledWith("pane:browser-proof", "capture:recording");
+    expect(within(recordingControls).getByRole("progressbar", { name: "Browser recording progress" })).toBeTruthy();
 
     await chooseBrowserAction("Open browser debugger Research Browser");
     expect(await screen.findByRole("tab", { name: "Console" })).toBeTruthy();
