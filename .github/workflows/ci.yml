@@ -15,6 +15,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  temporal-workflows:
+    name: Temporal sandbox and replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Existing worker completion tests exercise the real sqlite3 CLI.
+      - name: Install worker test prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3
+
+      - name: Build internal packages and typecheck
+        run: npm run check
+
+      - name: Typecheck Temporal tests and their fixtures
+        run: npm run check:temporal-tests -w @space/worker
+
+      # Independent of public export provenance, which cannot be regenerated
+      # by a contributor. This runs every worker test, including replay and the
+      # negative determinism control, with no skips or continue-on-error.
+      - name: Worker tests including real Temporal sandbox and replay
+        timeout-minutes: 3
+        run: npm test -w @space/worker
+
   public-quality:
     name: Sanitized public quality gates
     runs-on: ubuntu-latest
