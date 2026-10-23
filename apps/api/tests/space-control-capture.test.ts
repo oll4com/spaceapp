@@ -128,6 +128,11 @@ describe("Space Control screenshot capture", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const started = service.screenshot(actor, room.id, { aspect: "9:16", video: { steps: [{ dwellMs: 1000 }] } } as never);
+      // The video capture reaches the engine only after a real mkdir on the libuv thread
+      // pool, which can lose the race to the faked 6 s RUNNING timer on a loaded runner
+      // (seen twice in CI: requests[1] was still undefined here after all tests passed).
+      // Wait for the second capture to be dispatched before asserting on it.
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
       await vi.advanceTimersByTimeAsync(6000);
       const running = await started as { status: string; operationId: string };
       expect(running).toMatchObject({ status: "RUNNING", operationId: expect.any(String) });

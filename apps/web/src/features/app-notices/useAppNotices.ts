@@ -49,6 +49,10 @@ export function useAppNotices(): AppNotices {
     console.log(`[AI-Live-Debug][${type.toUpperCase()}] ${message}`);
     // Progress notes ("button tapped", "pane opened") stay in the console; only failures reach the screen.
     if (type !== "error") return;
+    // A late failure can arrive after the environment is gone (a test's jsdom teardown
+    // unmounted the tree between the error and this callback); touching `window` then
+    // throws after every test already passed. Nothing to show in that case.
+    if (typeof window === "undefined") return;
     if (liveDebugTimerRef.current !== null) window.clearTimeout(liveDebugTimerRef.current);
     setLiveDebugToast({ id: Date.now(), message, type });
     liveDebugTimerRef.current = window.setTimeout(() => {

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { prefetchT3Bundle } from "../src/features/t3code-pane/t3code-prefetch.js";
+import { describe, expect, it, vi } from "vitest";
+import { prefetchT3Bundle, scheduleT3BundlePrefetch } from "../src/features/t3code-pane/t3code-prefetch.js";
 
 describe("T3 bundle prefetch", () => {
   it("warms only the listed flat startup files, one at a time and at low priority", async () => {
@@ -25,6 +25,24 @@ describe("T3 bundle prefetch", () => {
       const fetchFn = (async (url: string) => { calls.push(url); return answer.clone(); }) as unknown as typeof fetch;
       expect(await prefetchT3Bundle(fetchFn)).toBe(0);
       expect(calls).toEqual(["/api/t3code/startup-assets"]);
+    }
+  });
+
+  it("does not touch a dead window when the idle timer fires after the page environment is gone", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchFn = vi.fn(async () => new Response("{}", { status: 404 }));
+      vi.stubGlobal("fetch", fetchFn);
+      scheduleT3BundlePrefetch(0);
+      // The timer outlives the environment (a test's jsdom teardown, a document
+      // that navigated away): firing it must be a no-op, not a ReferenceError.
+      vi.stubGlobal("window", undefined);
+      vi.advanceTimersByTime(0);
+      await Promise.resolve();
+      expect(fetchFn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
     }
   });
 });

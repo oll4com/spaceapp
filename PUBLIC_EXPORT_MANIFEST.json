@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "c067c535c2626f5041b9705eebbe22f5c31ac75f",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 407,
   "files": [
     {
       "path": ".gitignore",
@@ -10394,8 +10394,8 @@
     {
       "path": "apps/api/src/memory-graph-routes.ts",
       "sourceObjectId": "396e533dac265ca550730f1b168f8d5b0b1b8d52",
-      "sha256": "cb12080596d2ffd8003a5f428e09c003c505c7f933bb9a03e1714c59ab99bb14",
-      "size": 46898
+      "sha256": "9a7ab367a0d044f03729513745b7b51d41a369a79d1200fd3e9578ed21a0f592",
+      "size": 47443
     },
     {
       "path": "apps/api/src/memory-graph-service.ts",
@@ -13100,8 +13100,8 @@
     {
       "path": "apps/api/tests/memory-graph-api.test.ts",
       "sourceObjectId": "1b9d8dc0ffb99b36b0c5da49691731dd7dac321b",
-      "sha256": "9c2e9b100c355999acb73d4ca305eaabf0a45c043bf20d1e12f34fd144e93a22",
-      "size": 58770
+      "sha256": "32bb60f0a5796360f8ad0ef775001bc2474aa418ed4691c6f0b01a8e7bfd2019",
+      "size": 63075
     },
     {
       "path": "apps/api/tests/memory-graph-service-lifecycle.test.ts",
@@ -13820,8 +13820,8 @@
     {
       "path": "apps/api/tests/room-watchdog.test.ts",
       "sourceObjectId": "4046b1095658d1d4d5f89d3da069df7b1036e181",
-      "sha256": "e3829aeb9c4fddf071ded06a23a424dcd042061830c5cdf400e7b7a9aac73e06",
-      "size": 16377
+      "sha256": "a03cdb841da9f4e54a4f4f1ba5da54c3fa9ac56e448726a82645421d631d3cbc",
+      "size": 16552
     },
     {
       "path": "apps/api/tests/room-work.test.ts",
@@ -13922,8 +13922,8 @@
     {
       "path": "apps/api/tests/space-control-capture.test.ts",
       "sourceObjectId": "6091c194d8014c60e1d646a0a0881c9d562ad891",
-      "sha256": "95ae399f545126aea9ac3c562712be608815086304d235a642818b82fb8f1156",
-      "size": 10285
+      "sha256": "59b568239cf75d0b9149969ebbc7cb2fccf8547a159b62a817d0e309506bb859",
+      "size": 10696
     },
     {
       "path": "apps/api/tests/space-control-gemini-quota.test.ts",
@@ -15074,14 +15074,14 @@
     {
       "path": "apps/web/src/demo/DemoStore.ts",
       "sourceObjectId": "0e7407c906ade1b652c8bb815242a3a0cfe5c333",
-      "sha256": "f2a8fc79c6389aed461f2fa3b70a7cc80ccd301a6a305bf20b69a01e84dc961f",
-      "size": 137399
+      "sha256": "9369da6160ee9c7573d8dba2dc2a315b800aad88fc6376cec491e88c49232ec3",
+      "size": 140021
     },
     {
       "path": "apps/web/src/demo/FeatureShowcase.tsx",
       "sourceObjectId": "6fc2867d1ad3f0a60b8c867db9bf817abfcc9139",
-      "sha256": "9de1c258ae0ff453a3cf9805f8d87f768b16009ee7d1e935d4ae8bdd298f1852",
-      "size": 7646
+      "sha256": "5df3b29f8857c8869529d89aee4a0ea49c3dca7f527c005e2744f9b404b4afd5",
+      "size": 7683
     },
     {
       "path": "apps/web/src/demo/demo-fixture.ts",
@@ -15650,8 +15650,8 @@
     {
       "path": "apps/web/src/features/app-notices/useAppNotices.ts",
       "sourceObjectId": "e7e39928364fa60f24e8478fdd334dfe4f2d8203",
-      "sha256": "9c5745054f84f0acdabb9b59aa7bd65be1009b099143e0ef29ae175d388dc7fc",
-      "size": 8122
+      "sha256": "cd9b9055e23cd50c23e8ea85cfc4fd42f41649ba52487bb558db84012db6c1d9",
+      "size": 8421
     },
     {
       "path": "apps/web/src/features/app-studio-pane/ActivityTab.tsx",
@@ -17414,8 +17414,8 @@
     {
       "path": "apps/web/src/features/memory-workspace/MemoryGraph3D.tsx",
       "sourceObjectId": "34a99f3d5257fce6cb4af9e3a56e887b77269c5b",
-      "sha256": "3079dc672c9ee6f6a7e3bb87c37326f1d934b218dbe346af612aac509cd33793",
-      "size": 10006
+      "sha256": "d565b44a194dde05d1db424a291d1f467d7a5d0e748847eb7e43aa28e54078d1",
+      "size": 18519
     },
     {
       "path": "apps/web/src/features/memory-workspace/MemoryGraphErrorBoundary.tsx",
@@ -17450,8 +17450,8 @@
     {
       "path": "apps/web/src/features/memory-workspace/MemoryWorkspace.tsx",
       "sourceObjectId": "0cbadd5439880f77f1d2e8086ecc8b1d5773bb1c",
-      "sha256": "e9817493f2f705c65e4afdc0aac54ab4cf225a0cb97cc2819442a9833aa53f2f",
-      "size": 14671
+      "sha256": "5d3a95ddd02a55081a3e90bf3b16fe2f1ec4d7f1a5d8ef03e705ee28b7ced8e8",
+      "size": 17590
     },
     {
       "path": "apps/web/src/features/memory-workspace/MemoryWorkspaceErrorBoundary.tsx",
@@ -17462,14 +17462,14 @@
     {
       "path": "apps/web/src/features/memory-workspace/memory-3d.ts",
       "sourceObjectId": "512bdb7a3df4869903447fff2a892fcf6838970c",
-      "sha256": "b13db6d17c4c74ea41bbd86e8e238877fe4ed7c8e914914a75c65bb446b2440e",
-      "size": 6213
+      "sha256": "4ff65d8f79999585ace65db4fd7ab40792c59e34181271d760ffb156387df4ce",
+      "size": 16154
     },
     {
       "path": "apps/web/src/features/memory-workspace/memory-atlas.css",
       "sourceObjectId": "51d5424bdf2c1dd17d585c3b72ddd916ddaa7f79",
-      "sha256": "3d7528cd27cd345b917131f42591d89dab8ee15edf4a503214d11951c66cd1bd",
-      "size": 16436
+      "sha256": "944cbc4eb9e3793a93cfbf228a9141efc88ec4bb34a9e8768c1824cc855b6d7a",
+      "size": 16520
     },
     {
       "path": "apps/web/src/features/memory-workspace/memory-atlas.ts",
@@ -17498,8 +17498,8 @@
     {
       "path": "apps/web/src/features/memory-workspace/memory-network-layout.worker.ts",
       "sourceObjectId": "f46e5061271778e79f66c04f3fe31f3fe07fabf7",
-      "sha256": "fc54cf2d769930fd7dedca55afad0afc8c8abe0f85182e492679bf54d10f835b",
-      "size": 498
+      "sha256": "42bdc83b893b54d97ddd5b795f26c309bcbb006bd3cbd0d6019264d50889f9a0",
+      "size": 1300
     },
     {
       "path": "apps/web/src/features/notifications/NotificationCenterDock.tsx",
@@ -18578,8 +18578,8 @@
     {
       "path": "apps/web/src/features/t3code-pane/t3code-prefetch.ts",
       "sourceObjectId": "90f6ac45a15490af678e08d99c679a673750ed56",
-      "sha256": "a65305ae546166cbd249a0195a91b1a2c9d79c2d63afc4e0c199a1b6f261576c",
-      "size": 1988
+      "sha256": "e3baa3fb8b3669f4a914b2aaae28de240cde248efb901119d81125c69d36b747",
+      "size": 2308
     },
     {
       "path": "apps/web/src/features/t3code-pane/t3code-selection-channel.ts",
@@ -19334,8 +19334,8 @@
     {
       "path": "apps/web/src/live-api.ts",
       "sourceObjectId": "b8a928fa1a9fd8832351c62c872634c4b35e5e67",
-      "sha256": "0ed231c2591335d143f54ab3296d7421e8995af00468ef85c6c799ec68c1895d",
-      "size": 229740
+      "sha256": "bd34f36a250ad78f44bba0dbbd75be7081cb7fa4400c83962407d6f25e7e84ac",
+      "size": 229823
     },
     {
       "path": "apps/web/src/live/LiveSpaceApp.tsx",
@@ -20018,8 +20018,8 @@
     {
       "path": "apps/web/tests/demo-store.test.ts",
       "sourceObjectId": "a41ba0593603c81d6f1607e902db69f6f18fb768",
-      "sha256": "ccbc5e20678f3cc36ebf75a4b4d0338fb6c5167aa241933c9eb5817ca1b1a042",
-      "size": 33045
+      "sha256": "7bae2f4047bed80bc00d7893e76329a7cbeaca41095a9b8dde946db7be2d282b",
+      "size": 34364
     },
     {
       "path": "apps/web/tests/demos-pane.test.tsx",
@@ -20546,8 +20546,8 @@
     {
       "path": "apps/web/tests/memory-3d.test.ts",
       "sourceObjectId": "740e958c470ad0cf568f71ad4f22e85f438dc757",
-      "sha256": "caeae35dfeccb22cbe337d0805b3f4054ce0c048cd74cdda5e211bce3558c3cd",
-      "size": 3947
+      "sha256": "5a2fa72a58bc304c01a6682ade45bdb7ae8c1ab3ee5f5fec9c9a55c73e51e6d2",
+      "size": 10065
     },
     {
       "path": "apps/web/tests/memory-calendar-view.test.tsx",
@@ -21050,8 +21050,8 @@
     {
       "path": "apps/web/tests/smoke.test.tsx",
       "sourceObjectId": "6e746b1b5dfa15b5883c5490f78df5e41968ccfa",
-      "sha256": "d077b4e0e7ad9b3ac3e8a2c550f80cab631bc3c6298feac6eb38f20dae12a47d",
-      "size": 146570
+      "sha256": "1c089d170b08c874c4474d304dd8b9ad29df9b7d51e6e9cfc798ef2181d9048d",
+      "size": 146761
     },
     {
       "path": "apps/web/tests/snip-capture.test.ts",
@@ -21230,8 +21230,8 @@
     {
       "path": "apps/web/tests/t3code-prefetch.test.ts",
       "sourceObjectId": "b38d9039a29d7d9c76c58df98b1402037427b66f",
-      "sha256": "d730c1af89e0b7a8dd9c845209c77f917bc1083ea1bcf40266112bb259486420",
-      "size": 1745
+      "sha256": "63e8cc5e0fc338ea3a82445cd5d19d6156855b8c74ddfd4816b3db8945dbfe90",
+      "size": 2470
     },
     {
       "path": "apps/web/tests/t3code-selection-channel.test.ts",
@@ -22514,14 +22514,14 @@
     {
       "path": "package-lock.json",
       "sourceObjectId": "2467956ee1eefad6726373cd81dad1bd7d7c5346",
-      "sha256": "64f749608620190b0d9603d2515c36f332f38a9f30dab52005deb46fe9907b99",
+      "sha256": "ede831d14afa5c124f788a0ec3ed1c934468c50fe95db524c60c67c973e21348",
       "size": 419142
     },
     {
       "path": "package.json",
       "sourceObjectId": "5ba97578edaf7aba42abb6759578f3d09e0e3d12",
-      "sha256": "19efbe2169c5edce64b4f1a4cb64c9d49829bbe8ce01d5af2ab4380330fcc29b",
-      "size": 4221
+      "sha256": "99007830d0e3ae04095d593c42f7b831b8457ba0648845508ac032d4f6449037",
+      "size": 4248
     },
     {
       "path": "packages/browser-host/package.json",
@@ -22754,8 +22754,8 @@
     {
       "path": "packages/codex-app-server/tests/socket-multiplexer.test.ts",
       "sourceObjectId": "6dd1402faad388e6419d1b1b7e3ca699d5dcae68",
-      "sha256": "5f8ce27159a870d86f06e15d097929d4d61273b421fbbe05f8abfd3474da66d6",
-      "size": 33437
+      "sha256": "61fc2f2d8a421ef8dca1f60050fd29f91078b2157f52e1a7d2a14d6f3ec13e6d",
+      "size": 33541
     },
     {
       "path": "packages/codex-app-server/tsconfig.json",
@@ -23090,8 +23090,8 @@
     {
       "path": "packages/contracts/src/schemas.ts",
       "sourceObjectId": "696eb6d84d6580d5bd306b6373a6c930c54c8308",
-      "sha256": "3df2f5b7fb26f8e8061584f244c6ea8083a9dc08738b8be50007c3df13e59c24",
-      "size": 447443
+      "sha256": "3a01971e580d6c0585b9c1e7d2403db05fe05f16bf4118fb9b5cade5212f3b1a",
+      "size": 447789
     },
     {
       "path": "packages/contracts/src/source-control.ts",

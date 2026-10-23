@@ -241,6 +241,7 @@ export function FeatureShowcase({ kind }: { kind: "voice" | "memory" }) {
             edges={graph.edges}
             positions={atlas.positions}
             coordinates={coordinates}
+            packedCoordinates={null}
             showTitles={step > 0}
             selectedNodeId={selected}
             onSelectNode={setSelected}

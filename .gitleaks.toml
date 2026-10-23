@@ -5,6 +5,16 @@
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders, not credentials"
+description = "Documentation placeholders, not credentials; plus upstream's own historical synthetic-fixture commits"
 regexTarget = "match"
 regexes = ['''^your_[a-z_]+>''']
+# Test fixtures, example keys and maintainer process notes, not credentials.
+# Each fixed finding is pinned per-commit, per-path, per-rule and per-line in the
+# Gitleaks ignore file (.gitleaksignore): 23 entries covering the 21 generic-api-key
+# hits reachable in this branch's history (686788e5 x17, eb318bf4 x2, a43e799d x1,
+# 2c7eb7e8 x1) — synthetic test values, quality-doc artifact ids and OAuth field
+# names from upstream oll4com commits (686788e5 = 1.1.5 prep, a43e799d/eb318bf4 =
+# 1.1.6 prep, 2c7eb7e8) — plus one defensively pinned entry for e5a2a1dc, an
+# upstream 1.1.6-prep commit not reachable in this branch's history yet. Commit-
+# AND line-pinned, so any new commit — even on the same paths — is fully scanned
+# (finding 81b7da47 contributes no findings and is no longer listed).

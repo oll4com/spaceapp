@@ -429,6 +429,27 @@ describe("Space deterministic demo store", () => {
     expect(unchangedChangeSet).toEqual(changeSet);
   });
 
+  it("generates a deterministic synthetic memory graph for a requested size", async () => {
+    const store = new DemoStore();
+    const overview = await store.api.memoryGraphOverview({ limit: 10000 });
+    expect(memoryGraphOverviewPayloadSchema.parse(overview.data)).toEqual(overview.data);
+    expect(overview.data.nodes).toHaveLength(10000);
+    expect(overview.data.edges).toHaveLength(29651);
+    expect(overview.data.truncated).toBe(false);
+    expect(overview.data.nodes.filter(node => node.type === "SOURCE")).toHaveLength(24);
+    expect(overview.data.nodes.filter(node => node.type === "TOPIC")).toHaveLength(100);
+    const replay = await new DemoStore().api.memoryGraphOverview({ limit: 10000 });
+    expect(replay.data.nodes[6]).toEqual(overview.data.nodes[6]);
+    const unchanged = await store.api.memoryGraphOverview();
+    expect(unchanged.data.nodes.length).toBeLessThan(100);
+    const detail = await store.api.memoryGraphNode("memory:synth-000010");
+    expect(memoryGraphNodeDetailSchema.parse(detail)).toEqual(detail);
+    expect(detail.node.type).toBe("MEMORY");
+    expect(detail.relatedEdges.length).toBeGreaterThan(0);
+    const missing = await store.api.memoryGraphNode("memory:absent").catch((error: unknown) => error);
+    expect((missing as { status?: number }).status).toBe(404);
+  });
+
   it("keeps Links and Clipboard CRUD local, deterministic, and contract-valid", async () => {
     const store = new DemoStore();
 

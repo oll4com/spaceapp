@@ -68,8 +68,10 @@ test("user enable, add and remove give each user a CLI container and the core it
   assert.match(renderWorkspaceCompose(await loadConfig(root), { cliSandbox: true }), new RegExp(`  spaceapp-cli-${slug}:[^]*?no-new-privileges:true\\n      - seccomp=\\./seccomp-cli\\.json\\n      - apparmor=unconfined`));
   assert.match(compose, new RegExp(`\\nnetworks:\\n  spaceapp-user-${slug}: \\{\\}`));
   assert.deepEqual(JSON.parse(await readFile(join(root, "cli-hosts.json"), "utf8")), { "user:Bob12345": `/run/spaceapp-cli-users/${slug}/host.sock` });
-  // Windows has no POSIX modes (it reports 0o666).
-  if (process.platform !== "win32") assert.equal((await stat(join(root, "secrets", "users", slug, "providers"))).mode & 0o777, 0o700);
+  if (process.platform !== "win32") {
+    // Windows reports every writable path as 0o666 and cannot hold the 0o700 directory mode (libuv).
+    assert.equal((await stat(join(root, "secrets", "users", slug, "providers"))).mode & 0o777, 0o700);
+  }
   assert.match(stdout.value(), /credentials set <provider> --user user:Bob12345/);
 
   assert.equal(await run(["user", "remove", "user:Bob12345"], options), 0);
@@ -167,7 +169,10 @@ test("a backup keeps each user's CLI settings and Space Memory, never their keys
   const directory = join(root, "backups", "spaceapp-backup-20261017T080000000Z");
   assert.equal(await readFile(join(directory, "users", `${slug}-cli-config.tar.gz`), "utf8"), `spaceapp-cli-${slug}:settings`);
   assert.equal(await readFile(join(directory, "users", `${slug}-memory.tar.gz`), "utf8"), `spaceapp-cli-${slug}:memory`);
-  if (process.platform !== "win32") assert.equal((await stat(join(directory, "users", `${slug}-memory.tar.gz`))).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    // Windows reports every writable path as 0o666 and cannot hold the 0o600 archive mode (libuv).
+    assert.equal((await stat(join(directory, "users", `${slug}-memory.tar.gz`))).mode & 0o777, 0o600);
+  }
   assert.match(fixture.stdout.value(), /CLI settings and Space Memory of 1 of 1 user\(s\)/);
   // The user is still there: a restore puts their state straight back into their own container.
   assert.equal(await run(["restore"], { ...fixture.options, stdin: Readable.from(["RESTORE\n"]) }), 0);

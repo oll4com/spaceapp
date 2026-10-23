@@ -255,7 +255,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         durationMs: 8000,
         killedAt: new Date().toISOString()
       },
-      createdAt: new Date().toISOString()
+      // Strictly after every store-written event so getLatestEvent cannot tie-break on
+      // random ids when the room's events share this exact millisecond.
+      createdAt: new Date(Date.now() + 1).toISOString()
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);

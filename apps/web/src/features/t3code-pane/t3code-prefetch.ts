@@ -31,9 +31,13 @@ export function scheduleT3BundlePrefetch(delayMs = 8_000) {
   scheduled = true;
   const run = () => { void prefetchT3Bundle().catch(() => {}); };
   const whenIdle = () => {
+    // The timer can outlive the page environment it was scheduled in (a test's
+    // jsdom teardown, or a document that navigated away). Touching `window`
+    // here then throws an uncaught ReferenceError, so re-check it at fire time.
+    if (typeof window === "undefined") return;
     if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 10_000 });
     else run();
   };
   window.setTimeout(whenIdle, delayMs);
-  window.setInterval(() => { if (document.visibilityState === "visible") whenIdle(); }, REFRESH_MS);
+  window.setInterval(() => { if (typeof document !== "undefined" && document.visibilityState === "visible") whenIdle(); }, REFRESH_MS);
 }

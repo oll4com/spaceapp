@@ -1,0 +1,274 @@
+[
+  {
+    "nodes": 2000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe (LLVM 20.1.2 256 bits) (0x00000000)), llvmpipe)",
+    "webgl2": true,
+    "visibleNodes": 2000,
+    "visibleEdges": 5891,
+    "rotation": "-71.850,-72.300",
+    "layoutVolume": "0.9805",
+    "rotate": {
+      "samples": 480,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "zoom": {
+      "samples": 479,
+      "p50": 16.7,
+      "p95": 16.8,
+      "max": 16.8
+    },
+    "overall": {
+      "samples": 1110,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.1,
+    "pickMax": 2.4,
+    "pickSamples": 75
+  },
+  {
+    "nodes": 10000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe (LLVM 20.1.2 256 bits) (0x00000000)), llvmpipe)",
+    "webgl2": true,
+    "visibleNodes": 10000,
+    "visibleEdges": 29651,
+    "rotation": "-72.750,-73.200",
+    "layoutVolume": "0.9905",
+    "rotate": {
+      "samples": 245,
+      "p50": 33.3,
+      "p95": 50.1,
+      "max": 83.3
+    },
+    "zoom": {
+      "samples": 233,
+      "p50": 33.3,
+      "p95": 50.1,
+      "max": 183.3
+    },
+    "overall": {
+      "samples": 558,
+      "p50": 33.3,
+      "p95": 50.1,
+      "max": 183.3
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.3,
+    "pickMax": 7,
+    "pickSamples": 75
+  },
+  {
+    "nodes": 50000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (Mesa, Vulkan 1.4.318 (llvmpipe (LLVM 20.1.2 256 bits) (0x00000000)), llvmpipe)",
+    "webgl2": true,
+    "visibleNodes": 50000,
+    "visibleEdges": 148451,
+    "rotation": "-73.050,-73.500",
+    "layoutVolume": "0.8780",
+    "rotate": {
+      "samples": 60,
+      "p50": 133.4,
+      "p95": 250,
+      "max": 300
+    },
+    "zoom": {
+      "samples": 45,
+      "p50": 150,
+      "p95": 283.4,
+      "max": 316.7
+    },
+    "overall": {
+      "samples": 123,
+      "p50": 149.9,
+      "p95": 283.3,
+      "max": 316.7
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.7,
+    "pickMax": 19.4,
+    "pickSamples": 74
+  },
+  {
+    "nodes": 2000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "webgl2": true,
+    "visibleNodes": 2000,
+    "visibleEdges": 5891,
+    "rotation": "-73.050,-73.500",
+    "layoutVolume": "0.9805",
+    "rotate": {
+      "samples": 147,
+      "p50": 50,
+      "p95": 100,
+      "max": 150
+    },
+    "zoom": {
+      "samples": 140,
+      "p50": 50.1,
+      "p95": 83.4,
+      "max": 150
+    },
+    "overall": {
+      "samples": 332,
+      "p50": 50,
+      "p95": 100,
+      "max": 150
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.1,
+    "pickMax": 1.1,
+    "pickSamples": 75
+  },
+  {
+    "nodes": 50000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "webgl2": true,
+    "visibleNodes": 50000,
+    "visibleEdges": 148451,
+    "rotation": "-71.550,-72.000",
+    "layoutVolume": "0.8780",
+    "rotate": {
+      "samples": 9,
+      "p50": 1116.7,
+      "p95": 1366.6,
+      "max": 1366.6
+    },
+    "zoom": {
+      "samples": 6,
+      "p50": 1250,
+      "p95": 1366.6,
+      "max": 1366.6
+    },
+    "overall": {
+      "samples": 18,
+      "p50": 1233.3,
+      "p95": 1416.6,
+      "max": 1416.6
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.8,
+    "pickMax": 25.4,
+    "pickSamples": 74
+  },
+  {
+    "nodes": 2000,
+    "renderer": "canvas2d",
+    "unmaskedRenderer": null,
+    "webgl2": false,
+    "visibleNodes": 2000,
+    "visibleEdges": 5891,
+    "rotation": "-71.100,-71.550",
+    "layoutVolume": "0.9805",
+    "rotate": {
+      "samples": 479,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "zoom": {
+      "samples": 480,
+      "p50": 16.7,
+      "p95": 16.8,
+      "max": 16.8
+    },
+    "overall": {
+      "samples": 1110,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.1,
+    "pickMax": 4.3,
+    "pickSamples": 75
+  },
+  {
+    "host": "ares",
+    "gpu": "NVIDIA GeForce RTX 3090 (driver 595.99.02)",
+    "chrome": "Google Chrome for Testing 156.0.8078.47 (/home/ares/cfm/chrome-linux64/chrome)",
+    "chromeFlags": "--headless=new --no-sandbox --disable-dev-shm-usage --password-store=basic --use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist",
+    "server": "vite preview (production build) 127.0.0.1:4961",
+    "tree": "wt256 HEAD 3d06307",
+    "date": "2026-10-22",
+    "durationMs": 8000,
+    "nodes": 2000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA NVIDIA GeForce RTX 3090 (0x00002204)), NVIDIA)",
+    "webgl2": true,
+    "visibleNodes": 2000,
+    "visibleEdges": 5891,
+    "rotation": "-71.850,-72.300",
+    "layoutVolume": "0.9805",
+    "rotate": {
+      "samples": 480,
+      "p50": 16.7,
+      "p95": 16.8,
+      "max": 16.8
+    },
+    "zoom": {
+      "samples": 479,
+      "p50": 16.7,
+      "p95": 16.8,
+      "max": 16.8
+    },
+    "overall": {
+      "samples": 1110,
+      "p50": 16.7,
+      "p95": 16.8,
+      "max": 16.8
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.1,
+    "pickMax": 1.2,
+    "pickSamples": 76
+  },
+  {
+    "host": "ares",
+    "gpu": "NVIDIA GeForce RTX 3090 (driver 595.99.02)",
+    "chrome": "Google Chrome for Testing 156.0.8078.47 (/home/ares/cfm/chrome-linux64/chrome)",
+    "chromeFlags": "--headless=new --no-sandbox --disable-dev-shm-usage --password-store=basic --use-angle=vulkan --enable-features=Vulkan --ignore-gpu-blocklist",
+    "server": "vite preview (production build) 127.0.0.1:4961",
+    "tree": "wt256 HEAD 3d06307",
+    "date": "2026-10-22",
+    "durationMs": 8000,
+    "nodes": 50000,
+    "renderer": "webgl2",
+    "unmaskedRenderer": "ANGLE (NVIDIA, Vulkan 1.4.329 (NVIDIA NVIDIA GeForce RTX 3090 (0x00002204)), NVIDIA)",
+    "webgl2": true,
+    "visibleNodes": 50000,
+    "visibleEdges": 148451,
+    "rotation": "-71.850,-72.300",
+    "layoutVolume": "0.8780",
+    "rotate": {
+      "samples": 480,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "zoom": {
+      "samples": 479,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "overall": {
+      "samples": 1110,
+      "p50": 16.7,
+      "p95": 16.7,
+      "max": 16.8
+    },
+    "longTasksOver100ms": [],
+    "pickP95": 0.4,
+    "pickMax": 12,
+    "pickSamples": 75
+  }
+]

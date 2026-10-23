@@ -21,7 +21,9 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryGraphEdge,
   MemoryGraphNode,
+  MemoryGraphNodeDetail,
   MemoryGraphPayload,
   Pane,
   Room,
@@ -52,6 +54,7 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { syntheticMemoryGraphMetadata, syntheticMemoryGraphShape, syntheticMemoryGraphSlice, syntheticMemoryGraphSummary, SYNTHETIC_MEMORY_GRAPH_MAX_NODES } from "./demo-synthetic-memory.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
@@ -146,6 +149,7 @@ type DemoMemoryGraphQuery = {
   lifecycleStatus?: "ACTIVE" | "ARCHIVED";
   month?: string;
   relationMode?: "CLUSTERED" | "RELATIONS";
+  limit?: number;
   page?: number;
   pageSize?: number;
 };
@@ -226,6 +230,46 @@ export class DemoStore {
   private mockServices = new MockServices(() => this.fixture);
   private readonly publicMock: boolean;
   private readonly initialFixture: DemoFixture;
+  private syntheticMemory: { size: number; graph: MemoryGraphPayload } | null = null;
+
+  /** Builds the deterministic synthetic graph in bounded slices so no main-thread task exceeds 100 ms. */
+  private async ensureSyntheticMemoryGraph(nodeCount: number): Promise<MemoryGraphPayload> {
+    const shape = syntheticMemoryGraphShape(nodeCount);
+    if (this.syntheticMemory?.size === shape.total) return this.syntheticMemory.graph;
+    const nodes: MemoryGraphNode[] = [];
+    const edges: MemoryGraphEdge[] = [];
+    const sliceSize = 4000;
+    for (let start = 0; start < shape.total; start += sliceSize) {
+      const slice = syntheticMemoryGraphSlice(start, Math.min(sliceSize, shape.total - start), shape);
+      nodes.push(...slice.nodes);
+      edges.push(...slice.edges);
+      if (start + sliceSize < shape.total) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    const graph: MemoryGraphPayload = {
+      ...syntheticMemoryGraphMetadata(shape.total),
+      summary: syntheticMemoryGraphSummary(shape),
+      nodes,
+      edges
+    };
+    this.syntheticMemory = { size: shape.total, graph };
+    return graph;
+  }
+
+  private syntheticGraphNodeDetail(nodeId: string): MemoryGraphNodeDetail | null {
+    const graph = this.syntheticMemory?.graph;
+    if (!graph) return null;
+    const node = graph.nodes.find(candidate => candidate.id === nodeId);
+    if (!node) return null;
+    const relatedEdges = graph.edges.filter(edge => edge.source === node.id || edge.target === node.id).slice(0, 1000);
+    const relatedIds = new Set(relatedEdges.flatMap(edge => [edge.source, edge.target]));
+    return {
+      node: { ...node },
+      record: null,
+      relatedNodes: graph.nodes.filter(candidate => relatedIds.has(candidate.id) && candidate.id !== node.id).slice(0, 500).map(candidate => ({ ...candidate })),
+      relatedEdges: relatedEdges.map(edge => ({ ...edge })),
+      issues: []
+    };
+  }
 
   constructor(initialFixture?: DemoFixture) {
     this.publicMock = initialFixture !== undefined;
@@ -1496,7 +1540,12 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        if (query.limit) {
+          return this.ensureSyntheticMemoryGraph(Math.min(query.limit, SYNTHETIC_MEMORY_GRAPH_MAX_NODES))
+            .then(graph => ({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } }));
+        }
+        const graph = this.memoryGraph(query);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
       case "memoryCalendar": {
@@ -1574,6 +1623,8 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        const synthetic = this.syntheticGraphNodeDetail(roomId ?? "");
+        if (synthetic) return Promise.resolve(synthetic);
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
