@@ -255,7 +255,9 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         durationMs: 8000,
         killedAt: new Date().toISOString()
       },
-      createdAt: new Date().toISOString()
+      // Latest-event ordering uses (createdAt, id), not insertion order.
+      // Make this synthetic event strictly newer even within one clock tick.
+      createdAt: new Date(Date.parse(store.getLatestEvent(room.id)!.createdAt) + 1).toISOString()
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
