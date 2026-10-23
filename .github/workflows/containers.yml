@@ -43,7 +43,10 @@ jobs:
         arch:
           - amd64
           - arm64
-    runs-on: ubuntu-latest
+    # amd64 jobs build/emulate arm64 under QEMU as before; the arm64 job runs on a
+    # native arm64 runner so the browser smoke can launch Chromium natively on arm64
+    # (free for public repositories).
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,3 +74,134 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check core (linux/${{ matrix.arch }})
+        if: matrix.target == 'core'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          docker network create spaceapp-core-smoke >/dev/null
+          printf 'postgres://spaceapp:smoke-postgres-password@pg-smoke:5432/spaceapp' > /tmp/spaceapp-smoke-database-url
+          printf 'smoke-session-secret-0123456789abcdef0123456789' > /tmp/spaceapp-smoke-session-secret
+          printf 'smoke-setup-token-0123456789abcdef0123456789abcdef' > /tmp/spaceapp-smoke-setup-token
+          docker run -d --name pg-smoke --network spaceapp-core-smoke \
+            -e POSTGRES_DB=spaceapp -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=smoke-postgres-password \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          for attempt in $(seq 1 60); do
+            if docker exec pg-smoke pg_isready -U spaceapp -d spaceapp; then break; fi
+            if [ "${attempt}" = "60" ]; then echo "core smoke: postgres never became healthy"; exit 1; fi
+            sleep 2
+          done
+          docker run -d --name core-smoke --network spaceapp-core-smoke \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACEAPP_WORKFLOWS_ENABLED=false \
+            -e SPACE_API_HOST=127.0.0.1 -e SPACE_API_PORT=4910 \
+            -e SPACE_WEB_HOST=0.0.0.0 -e SPACE_WEB_PORT=4911 \
+            -e SPACE_API_ORIGIN=http://127.0.0.1:4910 \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            -e SPACE_BROWSER_SESSIONS_ENABLED=false \
+            -v /tmp/spaceapp-smoke-database-url:/run/secrets/database-url:ro \
+            -v /tmp/spaceapp-smoke-session-secret:/run/secrets/session-secret:ro \
+            -v /tmp/spaceapp-smoke-setup-token:/run/secrets/setup-token:ro \
+            spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          for attempt in $(seq 1 90); do
+            if docker exec core-smoke node -e "fetch('http://127.0.0.1:4911/readyz').then(async r=>{const body=await r.json();process.exit(r.ok&&body.ok===true?0:1)}).catch(()=>process.exit(1))"; then
+              echo "core smoke: /readyz answered ok:true on attempt ${attempt}"
+              echo "core smoke: migrations applied: $(docker exec pg-smoke psql -U spaceapp -d spaceapp -Atc 'SELECT count(*) FROM space_schema_migrations')"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "core smoke: /readyz never answered ok:true"
+          docker logs --tail 100 core-smoke
+          exit 1
+
+      - name: Smoke check cli (linux/${{ matrix.arch }})
+        if: matrix.target == 'cli'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          docker run -d --name cli-smoke \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          for attempt in $(seq 1 60); do
+            if docker exec cli-smoke sh -c 'test -S /run/spaceapp-cli/host.sock'; then
+              echo "cli smoke: CLI host socket exists on attempt ${attempt}"
+              opencode_version="$(docker exec -u spaceapp cli-smoke opencode --version || true)"
+              if [ "$opencode_version" != "opencode v2.0.32" ]; then
+                echo "cli smoke: expected opencode v2.0.32 as spaceapp, got: ${opencode_version:-<no output>}"
+                exit 1
+              fi
+              echo "cli smoke: OpenCode answers ${opencode_version} as spaceapp"
+              docker exec cli-smoke node -e "const net=require('node:net');const s=net.createConnection({path:'/run/spaceapp-cli/host.sock'});s.on('connect',()=>{console.log('cli smoke: socket accepted a connection');s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),5000)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "cli smoke: CLI host socket never appeared"
+          docker logs --tail 100 cli-smoke
+          exit 1
+
+      - name: Smoke check browser (linux/${{ matrix.arch }})
+        if: matrix.target == 'browser'
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          docker network create spaceapp-browser-smoke >/dev/null
+          printf 'postgres://spaceapp:smoke-postgres-password@pg-smoke:5432/spaceapp' > /tmp/spaceapp-smoke-database-url
+          docker run -d --name pg-smoke --network spaceapp-browser-smoke \
+            -e POSTGRES_DB=spaceapp -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=smoke-postgres-password \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          for attempt in $(seq 1 60); do
+            if docker exec pg-smoke pg_isready -U spaceapp -d spaceapp; then break; fi
+            if [ "${attempt}" = "60" ]; then echo "browser smoke: postgres never became healthy"; exit 1; fi
+            sleep 2
+          done
+          # The browser image ships only what it runs, so migrations are not in it:
+          # apply the tracked migration SQL in the same transaction-per-migration
+          # way the migrate runner does (packages/db/dist/migration-runner.js).
+          for migration in packages/db/migrations/*.sql; do
+            { printf 'BEGIN;\n'; cat "${migration}"; printf '\nCOMMIT;\n'; } \
+              | docker exec -i pg-smoke psql -U spaceapp -d spaceapp -q -v ON_ERROR_STOP=1 > /dev/null
+          done
+          docker run -d --name browser-smoke --network spaceapp-browser-smoke \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACE_DATABASE_URL_FILE=/run/secrets/database-url \
+            -e SPACE_ARTIFACT_ROOT=/var/lib/spaceapp/artifacts \
+            -e SPACE_BROWSER_SESSIONS_ENABLED=true \
+            -e SPACE_BROWSER_HOST_SOCKET=/run/spaceapp-browser/browser-host.sock \
+            -e SPACE_BROWSER_SESSIONS_DEFAULT_URL=about:blank \
+            -v /tmp/spaceapp-smoke-database-url:/run/secrets/database-url:ro \
+            spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          for attempt in $(seq 1 90); do
+            if docker exec browser-smoke sh -c 'test -S /run/spaceapp-browser/browser-host.sock'; then
+              echo "browser smoke: browser host socket exists on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" = "90" ]; then
+              echo "browser smoke: browser host socket never appeared"
+              docker logs --tail 100 browser-smoke
+              exit 1
+            fi
+            sleep 2
+          done
+          # Runs on the matching native runner (amd64/x86_64, arm64 on ubuntu-24.04-arm),
+          # so headless Chromium can be launched natively on BOTH architectures.
+          docker exec browser-smoke gosu spaceapp chromium --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --dump-dom about:blank > /dev/null
+          echo "browser smoke: headless Chromium rendered about:blank natively on linux/${{ matrix.arch }}"
+          # Headed sessions are the API default (/usr/bin/Xvfb): the X server must start in the image.
+          docker exec -d browser-smoke sh -c 'exec gosu spaceapp /usr/bin/Xvfb :99 -screen 0 1280x720x24 -nolisten tcp > /tmp/xvfb-smoke.log 2>&1'
+          for attempt in $(seq 1 20); do
+            if docker exec browser-smoke test -S /tmp/.X11-unix/X99; then
+              echo "browser smoke: Xvfb display :99 is up natively on linux/${{ matrix.arch }}"
+              break
+            fi
+            if [ "${attempt}" = "20" ]; then
+              echo "browser smoke: Xvfb never opened display :99"
+              docker exec browser-smoke cat /tmp/xvfb-smoke.log || true
+              exit 1
+            fi
+            sleep 1
+          done

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -48,6 +49,59 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/LICENSE \/app\/NOTICE \/app\/THIRD_PARTY_NOTICES\.md \.\//);
 });
 
+test("container targets stage per-service dependency closures", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+
+  assert.match(
+    normalizedDockerfile,
+    /RUN node scripts\/prune-container-targets\.mjs\s+--arch "\$\{TARGETARCH:-\$\(dpkg --print-architecture\)\}"\s+--out \/app\/deploy\/container-targets --all/
+  );
+  for (const target of ["core", "browser", "cli"]) {
+    assert.match(
+      dockerfile,
+      new RegExp(
+        `COPY --from=build --chown=spaceapp:spaceapp /app/deploy/container-targets/${target}/ \\./`
+      )
+    );
+  }
+  // runtime-base no longer copies the whole monorepo output into every image.
+  assert.doesNotMatch(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/node_modules/);
+  assert.doesNotMatch(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/apps/);
+  assert.doesNotMatch(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/packages/);
+  assert.doesNotMatch(dockerfile, /COPY --from=build --chown=spaceapp:spaceapp \/app\/agent-skills/);
+});
+
+test("container target manifest names existing workspaces and resolvable dependencies", async () => {
+  const { containerTargetManifest } = await import("../prune-container-targets.mjs");
+  const lockfile = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+  const lockfilePackages = lockfile.packages ?? {};
+  const dependenciesOf = (workspace) =>
+    JSON.parse(readFileSync(join(root, workspace, "package.json"), "utf8")).dependencies ?? {};
+
+  for (const [target, manifest] of Object.entries(containerTargetManifest)) {
+    for (const workspace of manifest.workspaces) {
+      assert.ok(existsSync(join(root, workspace)), `${target}: missing workspace ${workspace}`);
+    }
+    assert.ok(
+      manifest.workspaces.every((workspace) => manifest.dependencyWorkspaces.includes(workspace) || workspace === "apps/web"),
+      `${target}: copied workspaces outside dependencyWorkspaces are build-only`
+    );
+    for (const dependency of Object.keys(
+      Object.fromEntries(manifest.dependencyWorkspaces.flatMap((workspace) => Object.entries(dependenciesOf(workspace))))
+    )) {
+      if (dependency.startsWith("@space/")) continue;
+      const nested = manifest.dependencyWorkspaces.some((workspace) =>
+        existsSync(join(root, workspace, "node_modules", dependency))
+      );
+      assert.ok(
+        nested || lockfilePackages[`node_modules/${dependency}`] !== undefined,
+        `${target}: declared dependency ${dependency} is not in package-lock.json`
+      );
+    }
+  }
+});
+
 test("public container images identify their repository and license for GHCR", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
 
@@ -74,6 +128,15 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
   assert.match(normalizedCliStage, /apt-get install -y --no-install-recommends python3-minimal\s+&& rm -rf \/var\/lib\/apt\/lists\/\*/);
 });
 
+test("CLI image drops the unused OpenCode platform binaries in the install layer (issue #64 cli budget)", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const cliStage = dockerfile.slice(dockerfile.indexOf("FROM runtime-base AS cli")).replace(/\\\r?\n\s*/g, " ");
+  // One RUN line after joining continuations: the removal must share the install's layer or the bytes stay in the image.
+  assert.match(cliStage, /npm install[^\n]*@opencode\/cli@2\.0\.32[^\n]*&& rm -rf \/usr\/local\/lib\/node_modules\/@opencode\/cli\/node_modules /);
+  // The kept binary is the native ELF that `opencode` on PATH resolves to, not a launcher needing the removed packages.
+  assert.match(cliStage, /rm -rf \/usr\/local\/lib\/node_modules\/@opencode\/cli\/node_modules[^\n]*= 7f454c46[^\n]*amd64\) machine=3e ;; arm64\) machine=b7 ;;[^\n]*-j18 -N1[^\n]*= "\$machine"[^\n]*readlink -f \/usr\/local\/bin\/opencode\)" = \/usr\/local\/lib\/node_modules\/@opencode\/cli\/bin\/opencode\.exe/);
+});
+
 test("CLI image resolves the default room project /opt/spaceapp to the documented /etc session directory", async () => {
   // 1.1.3 devtest: without it the Getting Started OpenCode pane exited with chdir(2) failed.
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
@@ -95,7 +158,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 
   assert.match(
     normalizedRuntimeStage,
-    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.1 undici@6\.28\.1 postcss-selector-parser@7\.1\.6/
+    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.28\.1 postcss-selector-parser@7\.1\.6/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -107,7 +170,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
   );
   assert.match(
     normalizedRuntimeStage,
-    /tar -xzf \/tmp\/npm-security-patches\/ip-address-10\.7\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/ip-address --strip-components=1/
+    /tar -xzf \/tmp\/npm-security-patches\/ip-address-10\.7\.4\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/ip-address --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,

@@ -5,6 +5,25 @@
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders, not credentials"
+description = "Documentation placeholders, not credentials; plus upstream's own historical synthetic-fixture commits"
 regexTarget = "match"
 regexes = ['''^your_[a-z_]+>''']
+# Test fixtures, example keys and maintainer process notes, not credentials.
+# All hits originate in upstream oll4com commits (686788e = 1.1.5 prep,
+# 81b7da4/a43e799 = 1.1.6 prep, 2c7eb7e8, e5a2a1d) and are synthetic values
+# (fake keys in tests, artifact ids in quality docs, OAuth field names).
+# Listed per-path so nothing outside these exact files is suppressed.
+# Commit-pinned suppression (CodeRabbit review: whole-file path suppression would
+# let a FUTURE credential in those files escape the scan). These six commits are
+# upstream's own (oll4com / Space Agent, on main): 2c7eb7e8, 686788e5, 81b7da47,
+# a43e799d, eb318bf4, e5a2a1dc — their generic-api-key hits are synthetic test values,
+# quality-doc artifact ids and OAuth field names, all visible in published history.
+# Any NEW commit in those files is still fully scanned.
+commits = [
+  '''2c7eb7e8ee5c374c4c891438b1cc2c63db359549''',
+  '''686788e5ef9540356afb4e9d7b203af1ac84d4fa''',
+  '''81b7da47a58a211112f8068147ffa35ec9e6de36''',
+  '''a43e799de92bcbfbfd653f580acab0a19c31aa5c''',
+  '''eb318bf4935f3b6ab6e11b2e4bb114bf150786cd''',
+  '''e5a2a1dc6e63af7d9eecc8b5809c6d566dcb3b9c''',
+]

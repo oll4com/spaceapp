@@ -2216,7 +2216,9 @@ describe("Space web shell", () => {
       createdAt: "2026-06-26T00:00:02.000Z"
     });
     await waitFor(() => expect(requests.filter((request) => request === "GET /api/panes/pane%3Abrowser-live/browser/handoff")).toHaveLength(2));
-    expect(screen.getByRole("article", { name: "Planner agent 1" }).classList.contains("is-target")).toBe(true);
+    // The SSE-driven class update lands in its own render; assert inside waitFor so a loaded
+    // runner cannot race the DOM refresh between the fetch and this check.
+    await waitFor(() => expect(screen.getByRole("article", { name: "Planner agent 1" }).classList.contains("is-target")).toBe(true));
 
     // A replayed request of a pane closed since answers 409 once; the same event is not fetched again.
     const closedHandoff = {

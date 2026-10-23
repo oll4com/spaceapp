@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "c067c535c2626f5041b9705eebbe22f5c31ac75f",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 396,
   "files": [
     {
       "path": ".gitignore",
@@ -1428,7 +1428,7 @@
       "size": 589
     },
     {
-      "path": "agent-skills/space-huashu-design/huashu-design/demos/voiceover-demo/什么是token.html",
+      "path": "agent-skills/space-huashu-design/huashu-design/demos/voiceover-demo/\u4ec0\u4e48\u662ftoken.html",
       "sourceObjectId": "ae8785fadc6c15e0a069d54e7b8c0a4b3c31aaaa",
       "sha256": "f7efee54f6f8230718e5c0fa362ce3e9f717ddce6c248ad6301d9242c1e8b522",
       "size": 11988
@@ -8516,7 +8516,7 @@
     {
       "path": "apps/api/package.json",
       "sourceObjectId": "79fd782d2e29313517de4af909cddc5791cfd7f7",
-      "sha256": "dbeab1706913eed692334d56042ed675c73acaef86d8261c8f73aa55bd6c7eab",
+      "sha256": "e1b488853ad44d298cd899bd6e71b8fcc1c5bf6e3cc3218ff19c55e7c1cea410",
       "size": 1970
     },
     {
@@ -13820,8 +13820,8 @@
     {
       "path": "apps/api/tests/room-watchdog.test.ts",
       "sourceObjectId": "4046b1095658d1d4d5f89d3da069df7b1036e181",
-      "sha256": "e3829aeb9c4fddf071ded06a23a424dcd042061830c5cdf400e7b7a9aac73e06",
-      "size": 16377
+      "sha256": "a03cdb841da9f4e54a4f4f1ba5da54c3fa9ac56e448726a82645421d631d3cbc",
+      "size": 16552
     },
     {
       "path": "apps/api/tests/room-work.test.ts",
@@ -21050,8 +21050,8 @@
     {
       "path": "apps/web/tests/smoke.test.tsx",
       "sourceObjectId": "6e746b1b5dfa15b5883c5490f78df5e41968ccfa",
-      "sha256": "d077b4e0e7ad9b3ac3e8a2c550f80cab631bc3c6298feac6eb38f20dae12a47d",
-      "size": 146570
+      "sha256": "1c089d170b08c874c4474d304dd8b9ad29df9b7d51e6e9cfc798ef2181d9048d",
+      "size": 146761
     },
     {
       "path": "apps/web/tests/snip-capture.test.ts",
@@ -22514,14 +22514,14 @@
     {
       "path": "package-lock.json",
       "sourceObjectId": "2467956ee1eefad6726373cd81dad1bd7d7c5346",
-      "sha256": "64f749608620190b0d9603d2515c36f332f38a9f30dab52005deb46fe9907b99",
-      "size": 419142
+      "sha256": "67bbbc52c45a5d0a4e0b66a41f64069eb16639f6a67f3deae0f51c2cf30ed495",
+      "size": 420945
     },
     {
       "path": "package.json",
       "sourceObjectId": "5ba97578edaf7aba42abb6759578f3d09e0e3d12",
-      "sha256": "19efbe2169c5edce64b4f1a4cb64c9d49829bbe8ce01d5af2ab4380330fcc29b",
-      "size": 4221
+      "sha256": "c3ac30106ac451d7d13a5319013d34b096cdd4844e30bdccc0396e16f45d556e",
+      "size": 4248
     },
     {
       "path": "packages/browser-host/package.json",
@@ -22754,8 +22754,8 @@
     {
       "path": "packages/codex-app-server/tests/socket-multiplexer.test.ts",
       "sourceObjectId": "6dd1402faad388e6419d1b1b7e3ca699d5dcae68",
-      "sha256": "5f8ce27159a870d86f06e15d097929d4d61273b421fbbe05f8abfd3474da66d6",
-      "size": 33437
+      "sha256": "61fc2f2d8a421ef8dca1f60050fd29f91078b2157f52e1a7d2a14d6f3ec13e6d",
+      "size": 33541
     },
     {
       "path": "packages/codex-app-server/tsconfig.json",
@@ -25568,8 +25568,8 @@
     {
       "path": "packages/gateway/package.json",
       "sourceObjectId": "514b136ff58e21ab43ca338c20705d80e1d6cb7f",
-      "sha256": "1e076757e197f3af4564bd52d51cb2ab2b6fd8bb17e557f58e2fa014233c3e0e",
-      "size": 877
+      "sha256": "50a238a6f6d89bf251ee0b25b423fcd5fc1798c4cff241302c473e4712464a6f",
+      "size": 878
     },
     {
       "path": "packages/gateway/scripts/bundle.mjs",

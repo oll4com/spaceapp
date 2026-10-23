@@ -11,6 +11,11 @@ RUN npm ci --no-audit --no-fund \
     && npm prune --omit=dev \
     && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
 
+ARG TARGETARCH
+RUN node scripts/prune-container-targets.mjs \
+      --arch "${TARGETARCH:-$(dpkg --print-architecture)}" \
+      --out /app/deploy/container-targets --all
+
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
 ARG NPM_VERSION=11.18.0
@@ -22,7 +27,7 @@ LABEL org.opencontainers.image.licenses=MIT
 RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
     && install -d /tmp/npm-security-patches \
     && npm pack --ignore-scripts --no-audit --no-fund --pack-destination /tmp/npm-security-patches \
-      brace-expansion@5.0.12 tar@7.5.21 ip-address@10.7.1 undici@6.28.1 postcss-selector-parser@7.1.6 \
+      brace-expansion@5.0.12 tar@7.5.21 ip-address@10.7.4 undici@6.28.1 postcss-selector-parser@7.1.6 \
     && rm -rf \
       /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
       /usr/local/lib/node_modules/npm/node_modules/tar \
@@ -39,7 +44,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
       -C /usr/local/lib/node_modules/npm/node_modules/brace-expansion --strip-components=1 \
     && tar -xzf /tmp/npm-security-patches/tar-7.5.21.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/tar --strip-components=1 \
-    && tar -xzf /tmp/npm-security-patches/ip-address-10.7.1.tgz \
+    && tar -xzf /tmp/npm-security-patches/ip-address-10.7.4.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1 \
     && tar -xzf /tmp/npm-security-patches/undici-6.28.1.tgz \
       -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1 \
@@ -54,17 +59,8 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
-COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
 COPY --from=build --chown=spaceapp:spaceapp /app/THIRD_PARTY_LICENSES ./THIRD_PARTY_LICENSES
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -73,6 +69,14 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
        done
 
 FROM runtime-base AS core
+# Each target stage ships only the code and dependencies its service runs;
+# scripts/prune-container-targets.mjs staged the per-target subtree.
+COPY --from=build --chown=spaceapp:spaceapp /app/deploy/container-targets/core/ ./
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
+RUN install -d -o spaceapp -g spaceapp -m 0755 /opt/spaceapp
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -85,8 +89,11 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
+COPY --from=build --chown=spaceapp:spaceapp /app/deploy/container-targets/browser/ ./
+# xvfb: browser sessions run headed by default (the API spawns /usr/bin/Xvfb unless
+# SPACE_BROWSER_SESSIONS_XVFB_ENABLED=false), so the browser image needs the X server.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
+    && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -97,16 +104,28 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --from=build --chown=spaceapp:spaceapp /app/deploy/container-targets/cli/ ./
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md
 ARG TARGETARCH
 # python3-minimal (about 13 MB): agents often check their work with a short python3 script (pilot F18).
-# OpenCode 2 (@opencode/cli): its postinstall picks the native binary for the image's platform.
+# OpenCode 2 (@opencode/cli): its postinstall links the native binary for the image's platform to
+# bin/opencode.exe. npm also installs every linux package for the CPU (four ~212 MB binaries on amd64:
+# glibc/musl, AVX2/baseline; two on arm64); only the linked one runs, so the packages are removed in
+# this layer. The checks are static (ELF magic and machine, PATH link) so an emulated arm64 build never
+# executes the binary; the Container matrix smoke runs it natively.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --no-audit --no-fund @opencode/cli@2.0.32 \
+    && rm -rf /usr/local/lib/node_modules/@opencode/cli/node_modules \
+    && test -f /usr/local/lib/node_modules/@opencode/cli/bin/opencode.exe \
+    && test ! -L /usr/local/lib/node_modules/@opencode/cli/bin/opencode.exe \
+    && test "$(od -An -tx1 -N4 /usr/local/lib/node_modules/@opencode/cli/bin/opencode.exe | tr -d ' ')" = 7f454c46 \
+    && case "${TARGETARCH:-$(dpkg --print-architecture)}" in amd64) machine=3e ;; arm64) machine=b7 ;; *) machine=unknown ;; esac \
+    && test "$(od -An -tx1 -j18 -N1 /usr/local/lib/node_modules/@opencode/cli/bin/opencode.exe | tr -d ' ')" = "$machine" \
+    && test "$(readlink -f /usr/local/bin/opencode)" = /usr/local/lib/node_modules/@opencode/cli/bin/opencode.exe \
     && install -d -o spaceapp -g spaceapp -m 0700 /var/lib/spaceapp-cli/vendor \
     && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \

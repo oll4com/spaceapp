@@ -82,6 +82,9 @@ const publicScripts = new Set([
   "scripts/cli-render-fixture.mjs",
   // Maintained here; listed so the CI re-export of this repository keeps them.
   "scripts/public-test-exclusions.json",
+  // The Dockerfile runs this at image-build time and the docker-distribution
+  // test imports its manifest; missing, the candidate build broke (2026-10-20).
+  "scripts/prune-container-targets.mjs",
   "scripts/verify-export-provenance.mjs",
   "scripts/tests/verify-export-provenance.test.mjs",
   "scripts/publish-npm-candidate.mjs",

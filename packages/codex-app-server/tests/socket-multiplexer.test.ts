@@ -19,7 +19,7 @@ const unixSocketTestRoot = "/tmp";
 
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
-});
+}, 30000); // socket teardown waits on connected clients; the default 10s hook timeout flakes under CI load
 
 async function listenSingleClientUpstream(socketPath: string) {
   let connectionCount = 0;
