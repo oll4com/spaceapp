@@ -135,14 +135,18 @@ const publicScripts = new Set([
   "scripts/tests/quality-known-limitations.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
-  "scripts/tests/contributor-smoke.test.mjs"
+  "scripts/tests/contributor-smoke.test.mjs",
+  "scripts/dev-stack.mjs",
+  "scripts/tests/dev-stack.test.mjs"
 ]);
 
 // Root package.json scripts may name only files in the public tree: exported
 // source files plus these files that the public repository maintains itself.
 const publicRepositoryScripts = new Set([
   "scripts/public-export.mjs",
-  "scripts/tests/public-suite.test.mjs"
+  "scripts/tests/public-suite.test.mjs",
+  "scripts/dev-stack.mjs",
+  "scripts/tests/dev-stack.test.mjs"
 ]);
 const publicRepositoryWorkspaces = new Set(["run-spaceapp"]);
 // The public tree carries only the reviewed public tests, so its npm test is

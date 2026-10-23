@@ -1,0 +1,967 @@
+name: dev-stack
+
+# Runs the full SpaceApp from source on a clean ubuntu-latest runner with no
+# TTY: PostgreSQL + Temporal in Docker, then the API, web, worker and CLI host
+# from source. It waits for /readyz, claims owner setup over HTTP through the
+# real setup-token flow (no dev-login shortcut), opens an OpenCode CLI pane
+# through the API and checks the pane is running, then resets and verifies that
+# nothing is left behind.
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack.mjs"
+      - "scripts/tests/**"
+      - "packages/run-spaceapp/templates/compose.yml"
+      - "deploy/docker/**"
+      # The web dev server proxies to the API, and it has to follow the port the
+      # dev stack picked rather than the installed default. A change here can
+      # break the browser half of the stack on its own, so it belongs in the list.
+      - "apps/web/vite.config.ts"
+      - ".github/workflows/dev-stack.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: dev-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  API_PORT: "5910"
+  WEB_PORT: "5911"
+
+jobs:
+  dev-stack:
+    name: Run the full app from source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # npm ci and the build run code from this checkout; the job needs no
+          # git credentials after that, so do not leave the token in .git/config
+          # where a lifecycle script could read it.
+          persist-credentials: false
+
+      - name: Use Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+          npm_config_fund: "false"
+          npm_config_audit: "false"
+
+      - name: Build the workspace
+        run: npm run build
+
+      - name: Unit tests for the dev-stack orchestrator
+        run: node --test scripts/tests/dev-stack.test.mjs
+
+      # ---------------------------------------------------------------
+      # The real run. No TTY on CI, which is exactly what the acceptance
+      # contract asks for.
+      # ---------------------------------------------------------------
+      - name: Start the stack from source
+        run: |
+          set -euo pipefail
+          nohup npm run dev:stack > dev-stack.out 2>&1 &
+          echo "dev-stack pid $!"
+
+      - name: Wait for /readyz to report ok
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${API_PORT}/readyz"
+          for i in $(seq 1 150); do
+            if curl -fsS "http://127.0.0.1:${API_PORT}/readyz" -o readyz.json 2>/dev/null; then
+              echo "readyz: $(cat readyz.json)"
+              if grep -q '"ok"[: ]*true' readyz.json; then
+                echo "API is ready."
+                exit 0
+              fi
+            fi
+            # A cold `npm install opencode-ai` on a macOS runner can take
+            # minutes, which is what the ceiling above is sized for. Fail early
+            # only when the orchestrator itself is gone — then nothing will ever
+            # answer, and waiting out the rest of the budget proves nothing.
+            if [ "${i}" -ge 15 ] && ! pgrep -f 'scripts/dev-stack.mjs' >/dev/null 2>&1; then
+              echo "the orchestrator exited, so /readyz will never answer."
+              break
+            fi
+            sleep 2
+          done
+          echo "readyz never reported ok"
+          # The API is not necessarily the process that died: dev-stack stops the
+          # whole stack as soon as any child exits, so every service log matters.
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      # /opt is the installed product's root, and it is not writable on macOS
+      # without root. The API used to die on exactly that: the default
+      # appDiagnosticsRoot is /opt/spaceapp/var/app-diagnostics, mkdir threw
+      # EACCES, and /readyz never answered — on macOS only, because a Linux
+      # runner creates /opt/spaceapp without complaint. Thirteen green Linux
+      # runs said nothing; the macOS job found it on its second attempt.
+      #
+      # The unit test pins the environment dev-stack hands over. This pins what
+      # the processes actually did with it, on both platforms, so a path that
+      # escapes the environment some other way cannot pass unremarked again.
+      - name: Check no service reached into the installed product's root
+        shell: bash
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn "/opt/spaceapp" .dev-stack/logs/ || true)
+          if [ -n "$hits" ]; then
+            echo "a service used the installed product's root instead of the state directory:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "no service touched /opt/spaceapp; every path resolved inside .dev-stack"
+
+      # The browser never reaches the API directly. It calls the Vite server,
+      # which proxies /api, /healthz, /readyz and /version onward. That proxy
+      # used to name the installed default — 4910 — no matter which port the
+      # dev stack had actually chosen, so the URL printed at the end could serve
+      # the shell and still fail every request made from it. Asking the web port
+      # for /readyz is the cheapest proof that the two halves are wired together,
+      # and it is the half a screenshot of the API would not catch.
+      - name: Check the web server proxies to this stack's API
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${WEB_PORT}/readyz (proxied to ${API_PORT})"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${WEB_PORT}/readyz" -o readyz-web.json 2>/dev/null; then
+              echo "readyz through Vite: $(cat readyz-web.json)"
+              if grep -q '"ok"[: ]*true' readyz-web.json; then
+                echo "The web server proxies to the dev-stack API on ${API_PORT}."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "the web server never proxied /readyz to the API on ${API_PORT}"
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      # Owner setup goes through the real setup-token flow:
+      #   GET  /api/setup/status   -> { setupRequired, expiresAt }
+      #   POST /api/setup/claim    -> { token, email, password }  (password >= 12)
+      # The claim response sets the session cookie and returns starterRoomId.
+      - name: Claim owner setup over HTTP
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          TOKEN="$(cat .dev-stack/secrets/setup-token)"
+          echo "setup token loaded (${#TOKEN} chars)"
+
+          curl -fsS "${BASE}/api/setup/status" -o setup-status.json -w 'setup status: %{http_code}\n'
+          cat setup-status.json
+          grep -q '"setupRequired"[: ]*true' setup-status.json
+
+          curl -fsS -X POST "${BASE}/api/setup/claim" \
+            -H 'content-type: application/json' \
+            --data "{\"token\":\"${TOKEN}\",\"email\":\"ci-owner@example.test\",\"password\":\"ci-owner-password-1\"}" \
+            -c cookies.txt -o claim.json -w 'setup claim: %{http_code}\n'
+          cat claim.json
+
+          node -e '
+            const c = require("./claim.json");
+            if (c.isAuthenticated !== true) { console.error("claim did not authenticate"); process.exit(1); }
+            if (c.isSetupRequired !== false) { console.error("setup still required"); process.exit(1); }
+            if (!c.starterRoomId) { console.error("claim returned no starterRoomId"); process.exit(1); }
+            require("fs").writeFileSync("starter-room-id.txt", c.starterRoomId);
+            console.log("owner claimed; starter room:", c.starterRoomId);
+          '
+
+      # Every non-GET /api/ request made with a session must carry the CSRF
+      # header the API names, or the request guard answers 403 CSRF_INVALID.
+      # The claim above succeeded without one only because there was no session
+      # yet and the guard skips unauthenticated requests.
+      - name: Fetch the CSRF token the session needs
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          curl -fsS -b cookies.txt "${BASE}/api/auth/csrf" -o csrf.json -w 'csrf: %{http_code}\n'
+          cat csrf.json
+          node -e '
+            const c = require("./csrf.json");
+            if (!c.csrfToken) { console.error("no csrfToken in the response"); process.exit(1); }
+            if (!c.headerName) { console.error("no headerName in the response"); process.exit(1); }
+            require("fs").writeFileSync("csrf-token.txt", c.csrfToken);
+            require("fs").writeFileSync("csrf-header.txt", c.headerName);
+            console.log("csrf header:", c.headerName);
+          '
+
+      # The starter room is created through the documented setup route, not by
+      # guessing a room id. It needs the ADMIN session the claim just issued.
+      # The route takes no body, and Fastify answers 400 "Body cannot be empty
+      # when content-type is set to 'application/json'" if we claim one anyway,
+      # so no content-type header here.
+      - name: Ensure the Getting Started room
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -o starter-room.json -w '%{http_code}')"
+          echo "starter room: ${code}"
+          cat starter-room.json
+          if [ "${code}" != "200" ]; then echo "starter-room request failed"; exit 1; fi
+          node -e '
+            const s = require("./starter-room.json");
+            const id = s.room?.id;
+            if (!id) { console.error("no room id from /api/setup/starter-room"); process.exit(1); }
+            require("fs").writeFileSync("starter-room-id.txt", id);
+            console.log("starter room:", id);
+          '
+
+      # OpenCode CLI pane: mode TERMINAL + terminalRuntimeId "cli:opencode".
+      # The runtime descriptor declares authMode "NONE", so no AI provider
+      # account is needed to start the session.
+      #
+      # POST /api/panes only creates the pane; the CLI session that actually
+      # execs OpenCode starts on POST /api/panes/:id/cli/session, and
+      # GET /api/panes/:id/cli/session reports its state (null when no session
+      # is active). Session status is IDLE | RUNNING | INTERRUPTING | EXITED |
+      # ERROR; the pane's own status field is a different enum and does not
+      # describe the CLI process.
+      - name: Open an OpenCode CLI pane and check it is running
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          ROOM_ID="$(cat starter-room-id.txt)"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -H 'content-type: application/json' \
+            -d "{\"roomId\":\"${ROOM_ID}\",\"title\":\"OpenCode CLI\",\"mode\":\"TERMINAL\",\"terminalRuntimeId\":\"cli:opencode\"}" \
+            -o pane.json -w '%{http_code}')"
+          echo "open pane: ${code}"
+          cat pane.json
+          if [ "${code}" != "200" ]; then echo "pane create failed"; exit 1; fi
+
+          node -e '
+            const p = require("./pane.json");
+            if (!p.id) { console.error("pane create returned no id"); process.exit(1); }
+            if (p.mode !== "TERMINAL") { console.error("pane mode is " + p.mode + ", expected TERMINAL"); process.exit(1); }
+            if (p.terminalRuntimeId !== "cli:opencode") { console.error("wrong runtime: " + p.terminalRuntimeId); process.exit(1); }
+            require("fs").writeFileSync("pane-id.txt", p.id);
+            console.log("pane:", p.id, p.mode, p.terminalRuntimeId);
+          '
+          PANE_ID="$(cat pane-id.txt)"
+
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -H 'content-type: application/json' \
+            -d '{"runtimeId":"cli:opencode"}' \
+            -o session-start.json -w '%{http_code}')"
+          echo "start cli session: ${code}"
+          cat session-start.json
+          if [ "${code}" != "200" ]; then echo "cli session start failed"; exit 1; fi
+
+          node -e '
+            const s = require("./session-start.json");
+            const session = s.session;
+            if (!session) { console.error("cli session start returned no session"); process.exit(1); }
+            if (session.runtimeId !== "cli:opencode") { console.error("cli session runtime is " + session.runtimeId); process.exit(1); }
+            if (session.status === "EXITED" || session.status === "ERROR") {
+              console.error("cli session started in " + session.status); process.exit(1);
+            }
+            console.log("cli session:", session.sessionId, session.status);
+          '
+
+          for i in $(seq 1 45); do
+            rm -f cli-session.json
+            code="$(curl -sS -b cookies.txt "${BASE}/api/panes/${PANE_ID}/cli/session" -o cli-session.json -w '%{http_code}' || echo 000)"
+            # JSON.parse, not require: require caches by resolved filename, so
+            # every poll after the first would re-read the first response and the
+            # loop could never observe a state change. A missing file is normal
+            # here -- curl writes nothing when it cannot reach the API.
+            STATE="$(node -e '
+              const fs = require("fs");
+              if (!fs.existsSync("cli-session.json")) { console.log("NO_RESPONSE"); process.exit(0); }
+              const raw = fs.readFileSync("cli-session.json", "utf8").trim();
+              if (raw === "null") { console.log("NO_SESSION"); process.exit(0); }
+              let d; try { d = JSON.parse(raw); } catch { console.log(""); process.exit(0); }
+              console.log((d && d.session && d.session.status) || "");
+            ')"
+            echo "cli session state: ${STATE} (http ${code})"
+            case "${STATE}" in
+              RUNNING|IDLE)
+                echo "OpenCode CLI session is up"; exit 0 ;;
+              EXITED|ERROR)
+                echo "OpenCode CLI session is ${STATE}"
+                tail -n 120 .dev-stack/logs/cli-host.log || true
+                exit 1 ;;
+            esac
+            sleep 2
+          done
+          echo "OpenCode CLI session never reached a running state"
+          tail -n 120 .dev-stack/logs/cli-host.log || true
+          exit 1
+
+      # The step that starts the stack backgrounds it with `nohup ... > dev-stack.out`,
+      # so its own output never reaches the log. Print the file here, while it
+      # still exists: `reset` deletes .dev-stack/, and the failure dump below is
+      # skipped on a green run. This is also the Linux terminal output the issue
+      # asks the pull request to carry.
+      - name: Print what the one command produced
+        if: always()
+        run: |
+          # `up` is launched with `nohup ... > dev-stack.out`, so a missing file
+          # means the stack step died before it could write anything — which that
+          # step has already reported. Say that plainly rather than letting a
+          # bare `cat` error become the last thing a reader sees.
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            echo "The cause is in that step; there is no transcript to print."
+            exit 0
+          fi
+          cat dev-stack.out
+
+      # Evidence first, teardown second. `reset` deletes .dev-stack/, so a dump
+      # that runs after it finds nothing left to read.
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== dev-stack.out ==="; cat dev-stack.out || true
+          echo "=== .dev-stack/logs ==="; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="; tail -n 120 "$f" || true
+          done
+          echo "=== containers ==="
+          docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" || true
+          for c in $(docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}'); do
+            echo "=== docker logs $c ==="; docker logs --tail 80 "$c" 2>&1 || true
+          done
+
+      # The contract asks that a change under apps/api be picked up without
+      # restarting anything by hand. dev-stack.mjs starts the API as
+      # `npx tsx watch apps/api/src/server.ts`, so a module-level line appended
+      # to that entry file must show up in .dev-stack/logs/api.log on its own.
+      # Asserting that from the orchestrator's source would only restate the
+      # intent; running it here demonstrates it.
+      - name: Edit the API entry file and let the watcher pick it up
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          TARGET=apps/api/src/server.ts
+          LOG=.dev-stack/logs/api.log
+          PROBE="dev-stack hot reload probe: this line came from an edit made while the stack was running"
+          cp "$TARGET" "${TARGET}.orig"
+          before="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+          echo "probe lines in the API log before the edit: ${before:-0}"
+
+          printf '\nconsole.log("%s");\n' "$PROBE" >> "$TARGET"
+
+          seen=""
+          for ((i = 0; i < 60; i++)); do
+            sleep 2
+            seen="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+            if [ "${seen:-0}" -gt "${before:-0}" ]; then
+              echo "probe lines in the API log after the edit:  ${seen}"
+              break
+            fi
+          done
+
+          cp "${TARGET}.orig" "$TARGET"
+          rm -f "${TARGET}.orig"
+
+          if [ "${seen:-0}" -le "${before:-0}" ]; then
+            echo "the API never picked up an edit to ${TARGET} within 120s."
+            echo "--- tail of ${LOG} ---"
+            tail -n 40 "$LOG" || true
+            exit 1
+          fi
+          echo "the running API picked up an edit to ${TARGET} with no restart by hand."
+
+      # The contract asks that a service which dies is a clear failure rather
+      # than a silent hang. dev-stack.mjs watches every child and, when one exits
+      # on its own, prints "dev-stack: <name> exited unexpectedly (…)" and stops
+      # the rest. Nothing in the suite had ever exercised that path, so kill the
+      # cheapest service to lose and read what the orchestrator says.
+      - name: A service that dies is reported, not left hanging
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          worker="$(pgrep -f 'apps/worker/dist/worker.js' | head -n 1 || true)"
+          if [ -z "${worker}" ]; then
+            echo "no worker process found; the stack is not in the state this step needs."
+            exit 1
+          fi
+          # dev-stack deletes its own pid file once every service has stopped,
+          # and this step makes that happen on purpose. Keep a copy so the reset
+          # step below still has the processes to look for.
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.before-kill.json
+          fi
+
+          echo "killing the worker (pid ${worker}) to see what the orchestrator says"
+          kill "${worker}"
+
+          found=""
+          for ((i = 0; i < 30; i++)); do
+            sleep 2
+            if grep -q 'dev-stack: worker exited unexpectedly' dev-stack.out; then
+              found=yes
+              break
+            fi
+          done
+
+          echo "--- what the orchestrator wrote about it ---"
+          grep -n 'exited unexpectedly\|shutting the stack down' dev-stack.out || true
+
+          if [ -z "${found}" ]; then
+            echo "killing the worker produced no 'exited unexpectedly' line within 60s."
+            exit 1
+          fi
+          echo "a dead service is named, and the stack stops instead of hanging."
+
+
+      - name: Reset and verify no resources remain
+        id: reset-stack
+        if: always()
+        run: |
+          set -euo pipefail
+
+          # Record the host processes the stack started BEFORE reset removes the
+          # state directory that lists them, so the post-reset check below has
+          # something to assert against. `npm run dev:stack` spawns the API, web,
+          # worker and CLI host as real children; a reset that stopped only the
+          # containers would leave all four running.
+          echo "[]" > /tmp/dev-stack.pids.json
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.json
+            echo "--- host processes recorded before reset ---"
+            node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          elif [ -f /tmp/dev-stack.pids.before-kill.json ]; then
+            # "A service that dies is reported" stops the stack on purpose, and
+            # dev-stack then deletes its pid file. It leaves a copy here so this
+            # check still has a real list of processes to look for.
+            cp /tmp/dev-stack.pids.before-kill.json /tmp/dev-stack.pids.json
+            echo "--- host processes recorded before the stack was stopped on purpose ---"
+            node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          else
+            echo "no pid file was recorded before reset"
+          fi
+
+          npm run dev:stack -- reset 2>&1 | tee reset.out
+
+          echo "--- residual check ---"
+          if docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}' | grep -q .; then
+            echo "containers left behind"; docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Name}}' | grep -q .; then
+            echo "volumes left behind"; docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if [ -d .dev-stack ]; then
+            echo ".dev-stack still exists after reset"; ls -la .dev-stack; exit 1
+          fi
+
+          # The acceptance criteria name processes alongside containers and
+          # volumes. Any pid recorded above that still answers kill -0 means reset
+          # left a host process behind — the worker forks its own children, so a
+          # leader-only signal would show up here.
+          leaked=0
+          while read -r name pid; do
+            [ -n "${pid:-}" ] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "process still alive after reset: $name (pid $pid)"
+              ps -o pid,ppid,pgid,stat,command -p "$pid" || true
+              leaked=1
+            fi
+          done < <(node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)')
+          if [ "$leaked" -ne 0 ]; then
+            echo "reset left host processes running"; exit 1
+          fi
+
+          echo "no containers, no volumes, no state directory and no processes left."
+
+      # A leak after reset is its own failure mode — the acceptance criteria call
+      # out leftover containers, volumes and processes specifically — so surface
+      # reset's own output rather than leaving it buried in the step log.
+      - name: Dump reset output when reset itself failed
+        if: failure() && steps.reset-stack.outcome == 'failure'
+        run: |
+          echo "=== reset.out ==="; cat reset.out || true
+
+  # The issue asks for the terminal output of a run on Linux *and* on at least
+  # one of macOS or WSL2. CI covers Linux above. GitHub's macOS runners ship a
+  # Docker CLI but no daemon, so this job starts Colima — the same path
+  # CONTRIBUTING.md gives macOS contributors — and runs the identical sequence.
+  #
+  # The runner must be an Intel (x64) image, not `macos-latest`. `macos-latest`
+  # is arm64 (M-series), and those runners expose no nested virtualization, so
+  # Colima cannot start its VM at all:
+  #
+  #   level=fatal msg="error starting vm: error at 'creating and starting':
+  #   exit status 1"
+  #
+  # Apple added nested virtualization only on M3+ with macOS 15, and GitHub has
+  # not enabled it for its arm64 images. `macos-15-intel` is x64 and does support
+  # it. Apple's Local Network Privacy on macOS 15+ does hide the Colima VM's own
+  # address from user processes, but that is irrelevant here: every port this
+  # stack publishes is bound to 127.0.0.1 and reached over localhost, which keeps
+  # working.
+  #
+  # It was gated to workflow_dispatch while it was being brought up. It has a
+  # green run now, so it runs alongside the Linux job, scoped by the same `paths`
+  # filter. It bills at ten times an Ubuntu one: re-add
+  # `if: github.event_name == 'workflow_dispatch'` if the macOS minutes matter
+  # more than the platform coverage.
+  dev-stack-macos:
+    name: Run the full app from source (macOS)
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Start Colima, the macOS Docker path CONTRIBUTING documents
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No vm-type is forced: Colima picks its own default (vz on macOS 13+),
+          # which is also what a contributor following CONTRIBUTING.md gets. An
+          # earlier revision pinned `--vm-type qemu` and failed, because the
+          # colima formula no longer pulls qemu in:
+          #   cannot use vmType: 'qemu', error: qemu-img not found
+          brew install colima docker docker-compose
+          mkdir -p "$HOME/.docker/cli-plugins"
+          ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" \
+            "$HOME/.docker/cli-plugins/docker-compose"
+          colima start --cpu 3 --memory 6 --disk 30
+          docker context use colima
+          docker version
+
+      - name: Install dependencies
+        shell: bash
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+          npm_config_fund: "false"
+          npm_config_audit: "false"
+
+      - name: Build the workspace
+        shell: bash
+        run: npm run build
+
+      # The process-group teardown, the /proc-based liveness probe and the file
+      # modes all branch on process.platform, so the unit tests matter here too.
+      - name: Unit tests for the dev-stack orchestrator
+        shell: bash
+        run: node --test scripts/tests/dev-stack.test.mjs
+
+      - name: Start the stack from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup npm run dev:stack > dev-stack.out 2>&1 &
+          echo "dev-stack pid $!"
+
+      - name: Wait for /readyz to report ok
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${API_PORT}/readyz"
+          for ((i = 0; i < 300; i++)); do
+            if curl -fsS "http://127.0.0.1:${API_PORT}/readyz" -o readyz.json 2>/dev/null; then
+              echo "readyz: $(cat readyz.json)"
+              if grep -q '"ok"[: ]*true' readyz.json; then
+                echo "API is ready."
+                exit 0
+              fi
+            fi
+            # A cold `npm install opencode-ai` on a macOS runner can take
+            # minutes, which is what the ceiling above is sized for. Fail early
+            # only when the orchestrator itself is gone — then nothing will ever
+            # answer, and waiting out the rest of the budget proves nothing.
+            if [ "${i}" -ge 15 ] && ! pgrep -f 'scripts/dev-stack.mjs' >/dev/null 2>&1; then
+              echo "the orchestrator exited, so /readyz will never answer."
+              break
+            fi
+            sleep 2
+          done
+          echo "readyz never reported ok"
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      # This is the step that would have caught the macOS-only failure the
+      # issue's platform requirement was written for. /opt is not writable
+      # without root here, so one default rooted at the installed product —
+      # appDiagnosticsRoot — took the API down before /readyz could answer,
+      # while the identical run passed on Linux because a Linux runner creates
+      # /opt/spaceapp without complaint.
+      - name: Check no service reached into the installed product's root (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn "/opt/spaceapp" .dev-stack/logs/ || true)
+          if [ -n "$hits" ]; then
+            echo "a service used the installed product's root instead of the state directory:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "no service touched /opt/spaceapp; every path resolved inside .dev-stack"
+
+      # Same proxy contract as the Linux job. macOS is where this step earns its
+      # keep twice over: it is the platform whose Docker path differs most, and
+      # the one whose transcript the issue asks for.
+      - name: Check the web server proxies to this stack's API (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "waiting for http://127.0.0.1:${WEB_PORT}/readyz (proxied to ${API_PORT})"
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${WEB_PORT}/readyz" -o readyz-web.json 2>/dev/null; then
+              echo "readyz through Vite: $(cat readyz-web.json)"
+              if grep -q '"ok"[: ]*true' readyz-web.json; then
+                echo "The web server proxies to the dev-stack API on ${API_PORT}."
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "the web server never proxied /readyz to the API on ${API_PORT}"
+          echo "--- dev-stack.out ---"; cat dev-stack.out || true
+          echo "--- .dev-stack/logs ---"; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"; tail -n 120 "$f" || true
+          done
+          exit 1
+
+      - name: Claim owner setup over HTTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          TOKEN="$(cat .dev-stack/secrets/setup-token)"
+          echo "setup token loaded (${#TOKEN} chars)"
+
+          curl -fsS "${BASE}/api/setup/status" -o setup-status.json -w 'setup status: %{http_code}\n'
+          cat setup-status.json
+          grep -q '"setupRequired"[: ]*true' setup-status.json
+
+          curl -fsS -X POST "${BASE}/api/setup/claim" \
+            -H 'content-type: application/json' \
+            --data "{\"token\":\"${TOKEN}\",\"email\":\"ci-owner@example.test\",\"password\":\"ci-owner-password-1\"}" \
+            -c cookies.txt -o claim.json -w 'setup claim: %{http_code}\n'
+          cat claim.json
+
+          node -e '
+            const c = require("./claim.json");
+            if (c.isAuthenticated !== true) { console.error("claim did not authenticate"); process.exit(1); }
+            if (c.isSetupRequired !== false) { console.error("setup still required"); process.exit(1); }
+            if (!c.starterRoomId) { console.error("claim returned no starterRoomId"); process.exit(1); }
+            console.log("owner claimed; starter room:", c.starterRoomId);
+          '
+
+      - name: Fetch the CSRF token the session needs
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          curl -fsS -b cookies.txt "${BASE}/api/auth/csrf" -o csrf.json -w 'csrf: %{http_code}\n'
+          cat csrf.json
+          node -e '
+            const c = require("./csrf.json");
+            if (!c.csrfToken) { console.error("no csrfToken in the response"); process.exit(1); }
+            if (!c.headerName) { console.error("no headerName in the response"); process.exit(1); }
+            require("fs").writeFileSync("csrf-token.txt", c.csrfToken);
+            require("fs").writeFileSync("csrf-header.txt", c.headerName);
+            console.log("csrf header:", c.headerName);
+          '
+
+      - name: Ensure the Getting Started room
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/setup/starter-room" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -o starter-room.json -w '%{http_code}')"
+          echo "starter room: ${code}"
+          cat starter-room.json
+          if [ "${code}" != "200" ]; then echo "starter-room request failed"; exit 1; fi
+          node -e '
+            const s = require("./starter-room.json");
+            const id = s.room?.id;
+            if (!id) { console.error("no room id from /api/setup/starter-room"); process.exit(1); }
+            require("fs").writeFileSync("starter-room-id.txt", id);
+            console.log("starter room:", id);
+          '
+
+      - name: Open an OpenCode CLI pane and check it is running
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="http://127.0.0.1:${API_PORT}"
+          ROOM_ID="$(cat starter-room-id.txt)"
+          CSRF_HEADER="$(cat csrf-header.txt)"
+          CSRF_TOKEN="$(cat csrf-token.txt)"
+
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -H 'content-type: application/json' \
+            -d "{\"roomId\":\"${ROOM_ID}\",\"title\":\"OpenCode CLI\",\"mode\":\"TERMINAL\",\"terminalRuntimeId\":\"cli:opencode\"}" \
+            -o pane.json -w '%{http_code}')"
+          echo "open pane: ${code}"
+          cat pane.json
+          if [ "${code}" != "200" ]; then echo "pane create failed"; exit 1; fi
+
+          node -e '
+            const p = require("./pane.json");
+            if (!p.id) { console.error("pane create returned no id"); process.exit(1); }
+            if (p.mode !== "TERMINAL") { console.error("pane mode is " + p.mode + ", expected TERMINAL"); process.exit(1); }
+            if (p.terminalRuntimeId !== "cli:opencode") { console.error("wrong runtime: " + p.terminalRuntimeId); process.exit(1); }
+            require("fs").writeFileSync("pane-id.txt", p.id);
+            console.log("pane:", p.id, p.mode, p.terminalRuntimeId);
+          '
+          PANE_ID="$(cat pane-id.txt)"
+
+          code="$(curl -sS -b cookies.txt -X POST "${BASE}/api/panes/${PANE_ID}/cli/session" \
+            -H "${CSRF_HEADER}: ${CSRF_TOKEN}" \
+            -H 'content-type: application/json' \
+            -d '{"runtimeId":"cli:opencode"}' \
+            -o session-start.json -w '%{http_code}')"
+          echo "start cli session: ${code}"
+          cat session-start.json
+          if [ "${code}" != "200" ]; then echo "cli session start failed"; exit 1; fi
+
+          for ((i = 0; i < 45; i++)); do
+            rm -f cli-session.json
+            code="$(curl -sS -b cookies.txt "${BASE}/api/panes/${PANE_ID}/cli/session" -o cli-session.json -w '%{http_code}' || echo 000)"
+            STATE="$(node -e '
+              const fs = require("fs");
+              if (!fs.existsSync("cli-session.json")) { console.log("NO_RESPONSE"); process.exit(0); }
+              const raw = fs.readFileSync("cli-session.json", "utf8").trim();
+              if (raw === "null") { console.log("NO_SESSION"); process.exit(0); }
+              let d; try { d = JSON.parse(raw); } catch { console.log(""); process.exit(0); }
+              console.log((d && d.session && d.session.status) || "");
+            ')"
+            echo "cli session state: ${STATE} (http ${code})"
+            case "${STATE}" in
+              RUNNING|IDLE)
+                echo "OpenCode CLI session is up"; exit 0 ;;
+              EXITED|ERROR)
+                echo "OpenCode CLI session is ${STATE}"
+                tail -n 120 .dev-stack/logs/cli-host.log || true
+                exit 1 ;;
+            esac
+            sleep 2
+          done
+          echo "OpenCode CLI session never reached a running state"
+          tail -n 120 .dev-stack/logs/cli-host.log || true
+          exit 1
+
+      - name: Print what the one command produced
+        if: always()
+        shell: bash
+        run: |
+          # Same contract as the Linux job: a missing file means the stack step
+          # failed before writing anything, and that step carries the cause.
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            echo "The cause is in that step; there is no transcript to print."
+            exit 0
+          fi
+          cat dev-stack.out
+
+      - name: Dump logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== dev-stack.out ==="; cat dev-stack.out || true
+          echo "=== .dev-stack/logs ==="; ls -la .dev-stack/logs 2>/dev/null || true
+          for f in .dev-stack/logs/*.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="; tail -n 120 "$f" || true
+          done
+
+      # The contract asks that a change under apps/api be picked up without
+      # restarting anything by hand. dev-stack.mjs starts the API as
+      # `npx tsx watch apps/api/src/server.ts`, so a module-level line appended
+      # to that entry file must show up in .dev-stack/logs/api.log on its own.
+      # Asserting that from the orchestrator's source would only restate the
+      # intent; running it here demonstrates it.
+      - name: Edit the API entry file and let the watcher pick it up (macOS)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          TARGET=apps/api/src/server.ts
+          LOG=.dev-stack/logs/api.log
+          PROBE="dev-stack hot reload probe: this line came from an edit made while the stack was running"
+          cp "$TARGET" "${TARGET}.orig"
+          before="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+          echo "probe lines in the API log before the edit: ${before:-0}"
+
+          printf '\nconsole.log("%s");\n' "$PROBE" >> "$TARGET"
+
+          seen=""
+          for ((i = 0; i < 60; i++)); do
+            sleep 2
+            seen="$(grep -c "$PROBE" "$LOG" 2>/dev/null || true)"
+            if [ "${seen:-0}" -gt "${before:-0}" ]; then
+              echo "probe lines in the API log after the edit:  ${seen}"
+              break
+            fi
+          done
+
+          cp "${TARGET}.orig" "$TARGET"
+          rm -f "${TARGET}.orig"
+
+          if [ "${seen:-0}" -le "${before:-0}" ]; then
+            echo "the API never picked up an edit to ${TARGET} within 120s."
+            echo "--- tail of ${LOG} ---"
+            tail -n 40 "$LOG" || true
+            exit 1
+          fi
+          echo "the running API picked up an edit to ${TARGET} with no restart by hand."
+
+      # The contract asks that a service which dies is a clear failure rather
+      # than a silent hang. dev-stack.mjs watches every child and, when one exits
+      # on its own, prints "dev-stack: <name> exited unexpectedly (…)" and stops
+      # the rest. Nothing in the suite had ever exercised that path, so kill the
+      # cheapest service to lose and read what the orchestrator says.
+      - name: A service that dies is reported, not left hanging (macOS)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f dev-stack.out ]; then
+            echo "dev-stack.out is absent: the stack step failed before writing it."
+            exit 0
+          fi
+
+          worker="$(pgrep -f 'apps/worker/dist/worker.js' | head -n 1 || true)"
+          if [ -z "${worker}" ]; then
+            echo "no worker process found; the stack is not in the state this step needs."
+            exit 1
+          fi
+          # dev-stack deletes its own pid file once every service has stopped,
+          # and this step makes that happen on purpose. Keep a copy so the reset
+          # step below still has the processes to look for.
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json /tmp/dev-stack.pids.before-kill.json
+          fi
+
+          echo "killing the worker (pid ${worker}) to see what the orchestrator says"
+          kill "${worker}"
+
+          found=""
+          for ((i = 0; i < 30; i++)); do
+            sleep 2
+            if grep -q 'dev-stack: worker exited unexpectedly' dev-stack.out; then
+              found=yes
+              break
+            fi
+          done
+
+          echo "--- what the orchestrator wrote about it ---"
+          grep -n 'exited unexpectedly\|shutting the stack down' dev-stack.out || true
+
+          if [ -z "${found}" ]; then
+            echo "killing the worker produced no 'exited unexpectedly' line within 60s."
+            exit 1
+          fi
+          echo "a dead service is named, and the stack stops instead of hanging."
+
+
+      - name: Reset and verify no resources remain
+        id: reset-stack-macos
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[]" > "${RUNNER_TEMP}/dev-stack.pids.json"
+          if [ -f .dev-stack/dev-stack.pids.json ]; then
+            cp .dev-stack/dev-stack.pids.json "${RUNNER_TEMP}/dev-stack.pids.json"
+            echo "--- host processes recorded before reset ---"
+            node -e 'for (const e of require(process.env.RUNNER_TEMP + "/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          elif [ -f /tmp/dev-stack.pids.before-kill.json ]; then
+            # "A service that dies is reported" stops the stack on purpose, and
+            # dev-stack then deletes its pid file. It leaves a copy here so this
+            # check still has a real list of processes to look for.
+            cp /tmp/dev-stack.pids.before-kill.json /tmp/dev-stack.pids.json
+            echo "--- host processes recorded before the stack was stopped on purpose ---"
+            node -e 'for (const e of require("/tmp/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)'
+          else
+            echo "no pid file was recorded before reset"
+          fi
+
+          npm run dev:stack -- reset 2>&1 | tee reset.out
+
+          echo "--- residual check ---"
+          if docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Names}}' | grep -q .; then
+            echo "containers left behind"; docker ps -a --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack" --format '{{.Name}}' | grep -q .; then
+            echo "volumes left behind"; docker volume ls --filter "label=com.docker.compose.project=spaceapp-dev-stack"; exit 1
+          fi
+          if [ -d .dev-stack ]; then
+            echo ".dev-stack still exists after reset"; ls -la .dev-stack; exit 1
+          fi
+
+          leaked=0
+          while read -r name pid; do
+            [ -n "${pid:-}" ] || continue
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "process still alive after reset: $name (pid $pid)"
+              ps -o pid,ppid,pgid,stat,command -p "$pid" || true
+              leaked=1
+            fi
+          done < <(node -e 'for (const e of require(process.env.RUNNER_TEMP + "/dev-stack.pids.json")) console.log(`${e.name} ${e.pid}`)')
+          if [ "$leaked" -ne 0 ]; then
+            echo "reset left host processes running"; exit 1
+          fi
+
+          echo "no containers, no volumes, no state directory and no processes left."
