@@ -102,6 +102,21 @@ results and known failures are indexed there in `docs/quality/README.md`, and
 its `AGENTS.md` describes the guidance to read before changing session
 attachment, room retention, control, readiness, polling or deployment.
 
+## Temporal workflow testing and determinism replay gate
+
+Workflows in `@space/worker` run against an ephemeral time-skipping test server (`@temporalio/testing`) in `apps/worker/tests/temporal-workflow-sandbox.test.ts`. This verifies real workflow definitions against time-skipping environments without external server daemons.
+
+Recorded synthetic execution histories in `apps/worker/tests/fixtures/workflow-histories/*.json` are replayed in CI via `apps/worker/tests/temporal-workflow-replay.test.ts` to gate determinism. Any backwards-incompatible workflow change that alters recorded command sequences fails with `DeterminismViolationError`.
+
+### History re-recording policy
+
+- Modifying existing workflow behavior must preserve replay compatibility with previously recorded histories using Temporal's `patched()` mechanism.
+- Never re-record fixtures to mask non-deterministic regressions.
+- When adding a new workflow or intentionally retiring an older patch boundary, re-record synthetic fixtures using:
+  ```sh
+  npm run temporal:record-histories -w @space/worker
+  ```
+
 Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.

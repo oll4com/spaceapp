@@ -10,7 +10,9 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "pretest": "npm run build -w @space/contracts",
+    "test": "vitest run",
+    "temporal:record-histories": "npm run build -w @space/contracts && node scripts/record-workflow-histories.mjs"
   },
   "dependencies": {
     "@space/codex-app-server": "0.2.5",
@@ -26,6 +28,7 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/testing": "1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },
