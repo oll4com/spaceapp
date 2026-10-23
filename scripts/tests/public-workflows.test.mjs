@@ -52,6 +52,8 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
   assert.match(containers, /push: false/);
+  assert.match(containers, /ubuntu-24\.04-arm/);
+  assert.match(containers, /node scripts\/container-smoke\.mjs[\s\S]*--target "\$\{\{ matrix\.target \}\}"[\s\S]*--image "spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"/);
 });
 
 test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {

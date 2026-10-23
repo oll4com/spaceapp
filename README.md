@@ -246,6 +246,14 @@ The launcher selects the largest profile that fits the available CPU, RAM, and f
 | `medium` | Standard Dev PC | Small stack + `temporal` (background workers & automated workflows) | 4 CPUs, 11 GiB RAM, 8 GiB disk |
 | `large` | Workstations / Servers | Medium stack + `spaceapp-browser` (Chromium browser sessions in a separate service) | 8 CPUs, 15 GiB RAM, 11 GiB disk |
 
+The service images contain separate runtime dependency trees. CI checks both
+`linux/amd64` and `linux/arm64`, with uncompressed image ceilings of 815 MiB for
+core, 1130 MiB for browser and 690 MiB for CLI. The measured sizes and margins
+are recorded in [the image budget check](scripts/container-image-size-budget.mjs).
+These are image-size limits, not compressed download estimates. The installation
+disk requirements above remain unchanged: they also allow for database state,
+temporary files and operational working space.
+
 ---
 
 ## ❓ Frequently Asked Questions & Troubleshooting
