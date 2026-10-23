@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import { defaultPayloadConverter } from "@temporalio/common";
 import {
   categorizeFailureCode,
   formatTraceparent,
@@ -11,6 +12,7 @@ import {
   type FailureCategory
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
+import { allowlistedAttributes } from "./workflow-observability.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -137,12 +139,36 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** Activity headers (from ActivityExecuteInput). A traceparent header takes precedence over args. */
+  headers?: Record<string, unknown>;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
+}
+
+/**
+ * Traceparent for the activity span's parent. Prefers the `traceparent`
+ * header injected by the workflow outbound interceptor (parent = the workflow
+ * span), falling back to the traceparent in the activity args (parent = the
+ * API span, the pre-#61 behavior).
+ */
+function parentTraceparent(args: readonly unknown[], headers: Record<string, unknown> | undefined) {
+  if (headers) {
+    const payload = headers.traceparent;
+    if (payload && typeof payload === "object") {
+      try {
+        const value = defaultPayloadConverter.fromPayload(payload as never);
+        const parsed = typeof value === "string" ? parseTraceparent(value) : null;
+        if (parsed) return parsed;
+      } catch {
+        // Fall through to args.
+      }
+    }
+  }
+  return activityTraceparent(args);
 }
 
 export async function observeActivityExecution<T>(
@@ -194,7 +220,7 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans ? parentTraceparent(args, dependencies.headers) : null;
     if (parent) {
       dependencies.spans!.record({
         traceId: parent.traceId,
@@ -203,7 +229,15 @@ export async function observeActivityExecution<T>(
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: allowlistedAttributes("activity", [
+          ["space.activity_type", activityType],
+          ["space.outcome", outcome],
+          ["space.attempt", info.attempt],
+          ["space.reason_code", reasonCode],
+          ["space.category", category],
+          ["space.workflow_type", logIdentifier(info.workflowType)],
+          ["space.run_id", logIdentifier(info.workflowExecution?.runId)]
+        ]),
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -224,12 +258,13 @@ export async function observeActivityExecution<T>(
 }
 
 /** Temporal worker interceptor factory: register in Worker.create({ interceptors }). */
-export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled"> = {}): ActivityInterceptorsFactory {
+export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled" | "headers"> = {}): ActivityInterceptorsFactory {
   return (context) => ({
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
-        cancelled: () => context.cancellationSignal.aborted
+        cancelled: () => context.cancellationSignal.aborted,
+        headers: input.headers as unknown as Record<string, unknown>
       })
     }
   });

@@ -186,7 +186,9 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\]/);
+    expect(source, entry).toMatch(/workflowModules: \[.*workflow-observability\.js/);
+    expect(source, entry).toMatch(/sinks: createWorkflowTelemetrySinks\(spans\)/);
   }
 });
 
@@ -202,4 +204,24 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+
+it("prefers the traceparent header (workflow span) over args for the activity parent", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (span: Record<string, unknown>) => recorded.push(span), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const { defaultPayloadConverter } = await import("@temporalio/common");
+  const info = { activityType: "runTurn", activityId: "1", attempt: 2, workflowType: "testWorkflow", currentAttemptScheduledTimestampMs: 1_000, workflowExecution: { workflowId: "w", runId: "run-uuid-1" } } as never;
+  const argsTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  const headerTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-aaaaaaaaaaaaaaaa-01";
+  const headers = { traceparent: defaultPayloadConverter.toPayload(headerTraceparent) };
+  await observeActivityExecution(info, [{ turn: { traceparent: argsTraceparent } }], async () => "ok", { metrics, now: () => 1_000, spans: spans as never, headers: headers as never });
+  expect(recorded).toHaveLength(1);
+  // Parent is the workflow span from the header, not the API span from args.
+  expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "aaaaaaaaaaaaaaaa" });
+  const attributes = recorded[0]!.attributes as Record<string, unknown>;
+  expect(attributes["space.activity_type"]).toBe("runTurn");
+  expect(attributes["space.attempt"]).toBe(2);
+  expect(attributes["space.workflow_type"]).toBe("testWorkflow");
+  expect(attributes["space.run_id"]).toBe("run-uuid-1");
 });

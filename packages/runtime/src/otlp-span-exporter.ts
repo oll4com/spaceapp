@@ -11,6 +11,13 @@
  * request.
  */
 
+export interface SpanLink {
+  /** 32 lower-case hex characters. */
+  traceId: string;
+  /** 16 lower-case hex characters. */
+  spanId: string;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -22,6 +29,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** OTLP span links (e.g. continue-as-new or background continuation targets). */
+  links?: ReadonlyArray<SpanLink>;
 }
 
 export interface SpanExporterStats {
@@ -70,24 +79,32 @@ function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
+function validLink(link: SpanLink): boolean {
+  return traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId);
+}
+
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string) {
   return {
     resourceSpans: [{
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
         scope: { name: serviceName },
-        spans: spans.map(span => ({
-          traceId: span.traceId,
-          spanId: span.spanId,
-          ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
-          name: span.name,
-          kind: span.kind ?? 2,
-          startTimeUnixNano: span.startTimeUnixNano.toString(),
-          endTimeUnixNano: span.endTimeUnixNano.toString(),
-          attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
-          // STATUS_CODE_ERROR or STATUS_CODE_UNSET
-          status: { code: span.error ? 2 : 0 }
-        }))
+        spans: spans.map(span => {
+          const links = (span.links ?? []).filter(validLink);
+          return {
+            traceId: span.traceId,
+            spanId: span.spanId,
+            ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
+            name: span.name,
+            kind: span.kind ?? 2,
+            startTimeUnixNano: span.startTimeUnixNano.toString(),
+            endTimeUnixNano: span.endTimeUnixNano.toString(),
+            attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+            // STATUS_CODE_ERROR or STATUS_CODE_UNSET
+            status: { code: span.error ? 2 : 0 },
+            ...(links.length ? { links: links.map(link => ({ traceId: link.traceId, spanId: link.spanId, attributes: [] })) } : {})
+          };
+        })
       }]
     }]
   };
