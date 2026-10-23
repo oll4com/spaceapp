@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -22,6 +23,8 @@ import { imageDigestEnv, PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
+export const SUPPORTED_ENGINES = Object.freeze(["docker", "podman"]);
+export const MIN_PODMAN_VERSION = Object.freeze({ major: 5, minor: 0 });
 export const MIN_INSTALL_FREE_DISK_BYTES_STANDARD = 15 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES_LIGHT = 7 * 1024 ** 3;
 export const MIN_INSTALL_FREE_DISK_BYTES = MIN_INSTALL_FREE_DISK_BYTES_STANDARD;
@@ -88,6 +91,40 @@ export const PROFILE_REQUIREMENTS = Object.freeze({
   light: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
   standard: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 11 * 1024 ** 3 }
 });
+
+export function normalizeEngine(value) {
+  if (value === undefined || value === null || value === "") return "docker";
+  const engine = String(value).trim().toLowerCase();
+  if (!SUPPORTED_ENGINES.includes(engine)) {
+    throw new Error(`Container engine must be one of: ${SUPPORTED_ENGINES.join(", ")}.`);
+  }
+  return engine;
+}
+
+export function parsePodmanVersion(output) {
+  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(output ?? ""));
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3] ?? 0) };
+}
+
+export function podmanVersionSupported(version) {
+  if (!version) return false;
+  if (version.major > MIN_PODMAN_VERSION.major) return true;
+  if (version.major < MIN_PODMAN_VERSION.major) return false;
+  return version.minor >= MIN_PODMAN_VERSION.minor;
+}
+
+export function composeCommand(engine, args) {
+  const normalized = normalizeEngine(engine);
+  if (normalized === "podman") {
+    return { command: "podman", args: ["compose", ...args] };
+  }
+  return { command: "docker", args: ["compose", ...args] };
+}
+
+export function engineBinary(engine) {
+  return normalizeEngine(engine) === "podman" ? "podman" : "docker";
+}
 
 export function profileRuntimeSettings(profile) {
   const settings = PROFILE_RUNTIME_SETTINGS[profile];
