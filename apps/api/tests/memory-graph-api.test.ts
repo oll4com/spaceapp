@@ -414,6 +414,92 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  function bulkSnapshot(nodeCount: number) {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    const memories = nodeCount - 1;
+    graphSnapshot.nodes = [
+      { id: "source:space", type: "SOURCE" as const, label: "space.md", sourcePath: "/opt/spaceapp/docs/space.md", recordId: null },
+      ...Array.from({ length: memories }, (_, index) => ({
+        id: `memory:bulk-${index}`,
+        type: "MEMORY" as const,
+        label: `Bulk memory ${index}`,
+        sourcePath: "/opt/spaceapp/docs/space.md",
+        recordId: null
+      }))
+    ];
+    graphSnapshot.edges = Array.from({ length: memories }, (_, index) => [
+      { id: `edge:contains-${index}`, type: "CONTAINS" as const, source: "source:space", target: `memory:bulk-${index}` },
+      { id: `edge:derived-${index}`, type: "DERIVED_FROM" as const, source: `memory:bulk-${index}`, target: `memory:bulk-${(index + 1) % memories}` },
+      { id: `edge:derived-far-${index}`, type: "DERIVED_FROM" as const, source: `memory:bulk-${index}`, target: `memory:bulk-${(index + 7) % memories}` }
+    ]).flat();
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount, edgeCount: graphSnapshot.edges.length };
+    return graphSnapshot;
+  }
+
+  it("raises the overview node budget only when a limit is requested", async () => {
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: bulkSnapshot(3000) });
+
+    const sampled = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    expect(sampled.statusCode).toBe(200);
+    expect(sampled.json().data.nodes).toHaveLength(2000);
+    expect(sampled.json().data).toMatchObject({ totalMatchingNodes: 3000, truncated: true });
+
+    const partial = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=2500", headers: { cookie } });
+    expect(partial.statusCode).toBe(200);
+    expect(partial.json().data.nodes).toHaveLength(2500);
+    expect(partial.json().data.truncated).toBe(true);
+
+    const full = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=3000", headers: { cookie } });
+    expect(full.statusCode).toBe(200);
+    expect(full.json().data.nodes).toHaveLength(3000);
+    expect(full.json().data.truncated).toBe(false);
+    await app.close();
+  });
+
+  it("rejects an overview limit above the server maximum", async () => {
+    const app = await memoryGraphApp(true);
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(response.statusCode).toBe(422);
+    await app.close();
+  });
+
+  it("keys the overview ETag by the requested limit", async () => {
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: bulkSnapshot(3000) });
+    const sampled = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+    const full = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=3000", headers: { cookie } });
+    expect(sampled.headers.etag).toBe(`"${"a".repeat(64)}"`);
+    expect(full.headers.etag).not.toBe(sampled.headers.etag);
+
+    const crossCached = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview",
+      headers: { cookie, "if-none-match": full.headers.etag }
+    });
+    expect(crossCached.statusCode).toBe(200);
+    const matching = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=3000",
+      headers: { cookie, "if-none-match": full.headers.etag }
+    });
+    expect(matching.statusCode).toBe(304);
+    await app.close();
+  });
+
+  it("serves a 50,000-node overview with ~150k edges and reports its cost", async () => {
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: bulkSnapshot(50000) });
+    const startedAt = performance.now();
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    const elapsedMs = performance.now() - startedAt;
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.data.nodes).toHaveLength(50000);
+    expect(body.data.edges.length).toBeGreaterThan(140000);
+    expect(body.data).toMatchObject({ totalMatchingNodes: 50000, truncated: false });
+    // Measured evidence for the PR: server time and payload size at 50k.
+    console.log(`overview 50k: ${elapsedMs.toFixed(1)} ms server time, ${(Buffer.byteLength(response.payload) / 1024 / 1024).toFixed(2)} MiB payload, ${body.data.edges.length} edges`);
+    await app.close();
+  }, 120000);
+
   it("retains real tags and their neighbors when an archive exceeds the overview cap", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     graphSnapshot.nodes = Array.from({ length: 2200 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));

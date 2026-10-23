@@ -29,6 +29,11 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
   const [graph, setGraph] = useState<MemoryGraphOverviewResponse | null>(null);
+  // The full-graph payload (up to the server maximum) the 3D view upgrades
+  // to; the sampled overview stays the data source for every other view.
+  const [fullGraph, setFullGraph] = useState<MemoryGraphOverviewResponse | null>(null);
+  const [fullGraphLoading, setFullGraphLoading] = useState(false);
+  const fullGraphAttempt = useRef<MemoryGraphOverviewResponse | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [detail, setDetail] = useState<MemoryGraphNodeDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,6 +78,9 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     let active = true;
     setLoading(true);
     setError(null);
+    setFullGraph(null);
+    setFullGraphLoading(false);
+    fullGraphAttempt.current = null;
     closeDetail();
     // Search covers the entire archive; removing the month picker must not hide old memories.
     void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS" })
@@ -81,6 +89,22 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [workspaceMode, query, closeDetail]);
+
+  // Entering the 3D view upgrades the data to the full archive (the server
+  // caps the request at 50,000 nodes): the sampled overview is a 2,000-node
+  // excerpt, which would silently hide most of a large workspace. The view
+  // stays usable on the sample while the full payload is in flight.
+  useEffect(() => {
+    if (!view3D || workspaceMode !== "atlas" || !graph || fullGraph || fullGraphAttempt.current === graph) return;
+    fullGraphAttempt.current = graph;
+    let active = true;
+    setFullGraphLoading(true);
+    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS", limit: 50000 })
+      .then(payload => { if (active) setFullGraph(payload); })
+      .catch(() => { /* the sampled graph stays in place */ })
+      .finally(() => { if (active) setFullGraphLoading(false); });
+    return () => { active = false; };
+  }, [view3D, workspaceMode, graph, fullGraph, query]);
 
   useEffect(() => () => { detailRequest.current++; }, []);
   const selectNode = useCallback((nodeId: string) => {
@@ -95,12 +119,23 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
       .finally(() => { if (request === detailRequest.current) setDetailLoading(false); });
   }, []);
 
-  const atlas = useMemo(() => createMemoryAtlas(graph?.data.nodes ?? [], graph?.data.edges ?? [], false), [graph]);
+  const activeGraph = view3D && fullGraph ? fullGraph : graph;
+  const atlas = useMemo(() => createMemoryAtlas(activeGraph?.data.nodes ?? [], activeGraph?.data.edges ?? [], false), [activeGraph]);
   const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D> } | null>(null);
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
+    worker.onmessage = (event: MessageEvent<
+      | { type: "depth-progress"; depth: Array<[string, MemoryPoint3D]> }
+      | { positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }
+    >) => {
+      if ("type" in event.data) {
+        // Streaming 3D layout: depth refines in place while the worker keeps
+        // simulating, so the 3D view is usable long before the final pass.
+        const depth = new Map(event.data.depth);
+        setLayout(previous => ({ atlas, depth, positions: previous?.atlas === atlas ? previous.positions : atlas.positions }));
+        return;
+      }
       const coordinates = new Map(event.data.positions);
       setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
       worker.terminate();
@@ -193,7 +228,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
                   <DesktopMemoryGraph nodes={atlas.nodes} edges={atlas.edges} displayMode="SEMANTIC" relationMode="RELATIONS" selectedNodeId={selectedNodeId} onSelectNode={selectNode} loading={loading || layoutPending} error={error} totalNodes={graph?.data.totalMatchingNodes ?? 0} totalEdges={graph?.data.totalMatchingEdges ?? 0} truncated={graph?.data.truncated ?? false} atlasPositions={atlasPositions} showTitles={showTitles} />
                 </Suspense>
               </MemoryGraphErrorBoundary></div>
-              {view3D ? <MemoryGraph3D nodes={atlas.nodes} edges={atlas.edges} positions={atlasPositions} coordinates={layout?.atlas === atlas ? layout.depth : new Map()} showTitles={showTitles} selectedNodeId={selectedNodeId} onSelectNode={selectNode} loading={loading || layoutPending} resetToken={reset3D} /> : null}
+              {view3D ? <MemoryGraph3D nodes={atlas.nodes} edges={atlas.edges} positions={atlasPositions} coordinates={layout?.atlas === atlas ? layout.depth : new Map()} showTitles={showTitles} selectedNodeId={selectedNodeId} onSelectNode={selectNode} loading={loading || layoutPending || fullGraphLoading} resetToken={reset3D} /> : null}
             </div>
             {!selectedNodeId && displayGroups.length > 0 ? <aside className="memory-atlas-topics" aria-label="Map topics">
               <span className="memory-atlas-eyebrow">COLOR GUIDE</span>
