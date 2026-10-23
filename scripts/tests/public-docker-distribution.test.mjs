@@ -329,3 +329,341 @@ test("core seeds generic starter memory only when mutable owner memory is absent
   assert.match(starter, /^# SpaceApp Memory/m);
   assert.doesNotMatch(starter, /\/etc\/docs|\/srv\/space|spaceapp-user|oll4\.com/i);
 });
+
+test("Dockerfile stages per-target /app-targets trees instead of copying the full monorepo into runtime-base", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const buildStage = dockerfile.match(/FROM [^\n]+ AS build([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const runtimeBaseStage =
+    dockerfile.match(/FROM [^\n]+ AS runtime-base([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const coreStage = dockerfile.match(/FROM runtime-base AS core([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const browserStage =
+    dockerfile.match(/FROM runtime-base AS browser([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+
+  const { isPublicExportPath } = await import("../public-export.mjs");
+
+  assert.equal(isPublicExportPath("scripts/stage-container-runtime.mjs"), true);
+  assert.equal(isPublicExportPath("scripts/smoke-container-image.mjs"), true);
+  assert.match(
+    buildStage,
+    /node scripts\/stage-container-runtime\.mjs --source \/app --output \/app-targets --arch "\$\{TARGETARCH:-\}"/
+  );
+  assert.doesNotMatch(
+    runtimeBaseStage,
+    /COPY --from=build[^\n]*\/app\/(?:node_modules|apps|packages|demos|starter-memory|agent-skills|scripts)/
+  );
+  assert.match(coreStage, /COPY --from=build --chown=spaceapp:spaceapp \/app-targets\/core\/ \.\//);
+  assert.match(browserStage, /COPY --from=build --chown=spaceapp:spaceapp \/app-targets\/browser\/ \.\//);
+  assert.match(cliStage, /COPY --from=build --chown=spaceapp:spaceapp \/app-targets\/cli\/ \.\//);
+});
+
+test("stageContainerRuntime isolates core, browser, and cli runtime trees and strips cross-arch native artifacts", async () => {
+  const { existsSync } = await import("node:fs");
+  const { mkdtemp, mkdir, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { resolveTemporalBridgeReleaseTarget, stageContainerRuntime } = await import(
+    "../stage-container-runtime.mjs"
+  );
+  const { parsePostgresImageFromCompose, parseSmokeArgs } = await import("../smoke-container-image.mjs");
+
+  assert.equal(resolveTemporalBridgeReleaseTarget("amd64"), "x86_64-unknown-linux-gnu");
+  assert.equal(resolveTemporalBridgeReleaseTarget("arm64"), "aarch64-unknown-linux-gnu");
+
+  const parsedSmoke = parseSmokeArgs([
+    "--target",
+    "core",
+    "--arch",
+    "amd64",
+    "--image",
+    "spaceapp-ci:core-amd64"
+  ]);
+  assert.equal(parsedSmoke.target, "core");
+  assert.equal(parsedSmoke.arch, "amd64");
+  assert.equal(parsedSmoke.image, "spaceapp-ci:core-amd64");
+  assert.equal(parsedSmoke.postgresImage, parsePostgresImageFromCompose());
+  assert.match(parsedSmoke.postgresImage, /^pgvector\/pgvector:[^\s]+@sha256:[0-9a-f]{64}$/);
+
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "spaceapp-stage-test-"));
+  const sourceRoot = join(fixtureRoot, "source");
+  const outputRoot = join(fixtureRoot, "output");
+
+  try {
+    await mkdir(join(sourceRoot, "apps/api/dist/services"), { recursive: true });
+    await mkdir(join(sourceRoot, "apps/api/src"), { recursive: true });
+    await mkdir(join(sourceRoot, "apps/web/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "apps/web/src"), { recursive: true });
+    await mkdir(join(sourceRoot, "apps/worker/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/browser-host/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/cli-host/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/contracts/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/db/dist/migrations"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/gateway/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/gateway/grammars"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/memory-graph/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "packages/runtime/dist"), { recursive: true });
+    await mkdir(join(sourceRoot, "demos/starter"), { recursive: true });
+    await mkdir(join(sourceRoot, "starter-memory"), { recursive: true });
+    await mkdir(join(sourceRoot, "agent-skills/skill-a"), { recursive: true });
+    await mkdir(join(sourceRoot, "scripts"), { recursive: true });
+
+    await writeFile(
+      join(sourceRoot, "package.json"),
+      JSON.stringify({ name: "spaceapp", private: true, workspaces: ["apps/*", "packages/*"] })
+    );
+    await writeFile(
+      join(sourceRoot, "apps/api/package.json"),
+      JSON.stringify({
+        name: "@space/api",
+        version: "0.2.5",
+        dependencies: {
+          "@space/browser-host": "0.2.5",
+          "@space/cli-host": "0.2.5",
+          "@space/contracts": "0.2.5",
+          "@space/db": "0.2.5",
+          "@space/gateway": "0.2.5",
+          "@space/memory-graph": "0.2.5",
+          "@space/runtime": "0.2.5",
+          fastify: "5.12.5"
+        }
+      })
+    );
+    await writeFile(
+      join(sourceRoot, "apps/api/dist/server.js"),
+      'import "fastify";\nexport const server = true;\n'
+    );
+    await writeFile(
+      join(sourceRoot, "apps/api/dist/browser-host-main.js"),
+      'import { helper } from "./services/browser-helper.js";\nimport "@space/browser-host";\nexport const main = helper;\n'
+    );
+    await writeFile(
+      join(sourceRoot, "apps/api/dist/services/browser-helper.js"),
+      'import "@space/db";\nexport const helper = "ok";\n'
+    );
+    await writeFile(join(sourceRoot, "apps/api/src/server.ts"), "export const raw = true;\n");
+    await writeFile(
+      join(sourceRoot, "apps/web/package.json"),
+      JSON.stringify({ name: "@space/web", version: "0.2.5", dependencies: { react: "19.0.0" } })
+    );
+    await writeFile(join(sourceRoot, "apps/web/dist/index.html"), "<html></html>\n");
+    await writeFile(join(sourceRoot, "apps/web/src/App.tsx"), "export default null;\n");
+    await writeFile(
+      join(sourceRoot, "apps/worker/package.json"),
+      JSON.stringify({
+        name: "@space/worker",
+        version: "0.2.5",
+        dependencies: { "@temporalio/worker": "1.24.0" }
+      })
+    );
+    await writeFile(join(sourceRoot, "apps/worker/dist/index.js"), "export const worker = true;\n");
+
+    for (const [pkg, deps] of [
+      ["browser-host", { "playwright-core": "1.59.1" }],
+      ["cli-host", { "node-pty": "1.1.0" }],
+      ["codex-app-server", {}],
+      ["contracts", {}],
+      ["db", { pg: "8.18.0" }],
+      ["gateway", {}],
+      ["memory-graph", {}],
+      ["opencode-control", {}],
+      ["runtime", {}],
+      ["streaming", {}]
+    ]) {
+      await mkdir(join(sourceRoot, "packages", pkg, "dist"), { recursive: true });
+      await writeFile(
+        join(sourceRoot, "packages", pkg, "package.json"),
+        JSON.stringify({ name: `@space/${pkg}`, version: "0.2.5", dependencies: deps })
+      );
+      await writeFile(join(sourceRoot, "packages", pkg, "dist/index.js"), "export {};\n");
+      await writeFile(join(sourceRoot, "packages", pkg, "dist/index.d.ts"), "export {};\n");
+    }
+    await writeFile(join(sourceRoot, "packages/db/dist/migrations/001.sql"), "SELECT 1;\n");
+    await writeFile(join(sourceRoot, "packages/gateway/grammars/tree-sitter-c.wasm"), "wasm");
+    await writeFile(join(sourceRoot, "demos/starter/README.md"), "# Demo\n");
+    await writeFile(join(sourceRoot, "starter-memory/AGENTS.md"), "# Memory\n");
+    await writeFile(join(sourceRoot, "agent-skills/skill-a/SKILL.md"), "# Skill\n");
+    for (const script of [
+      "rotate-owner-setup-token.mjs",
+      "reset-owner-password.mjs",
+      "portable-backup.mjs",
+      "portable-restore.mjs"
+    ]) {
+      await writeFile(join(sourceRoot, "scripts", script), "export {};\n");
+    }
+
+    // Populate node_modules with target-specific packages and cross-arch native artifacts
+    await mkdir(join(sourceRoot, "node_modules/fastify"), { recursive: true });
+    await writeFile(
+      join(sourceRoot, "node_modules/fastify/package.json"),
+      JSON.stringify({ name: "fastify", version: "5.12.5" })
+    );
+    await mkdir(join(sourceRoot, "node_modules/playwright-core"), { recursive: true });
+    await writeFile(
+      join(sourceRoot, "node_modules/playwright-core/package.json"),
+      JSON.stringify({ name: "playwright-core", version: "1.59.1" })
+    );
+    await mkdir(join(sourceRoot, "node_modules/pg"), { recursive: true });
+    await writeFile(
+      join(sourceRoot, "node_modules/pg/package.json"),
+      JSON.stringify({ name: "pg", version: "8.18.0" })
+    );
+    await mkdir(join(sourceRoot, "node_modules/react"), { recursive: true });
+    await writeFile(
+      join(sourceRoot, "node_modules/react/package.json"),
+      JSON.stringify({ name: "react", version: "19.0.0" })
+    );
+    await mkdir(join(sourceRoot, "node_modules/node-pty/prebuilds/linux-x64"), { recursive: true });
+    await mkdir(join(sourceRoot, "node_modules/node-pty/prebuilds/win32-x64"), { recursive: true });
+    await writeFile(
+      join(sourceRoot, "node_modules/node-pty/package.json"),
+      JSON.stringify({ name: "node-pty", version: "1.1.0" })
+    );
+    await writeFile(join(sourceRoot, "node_modules/node-pty/prebuilds/linux-x64/pty.node"), "elf");
+    await writeFile(join(sourceRoot, "node_modules/node-pty/prebuilds/win32-x64/pty.node"), "pe");
+
+    await mkdir(
+      join(sourceRoot, "node_modules/@temporalio/worker"),
+      { recursive: true }
+    );
+    await writeFile(
+      join(sourceRoot, "node_modules/@temporalio/worker/package.json"),
+      JSON.stringify({
+        name: "@temporalio/worker",
+        version: "1.24.0",
+        dependencies: { "@temporalio/core-bridge": "1.24.0" }
+      })
+    );
+    await mkdir(
+      join(sourceRoot, "node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu"),
+      { recursive: true }
+    );
+    await mkdir(
+      join(sourceRoot, "node_modules/@temporalio/core-bridge/releases/aarch64-apple-darwin"),
+      { recursive: true }
+    );
+    await mkdir(join(sourceRoot, "node_modules/@temporalio/core-bridge/sdk-core"), {
+      recursive: true
+    });
+    await writeFile(
+      join(sourceRoot, "node_modules/@temporalio/core-bridge/package.json"),
+      JSON.stringify({ name: "@temporalio/core-bridge", version: "1.24.0" })
+    );
+    await writeFile(
+      join(sourceRoot, "node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu/index.node"),
+      "linux-amd64"
+    );
+    await writeFile(
+      join(sourceRoot, "node_modules/@temporalio/core-bridge/releases/aarch64-apple-darwin/index.node"),
+      "darwin-arm64"
+    );
+    await writeFile(join(sourceRoot, "node_modules/@temporalio/core-bridge/sdk-core/Cargo.toml"), "");
+
+    await writeFile(
+      join(sourceRoot, "package-lock.json"),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          "": { workspaces: ["apps/*", "packages/*"] },
+          "apps/api": {
+            name: "@space/api",
+            dependencies: {
+              "@space/browser-host": "0.2.5",
+              "@space/cli-host": "0.2.5",
+              "@space/contracts": "0.2.5",
+              "@space/db": "0.2.5",
+              "@space/gateway": "0.2.5",
+              "@space/memory-graph": "0.2.5",
+              "@space/runtime": "0.2.5",
+              fastify: "5.12.5"
+            }
+          },
+          "apps/web": { name: "@space/web", dependencies: { react: "19.0.0" } },
+          "apps/worker": {
+            name: "@space/worker",
+            dependencies: { "@temporalio/worker": "1.24.0" }
+          },
+          "packages/browser-host": {
+            name: "@space/browser-host",
+            dependencies: { "playwright-core": "1.59.1" }
+          },
+          "packages/cli-host": {
+            name: "@space/cli-host",
+            dependencies: { "node-pty": "1.1.0" }
+          },
+          "packages/contracts": { name: "@space/contracts" },
+          "packages/db": { name: "@space/db", dependencies: { pg: "8.18.0" } },
+          "packages/gateway": { name: "@space/gateway" },
+          "packages/memory-graph": { name: "@space/memory-graph" },
+          "packages/runtime": { name: "@space/runtime" },
+          "node_modules/fastify": { version: "5.12.5" },
+          "node_modules/playwright-core": { version: "1.59.1" },
+          "node_modules/pg": { version: "8.18.0" },
+          "node_modules/react": { version: "19.0.0" },
+          "node_modules/node-pty": { version: "1.1.0" },
+          "node_modules/@temporalio/worker": {
+            version: "1.24.0",
+            dependencies: { "@temporalio/core-bridge": "1.24.0" }
+          },
+          "node_modules/@temporalio/core-bridge": { version: "1.24.0" }
+        }
+      })
+    );
+
+    await stageContainerRuntime({ sourceRoot, outputRoot, arch: "amd64" });
+
+    // Core assertions
+    assert.equal(existsSync(join(outputRoot, "core/apps/api/dist/server.js")), true);
+    assert.equal(existsSync(join(outputRoot, "core/apps/api/src/server.ts")), false);
+    assert.equal(existsSync(join(outputRoot, "core/apps/web/dist/index.html")), true);
+    assert.equal(existsSync(join(outputRoot, "core/apps/web/src/App.tsx")), false);
+    assert.equal(existsSync(join(outputRoot, "core/apps/worker/dist/index.js")), true);
+    assert.equal(existsSync(join(outputRoot, "core/node_modules/fastify/package.json")), true);
+    assert.equal(existsSync(join(outputRoot, "core/node_modules/react")), false);
+    assert.equal(existsSync(join(outputRoot, "core/node_modules/node-pty")), false);
+    assert.equal(existsSync(join(outputRoot, "core/agent-skills/skill-a/SKILL.md")), true);
+    assert.equal(
+      existsSync(
+        join(outputRoot, "core/node_modules/@temporalio/core-bridge/releases/x86_64-unknown-linux-gnu/index.node")
+      ),
+      true
+    );
+    assert.equal(
+      existsSync(
+        join(outputRoot, "core/node_modules/@temporalio/core-bridge/releases/aarch64-apple-darwin")
+      ),
+      false
+    );
+    assert.equal(
+      existsSync(join(outputRoot, "core/node_modules/@temporalio/core-bridge/sdk-core")),
+      false
+    );
+
+    // Browser assertions
+    assert.equal(existsSync(join(outputRoot, "browser/apps/api/dist/browser-host-main.js")), true);
+    assert.equal(existsSync(join(outputRoot, "browser/apps/api/dist/services/browser-helper.js")), true);
+    assert.equal(existsSync(join(outputRoot, "browser/apps/api/dist/server.js")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/apps/web")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/apps/worker")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/node_modules/playwright-core/package.json")), true);
+    assert.equal(existsSync(join(outputRoot, "browser/node_modules/pg/package.json")), true);
+    assert.equal(existsSync(join(outputRoot, "browser/node_modules/fastify")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/node_modules/node-pty")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/node_modules/@temporalio")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/agent-skills")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/demos")), false);
+    assert.equal(existsSync(join(outputRoot, "browser/starter-memory")), false);
+
+    // CLI assertions
+    assert.equal(existsSync(join(outputRoot, "cli/packages/cli-host/dist/index.js")), true);
+    assert.equal(existsSync(join(outputRoot, "cli/packages/cli-host/dist/index.d.ts")), false);
+    assert.equal(existsSync(join(outputRoot, "cli/agent-skills/skill-a/SKILL.md")), true);
+    assert.equal(existsSync(join(outputRoot, "cli/node_modules/node-pty/prebuilds/linux-x64/pty.node")), true);
+    assert.equal(existsSync(join(outputRoot, "cli/node_modules/node-pty/prebuilds/win32-x64")), false);
+    assert.equal(existsSync(join(outputRoot, "cli/apps")), false);
+    assert.equal(existsSync(join(outputRoot, "cli/node_modules/playwright-core")), false);
+    assert.equal(existsSync(join(outputRoot, "cli/node_modules/fastify")), false);
+    assert.equal(existsSync(join(outputRoot, "cli/demos")), false);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
