@@ -118,3 +118,18 @@ which certifies the [Developer Certificate of Origin 1.1](https://developercerti
 that you wrote the contribution or have the right to submit it under the MIT
 License. `git commit -s` adds the line. There is no separate contributor
 license agreement.
+## Temporal workflow replay histories
+
+Workflow changes in `apps/worker` are gated by replay determinism tests against
+synthetic histories in `apps/worker/tests/fixtures/workflow-histories/`. To
+record or refresh fixtures locally:
+
+```sh
+npm run temporal:record-histories -w @space/worker
+```
+
+Re-recording is allowed **only** together with a replay-safe `patched()` change
+(while retaining pre-patch fixtures for existing branches) or when adding a new
+workflow. Never re-record histories to make a failing replay test pass.
+
+
