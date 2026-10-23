@@ -33,9 +33,9 @@
     "fast-json-stringify@7": {
       "fast-uri": "4.2.2"
     },
-    "sanitize-html": "2.17.7",
+    "sanitize-html": "2.18.1",
     "@fastify/busboy": "3.2.2",
-    "hono": "4.13.7",
+    "hono": "4.13.13",
     "qs": "6.16.0",
     "proxy-addr": "2.0.8",
     "http-cache-semantics": "4.3.0",
@@ -43,6 +43,8 @@
     "@napi-rs/canvas": "1.0.9"
   },
   "scripts": {
+    "dev:stack": "node scripts/dev-stack.mjs",
+    "smoke:dev-stack": "node scripts/dev-stack-smoke.mjs",
     "dev:api": "npm run dev -w @space/api",
     "dev:web": "npm run dev -w @space/web",
     "dev:worker": "npm run dev -w @space/worker",

@@ -4,7 +4,8 @@ import { readFile } from "node:fs/promises";
 
 // 1.1.7 (Nous decision 2026-10-18): the API reads Codex's session logs to see a Codex pane's turns. It gets only
 // Codex's sessions/ (its own volume, read-only), never the Codex home, auth.json or any other credential.
-const template = await readFile(new URL("../templates/compose.yml", import.meta.url), "utf8");
+// Git for Windows checks out CRLF; regex checks below operate on LF-normalized YAML.
+const template = (await readFile(new URL("../templates/compose.yml", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const credentialInstall = await readFile(new URL("../../../deploy/docker/credential-install.mjs", import.meta.url), "utf8");
 const service = (name) => template.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:\\n|^[a-z])`, "m"))?.[1] ?? "";
 const mounts = (block) => [...(block.match(/^    volumes:\n((?:      (?:- |#).*\n)+)/m)?.[1] ?? "").matchAll(/^      - (\S+)\s*$/gm)].map((match) => match[1]);

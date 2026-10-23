@@ -60,7 +60,8 @@ export const csrfHeaderName = CSRF_HEADER;
 export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
   let googleClientId = env.SPACE_GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || undefined;
   let googleClientSecret = env.SPACE_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || undefined;
-  if (!googleClientId) {
+  // A source dev stack must not discover an installed operator's OAuth secrets.
+  if (!googleClientId && env.SPACE_INSTANCE !== "dev" && env.SPACE_GOOGLE_AUTH_DISABLED !== "true") {
     try {
       const candidates = ["/opt/spaceapp/secrets/google-oauth.json", "/var/lib/spaceapp/google-oauth.json"];
       for (const p of candidates) {

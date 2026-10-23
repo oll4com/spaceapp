@@ -1,3 +1,5 @@
+import "./dev-stack.test.mjs";
+import "./dev-stack-vite.test.mjs";
 import "./publish-npm-candidate.test.mjs";
 import "./container-image-size-budget.test.mjs";
 import "./mcp-hono-compatibility.test.mjs";
