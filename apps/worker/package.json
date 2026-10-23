@@ -10,6 +10,7 @@
     "start": "node dist/worker.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "pretest": "npm run build -w @space/contracts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -26,6 +27,7 @@
     "undici": "8.10.2"
   },
   "devDependencies": {
+    "@temporalio/testing": "^1.24.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },

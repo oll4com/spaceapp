@@ -7,10 +7,11 @@ import {
   formatTraceparent,
   isSafeErrorCode,
   parseTraceparent,
+  sanitizeSpanAttributes,
   traceIdFromTraceparent,
-  type FailureCategory
+  type FailureCategory,
+  type SpanExporter
 } from "@space/contracts";
-import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -135,14 +136,32 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity under workflow or caller traceparent. */
   spans?: SpanExporter | null;
+  headerTraceparent?: string | null;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
+}
+
+function extractHeaderTraceparent(headers: Record<string, unknown> | undefined): string | null {
+  const raw = headers?.["x-space-traceparent"];
+  if (!raw) return null;
+  if (typeof raw === "string") return raw.trim() || null;
+  const payload = raw as { data?: Uint8Array | Buffer | null };
+  if (payload?.data) {
+    try {
+      const text = Buffer.from(payload.data).toString("utf8");
+      const parsed = JSON.parse(text);
+      return typeof parsed === "string" && parsed.trim() ? parsed.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export async function observeActivityExecution<T>(
@@ -158,6 +177,16 @@ export async function observeActivityExecution<T>(
   const queueMs = Number.isFinite(info.currentAttemptScheduledTimestampMs)
     ? Math.max(0, startedAt - info.currentAttemptScheduledTimestampMs)
     : null;
+  const correlation = activityCorrelation(args);
+  const headerParent = parseTraceparent(dependencies.headerTraceparent);
+  if (headerParent) {
+    if (!correlation.w3cTraceId) {
+      correlation.w3cTraceId = headerParent.traceId;
+    }
+    if (!correlation.traceId) {
+      correlation.traceId = headerParent.traceId;
+    }
+  }
   const base: Record<string, WorkerLogValue> = {
     activityType,
     activityId: info.activityId,
@@ -165,7 +194,7 @@ export async function observeActivityExecution<T>(
     workflowId: info.workflowExecution?.workflowId ?? null,
     temporalRunId: info.workflowExecution?.runId ?? null,
     attempt: info.attempt,
-    ...activityCorrelation(args)
+    ...correlation
   };
   const labels = { activity_type: activityType };
   if (info.attempt > 1) metrics.activityRetries.inc(labels);
@@ -175,7 +204,8 @@ export async function observeActivityExecution<T>(
   const observation: ActivityObservation = { reasonCode: null };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
-    const durationMs = Math.max(0, now() - startedAt);
+    const finishedAt = now();
+    const durationMs = Math.max(0, finishedAt - startedAt);
     metrics.activitiesInFlight.inc(labels, -1);
     metrics.activityExecutions.inc({ activity_type: activityType, outcome });
     metrics.activityDuration.observe(labels, durationMs / 1000);
@@ -194,19 +224,66 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
-        traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
-        parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
-        startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
-        error: outcome === "FAILED" || outcome === "FAILED_RESULT",
-        kind: 1
-      });
+
+    const exporter = dependencies.spans ?? null;
+    if (exporter) {
+      try {
+        const argParent = activityTraceparent(args);
+        const runIdHex = (info.workflowExecution?.runId ?? "").replace(/-/g, "").toLowerCase();
+        const validWorkflowRunSpanId = /^[0-9a-f]{16,}$/.test(runIdHex) ? runIdHex.slice(0, 16) : null;
+        const validWorkflowRunTraceId = /^[0-9a-f]{32,}$/.test(runIdHex) ? runIdHex.slice(0, 32) : null;
+
+        const traceId = headerParent?.traceId ?? argParent?.traceId ?? (
+          correlation.traceId && /^[0-9a-f]{32}$/i.test(correlation.traceId) ? correlation.traceId.toLowerCase() : validWorkflowRunTraceId
+        );
+        const parentSpanId = headerParent?.parentId ?? argParent?.parentId ?? validWorkflowRunSpanId;
+
+        if (traceId) {
+          let spanId = randomBytes(8).toString("hex");
+          while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
+
+          const rawAttributes: Record<string, unknown> = {
+            "space.activity_type": activityType,
+            "space.outcome": outcome,
+            "space.attempt": info.attempt,
+            "activity.type": activityType,
+            "activity.id": info.activityId,
+            "activity.attempt": info.attempt,
+            "activity.outcome": outcome,
+            ...(info.workflowType ? { "workflow.type": info.workflowType } : {}),
+            ...(info.workflowExecution?.workflowId ? { "workflow.id": info.workflowExecution.workflowId } : {}),
+            ...(info.workflowExecution?.runId ? { "workflow.run_id": info.workflowExecution.runId } : {}),
+            ...(reasonCode ? { "error.code": reasonCode } : {}),
+            ...(category ? { "error.category": category } : {}),
+            duration_ms: durationMs,
+            ...(queueMs !== null ? { queue_ms: queueMs } : {}),
+            ...(correlation.roomId ? { "space.room_id": correlation.roomId } : {}),
+            ...(correlation.paneId ? { "space.pane_id": correlation.paneId } : {}),
+            ...(correlation.missionId ? { "space.mission_id": correlation.missionId } : {}),
+            ...(correlation.agentRunId ? { "space.agent_run_id": correlation.agentRunId } : {}),
+            ...(correlation.turnId ? { "space.turn_id": correlation.turnId } : {}),
+            ...(correlation.goalId ? { "space.goal_id": correlation.goalId } : {}),
+            ...(correlation.dotId ? { "space.dot_id": correlation.dotId } : {}),
+            ...correlation
+          };
+
+          const spanName = `activity ${activityType}`;
+
+          exporter.record({
+            traceId,
+            spanId,
+            parentSpanId,
+            name: spanName,
+            kind: 1,
+            startTimeUnixNano: BigInt(Math.round(startedAt * 1_000_000)),
+            endTimeUnixNano: BigInt(Math.round((startedAt + durationMs) * 1_000_000)),
+            attributes: sanitizeSpanAttributes(rawAttributes),
+            error: outcome !== "COMPLETED"
+          });
+        }
+      } catch {
+        // Span export failures must never escape finish or fail an activity
+      }
     }
   };
 
@@ -229,6 +306,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headerTraceparent: extractHeaderTraceparent(input.headers),
         cancelled: () => context.cancellationSignal.aborted
       })
     }

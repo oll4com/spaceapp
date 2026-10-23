@@ -56,6 +56,7 @@ export * from "./nous-focus.js";
 export * from "./nous-pane-board.js";
 export * from "./version.js";
 export * from "./observability.js";
+export * from "./otlp-span-exporter.js";
 
 export * from "./managed-plan-execution.js";
 export * from "./dots.js";
