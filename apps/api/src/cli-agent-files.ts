@@ -8,12 +8,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import sanitizeHtml from "sanitize-html";
-import { idSchema, isAgentFileArtifact, type Artifact } from "@space/contracts";
+import { idSchema, isAgentFileArtifact, resolveSpaceInstance, type Artifact } from "@space/contracts";
 import { makeSpaceId, type SpaceStore } from "@space/runtime";
 import { z } from "zod";
 import type { SpaceApiConfig } from "./config.js";
 import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { instanceStorageDirectory } from "./instance-storage.js";
 import { agentTokenLive, agentTokenSecret, agentTokenTtlMs } from "./cli-browser-bridge.js";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
@@ -202,6 +203,11 @@ export function resolveAgentFileMimeType(originalFilename: string, declaredMimeT
   return "application/octet-stream";
 }
 
+/**
+ * Rebuild a DOCX package through an explicit direct command or the stable installed broker.
+ * Dev work-root rejection becomes a typed normalization error before writes or child execution;
+ * conversion uses a private request directory, which is removed after success or failure.
+ */
 export async function normalizeAgentFileDocx(
   input: AgentFileDocxNormalizerInput,
   options: NormalizeAgentFileDocxOptions = {}
@@ -210,8 +216,18 @@ export async function normalizeAgentFileDocx(
     throw new AgentFileDocxNormalizationError("The DOCX source is not a valid Office package.");
   }
   const directCommand = options.command ?? process.env.SPACE_LIBREOFFICE_PATH;
-  const temporaryRoot = options.temporaryRoot ??
-    (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
+  const dev = resolveSpaceInstance(process.env) === "dev";
+  if (dev && !directCommand) {
+    throw new AgentFileDocxNormalizationError("Dev DOCX normalization requires an explicit direct LibreOffice command; the installed privileged broker is not used.");
+  }
+  let temporaryRoot: string;
+  try {
+    temporaryRoot = dev
+      ? instanceStorageDirectory("agent-docx-work", options.temporaryRoot ?? process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT)
+      : options.temporaryRoot ?? (directCommand ? tmpdir() : process.env.SPACE_AGENT_FILE_DOCX_WORK_ROOT ?? "/opt/spaceapp/var/agent-docx-work");
+  } catch (error) {
+    throw new AgentFileDocxNormalizationError(error instanceof Error ? error.message : undefined);
+  }
   await mkdir(temporaryRoot, { recursive: true, mode: 0o700 });
   const workingRoot = await mkdtemp(join(temporaryRoot, "request-"));
   const inputDirectory = join(workingRoot, "input");

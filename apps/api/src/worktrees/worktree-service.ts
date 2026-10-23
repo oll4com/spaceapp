@@ -117,7 +117,31 @@ export interface WorktreeRegistryData {
 // All API service instances sharing a registry must serialize read/modify/write.
 // Atomic rename alone protects the file, but can still lose concurrent records.
 const registryUpdates = new Map<string, Promise<void>>();
-const repositoryInitializations = new Map<string, Promise<void>>();
+const repositoryMetadataUpdates = new Map<string, Promise<void>>();
+
+// Git publishes a worktree's linking files separately. Another worktree command
+// must not enumerate that shared directory while its commondir is still empty.
+// The common-directory key also covers linked paths and separate service instances.
+async function withWorktreeMetadata<T>(repoPath: string, work: () => Promise<T>): Promise<T> {
+  const common = await execGit(repoPath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common.code !== 0 || !common.stdout.trim()) {
+    throw new WorktreeError("NOT_GIT_REPO", `Cannot resolve Git metadata: ${common.stderr.trim()}`);
+  }
+  const key = await realpath(resolve(repoPath, common.stdout.trim()));
+  const previous = repositoryMetadataUpdates.get(key) ?? Promise.resolve();
+  const result = previous.then(work, work);
+  const settled = result.then(() => {}, () => {});
+  repositoryMetadataUpdates.set(key, settled);
+  try {
+    return await result;
+  } finally {
+    if (repositoryMetadataUpdates.get(key) === settled) repositoryMetadataUpdates.delete(key);
+  }
+}
+
+function execMetadataGit(repoPath: string, args: string[], timeoutMs = 25000): Promise<GitExecResult> {
+  return withWorktreeMetadata(repoPath, () => execGit(repoPath, args, timeoutMs));
+}
 
 export class WorktreeService {
   constructor(private readonly baseStorageDir = WORKTREES_ROOT) {}
@@ -228,67 +252,59 @@ export class WorktreeService {
     const worktreeId = `wt-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
     const targetDir = join(this.baseStorageDir, repoSlug, worktreeId);
 
-    // Share initialization so parallel checkouts cannot race on an unborn
-    // repository's index or create several independent initial commits.
-    let initialization = repositoryInitializations.get(repoRoot);
-    if (!initialization) {
-      initialization = (async () => {
-        const repoHeadCheck = await execGit(repoRoot, ["rev-parse", "--verify", "HEAD"]);
-        if (repoHeadCheck.code !== 0) {
-          await execGit(repoRoot, ["add", "-A"]);
-          await execGit(repoRoot, ["-c", "user.name=SpaceApp", "-c", "user.email=space@local", "commit", "-m", "chore: initial commit", "--allow-empty"]);
+    const { baseBranch, branchName } = await withWorktreeMetadata(repoRoot, async () => {
+      // Initialization and branch checks share the registration lease, so an
+      // unborn repository gets one initial commit and branch checks see complete metadata.
+      const repoHeadCheck = await execGit(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+      if (repoHeadCheck.code !== 0) {
+        await execGit(repoRoot, ["add", "-A"]);
+        await execGit(repoRoot, ["-c", "user.name=SpaceApp", "-c", "user.email=space@local", "commit", "-m", "chore: initial commit", "--allow-empty"]);
+      }
+
+      // Determine base branch (fallback to current branch if specified base does not exist)
+      let baseBranch = input.baseBranch?.trim() || "main";
+      const baseBranchRefCheck = await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${baseBranch}`]);
+      if (baseBranchRefCheck.code !== 0) {
+        const currentBranchCheck = await execGit(repoRoot, ["branch", "--show-current"]);
+        const current = currentBranchCheck.stdout.trim();
+        if (current) {
+          baseBranch = current;
         }
-      })();
-      repositoryInitializations.set(repoRoot, initialization);
-    }
-    try {
-      await initialization;
-    } finally {
-      if (repositoryInitializations.get(repoRoot) === initialization) repositoryInitializations.delete(repoRoot);
-    }
-
-    // Determine base branch (fallback to current branch if specified base does not exist)
-    let baseBranch = input.baseBranch?.trim() || "main";
-    const baseBranchRefCheck = await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${baseBranch}`]);
-    if (baseBranchRefCheck.code !== 0) {
-      const currentBranchCheck = await execGit(repoRoot, ["branch", "--show-current"]);
-      const current = currentBranchCheck.stdout.trim();
-      if (current) {
-        baseBranch = current;
       }
-    }
 
-    // Determine branch name
-    const branchName = input.branchName?.trim() || `space/${worktreeId}`;
+      // Determine branch name
+      const branchName = input.branchName?.trim() || `space/${worktreeId}`;
 
-    // Ensure parent directory exists
-    await mkdir(dirname(targetDir), { recursive: true, mode: 0o775 });
-    await chmod(dirname(targetDir), 0o775).catch(() => {});
+      // Ensure parent directory exists
+      await mkdir(dirname(targetDir), { recursive: true, mode: 0o775 });
+      await chmod(dirname(targetDir), 0o775).catch(() => {});
 
-    // Check if branch already exists in repo
-    const branchCheck = await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${branchName}`]);
-    const branchExists = branchCheck.code === 0;
+      // Check if branch already exists in repo
+      const branchCheck = await execGit(repoRoot, ["show-ref", "--verify", `refs/heads/${branchName}`]);
+      const branchExists = branchCheck.code === 0;
 
-    // Check if branch is already checked out elsewhere
-    if (branchExists) {
-      const listCheck = await execGit(repoRoot, ["worktree", "list", "--porcelain"]);
-      if (listCheck.stdout.includes(`refs/heads/${branchName}`)) {
-        throw new WorktreeError(
-          "BRANCH_ALREADY_CHECKED_OUT",
-          `Branch ${branchName} is already checked out in another worktree.`
-        );
+      // Check if branch is already checked out elsewhere
+      if (branchExists) {
+        const listCheck = await execGit(repoRoot, ["worktree", "list", "--porcelain"]);
+        if (listCheck.stdout.includes(`refs/heads/${branchName}`)) {
+          throw new WorktreeError(
+            "BRANCH_ALREADY_CHECKED_OUT",
+            `Branch ${branchName} is already checked out in another worktree.`
+          );
+        }
       }
-    }
 
-    // Run git worktree add
-    const addArgs = branchExists
-      ? ["worktree", "add", targetDir, branchName]
-      : ["worktree", "add", targetDir, "-b", branchName, baseBranch];
+      // Run git worktree add
+      const addArgs = branchExists
+        ? ["worktree", "add", targetDir, branchName]
+        : ["worktree", "add", targetDir, "-b", branchName, baseBranch];
 
-    const result = await execGit(repoRoot, addArgs);
-    if (result.code !== 0) {
-      throw new WorktreeError("WORKTREE_ADD_FAILED", `Failed to add worktree: ${result.stderr.trim()}`);
-    }
+      const result = await execGit(repoRoot, addArgs);
+      if (result.code !== 0) {
+        throw new WorktreeError("WORKTREE_ADD_FAILED", `Failed to add worktree: ${result.stderr.trim()}`);
+      }
+      return { baseBranch, branchName };
+    });
     await chmod(targetDir, 0o775).catch(() => {});
 
     // Link modules and environment if requested
@@ -407,7 +423,7 @@ export class WorktreeService {
 
   async listWorktrees(repoPath: string): Promise<SpaceWorktree[]> {
     const repoRoot = await this.validateGitRepository(repoPath);
-    const listResult = await execGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const listResult = await execMetadataGit(repoRoot, ["worktree", "list", "--porcelain"]);
     if (listResult.code !== 0) {
       throw new WorktreeError("WORKTREE_LIST_FAILED", `Failed to list worktrees: ${listResult.stderr.trim()}`);
     }
@@ -508,7 +524,7 @@ export class WorktreeService {
     try {
       const toplevel = await execGit(realPath, ["rev-parse", "--show-toplevel"]);
       if (toplevel.code === 0 && toplevel.stdout.trim() === realPath) {
-        const branchResult = await execGit(realPath, ["branch", "--show-current"]);
+        const branchResult = await execMetadataGit(realPath, ["branch", "--show-current"]);
         const branch = branchResult.stdout.trim();
         const headResult = await execGit(realPath, ["rev-parse", "HEAD"]);
         const head = headResult.stdout.trim();
@@ -714,8 +730,8 @@ export class WorktreeService {
     // 1. If already recognized as MERGED:
     if (wt.status === "MERGED") {
       if (input.deleteBranchAfter && branch && !branch.startsWith("detached-") && branch !== "main") {
-        await execGit(repoRoot, ["branch", "-d", branch]).catch(async () => {
-          await execGit(repoRoot, ["branch", "-D", branch]).catch(() => {});
+        await execMetadataGit(repoRoot, ["branch", "-d", branch]).catch(async () => {
+          await execMetadataGit(repoRoot, ["branch", "-D", branch]).catch(() => {});
         });
       }
       if (input.deleteBranchAfter) {
@@ -771,8 +787,8 @@ export class WorktreeService {
 
     if (alreadyMerged) {
       if (input.deleteBranchAfter && branch && !branch.startsWith("detached-") && branch !== "main") {
-        await execGit(repoRoot, ["branch", "-d", branch]).catch(async () => {
-          await execGit(repoRoot, ["branch", "-D", branch]).catch(() => {});
+        await execMetadataGit(repoRoot, ["branch", "-d", branch]).catch(async () => {
+          await execMetadataGit(repoRoot, ["branch", "-D", branch]).catch(() => {});
         });
       }
       if (input.deleteBranchAfter) {
@@ -828,8 +844,8 @@ export class WorktreeService {
     }
 
     if (input.deleteBranchAfter && branch && !branch.startsWith("detached-") && branch !== "main") {
-      await execGit(repoRoot, ["branch", "-d", branch]).catch(async () => {
-        await execGit(repoRoot, ["branch", "-D", branch]).catch(() => {});
+      await execMetadataGit(repoRoot, ["branch", "-d", branch]).catch(async () => {
+        await execMetadataGit(repoRoot, ["branch", "-D", branch]).catch(() => {});
       });
     }
 
@@ -887,8 +903,10 @@ export class WorktreeService {
 
       if (repoRoot && repoRoot !== realPath) {
         const removeArgs = force ? ["worktree", "remove", "--force", realPath] : ["worktree", "remove", realPath];
-        await execGit(repoRoot, removeArgs);
-        await execGit(repoRoot, ["worktree", "prune"]);
+        await withWorktreeMetadata(repoRoot, async () => {
+          await execGit(repoRoot, removeArgs);
+          await execGit(repoRoot, ["worktree", "prune"]);
+        });
       }
 
       // Cleanup any remaining filesystem leftovers if git left them
@@ -913,7 +931,7 @@ export class WorktreeService {
     preserved: Array<{ path: string; branch: string; reason: string }>;
   }> {
     const repoRoot = await this.validateGitRepository(repoPath);
-    await execGit(repoRoot, ["worktree", "prune"], 5000).catch(() => null);
+    await execMetadataGit(repoRoot, ["worktree", "prune"], 5000).catch(() => null);
     const worktrees = await this.listWorktrees(repoRoot);
 
     const cleaned: Array<{ path: string; branch: string; reason: string }> = [];
@@ -1009,7 +1027,7 @@ export class WorktreeService {
         try {
           await this.removeWorktree(wt.worktreePath, true);
           if (wt.branch && !wt.branch.startsWith("detached-") && wt.branch !== "main") {
-            await execGit(repoRoot, ["branch", "-D", wt.branch]).catch(() => {});
+            await execMetadataGit(repoRoot, ["branch", "-D", wt.branch]).catch(() => {});
           }
           await this.recordWorktree({
             id: wt.id,
@@ -1033,7 +1051,7 @@ export class WorktreeService {
       });
     }
 
-    await execGit(repoRoot, ["worktree", "prune"], 5000).catch(() => null);
+    await execMetadataGit(repoRoot, ["worktree", "prune"], 5000).catch(() => null);
 
     return { cleaned, preserved };
   }

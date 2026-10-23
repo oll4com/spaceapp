@@ -63,7 +63,11 @@ export function useAppNotices(): AppNotices {
       if (detail?.message) showLiveDebug(detail.message, detail.type || "info");
     };
     window.addEventListener("space-live-debug", handleDebug);
-    return () => window.removeEventListener("space-live-debug", handleDebug);
+    return () => {
+      window.removeEventListener("space-live-debug", handleDebug);
+      if (liveDebugTimerRef.current !== null) window.clearTimeout(liveDebugTimerRef.current);
+      liveDebugTimerRef.current = null;
+    };
   }, [showLiveDebug]);
 
   const [storageWarning, setStorageWarning] = useState<string>("");

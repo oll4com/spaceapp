@@ -5,6 +5,19 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Serialize Git worktree metadata operations for each repository during concurrent
+  pane setup.
+- Preserve package reload priority and recovery before Compose setup in the source
+  development stack.
+- Validate isolated storage roots and preserve typed DOCX errors and MCP diagnostics
+  in new development instances.
+
+### Added
+
+- A source development stack (`npm run dev:stack`) with isolated local state,
+  service hot reload, and documented setup, stop, and reset commands.
 ## [1.1.7] - 2026-10-21
 
 Source: sanitized Space app @ 3e4572bc97 (4729 files: SpaceApp 77d00f6895 with

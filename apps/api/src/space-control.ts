@@ -15,6 +15,8 @@ import type { RoomPaneController, RoomPaneObservation } from "./room-pane-contro
 import { isCliPane } from "./pane-guards.js";
 import { type ControlActor, resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
+import { instanceStorageDirectory } from "./instance-storage.js";
+import { join } from "node:path";
 import type { ControlCaptureParams } from "./space-control-capture.js";
 
 /** `dotId` attributes operations and schedules to the Space Dot acting for this user. */
@@ -1646,6 +1648,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     };
   }
 
+  /** Run selected bounded probes, retain skips as WARN, and record failures privately without replacing their outcome if logging fails. */
   async function testMcpTools(actor: ControlActor, targetRoomId?: string, params?: { tools?: string[]; fast?: boolean }) {
     let effectiveRoomId = targetRoomId;
     if (!effectiveRoomId) {
@@ -1871,7 +1874,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
           failedTools: failedTools.map(f => ({ tool: f.tool, error: f.error })),
           agentHandoffPrompt
         }) + "\n";
-        appendFileSync("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", line);
+        const directory = instanceStorageDirectory("live-voice-logs");
+        await fsPromises.mkdir(directory, { recursive: true, mode: 0o700 });
+        appendFileSync(join(directory, "debug-incidents.jsonl"), line);
       } catch {}
     }
 
@@ -1979,7 +1984,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
 
     let recentIncidents: any[] = [];
     try {
-      const content = await fsPromises.readFile("/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl", "utf8");
+      const content = await fsPromises.readFile(join(instanceStorageDirectory("live-voice-logs"), "debug-incidents.jsonl"), "utf8");
       recentIncidents = content.trim().split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).slice(-5);
     } catch {}
 

@@ -2,6 +2,7 @@ import { readFile, readdir, writeFile, mkdir, symlink, unlink, lstat, realpath }
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
+  instanceBackgroundJobEnabled,
   type PluginCatalogItem,
   type PluginConnectionState,
   type PluginWithState,
@@ -9,8 +10,7 @@ import {
   type AgentPluginConfig
 } from "@space/contracts";
 import { parseSkillFrontmatter } from "@space/runtime";
-
-const PLUGINS_DIR = "/opt/spaceapp/var/plugins";
+import { instanceStorageDirectory } from "./instance-storage.js";
 
 export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
   {
@@ -549,8 +549,8 @@ export interface StoredPluginConnection {
 
 export class PluginsService {
   constructor(
-    private readonly storageDirectory = PLUGINS_DIR,
-    private readonly syncSkills = true,
+    private readonly storageDirectory = instanceStorageDirectory("plugins"),
+    private readonly syncSkills = instanceBackgroundJobEnabled(process.env, "plugin-skill-links"),
     private readonly skillDirs: readonly string[] = SKILL_DIRS
   ) {}
   private get connectionsFile() { return join(this.storageDirectory, "connections.json"); }

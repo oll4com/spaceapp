@@ -236,7 +236,8 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
     resolveLock();
     await wedgedPromise;
 
-    // Also test recording room event directly in store
+    // Also test recording room event directly in store. Latest ordering breaks timestamp ties by ID.
+    const latestSetupEvent = store.getLatestEvent(room.id)!;
     const watchdogEvent: Event = {
       id: "event:watchdog-test",
       roomId: room.id,
@@ -255,7 +256,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
         durationMs: 8000,
         killedAt: new Date().toISOString()
       },
-      createdAt: new Date().toISOString()
+      createdAt: new Date(Date.parse(latestSetupEvent.createdAt) + 1).toISOString()
     };
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
