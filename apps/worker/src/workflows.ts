@@ -97,7 +97,7 @@ export const dotGoalWakeSignal = defineSignal<[]>(DOT_GOAL_SIGNAL);
  * API reports the Goal finished. State lives in PostgreSQL; this workflow only
  * sequences steps, so it survives worker restarts and closed browsers.
  */
-export async function dotGoalWorkflow(input: { goalId: string }): Promise<{ goalStatus: string }> {
+export async function dotGoalWorkflow(input: { goalId: string; traceId?: string; traceparent?: string }): Promise<{ goalStatus: string }> {
   let woken = false;
   setHandler(dotGoalWakeSignal, () => { woken = true; });
   const result = await runDotGoalLoop(input.goalId, {
@@ -108,7 +108,7 @@ export async function dotGoalWorkflow(input: { goalId: string }): Promise<{ goal
     shouldContinueAsNew: () => workflowInfo().continueAsNewSuggested || workflowInfo().historyLength > 10_000
   }, 300);
   // A long Goal continues as a new run to bound workflow history.
-  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId });
+  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>(input);
   return { goalStatus: result.goalStatus ?? "UNKNOWN" };
 }
 

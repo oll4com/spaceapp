@@ -182,24 +182,62 @@ describe("worker metrics endpoint", () => {
   });
 });
 
-it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+it("registers the workflow and activity observability interceptors and sinks on every Temporal worker, including both memory workers", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/workflowModules:\s*\[workflowObservabilityInterceptorsPath\]/);
+    expect(source, entry).toMatch(/activity:\s*\[createActivityObservabilityInterceptors\(\{ spans \}\)\]/);
+    expect(source, entry).toMatch(/sinks:\s*createWorkflowObservabilitySinks\(\{ spans \}\)/);
   }
 });
 
-it("exports one INTERNAL span per activity under the caller's traceparent", async () => {
+it("exports one INTERNAL span per activity under the caller's traceparent with allowlisted correlation attributes", async () => {
   const recorded: Array<Record<string, unknown>> = [];
   const spans = { record: (span: Record<string, unknown>) => recorded.push(span), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
   const metrics = createWorkerMetrics(new MetricsRegistry());
   let clock = 1_000;
-  const info = { activityType: "runTurn", activityId: "1", attempt: 1, currentAttemptScheduledTimestampMs: 1_000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
+  const info = {
+    activityType: "runTurn",
+    activityId: "1",
+    attempt: 1,
+    workflowType: "codexAppServerTurnWorkflow",
+    currentAttemptScheduledTimestampMs: 950,
+    workflowExecution: { workflowId: "workflow:codex-app-server:room:a:pane:a:req:abcdefghijkl", runId: "run-1" }
+  } as never;
   const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
-  await observeActivityExecution(info, [{ turn: { traceparent } }], async () => { clock += 250; return "ok"; }, { metrics, now: () => clock, spans: spans as never });
+  await observeActivityExecution(
+    info,
+    [{ turn: { traceparent, traceId: "req:abcdefghijkl", roomId: "room:a", paneId: "pane:a", agentRunId: "agent_run:1", prompt: secretPrompt } }],
+    async () => { clock += 250; return "ok"; },
+    { metrics, now: () => clock, spans: spans as never }
+  );
   await observeActivityExecution(info, [{ traceId: "req:no-w3c-parent" }], async () => "ok", { metrics, now: () => clock, spans: spans as never });
   expect(recorded).toHaveLength(1);
-  expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
-    kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+  expect(recorded[0]).toMatchObject({
+    traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+    parentSpanId: "00f067aa0ba902b7",
+    name: "activity runTurn",
+    kind: 1,
+    error: false,
+    startTimeUnixNano: 1_000_000_000n,
+    endTimeUnixNano: 1_250_000_000n,
+    attributes: {
+      "space.activity_type": "runTurn",
+      "space.workflow_type": "codexAppServerTurnWorkflow",
+      "space.workflow_id": "workflow:codex-app-server:room:a:pane:a:req:abcdefghijkl",
+      "space.run_id": "run-1",
+      "space.trace_id": "req:abcdefghijkl",
+      "space.room_id": "room:a",
+      "space.pane_id": "pane:a",
+      "space.agent_run_id": "agent_run:1",
+      "space.outcome": "COMPLETED",
+      "space.attempt": 1,
+      "space.duration_ms": 250,
+      "space.queue_ms": 50
+    }
+  });
+  expect(JSON.stringify(recorded[0]!.attributes)).not.toContain("PRIVATE PROMPT");
+  expect(JSON.stringify(recorded[0]!.attributes)).not.toContain("sk-live");
 });
+

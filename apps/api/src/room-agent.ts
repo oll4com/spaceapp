@@ -190,14 +190,15 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
     const lease = await this.connect("roomAgentActionWorkflow");
     try {
       try {
+        const traceparent = traceparentForTraceId(traceId) ?? (bridge.requestId ? traceparentForTraceId(bridge.requestId) : null);
         await lease.client.workflow.start("roomAgentActionWorkflow", {
           workflowId: `space-room-action:${actionId}`, taskQueue: this.options.taskQueue,
-          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId }],
+          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId, ...(traceparent ? { traceparent } : {}) }],
           workflowIdReusePolicy: "REJECT_DUPLICATE",
           // traceId is this internal request; bridge.requestId is the originating request.
           memo: workflowCorrelationMemo({
             traceId,
-            traceparent: traceparentForTraceId(traceId),
+            traceparent,
             parentTraceId: bridge.requestId ?? null,
             missionId: bridge.missionId
           })
@@ -226,7 +227,12 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
         taskQueue: this.options.taskQueue,
         args: [{ roomId: item.turn.roomId, pending: [], processedCount: 0 }],
         signal: ROOM_AGENT_ENQUEUE_SIGNAL,
-        signalArgs: [item]
+        signalArgs: [item],
+        memo: workflowCorrelationMemo({
+          traceId: item.turn.traceId,
+          traceparent: item.turn.traceparent ?? null,
+          missionId: item.missionId
+        })
       });
       recordWorkflowStart(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE, "SIGNALED");
       return { workflowId, runId: handle.signaledRunId };

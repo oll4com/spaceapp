@@ -120,6 +120,45 @@ export function traceIdFromTraceparent(value: unknown): string | null {
   return parseTraceparent(value)?.traceId ?? null;
 }
 
+function fnv1a32(input: string, seed: number): number {
+  let hash = seed >>> 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b) >>> 0;
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35) >>> 0;
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
+/**
+ * Pure, deterministic 16-hex W3C span id derived from a stable seed string.
+ * Safe inside the Temporal workflow sandbox without advancing workflow PRNG.
+ */
+export function deterministicSpanId(seed: string): string {
+  const high = fnv1a32(`span:hi:${seed}`, 0x811c9dc5);
+  const low = fnv1a32(`span:lo:${seed}`, 0x9e3779b9) || 1;
+  return `${high.toString(16).padStart(8, "0")}${low.toString(16).padStart(8, "0")}`;
+}
+
+/** Pure, deterministic 32-hex W3C trace id derived from a stable seed string. */
+export function deterministicTraceId(seed: string): string {
+  const p0 = fnv1a32(`trace:0:${seed}`, 0x811c9dc5);
+  const p1 = fnv1a32(`trace:1:${seed}`, 0x9e3779b9);
+  const p2 = fnv1a32(`trace:2:${seed}`, 0x85ebca6b);
+  const p3 = fnv1a32(`trace:3:${seed}`, 0xc2b2ae35) || 1;
+  return [p0, p1, p2, p3].map((part) => part.toString(16).padStart(8, "0")).join("");
+}
+
+/** Pure, deterministic W3C traceparent derived from a stable trace seed and span seed. */
+export function deterministicTraceparent(traceSeed: string, spanSeed = traceSeed, flags = "01"): string {
+  return formatTraceparent(deterministicTraceId(traceSeed), deterministicSpanId(spanSeed), flags);
+}
+
+
 /**
  * Admin trace lookup (GET /api/admin/traces/:traceId). Identifiers, codes,
  * statuses and timestamps only: event messages, payload metadata, prompts and

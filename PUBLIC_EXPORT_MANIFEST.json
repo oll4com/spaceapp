@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "c067c535c2626f5041b9705eebbe22f5c31ac75f",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 409,
   "files": [
     {
       "path": ".gitignore",
@@ -9818,8 +9818,8 @@
     {
       "path": "apps/api/src/dot-goals.ts",
       "sourceObjectId": "30dd69deed5768eb5afa1a3b5db7a437aef278ff",
-      "sha256": "203b72a1fcb28073092f48775d5629fce0d315c4c6b2352c0cb2c1d43b6b8dd2",
-      "size": 21302
+      "sha256": "62dd1f1cbeba896ae91a4127dc85062d8775aceda4084bca55d5899f611802e3",
+      "size": 21781
     },
     {
       "path": "apps/api/src/dot-home.ts",
@@ -10370,8 +10370,8 @@
     {
       "path": "apps/api/src/memory-consolidation-coordinator.ts",
       "sourceObjectId": "df237c648eb7317d7b00267a62b791c5a1cf824c",
-      "sha256": "f05504aaaee5437bcdcaf1df7922776085371492b98772503d102453f452d803",
-      "size": 3533
+      "sha256": "5fbad5a36a4b7f3a15abf4cc29d1f3d5f61f073602c63d54482130d2fa856dc0",
+      "size": 3801
     },
     {
       "path": "apps/api/src/memory-embedding-backfill.ts",
@@ -10412,8 +10412,8 @@
     {
       "path": "apps/api/src/memory-mutation-coordinator.ts",
       "sourceObjectId": "f7d3d48bb65b4f816ed31c507630efb43bcf218e",
-      "sha256": "bc8c6c81a1f9ee1c36a4483ffc3191d9b9c41d9236c43189c405b913591516c9",
-      "size": 3483
+      "sha256": "679635407db2000d4f848c2979c5ed75ebbffc58dabc27a957f76624ad943f01",
+      "size": 3751
     },
     {
       "path": "apps/api/src/memory-routes.ts",
@@ -11000,8 +11000,8 @@
     {
       "path": "apps/api/src/room-agent.ts",
       "sourceObjectId": "c14ea96bd8ee0456fe946ffb2d366bbcfdda8af2",
-      "sha256": "c50966d798f7e6e7d2413b1c0b64017160ac884fa0298e52ced6e60f831d6cb0",
-      "size": 59738
+      "sha256": "14629262d141b79375065ee5e0c175c3e556ce36c08cb9bffb95a8dcc24264e2",
+      "size": 60058
     },
     {
       "path": "apps/api/src/room-cli-menu.ts",
@@ -11612,8 +11612,8 @@
     {
       "path": "apps/api/src/trace-context.ts",
       "sourceObjectId": "af9e55efd9dc8905b171728b5203ebf1033c0b00",
-      "sha256": "aed5a9c5c0abbca4a52fafa01385ee250808c0a7b157b2ed7ddc4517519ced9f",
-      "size": 5319
+      "sha256": "c2e70320cb203377be302d49a4db83bc946dc237687a6b5e3ae84927b87a2aa4",
+      "size": 5436
     },
     {
       "path": "apps/api/src/trace-routes.ts",
@@ -13370,8 +13370,8 @@
     {
       "path": "apps/api/tests/otlp-span-exporter.test.ts",
       "sourceObjectId": "d94ec65396aa058d9097f1299ff8756c83559422",
-      "sha256": "b5c021236e532cc7d723e3054a05157bba55f06def95e0591891232d767b6ac9",
-      "size": 8273
+      "sha256": "f9e0edbb245fc7fdde1ee25825b9bed936727f33b8d0ee7165f582c02a228167",
+      "size": 11364
     },
     {
       "path": "apps/api/tests/owned-system-analytics.ts",
@@ -21692,8 +21692,8 @@
     {
       "path": "apps/worker/src/activity-observability.ts",
       "sourceObjectId": "ea4d021d146c3b4f47ed562059b46599a10a22cc",
-      "sha256": "0acc1182c34352967649dfe981f9b494f04197a9701cdec4a4d6c0f67c8ebb6e",
-      "size": 9912
+      "sha256": "6c9f556fdf080b5ab3c4d6ef39a8cbd3a2ddb89439defa58dd785cb74d41c041",
+      "size": 13391
     },
     {
       "path": "apps/worker/src/browser-action-bridge.ts",
@@ -21800,8 +21800,8 @@
     {
       "path": "apps/worker/src/memory-maintenance-worker.ts",
       "sourceObjectId": "e1204603380890564b6f9735425fe94e5e1efa6a",
-      "sha256": "31425b782c91050c39ca7a1b93d9e2511043f2f0c944b2454d236bc7023d4c95",
-      "size": 2228
+      "sha256": "74ab0d7d3adee128d11ca7a2213106b3e4787df047d98aaa07a3784b07e43038",
+      "size": 2485
     },
     {
       "path": "apps/worker/src/memory-maintenance-workflows.ts",
@@ -21824,8 +21824,8 @@
     {
       "path": "apps/worker/src/memory-mutation-worker.ts",
       "sourceObjectId": "c2eadf65757cfe9070c1543c57c9e6e102c5c770",
-      "sha256": "581d177fb52b62a50ac0df8937ccbca3b457637128a68aedd07fce3048fa7881",
-      "size": 1859
+      "sha256": "7c1df01b92ebed576ca11708ac3e2a8901109e0c6fcab31647d894dcd5d05ba9",
+      "size": 2108
     },
     {
       "path": "apps/worker/src/memory-mutation-workflows.ts",
@@ -21866,8 +21866,8 @@
     {
       "path": "apps/worker/src/room-background-continuation.ts",
       "sourceObjectId": "e15c29a216a22ee882c946d85431a2aa83ea0375",
-      "sha256": "ee450848d1b37d24d935440e56b9c9e34b442567b7f2e448be5c0570589cd6a6",
-      "size": 12970
+      "sha256": "abd8ddc4489cace5c5c944cba086792d5176c970dded391d949ba09e346d19ea",
+      "size": 13484
     },
     {
       "path": "apps/worker/src/room-supervisor-state.ts",
@@ -21932,20 +21932,20 @@
     {
       "path": "apps/worker/src/worker.ts",
       "sourceObjectId": "6c33ef92a3384a0d54cc5239b8251a40a20be79f",
-      "sha256": "92c304f272e4652e763525fe65245b884ac80dd7b01b92e31371b3a5053bdfbd",
-      "size": 8841
+      "sha256": "5d619ba0e5104d447839016bcd40503918ad51d777e269c97a6d9da6f648d392",
+      "size": 9097
     },
     {
       "path": "apps/worker/src/workflows.ts",
       "sourceObjectId": "5f3a7d4cd4f14659040d0d05959a1113ae665538",
-      "sha256": "5b9c3033f89221f111e70c67cb2954079fcd87b6b1c11b4808307baeed62ee19",
-      "size": 18803
+      "sha256": "f4b7995d18ba73a9a995f21773b83e150cde3a156c81ed28582a60044db0d621",
+      "size": 18824
     },
     {
       "path": "apps/worker/tests/activity-observability.test.ts",
       "sourceObjectId": "654bf7962ec575ff6a0197177c8a15d2e3798272",
-      "sha256": "dc55d02187f929e2a608aec4cc174083b65ae4fde1c6f3dafffc7d222ae5da0f",
-      "size": 12002
+      "sha256": "93883799b8f55a19405f11d7c9fbabbd2e7c54376c4bec509951cf5aac7d0c61",
+      "size": 13219
     },
     {
       "path": "apps/worker/tests/chat-task-run.test.ts",
@@ -22370,8 +22370,8 @@
     {
       "path": "docs/configuration-reference.md",
       "sourceObjectId": "e432af4c60c2773b6522fcb207cbda1b6bb85faa",
-      "sha256": "6a058d4a9d836fb0cf5e69e6743ca5db993284e52ff3795eac2bc115cfb29b6d",
-      "size": 3122
+      "sha256": "203002727219bed9d01dc453e3213f6c8fa739c1d60d3c67f073e339c82b6fea",
+      "size": 4102
     },
     {
       "path": "docs/quality/KNOWN_LIMITATIONS.md",
@@ -22442,8 +22442,8 @@
     {
       "path": "docs/quality/observability.md",
       "sourceObjectId": "bb1d297a756df1f0eba5f886da24666b4e186b68",
-      "sha256": "09bf55f2566a84875c7a9763b2424a6d0f8c677993ab84d018d126b43a35849d",
-      "size": 20419
+      "sha256": "3deaaedfadf3cd6a94fed7870861a5728b751ed80ae93b9b9b9120df2dd80a0e",
+      "size": 24978
     },
     {
       "path": "docs/quality/pause-checkpoint-2026-10-03.md",
@@ -23036,8 +23036,8 @@
     {
       "path": "packages/contracts/src/observability.ts",
       "sourceObjectId": "dd8e53b41b78894a2d51819b4398b8865c0103ad",
-      "sha256": "d2b0675226c904d51af5112e20e600df6fb085e254ceddd82606850f3b351a50",
-      "size": 8013
+      "sha256": "aa4bf4cbdad6d6418d30c8aee498466d4102e0025cadd8f89d4dcc60aa95d201",
+      "size": 9595
     },
     {
       "path": "packages/contracts/src/pane-catalog.ts",
@@ -23090,8 +23090,8 @@
     {
       "path": "packages/contracts/src/schemas.ts",
       "sourceObjectId": "696eb6d84d6580d5bd306b6373a6c930c54c8308",
-      "sha256": "3df2f5b7fb26f8e8061584f244c6ea8083a9dc08738b8be50007c3df13e59c24",
-      "size": 447443
+      "sha256": "3cc8e18cd14068ed4c10be04b8df86dfc12e25a195bbae997bd69f7934cbb8f0",
+      "size": 447682
     },
     {
       "path": "packages/contracts/src/source-control.ts",
@@ -23402,8 +23402,8 @@
     {
       "path": "packages/contracts/tests/observability.test.ts",
       "sourceObjectId": "c7717396d653b66cd623efdcf24965ebc688083f",
-      "sha256": "e5d3cec9acb570e559375b888088d5b1bc59541c12fd3324e9d151779078ab55",
-      "size": 4790
+      "sha256": "20e0586c112839cc5f4fbe40a1c332b885e8be5fe848e82bd85e55b058d8c23e",
+      "size": 6216
     },
     {
       "path": "packages/contracts/tests/pane-catalog.test.ts",
@@ -27860,8 +27860,8 @@
     {
       "path": "packages/runtime/src/otlp-span-exporter.ts",
       "sourceObjectId": "86a0edf055e4ec7b12e3a6d03edb6013f5c0f284",
-      "sha256": "13736a1d326eb65bc8192ce71060066f4b2c9516b7d1277a62cbac4815877ffc",
-      "size": 5524
+      "sha256": "29e9c14eaf3225ed0dbd260adca6680cb90a08919c3a1d85a871948d6e81feeb",
+      "size": 10122
     },
     {
       "path": "packages/runtime/src/plan-execution-projection.ts",
