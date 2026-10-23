@@ -50,6 +50,119 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+When you need the complete SpaceApp stack (PostgreSQL with `pgvector`, Temporal,
+the API in watch mode, the Vite web dev server, the Temporal worker, and the
+CLI host with the preconfigured OpenCode CLI) running from your checkout with
+hot reload, start the contributor source stack after `npm ci`:
+
+```sh
+npm run dev:stack
+```
+
+Prerequisites:
+
+- Node **>=22.12 <23** and npm (same as above)
+- Docker Engine / Docker Desktop with `docker compose` available (Linux, macOS,
+  or Windows 11 with WSL2 integration enabled)
+
+What `npm run dev:stack` does:
+
+1. Reads the digest-pinned PostgreSQL (`pgvector`) and Temporal container images
+   from `packages/run-spaceapp/templates/compose.yml` and starts them under the
+   isolated `spaceapp-dev` Compose project bound only to `127.0.0.1`.
+2. Generates per-checkout secrets and runtime state under `.dev-stack/`
+   (git-ignored, `0700`/`0600` permissions) and runs `npm run db:migrate`.
+3. Installs the pinned `@opencode/cli` version from `Dockerfile` into
+   `.dev-stack/opencode` and writes local CLI wrappers into `.dev-stack/bin` so
+   the **Getting Started** room's OpenCode CLI pane reaches `RUNNING` without an
+   external AI provider account.
+4. Builds workspace packages and supervises `packages/cli-host`, `apps/worker`,
+   `apps/api` (`tsx watch`), and `apps/web` (Vite HMR).
+5. Prints the Web URL, API URL, and the one-time owner setup token (until owner
+   setup is claimed).
+
+Default loopback ports (chosen so `dev:stack` never collides with an installed
+`run-spaceapp` instance on `4910`/`4911`):
+
+- Web (Vite dev server): `127.0.0.1:5911` (override with `SPACE_WEB_PORT` or `--web-port`)
+- API: `127.0.0.1:5910` (override with `SPACE_API_PORT` or `--api-port`)
+- PostgreSQL: `127.0.0.1:55432` (override with `SPACE_DEV_POSTGRES_PORT` or `--postgres-port`)
+- Temporal: `127.0.0.1:57233` (override with `SPACE_DEV_TEMPORAL_PORT` or `--temporal-port`)
+
+Stop the stack while keeping your database volume and claimed owner account:
+
+```sh
+npm run dev:stack -- down
+```
+
+Remove the `spaceapp-dev` containers, volumes, and `.dev-stack/` state directory
+to return to a clean first-run state:
+
+```sh
+npm run dev:stack -- reset
+```
+
+Verify readiness, claim owner setup over HTTP, and verify that the Getting
+Started OpenCode CLI pane reaches `RUNNING` without a browser TTY:
+
+```sh
+npm run dev:stack:smoke
+```
+
+Sample readiness and smoke output:
+
+```text
+============================================================
+SpaceApp contributor dev stack is ready!
+  Web URL:      http://127.0.0.1:5911
+  API URL:      http://127.0.0.1:5910
+  Readiness:    http://127.0.0.1:5910/readyz
+  Setup token:  <one-time-owner-setup-token>
+  (One-time owner setup token — enter this at the Web URL to create the owner account)
+  Stop stack:   npm run dev:stack -- down
+  Reset stack:  npm run dev:stack -- reset
+============================================================
+
+{
+  "ok": true,
+  "readyzOk": true,
+  "roomName": "Getting Started",
+  "runtimeId": "cli:opencode",
+  "status": "RUNNING"
+}
+```
+
+### Platform notes (Linux, macOS, Windows 11 WSL2)
+
+- **Linux:** Ensure your user can reach the Docker daemon (`docker info`) and
+  `docker compose version` succeeds. All ports bind strictly to `127.0.0.1`.
+- **macOS (Docker Desktop or Colima):** Start Docker Desktop or Colima
+  (`colima start --cpu 4 --memory 8`) before running `npm run dev:stack`. Keep
+  the repository inside your macOS user home directory so bind-mounted secret
+  files under `.dev-stack/secrets/` are shared into the Linux VM automatically.
+  If `node-pty` needs to compile from source, install Xcode Command Line Tools
+  (`xcode-select --install`).
+- **Windows 11 (WSL2):** Run `npm run dev:stack` inside a WSL2 Linux
+  distribution (for example Ubuntu 24.04) with Docker Desktop WSL2 integration
+  enabled, and keep the checkout on the Linux ext4 filesystem inside WSL2 (not
+  `/mnt/c/`) for fast file watching and Unix domain socket support.
+
+### Troubleshooting
+
+- **Port already in use:** Override any colliding loopback port with
+  `SPACE_API_PORT`, `SPACE_WEB_PORT`, `SPACE_DEV_POSTGRES_PORT`, or
+  `SPACE_DEV_TEMPORAL_PORT` (or `--api-port`, `--web-port`, `--postgres-port`,
+  `--temporal-port`).
+- **Docker daemon or container health check failure:** Verify `docker ps` works
+  and run `npm run dev:stack -- reset` to recreate the `spaceapp-dev` containers
+  and volumes cleanly.
+- **Socket path length limit:** The CLI host Unix socket lives at
+  `.dev-stack/run/pane-host.sock`. If your checkout path is deeply nested
+  (>90 characters), pass `--state-dir /tmp/spaceapp-dev-stack` so the socket
+  path stays within the OS `sun_path` limit.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:

@@ -46,6 +46,7 @@
     "dev:api": "npm run dev -w @space/api",
     "dev:web": "npm run dev -w @space/web",
     "dev:worker": "npm run dev -w @space/worker",
+    "dev:stack": "node scripts/dev-stack.mjs",
     "db:migrate": "npm run migrate -w @space/db",
     "build": "npm run build -w @space/contracts && npm run build -w @space/icons && npm run build -w @space/streaming && npm run build -w @space/opencode-control && npm run build -w @space/memory-graph && npm run build -w @space/browser-host && npm run build -w @space/cli-host && npm run build -w @space/codex-app-server && npm run build -w @space/runtime && npm run build -w @space/db && npm run build -w @space/gateway && node scripts/build-demo-projects.mjs && npm run build -w @space/api && npm run build -w @space/worker && npm run build -w @space/web && node scripts/fix-build-permissions.mjs",
     "public:export:verify": "node scripts/public-export.mjs --verify",
@@ -58,7 +59,7 @@
     "build:demos": "node scripts/build-demo-projects.mjs",
     "test:architecture": "node --test scripts/tests/domain-boundaries.test.mjs scripts/tests/composition-root-size.test.mjs scripts/tests/quality-known-limitations.test.mjs && node scripts/domain-boundaries.mjs",
     "smoke:offline": "npm run build -w @space/cli-host && node scripts/contributor-smoke.mjs",
-    "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs",
+    "test:contributor": "node --test scripts/tests/contributor-smoke.test.mjs scripts/tests/dev-stack.test.mjs",
     "lint": "eslint --max-warnings=-1 apps packages scripts"
   },
   "devDependencies": {

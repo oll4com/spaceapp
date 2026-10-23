@@ -4,6 +4,12 @@ import { retainOpenTabAssets } from "./vite.asset-retention.js";
 import react from "@vitejs/plugin-react";
 import { demoBundleBoundaryPlugin } from "./vite.demo-boundary.js";
 
+/**
+ * Maps a Rollup module identifier to its manual vendor chunk name when applicable.
+ *
+ * @param moduleId - Absolute or virtual module identifier passed by Rollup.
+ * @returns The vendor chunk name, or `undefined` to let Rollup decide.
+ */
 export function manualChunkForModule(moduleId: string): string | undefined {
   const normalizedId = moduleId.replaceAll("\\", "/");
   if (
@@ -16,6 +22,21 @@ export function manualChunkForModule(moduleId: string): string | undefined {
   if (normalizedId.includes("/node_modules/zod/")) return "vendor-validation";
   return undefined;
 }
+
+/**
+ * Resolves the upstream API origin used by the Vite dev server proxy.
+ *
+ * @param env - Process environment variables to inspect.
+ * @returns Normalized HTTP origin for the SpaceApp API server.
+ */
+export function resolveViteApiOrigin(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.SPACE_API_ORIGIN?.trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const apiPort = env.SPACE_API_PORT?.trim() || "4910";
+  return `http://127.0.0.1:${apiPort}`;
+}
+
+const apiOrigin = resolveViteApiOrigin();
 
 export default defineConfig({
   plugins: [react(), demoBundleBoundaryPlugin(), retainOpenTabAssets()],
@@ -34,11 +55,16 @@ export default defineConfig({
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      "/api": {
+        target: apiOrigin,
+        ws: true
+      },
+      "/plugins": apiOrigin,
+      "/logout": apiOrigin,
+      "/healthz": apiOrigin,
+      "/livez": apiOrigin,
+      "/readyz": apiOrigin,
+      "/version": apiOrigin
     }
   },
   test: {
