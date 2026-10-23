@@ -434,6 +434,49 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  it("allows requesting up to 50,000 nodes via limit query parameter on the overview endpoint", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2500 }, (_, index) => ({
+      id: `memory:${String(index).padStart(4, "0")}`,
+      type: "MEMORY" as const,
+      label: `Memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = [];
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    // Request with limit=3000 expands beyond default 2000
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=3000",
+      headers: { cookie }
+    });
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data.nodes).toHaveLength(2500);
+    expect(data.truncated).toBe(false);
+    expect(data.totalMatchingNodes).toBe(2500);
+
+    // Rejects limit exceeding 50,000
+    const tooLarge = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=50001",
+      headers: { cookie }
+    });
+    expect(tooLarge.statusCode).toBe(422);
+
+    // Rejects limit less than 1
+    const tooSmall = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=0",
+      headers: { cookie }
+    });
+    expect(tooSmall.statusCode).toBe(422);
+
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;

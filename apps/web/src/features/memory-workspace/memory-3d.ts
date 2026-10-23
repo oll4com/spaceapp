@@ -13,8 +13,22 @@ const unit = (seed: string) => {
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
 
-/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+export interface Layout3DSnapshot {
+  step: number;
+  totalSteps: number;
+  done: boolean;
+  coordinates: Map<string, MemoryPoint3D>;
+}
+
+/**
+ * Progressive force layout generator that streams intermediate simulation snapshots
+ * to allow interactive rendering without blocking the main thread.
+ */
+export function* streamLayoutMemoryNetwork3D(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  stepBatch: number = 30
+): Generator<Layout3DSnapshot, Map<string, MemoryPoint3D>> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
@@ -40,29 +54,70 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
     points[b] = { x: parent.x + (unit(`${id}:dx`) - 0.5) * 70,
       y: parent.y + (unit(`${id}:dy`) - 0.5) * 70, z: parent.z + (unit(`${id}:dz`) - 0.5) * 70 };
   }
+
+  // Yield initial snapshot immediately so 3D view renders before simulation finishes
+  yield {
+    step: 0,
+    totalSteps: 180,
+    done: false,
+    coordinates: new Map(ordered.map((node, i) => [node.id, { ...points[i]! }]))
+  };
+
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
-  // Bounded spatial-grid repulsion and link springs act equally on all three axes.
   for (let step = 0; step < 180; step++) {
     fx.fill(0); fy.fill(0); fz.fill(0);
-    const grid = new Map<string, number[]>();
-    for (let i = 0; i < count; i++) {
-      const p = points[i]!, key = `${Math.floor(p.x / 32)},${Math.floor(p.y / 32)},${Math.floor(p.z / 32)}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key)!.push(i);
-    }
-    for (let i = 0; i < count; i++) {
-      const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
-      for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
-        for (const j of grid.get(`${x},${y},${z}`) ?? []) {
-          if (j <= i) continue;
-          const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
-          const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
-          const strength = (ordered[i]!.type === "SOURCE" || ordered[j]!.type === "SOURCE" ? 28 : 12) / distanceSquared;
-          fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
-          fx[j]! -= dx * strength; fy[j]! -= dy * strength; fz[j]! -= dz * strength;
+
+    if (count <= 2400) {
+      // Exact reference string grid preserving bit-identical determinism on smaller graphs
+      const grid = new Map<string, number[]>();
+      for (let i = 0; i < count; i++) {
+        const p = points[i]!, key = `${Math.floor(p.x / 32)},${Math.floor(p.y / 32)},${Math.floor(p.z / 32)}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key)!.push(i);
+      }
+      for (let i = 0; i < count; i++) {
+        const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
+        for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
+          for (const j of grid.get(`${x},${y},${z}`) ?? []) {
+            if (j <= i) continue;
+            const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
+            const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
+            const strength = (ordered[i]!.type === "SOURCE" || ordered[j]!.type === "SOURCE" ? 28 : 12) / distanceSquared;
+            fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
+            fx[j]! -= dx * strength; fy[j]! -= dy * strength; fz[j]! -= dz * strength;
+          }
+        }
+      }
+    } else {
+      // High-performance typed-array spatial hash table for large graphs up to 50,000 nodes
+      const HASH_SIZE = 16384;
+      const head = new Int32Array(HASH_SIZE).fill(-1);
+      const next = new Int32Array(count);
+      for (let i = 0; i < count; i++) {
+        const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
+        const h = (((gx * 73856093) ^ (gy * 19349663) ^ (gz * 83492791)) >>> 0) & (HASH_SIZE - 1);
+        next[i] = head[h]!;
+        head[h] = i;
+      }
+      for (let i = 0; i < count; i++) {
+        const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
+        for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
+          const h = (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) >>> 0) & (HASH_SIZE - 1);
+          let j = head[h]!;
+          while (j !== -1) {
+            if (j > i) {
+              const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
+              const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
+              const strength = (ordered[i]!.type === "SOURCE" || ordered[j]!.type === "SOURCE" ? 28 : 12) / distanceSquared;
+              fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
+              fx[j]! -= dx * strength; fy[j]! -= dy * strength; fz[j]! -= dz * strength;
+            }
+            j = next[j]!;
+          }
         }
       }
     }
+
     for (const link of links) {
       const a = points[link.a]!, b = points[link.b]!;
       const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, distance = Math.max(0.01, Math.hypot(dx, dy, dz));
@@ -78,8 +133,35 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
+
+    if ((step + 1) % stepBatch === 0 && step < 179) {
+      yield {
+        step: step + 1,
+        totalSteps: 180,
+        done: false,
+        coordinates: new Map(ordered.map((node, i) => [node.id, { ...points[i]! }]))
+      };
+    }
   }
-  return new Map(ordered.map((node, i) => [node.id, points[i]!]));
+
+  const finalMap = new Map(ordered.map((node, i) => [node.id, points[i]!]));
+  yield {
+    step: 180,
+    totalSteps: 180,
+    done: true,
+    coordinates: finalMap
+  };
+  return finalMap;
+}
+
+/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
+export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  const gen = streamLayoutMemoryNetwork3D(nodes, edges, 180);
+  let res: Map<string, MemoryPoint3D> = new Map();
+  for (const snapshot of gen) {
+    res = snapshot.coordinates;
+  }
+  return res;
 }
 
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {
