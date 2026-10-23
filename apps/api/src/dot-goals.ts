@@ -16,6 +16,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import type { DotGoalsRepository, DotsRepository } from "@space/db";
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 
 /**
  * Space Dots Stage 4: Goals.
@@ -26,7 +27,7 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string): Promise<void>;
+  start(goalId: string, traceId?: string): Promise<void>;
   wake(goalId: string): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
   ensure?(goalId: string): Promise<boolean>;
@@ -38,11 +39,18 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string) {
+  start(goalId: string, traceId?: string) {
     return this.client(async (client) => {
       try {
-        await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
-          args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE" });
+        const traceparent = traceparentForTraceId(traceId);
+        const memo = workflowCorrelationMemo({ traceId, traceparent });
+        await client.workflow.start("dotGoalWorkflow", {
+          workflowId: dotGoalWorkflowId(goalId),
+          taskQueue: this.options.taskQueue,
+          args: [{ goalId }],
+          workflowIdReusePolicy: "REJECT_DUPLICATE",
+          ...(Object.keys(memo).length ? { memo } : {})
+        });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
@@ -65,6 +73,7 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     });
   }
 }
+/** Creates a TemporalDotGoalWorkflowCoordinator when enabled, otherwise null. */
 export function createDotGoalWorkflowCoordinator(options: { enabled: boolean; address: string; namespace: string; taskQueue: string }): DotGoalWorkflowCoordinator | null {
   return options.enabled ? new TemporalDotGoalWorkflowCoordinator(options) : null;
 }
@@ -93,19 +102,25 @@ export type DotGoalStepState =
   | { state: "STARTED" | "BUSY"; runId: string; goal: DotGoal }
   | { state: "PAUSED" | "WAITING" | "DONE"; goal: DotGoal };
 
+/** Generates a deterministic idempotency key for a specific Goal step number. */
 function requestKeyFor(goalId: string, step: number): string {
   return `goal-${createHash("sha256").update(`${goalId}:${step}`).digest("hex").slice(0, 40)}`;
 }
 
+/** Factory for DotGoalService managing Goal lifecycle, chat turns, and worker workflow steering. */
 export function createDotGoalService(deps: DotGoalServiceDeps) {
+  /** Retrieves the active SpaceAgentSession corresponding to the Goal's session. */
   async function activeSession(goal: DotGoal) {
     const session = await deps.store.getSpaceAgentSession(goal.sessionId);
     return session?.isActive && session.dotId === goal.dotId ? session : null;
   }
+
+  /** Transitions Goal state to terminal or paused and persists status reason. */
   async function finish(goal: DotGoal, status: DotGoal["status"], reason: string) {
     return (await deps.goals.transition(goal.goalId, ["ACTIVE", "PAUSED"], status, reason)) ?? goal;
   }
 
+  /** Validates prerequisites and creates a new Dot Goal, starting its Temporal workflow. */
   async function create(owner: string, dotId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const input = createDotGoalInputSchema.parse(raw);
     if (!deps.workflow) throw new DotGoalError(503, "DOT_GOALS_UNAVAILABLE", "Goals need the Space worker runtime.");
@@ -125,7 +140,10 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       if ((error as { code?: string }).code === "DOT_GOAL_OPEN") throw new DotGoalError(409, "DOT_GOAL_OPEN", "This conversation already has an open Goal.");
       throw error;
     }
-    try { await deps.workflow.start(goal.goalId); }
+    try {
+      if (request?.id) await deps.workflow.start(goal.goalId, String(request.id));
+      else await deps.workflow.start(goal.goalId);
+    }
     catch {
       goal = await finish(goal, "FAILED", "The Goal runtime could not start. Try again.");
       throw new DotGoalError(503, "DOT_GOAL_RUNTIME", "The Goal runtime could not start. Try again.");
@@ -134,6 +152,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return goal;
   }
 
+  /** Pauses, resumes, or cancels an existing Goal owned by the user. */
   async function control(owner: string, dotId: string, goalId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const { action } = dotGoalControlInputSchema.parse(raw);
     const goal = await deps.goals.getOwned(owner, dotId, goalId);
@@ -152,6 +171,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
     return next;
   }
 
+  /** Appends steering guidance notes to an active Goal. */
   async function steer(owner: string, dotId: string, goalId: string, raw: unknown, request: FastifyRequest | null): Promise<DotGoal> {
     const { text } = dotGoalSteerInputSchema.parse(raw);
     const goal = await deps.goals.getOwned(owner, dotId, goalId);
@@ -268,6 +288,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
 }
 export type DotGoalService = ReturnType<typeof createDotGoalService>;
 
+/** Registers REST HTTP routes for managing Dot Goals (/api/dots/:dotId/goals). */
 export function registerDotGoalRoutes(app: FastifyInstance, service: DotGoalService | null, deps: { goals: DotGoalsRepository } | null, options: {
   routeOptions: RouteShorthandOptions;
   authenticatedOwner: (request: FastifyRequest) => Promise<string>;
@@ -279,6 +300,7 @@ export function registerDotGoalRoutes(app: FastifyInstance, service: DotGoalServ
     if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: "DOT_GOAL_INVALID", message: "Goal request is invalid." } });
     throw error;
   };
+  /** Authenticated handler wrapper enforcing interactive user session scope for Dot Goal operations. */
   const user = (action: (request: FastifyRequest, owner: string, goals: DotGoalService, repo: DotGoalsRepository) => Promise<unknown>) =>
     async (request: FastifyRequest, reply: import("fastify").FastifyReply) => {
       if (!request.user) return reply.code(401).send({ error: { code: "UNAUTHENTICATED", message: "Sign in to use Dots." } });

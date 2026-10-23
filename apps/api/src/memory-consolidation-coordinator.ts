@@ -6,6 +6,7 @@ import {
   type MemoryConsolidationWorkflowInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError } from "@space/runtime";
+import { withTurnTraceparent, workflowCorrelationMemo } from "./trace-context.js";
 
 export { MEMORY_CONSOLIDATION_TASK_QUEUE, MEMORY_CONSOLIDATION_WORKFLOW_TYPE };
 
@@ -21,6 +22,7 @@ interface WorkflowStartOptions {
   workflowId: string;
   workflowIdReusePolicy: "REJECT_DUPLICATE";
   workflowIdConflictPolicy: "USE_EXISTING";
+  memo?: Record<string, string>;
 }
 
 interface WorkflowStartHandle {
@@ -33,23 +35,28 @@ export type MemoryConsolidationWorkflowStarter = (
   options: WorkflowStartOptions
 ) => Promise<WorkflowStartHandle>;
 
+/** Checks whether the error signifies that the consolidation workflow execution has already started. */
 function isAlreadyStarted(error: unknown): boolean {
   return error instanceof Error && error.name === "WorkflowExecutionAlreadyStartedError";
 }
 
+/** Schedules a memory consolidation workflow on Temporal with correlation memo and traceparent. */
 export async function scheduleMemoryConsolidation(
   rawInput: MemoryConsolidationWorkflowInput,
   workflowId: string,
   startWorkflow: MemoryConsolidationWorkflowStarter
 ): Promise<MemoryConsolidationStartResult> {
-  const input = memoryConsolidationWorkflowInputSchema.parse(rawInput);
+  // Rollout order: Deploy workers before the API so workers accept the optional
+  // traceparent field in workflow input arguments before the API starts sending it.
+  const input = withTurnTraceparent(memoryConsolidationWorkflowInputSchema.parse(rawInput));
   try {
     const handle = await startWorkflow(MEMORY_CONSOLIDATION_WORKFLOW_TYPE, {
       args: [input],
       taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
-      workflowIdConflictPolicy: "USE_EXISTING"
+      workflowIdConflictPolicy: "USE_EXISTING",
+      ...(input.traceparent ? { memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: input.traceparent }) } : {})
     });
     return {
       status: "SCHEDULED",
@@ -93,6 +100,7 @@ class TemporalMemoryConsolidationCoordinator implements MemoryConsolidationCoord
   }
 }
 
+/** Creates a live or disabled MemoryConsolidationCoordinator based on configuration flags. */
 export function createMemoryConsolidationCoordinator(options: {
   enabled: boolean;
   address: string;

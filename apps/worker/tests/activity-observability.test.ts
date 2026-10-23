@@ -16,10 +16,12 @@ import {
   resolveWorkerMetricsListen,
   startWorkerMetricsServer
 } from "../src/worker-metrics.js";
+import { encodeSpaceTraceHeader } from "../src/workflow-observability-interceptors.js";
 
 const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const secretPrompt = "PRIVATE PROMPT: deploy with token sk-live-worker-secret-123";
 
+/** Generates mock ActivityInfo with customizable defaults for testing. */
 const info = (overrides: Partial<Parameters<typeof observeActivityExecution>[0]> = {}) => ({
   activityType: "runCodexAppServerTurn",
   activityId: "3",
@@ -30,6 +32,7 @@ const info = (overrides: Partial<Parameters<typeof observeActivityExecution>[0]>
   ...overrides
 });
 
+/** Intercepts worker log records into memory for test assertions and returns a cleanup function. */
 function capture() {
   const records: Array<Record<string, unknown>> = [];
   const lines: string[] = [];
@@ -162,6 +165,7 @@ describe("worker metrics endpoint", () => {
     const port = 20_000 + Math.floor(Math.random() * 20_000);
     const server = await startWorkerMetricsServer({ host: "127.0.0.1", port });
     expect(server).not.toBeNull();
+    /** Performs a test HTTP GET request against the local Prometheus metrics port. */
     const get = (path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
       request({ host: "127.0.0.1", port, path }, (response) => {
         let body = "";
@@ -182,11 +186,13 @@ describe("worker metrics endpoint", () => {
   });
 });
 
-it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
+it("registers the activity and workflow interceptors on every Temporal worker, including both memory workers", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/workflowModules:\s*\[workflowObservabilityInterceptorsPath\]/);
+    expect(source, entry).toMatch(/activity:\s*\[createActivityObservabilityInterceptors\(\{ spans \}\)\]/);
+    expect(source, entry).toMatch(/sinks:\s*createWorkflowObservabilitySinks\(\{ spans \}\)/);
   }
 });
 
@@ -203,3 +209,21 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
 });
+
+it("exports an activity span under the parent from inbound workflow headers", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (span: Record<string, unknown>) => recorded.push(span), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const headerInfo = { activityType: "runHeaderTurn", activityId: "1", attempt: 1, currentAttemptScheduledTimestampMs: 1_000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
+  const parentTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  const headers: Record<string, unknown> = {};
+  encodeSpaceTraceHeader(headers, { traceId: "4bf92f3577b34da6a3ce929d0e0e4736", traceparent: parentTraceparent });
+  await observeActivityExecution(headerInfo, [{ noTraceparent: true }], async () => "ok", { metrics, headers, spans: spans as never });
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0]).toMatchObject({
+    traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+    parentSpanId: "00f067aa0ba902b7",
+    name: "activity runHeaderTurn"
+  });
+});
+
