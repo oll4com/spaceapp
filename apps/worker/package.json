@@ -23,11 +23,13 @@
     "@temporalio/client": "1.24.0",
     "@temporalio/worker": "1.24.0",
     "@temporalio/workflow": "1.24.0",
-    "undici": "8.10.2"
+    "undici": "8.10.2",
+    "@temporalio/common": "1.24.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.1.12"
+    "vitest": "^4.1.12",
+    "@temporalio/testing": "1.24.0"
   },
   "license": "MIT"
 }

@@ -13,6 +13,7 @@ import {
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { readTraceEnvelope, traceAttributes } from "./trace-propagation.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -30,6 +31,7 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  traceparent?: string | null;
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
@@ -57,6 +59,10 @@ export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Pro
 
 /** traceparent for an outbound call: same W3C trace, new span id; null if none. */
 export function childTraceparent(traceparent: string | null | undefined): string | null {
+  // Calls made during an observed activity are children of its real span,
+  // rather than an invented span which the collector will never receive.
+  const active = observations.getStore()?.traceparent;
+  if (active) return active;
   const parsed = parseTraceparent(traceparent);
   if (!parsed) return null;
   let spanId = randomBytes(8).toString("hex");
@@ -137,6 +143,8 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** Workflow interceptor header; takes precedence over legacy argument context. */
+  traceparent?: string | null;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -168,11 +176,14 @@ export async function observeActivityExecution<T>(
     ...activityCorrelation(args)
   };
   const labels = { activity_type: activityType };
+  const parent = dependencies.spans ? parseTraceparent(dependencies.traceparent) ?? activityTraceparent(args) : null;
+  const spanId = parent ? randomBytes(8).toString("hex") : null;
   if (info.attempt > 1) metrics.activityRetries.inc(labels);
   if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
   metrics.activitiesInFlight.inc(labels);
   workerLog("info", "activity.started", { ...base, queueMs });
-  const observation: ActivityObservation = { reasonCode: null };
+  const observation: ActivityObservation = { reasonCode: null,
+    traceparent: parent && spanId ? formatTraceparent(parent.traceId, spanId, parent.flags) : null };
 
   const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
     const durationMs = Math.max(0, now() - startedAt);
@@ -194,19 +205,28 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
+    if (parent && spanId) {
+      try { dependencies.spans!.record({
         traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
+        spanId,
         parentSpanId: parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
-        endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        // Preserve a positive span interval when host millisecond resolution
+        // rounds a fast activity's elapsed time to zero.
+        endTimeUnixNano: BigInt(startedAt) * 1_000_000n + (durationMs > 0 ? BigInt(durationMs) * 1_000_000n : 1n),
+        attributes: traceAttributes({
+          "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt,
+          "space.activity_id": info.activityId, "space.workflow_type": info.workflowType,
+          "space.workflow_id": info.workflowExecution?.workflowId,
+          "space.temporal_run_id": info.workflowExecution?.runId, "space.duration_ms": durationMs,
+          "space.reason_code": reasonCode, "space.category": category,
+          "space.room_id": base.roomId, "space.pane_id": base.paneId,
+          "space.mission_id": base.missionId, "space.trace_id": base.traceId
+        }),
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
-      });
+      }); } catch { /* An exporter cannot change the activity's result. */ }
     }
   };
 
@@ -229,6 +249,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        traceparent: readTraceEnvelope(input.headers).traceparent,
         cancelled: () => context.cancellationSignal.aborted
       })
     }

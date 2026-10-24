@@ -41,6 +41,30 @@ outside this registry. Full cross-service configuration coverage remains open.
 
 ## Optional modules
 
+### Optional OTLP tracing
+
+Set `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` separately for the API and each worker
+process to a collector base URL, for example `http://127.0.0.1:4318`. The shared
+exporter POSTs OTLP/HTTP JSON to `<base>/v1/traces`. It is off when unset or invalid;
+URLs containing credentials, queries or fragments are rejected. No API key or
+OpenTelemetry SDK is required.
+
+The main worker, memory-maintenance worker and memory-mutation worker export
+workflow-run and activity-attempt spans connected to the API request. Child
+workflows nest under their parent; continued runs and background traces carry
+span links. Replay exports no duplicate spans. Workflow spans finish when their
+run closes, so a long-running supervisor's final span is delayed until then.
+
+The exporter bounds its queue to 4,096 spans, sends batches of 256, flushes every
+5 seconds and times out requests after 3 seconds. A slow collector cannot delay
+workflow or activity work. Worker attributes exclude prompts, output, paths,
+URLs and error messages; only allowlisted IDs, types, attempts, statuses,
+stable failure codes/categories and durations are sent. See the
+[observability guide](quality/observability.md#traces-w3c-trace-context) for tests
+and the remaining host-tracing limits.
+
+### Feature modules
+
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:
 `games` (chess and Asteroids benchmarks), `job-copilot`, `mail-copilot`,
 `marketing-copilot`, `channels` (Slack and Teams), `telegram`, `waitlist` and
