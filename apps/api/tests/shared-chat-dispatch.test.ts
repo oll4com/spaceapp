@@ -125,6 +125,61 @@ describe("pickSharedChatDispatchTarget", () => {
     expect(target!.pane.id).toBe(newer.pane.id);
   });
 
+  it("deterministically breaks ties by sessionId when updatedAt timestamps are equal", async () => {
+    const store = new InMemorySpaceStore();
+    const first = createIdleDeepseekPane(store, "Deepseek 1");
+    const second = createIdleDeepseekPane(store, "Deepseek 2");
+    const id1 = createRunningSession(store, first.room.id, first.pane.id, "cli:deepseek", "2026-08-15T12:00:00.000Z");
+    const id2 = createRunningSession(store, second.room.id, second.pane.id, "cli:deepseek", "2026-08-15T12:00:00.000Z");
+
+    const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
+    expect(target).not.toBeNull();
+    const expectedSessionId = id1.localeCompare(id2) > 0 ? id1 : id2;
+    expect(target!.session.sessionId).toBe(expectedSessionId);
+  });
+
+  it("compares updatedAt by instant across fractional precision and offsets", async () => {
+    const store = new InMemorySpaceStore();
+    const wholeSecond = createIdleDeepseekPane(store, "Deepseek whole second");
+    const oneMsLater = createIdleDeepseekPane(store, "Deepseek one ms later");
+    // Lexically "12:00:00Z" sorts after "12:00:00.001Z", but it is earlier.
+    createRunningSession(store, wholeSecond.room.id, wholeSecond.pane.id, "cli:deepseek", "2026-08-15T12:00:00Z");
+    createRunningSession(store, oneMsLater.room.id, oneMsLater.pane.id, "cli:deepseek", "2026-08-15T12:00:00.001Z");
+    expect((await pickSharedChatDispatchTarget(store, "cli:deepseek"))!.pane.id).toBe(oneMsLater.pane.id);
+
+    const offsetStore = new InMemorySpaceStore();
+    const plusTwo = createIdleDeepseekPane(offsetStore, "Deepseek +02:00");
+    const utc = createIdleDeepseekPane(offsetStore, "Deepseek UTC");
+    // 13:00+02:00 is 11:00Z, an hour before 12:00Z.
+    createRunningSession(offsetStore, plusTwo.room.id, plusTwo.pane.id, "cli:deepseek", "2026-08-15T13:00:00+02:00");
+    createRunningSession(offsetStore, utc.room.id, utc.pane.id, "cli:deepseek", "2026-08-15T12:00:00.000Z");
+    expect((await pickSharedChatDispatchTarget(offsetStore, "cli:deepseek"))!.pane.id).toBe(utc.pane.id);
+  });
+
+  it("treats the same instant written differently as a tie broken by sessionId", async () => {
+    const store = new InMemorySpaceStore();
+    const first = createIdleDeepseekPane(store, "Deepseek 1");
+    const second = createIdleDeepseekPane(store, "Deepseek 2");
+    const id1 = createRunningSession(store, first.room.id, first.pane.id, "cli:deepseek", "2026-08-15T12:00:00Z");
+    const id2 = createRunningSession(store, second.room.id, second.pane.id, "cli:deepseek", "2026-08-15T12:00:00.000Z");
+
+    const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
+    const expectedSessionId = id1.localeCompare(id2) > 0 ? id1 : id2;
+    expect(target!.session.sessionId).toBe(expectedSessionId);
+  });
+
+  it("does not move a session back in time when it is upserted with an older updatedAt", async () => {
+    const store = new InMemorySpaceStore();
+    const { room, pane } = createIdleDeepseekPane(store, "Deepseek replay");
+    const sessionId = createRunningSession(store, room.id, pane.id, "cli:deepseek", "2026-08-15T10:00:00.000Z");
+    store.createPaneCliSession({
+      ...store.getPaneCliSession(sessionId)!,
+      updatedAt: "2026-08-15T09:00:00.000Z"
+    });
+
+    expect(store.getPaneCliSession(sessionId)!.updatedAt).toBe("2026-08-15T10:00:00.000Z");
+  });
+
   it("only considers the requested runtime", async () => {
     const store = new InMemorySpaceStore();
     const claude = createIdleDeepseekPane(store, "Claude pane");

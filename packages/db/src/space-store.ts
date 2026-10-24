@@ -10550,7 +10550,7 @@ export class PostgresSpaceStore implements SpaceStore {
             updated_at,
             ended_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $20, NULL)
           ON CONFLICT (session_id)
           DO UPDATE SET
             pane_id = EXCLUDED.pane_id,
@@ -10571,7 +10571,9 @@ export class PostgresSpaceStore implements SpaceStore {
             status_reason = EXCLUDED.status_reason,
             exit_code = EXCLUDED.exit_code,
             is_active = EXCLUDED.is_active,
-            updated_at = EXCLUDED.updated_at,
+            -- A replayed upsert with an older caller-supplied updatedAt must
+            -- not move the session back in time.
+            updated_at = GREATEST(pane_cli_sessions.updated_at, EXCLUDED.updated_at),
             ended_at = EXCLUDED.ended_at
           RETURNING
             session_id AS "sessionId",
@@ -10617,7 +10619,8 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.status ?? "IDLE",
           parsed.statusReason ?? null,
           isActive,
-          timestamp
+          parsed.startedAt ?? timestamp,
+          parsed.updatedAt ?? timestamp
         ]
       );
       const stored = mapPaneCliSession(firstOrNotFound(result.rows, `CLI session ${sessionId} was not stored.`));
