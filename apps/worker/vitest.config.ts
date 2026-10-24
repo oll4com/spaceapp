@@ -16,6 +16,7 @@ export default defineConfig({
     }
   },
   test: {
+    globalSetup: ["./tests/support/temporal-global-setup.ts"],
     exclude: [
       "**/node_modules/**",
       "**/dist/**",

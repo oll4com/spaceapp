@@ -1,0 +1,73 @@
+name: Temporal workflow acceptance
+
+on:
+  pull_request:
+    paths:
+      - "apps/worker/**"
+      - "packages/contracts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
+      - ".nvmrc"
+      - ".github/workflows/temporal-workflows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build dependencies and typecheck
+        run: npm run check
+      - name: Added Temporal tests within three minutes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/worker/scripts/run-temporal-acceptance.mjs \
+            tests/temporal-sandbox-core.test.ts \
+            tests/temporal-sandbox-supervisor-rollover.test.ts \
+            tests/temporal-sandbox-supervisor-races.test.ts \
+            tests/temporal-replay.test.ts \
+            tests/temporal-history-store.test.ts \
+            tests/temporal-measurement.test.ts | tee "$RUNNER_TEMP/temporal-worker.log"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const lines = readFileSync(`${process.env.RUNNER_TEMP}/temporal-worker.log`, "utf8").trim().split("\n");
+          const report = JSON.parse(lines.at(-1));
+          if (report.scope !== "selected-worker-tests" || report.exitCode !== 0 ||
+              !Number.isFinite(report.elapsedMs) || report.elapsedMs >= 180_000) {
+            throw new Error(`Temporal acceptance budget failed: ${JSON.stringify(report)}`);
+          }
+          NODE
+      - name: Remaining worker regressions
+        run: >-
+          npm test -w @space/worker --
+          --exclude tests/temporal-sandbox-core.test.ts
+          --exclude tests/temporal-sandbox-supervisor-rollover.test.ts
+          --exclude tests/temporal-sandbox-supervisor-races.test.ts
+          --exclude tests/temporal-replay.test.ts
+          --exclude tests/temporal-history-store.test.ts
+          --exclude tests/temporal-measurement.test.ts
+      - name: Report measured duration
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/temporal-worker.log" ]; then
+            tail -n 1 "$RUNNER_TEMP/temporal-worker.log" >> "$GITHUB_STEP_SUMMARY"
+          fi
