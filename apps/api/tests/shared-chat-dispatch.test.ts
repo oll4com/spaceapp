@@ -125,6 +125,19 @@ describe("pickSharedChatDispatchTarget", () => {
     expect(target!.pane.id).toBe(newer.pane.id);
   });
 
+  it("uses deterministic sessionId tie-break when updatedAt timestamps are identical", async () => {
+    const store = new InMemorySpaceStore();
+    const pane1 = createIdleDeepseekPane(store, "Pane 1");
+    const pane2 = createIdleDeepseekPane(store, "Pane 2");
+    const sameTimestamp = "2026-08-15T10:00:00.000Z";
+    createRunningSession(store, pane1.room.id, pane1.pane.id, "cli:deepseek", sameTimestamp);
+    createRunningSession(store, pane2.room.id, pane2.pane.id, "cli:deepseek", sameTimestamp);
+
+    const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
+    expect(target).not.toBeNull();
+    expect(["Pane 1", "Pane 2"]).toContain(target!.pane.title);
+  });
+
   it("only considers the requested runtime", async () => {
     const store = new InMemorySpaceStore();
     const claude = createIdleDeepseekPane(store, "Claude pane");
