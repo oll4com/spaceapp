@@ -2,7 +2,18 @@ import { useEffect, useMemo, useRef } from "react";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 import type { MemoryAtlasPosition } from "./memory-atlas.js";
 import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
-import { DEFAULT_MEMORY_CAMERA, memory3DVolumeRatio, projectMemoryPoint, type MemoryCamera3D, type MemoryPoint3D } from "./memory-3d.js";
+import {
+  DEFAULT_MEMORY_CAMERA,
+  buildProjectedSpatialIndex,
+  memory3DVolumeRatio,
+  pickMemoryNodeAt,
+  projectMemoryPoint,
+  selectVisibleMemoryLabelsLOD,
+  type MemoryCamera3D,
+  type MemoryPoint3D,
+  type ProjectedMemoryNode,
+  type SpatialPickIndex2D
+} from "./memory-3d.js";
 
 export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode, loading, resetToken }: {
   nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[];
@@ -27,19 +38,24 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
     if (!context) return;
     let frame = 0, width = 1, height = 1;
     let hover: string | null = null;
-    let points: Array<{ id: string; x: number; y: number; z: number; radius: number }> = [];
+    let spatialIndex: SpatialPickIndex2D = { cellSize: 24, buckets: new Map() };
     const pointers = new Map<number, { x: number; y: number }>();
     let dragged = false, downX = 0, downY = 0;
     const render = () => {
       frame = 0;
       const { nodes, edges, positions, coordinates, showTitles, selectedNodeId } = current.current;
       context.clearRect(0, 0, width, height);
-      const extent = Math.max(60, ...[...coordinates.values()].map(p => Math.hypot(p.x, p.y, p.z)));
-      const scale = Math.min(width, height) * 0.4 / extent;
-      const projected = new Map(nodes.flatMap(node => {
+      let maxExtent = 60;
+      for (const p of coordinates.values()) {
+        const dist = Math.hypot(p.x, p.y, p.z);
+        if (dist > maxExtent) maxExtent = dist;
+      }
+      const scale = Math.min(width, height) * 0.4 / maxExtent;
+      const projected = new Map<string, { x: number; y: number; z: number; perspective: number }>();
+      for (const node of nodes) {
         const p = coordinates.get(node.id);
-        return p ? [[node.id, projectMemoryPoint(p, cameraRef.current, scale, width, height)] as const] : [];
-      }));
+        if (p) projected.set(node.id, projectMemoryPoint(p, cameraRef.current, scale, width, height));
+      }
       const focus = hover ?? selectedNodeId;
       const neighbors = new Set<string>();
       if (focus) for (const edge of edges) { if (edge.source === focus) neighbors.add(edge.target); if (edge.target === focus) neighbors.add(edge.source); }
@@ -52,8 +68,11 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         context.lineWidth = incident ? 1.15 : 0.55;
         context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
       }
-      points = [];
-      const ordered = nodes.filter(node => projected.has(node.id)).sort((a, b) => projected.get(b.id)!.z - projected.get(a.id)!.z);
+      const points: ProjectedMemoryNode[] = [];
+      const ordered = nodes.filter(node => projected.has(node.id));
+      if (ordered.length <= 5000) {
+        ordered.sort((a, b) => projected.get(b.id)!.z - projected.get(a.id)!.z);
+      }
       const labelBoxes: Array<{ x: number; y: number; w: number }> = [];
       for (const node of ordered) {
         const p = projected.get(node.id)!;
@@ -66,12 +85,12 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         if (root || highlighted) { context.shadowColor = context.fillStyle; context.shadowBlur = 13; }
         context.beginPath(); context.arc(p.x, p.y, radius, 0, Math.PI * 2); context.fill(); context.shadowBlur = 0;
       }
+      spatialIndex = buildProjectedSpatialIndex(points);
       context.globalAlpha = 1;
       if (showTitles) {
-        const labeled = [...ordered].sort((a, b) => Number(b.id === focus) - Number(a.id === focus) || Number(isMemoryCoreLabel(b.label)) - Number(isMemoryCoreLabel(a.label)) || Number(b.type === "SOURCE") - Number(a.type === "SOURCE"));
+        const labeled = selectVisibleMemoryLabelsLOD(ordered, focus, cameraRef.current.zoom);
         context.font = "11px system-ui, sans-serif";
         for (const node of labeled) {
-          if (node.type !== "SOURCE" && node.id !== focus && cameraRef.current.zoom < 1.6) continue;
           const p = projected.get(node.id)!;
           const label = node.label.length > 48 ? `${node.label.slice(0, 45)}…` : node.label;
           const x = p.x + 9, y = p.y, w = context.measureText(label).width;
@@ -91,7 +110,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
       context.setTransform(dpr, 0, 0, dpr, 0, 0); schedule();
     };
-    const hit = (x: number, y: number) => [...points].reverse().find(p => Math.hypot(p.x - x, p.y - y) < Math.max(7, p.radius + 3))?.id ?? null;
+    const hit = (x: number, y: number) => pickMemoryNodeAt(spatialIndex, x, y);
     const local = (event: PointerEvent) => { const rect = canvas.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; };
     const down = (event: PointerEvent) => {
       canvas.focus(); canvas.setPointerCapture(event.pointerId);
@@ -119,15 +138,23 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
     const cancel = (event: PointerEvent) => { pointers.delete(event.pointerId); dragged = true; };
     const wheel = (event: WheelEvent) => { event.preventDefault(); cameraRef.current.zoom = Math.max(0.35, Math.min(5, cameraRef.current.zoom * Math.exp(-event.deltaY * 0.001))); schedule(); };
     const key = (event: KeyboardEvent) => {
-      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
-        event.preventDefault(); cameraRef.current.yaw += event.key === "ArrowLeft" ? -0.15 : event.key === "ArrowRight" ? 0.15 : 0;
-        cameraRef.current.pitch += event.key === "ArrowUp" ? -0.15 : event.key === "ArrowDown" ? 0.15 : 0; schedule();
-      } else if (event.key === "Enter") { const node = current.current.nodes.find(node => node.id === current.current.selectedNodeId) ?? current.current.nodes.find(node => isMemoryCoreLabel(node.label)); if (node) current.current.onSelectNode(node.id); }
+      const step = ({ ArrowLeft: [-0.14, 0, 1], ArrowRight: [0.14, 0, 1], ArrowUp: [0, -0.14, 1], ArrowDown: [0, 0.14, 1], "+": [0, 0, 1.15], "=": [0, 0, 1.15], "-": [0, 0, 1 / 1.15] } as const)[event.key];
+      if (!step) return;
+      event.preventDefault();
+      cameraRef.current.yaw += step[0]; cameraRef.current.pitch += step[1]; cameraRef.current.zoom = Math.max(0.35, Math.min(5, cameraRef.current.zoom * step[2]));
+      schedule();
     };
-    const observer = new ResizeObserver(resize); observer.observe(canvas); resize();
-    canvas.addEventListener("pointerdown", down); canvas.addEventListener("pointermove", move); canvas.addEventListener("pointerup", up); canvas.addEventListener("pointercancel", cancel); canvas.addEventListener("wheel", wheel, { passive: false }); canvas.addEventListener("keydown", key);
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); redrawRef.current = () => {}; canvas.removeEventListener("pointerdown", down); canvas.removeEventListener("pointermove", move); canvas.removeEventListener("pointerup", up); canvas.removeEventListener("pointercancel", cancel); canvas.removeEventListener("wheel", wheel); canvas.removeEventListener("keydown", key); };
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas); resize();
+    canvas.addEventListener("pointerdown", down); canvas.addEventListener("pointermove", move); canvas.addEventListener("pointerup", up);
+    canvas.addEventListener("pointercancel", cancel); canvas.addEventListener("wheel", wheel, { passive: false }); canvas.addEventListener("keydown", key);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      canvas.removeEventListener("pointerdown", down); canvas.removeEventListener("pointermove", move); canvas.removeEventListener("pointerup", up);
+      canvas.removeEventListener("pointercancel", cancel); canvas.removeEventListener("wheel", wheel); canvas.removeEventListener("keydown", key);
+    };
   }, []);
   useEffect(() => { redrawRef.current(); }, [nodes, edges, positions, coordinates, showTitles, selectedNodeId]);
-  return <div className="memory-3d-surface"><canvas ref={canvasRef} tabIndex={0} role="application" aria-label="3D memory graph. Drag or use arrow keys to rotate 360 degrees. Scroll or pinch to zoom. Click a node to open." aria-busy={loading} data-titles-visible={showTitles} data-layout-volume={volumeRatio.toFixed(4)} /><span className="memory-3d-hint">Drag to rotate 360° · Scroll or pinch to zoom · Click to explore</span></div>;
+  return <canvas ref={canvasRef} className="memory-3d-canvas" tabIndex={0} aria-label="3D memory graph" aria-busy={loading} data-layout-volume={volumeRatio.toFixed(3)} data-titles-visible={showTitles ? "true" : "false"} />;
 }

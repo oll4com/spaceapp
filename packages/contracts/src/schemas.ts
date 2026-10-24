@@ -7283,12 +7283,16 @@ export const listMemoryGraphQuerySchema = paginationRequestSchema.extend({
   relationMode: z.enum(["CLUSTERED", "RELATIONS"]).default("RELATIONS")
 });
 
-export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema.omit({
-  page: true,
-  pageSize: true,
-  sortBy: true,
-  sortOrder: true
-});
+export const listMemoryGraphOverviewQuerySchema = listMemoryGraphQuerySchema
+  .omit({
+    page: true,
+    pageSize: true,
+    sortBy: true,
+    sortOrder: true
+  })
+  .extend({
+    limit: z.coerce.number().int().min(100).max(50000).default(2000)
+  });
 
 export const memoryCalendarQuerySchema = z.object({
   year: z.coerce.number().int().min(2000).max(2100).optional(),

@@ -60,3 +60,104 @@ describe("3D memory projection", () => {
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
   });
 });
+
+import {
+  buildProjectedSpatialIndex,
+  MAX_VISIBLE_LABELS_3D,
+  pickMemoryNodeAt,
+  selectVisibleMemoryLabelsLOD,
+  type ProjectedMemoryNode
+} from "../src/features/memory-workspace/memory-3d.js";
+import { listMemoryGraphOverviewQuerySchema } from "@space/contracts";
+import { selectOverviewNodes } from "../../api/src/memory-graph-routes.js";
+
+describe("50,000-node spatial picking, label LOD, incremental streaming, and overview limit (#62)", () => {
+  it("picks the front-most node among 50,000 projected nodes in under 4 ms using spatial grid indexing", () => {
+    const projected: ProjectedMemoryNode[] = Array.from({ length: 50_000 }, (_, i) => ({
+      id: `node-${i}`,
+      x: (i % 250) * 8,
+      y: Math.floor(i / 250) * 8,
+      z: 100 + (i % 50),
+      perspective: 0.85,
+      radius: 2.5
+    }));
+    // Add an overlapping closer node at the same screen coordinate as node-12550
+    const targetX = (12550 % 250) * 8;
+    const targetY = Math.floor(12550 / 250) * 8;
+    projected.push({
+      id: "node-frontmost",
+      x: targetX + 1,
+      y: targetY - 1,
+      z: 10,
+      perspective: 0.95,
+      radius: 3.0
+    });
+
+    const index = buildProjectedSpatialIndex(projected);
+    const t0 = performance.now();
+    const hitId = pickMemoryNodeAt(index, targetX, targetY);
+    const elapsedMs = performance.now() - t0;
+
+    expect(hitId).toBe("node-frontmost");
+    expect(elapsedMs).toBeLessThan(4);
+  });
+
+  it("bounds visible labels per frame and prioritizes focus, core, and source nodes", () => {
+    const { nodes } = {
+      nodes: [
+        { id: "core-1", label: "gemini.md", type: "SOURCE" as const, sourcePath: "/gemini.md", recordId: null },
+        { id: "src-1", label: "notes.md", type: "SOURCE" as const, sourcePath: "/notes.md", recordId: null },
+        ...Array.from({ length: 500 }, (_, i) => ({
+          id: `mem-${i}`,
+          label: `Memory ${i}`,
+          type: "MEMORY" as const,
+          sourcePath: "/notes.md",
+          recordId: `mem-${i}`
+        }))
+      ]
+    };
+    const lowZoom = selectVisibleMemoryLabelsLOD(nodes, "mem-42", 1.0);
+    expect(lowZoom.map(n => n.id)).toEqual(["mem-42", "core-1", "src-1"]);
+
+    const highZoom = selectVisibleMemoryLabelsLOD(nodes, "mem-42", 2.0);
+    expect(highZoom.length).toBeLessThanOrEqual(MAX_VISIBLE_LABELS_3D);
+    expect(highZoom[0]?.id).toBe("mem-42");
+    expect(highZoom[1]?.id).toBe("core-1");
+  });
+
+  it("streams intermediate layout positions during layoutMemoryNetwork3D", () => {
+    const nodes: MemoryGraphNode[] = Array.from({ length: 40 }, (_, i) => ({
+      id: `n-${i}`,
+      label: `n-${i}`,
+      type: i === 0 ? "SOURCE" : "MEMORY",
+      sourcePath: "/doc.md",
+      recordId: `n-${i}`
+    }));
+    const stepsSeen: number[] = [];
+    const finalMap = layoutMemoryNetwork3D(nodes, [], {
+      steps: 24,
+      streamIntervalSteps: 8,
+      onProgress: (map, step) => {
+        expect(map.size).toBe(40);
+        stepsSeen.push(step);
+      }
+    });
+    expect(stepsSeen).toEqual([8, 16, 24]);
+    expect(finalMap.size).toBe(40);
+  });
+
+  it("allows overview query limit up to 50,000 nodes while defaulting to 2,000", () => {
+    expect(listMemoryGraphOverviewQuerySchema.parse({}).limit).toBe(2000);
+    expect(listMemoryGraphOverviewQuerySchema.parse({ limit: "50000" }).limit).toBe(50000);
+
+    const manyNodes: MemoryGraphNode[] = Array.from({ length: 3500 }, (_, i) => ({
+      id: `node-${i}`,
+      label: `Node ${i}`,
+      type: "MEMORY",
+      sourcePath: "/a.md",
+      recordId: `node-${i}`
+    }));
+    expect(selectOverviewNodes(manyNodes, []).length).toBe(2000);
+    expect(selectOverviewNodes(manyNodes, [], 50000).length).toBe(3500);
+  });
+});
