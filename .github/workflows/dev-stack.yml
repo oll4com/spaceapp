@@ -1,0 +1,147 @@
+name: Contributor Dev Stack CI
+
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack.mjs"
+      - "scripts/tests/dev-stack.test.mjs"
+      - ".github/workflows/dev-stack.yml"
+      - "packages/run-spaceapp/templates/compose.yml"
+      - "apps/web/vite.config.ts"
+      - "package.json"
+      - "CONTRIBUTING.md"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/dev-stack.mjs"
+      - "scripts/tests/dev-stack.test.mjs"
+      - ".github/workflows/dev-stack.yml"
+      - "packages/run-spaceapp/templates/compose.yml"
+      - "apps/web/vite.config.ts"
+      - "package.json"
+      - "CONTRIBUTING.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-stack-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dev-stack:
+    name: Full Contributor Stack from Source (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+
+      - name: Run dev-stack unit tests
+        run: npm run test:dev-stack
+
+      - name: Run contributor dev-stack end-to-end verification
+        env:
+          SPACE_RUN_DEV_STACK_E2E: "1"
+        run: |
+          # Start stack in background without a TTY
+          READY_FILE="$RUNNER_TEMP/dev-stack-ready.json"
+          STATE_DIR="$RUNNER_TEMP/spaceapp-dev-stack"
+          
+          export SPACE_DEV_STACK_STATE_DIR="$STATE_DIR"
+          export SPACE_DEV_READY_FILE="$READY_FILE"
+          export SPACE_API_PORT=4910
+          export SPACE_WEB_PORT=4911
+          
+          node scripts/dev-stack.mjs > "$RUNNER_TEMP/dev-stack.log" 2>&1 &
+          STACK_PID=$!
+          
+          echo "Waiting for stack readiness at $READY_FILE..."
+          DEADLINE=$((SECONDS + 180))
+          while [ ! -f "$READY_FILE" ]; do
+            if ! kill -0 "$STACK_PID" 2>/dev/null; then
+              echo "dev-stack process exited prematurely. Log output:"
+              cat "$RUNNER_TEMP/dev-stack.log"
+              exit 1
+            fi
+            if [ $SECONDS -ge $DEADLINE ]; then
+              echo "Timed out waiting for dev-stack ready file. Log output:"
+              cat "$RUNNER_TEMP/dev-stack.log"
+              exit 1
+            fi
+            sleep 2
+          done
+          
+          echo "dev-stack reported ready! Content:"
+          cat "$READY_FILE"
+          
+          # Poll /readyz endpoint
+          curl -sS --fail http://127.0.0.1:4910/readyz
+          curl -sS --fail http://127.0.0.1:4911/readyz
+          
+          # Complete owner setup over HTTP
+          SETUP_TOKEN=$(cat "$STATE_DIR/secrets/setup-token" | tr -d '\r\n')
+          CLAIM_RESP=$(curl -sS -i -X POST http://127.0.0.1:4911/api/setup/claim \
+            -H "Content-Type: application/json" \
+            -d "{\"token\":\"$SETUP_TOKEN\",\"email\":\"owner@example.com\",\"password\":\"correct horse battery staple\"}")
+          
+          SESSION_COOKIE=$(echo "$CLAIM_RESP" | grep -i '^set-cookie:' | sed -n 's/.*\(space_session=[^;]*\).*/\1/p' | head -n 1)
+          STARTER_ROOM_ID=$(echo "$CLAIM_RESP" | grep '{' | jq -r '.starterRoomId')
+          echo "Owner setup completed. Session: $SESSION_COOKIE, Starter Room: $STARTER_ROOM_ID"
+          
+          # Fetch CSRF token
+          CSRF_RESP=$(curl -sS http://127.0.0.1:4911/api/auth/csrf -H "Cookie: $SESSION_COOKIE")
+          CSRF_TOKEN=$(echo "$CSRF_RESP" | jq -r '.csrfToken')
+          CSRF_HEADER=$(echo "$CSRF_RESP" | jq -r '.headerName')
+          
+          # Inspect room panes and verify OpenCode terminal pane exists
+          PANES_RESP=$(curl -sS "http://127.0.0.1:4911/api/panes?roomId=$STARTER_ROOM_ID" -H "Cookie: $SESSION_COOKIE")
+          OPENCODE_PANE_ID=$(echo "$PANES_RESP" | jq -r '.data[] | select(.terminalRuntimeId == "cli:opencode") | .id' | head -n 1)
+          echo "OpenCode Pane ID: $OPENCODE_PANE_ID"
+          test -n "$OPENCODE_PANE_ID"
+          
+          # Create and verify CLI session
+          SESSION_RESP=$(curl -sS -X POST "http://127.0.0.1:4911/api/panes/$OPENCODE_PANE_ID/cli/session" \
+            -H "Content-Type: application/json" \
+            -H "Cookie: $SESSION_COOKIE" \
+            -H "$CSRF_HEADER: $CSRF_TOKEN" \
+            -d '{"runtimeId":"cli:opencode"}')
+          
+          echo "Session response: $SESSION_RESP"
+          
+          # Verify active session status is RUNNING
+          ACTIVE_STATUS=$(curl -sS "http://127.0.0.1:4911/api/panes/$OPENCODE_PANE_ID/cli/session" -H "Cookie: $SESSION_COOKIE" | jq -r '.session.status')
+          echo "CLI session status: $ACTIVE_STATUS"
+          [ "$ACTIVE_STATUS" = "RUNNING" ]
+          
+          # Stop stack
+          node scripts/dev-stack.mjs down
+          
+          # Reset stack
+          node scripts/dev-stack.mjs reset
+          
+          # Verify clean reset: no state directory, no docker containers or volumes
+          test ! -d "$STATE_DIR"
+          
+          REMAINING_CONTAINERS=$(docker ps -a --filter "name=spaceapp-dev" -q)
+          [ -z "$REMAINING_CONTAINERS" ]
+          
+          REMAINING_VOLUMES=$(docker volume ls --filter "name=spaceapp-dev" -q)
+          [ -z "$REMAINING_VOLUMES" ]
+          
+          echo "Contributor dev-stack lifecycle verified clean!"

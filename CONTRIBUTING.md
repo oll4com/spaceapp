@@ -50,6 +50,59 @@ select a short temporary directory you own and set `TMPDIR` for the command.
 On Windows run this particular smoke check inside WSL or a Linux development
 container. It does not certify the Windows/macOS installer.
 
+## Run the full app from source
+
+To run the complete application stack (PostgreSQL with pgvector, Temporal orchestration engine, API in watch mode, Vite web dev server with hot reload, worker, and CLI host) from source:
+
+```sh
+npm run dev:stack
+```
+
+This single command coordinates all dependencies:
+- Starts PostgreSQL (`pgvector`) and Temporal in Docker using the exact SHA256-pinned images from `packages/run-spaceapp/templates/compose.yml`.
+- Automatically initializes secure development credentials with strict `0600` permissions under `.dev-stack/secrets/`.
+- Compiles internal workspace packages in topological order and executes `@space/db` migrations.
+- Supervises the host processes with fast-fail exit handling and unified logging.
+- Prints the web URL (`http://127.0.0.1:4911`) and one-time owner setup token.
+
+### Stopping and resetting
+
+To stop all services and containers without wiping state:
+
+```sh
+npm run dev:stack -- down
+```
+
+To stop containers, remove Docker volumes, and completely delete `.dev-stack/`:
+
+```sh
+npm run dev:stack -- reset
+```
+
+### Configurable ports and environment variables
+
+All open ports bind strictly to `127.0.0.1`. You can customize them via environment variables:
+
+| Service | Default Port | Override Variable |
+|---|---|---|
+| Web UI | `4911` | `SPACE_WEB_PORT` |
+| API | `4910` | `SPACE_API_PORT` |
+| PostgreSQL | `15432` | `SPACE_DEV_POSTGRES_PORT` |
+| Temporal | `17233` | `SPACE_DEV_TEMPORAL_PORT` |
+| State Directory | `.dev-stack` | `SPACE_DEV_STACK_STATE_DIR` |
+
+### Platform notes
+
+- **Linux:** Requires Docker Engine with standard socket access (`docker` group or rootless).
+- **macOS:** Compatible with Docker Desktop or Colima (`colima start`). When the repository path is deeply nested, Unix domain socket paths for `cli-host` automatically fall back to a short path under `os.tmpdir()`.
+- **Windows 11:** Run inside WSL2 with Docker Desktop WSL2 integration enabled or a native WSL2 Docker engine.
+
+### Troubleshooting
+
+- **Port collision:** If port 4910 or 4911 is already in use by an installed instance, set custom ports via `SPACE_API_PORT` and `SPACE_WEB_PORT`.
+- **Stale process or socket:** Run `npm run dev:stack -- down` to stop recorded processes and clean socket files.
+- **Fresh state:** Run `npm run dev:stack -- reset` to clean state and re-run migrations from scratch.
+
 ## Make and verify a small change
 
 Work on a branch, not on `main`, so the change can become a pull request:
