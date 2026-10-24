@@ -127,8 +127,8 @@ function ttyStdin(...answers) {
   return stream;
 }
 
-const FRESH_APPROVALS = ["", "", "", "", "", "y"];
-const FRESH_APPROVALS_WINDOWS = ["", "", "", "", "", "y", ""];
+const FRESH_APPROVALS = ["", "", "", "", "", "", "y"];
+const FRESH_APPROVALS_WINDOWS = ["", "", "", "", "", "", "y", ""];
 
 const eightGigabyteClassLinuxGuest = Object.freeze({
   cpuCount: 4,

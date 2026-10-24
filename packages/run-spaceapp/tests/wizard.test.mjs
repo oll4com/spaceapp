@@ -85,12 +85,13 @@ async function real015Schema3Config(root, overrides = {}) {
   }, null, 2)}\n`);
 }
 
-test("schema 3 configs from real 0.1.15 installs migrate to schema 4 with companionsEnabled defaulting to false", async () => {
+test("schema 3 configs from real 0.1.15 installs migrate to schema 5 with companionsEnabled and engine defaulting", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-migration-schema3-"));
   await real015Schema3Config(root);
 
   const config = await loadConfig(root);
-  assert.equal(config.schemaVersion, 4);
+  assert.equal(config.schemaVersion, 5);
+  assert.equal(config.engine, "docker");
   assert.equal(config.companionsEnabled, false);
   assert.equal(config.version, "0.1.15");
   assert.equal(config.accessMode, "isolated");
@@ -111,7 +112,8 @@ test("planConfigRepairs reports the exact repair for schema 3 companionsEnabled 
   assert.equal(convert.actions[0].value, "true");
   const repaired = applyConfigRepairs(stringTrue);
   assert.equal(repaired.companionsEnabled, true);
-  assert.equal(repaired.schemaVersion, 4);
+  assert.equal(repaired.schemaVersion, 5);
+  assert.equal(repaired.engine, "docker");
 
   const stringFalse = { ...missing, companionsEnabled: "false" };
   assert.equal(applyConfigRepairs(stringFalse).companionsEnabled, false);
