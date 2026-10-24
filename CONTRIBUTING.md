@@ -94,6 +94,20 @@ check also refuse to run on `main`.
 Opt-in database and authenticated provider proofs require separate isolated
 fixtures; skipped proofs are not passing evidence.
 
+### Temporal workflow histories
+
+The worker test suite runs the production workflow bundle in Temporal's
+time-skipping test server. To refresh the synthetic replay fixtures, run:
+
+```sh
+npm run temporal:record-histories -w @space/worker
+```
+
+Only re-record histories in the same change as a replay-safe `patched()`
+workflow change. Never replace a failing fixture merely to make replay pass;
+first decide whether the workflow change needs a new patch marker and add a
+regression test for the behavior.
+
 In the maintainers' source repository, `npm run check:claims` compares the
 version, licence, Node requirement, runtime list and key constants stated in
 the README and `docs/` with the code, and rejects unqualified latency or
