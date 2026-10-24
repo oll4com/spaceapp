@@ -21,7 +21,9 @@ import type {
   CreateUserLinkRequest,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryGraphEdge,
   MemoryGraphNode,
+  MemoryGraphNodeDetail,
   MemoryGraphPayload,
   Pane,
   Room,
@@ -52,6 +54,7 @@ import type { SpaceApiClient } from "../runtime/SpaceRuntime.js";
 import { DEMO_LOCAL_REPLY, SpaceApiError } from "../runtime/SpaceRuntime.js";
 import { CLI_RUNTIME_PRESENTATIONS, cliRuntimeLabel } from "../cli-runtime-presentation.js";
 import { createDemoFixture, DEMO_FIXED_AT, type DemoFixture } from "./demo-fixture.js";
+import { createSyntheticMemoryGraph, demoGraphSizeFromSearch } from "./demo-synthetic-graph.js";
 import { MockServices } from "./mock-services.js";
 import { getCliMockTranscript, getCliMockModel, getCliMockCwd, getCliMockDefinition } from "./mock-cli-transcripts.js";
 
@@ -146,6 +149,7 @@ type DemoMemoryGraphQuery = {
   lifecycleStatus?: "ACTIVE" | "ARCHIVED";
   month?: string;
   relationMode?: "CLUSTERED" | "RELATIONS";
+  limit?: number;
   page?: number;
   pageSize?: number;
 };
@@ -204,6 +208,7 @@ function initialSetupConnectionResults(): Map<string, DemoSetupConnectionResult>
 
 export class DemoStore {
   private fixture = cloneFixture();
+  private syntheticGraph: { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] } | null | undefined;
   private sequence = 0;
   private cliRuntimeEnabled = new Map<CliToggleRuntimeId, boolean>(
     cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true])
@@ -668,8 +673,53 @@ export class DemoStore {
     };
   }
 
+  /**
+   * The synthetic benchmark graph requested via `?demoGraphSize=N` on the
+   * demo URL, built lazily on first use. Null when no size was requested.
+   */
+  private demoSyntheticGraph(): { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] } | null {
+    if (this.syntheticGraph === undefined) {
+      const size = typeof window !== "undefined" ? demoGraphSizeFromSearch(window.location.search) : null;
+      this.syntheticGraph = size ? createSyntheticMemoryGraph(size) : null;
+    }
+    return this.syntheticGraph;
+  }
+
+  private syntheticNodeDetail(nodeId: string): MemoryGraphNodeDetail | null {
+    const synthetic = this.demoSyntheticGraph();
+    if (!synthetic) return null;
+    const node = synthetic.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return null;
+    const relatedEdges = synthetic.edges.filter((edge) => edge.source === nodeId || edge.target === nodeId).slice(0, 48);
+    const relatedIds = new Set(relatedEdges.flatMap((edge) => [edge.source, edge.target]));
+    relatedIds.delete(nodeId);
+    const relatedNodes = synthetic.nodes.filter((candidate) => relatedIds.has(candidate.id)).slice(0, 24);
+    return {
+      node,
+      record: node.type === "MEMORY" ? {
+        id: node.recordId ?? node.id,
+        sourcePath: node.sourcePath ?? "/demo/synthetic/space.md",
+        sectionId: `section:${node.id}`,
+        title: node.label,
+        body: "Synthetic record generated for the demo benchmark graph.",
+        createdAt: DEMO_FIXED_AT,
+        scope: "PROJECT" as const,
+        roomId: null,
+        provenance: "Deterministic synthetic demo graph.",
+        contentHash: "0".repeat(64),
+        lifecycleStatus: "ACTIVE" as const,
+        tags: [],
+        topics: []
+      } : null,
+      relatedNodes,
+      relatedEdges,
+      issues: []
+    };
+  }
+
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+    const synthetic = this.demoSyntheticGraph();
+    const base = synthetic ? { ...this.fixture.memoryWorkspace.graph, nodes: synthetic.nodes, edges: synthetic.edges } : this.fixture.memoryWorkspace.graph;
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
@@ -1496,8 +1546,24 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
-        const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
-        return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
+        const query = (args[0] ?? {}) as DemoMemoryGraphQuery;
+        const graph = this.memoryGraph(query);
+        // Mirror the real endpoint: the default response budget is 2,000
+        // nodes (3x edges); an explicit limit raises it up to 50,000.
+        const limit = Math.min(50_000, Math.max(1, query.limit ?? 2000));
+        const nodes = graph.nodes.slice(0, limit);
+        const visibleIds = new Set(nodes.map((node) => node.id));
+        const edges = graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)).slice(0, limit * 3);
+        return Promise.resolve({
+          data: {
+            ...graph,
+            nodes,
+            edges,
+            totalMatchingNodes: graph.nodes.length,
+            totalMatchingEdges: graph.edges.length,
+            truncated: nodes.length !== graph.nodes.length || edges.length !== graph.edges.length
+          }
+        });
       }
       case "memoryCalendar": {
         const query = (args[0] ?? {}) as { year?: number; month?: string; date?: string };
@@ -1575,8 +1641,10 @@ export class DemoStore {
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
-        if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
-        return Promise.resolve(structuredClone(detail));
+        if (detail) return Promise.resolve(structuredClone(detail));
+        const synthetic = this.syntheticNodeDetail(roomId ?? "");
+        if (synthetic) return Promise.resolve(synthetic);
+        throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
       }
       case "memoryChangeSets": {
         const query = (args[0] ?? {}) as { kind?: string; status?: string; sourcePath?: string; recordId?: string; issueId?: string; page?: number; pageSize?: number };

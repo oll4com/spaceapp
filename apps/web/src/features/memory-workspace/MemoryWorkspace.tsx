@@ -75,12 +75,15 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     setError(null);
     closeDetail();
     // Search covers the entire archive; removing the month picker must not hide old memories.
-    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS" })
+    // The 3D view asks for the full graph (the overview endpoint caps the
+    // response at the requested limit, hard server maximum 50,000); the 2D
+    // atlas keeps the historical default response size.
+    void api.memoryGraphOverview({ q: query || undefined, month: "all", relationMode: "RELATIONS", limit: view3D ? 50000 : undefined })
       .then(payload => { if (active) setGraph(payload); })
       .catch(caught => { if (active) setError(caught instanceof Error ? caught.message : "Memory could not be loaded."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [workspaceMode, query, closeDetail]);
+  }, [workspaceMode, query, closeDetail, view3D]);
 
   useEffect(() => () => { detailRequest.current++; }, []);
   const selectNode = useCallback((nodeId: string) => {
@@ -100,14 +103,50 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
-      const coordinates = new Map(event.data.positions);
-      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
-      worker.terminate();
+    let mergedPositions: Map<string, MemoryAtlasPosition> | null = null;
+    let depth = new Map<string, MemoryPoint3D>();
+    let pendingDepth: { order: string[]; flat: Float32Array; done: boolean } | null = null;
+    let depthTimer: ReturnType<typeof setTimeout> | null = null;
+    const applyDepth = (order: string[], flat: Float32Array, done: boolean) => {
+      depth = new Map(order.map((id, i) => [id, { x: flat[i * 3]!, y: flat[i * 3 + 1]!, z: flat[i * 3 + 2]! }] as const));
+      setLayout({ atlas, depth, positions: mergedPositions ?? atlas.positions });
+      if (done) worker.terminate();
+    };
+    worker.onmessage = (event: MessageEvent<
+      | { type: "layout"; positions: Array<[string, { x: number; y: number }]> }
+      | { type: "depth"; order: string[]; positions: Float32Array; done: boolean }
+    >) => {
+      if (event.data.type === "layout") {
+        const coordinates = new Map(event.data.positions);
+        mergedPositions = new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }]));
+        setLayout({ atlas, depth, positions: mergedPositions });
+        return;
+      }
+      // 3D positions stream in while the simulation converges; the view is
+      // usable from the first (seeded) positions onward. Streamed updates are
+      // coalesced so applying them never becomes its own long task; the final
+      // positions are always applied immediately.
+      const first = pendingDepth === null && depth.size === 0;
+      pendingDepth = { order: event.data.order, flat: event.data.positions, done: event.data.done };
+      if (event.data.done || first) {
+        if (depthTimer) { clearTimeout(depthTimer); depthTimer = null; }
+        const pending = pendingDepth;
+        pendingDepth = null;
+        applyDepth(pending.order, pending.flat, pending.done);
+      } else if (!depthTimer) {
+        depthTimer = setTimeout(() => {
+          depthTimer = null;
+          if (pendingDepth) {
+            const pending = pendingDepth;
+            pendingDepth = null;
+            applyDepth(pending.order, pending.flat, pending.done);
+          }
+        }, 250);
+      }
     };
     worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
     worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
-    return () => worker.terminate();
+    return () => { if (depthTimer) clearTimeout(depthTimer); worker.terminate(); };
   }, [workspaceMode, atlas]);
   const layoutPending = typeof Worker !== "undefined" && atlas.nodes.length > 0 && layout?.atlas !== atlas;
   const atlasPositions = layout?.atlas === atlas ? layout.positions : atlas.positions;

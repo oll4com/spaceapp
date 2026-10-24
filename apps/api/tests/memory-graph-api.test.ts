@@ -434,6 +434,68 @@ describe("Memory graph API", () => {
     await app.close();
   });
 
+  const overCapSnapshot = () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 2200 }, (_, index) => ({ id: `memory:${String(index).padStart(4, "0")}`, type: "MEMORY" as const, label: `Memory ${index}`, sourcePath: null, recordId: null }));
+    graphSnapshot.nodes.push({ id: "topic:important", type: "TOPIC", label: "Important", sourcePath: null, recordId: null });
+    graphSnapshot.nodes.push({ id: "source:root", type: "SOURCE", label: "gemini.md", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null });
+    graphSnapshot.edges = [{ id: "edge:tag", source: "memory:2199", target: "topic:important", type: "TAGGED_WITH", origin: "EXPLICIT_TAG", confidence: 1, evidence: "Explicit tag in canonical memory." }];
+    return graphSnapshot;
+  };
+
+  it("serves more than the historical cap when an explicit overview limit is requested", async () => {
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: overCapSnapshot() });
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=5000", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data.nodes).toHaveLength(2202);
+    expect(data.nodes).toContainEqual(expect.objectContaining({ id: "memory:2199" }));
+    expect(data.truncated).toBe(false);
+    expect(data.totalMatchingNodes).toBe(2202);
+    await app.close();
+  });
+
+  it("applies a small explicit overview limit and keeps the taxonomy reservations first", async () => {
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: overCapSnapshot() });
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=10", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data.nodes).toHaveLength(10);
+    expect(data.nodes).toContainEqual(expect.objectContaining({ id: "source:root" }));
+    expect(data.nodes).toContainEqual(expect.objectContaining({ id: "topic:important" }));
+    expect(data.truncated).toBe(true);
+    expect(data.totalMatchingNodes).toBe(2202);
+    await app.close();
+  });
+
+  it("rejects an overview limit above the hard maximum", async () => {
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot: overCapSnapshot() });
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50001", headers: { cookie } });
+    expect(response.statusCode).toBe(422);
+    await app.close();
+  });
+
+  it("serves a 50,000-node overview at the hard maximum", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 49_999 }, (_, index) => ({ id: `memory:bulk-${index}`, type: "MEMORY" as const, label: `Bulk memory ${index}`, sourcePath: "/opt/spaceapp/docs/gemini_history_2026-07.md", recordId: null }));
+    graphSnapshot.nodes.push({ id: "source:root", type: "SOURCE", label: "gemini.md", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null });
+    graphSnapshot.edges = graphSnapshot.nodes.slice(1).map((node, index) => ({ id: `edge:bulk-${index}`, type: "CONTAINS" as const, source: "source:root", target: node.id }));
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: graphSnapshot.nodes.length, edgeCount: graphSnapshot.edges.length };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    const startedAt = performance.now();
+    const response = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000", headers: { cookie } });
+    const elapsedMs = performance.now() - startedAt;
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data.nodes).toHaveLength(50_000);
+    expect(data.edges).toHaveLength(49_999);
+    expect(data.truncated).toBe(false);
+    expect(data.totalMatchingNodes).toBe(50_000);
+    // Measured for the issue #62 report: server time and payload size at 50k nodes.
+    console.info(`overview limit=50000: ${data.nodes.length} nodes, ${data.edges.length} edges, ${response.body.length} bytes JSON, ${elapsedMs.toFixed(1)} ms server time`);
+    await app.close();
+  });
+
   it("serves the all-months archive and single-month filtering through the month query param", async () => {
     const graphSnapshot = snapshot() as MemoryGraphSnapshot;
     const archiveSnapshot = snapshot() as MemoryGraphSnapshot;

@@ -13,8 +13,32 @@ const unit = (seed: string) => {
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
 
-/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+export const MEMORY_NETWORK_3D_STEPS = 180;
+
+export interface MemoryNetwork3DLayout {
+  /** Total simulation steps; identical to the batch layout's fixed step count. */
+  readonly totalSteps: number;
+  /** Simulation steps completed so far. */
+  readonly completedSteps: number;
+  /** True once every step has run and the positions are final. */
+  readonly done: boolean;
+  /** Node ids in layout order; `flatPositions` follows the same order. */
+  readonly order: readonly string[];
+  /** Runs one simulation step. Returns true when the layout is complete. */
+  step(): boolean;
+  /** Current positions (seeded positions before the first step). */
+  positions(): Map<string, MemoryPoint3D>;
+  /** Current positions as xyz triplets in `order` sequence. */
+  flatPositions(): Float32Array;
+}
+
+/**
+ * Incremental form of the 3D force layout. Each `step()` runs exactly the
+ * simulation step the batch layout runs, in the same order and with the same
+ * arithmetic, so stepping to completion yields the identical result while
+ * callers (the layout worker) can stream intermediate positions.
+ */
+export function createMemoryNetwork3DLayout(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryNetwork3DLayout {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
@@ -41,8 +65,10 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       y: parent.y + (unit(`${id}:dy`) - 0.5) * 70, z: parent.z + (unit(`${id}:dz`) - 0.5) * 70 };
   }
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
+  let stepIndex = 0;
   // Bounded spatial-grid repulsion and link springs act equally on all three axes.
-  for (let step = 0; step < 180; step++) {
+  const runStep = () => {
+    const step = stepIndex;
     fx.fill(0); fy.fill(0); fz.fill(0);
     const grid = new Map<string, number[]>();
     for (let i = 0; i < count; i++) {
@@ -78,8 +104,36 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
       p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
     }
-  }
-  return new Map(ordered.map((node, i) => [node.id, points[i]!]));
+    stepIndex += 1;
+  };
+  const layout: MemoryNetwork3DLayout = {
+    totalSteps: MEMORY_NETWORK_3D_STEPS,
+    get completedSteps() { return stepIndex; },
+    get done() { return stepIndex >= MEMORY_NETWORK_3D_STEPS; },
+    order: ordered.map(node => node.id),
+    step() {
+      if (stepIndex < MEMORY_NETWORK_3D_STEPS) runStep();
+      return stepIndex >= MEMORY_NETWORK_3D_STEPS;
+    },
+    positions() {
+      return new Map(ordered.map((node, i) => [node.id, points[i]!]));
+    },
+    flatPositions() {
+      const flat = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        flat[i * 3] = points[i]!.x; flat[i * 3 + 1] = points[i]!.y; flat[i * 3 + 2] = points[i]!.z;
+      }
+      return flat;
+    }
+  };
+  return layout;
+}
+
+/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
+export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  const layout = createMemoryNetwork3DLayout(nodes, edges);
+  while (!layout.step()) { /* run the identical steps to completion */ }
+  return layout.positions();
 }
 
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {

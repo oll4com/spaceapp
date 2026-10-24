@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA } from "../src/features/memory-workspace/memory-3d.js";
+import { createMemoryNetwork3DLayout, layoutMemoryNetwork3D, memory3DVolumeRatio, projectMemoryPoint, DEFAULT_MEMORY_CAMERA, MEMORY_NETWORK_3D_STEPS } from "../src/features/memory-workspace/memory-3d.js";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 
 describe("3D memory projection", () => {
@@ -58,5 +58,56 @@ describe("3D memory projection", () => {
     const plane = Array.from({ length: 100 }, (_, i) => ({ x: i % 10, y: Math.floor(i / 10), z: i % 10 + Math.floor(i / 10) }));
     expect(memory3DVolumeRatio(plane)).toBeCloseTo(0);
     expect(layoutMemoryNetwork3D([], []).size).toBe(0);
+  });
+});
+
+describe("3D memory layout streaming", () => {
+  const fixture = () => {
+    const nodes: MemoryGraphNode[] = [{ id: "root", label: "gemini.md", type: "SOURCE", sourcePath: "/opt/spaceapp/docs/gemini.md", recordId: null }];
+    const edges: MemoryGraphEdge[] = [];
+    for (let file = 0; file < 6; file++) {
+      const id = `source-${file}`;
+      nodes.push({ id, label: `${id}.md`, type: "SOURCE", sourcePath: `/opt/spaceapp/docs/${id}.md`, recordId: null });
+      edges.push({ id: `file-${file}`, type: "DERIVED_FROM", source: "root", target: id });
+      for (let item = 0; item < 12; item++) {
+        const memory = `${id}-memory-${item}`;
+        nodes.push({ id: memory, label: memory, type: "MEMORY", sourcePath: `/opt/spaceapp/docs/${id}.md`, recordId: memory });
+        edges.push({ id: memory, type: "CONTAINS", source: id, target: memory });
+      }
+    }
+    return { nodes, edges };
+  };
+  it("stepping to completion reproduces the batch layout exactly", () => {
+    const { nodes, edges } = fixture();
+    const layout = createMemoryNetwork3DLayout(nodes, edges);
+    expect(layout.totalSteps).toBe(MEMORY_NETWORK_3D_STEPS);
+    expect(layout.done).toBe(false);
+    while (!layout.step()) { /* stream */ }
+    expect(layout.completedSteps).toBe(MEMORY_NETWORK_3D_STEPS);
+    expect(layout.done).toBe(true);
+    expect([...layout.positions()]).toEqual([...layoutMemoryNetwork3D(nodes, edges)]);
+    expect(layout.step()).toBe(true);
+  });
+  it("streams seeded positions in layout order before the first step", () => {
+    const { nodes, edges } = fixture();
+    const layout = createMemoryNetwork3DLayout(nodes, edges);
+    const seeded = layout.flatPositions();
+    expect(seeded).toHaveLength(nodes.length * 3);
+    expect(layout.order).toHaveLength(nodes.length);
+    expect(layout.order).toContain("root");
+    expect(layout.positions().get("root")).toEqual({ x: 0, y: 0, z: 0 });
+    const rootIndex = layout.order.indexOf("root");
+    expect([seeded[rootIndex * 3], seeded[rootIndex * 3 + 1], seeded[rootIndex * 3 + 2]]).toEqual([0, 0, 0]);
+    layout.step();
+    expect(layout.flatPositions()).not.toEqual(seeded);
+  });
+  it("is deterministic across independent streaming runs", () => {
+    const { nodes, edges } = fixture();
+    const run = () => {
+      const layout = createMemoryNetwork3DLayout(nodes, edges);
+      while (!layout.step()) { /* stream */ }
+      return layout.flatPositions();
+    };
+    expect(run()).toEqual(run());
   });
 });

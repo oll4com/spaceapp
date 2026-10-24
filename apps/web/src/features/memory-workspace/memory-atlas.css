@@ -173,6 +173,7 @@
 .memory-atlas-2d { height: 100%; }
 .memory-atlas-2d[hidden] { display: none; }
 .memory-3d-surface { position: absolute; inset: 0 3% 55px 22%; }
+.memory-3d-surface .memory-3d-labels { position: absolute; inset: 0; pointer-events: none; }
 .memory-3d-surface canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline-offset: -3px; }
 .memory-3d-surface canvas:active { cursor: grabbing; }
 .memory-3d-hint { position: absolute; bottom: 26px; left: 0; right: 0; text-align: center; font-size: 10px; color: #95aec2; pointer-events: none; }

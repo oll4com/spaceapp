@@ -118,6 +118,17 @@ remaining fixes from the independent reviews; open items are listed in
   own npm dependencies are resolved when they install; per-provider lockfiles
   are planned for 1.1.8 (review INT5-C-F14).
 
+### Memory graph
+
+- The 3D memory graph now renders with WebGL2 (instanced nodes, batched
+  edges, GPU depth and picking) instead of Canvas 2D, and the 3D view can
+  load up to 50,000 nodes through a new `limit` parameter on the overview
+  endpoint (default unchanged at 2,000). Layout positions stream in from the
+  layout worker while the simulation converges. Machines without WebGL2
+  keep the previous Canvas 2D renderer with the historical 2,000-node cap.
+  Demo mode can generate a synthetic graph of a chosen size for
+  benchmarking (`/demo-workspace?demoGraphSize=50000`).
+
 ## [1.1.6] - 2026-10-18
 
 Source: sanitized Space app @ f8803d5d96 (4595 files). Adds install telemetry
