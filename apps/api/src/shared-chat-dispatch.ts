@@ -86,7 +86,11 @@ export async function pickSharedChatDispatchTarget(
   }
   const targets = eligibleTargets(sessions, panesForRoom);
   if (!targets.length) return null;
-  targets.sort((left, right) => right.session.updatedAt.localeCompare(left.session.updatedAt));
+  targets.sort(
+    (left, right) =>
+      right.session.updatedAt.localeCompare(left.session.updatedAt) ||
+      right.session.sessionId.localeCompare(left.session.sessionId)
+  );
   return targets[0] ?? null;
 }
 

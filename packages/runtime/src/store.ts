@@ -6434,9 +6434,9 @@ export class InMemorySpaceStore implements SpaceStore {
       statusReason: parsed.statusReason ?? null,
       exitCode: null,
       isActive: parsed.isActive ?? true,
-      startedAt: timestamp,
-      updatedAt: timestamp,
-      endedAt: null
+      startedAt: parsed.startedAt ?? timestamp,
+      updatedAt: parsed.updatedAt ?? timestamp,
+      endedAt: parsed.endedAt ?? null
     });
     if (session.isActive) {
       for (const [sessionId, existing] of this.paneCliSessions.entries()) {

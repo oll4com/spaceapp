@@ -2401,7 +2401,10 @@ export const createPaneCliSessionInputSchema = paneCliSessionSchema
     codexThreadId: codexThreadIdSchema.nullable().default(null),
     status: paneCliSessionStatusSchema.optional(),
     statusReason: z.string().trim().min(1).max(500).nullable().optional(),
-    isActive: z.boolean().optional()
+    isActive: z.boolean().optional(),
+    startedAt: isoDateTimeSchema.optional(),
+    updatedAt: isoDateTimeSchema.optional(),
+    endedAt: isoDateTimeSchema.nullable().optional()
   });
 
 export const updatePaneCliSessionInputSchema = z
