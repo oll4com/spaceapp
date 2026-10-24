@@ -22,6 +22,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Causal links across continued workflow runs and background traces. */
+  links?: ReadonlyArray<{ traceId: string; spanId: string }>;
 }
 
 export interface SpanExporterStats {
@@ -85,6 +87,8 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length ? { links: span.links.filter(link => traceIdPattern.test(link.traceId) &&
+            spanIdPattern.test(link.spanId)).map(({ traceId, spanId }) => ({ traceId, spanId })) } : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
@@ -103,6 +107,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const queue: ServerSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
+  let closed = false;
 
   const flushOnce = async () => {
     const batch = queue.splice(0, batchSize);
@@ -122,13 +127,16 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
+      // Defer the drain until inFlight has been assigned. An empty synchronous
+      // drain would otherwise set it to null before the assignment and leave a
+      // resolved promise latched forever, suppressing future idle flushes.
+      inFlight = Promise.resolve().then(async () => {
         try {
           while (queue.length) await flushOnce();
         } finally {
           inFlight = null;
         }
-      })();
+      });
     }
     return inFlight;
   };
@@ -138,7 +146,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   return {
     record(span) {
       if (!traceIdPattern.test(span.traceId) || !spanIdPattern.test(span.spanId)) return;
-      if (queue.length >= maxQueue) {
+      if (closed || queue.length >= maxQueue) {
         stats.dropped += 1;
         return;
       }
@@ -147,6 +155,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     },
     flush,
     async close() {
+      closed = true;
       clearInterval(timer);
       await flush();
     },

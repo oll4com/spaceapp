@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request } from "node:http";
 import { MetricsRegistry } from "@space/runtime";
+import { parseTraceparent } from "@space/contracts";
 import {
   activityCorrelation,
   childTraceparent,
@@ -186,7 +187,7 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/interceptors: \{ \.\.\.tracing.interceptors, activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
   }
 });
 
@@ -202,4 +203,16 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+
+it("parents outbound internal API calls to the activity span that is actually exported", async () => {
+  const recorded: Array<{ traceId: string; spanId: string }> = [];
+  const spans = { record: (span: { traceId: string; spanId: string }) => recorded.push(span) };
+  let propagated: string | null = null;
+  await observeActivityExecution(info(), [{ traceparent }], async () => {
+    propagated = childTraceparent(traceparent);
+    return "ok";
+  }, { spans: spans as never, metrics: createWorkerMetrics(new MetricsRegistry()) });
+  expect(recorded).toHaveLength(1);
+  expect(parseTraceparent(propagated)).toMatchObject({ traceId: recorded[0]!.traceId, parentId: recorded[0]!.spanId });
 });

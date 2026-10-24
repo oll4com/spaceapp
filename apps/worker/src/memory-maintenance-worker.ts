@@ -1,3 +1,4 @@
+import { createWorkflowTracingOptions } from "./workflow-tracing-worker.js";
 import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import * as activities from "./memory-maintenance-activities.js";
@@ -23,6 +24,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
   try {
     const connection = await NativeConnection.connect({ address });
     const spans = otlpSpanExporterFromEnv(process.env, service);
+    const tracing = createWorkflowTracingOptions(spans);
     const worker = await Worker.create({
       connection,
       namespace,
@@ -30,7 +32,8 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      ...tracing,
+      interceptors: { ...tracing.interceptors, activity: [createActivityObservabilityInterceptors({ spans })] }
     });
     console.log(JSON.stringify({
       service,

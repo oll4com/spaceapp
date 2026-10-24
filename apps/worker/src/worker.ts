@@ -1,3 +1,4 @@
+import { createWorkflowTracingOptions } from "./workflow-tracing-worker.js";
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
 import { assertDevInstanceIsolated, instanceBackgroundJobEnabled } from "@space/contracts";
@@ -37,15 +38,16 @@ if (temporalCoreMetricsBind) {
 
 const connection = await NativeConnection.connect({ address });
 const spans = otlpSpanExporterFromEnv(process.env, "space-worker");
+const tracing = createWorkflowTracingOptions(spans);
 const worker = await Worker.create({
   connection,
   namespace,
   taskQueue,
   workflowsPath,
   activities,
-  // Structured, correlated activity records and worker metrics. Activity-side
-  // only: the workflow sandbox and its replay behaviour are unchanged.
-  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+  // Correlated activity records, optional replay-safe workflow spans and metrics.
+  ...tracing,
+  interceptors: { ...tracing.interceptors, activity: [createActivityObservabilityInterceptors({ spans })] }
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.
