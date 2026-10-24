@@ -22,6 +22,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Context links for continued workflow runs and background work. */
+  links?: ReadonlyArray<{ traceId: string; spanId: string }>;
 }
 
 export interface SpanExporterStats {
@@ -85,6 +87,9 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length ? { links: span.links.filter(link =>
+            traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId)
+          ).map(link => ({ traceId: link.traceId, spanId: link.spanId })) } : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
@@ -103,10 +108,12 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   const queue: ServerSpan[] = [];
   const stats: SpanExporterStats = { exported: 0, dropped: 0, failed: 0 };
   let inFlight: Promise<void> | null = null;
+  let closed = false;
+  let lastSendFailed = false;
 
-  const flushOnce = async () => {
+  const flushOnce = async (): Promise<boolean> => {
     const batch = queue.splice(0, batchSize);
-    if (!batch.length) return;
+    if (!batch.length) return true;
     try {
       const response = await send(url, {
         method: "POST",
@@ -114,22 +121,33 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
         body: JSON.stringify(otlpTraceRequest(batch, options.serviceName)),
         signal: AbortSignal.timeout(timeoutMs)
       });
-      if (response.ok) stats.exported += batch.length;
-      else stats.failed += batch.length;
-    } catch {
+      if (response.ok) {
+        lastSendFailed = false;
+        stats.exported += batch.length;
+        return true;
+      }
+      lastSendFailed = true;
       stats.failed += batch.length;
+      return false;
+    } catch {
+      lastSendFailed = true;
+      stats.failed += batch.length;
+      return false;
     }
   };
   const flush = (): Promise<void> => {
-    if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          while (queue.length) await flushOnce();
-        } finally {
-          inFlight = null;
-        }
-      })();
-    }
+    if (inFlight) return inFlight;
+    // An idle timer must not leave a resolved promise permanently in flight.
+    if (!queue.length || (closed && lastSendFailed)) return Promise.resolve();
+    inFlight = (async () => {
+      try {
+        // Avoid a long shutdown against a failing collector: at most one
+        // unsuccessful POST is attempted per flush, regardless of queue size.
+        while (queue.length) if (!(await flushOnce())) break;
+      } finally {
+        inFlight = null;
+      }
+    })();
     return inFlight;
   };
   const timer = setInterval(() => void flush(), options.flushIntervalMs ?? 5000);
@@ -137,6 +155,7 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
 
   return {
     record(span) {
+      if (closed) return;
       if (!traceIdPattern.test(span.traceId) || !spanIdPattern.test(span.spanId)) return;
       if (queue.length >= maxQueue) {
         stats.dropped += 1;
@@ -147,8 +166,12 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     },
     flush,
     async close() {
+      closed = true;
       clearInterval(timer);
       await flush();
+      // Export is best effort; remaining spans cannot stall termination.
+      stats.dropped += queue.length;
+      queue.length = 0;
     },
     stats: () => ({ ...stats })
   };

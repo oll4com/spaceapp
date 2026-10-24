@@ -215,46 +215,69 @@ Without the endpoint, every activity still writes `activity.started` and
 
 ## Traces (W3C trace context)
 
-The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
-SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
-2026-10-16 the worker and both memory workers use the same exporter (services
-`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
-- **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
-  An invalid or missing header gets a new trace ID. Every API log line carries
-  `w3cTraceId` (Fastify `childLoggerFactory`).
-- **Propagation into turns:** API turn starters and the Room Agent coordinator add
-  the request's `traceparent` to the turn input (an optional contract field) and
-  to the Temporal memo. A bounded in-memory map from request ID to trace context
-  (`apps/api/src/trace-context.ts`) does this without passing the request object
-  through every service.
-- **Worker:** worker logs read the trace ID from the activity input. Internal
-  room-action calls from the worker send a child `traceparent`, so the internal
-  API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+### Connected Temporal OTLP traces (issue 61)
 
-### Replay compatibility
+When `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set on the API and each relevant
+worker, the shared dependency-free exporter in
+`packages/runtime/src/otlp-span-exporter.ts` sends OTLP/HTTP JSON spans to
+`<endpoint>/v1/traces`. It is off by default. All three workers
+(`worker.ts`, `memory-maintenance-worker.ts`, `memory-mutation-worker.ts`)
+register activity and workflow instrumentation only when exporting is enabled.
 
-No file under `apps/worker/src` that the workflow bundle imports was changed
-(`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
-`dot-goal-loop.ts`). The `agent-turns` workflow bundle was built for the base
-commit and for this change and compared after normalizing paths and webpack
-module numbers. The only differences are in `@space/contracts`:
-- the new `observability` module;
-- the optional `traceparent` turn-input field;
-- the optional file search and readiness fields.
+For API-started Temporal work, the exported hierarchy is:
 
-A history without `traceparent` parses exactly as before. Activity inputs are
-not part of Temporal's determinism check.
+1. The actual HTTP `SERVER` span, not a synthetic unexported span ID.
+2. An `INTERNAL` span for each Temporal workflow run.
+3. An `INTERNAL` span for each individual activity execution attempt,
+   including failures and retries, with its attempt, outcome, duration and safe
+   reason code/category. Child workflows nest under their preceding workflow span.
 
-The read-only live replay (`node scripts/temporal-replay-check.mjs --limit 30`)
-could not be run from the agent sandbox that made this change. Its network
-namespace has no route to the Temporal container (`172.18.0.5:7233`), and
-`127.0.0.1:7233` refuses connections. Run it before deploying this change.
+The workflow interceptor uses deterministic run-based span IDs and Temporal's
+deterministic clock. Headers carry the current parent to activities; child
+workflows inherit parent context via Temporal memo. It performs no network I/O.
+A Node-side sink with `callDuringReplay: false` records allowlisted
+span fields into the shared bounded queue. Actual history replay adds no OTLP
+spans. An API request signalled into a long-lived Room Agent supervisor
+retains its own context for that turn's activities and child workflow; the
+separate request also has a causal link back to the supervisor run. A scheduled
+workflow with no incoming request starts its own root trace.
+
+A continued-as-new run keeps the trace and emits a causal span link to the
+previous Temporal run. A background continuation starts a new W3C trace with
+no unexported parent and links to the originating workflow's run-based span.
+The Space request-ID convention `trace:bg-<id>` remains unchanged.
+
+Only validated IDs, workflow/activity types, attempts, statuses, stable error
+codes/categories and durations are exported; prompts, model outputs, raw
+errors, file paths, URLs and request contents are excluded. The shared queue
+holds up to 4,096 spans and flushes up to 256 per POST, with an HTTP timeout
+of three seconds. Overflow and final unsent records are dropped and counted.
+After a failed collector POST the drain stops; worker operations never await
+collector delivery. This is best-effort telemetry, not an audit log.
+
+Temporal replay suppresses sink calls, but a workflow task that fails *after*
+its sink ran can retry that task and generate a duplicate best-effort span.
+Exactly-once delivery is not guaranteed.
+
+### Replay compatibility and verification
+
+The application workflows retain their existing behavior; tracing lives in
+optional Temporal interceptors, sinks, context propagation and shared
+transport. New scheduling headers and memos are guarded by
+`patched("otlp-trace-propagation-v1")` to avoid changing commands
+when older workflow histories replay.
+
+Use `npm run check`, `npm test -w @space/worker`, and
+`npm test -w @space/api -- otlp` for automated checks. Worker
+integration tests run a real `@temporalio/testing` server and local
+fake OTLP HTTP collector without Docker or provider credentials, including
+replay suppression, child parentage, activity retries, Room Agent signals,
+continue-as-new links, background links and payload redaction.
+
+For visual confirmation, start Jaeger with its OTLP HTTP receiver on port
+4318, configure the same endpoint on the API and workers, trigger a turn
+and inspect the hierarchy in the Jaeger UI on port 16686. Do not include
+real prompt or credential data when recording traces.
 
 ## Redaction policy
 

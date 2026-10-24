@@ -9,6 +9,7 @@ import {
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workflowTracingSinks } from "./workflow-tracing-sink.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-maintenance-worker";
@@ -30,7 +31,11 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      interceptors: {
+        activity: [createActivityObservabilityInterceptors({ spans })],
+        ...(spans ? { workflowModules: [fileURLToPath(new URL("./workflow-tracing-interceptors.js", import.meta.url))] } : {})
+      },
+      ...(spans ? { sinks: workflowTracingSinks(spans) } : {})
     });
     console.log(JSON.stringify({
       service,

@@ -39,6 +39,33 @@ capabilities or cross-service compatibility. Authentication/server bootstrap,
 worker, web build and installer environment fields outside `SpaceApiConfig` are
 outside this registry. Full cross-service configuration coverage remains open.
 
+## Optional OTLP trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` can point to a plain HTTP(S)
+collector base URL, for example `http://127.0.0.1:4318`. The API
+and all three Temporal workers send OTLP JSON to `/v1/traces`. Export is disabled
+when the variable is unset; invalid URLs, embedded credentials, fragments
+and query strings are rejected.
+
+Traces include an API HTTP span, Temporal workflow spans, activity-attempt
+spans and links to continued-as-new and background work. A long-lived Room
+Agent supervisor links later requests while preserving each turn's own
+trace ancestry. Scheduled workflows without an API context start a root.
+Only allowlisted
+identifiers, types, statuses, reason codes, categories and durations leave
+the process. No prompts, outputs, file paths or error messages are exported.
+
+The shared runtime exporter has a bounded queue (4096), a batch cap (256)
+and a request timeout (3000 ms); it drops and counts overflow or shutdown
+unsent spans without blocking production operations. A failed collector batch
+ends that drain instead of repeatedly extending shutdown. This is best-effort
+diagnostics rather than a guaranteed audit log. No new tracing SDK is required.
+
+Set the variable independently for the API and the worker processes. To
+inspect a full trace locally, run an OTLP-compatible collector (for example,
+Jaeger with HTTP receiver port 4318) and start a synthetic workflow; the
+collector is optional and does not participate in business logic.
+
 ## Optional modules
 
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:

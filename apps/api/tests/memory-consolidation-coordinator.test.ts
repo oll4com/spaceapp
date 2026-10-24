@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { requestTraceContexts } from "../src/trace-context.js";
 import {
   MEMORY_CONSOLIDATION_TASK_QUEUE,
   MEMORY_CONSOLIDATION_WORKFLOW_TYPE,
@@ -6,6 +7,28 @@ import {
 } from "../src/memory-consolidation-coordinator.js";
 
 describe("Memory consolidation coordinator", () => {
+  it("propagates actual API SERVER context through Temporal memo", async () => {
+    const requestId = "req:test-memory-consolidation";
+    const traceId = "12341234123412341234123412341234";
+    const spanId = "deadbeef12345678";
+    requestTraceContexts.remember(requestId, {
+      w3cTraceId: traceId, spanId, parentSpanId: null, inbound: false,
+      traceparent: "00-" + traceId + "-" + spanId + "-01"
+    });
+    let memo: Record<string, string> | undefined;
+    await scheduleMemoryConsolidation(
+      { runId: "memory_consolidation:sample", traceId: requestId },
+      "space-memory-consolidation:test-workflow",
+      async (_name, options) => { memo = options.memo; return { workflowId: options.workflowId }; }
+    );
+    expect(memo).toEqual({
+      spaceTraceId: requestId,
+      traceparent: "00-" + traceId + "-" + spanId + "-01",
+      w3cTraceId: traceId
+    });
+  });
+
+
   it("starts a retry-safe workflow on the exclusive maintenance queue", async () => {
     const calls: Array<{ workflowType: string; options: unknown }> = [];
     const input = { runId: "memory_consolidation:run-1", traceId: "trace:memory-consolidation" };

@@ -1,4 +1,7 @@
+import { randomBytes } from "node:crypto";
 import {
+  formatTraceparent,
+  parseTraceparent,
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
   roomAgentSupervisorQueueItemSchema,
@@ -122,10 +125,19 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const sourceTrace = parseTraceparent(source.queueItem.turn.traceparent);
+  // A background continuation has a new Space request id and its own W3C
+  // trace. Keep an explicit, identifier-only link to the originating run.
+  const backgroundTraceparent = sourceTrace
+    ? formatTraceparent(randomBytes(16).toString("hex"), randomBytes(8).toString("hex"), sourceTrace.flags)
+    : undefined;
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
-    roomAgentContinuation: { sourceRunId: source.run.runId, generation },
+    ...(backgroundTraceparent ? { traceparent: backgroundTraceparent } : {}),
+    roomAgentContinuation: { sourceRunId: source.run.runId,
+      ...(source.run.temporalRunId ? { sourceTemporalRunId: source.run.temporalRunId } : {}), generation,
+      ...(sourceTrace ? { sourceTraceparent: source.queueItem.turn.traceparent } : {}) },
     artifactIds: [], agentRunId: runId,
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,

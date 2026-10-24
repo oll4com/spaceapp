@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
+import { defaultPayloadConverter } from "@temporalio/common";
 import type { Context } from "@temporalio/activity";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import {
@@ -137,12 +138,31 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** W3C context passed through the Temporal activity header; never task data. */
+  headers?: Record<string, unknown>;
 }
 
-function activityTraceparent(args: readonly unknown[]) {
+const WORKFLOW_TRACE_HEADER = "space.w3c.traceparent";
+const WORKFLOW_LINK_HEADER = "space.w3c.link";
+
+function activityTraceparent(args: readonly unknown[], headers?: Record<string, unknown>) {
+  // The explicit header contains the parent span, whether that is this
+  // workflow run or a separate API request to a long-lived supervisor.
+  try {
+    const wire = headers?.[WORKFLOW_TRACE_HEADER];
+    if (wire) {
+      const parsed = parseTraceparent(defaultPayloadConverter.fromPayload(wire as never));
+      if (parsed) {
+        const link = headers?.[WORKFLOW_LINK_HEADER];
+        const linked = link ? parseTraceparent(defaultPayloadConverter.fromPayload(link as never)) : null;
+        return { ...parsed, link: linked ? { traceId: linked.traceId, spanId: linked.parentId } : null };
+      }
+    }
+  } catch { /* Invalid headers fall back to the existing application input. */ }
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
-  return parseTraceparent(found.traceparent);
+  const parsed = parseTraceparent(found.traceparent);
+  return parsed ? { ...parsed, link: null } : null;
 }
 
 export async function observeActivityExecution<T>(
@@ -194,16 +214,25 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans ? activityTraceparent(args, dependencies.headers) : null;
     if (parent) {
+      const attrs: Record<string, string | number> = {
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.duration_ms": durationMs
+      };
+      if (reasonCode && isSafeErrorCode(reasonCode)) attrs["space.reason_code"] = reasonCode;
+      if (category) attrs["space.category"] = category;
       dependencies.spans!.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
         parentSpanId: parent.parentId,
-        name: `activity ${activityType}`,
+        ...(parent.link ? { links: [parent.link] } : {}),
+        name: "activity " + activityType,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: attrs,
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -229,7 +258,8 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
-        cancelled: () => context.cancellationSignal.aborted
+        cancelled: () => context.cancellationSignal.aborted,
+        headers: input.headers
       })
     }
   });
