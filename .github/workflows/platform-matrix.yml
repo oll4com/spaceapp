@@ -57,3 +57,54 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+
+  podman-lifecycle:
+    name: Podman Lifecycle / ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up Podman Compose provider
+        run: |
+          podman --version
+          sudo apt-get update -qq && sudo apt-get install -y -qq podman-compose || true
+
+      - name: Link local run-spaceapp
+        run: npm link -w run-spaceapp
+
+      - name: Install SpaceApp with Podman engine
+        run: |
+          spaceapp install --engine podman --profile small --non-interactive --answers '{"confirm": true}'
+
+      - name: Verify readyz endpoint
+        run: curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:4911/readyz
+
+      - name: Verify doctor diagnostics on Podman
+        run: spaceapp doctor
+
+      - name: Test provider install command
+        run: spaceapp provider install opencode
+
+      - name: Test spaceapp backup
+        run: spaceapp backup
+
+      - name: Test spaceapp uninstall with purge-data
+        run: |
+          echo "DELETE" | spaceapp uninstall --purge-data
+
+      - name: Confirm no containers or runtime resources remain
+        run: |
+          test -z "$(podman ps -aq)"
+          VOLUMES="$(podman volume ls -q)"
+          test -z "$VOLUMES"

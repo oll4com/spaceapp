@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -654,7 +655,13 @@ async function dockerCliAndComposeAreAvailable(execute) {
   return true;
 }
 
-async function dockerIsReady(execute) {
+/**
+ * Checks if Docker CLI, compose plugin, and Docker daemon are ready.
+ *
+ * @param {Function} execute Command execution function.
+ * @returns {Promise<boolean>} True if Docker engine is operational.
+ */
+export async function dockerIsReady(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] },
@@ -667,6 +674,207 @@ async function dockerIsReady(execute) {
   return true;
 }
 
+/**
+ * Checks if the Podman CLI and its compose provider are available on PATH.
+ *
+ * @param {Function} execute Command execution function.
+ * @returns {Promise<boolean>} True if Podman and its compose plugin/provider are accessible.
+ */
+export async function podmanCliAndComposeAreAvailable(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Checks if Podman is operational and ready to run containers.
+ * Probes CLI version, compose provider version, and engine status (podman info).
+ *
+ * @param {Function} execute Command execution function.
+ * @returns {Promise<boolean>} True if Podman is completely ready.
+ */
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Provides installation and setup guidance for Podman depending on the operating system.
+ *
+ * @param {string} platform Operating system platform string (e.g., "linux", "darwin", "win32").
+ * @returns {string} Human-readable installation instructions.
+ */
+export function podmanInstallHelp(platform) {
+  if (platform === "darwin") {
+    return "Install Podman using Homebrew (\"brew install podman\") and start a machine (\"podman machine init && podman machine start\").";
+  }
+  if (platform === "win32") {
+    return "Podman on Windows is not supported by SpaceApp.";
+  }
+  return "Install Podman (version 5 or later) with a compose provider using your package manager (e.g. \"sudo dnf install podman podman-compose\" or \"sudo apt install podman\").";
+}
+
+/**
+ * Validates that an active Podman machine on macOS has sufficient CPU, memory, and disk for the profile.
+ * Explains how to resize the machine with podman machine commands if resources are insufficient.
+ *
+ * @param {object} options Verification options.
+ * @param {Function} options.execute Command execution function.
+ * @param {string} [options.profile="small"] Installation profile name.
+ * @param {object} [options.stderr] Error output stream.
+ * @param {object} [options.stdout] Standard output stream.
+ * @returns {Promise<{ ok: boolean, code: number }>} Result object indicating success or failure.
+ */
+export async function checkMacPodmanMachine({ execute, profile = "small", stderr, stdout }) {
+  let output = "";
+  const captureStream = new Writable({
+    write(chunk, _encoding, done) {
+      if (output.length < 1024 * 1024) output += chunk.toString();
+      done();
+    }
+  });
+  let code = await execute(
+    { command: "podman", args: ["machine", "inspect"] },
+    { stdout: captureStream, stderr: null }
+  );
+  if (code !== 0 || !output.trim()) {
+    output = "";
+    const listStream = new Writable({
+      write(chunk, _encoding, done) {
+        if (output.length < 1024 * 1024) output += chunk.toString();
+        done();
+      }
+    });
+    code = await execute(
+      { command: "podman", args: ["machine", "list", "--format", "json"] },
+      { stdout: listStream, stderr: null }
+    );
+    if (code !== 0 || !output.trim()) {
+      stderr?.write("SpaceApp could not inspect Podman machine. Ensure a Podman machine is running (\"podman machine start\").\n");
+      return { ok: false, code: 1 };
+    }
+  }
+  let machine = null;
+  try {
+    const parsed = JSON.parse(output);
+    machine = Array.isArray(parsed)
+      ? (parsed.find((m) => m.Running || m.running || m.Default || m.default) ?? parsed[0])
+      : parsed;
+  } catch {
+    return { ok: true, code: 0 };
+  }
+  if (!machine) {
+    stderr?.write("No active Podman machine found. Run \"podman machine init && podman machine start\".\n");
+    return { ok: false, code: 1 };
+  }
+  const req = PROFILE_REQUIREMENTS[profile];
+  if (!req) return { ok: true, code: 0 };
+  const cpus = Number(machine.CPUs ?? machine.cpus ?? machine.Resources?.CPUs ?? 0);
+  let memBytes = 0;
+  const rawMem = machine.Memory ?? machine.memory ?? machine.Resources?.Memory;
+  if (typeof rawMem === "number") {
+    memBytes = rawMem > 1024 * 1024 * 1024 ? rawMem : rawMem > 1024 * 1024 ? rawMem : rawMem * (1024 ** 2);
+  } else if (typeof rawMem === "string") {
+    const match = /^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?$/.exec(rawMem.trim());
+    if (match) {
+      const val = parseFloat(match[1]);
+      const unit = (match[2] || "").toLowerCase();
+      if (unit.startsWith("g")) memBytes = val * (1024 ** 3);
+      else if (unit.startsWith("m")) memBytes = val * (1024 ** 2);
+      else memBytes = val;
+    }
+  }
+  let diskBytes = 0;
+  const rawDisk = machine.DiskSize ?? machine.diskSize ?? machine.Resources?.DiskSize;
+  if (typeof rawDisk === "number") {
+    diskBytes = rawDisk > 1024 * 1024 * 1024 ? rawDisk : rawDisk * (1024 ** 3);
+  } else if (typeof rawDisk === "string") {
+    const match = /^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?$/.exec(rawDisk.trim());
+    if (match) {
+      const val = parseFloat(match[1]);
+      const unit = (match[2] || "").toLowerCase();
+      if (unit.startsWith("t")) diskBytes = val * (1024 ** 4);
+      else if (unit.startsWith("g")) diskBytes = val * (1024 ** 3);
+      else if (unit.startsWith("m")) diskBytes = val * (1024 ** 2);
+      else diskBytes = val;
+    }
+  }
+  const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
+  const minMem = Math.min(req.memoryBytes, engineMemoryBytes);
+  const cpusOk = cpus === 0 || cpus >= req.cpuCount;
+  const memOk = memBytes === 0 || memBytes >= minMem;
+  const diskOk = diskBytes === 0 || diskBytes >= req.freshDiskBytes;
+  if (!cpusOk || !memOk || !diskOk) {
+    const gib = (bytes) => (bytes / 1024 ** 3).toFixed(1);
+    stderr?.write(
+      `The Podman machine does not have sufficient resources for the "${profile}" profile.\n` +
+      `Required: ${req.cpuCount} CPUs, ${gib(minMem)} GiB memory, ${gib(req.freshDiskBytes)} GiB disk.\n` +
+      `Available: ${cpus} CPUs, ${gib(memBytes)} GiB memory, ${gib(diskBytes)} GiB disk.\n\n` +
+      "To resize your Podman machine, run:\n" +
+      "  podman machine stop\n" +
+      `  podman machine set --cpus ${req.cpuCount} --memory ${Math.ceil(minMem / (1024 ** 2))} --disk-size ${Math.max(20, Math.ceil(req.freshDiskBytes / (1024 ** 3)))}\n` +
+      "  podman machine start\n"
+    );
+    return { ok: false, code: 1 };
+  }
+  return { ok: true, code: 0 };
+}
+
+/**
+ * Ensures that Podman and its compose provider are available and ready.
+ * On macOS, validates that the Podman machine has sufficient CPU, memory, and disk.
+ *
+ * @param {object} options Options including platform, execute, profile, stderr, stdout.
+ * @returns {Promise<{ code: number, reexecuted: boolean }>}
+ */
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  execute,
+  profile = "small",
+  stderr = process.stderr,
+  stdout = process.stdout
+}) {
+  const ready = await podmanIsReady(execute);
+  if (!ready) {
+    stderr.write(`Podman is required and is not ready. ${podmanInstallHelp(platform)}\n`);
+    return { code: 1, reexecuted: false };
+  }
+  if (platform === "darwin") {
+    const check = await checkMacPodmanMachine({ execute, profile, stderr, stdout });
+    if (!check.ok) {
+      return { code: check.code || 1, reexecuted: false };
+    }
+  }
+  return { code: 0, reexecuted: false };
+}
+
+/**
+ * Dispatches automated Docker Engine and Compose installation for supported Linux distributions.
+ *
+ * @param {object} params Linux installation parameters.
+ * @param {string} params.arch Architecture string ("amd64" | "arm64").
+ * @param {object} params.release Parsed /etc/os-release fields.
+ * @param {import("node:stream").Readable} params.stdin Standard input stream.
+ * @param {import("node:stream").Writable} params.stdout Standard output stream.
+ * @param {import("node:stream").Writable} params.stderr Standard error stream.
+ * @param {Function} params.execute Command execution runner.
+ * @param {Function} params.download Binary download runner.
+ * @returns {Promise<{ code: number, reexecuted: boolean }>} Installation result.
+ */
 async function installLinuxDockerEngine({
   arch,
   release,
