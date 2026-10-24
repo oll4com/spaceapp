@@ -1,0 +1,58 @@
+# Dev-stack services for `npm run dev:stack` (scripts/dev-stack.mjs).
+# Only PostgreSQL and Temporal run in Docker; everything else runs from source.
+# The ALL-CAPS placeholder tokens are substituted by scripts/dev-stack.mjs:
+# the images (with digests) are parsed out of
+# packages/run-spaceapp/templates/compose.yml so they are never copied by hand.
+name: spaceapp-dev
+
+services:
+  postgres:
+    image: __POSTGRES_IMAGE__
+    restart: "no"
+    environment:
+      POSTGRES_DB: spaceapp
+      POSTGRES_USER: spaceapp
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    ports:
+      - "127.0.0.1:__POSTGRES_PORT__:5432"
+    volumes:
+      - spaceapp-dev-postgres:/var/lib/postgresql/data
+    secrets:
+      - postgres-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spaceapp -d spaceapp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  temporal:
+    image: __TEMPORAL_IMAGE__
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: spaceapp
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/docker.yaml
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - export POSTGRES_PWD="$$(cat /run/secrets/postgres-password)"; exec /etc/temporal/entrypoint.sh autosetup
+    ports:
+      - "127.0.0.1:__TEMPORAL_PORT__:7233"
+    secrets:
+      - postgres-password
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233 >/dev/null && temporal operator namespace describe --namespace default --address temporal:7233 >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+secrets:
+  postgres-password:
+    file: __SECRETS_DIR__/postgres-password
+
+volumes:
+  spaceapp-dev-postgres:

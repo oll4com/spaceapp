@@ -1,0 +1,60 @@
+name: Dev stack
+
+# End-to-end check for `npm run dev:stack` (issue: one command to run the
+# full SpaceApp stack from source). Runs the stack without a TTY, completes
+# owner setup over HTTP, checks the starter room's CLI pane, then resets
+# and verifies nothing is left behind.
+on:
+  pull_request:
+    paths:
+      - "scripts/dev-stack.mjs"
+      - "scripts/dev-stack-ci.mjs"
+      - "scripts/dev-stack.compose.yml"
+      - "package.json"
+      - ".github/workflows/dev-stack.yml"
+  workflow_dispatch:
+
+jobs:
+  dev-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+
+      - name: Run the dev stack end to end
+        run: node scripts/dev-stack-ci.mjs
+
+  # Same end-to-end check on macOS (acceptance asks for Linux and
+  # macOS/WSL2 run outputs). GitHub's macOS runners ship no Docker, so
+  # Colima provides the daemon; the stack itself is unchanged.
+  dev-stack-macos:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Docker via Colima
+        run: |
+          brew install colima docker docker-compose
+          mkdir -p ~/.docker/cli-plugins
+          ln -sfn "$(brew --prefix docker-compose)/bin/docker-compose" ~/.docker/cli-plugins/docker-compose
+          colima start --cpu 4 --memory 6
+
+      - name: Install dependencies
+        run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+
+      - name: Run the dev stack end to end
+        run: node scripts/dev-stack-ci.mjs

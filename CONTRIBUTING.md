@@ -27,6 +27,61 @@ packaging requires its normal toolchain and separate platform acceptance.
 Dependency installation may use the network; the smoke command below does not
 need a provider account, API key, Docker, PostgreSQL or Temporal.
 
+## Run the full app from source
+
+One command starts the whole application from a fresh clone — no image
+builds, no manual service wiring:
+
+```sh
+ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci   # once, if node_modules is missing
+npm run dev:stack                        # start everything
+npm run dev:stack -- down                # stop processes and Docker services
+npm run dev:stack -- reset               # stop + remove containers, volumes and state
+```
+
+**Prerequisites.** Node >=22.12 <23 and npm (as above), plus a running
+Docker with Compose v2 — only PostgreSQL (pgvector) and Temporal run in
+Docker, using the same digest-pinned images as
+`packages/run-spaceapp/templates/compose.yml` (the digests are read from
+that file at startup, never copied). The API (watch mode), the Vite web dev
+server, the Temporal worker and the CLI host all run from source.
+
+**What it does.** The command creates a `.dev-stack/` state directory
+(git-ignored) holding per-install secrets (mode 0600), the rendered compose
+file, logs, the CLI provider state, the `*-vscode-parity` wrapper commands
+and the pinned OpenCode build from the `Dockerfile`, installed into the
+state directory rather than globally. It runs the migrations, starts the
+processes in dependency order and waits until `/readyz` reports `ok: true`
+with workflows enabled. It then prints the web URL and the one-time owner
+setup token — complete the usual owner setup in the browser (setup token →
+create owner → sign in; the token is valid for about 15 minutes after the
+API starts, restart the stack if it lapses). The dev-login shortcut is
+never enabled. If any process exits, the command says which one and where
+its log is instead of hanging silently.
+
+**Ports.** Everything binds to `127.0.0.1` only, on its own ports so an
+installed SpaceApp on 4910/4911 is never touched: web 14911, API 14910,
+PostgreSQL 15432, Temporal 7233. Override any of them with
+`SPACE_DEV_WEB_PORT`, `SPACE_DEV_API_PORT`, `SPACE_DEV_POSTGRES_PORT` and
+`SPACE_DEV_TEMPORAL_PORT`.
+
+**Hot reload.** Editing `apps/api/src` restarts the API, editing
+`apps/web/src` hot-reloads in the browser, and editing `packages/*` or the
+worker rebuilds that package and restarts the processes that consume it.
+
+**Platform notes.** Linux works as-is. On macOS, Docker Desktop or Colima
+both work (`colima start` before the command). On Windows 11, run
+everything inside WSL2, including Docker Desktop's WSL2 backend; the
+commands above are run from the WSL2 shell, not from PowerShell.
+
+**Troubleshooting.** "Docker is not reachable" — start Docker Desktop /
+Colima / dockerd and retry. A port is already in use — another dev stack or
+an unrelated process holds it; pick another port with the variables above.
+The setup token expired — stop and start again, then claim promptly. Logs
+for every process are in `.dev-stack/logs/`. `npm run dev:stack -- status`
+shows what is currently running; `reset` returns the machine to a clean
+slate.
+
 ## First executed task, without a provider
 
 ```sh

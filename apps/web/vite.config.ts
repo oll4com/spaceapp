@@ -33,12 +33,14 @@ export default defineConfig({
   server: {
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
+    // SPACE_API_ORIGIN lets `npm run dev:stack` point the dev proxy at its own
+    // API port; the default is the installed app's API on 4910, as before.
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      "/api": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/plugins": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/healthz": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/readyz": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910",
+      "/version": process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910"
     }
   },
   test: {
