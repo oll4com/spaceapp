@@ -81,7 +81,13 @@ jobs:
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
           sudo apt-get update
           sudo apt-get install -y podman docker-compose-plugin
-          podman --version
+          podman_version=$(podman --version | awk '{print $3}')
+          echo "Podman version: $podman_version"
+          required="4.9.0"
+          if [ "$(printf '%s\n' "$required" "$podman_version" | sort -V | head -n1)" != "$required" ]; then
+            echo "Podman $podman_version is older than required $required"
+            exit 1
+          fi
           podman compose version
 
       - name: Install workspace dependencies
@@ -101,7 +107,7 @@ jobs:
         env:
           SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman-ci
         run: |
-          for i in {1..60}; do
+          for _ in {1..60}; do
             if curl -fsS http://127.0.0.1:4911/readyz | grep -q '"ok":true'; then
               echo "SpaceApp is ready"
               exit 0

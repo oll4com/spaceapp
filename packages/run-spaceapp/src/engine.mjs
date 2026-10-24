@@ -88,6 +88,25 @@ export function minimumPodmanVersion() {
 }
 
 /**
+ * Validate the installed Podman version is at least the documented minimum.
+ * Returns false when the CLI is unavailable or the version cannot be parsed.
+ */
+export async function validatePodmanVersion(execute) {
+  const spec = engineVersionFlags("podman");
+  let output = "";
+  const { Writable } = await import("node:stream");
+  const stdout = new Writable({
+    write(chunk, _encoding, done) {
+      output += chunk.toString();
+      done();
+    }
+  });
+  const code = await execute(spec, { stdout, stderr: null });
+  if (code !== 0) return false;
+  return isPodmanVersionSupported(parseEngineVersion(output));
+}
+
+/**
  * Detect the first engine that is available on PATH and responsive.
  * Docker is preferred when both are present to preserve existing behaviour.
  */
@@ -128,7 +147,7 @@ export async function inspectPodmanMachine(execute, name = "") {
  * List Podman machines. Returns an empty array when the CLI is unavailable.
  */
 export async function listPodmanMachines(execute) {
-  const output = await captureProbe(execute, { command: "podman", args: ["machine", "list", "--format", "{{json .}}"] });
+  const output = await captureProbe(execute, { command: "podman", args: ["machine", "list", "--format", "json"] });
   if (!output) return [];
   try {
     const parsed = JSON.parse(output);
@@ -144,9 +163,10 @@ export async function listPodmanMachines(execute) {
  */
 export function podmanMachineResourceInfo(machine) {
   if (!machine || typeof machine !== "object") return null;
-  const cpus = Number(machine.CPUs ?? machine.cpus);
-  const memoryBytes = parseByteSize(machine.Memory ?? machine.memory);
-  const diskSize = machine.DiskSize ?? machine.diskSize ?? machine.ImageVolumeSize ?? machine.imageVolumeSize;
+  const resources = machine.Resources && typeof machine.Resources === "object" ? machine.Resources : {};
+  const cpus = Number(resources.CPUs ?? machine.CPUs ?? machine.cpus);
+  const memoryBytes = parseByteSize(resources.Memory ?? machine.Memory ?? machine.memory);
+  const diskSize = resources.DiskSize ?? machine.DiskSize ?? machine.diskSize ?? machine.ImageVolumeSize ?? machine.imageVolumeSize;
   const diskBytes = parseByteSize(diskSize);
   if (!Number.isFinite(cpus) || cpus <= 0) return null;
   return {

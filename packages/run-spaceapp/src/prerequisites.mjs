@@ -17,7 +17,8 @@ import {
   listPodmanMachines,
   normalizeEngine,
   podmanMachineResizeGuidance,
-  podmanMachineResourceInfo
+  podmanMachineResourceInfo,
+  validatePodmanVersion
 } from "./engine.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
@@ -149,6 +150,13 @@ export async function ensureDockerAvailable({
   const engine = normalizeEngine(requestedEngine ?? defaultEngine());
   if (engine === "podman") {
     if (await engineIsReady("podman", execute)) {
+      if (platform === "darwin") {
+        const machineDiag = await diagnosePodmanMachine(execute);
+        if (!machineDiag.ok) {
+          stderr.write(machineDiag.message);
+          return { code: 1, reexecuted: false };
+        }
+      }
       return { code: 0, reexecuted: false };
     }
     if (platform === "darwin") {
@@ -699,6 +707,9 @@ async function engineIsReady(engine, execute) {
       return false;
     }
   }
+  if (engine === "podman" && !await validatePodmanVersion(execute)) {
+    return false;
+  }
   return true;
 }
 
@@ -707,6 +718,7 @@ async function diagnosePodmanMachine(execute) {
   const running = machines.find((machine) => machine?.Running === true);
   if (!machines.length) {
     return {
+      ok: false,
       message:
         "Podman was selected but no Podman machine exists on macOS. " +
         "Create and start one with:\n" +
@@ -717,6 +729,7 @@ async function diagnosePodmanMachine(execute) {
   }
   if (!running) {
     return {
+      ok: false,
       message:
         "Podman was selected but no Podman machine is running. " +
         `Start it with: podman machine start ${machines[0]?.Name ?? ""}\n` +
@@ -727,6 +740,7 @@ async function diagnosePodmanMachine(execute) {
   const resources = podmanMachineResourceInfo(machine);
   if (!resources) {
     return {
+      ok: false,
       message:
         `Podman machine "${running.Name}" is running but its resources could not be read. ` +
         "Verify it with: podman machine inspect " + running.Name + "\n"
@@ -743,9 +757,10 @@ async function diagnosePodmanMachine(execute) {
   if (issues.length) {
     lines.push("The machine is below the recommended size for SpaceApp: " + issues.join(", ") + ".");
     lines.push(podmanMachineResizeGuidance(running.Name));
+    lines.push("Then rerun this command, or use --engine docker.");
+    return { ok: false, message: lines.join("\n") + "\n" };
   }
-  lines.push("Then rerun this command, or use --engine docker.");
-  return { message: lines.join("\n") + "\n" };
+  return { ok: true, message: lines.join("\n") + "\n" };
 }
 
 function formatGibibytes(bytes) {
