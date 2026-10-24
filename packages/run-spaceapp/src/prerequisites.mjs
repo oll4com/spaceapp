@@ -5,11 +5,18 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import {
+  PODMAN_COMPOSE_PROVIDER,
+  PODMAN_MIN_VERSION,
+  parseEngineVersion,
+  podmanInstallInstructions,
+  versionAtLeast
+} from "./engine.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -183,6 +190,94 @@ export async function ensureDockerAvailable({
     osRelease,
     installArgs
   });
+}
+
+/** Capture a probe command's stdout (the execute contract streams output, exactly like storage.captureProbe). */
+async function captureProbeOutput(spec, execute) {
+  let output = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      output += chunk.toString();
+      callback();
+    }
+  });
+  try {
+    const code = await execute(spec, { stdout, stderr: null });
+    return { code, output };
+  } catch {
+    return { code: 127, output };
+  }
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Podman prerequisite gate (#63). Unlike Docker, Podman is never installed by the launcher (installing Podman
+ * is out of scope): when anything is missing or too old this prints the instructions and fails, so the user
+ * hears about it at install time instead of as a late stack failure.
+ */
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  execute
+}) {
+  if (platform === "win32") {
+    stderr.write("The Podman engine is not supported on Windows. Rerun the installer with the Docker engine.\n");
+    return { code: 1, reexecuted: false };
+  }
+  const versionProbe = await captureProbeOutput({ command: "podman", args: ["--version"] }, execute);
+  const version = versionProbe.code === 0 ? parseEngineVersion(versionProbe.output) : null;
+  if (!version) {
+    stderr.write("Podman was not found on PATH.\n");
+    stderr.write(`${podmanInstallInstructions(platform)}\n`);
+    return { code: 1, reexecuted: false };
+  }
+  if (!versionAtLeast(version, PODMAN_MIN_VERSION)) {
+    stderr.write(
+      `Podman ${version} is too old: SpaceApp requires Podman >= ${PODMAN_MIN_VERSION}. ` +
+      "Upgrade Podman with your package manager or from https://podman.io and rerun the installer.\n"
+    );
+    return { code: 1, reexecuted: false };
+  }
+  if (await execute({ command: "podman", args: ["compose", "version"] }, { stdout: null, stderr: null }) !== 0) {
+    stderr.write(
+      "`podman compose` has no working provider. SpaceApp drives Compose through " +
+      `${PODMAN_COMPOSE_PROVIDER}; install Docker Compose v2 (the standalone docker-compose binary or the ` +
+      "Docker CLI compose plugin), then confirm `podman compose version` succeeds. " +
+      "podman-compose (the Python tool) is not a supported provider.\n"
+    );
+    return { code: 1, reexecuted: false };
+  }
+  if (await execute({ command: "podman", args: ["info"] }, { stdout: null, stderr: null }) !== 0) {
+    if (platform === "darwin") {
+      stderr.write(
+        "Podman is installed but its machine is not reachable. Create and start it, then rerun the installer:\n" +
+        "  podman machine init && podman machine start\n"
+      );
+    } else {
+      stderr.write(
+        "Podman is installed but not reachable. For rootless Podman, start the user socket the Compose " +
+        "provider connects to, then rerun the installer:\n" +
+        "  systemctl --user enable --now podman.socket\n" +
+        "and confirm `podman info` succeeds.\n"
+      );
+    }
+    return { code: 1, reexecuted: false };
+  }
+  stdout.write(`Podman ${version} with the Docker Compose v2 provider is ready.\n`);
+  return { code: 0, reexecuted: false };
 }
 
 async function ensureWindowsDocker({
@@ -654,7 +749,7 @@ async function dockerCliAndComposeAreAvailable(execute) {
   return true;
 }
 
-async function dockerIsReady(execute) {
+export async function dockerIsReady(execute) {
   for (const spec of [
     { command: "docker", args: ["--version"] },
     { command: "docker", args: ["compose", "version"] },

@@ -93,6 +93,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
 - **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Podman (alternative, Linux/macOS)**: `install --engine podman` runs the same stack on rootless Podman >= 5 (cgroup v2) through the Docker Compose v2 provider (`podman compose`). Podman is never installed by the launcher; see the run-spaceapp README's "Container engines" section for requirements, the macOS machine sizing check, and the backup/restore migration used instead of in-place engine switching.
 
 ### Run the Installation Command
 

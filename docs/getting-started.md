@@ -53,6 +53,40 @@ its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
 
+## Podman instead of Docker (Linux and macOS)
+
+The same stack runs on rootless Podman. Install Podman yourself first (the
+launcher never installs it), then:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+You need Podman >= 5 (on Linux, on cgroup v2) and its Compose provider:
+Docker Compose v2, so that `podman compose version` succeeds — the stack
+relies on Compose v2 semantics (profiles, file secrets, health conditions,
+`--wait`), and podman-compose is not a supported provider. On Linux, start
+the rootless user socket the provider connects to:
+
+```bash
+systemctl --user enable --now podman.socket
+```
+
+On macOS, create and start a Podman machine (`podman machine init &&
+podman machine start`); `spaceapp doctor` compares the machine's CPUs,
+memory, and disk with your profile and prints the `podman machine set`
+resize command when it is too small.
+
+The engine is stored in the configuration and used by every later command.
+If Docker is missing but Podman is ready, a plain `install` picks Podman
+automatically and says so. Switching engines later is refused — volumes are
+engine-private — and the installer prints the supported migration instead:
+`backup`, `uninstall --purge-data`, `install --engine <other>`, `restore`.
+`--access host-root` stays Docker-only, and Podman on Windows is not
+supported. `spaceapp doctor` reports the engine version, rootless state,
+cgroup version, and whether memory/CPU limits can be delegated to your user
+cgroup; when they cannot, it says so up front rather than failing late.
+
 ## Windows 11 — Command Prompt
 
 Enable hardware virtualization and install Node.js 20.11 or newer. Open

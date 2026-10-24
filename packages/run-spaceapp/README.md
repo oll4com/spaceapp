@@ -62,6 +62,63 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+### Container engines: Docker or rootless Podman
+
+Docker is the default engine. On Linux and macOS the same stack can run on
+rootless Podman instead:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Requirements for the Podman engine:
+
+- Podman >= 5 on cgroup v2 (Linux). The launcher never installs Podman; when
+  it is missing or too old it prints the install instructions for your
+  platform and stops.
+- The Compose provider is Docker Compose v2, reached through `podman compose`
+  (the standalone `docker-compose` binary, or the Docker CLI with its compose
+  plugin). podman-compose is not a supported provider: the stack relies on
+  Compose v2 semantics (profiles, file-based secrets, `depends_on` health
+  conditions including `required: false`, `--wait`). Confirm with
+  `podman compose version`.
+- Rootless Podman needs its user socket for the provider:
+  `systemctl --user enable --now podman.socket`.
+- On macOS, a Podman machine: `podman machine init && podman machine start`.
+  The launcher checks the machine's CPUs, memory, and disk against the
+  selected profile in `doctor` and explains how to resize it
+  (`podman machine set --cpus N --memory MIB --disk-size GIB`).
+
+The chosen engine is saved in the installation configuration and used by
+every later command (`up`, `down`, `status`, `logs`, `update`, `backup`,
+`restore`, `doctor`, `uninstall`, the provider installer, and the rest). If
+Docker is absent but a supported Podman is ready, a plain `install` picks
+Podman automatically and says so; `--engine docker` insists on Docker.
+
+Engines cannot be switched on an existing installation: volumes are private
+to each engine, so the data would be stranded. The installer refuses with the
+supported migration — `backup` on the current engine,
+`uninstall --purge-data`, `install --engine <other>`, then `restore`.
+
+Rootless notes:
+
+- The published images start as root inside the container and drop to
+  `10001:10001` themselves; the launcher deliberately does **not** set
+  `userns_mode: keep-id`, which breaks that startup. The default subordinate
+  UID mapping is correct, and backup/restore one-off containers run as `0:0`
+  (the mapped root) so they can read every file.
+- Workspace bind mounts are rendered with the SELinux `z` relabel option
+  under Podman, so they work on SELinux-enforcing hosts and keep their host
+  ownership. Read-only workspaces stay read-only.
+- Profile memory/CPU limits (`mem_limit`/`cpus`) need cgroup v2 controller
+  delegation to your user cgroup. `doctor` reports the engine, version,
+  rootless state, cgroup version, and delegation; when cpu/memory are not
+  delegated it says so plainly (the stack runs, limits unenforced) instead of
+  failing late. The support bundle carries the same facts, never secrets.
+- `--access host-root` is refused with the Podman engine (rootless-only
+  support); use isolated access, or Docker for host-root. Podman on Windows
+  is not supported.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard lists what is sent

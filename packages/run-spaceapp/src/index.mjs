@@ -19,6 +19,7 @@ import {
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 import { imageDigestEnv, PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
+import { CONTAINER_ENGINES, engineOf } from "./engine.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -125,6 +126,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -308,13 +310,17 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine = undefined
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  if (engine !== undefined && !CONTAINER_ENGINES.includes(engine)) {
+    throw new Error("Default config engine must be docker or podman.");
+  }
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -324,6 +330,9 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    // Only an explicitly chosen engine is stored: configurations written before engine selection have no
+    // field and mean Docker, so the default keeps producing the exact pre-engine configuration shape.
+    ...(engine === undefined ? {} : { engine }),
     companionsEnabled,
     optionalModules: "none",
     workspaces: []
@@ -363,6 +372,14 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !CONTAINER_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  // host-root hands the containers the whole host filesystem; the Podman support in this launcher is
+  // rootless-only, so the combination is refused here as well as at install time (#63).
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("accessMode host-root is not supported with the Podman engine; use isolated access or the Docker engine.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -673,11 +690,18 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
+  // On SELinux-enforcing hosts a Podman bind mount needs the shared relabel option or the container cannot
+  // read the workspace at all; "z" relabels for shared use and keeps the host ownership (rootless Podman maps
+  // the mount to the invoking user). Docker renders no bind options, so Docker output is unchanged.
+  const bindExtras = engineOf(config) === "podman"
+    ? ["        bind:", '          selinux: "z"']
+    : [];
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...bindExtras
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -692,7 +716,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...bindExtras
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
@@ -783,6 +808,12 @@ export function renderHostAccessCompose(config) {
 
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
+  // The engine travels on the options object; callers that pass the configuration itself (which carries the
+  // stored engine) get the right binary for free. `podman compose` accepts the same Compose v2 arguments.
+  const engine = options.engine ?? "docker";
+  if (!CONTAINER_ENGINES.includes(engine)) {
+    throw new Error(`Unsupported container engine "${engine}".`);
+  }
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
@@ -905,7 +936,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -956,8 +987,12 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine = undefined
 }) {
+  if (engine !== undefined && !CONTAINER_ENGINES.includes(engine)) {
+    throw new Error("Install engine must be docker or podman.");
+  }
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([
@@ -979,7 +1014,10 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      // A fresh install stores the engine only when one was explicitly chosen; an existing installation
+      // keeps its stored engine untouched here (cli.mjs refuses an in-place switch before this runs).
+      ...(engine === undefined ? {} : { engine })
     });
   }
   if (config.version !== version) {
