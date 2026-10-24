@@ -5,6 +5,19 @@
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders, not credentials"
+description = "Test fixtures, documentation placeholders, and public client identifiers"
 regexTarget = "match"
-regexes = ['''^your_[a-z_]+>''']
+regexes = [
+  '''^your_[a-z_]+>''',
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''',
+  '''phc_zjjbX0PnWxERXrMHhkEJWj9A9BhGVLRReICgsfTMmpx'''
+]
+paths = [
+  '''apps/[^/]+/tests/.*''',
+  '''packages/[^/]+/tests/.*''',
+  '''packages/gateway/tests/fixtures/.*''',
+  '''agent-skills/[^/]+/tests/.*''',
+  '''docs/quality/.*''',
+  '''agent-skills/space-hyperframes/media-use/scripts/lib/telemetry\.mjs''',
+  '''packages/gateway/src/providers/claude/oauth\.ts'''
+]
