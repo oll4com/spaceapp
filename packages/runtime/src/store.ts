@@ -6422,6 +6422,8 @@ export class InMemorySpaceStore implements SpaceStore {
         throw new SpaceConflictError("CLI task revision does not belong to the selected logical task.");
       }
     }
+    const startedAt = parsed.startedAt ?? timestamp;
+    const updatedAt = parsed.updatedAt ?? startedAt;
     const session = paneCliSessionSchema.parse({
       ...parsed,
       sessionId,
@@ -6434,8 +6436,8 @@ export class InMemorySpaceStore implements SpaceStore {
       statusReason: parsed.statusReason ?? null,
       exitCode: null,
       isActive: parsed.isActive ?? true,
-      startedAt: timestamp,
-      updatedAt: timestamp,
+      startedAt,
+      updatedAt,
       endedAt: null
     });
     if (session.isActive) {

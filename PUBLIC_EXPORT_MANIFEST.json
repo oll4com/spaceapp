@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "3e4572bc975623d3450a8dfebeba5dbc8b7406f6",
   "fileCount": 4729,
-  "transformations": 393,
+  "transformations": 394,
   "files": [
     {
       "path": ".gitignore",
@@ -11180,8 +11180,8 @@
     {
       "path": "apps/api/src/shared-chat-dispatch.ts",
       "sourceObjectId": "97dc9e01246e1ea8369f177aea4bc45014f73f9f",
-      "sha256": "cad0db59cb96273b01ef9a44fcff2e91efe85d5a9621e2053b4eb55f7d042ea0",
-      "size": 4377
+      "sha256": "95b6dd69a6e4fd8fe931d7430819283225985317ab88205926b03f32439fdf79",
+      "size": 4741
     },
     {
       "path": "apps/api/src/shared-chat-routes.ts",
@@ -13904,8 +13904,8 @@
     {
       "path": "apps/api/tests/shared-chat-dispatch.test.ts",
       "sourceObjectId": "8650787b9a272f8fd0ac19a70a459c5d35a4e519",
-      "sha256": "03738b1eaf249a85dac1806a499a4c87d46e3a8c8af7ec1008f9a6ff0aa7f014",
-      "size": 7333
+      "sha256": "2444ead49dad0e3dbbb35adae0dd4a55bc2c96db7ad259b1d5ab14b71e35e5dd",
+      "size": 9328
     },
     {
       "path": "apps/api/tests/source-control-publishing.test.ts",
@@ -23090,8 +23090,8 @@
     {
       "path": "packages/contracts/src/schemas.ts",
       "sourceObjectId": "696eb6d84d6580d5bd306b6373a6c930c54c8308",
-      "sha256": "3df2f5b7fb26f8e8061584f244c6ea8083a9dc08738b8be50007c3df13e59c24",
-      "size": 447443
+      "sha256": "0f9dcee8060a44dc1572e2d30a2c4006097f54423705d60ea59fa8df49bf9a21",
+      "size": 447533
     },
     {
       "path": "packages/contracts/src/source-control.ts",
@@ -27896,8 +27896,8 @@
     {
       "path": "packages/runtime/src/store.ts",
       "sourceObjectId": "6aed37fac93d1cb7e8161bd5630c144e4f9396c1",
-      "sha256": "8794b8ea3f86730a81f9a3402670907783aadcf262ebb0f1cd5a58b901a82317",
-      "size": 397695
+      "sha256": "1404a37d3c282c04c0b35a7c42c7834048844e41aee512b3e1daa45fbfb6d484",
+      "size": 397779
     },
     {
       "path": "packages/runtime/src/telegram-notifications.ts",
