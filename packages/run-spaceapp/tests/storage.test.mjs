@@ -121,3 +121,25 @@ test("an installation that pulled its images by digest is inspected by digest, s
   assert.ok(!inspected.includes("ghcr.io/oll4com/spaceapp-core:1.1.7"), "the pinned digest answered, the tag was not needed");
   assert.ok(inspected.includes("ghcr.io/oll4com/spaceapp-cli:1.1.7"), "an unpinned image is still found by its tag");
 });
+
+test("Podman storage probes the selected engine and reads its rootless resource shape", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-storage-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const calls = [];
+  const execute = async (spec, io) => {
+    calls.push(spec);
+    if (spec.args[0] === "info") io.stdout.write(JSON.stringify({ host: { cpus: 6, memTotal: 10 * GiB }, store: { graphRootAllocated: 40 * GiB, graphRootUsed: 39 * GiB } }));
+    else if (spec.args[0] === "image") io.stdout.write("a".repeat(64));
+    return 0;
+  };
+  const plan = await inspectStoragePlan({ root, config: { ...createDefaultConfig({ version: "1.1.7", profile: "small" }), engine: "podman" }, resources, execute, operation: "repair", fetch: null });
+  assert.ok(calls.every((spec) => spec.command === "podman"));
+  assert.deepEqual(calls[0].args, ["info", "--format", "json"]);
+  assert.equal(plan.missingImages.length, 0, "Podman's unprefixed cached image ID is recognized");
+  assert.equal(plan.engineFreeDiskBytes, GiB);
+  assert.equal(plan.resources.freeDiskBytes, GiB);
+  assert.equal(plan.resources.engineCpuCount, 6);
+  assert.equal(plan.resources.engineMemoryBytes, 10 * GiB);
+  assert.equal(plan.resources.engine, "podman");
+  assert.equal(storageChecks(plan, resources).at(-1).name, "Podman storage");
+});

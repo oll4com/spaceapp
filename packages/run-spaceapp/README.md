@@ -1,6 +1,6 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for SpaceApp.
+Cross-platform Docker and rootless Podman launcher for SpaceApp.
 
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
@@ -17,8 +17,10 @@ npm install -g run-spaceapp
 
 The smallest profile requires Node.js 20.11 or newer, 4 CPUs, 8 GB-class RAM
 (7 GiB usable), and 6.5 GiB free for a fresh installation. Keep `@latest` in the command so npm resolves the current release instead
-of matching an existing local launcher. If Docker is missing, the universal
-install command automatically installs it from official Docker sources on
+of matching an existing local launcher. Docker remains the default. If Docker is
+missing and Podman is installed, the launcher offers Podman (and selects it with
+`--non-interactive`). If neither is available, the universal install command
+automatically installs Docker from official Docker sources on
 Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
 `pacman` packages on Arch-family Linux including CachyOS. It starts Docker and
 waits for Engine and Compose readiness before pulling images. Windows prefers
@@ -41,7 +43,7 @@ credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
 
 The launcher selects `small`, `medium`, or `large` automatically using CPU,
-RAM and free disk. Docker's CPU and RAM allocation is checked as well.
+RAM and free disk. The selected engine's CPU and RAM allocation is checked as well.
 
 | Profile | CPU | Usable RAM | Fresh free space | Services |
 | --- | --- | --- | --- | --- |
@@ -59,8 +61,64 @@ checkpoint and 0.5 GiB headroom. Cached target images require no extra image spa
 Shared layers are excluded when public registry metadata is available; otherwise
 a conservative estimate is shown. Space is checked again after pulling and
 before pausing writers. Existing data is kept in place; the launcher never deletes
-images, backups or volumes to free space. Separate Docker disk capacity is checked
+images, backups or volumes to free space. Separate engine disk capacity is checked
 when measurable and its availability is reported.
+
+### Rootless Podman
+
+Install [Podman](https://podman.io/docs/installation) **5.0 or newer** yourself,
+then install **Docker Compose v2, version 2.20.0 or newer**, as the
+`docker-compose` executable on `PATH`. The launcher runs `podman compose`
+with `docker-compose` as its provider. Python `podman-compose` and other major
+versions of Docker Compose are not supported. This provider supplies profiles, file secrets,
+health dependencies (including `required: false`), `--wait`, and resource limits.
+A Docker daemon is not required. See the
+[Podman Compose provider documentation](https://docs.podman.io/en/latest/markdown/podman-compose.1.html).
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+On Linux, run as your normal user with cgroup v2 and CPU/memory controllers
+delegated to the user's systemd service. Enable the rootless API socket with
+`systemctl --user enable --now podman.socket` before installing. `doctor`
+reports the engine/version,
+rootless status, cgroup version and limit delegation; `support-bundle` includes
+those facts without credentials. Missing delegation stops installation with
+setup guidance. `doctor --fix` rechecks Podman but does not install it or change
+system cgroup delegation. See [rootless setup and troubleshooting](https://github.com/containers/podman/blob/main/troubleshooting.md).
+
+On macOS, initialize and start a rootless Podman machine with enough resources:
+
+```bash
+podman machine init --cpus 4 --memory 8192 --disk-size 30
+podman machine start
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The launcher checks the machine's CPU, memory and available disk against the
+selected profile. On machine providers that support resizing (QEMU), stop the
+machine, run `podman machine set --cpus 4 --memory 8192 --disk-size 30 <name>`,
+then start it again. Disk capacity can only increase; other providers may require
+recreating the machine after backing up its data. See
+[`podman machine set`](https://docs.podman.io/en/latest/markdown/podman-machine-set.1.html).
+
+`--engine docker|podman` is saved in `config.json`; all later commands use that
+engine without another flag. Unattended installs can use
+`install --non-interactive --answers answers.json` with
+`{"confirm":true,"engine":"podman","open":false}`.
+Existing installations without an engine setting continue to use Docker.
+Changing engines on an existing installation is refused because their volumes
+are separate; there is no supported in-place engine migration. Podman supports
+isolated access only: `--access host-root` is refused. Windows Podman/WSL is
+outside this support path.
+
+Workspace bind mounts on Podman use shared SELinux `:z` labeling (including
+read-only mounts) because core and CLI share them. Register project directories
+you own, not system directories: relabeling changes their SELinux labels. The
+launcher maps container UID/GID 10001 to your host user for these services, so
+files created in writable workspaces retain your host ownership without a
+recursive `chown`. See [workspace setup](https://github.com/oll4com/spaceapp/blob/main/docs/getting-started.md#register-a-workspace).
 
 ### Telemetry
 
@@ -114,13 +172,13 @@ before enabling it:
 npx --yes run-spaceapp@latest install --access host-root
 ```
 
-Host-root is supported only on Linux. Run
+Host-root is supported only on Linux with Docker; Podman refuses it. Run
 `npx --yes run-spaceapp@latest install --access isolated` to remove the host
 mount while keeping SpaceApp data and volumes.
 
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in
-isolated Docker provider state. Neither credential source is included in
+isolated container provider state. Neither credential source is included in
 portable SpaceApp backups.
 
 Claude Code is not redistributed in SpaceApp images. Install the reviewed
@@ -162,7 +220,7 @@ npx --yes run-spaceapp@latest owner rotate-setup-token
 ```bash
 npx --yes run-spaceapp@latest status         # Check container health and port bindings
 npx --yes run-spaceapp@latest logs           # Show recent container log lines
-npx --yes run-spaceapp@latest doctor         # Verify system prerequisites and diagnose Docker
+npx --yes run-spaceapp@latest doctor         # Verify system prerequisites and diagnose the engine
 npx --yes run-spaceapp@latest up             # Start containers in background
 npx --yes run-spaceapp@latest down           # Stop containers cleanly
 npx --yes run-spaceapp@latest open           # Open web app in default browser

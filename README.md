@@ -30,7 +30,7 @@ With SpaceApp, you can:
 - **Control Your Deployment**: Self-host the application and choose its providers and integrations. Remote model requests send the context needed for execution to the configured provider or gateway. Host filesystem access and credentials depend on deployment settings and explicit operator permissions; see the [state and trust boundaries](docs/quality/state-ownership.md).
 - **Start with OpenCode**: Setup presents OpenCode first. Available models, free tiers and authentication requirements depend on the installed CLI and its current provider catalog. Select and verify a model during setup.
 - **Shared Vector Memory (optional)**: When the memory graph is enabled for a deployment, SpaceApp stores memory records and their embeddings in PostgreSQL with `pgvector` and shows them as a 3D graph that agent sessions can query. Embeddings are computed by the configured embedding provider, so that provider receives the indexed text.
-- **One-Command Setup**: A single universal launcher command installs Docker prerequisites (if missing), configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11.
+- **One-Command Setup**: A single universal launcher command selects Docker or rootless Podman, installs Docker prerequisites when needed, configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11.
 
 ---
 
@@ -92,7 +92,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 - **Hardware**:
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
-- **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Container engine**: Docker is the default; if neither Docker nor Podman is present, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux). Alternatively, install **Podman >=5.0** with **Docker Compose v2 >=2.20.0** (`docker-compose` on `PATH`) and use `install --engine podman`. Linux requires rootless Podman, cgroup v2 and delegated CPU/memory controllers; macOS requires a running rootless Podman machine sized for the profile. Windows Podman is not supported. See [Podman setup and limits](docs/getting-started.md#rootless-podman-linux-and-macos).
 
 ### Run the Installation Command
 
@@ -104,8 +104,18 @@ npx --yes run-spaceapp@latest install
 
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
+The engine is saved for later commands. When Docker is absent and Podman is
+installed, the wizard offers Podman; `--non-interactive` selects it automatically.
+Use `--answers answers.json` with `{"confirm":true,"engine":"podman","open":false}` for scripted selection.
+Existing installs keep their engine: switching is refused because Docker and
+Podman volumes are separate. Podman supports isolated access only; `--access
+host-root` is refused. `doctor` and `support-bundle` report engine/version,
+rootless status, cgroup version and CPU/memory limit delegation. Registered
+Podman workspaces use shared SELinux `:z` labels and preserve your host user
+ownership; see [workspace setup](docs/getting-started.md#register-a-workspace).
+
 ### What Happens Next (Step-by-Step Onboarding):
-1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
+1. **System & Engine Verification**: The launcher verifies CPU, RAM, disk and the selected engine, and installs/starts Docker if needed.
 2. **Container Initialization**: Pulls SpaceApp's images by the digest the npm package pins (from run-spaceapp 1.1.7; earlier packages by exact version tag; published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.
@@ -130,7 +140,7 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 | :--- | :--- | :--- |
 | `install` | Full setup: installs Docker if needed, creates secrets, starts stack, and opens browser. | `npx --yes run-spaceapp@latest install --profile auto` |
 | `reinstall` | Clean reinstallation of containers while preserving existing data, credentials, and workspaces. | `npx --yes run-spaceapp@latest reinstall --keep-data` |
-| `up` | Starts the Docker application containers in the background. | `npx --yes run-spaceapp@latest up` |
+| `up` | Starts the application containers in the background. | `npx --yes run-spaceapp@latest up` |
 | `down` | Stops all SpaceApp containers cleanly without removing data. | `npx --yes run-spaceapp@latest down` |
 | `status` | Checks running container status, health checks, and port bindings. | `npx --yes run-spaceapp@latest status` |
 | `logs` | Shows the most recent container log lines (bounded tail) for troubleshooting. | `npx --yes run-spaceapp@latest logs` |
@@ -143,7 +153,7 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 | :--- | :--- | :--- |
 | `owner reset-password` | **Forgot your password?** Securely resets the operator account password from your terminal via masked input. | `npx --yes run-spaceapp@latest owner reset-password` |
 | `owner rotate-setup-token` | **Setup token expired?** Generates a fresh 15-minute token if the first-run owner setup was not completed in time. | `npx --yes run-spaceapp@latest owner rotate-setup-token` |
-| `factory-reset` | **Fresh start:** Creates a safety backup, purges all Docker volumes and database data, and resets to clean slate. | `npx --yes run-spaceapp@latest factory-reset` |
+| `factory-reset` | **Fresh start:** Creates a safety backup, purges all application volumes and database data, and resets to clean slate. | `npx --yes run-spaceapp@latest factory-reset` |
 
 ### 📁 Host Workspace Management
 
@@ -171,10 +181,10 @@ By default, the SpaceApp containers get no bind mount of your host filesystem: a
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
-| `doctor [--fix]` | Diagnoses system prerequisites, Docker health, and config; `--fix` automatically repairs issues. | `npx --yes run-spaceapp@latest doctor --fix` |
+| `doctor [--fix]` | Diagnoses system prerequisites, container engine health, and config; `--fix` automatically repairs issues. | `npx --yes run-spaceapp@latest doctor --fix` |
 | `repair [--dry-run]` | Verifies and rebuilds container configurations and runtime files. | `npx --yes run-spaceapp@latest repair` |
 | `support-bundle` | Generates a sanitized diagnostic JSON bundle to share when seeking help or opening issues. | `npx --yes run-spaceapp@latest support-bundle` |
-| `update [version]` | Safely downloads updated Docker images and upgrades the application stack with automatic checkpointing. | `npx --yes run-spaceapp@latest update` |
+| `update [version]` | Safely downloads updated container images and upgrades the application stack with automatic checkpointing. | `npx --yes run-spaceapp@latest update` |
 | `rollback` | Switches back to the previously recorded runtime images and configuration. It does not revert database changes; use `restore` for that. | `npx --yes run-spaceapp@latest rollback` |
 | `backup` | Generates a portable, checksummed archive containing PostgreSQL data, app settings, and memory graph. | `npx --yes run-spaceapp@latest backup` |
 | `restore` | Restores database, application data, and memory state from a previously generated backup archive. | `npx --yes run-spaceapp@latest restore` |
@@ -211,7 +221,7 @@ The runtime registry declares 16 CLI adapters, listed below. Installed versions 
 
 ## 🏗️ System Architecture & Profiles
 
-SpaceApp deploys a versioned Docker Compose stack. The installation profile decides which of the services below run; optional companion services are not shown:
+SpaceApp deploys a versioned Compose stack on Docker or rootless Podman. The installation profile decides which of the services below run; optional companion services are not shown:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -238,7 +248,7 @@ SpaceApp deploys a versioned Docker Compose stack. The installation profile deci
 
 ### Installation Profiles
 
-The launcher selects the largest profile that fits the available CPU, RAM, and free disk (and Docker's CPU and memory allocation when it can measure it), or you can pass `--profile <name>`:
+The launcher selects the largest profile that fits the available CPU, RAM, and free disk (and the engine's CPU and memory allocation when it can measure it), or you can pass `--profile <name>`:
 
 | Profile | Target System | Allocated Services | Minimum Hardware |
 | :--- | :--- | :--- | :--- |
@@ -278,7 +288,7 @@ On Linux, the launcher can mount the whole host filesystem into the CLI service.
 ```bash
 npx --yes run-spaceapp@latest install --access host-root
 ```
-Host-root is supported only on Linux. Run `npx --yes run-spaceapp@latest install --access isolated` to remove the host mount again.
+Host-root is supported only on Linux with Docker; Podman refuses it. Run `npx --yes run-spaceapp@latest install --access isolated` to remove the host mount again.
 </details>
 
 <details>

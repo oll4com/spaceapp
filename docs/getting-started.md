@@ -1,9 +1,11 @@
 # Getting started
 
 SpaceApp packages its application services and redistributable AI coding CLIs
-in Docker. The host needs Node.js only for the small `spaceapp` launcher,
-and enough resources for the stack. The launcher installs and starts Docker
-automatically when it is missing.
+in containers on Docker or rootless Podman. The host needs Node.js only for the
+small `spaceapp` launcher, and enough resources for the stack. Docker remains the
+default. If Docker is absent and Podman is installed, the launcher offers Podman
+(or selects it with `--non-interactive`); otherwise it installs and starts Docker
+when needed.
 
 ## Requirements
 
@@ -32,7 +34,7 @@ npx --yes run-spaceapp@latest install
 Linux runs the containers directly through the host Docker Engine; SpaceApp
 does not create a second guest VM. The launcher runs as the current non-root
 user so the installation remains in that user's config directory. If Docker is
-missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
+selected but missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
 official repository. On Arch-family systems, including CachyOS, it installs
 the native `docker` and `docker-compose` packages through `pacman`. It then
 starts the service. Before adding the current user to the `docker` group, it
@@ -47,11 +49,75 @@ Install Node.js 20.11 or newer, then run in Terminal:
 npx --yes run-spaceapp@latest install
 ```
 
-If Docker is missing, the launcher asks you to review and accept Docker
-Desktop's terms, downloads the official architecture-specific DMG, verifies
+If Docker is selected but missing, the launcher asks you to review and accept
+Docker Desktop's terms, downloads the official architecture-specific DMG, verifies
 its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
+
+## Rootless Podman (Linux and macOS)
+
+Install [Podman](https://podman.io/docs/installation) **>=5.0** and **Docker
+Compose v2 >=2.20.0**, with the `docker-compose` executable on `PATH`.
+The launcher calls `podman compose` with Docker Compose v2 as its provider.
+Python `podman-compose` and other major versions of Docker Compose are not
+supported. The provider supports the stack's profiles, file-based secrets, health dependencies including
+`required: false`, `init`, CPU/memory limits, shared socket volumes, `--wait`, and
+`exec`/`run --user 10001:10001`. No Docker daemon is needed. See
+[Podman's Compose provider configuration](https://docs.podman.io/en/latest/markdown/podman-compose.1.html).
+
+On Linux, use your normal unprivileged account. Rootless Podman needs subordinate
+UID/GID ranges, cgroup v2 and delegated CPU and memory controllers. Check the
+current engine and the launcher diagnostics:
+
+```bash
+systemctl --user enable --now podman.socket
+podman info
+npx --yes run-spaceapp@latest install --engine podman --profile small
+npx --yes run-spaceapp@latest doctor
+```
+
+If CPU/memory delegation is missing, an administrator must enable those
+controllers for the systemd user service before installation. See the
+[Podman rootless troubleshooting guide](https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-resource-limits-fails-with-a-permissions-error).
+The launcher reports unavailable limits before starting the stack. It does not
+install Podman or change the host's cgroup delegation, including with
+`doctor --fix`.
+
+On macOS, create and start a rootless Podman machine first. This example leaves
+headroom above the `small` profile's minimum:
+
+```bash
+podman machine init --cpus 4 --memory 8192 --disk-size 30
+podman machine start
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+Machine CPU, memory and free storage must meet the chosen profile, independently
+of your Mac's capacity. The launcher checks them and gives resizing guidance.
+For QEMU machines, stop the machine, resize, then start it again; for example:
+
+```bash
+podman machine stop <name>
+podman machine set --cpus 8 --memory 16384 --disk-size 40 <name>
+podman machine start <name>
+```
+
+Disk size can only grow. Other machine providers may require recreation instead
+of resizing: back up existing data before doing that. Consult
+[`podman machine set`](https://docs.podman.io/en/latest/markdown/podman-machine-set.1.html)
+for provider-specific restrictions.
+
+Engine selection is stored as `engine` in the installation's `config.json`.
+Every subsequent command, including backups, updates and uninstall, uses that
+engine. Scripted installation also accepts `--answers answers.json` with
+`{"confirm":true,"engine":"podman","open":false}`. An explicit
+`--engine docker` keeps the Docker path.
+Old installations with no engine field still use Docker. The launcher refuses
+engine changes on an existing installation because the engines cannot see each
+other's volumes; no in-place engine migration is supported. Podman supports only
+`--access isolated`; `--access host-root` is refused. Podman on Windows/WSL is
+outside the supported scope.
 
 ## Windows 11 — Command Prompt
 
@@ -98,7 +164,7 @@ The universal install command defaults to `--profile auto`:
 | `large` | medium + managed Chromium, larger resource limits | 8 | 15 GiB | 11 GiB |
 
 Auto chooses the largest profile that fits all three resources, then checks
-Docker's allocation. Existing installations preserve their profile during an
+the engine's allocation. Existing installations preserve their profile during an
 upgrade. `light` and `standard` keep compatibility settings for older installs.
 Additional providers and companions install only when requested.
 
@@ -146,8 +212,8 @@ data, credentials, workspaces, secrets, and persistent volumes, run:
 npx --yes run-spaceapp@latest install --access isolated
 ```
 
-Host-root is supported only on Linux; the launcher refuses it on macOS and
-Windows.
+Host-root is supported only on Linux with Docker; the launcher refuses it
+with Podman and on macOS and Windows.
 
 The `npx` command is the universal one-command installer. To retain a global
 launcher for later operations, optionally run `npm install -g run-spaceapp`;
@@ -162,7 +228,7 @@ headroom. Target images already cached need no extra image space. Registry layer
 metadata excludes shared layers when available; offline/unknown metadata uses a
 conservative estimate. The launcher checks space again after pull and before
 cutover. Existing workspaces and volumes are retained in place, never duplicated
-or deleted for space. Docker's separate disk capacity is checked when measurable;
+or deleted for space. The engine's separate disk capacity is checked when measurable;
 an unavailable measurement is reported. Data size and optional companions can
 increase the requirement.
 
@@ -178,7 +244,7 @@ The universal install command performs
 `initialize → prerequisites → doctor → pull → up → readiness → setup status → open`. It creates
 non-secret configuration, fresh database/session secrets, and a one-time setup
 token; installs Docker from official sources when required; checks CPU, RAM,
-free disk, Docker CLI, Compose, and engine readiness; downloads the selected
+free disk, the selected engine CLI, Compose, and engine readiness; downloads the selected
 images; starts the services; waits up to ten minutes for `/readyz`; verifies
 first-owner status; and opens `http://127.0.0.1:4911`.
 
@@ -231,7 +297,7 @@ instructions before allowing tools to operate on it.
 services. Run `npx --yes run-spaceapp@latest up` only if the command says the
 services could not pick it up.
 
-On Linux the CLIs run as uid 10001 inside Docker, and a mounted folder keeps its
+On Linux with Docker, the CLIs run as uid 10001, and a mounted folder keeps its
 host owner. When they cannot write to it, `workspace add` prints the command that
 gives them access without changing the owner (install the `acl` package if
 `setfacl` is missing):
@@ -239,6 +305,17 @@ gives them access without changing the owner (install the `acl` package if
 ```bash
 sudo setfacl -R -m u:10001:rwX -m u:$(id -u):rwX -m d:u:10001:rwX -m d:u:$(id -u):rwX /home/alice/code/example
 ```
+
+With rootless Podman, workspace services use `keep-id` to map your host UID/GID
+to container UID/GID 10001. Files created in a writable workspace are owned by
+your user on the host; the launcher does not recursively change ownership. Use
+directories you own and already have permission to access. Read-only workspaces
+remain read-only.
+
+On SELinux hosts, Podman workspace mounts include `:z` to label the directory for
+sharing between core and CLI. Private `:Z` labeling is unsuitable because both
+services use the same directory. SELinux relabeling applies even to read-only
+mounts; register project directories, not system directories or your entire home.
 
 ## First browser setup
 
@@ -308,9 +385,12 @@ npx --yes run-spaceapp@latest status
 npx --yes run-spaceapp@latest logs
 ```
 
-`doctor` checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU,
-memory, and free disk exactly once each. It distinguishes a missing CLI or
-Compose plugin from an installed engine that is stopped or inaccessible.
+`doctor` checks Node.js, the selected engine CLI, Compose, engine readiness,
+CPU, memory and free disk. It reports engine/version, rootless or rootful mode,
+cgroup version and whether CPU/memory limits are delegated. For Podman, missing
+limit delegation is a prerequisite failure with setup guidance. `support-bundle`
+includes the same engine facts without credentials. Diagnostics distinguish a
+missing CLI or Compose provider from a stopped or inaccessible engine.
 The `small` profile should show core, CLI, and PostgreSQL running; `medium`
 adds Temporal, and `large` also adds the browser service. If startup is still
 in progress, wait for the health checks and inspect bounded logs.

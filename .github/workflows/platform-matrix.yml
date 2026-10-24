@@ -57,3 +57,159 @@ jobs:
       - run: npm run check -w run-spaceapp
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
+
+  podman:
+    name: Launcher / rootless Podman / small
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      SPACEAPP_HOME: ${{ runner.temp }}/spaceapp-podman
+      SPACEAPP_TELEMETRY: "0"
+      PODMAN_COMPOSE_PROVIDER: docker-compose
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.23.0"
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Prepare Podman 5+ and the Compose v2 provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ubuntu 24.04 currently ships Podman 4.9; use Homebrew's Linux
+          # bottle until ubuntu-latest provides a supported version itself.
+          if ! podman --version | awk '{ split($3, v, "."); exit !(v[1] >= 5) }'; then
+            /home/linuxbrew/.linuxbrew/bin/brew install podman
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          fi
+          sudo apt-get update
+          sudo apt-get install -y uidmap
+          podman --version
+          podman --version | awk '{ split($3, v, "."); exit !(v[1] >= 5) }'
+
+          # Pin the provider major version; the latest Compose release may
+          # have different API requirements. Verify the release checksum.
+          mkdir -p "$RUNNER_TEMP/spaceapp-compose"
+          cd "$RUNNER_TEMP/spaceapp-compose"
+          curl --fail --location --retry 3 -O https://github.com/docker/compose/releases/download/v2.38.2/docker-compose-linux-x86_64
+          echo "486b3ffc0f806ca2efbc430cef89955386011662f0c76bad17c103d059cfa9cf  docker-compose-linux-x86_64" | sha256sum --check
+          install -m 755 docker-compose-linux-x86_64 docker-compose
+          echo "$RUNNER_TEMP/spaceapp-compose" >> "$GITHUB_PATH"
+          ./docker-compose version
+
+      - name: Start an isolated rootless Podman API service
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0
+          spaceapp_runner_user=$(id -un)
+          spaceapp_runner_uid=$(id -u)
+          # Fresh hosted images may omit subordinate ranges for the runner.
+          # Allocate above all existing ranges without changing other users.
+          subid_start=$(awk -F: 'BEGIN { next_id = 100000 } { if ($2 + $3 > next_id) next_id = $2 + $3 } END { print next_id }' /etc/subuid /etc/subgid)
+          subid_end=$((subid_start + 65535))
+          if ! awk -F: -v name="$spaceapp_runner_user" -v uid="$spaceapp_runner_uid" '($1 == name || $1 == uid) && $3 >= 65536 { found = 1 } END { exit !found }' /etc/subuid; then
+            sudo usermod --add-subuids "$subid_start-$subid_end" "$spaceapp_runner_user"
+          fi
+          if ! awk -F: -v name="$spaceapp_runner_user" -v uid="$spaceapp_runner_uid" '($1 == name || $1 == uid) && $3 >= 65536 { found = 1 } END { exit !found }' /etc/subgid; then
+            sudo usermod --add-subgids "$subid_start-$subid_end" "$spaceapp_runner_user"
+          fi
+          # Delegation in the API unit alone cannot enable controllers that
+          # the system manager has not delegated to the runner's user tree.
+          sudo loginctl enable-linger "$spaceapp_runner_user"
+          sudo /usr/bin/systemctl start "user@$spaceapp_runner_uid.service"
+          sudo /usr/bin/systemctl set-property --runtime "user@$spaceapp_runner_uid.service" Delegate=yes
+          export XDG_RUNTIME_DIR="/run/user/$spaceapp_runner_uid"
+          spaceapp_podman_socket="$XDG_RUNTIME_DIR/podman/podman.sock"
+          mkdir -p "$(dirname "$spaceapp_podman_socket")"
+          test ! -S "$spaceapp_podman_socket"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          /usr/bin/systemd-run --user --collect --unit=spaceapp-ci-podman --property=Delegate=yes \
+            --setenv="PATH=$PATH" "$(command -v podman)" system service --time=0 "unix://$spaceapp_podman_socket"
+          for attempt in {1..30}; do
+            if curl --fail --silent --unix-socket "$spaceapp_podman_socket" http://localhost/_ping; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent --unix-socket "$spaceapp_podman_socket" http://localhost/_ping
+          podman info --format json | jq -e '
+            .host.security.rootless == true and .host.cgroupVersion == "v2" and
+            (.host.cgroupControllers | index("cpu") != null) and
+            (.host.cgroupControllers | index("memory") != null)'
+          podman compose version
+
+      - name: Install the small profile with Podman
+        run: >-
+          node packages/run-spaceapp/bin/spaceapp.mjs install
+          --engine podman --profile small --non-interactive
+          --answers '{"confirm":true,"open":false,"telemetry":false,"companions":false}'
+
+      - name: Verify readiness and saved engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '.engine == "podman"' "$SPACEAPP_HOME/config.json"
+          for attempt in {1..60}; do
+            if curl --fail --silent --max-time 10 http://127.0.0.1:4911/readyz | jq -e '.ok == true'; then
+              node packages/run-spaceapp/bin/spaceapp.mjs doctor
+              exit 0
+            fi
+            sleep 2
+          done
+          node packages/run-spaceapp/bin/spaceapp.mjs logs
+          exit 1
+
+      - name: Create and verify a backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          node packages/run-spaceapp/bin/spaceapp.mjs backup
+          test -n "$(find "$SPACEAPP_HOME/backups" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+
+      - name: Uninstall, purge volumes, and verify cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          cleanup_code=0
+          project=$(node --input-type=module -e 'import { composeProjectName } from "./packages/run-spaceapp/src/index.mjs"; console.log(composeProjectName(process.env.SPACEAPP_HOME));') || exit 1
+          if test -f "$SPACEAPP_HOME/config.json"; then
+            node packages/run-spaceapp/bin/spaceapp.mjs uninstall --purge-data --non-interactive \
+              --answers '{"purgeConfirm":"DELETE"}' || cleanup_code=1
+          fi
+          if podman info >/dev/null 2>&1; then
+            containers=$(podman ps -aq --filter "label=com.docker.compose.project=$project") || cleanup_code=1
+            volumes=$(podman volume ls -q --filter "label=com.docker.compose.project=$project") || cleanup_code=1
+            networks=$(podman network ls -q --filter "label=com.docker.compose.project=$project") || cleanup_code=1
+            # Preserve a failing result for leaked resources, then clean up
+            # exactly this test's project even if install/uninstall failed.
+            if test -n "$containers$volumes$networks"; then
+              cleanup_code=1
+              printf '%s\n' "$containers" | xargs -r podman rm -f
+              printf '%s\n' "$volumes" | xargs -r podman volume rm -f
+              printf '%s\n' "$networks" | xargs -r podman network rm -f
+            fi
+            test -z "$(podman ps -aq --filter "label=com.docker.compose.project=$project")" || cleanup_code=1
+            test -z "$(podman volume ls -q --filter "label=com.docker.compose.project=$project")" || cleanup_code=1
+            test -z "$(podman network ls -q --filter "label=com.docker.compose.project=$project")" || cleanup_code=1
+            test -z "$(podman ps -q)" || cleanup_code=1
+            podman unshare rm -rf "$SPACEAPP_HOME" || cleanup_code=1
+          elif test -f "$SPACEAPP_HOME/config.json"; then
+            echo "Podman is unavailable; runtime cleanup could not be verified."
+            cleanup_code=1
+          fi
+          /usr/bin/systemctl --user stop spaceapp-ci-podman.service || true
+          if /usr/bin/systemctl --user is-active --quiet spaceapp-ci-podman.service; then
+            cleanup_code=1
+          fi
+          exit "$cleanup_code"
