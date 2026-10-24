@@ -74,7 +74,11 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
 
 FROM runtime-base AS core
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
-RUN install -d -o spaceapp -g spaceapp -m 0700 \
+RUN rm -rf /app/packages/browser-host /app/apps/api/dist/browser-host-main.js \
+      /app/node_modules/node-pty \
+      /app/node_modules/@xterm \
+      /app/node_modules/chromium* \
+    && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
       /var/lib/spaceapp/artifacts \
       /var/lib/spaceapp/memory \
@@ -88,6 +92,10 @@ FROM runtime-base AS browser
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /app/apps/web /app/apps/worker /app/packages/cli-host /app/agent-skills \
+      /app/node_modules/@temporalio /app/node_modules/node-pty \
+      /app/node_modules/pdfjs-dist /app/node_modules/@napi-rs/canvas \
+      /app/node_modules/react /app/node_modules/react-dom \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
       /var/lib/spaceapp/artifacts \
@@ -109,6 +117,13 @@ RUN apt-get update \
     && npm install --global --no-audit --no-fund @opencode/cli@2.0.32 \
     && install -d -o spaceapp -g spaceapp -m 0700 /var/lib/spaceapp-cli/vendor \
     && npm cache clean --force \
+    && rm -rf /app/apps/api /app/apps/web /app/apps/worker \
+      /app/packages/browser-host /app/packages/db \
+      /app/node_modules/@temporalio \
+      /app/node_modules/pdfjs-dist /app/node_modules/@napi-rs/canvas \
+      /app/node_modules/fastify /app/node_modules/@fastify \
+      /app/node_modules/react /app/node_modules/react-dom \
+      /app/node_modules/mysql2 /app/node_modules/pg /app/node_modules/postgres \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp-cli \
       /var/lib/spaceapp-cli/providers \
