@@ -2,6 +2,7 @@ import "./publish-npm-candidate.test.mjs";
 import "./container-image-size-budget.test.mjs";
 import "./mcp-hono-compatibility.test.mjs";
 import "./portable-backup-restore.test.mjs";
+import "./prune-container-native-binaries.test.mjs";
 import "./published-container-verification.test.mjs";
 import "./public-compose-config.test.mjs";
 import "./public-credential-install.test.mjs";

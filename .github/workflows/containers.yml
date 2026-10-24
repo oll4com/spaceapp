@@ -6,9 +6,13 @@ on:
       - "apps/**"
       - "packages/**"
       - "!packages/run-spaceapp/**"
+      - "agent-skills/**"
       - "deploy/docker/**"
+      - "scripts/**"
       - "starter-memory/**"
       - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
       - "package-lock.json"
   push:
     branches:
@@ -17,9 +21,13 @@ on:
       - "apps/**"
       - "packages/**"
       - "!packages/run-spaceapp/**"
+      - "agent-skills/**"
       - "deploy/docker/**"
+      - "scripts/**"
       - "starter-memory/**"
       - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
       - "package-lock.json"
   workflow_dispatch:
 
@@ -44,7 +52,7 @@ jobs:
           - amd64
           - arm64
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,3 +79,187 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check core container
+        if: matrix.target == 'core'
+        run: |
+          set -euxo pipefail
+          image="spaceapp-ci:core-${{ matrix.arch }}"
+          mkdir -p smoke/secrets
+          printf 'spaceapp-smoke-password' > smoke/secrets/postgres-password
+          printf 'postgres://spaceapp:spaceapp-smoke-password@smoke-postgres:5432/spaceapp' > smoke/secrets/database-url
+          printf 'smoke-session-secret-00000000000000000000000000' > smoke/secrets/session-secret
+          printf 'smoke-setup-token-0000000000000000' > smoke/secrets/setup-token
+          docker network create smoke-net
+          docker run -d --name smoke-postgres --network smoke-net \
+            -e POSTGRES_DB=spaceapp \
+            -e POSTGRES_USER=spaceapp \
+            -e POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password \
+            --mount "type=bind,source=$PWD/smoke/secrets/postgres-password,target=/run/secrets/postgres-password,readonly" \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          for i in $(seq 1 60); do
+            if timeout 10 docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+              sleep 5
+              timeout 10 docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp && break || true
+            fi
+            sleep 2
+          done
+          timeout 10 docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp
+          docker run -d --name smoke-temporal --network smoke-net \
+            -e DB=postgres12 -e DB_PORT=5432 -e POSTGRES_USER=spaceapp -e POSTGRES_SEEDS=smoke-postgres \
+            --mount "type=bind,source=$PWD/smoke/secrets/postgres-password,target=/run/secrets/postgres-password,readonly" \
+            --entrypoint /bin/sh \
+            temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312 \
+            -ec 'export POSTGRES_PWD="$(cat /run/secrets/postgres-password)"; exec /etc/temporal/entrypoint.sh autosetup'
+          for i in $(seq 1 60); do
+            if timeout 15 docker exec smoke-temporal temporal operator cluster health --address smoke-temporal:7233 >/dev/null 2>&1; then break; fi
+            sleep 5
+          done
+          timeout 15 docker exec smoke-temporal temporal operator cluster health --address smoke-temporal:7233
+          docker run -d --name smoke-core --network smoke-net \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_AGENT_TOOLS_WRITER=disabled \
+            -e SPACE_DEV_LOGIN=false \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACE_DATABASE_URL_SOURCE_FILE=/run/secrets/database-url \
+            -e SPACE_DATABASE_URL_FILE=/run/spaceapp/database-url \
+            -e SPACE_SESSION_SECRET_FILE=/run/secrets/session-secret \
+            -e SPACE_SETUP_TOKEN_SOURCE_FILE=/run/secrets/setup-token \
+            -e SPACE_API_HOST=127.0.0.1 \
+            -e SPACE_API_PORT=4910 \
+            -e SPACE_WEB_HOST=0.0.0.0 \
+            -e SPACE_WEB_PORT=4911 \
+            -e SPACE_API_ORIGIN=http://127.0.0.1:4910 \
+            -e SPACE_TEMPORAL_ADDRESS=smoke-temporal:7233 \
+            -e SPACEAPP_WORKFLOWS_ENABLED=true \
+            -e SPACE_CLI_ENABLED=false \
+            -e SPACE_BROWSER_SESSIONS_ENABLED=false \
+            -e SPACE_MEMORY_ROOT=/var/lib/spaceapp/memory \
+            -e SPACE_STARTER_MEMORY_ROOT=/opt/spaceapp/starter-memory \
+            --mount "type=bind,source=$PWD/smoke/secrets/database-url,target=/run/secrets/database-url,readonly" \
+            --mount "type=bind,source=$PWD/smoke/secrets/session-secret,target=/run/secrets/session-secret,readonly" \
+            --mount "type=bind,source=$PWD/smoke/secrets/setup-token,target=/run/secrets/setup-token,readonly" \
+            "$image"
+          ready=""
+          for i in $(seq 1 60); do
+            ready=$(timeout 15 docker exec smoke-core curl -sf --max-time 10 http://127.0.0.1:4911/readyz || true)
+            if printf '%s' "$ready" | grep -q '"ok":true'; then break; fi
+            sleep 5
+          done
+          printf '%s' "$ready" | grep -q '"ok":true'
+          printf 'core /readyz: %s\n' "$ready"
+
+      - name: Smoke check cli container
+        if: matrix.target == 'cli'
+        run: |
+          set -euxo pipefail
+          image="spaceapp-ci:cli-${{ matrix.arch }}"
+          docker run -d --name smoke-cli \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            "$image"
+          for i in $(seq 1 60); do
+            if timeout 10 docker exec smoke-cli test -S /run/spaceapp-cli/host.sock; then break; fi
+            sleep 2
+          done
+          timeout 10 docker exec smoke-cli test -S /run/spaceapp-cli/host.sock
+          timeout 30 docker exec smoke-cli node -e '
+            const net = require("node:net");
+            const socket = net.connect("/run/spaceapp-cli/host.sock");
+            const fail = (message) => { console.error(message); process.exit(1); };
+            socket.on("connect", () => { console.log("cli host accepted a socket connection"); socket.end(); });
+            socket.on("close", () => process.exit(0));
+            socket.on("error", (error) => fail(`socket error: ${error.message}`));
+            setTimeout(() => fail("timed out connecting to the CLI host socket"), 15000);
+          '
+
+      - name: Smoke check browser container
+        if: matrix.target == 'browser'
+        run: |
+          set -euxo pipefail
+          image="spaceapp-ci:browser-${{ matrix.arch }}"
+          mkdir -p smoke/secrets
+          printf 'spaceapp-smoke-password' > smoke/secrets/postgres-password
+          printf 'postgres://spaceapp:spaceapp-smoke-password@smoke-postgres:5432/spaceapp' > smoke/secrets/database-url
+          docker network create smoke-net
+          docker run -d --name smoke-postgres --network smoke-net \
+            -e POSTGRES_DB=spaceapp \
+            -e POSTGRES_USER=spaceapp \
+            -e POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password \
+            --mount "type=bind,source=$PWD/smoke/secrets/postgres-password,target=/run/secrets/postgres-password,readonly" \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          for i in $(seq 1 60); do
+            if timeout 10 docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+              sleep 5
+              timeout 10 docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp && break || true
+            fi
+            sleep 2
+          done
+          timeout 10 docker exec smoke-postgres pg_isready -U spaceapp -d spaceapp
+          timeout 300 docker run --rm --network smoke-net \
+            -e SPACE_DATABASE_URL="postgres://spaceapp:spaceapp-smoke-password@smoke-postgres:5432/spaceapp" \
+            --entrypoint node \
+            "$image" packages/db/dist/migrate.js
+          docker run -d --name smoke-browser --network smoke-net \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACE_DATABASE_URL_FILE=/run/secrets/database-url \
+            -e SPACE_ARTIFACT_ROOT=/var/lib/spaceapp/artifacts \
+            -e SPACE_BROWSER_SESSIONS_ENABLED=true \
+            -e SPACE_BROWSER_HOST_TRANSPORT=unix \
+            -e SPACE_BROWSER_HOST_SOCKET=/run/spaceapp-browser/browser-host.sock \
+            -e SPACE_BROWSER_SESSIONS_DEFAULT_URL=about:blank \
+            --mount "type=bind,source=$PWD/smoke/secrets/database-url,target=/run/secrets/database-url,readonly" \
+            "$image"
+          for i in $(seq 1 60); do
+            if timeout 10 docker exec smoke-browser test -S /run/spaceapp-browser/browser-host.sock; then break; fi
+            sleep 2
+          done
+          timeout 10 docker exec smoke-browser test -S /run/spaceapp-browser/browser-host.sock
+          cat > smoke/browser-host-health.js <<'EOF'
+          const net = require("node:net");
+          const socketPath = process.env.SPACE_BROWSER_HOST_SOCKET || "/run/spaceapp-browser/browser-host.sock";
+          const fail = (message) => { console.error(message); process.exit(1); };
+          const body = Buffer.from(JSON.stringify({ kind: "request", requestId: "smoke-health", method: "health", params: {} }), "utf8");
+          const frame = Buffer.alloc(4 + body.length);
+          frame.writeUInt32BE(body.length, 0);
+          body.copy(frame, 4);
+          const socket = net.connect(socketPath);
+          let buffer = Buffer.alloc(0);
+          socket.on("connect", () => socket.write(frame));
+          socket.on("data", (chunk) => {
+            buffer = Buffer.concat([buffer, chunk]);
+            while (buffer.length >= 4) {
+              const length = buffer.readUInt32BE(0);
+              if (buffer.length < length + 4) return;
+              const envelope = JSON.parse(buffer.subarray(4, length + 4).toString("utf8"));
+              buffer = buffer.subarray(length + 4);
+              if (envelope.kind !== "response" || envelope.requestId !== "smoke-health") continue;
+              if (!envelope.ok) fail(`browser host health failed: ${JSON.stringify(envelope.error)}`);
+              console.log(`browser host health: ${JSON.stringify(envelope.result)}`);
+              socket.end();
+              process.exit(0);
+            }
+          });
+          socket.on("error", (error) => fail(`socket error: ${error.message}`));
+          setTimeout(() => fail("timed out waiting for browser host health"), 20000);
+          EOF
+          timeout 30 docker exec -i smoke-browser node < smoke/browser-host-health.js
+          timeout 300 docker exec smoke-browser chromium --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --dump-dom about:blank | grep -qi html
+
+      - name: Print smoke container logs on failure
+        if: failure()
+        run: |
+          for name in smoke-core smoke-browser smoke-cli smoke-temporal smoke-postgres; do
+            if docker inspect "$name" >/dev/null 2>&1; then
+              echo "::group::docker logs $name"
+              docker logs "$name" 2>&1 | tail -200 || true
+              echo "::endgroup::"
+            fi
+          done
+          docker ps -a
+
+      - name: Remove smoke containers
+        if: always()
+        run: |
+          docker rm -f smoke-core smoke-browser smoke-cli smoke-temporal smoke-postgres 2>/dev/null || true
+          docker network rm smoke-net 2>/dev/null || true

@@ -1,5 +1,8 @@
 .git
 .github
+Dockerfile
+Dockerfile.*
+.dockerignore
 .env
 .env.*
 node_modules

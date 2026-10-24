@@ -15,6 +15,7 @@ const publicTestModules = [
   "container-image-size-budget.test.mjs",
   "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",
+  "prune-container-native-binaries.test.mjs",
   "published-container-verification.test.mjs",
   "public-compose-config.test.mjs",
   "public-credential-install.test.mjs",

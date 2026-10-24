@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS build
+ARG TARGETARCH
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential liblzma5 python3 pkg-config \
@@ -8,8 +9,7 @@ RUN apt-get update \
 COPY . .
 RUN npm ci --no-audit --no-fund \
     && npm run build \
-    && npm prune --omit=dev \
-    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+    && find apps packages -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
@@ -54,11 +54,23 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
-COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/worker/package.json apps/worker/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/browser-host/package.json packages/browser-host/package.json
+COPY packages/cli-host/package.json packages/cli-host/package.json
+COPY packages/codex-app-server/package.json packages/codex-app-server/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/gateway/package.json packages/gateway/package.json
+COPY packages/icons/package.json packages/icons/package.json
+COPY packages/memory-graph/package.json packages/memory-graph/package.json
+COPY packages/opencode-control/package.json packages/opencode-control/package.json
+COPY packages/runtime/package.json packages/runtime/package.json
+COPY packages/run-spaceapp/package.json packages/run-spaceapp/package.json
+COPY packages/streaming/package.json packages/streaming/package.json
+COPY scripts/prune-container-native-binaries.mjs ./scripts/prune-container-native-binaries.mjs
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
 COPY --from=build --chown=spaceapp:spaceapp /app/THIRD_PARTY_LICENSES ./THIRD_PARTY_LICENSES
 COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
@@ -72,8 +84,89 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
          ln -s /usr/local/bin/spaceapp-cli-wrapper "/usr/local/bin/${name}-vscode-parity"; \
        done
 
+# Each target installs only the production dependency closure of the
+# workspaces its entrypoints load. The root dependencies are included for
+# core because apps/api relies on root-hoisted packages (for example ws).
+# The closure stages build on the toolchain-bearing build stage so native
+# modules (for example node-pty) can compile; only their node_modules are
+# copied into the runtime images.
+FROM build AS core-closure
+ARG TARGETARCH
+RUN npm ci --omit=dev --include-workspace-root --workspace @space/api --workspace @space/worker --workspace @space/db --no-audit --no-fund \
+    && mkdir -p apps/api/node_modules apps/worker/node_modules packages/db/node_modules \
+    && node scripts/prune-container-native-binaries.mjs --arch "${TARGETARCH}" \
+    && find . -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+
+# The Browser Host entrypoint loads @space/browser-host, @space/db,
+# @space/runtime, @space/contracts and @t3-oss/env-core; env-core is copied
+# from the build tree because it is an apps/api dependency, not a workspace
+# dependency of the two installed workspaces.
+FROM build AS browser-closure
+ARG TARGETARCH
+RUN npm ci --omit=dev --workspace @space/browser-host --workspace @space/db --no-audit --no-fund
+COPY --from=build /app/node_modules/@t3-oss/env-core ./node_modules/@t3-oss/env-core
+RUN mkdir -p packages/browser-host/node_modules packages/db/node_modules \
+    && node scripts/prune-container-native-binaries.mjs --arch "${TARGETARCH}" \
+    && find . -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+
+FROM build AS cli-closure
+ARG TARGETARCH
+RUN npm ci --omit=dev --workspace @space/cli-host --no-audit --no-fund \
+    && mkdir -p packages/cli-host/node_modules \
+    && node scripts/prune-container-native-binaries.mjs --arch "${TARGETARCH}" \
+    && find . -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+
+# Slim runtime trees: only the built artifacts each image loads at runtime.
+# The workspace directories keep the node_modules/@space symlink targets whole.
+FROM build AS core-tree
+RUN set -eux; \
+    mkdir -p /out/apps/api /out/apps/worker /out/apps/web /out/scripts; \
+    cp apps/api/package.json /out/apps/api/package.json; \
+    cp -r apps/api/dist /out/apps/api/dist; \
+    cp apps/worker/package.json /out/apps/worker/package.json; \
+    cp -r apps/worker/dist /out/apps/worker/dist; \
+    cp apps/web/package.json /out/apps/web/package.json; \
+    cp -r apps/web/dist /out/apps/web/dist; \
+    cp apps/web/server.mjs /out/apps/web/server.mjs; \
+    for p in browser-host cli-host codex-app-server contracts db gateway memory-graph opencode-control runtime streaming; do \
+      mkdir -p "/out/packages/$p"; \
+      cp "packages/$p/package.json" "/out/packages/$p/package.json"; \
+      cp -r "packages/$p/dist" "/out/packages/$p/dist"; \
+    done; \
+    cp -r packages/db/migrations /out/packages/db/migrations; \
+    cp -r agent-skills /out/agent-skills; \
+    cp -r starter-memory /out/starter-memory; \
+    cp scripts/reset-owner-password.mjs scripts/rotate-owner-setup-token.mjs \
+       scripts/portable-backup.mjs scripts/portable-restore.mjs /out/scripts/
+
+FROM build AS browser-tree
+RUN set -eux; \
+    mkdir -p /out/apps/api; \
+    cp -r apps/api/dist /out/apps/api/dist; \
+    for p in browser-host contracts db memory-graph runtime; do \
+      mkdir -p "/out/packages/$p"; \
+      cp "packages/$p/package.json" "/out/packages/$p/package.json"; \
+      cp -r "packages/$p/dist" "/out/packages/$p/dist"; \
+    done; \
+    cp -r packages/db/migrations /out/packages/db/migrations
+
+FROM build AS cli-tree
+RUN set -eux; \
+    mkdir -p /out/packages/cli-host /out/agent-skills; \
+    cp packages/cli-host/package.json /out/packages/cli-host/package.json; \
+    cp -r packages/cli-host/dist /out/packages/cli-host/dist; \
+    cp -r agent-skills/. /out/agent-skills/
+
 FROM runtime-base AS core
-COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
+COPY --from=core-closure --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=core-tree --chown=spaceapp:spaceapp /out/apps ./apps
+COPY --from=core-tree --chown=spaceapp:spaceapp /out/packages ./packages
+COPY --from=core-closure --chown=spaceapp:spaceapp /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=core-closure --chown=spaceapp:spaceapp /app/apps/worker/node_modules ./apps/worker/node_modules
+COPY --from=core-closure --chown=spaceapp:spaceapp /app/packages/db/node_modules ./packages/db/node_modules
+COPY --from=core-tree --chown=spaceapp:spaceapp /out/agent-skills ./agent-skills
+COPY --from=core-tree --chown=spaceapp:spaceapp /out/scripts ./scripts
+COPY --from=core-tree --chown=spaceapp:spaceapp /out/starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
       /var/lib/spaceapp/artifacts \
@@ -86,12 +179,17 @@ ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
+    && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
       /var/lib/spaceapp/artifacts \
       /run/spaceapp-browser
+COPY --from=browser-closure --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=browser-tree --chown=spaceapp:spaceapp /out/apps ./apps
+COPY --from=browser-tree --chown=spaceapp:spaceapp /out/packages ./packages
+COPY --from=browser-closure --chown=spaceapp:spaceapp /app/packages/browser-host/node_modules ./packages/browser-host/node_modules
+COPY --from=browser-closure --chown=spaceapp:spaceapp /app/packages/db/node_modules ./packages/db/node_modules
 ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
     SPACE_BROWSER_SESSIONS_CHROME_PATH=/usr/bin/chromium
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
@@ -107,6 +205,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --no-audit --no-fund @opencode/cli@2.0.32 \
+    && rm -rf /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-* \
     && install -d -o spaceapp -g spaceapp -m 0700 /var/lib/spaceapp-cli/vendor \
     && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \
@@ -121,4 +220,8 @@ RUN apt-get update \
 # /etc/AGENTS.md documents, so that path resolves to /etc in this image. Without it, the
 # Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts.
 RUN ln -s /etc /opt/spaceapp
+COPY --from=cli-closure --chown=spaceapp:spaceapp /app/node_modules ./node_modules
+COPY --from=cli-closure --chown=spaceapp:spaceapp /app/packages/cli-host/node_modules ./packages/cli-host/node_modules
+COPY --from=cli-tree --chown=spaceapp:spaceapp /out/packages/cli-host ./packages/cli-host
+COPY --from=cli-tree --chown=spaceapp:spaceapp /out/agent-skills ./agent-skills
 ENTRYPOINT ["/app/deploy/docker/cli-entrypoint.sh"]

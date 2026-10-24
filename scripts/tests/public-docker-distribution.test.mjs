@@ -63,7 +63,7 @@ test("public container images identify their repository and license for GHCR", a
 
 test("CLI image removes the npm download cache in the same layer as bundled CLI installation", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
-  const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cliStage = dockerfile.match(/FROM runtime-base AS cli\r?\n([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   const normalizedCliStage = cliStage.replace(/\\\r?\n\s*/g, " ");
 
   assert.match(
@@ -77,9 +77,9 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
 test("CLI image resolves the default room project /opt/spaceapp to the documented /etc session directory", async () => {
   // 1.1.3 devtest: without it the Getting Started OpenCode pane exited with chdir(2) failed.
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
-  const cliStage = dockerfile.match(/FROM runtime-base AS cli([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const cliStage = dockerfile.match(/FROM runtime-base AS cli\r?\n([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   assert.match(cliStage, /^RUN ln -s \/etc \/opt\/spaceapp$/m);
-  const coreStage = dockerfile.match(/FROM runtime-base AS core([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
+  const coreStage = dockerfile.match(/FROM runtime-base AS core\r?\n([\s\S]*?)(?=\nFROM |\s*$)/)?.[1] || "";
   assert.doesNotMatch(coreStage, /ln -s \/etc \/opt\/spaceapp/);
   const agents = await readFile(join(root, "starter-memory", "AGENTS.md"), "utf8");
   assert.match(agents, /cwd=\/etc/);
