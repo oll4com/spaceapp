@@ -71,3 +71,71 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check core (migrations and /readyz against pgvector PostgreSQL)
+        if: matrix.target == 'core'
+        timeout-minutes: 20
+        run: |
+          docker network create spaceapp-smoke
+          docker run -d --name pg --network spaceapp-smoke \
+            -e POSTGRES_DB=spaceapp -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=spaceapp \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          until docker exec pg pg_isready -U spaceapp -d spaceapp; do sleep 2; done
+          mkdir -p "$RUNNER_TEMP/smoke-secrets"
+          printf 'postgresql://spaceapp:spaceapp@pg:5432/spaceapp' > "$RUNNER_TEMP/smoke-secrets/database-url"
+          printf 'smoke-session-secret' > "$RUNNER_TEMP/smoke-secrets/session-secret"
+          printf 'smoke-setup-token-0123456789abcdef0123456789abcdef' > "$RUNNER_TEMP/smoke-secrets/setup-token"
+          docker run -d --name core --network spaceapp-smoke -p 4911:4911 \
+            -v "$RUNNER_TEMP/smoke-secrets:/run/secrets:ro" \
+            -e SPACE_PUBLIC_DISTRIBUTION=true -e SPACEAPP_WORKFLOWS_ENABLED=false -e SPACE_RUNTIME_STORE=postgres \
+            spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:4911/readyz 2>/dev/null | grep -q 'ok:true'; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then docker logs core; docker logs pg; exit 1; fi
+          docker logs core 2>&1 | tail -5
+
+      - name: Smoke check cli (CLI host accepts a socket connection)
+        if: matrix.target == 'cli'
+        timeout-minutes: 15
+        run: |
+          docker run -d --name cli \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          ready=0
+          for _ in $(seq 1 60); do
+            if docker exec cli node -e "const s=require('node:net').connect('/run/spaceapp-cli/host.sock');s.on('connect',()=>{console.log('cli host socket connected');s.end();}).on('error',()=>process.exit(1)).on('close',()=>process.exit(0))"; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then docker logs cli; exit 1; fi
+          docker logs cli 2>&1 | tail -5
+
+      - name: Smoke check browser (Browser Host starts and headless Chromium launches once)
+        if: matrix.target == 'browser'
+        timeout-minutes: 20
+        run: |
+          docker network create spaceapp-smoke
+          docker run -d --name pg --network spaceapp-smoke \
+            -e POSTGRES_DB=spaceapp -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=spaceapp \
+            pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+          until docker exec pg pg_isready -U spaceapp -d spaceapp; do sleep 2; done
+          mkdir -p "$RUNNER_TEMP/smoke-secrets"
+          printf 'postgresql://spaceapp:spaceapp@pg:5432/spaceapp' > "$RUNNER_TEMP/smoke-secrets/database-url"
+          docker run -d --name browser --network spaceapp-smoke \
+            -v "$RUNNER_TEMP/smoke-secrets:/run/secrets:ro" \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACE_BROWSER_HOST_SOCKET=/run/spaceapp-browser/browser-host.sock \
+            spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          # The browser image carries the db workspace, so it can apply migrations itself.
+          docker exec -e SPACE_DATABASE_URL=postgresql://spaceapp:spaceapp@pg:5432/spaceapp \
+            browser node packages/db/dist/migrate.js
+          ready=0
+          for _ in $(seq 1 60); do
+            if docker exec browser node -e "const{execFileSync}=require('node:child_process');const out=execFileSync('ps',['-o','args=','-C','node']);process.stdout.write(out.toString())" 2>/dev/null | grep -q browser-host-main.js; then ready=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' browser)" != true ]; then docker logs browser; exit 1; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then docker logs browser; exit 1; fi
+          docker exec browser node -e "const{spawnSync}=require('node:child_process');const r=spawnSync('/usr/bin/chromium',['--headless=new','--no-sandbox','--disable-gpu','--dump-dom','about:blank'],{timeout:60000});if(r.status!==0){console.error(r.stderr.toString());process.exit(1)}console.log('headless chromium launched')"
