@@ -6,7 +6,8 @@ import test from "node:test";
 const root = resolve(import.meta.dirname, "../..");
 
 async function workflow(name) {
-  return readFile(join(root, ".github", "workflows", name), "utf8");
+  const content = await readFile(join(root, ".github", "workflows", name), "utf8");
+  return content.replace(/\r\n/g, "\n");
 }
 
 test("CI creates and validates only the sanitized public candidate", async () => {
