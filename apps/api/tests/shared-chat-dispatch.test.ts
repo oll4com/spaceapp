@@ -123,6 +123,42 @@ describe("pickSharedChatDispatchTarget", () => {
     const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
     expect(target).not.toBeNull();
     expect(target!.pane.id).toBe(newer.pane.id);
+    expect(target!.session.updatedAt).toBe("2026-08-15T10:00:00.000Z");
+  });
+
+  it("uses deterministic sessionId tie-break when updatedAt timestamps are identical", async () => {
+    const store = new InMemorySpaceStore();
+    const first = createIdleDeepseekPane(store, "Deepseek A");
+    const second = createIdleDeepseekPane(store, "Deepseek B");
+    store.createPaneCliSession({
+      sessionId: "cli_session_0001",
+      paneId: first.pane.id,
+      roomId: first.room.id,
+      runtimeId: "cli:deepseek",
+      providerId: "deepseek",
+      agentId: "deepseek",
+      status: "RUNNING",
+      purpose: "NORMAL",
+      startedAt: "2026-08-15T09:00:00.000Z",
+      updatedAt: "2026-08-15T10:00:00.000Z"
+    });
+    store.createPaneCliSession({
+      sessionId: "cli_session_0002",
+      paneId: second.pane.id,
+      roomId: second.room.id,
+      runtimeId: "cli:deepseek",
+      providerId: "deepseek",
+      agentId: "deepseek",
+      status: "RUNNING",
+      purpose: "NORMAL",
+      startedAt: "2026-08-15T09:00:00.000Z",
+      updatedAt: "2026-08-15T10:00:00.000Z"
+    });
+
+    const target = await pickSharedChatDispatchTarget(store, "cli:deepseek");
+    expect(target).not.toBeNull();
+    expect(target!.session.sessionId).toBe("cli_session_0002");
+    expect(target!.pane.id).toBe(second.pane.id);
   });
 
   it("only considers the requested runtime", async () => {
