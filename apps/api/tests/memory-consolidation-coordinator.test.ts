@@ -4,11 +4,14 @@ import {
   MEMORY_CONSOLIDATION_WORKFLOW_TYPE,
   scheduleMemoryConsolidation
 } from "../src/memory-consolidation-coordinator.js";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 
 describe("Memory consolidation coordinator", () => {
   it("starts a retry-safe workflow on the exclusive maintenance queue", async () => {
     const calls: Array<{ workflowType: string; options: unknown }> = [];
     const input = { runId: "memory_consolidation:run-1", traceId: "trace:memory-consolidation" };
+    const request = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    requestTraceContexts.remember(input.traceId, request);
     const workflowId = `space-memory-consolidation:${"a".repeat(64)}`;
 
     const result = await scheduleMemoryConsolidation(input, workflowId, async (workflowType, options) => {
@@ -24,7 +27,8 @@ describe("Memory consolidation coordinator", () => {
         taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
         workflowId,
         workflowIdReusePolicy: "REJECT_DUPLICATE",
-        workflowIdConflictPolicy: "USE_EXISTING"
+        workflowIdConflictPolicy: "USE_EXISTING",
+        memo: { spaceTraceId: input.traceId, traceparent: request.traceparent, w3cTraceId: request.w3cTraceId }
       }
     }]);
   });

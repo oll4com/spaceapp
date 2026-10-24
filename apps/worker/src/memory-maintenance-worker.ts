@@ -8,7 +8,7 @@ import {
 } from "./memory-maintenance-config.js";
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
-import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { createWorkerTracing } from "./worker-tracing.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-maintenance-worker";
@@ -20,9 +20,9 @@ if (!memoryMaintenanceEnabled(process.env)) {
   const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
   const workflowsPath = fileURLToPath(new URL("./memory-maintenance-workflows.js", import.meta.url));
 
+  const spans = otlpSpanExporterFromEnv(process.env, service);
   try {
     const connection = await NativeConnection.connect({ address });
-    const spans = otlpSpanExporterFromEnv(process.env, service);
     const worker = await Worker.create({
       connection,
       namespace,
@@ -30,7 +30,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      ...createWorkerTracing(spans)
     });
     console.log(JSON.stringify({
       service,
@@ -43,7 +43,6 @@ if (!memoryMaintenanceEnabled(process.env)) {
     const stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
     await worker.run();
     stopReloadWatch();
-    await spans?.close();
   } catch (error) {
     console.error(JSON.stringify({
       service,
@@ -51,5 +50,7 @@ if (!memoryMaintenanceEnabled(process.env)) {
       error: error instanceof Error ? error.message : "Unknown maintenance worker failure."
     }));
     process.exitCode = 1;
+  } finally {
+    await spans?.close();
   }
 }

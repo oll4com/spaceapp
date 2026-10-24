@@ -5,11 +5,14 @@ import {
   buildMemoryMutationWorkflowId,
   scheduleMemoryMutation
 } from "../src/memory-mutation-coordinator.js";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 
 describe("Memory mutation coordinator", () => {
   it("starts the dedicated workflow with deterministic duplicate guards", async () => {
     const calls: Array<{ workflowType: string; options: unknown }> = [];
     const input = { changeSetId: "memory_change:approved", traceId: "req:mutation-start" };
+    const request = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    requestTraceContexts.remember(input.traceId, request);
 
     const result = await scheduleMemoryMutation(input, async (workflowType, options) => {
       calls.push({ workflowType, options });
@@ -30,7 +33,8 @@ describe("Memory mutation coordinator", () => {
           taskQueue: MEMORY_MUTATION_TASK_QUEUE,
           workflowId: result.workflowId,
           workflowIdReusePolicy: "REJECT_DUPLICATE",
-          workflowIdConflictPolicy: "USE_EXISTING"
+          workflowIdConflictPolicy: "USE_EXISTING",
+          memo: { spaceTraceId: input.traceId, traceparent: request.traceparent, w3cTraceId: request.w3cTraceId }
         }
       }
     ]);

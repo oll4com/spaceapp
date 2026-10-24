@@ -3,6 +3,10 @@ import { ROOM_AGENT_ENQUEUE_SIGNAL, ROOM_AGENT_STOP_SIGNAL, roomAgentSupervisorI
 import { continuationFixture } from "./room-continuation-fixture.js";
 import { discardSupervisorTurn, finishSupervisorTurn, prepareBackgroundContinuation, supervisorTurnState } from "../src/room-background-continuation.js";
 
+vi.mock("../src/workflow-tracing.js", () => ({
+  withWorkflowTraceContext: (_input: unknown, run: () => Promise<unknown>) => run()
+}));
+
 const temporal = vi.hoisted(() => ({
   handlers: new Map<string, (input: any) => void>(), activities: {} as Record<string, any>,
   child: vi.fn(), condition: vi.fn(), continueAsNew: vi.fn(), patch: true, counter: 0

@@ -52,3 +52,25 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Optional distributed tracing
+
+Set `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` to the collector's HTTP(S) base URL, for
+example `http://127.0.0.1:4318`, in the API and worker processes that should export
+traces. The exporter always appends `/v1/traces` and sends OTLP/HTTP JSON there,
+so give the base URL, not `.../v1/traces`. An unset or invalid endpoint disables
+export.
+
+The API exports request spans. The main worker and both memory workers export
+workflow, child workflow, mission and activity-attempt spans, with propagation
+through Temporal headers, inputs and memo. Continue-as-new preserves run lineage;
+a background mission starts a new trace linked to the preceding mission. Each
+process uses its existing service name. No tracing runtime package is required.
+
+The shared exporter bounds its queue to 4,096 spans and batches to 256, flushes
+every five seconds, and limits each POST to three seconds. Collector failures
+are counted and never block business execution. Workflow replay does not export
+spans. Attributes are limited to bounded identifiers, types, durations, attempts,
+outcomes and allowlisted reason codes; prompts and error messages are excluded.
+See [observability](quality/observability.md) for propagation, replay coverage and
+delivery limitations. Unset the endpoint and restart the processes to turn export off.

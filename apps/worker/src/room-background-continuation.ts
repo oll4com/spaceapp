@@ -1,6 +1,7 @@
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
+  formatTraceparent,
   roomAgentSupervisorQueueItemSchema,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
@@ -8,6 +9,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { roomActionSummary } from "./room-action-summary.js";
+import { backgroundMissionTraceContext } from "./temporal-trace-context.js";
 import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
 
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
@@ -122,6 +124,10 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const previousBackground = backgroundMissionTraceContext(source.queueItem.turn);
+  const continuedTraceparent = previousBackground
+    ? formatTraceparent(previousBackground.traceId, previousBackground.parentId, previousBackground.flags)
+    : source.queueItem.turn.traceparent ?? source.queueItem.turn.continuedTraceparent;
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
@@ -130,7 +136,12 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`,
+    // Automatic work gets its own trace. The first continuation links to the
+    // operator request span it continues; later ones link to the preceding
+    // background mission span. Persist the link so a lost activity reply cannot change it.
+    traceparent: undefined,
+    continuedTraceparent
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({

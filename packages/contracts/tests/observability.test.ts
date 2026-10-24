@@ -92,6 +92,13 @@ describe("additive observability contract fields", () => {
     expect(dummyTurnInputSchema.safeParse({ ...turn, traceparent: "not-a-trace" }).success).toBe(false);
   });
 
+  it("preserves an optional continuation link without changing old turn inputs", () => {
+    const continuedTraceparent = formatTraceparent("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
+    expect(dummyTurnInputSchema.parse({ ...turn, continuedTraceparent }).continuedTraceparent).toBe(continuedTraceparent);
+    expect(dummyTurnInputSchema.parse(turn).continuedTraceparent).toBeUndefined();
+    expect(dummyTurnInputSchema.safeParse({ ...turn, continuedTraceparent: "invalid" }).success).toBe(false);
+  });
+
   it("accepts the old and the new file search response shapes", () => {
     expect(fileSearchResponseSchema.parse({ query: "a", results: [], totalCount: 0 }).code).toBeUndefined();
     expect(fileSearchResponseSchema.parse({ query: "a", results: [], totalCount: 0, code: "EMPTY_RESULT", truncated: false }).code)

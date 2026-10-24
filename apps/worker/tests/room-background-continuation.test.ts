@@ -1,11 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
-import { roomAgentSupervisorInputSchema } from "@space/contracts";
+import { formatTraceparent, roomAgentSupervisorInputSchema } from "@space/contracts";
 import { continuationEvidence, discardSupervisorTurn, finishSupervisorTurn, prepareBackgroundContinuation, supervisorTurnState } from "../src/room-background-continuation.js";
 
 import { continuationFixture } from "./room-continuation-fixture.js";
 import { runCodexAppServerTurn } from "../src/activities.js";
+import { backgroundMissionTraceContext } from "../src/temporal-trace-context.js";
 
 describe("durable background continuation", () => {
+  it("starts new traces with persisted links to the immediately preceding mission", async () => {
+    const parent = formatTraceparent("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
+    const c = continuationFixture("OPEN_TYPES", parent);
+    const first = await prepareBackgroundContinuation(c.input, c.store);
+    if (first.state !== "READY") throw Error("Missing first continuation");
+    expect(first.item.turn.traceId).toBe("trace:bg-test-1");
+    expect(first.item.turn.traceparent).toBeUndefined();
+    expect(first.item.turn.continuedTraceparent).toBe(parent);
+    c.store.updateSpaceAgentRun(first.item.turn.agentRunId!, { status: "COMPLETED" });
+    c.store.markRoomAgentMissionSignaled(c.room.id, "background-test-1");
+    const second = await prepareBackgroundContinuation({ ...c.input, continuationId: "test-2" }, c.store);
+    if (second.state !== "READY") throw Error("Missing second continuation");
+    const previous = backgroundMissionTraceContext(first.item.turn)!;
+    expect(second.item.turn.traceId).toBe("trace:bg-test-2");
+    expect(second.item.turn.traceparent).toBeUndefined();
+    expect(second.item.turn.continuedTraceparent).toBe(formatTraceparent(previous.traceId, previous.parentId, previous.flags));
+    expect(second.item.turn.continuedTraceparent).not.toBe(parent);
+    expect(await prepareBackgroundContinuation({ ...c.input, continuationId: "test-2" }, c.store)).toEqual(second);
+  });
+
   it("includes the actual failure reason when resuming after a parsed background action", () => {
     const c = continuationFixture();
     const evidence = JSON.parse(continuationEvidence([{ ...c.action, status: "FAILED",

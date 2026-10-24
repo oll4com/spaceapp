@@ -5,7 +5,8 @@ import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { apiDomainMetrics } from "../src/api-metrics.js";
 import { TemporalCodexAppServerTurnStarter } from "../src/turns.js";
-import { TemporalRoomAgentWorkflowCoordinator } from "../src/room-agent.js";
+import { createRoomAgentService, TemporalRoomAgentWorkflowCoordinator } from "../src/room-agent.js";
+import * as roomAgentModels from "../src/room-agent-model-resolver.js";
 import type { TemporalClientFactory } from "../src/temporal-client.js";
 import {
   TraceContextRegistry,
@@ -47,9 +48,11 @@ describe("request trace context", () => {
     expect(registry.size).toBe(2);
     expect(registry.lookup("req:aaaaaaaaaaaa")).toBeNull();
 
-    registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
+    const request = createRequestTraceContext(inbound);
+    registry.remember("req:dddddddddddd", request);
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
-    expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(filled.traceparent).toBe(request.traceparent);
+    expect(parseTraceparent(filled.traceparent)).toMatchObject({ traceId: inboundTraceId, parentId: request.spanId });
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });
@@ -173,8 +176,68 @@ describe("workflow starters", () => {
     artifactIds: []
   };
 
+  it("persists the original mission parent before dispatch and keeps it through registry eviction, recovery and request retry", async () => {
+    const selection: roomAgentModels.AdvancedMissionModelSelection = {
+      providerId: null, modelId: "gpt-5.6-sol", reasoningEffort: "high", providerName: null, modelName: "GPT-5.6 Sol", tier: "CODEX"
+    };
+    const model = vi.spyOn(roomAgentModels, "resolveAdvancedMissionModel").mockResolvedValue(selection);
+    try {
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: "Mission tracing recovery", initialPaneCount: 0 });
+      const requestId = "req:persisted-mission-parent";
+      const request = createRequestTraceContext(inbound);
+      requestTraceContexts.remember(requestId, request);
+      const unavailable = new Error("Temporal dispatch unavailable in this fixture");
+      const enqueue = vi.fn(async (_item: RoomAgentSupervisorQueueItem) => ({ workflowId: "workflow:mission-tracing", runId: null }))
+        .mockRejectedValueOnce(unavailable);
+      const options: Parameters<typeof createRoomAgentService>[0] = {
+        store,
+        workflow: { enqueue, stop: async () => {} },
+        missionStopper: { pauseMission: async () => {}, resumeMission: async () => {}, stopMission: async () => {} },
+        roomPlanInventoryProvider: { inspect: async () => ({
+          totalPanes: 0, plannedPanes: 0, pendingPlans: 0, readyPlans: 0, pausedPlans: 0, runningPlans: 0,
+          checkedAt: new Date().toISOString(), plans: []
+        }) },
+        modelSelection: async () => selection
+      };
+      const actor = { holderType: "OPERATOR", holderId: "user:operator" } as const;
+      const objective = "Investigate the test fixture's queued task.";
+      const clientRequestId = "mission:trace-persistence";
+
+      await expect(createRoomAgentService(options).startMission(room.id, objective, clientRequestId, requestId, actor)).rejects.toBe(unavailable);
+      const unsignaled = store.listUnsignaledRoomAgentEnqueues();
+      expect(unsignaled).toHaveLength(1);
+      const original = unsignaled[0]!;
+      // Inspect the persisted queue item, not the outgoing coordinator copy.
+      expect(original.queueItem.turn.traceparent).toBe(request.traceparent);
+      expect(parseTraceparent(original.queueItem.turn.traceparent)?.parentId).toBe(request.spanId);
+
+      // Recovery must work after the request context has left the bounded map.
+      for (let index = 0; index < 4096; index += 1) requestTraceContexts.remember(`req:mission-eviction-${index}`, request);
+      expect(requestTraceContexts.lookup(requestId)).toBeNull();
+      const recoveredService = createRoomAgentService(options);
+      expect(await recoveredService.recoverPending()).toEqual({ scanned: 1, recovered: 1, failed: 0 });
+      expect(enqueue.mock.calls[1]![0].turn.traceparent).toBe(request.traceparent);
+      expect(store.listUnsignaledRoomAgentEnqueues()).toHaveLength(0);
+
+      const retriedRequestId = "req:retried-mission-parent";
+      const retriedRequest = createRequestTraceContext(undefined);
+      requestTraceContexts.remember(retriedRequestId, retriedRequest);
+      await recoveredService.startMission(room.id, objective, clientRequestId, retriedRequestId, actor);
+      const persisted = store.getRoomAgentTurn(original.mission.id, original.run.runId)!;
+      expect(persisted.queueItem.turn.traceparent).toBe(request.traceparent);
+      expect(persisted.queueItem.turn.traceparent).not.toBe(retriedRequest.traceparent);
+      expect(store.listRoomAgentMissions(room.id)).toHaveLength(1);
+      expect(enqueue).toHaveBeenCalledTimes(2);
+    } finally {
+      model.mockRestore();
+    }
+  });
+
+
   it("passes the request id and traceparent in workflow input and memo", async () => {
-    requestTraceContexts.remember(turn.traceId, createRequestTraceContext(inbound));
+    const request = createRequestTraceContext(inbound);
+    requestTraceContexts.remember(turn.traceId, request);
     const start = vi.fn(async (_type: string, options: { workflowId: string }) => ({ workflowId: options.workflowId, firstExecutionRunId: "run-1" }));
     const close = vi.fn(async () => undefined);
     const clientFactory = vi.fn(async () => ({ client: { workflow: { start } }, close })) as unknown as TemporalClientFactory;
@@ -188,8 +251,9 @@ describe("workflow starters", () => {
     expect(workflowType).toBe("codexAppServerTurnWorkflow");
     expect(options.workflowId).toContain(turn.traceId);
     expect(options.args[0]?.traceId).toBe(turn.traceId);
-    expect(parseTraceparent(options.args[0]?.traceparent)?.traceId).toBe(inboundTraceId);
-    expect(options.memo).toMatchObject({ spaceTraceId: turn.traceId, w3cTraceId: inboundTraceId });
+    expect(options.args[0]?.traceparent).toBe(request.traceparent);
+    expect(parseTraceparent(options.args[0]?.traceparent)).toMatchObject({ traceId: inboundTraceId, parentId: request.spanId });
+    expect(options.memo).toMatchObject({ spaceTraceId: turn.traceId, w3cTraceId: inboundTraceId, traceparent: request.traceparent });
     expect(JSON.stringify(options.memo)).not.toContain("PRIVATE PROMPT");
     expect(close).toHaveBeenCalledOnce();
     expect(metricValue(/workflow_type="codexAppServerTurnWorkflow",outcome="STARTED",category="NONE"/)).toBe(before + 1);
@@ -211,7 +275,8 @@ describe("workflow starters", () => {
   });
 
   it("adds the traceparent to queued room-agent turns and links background actions to their origin", async () => {
-    requestTraceContexts.remember("req:roomagent0001", createRequestTraceContext(inbound));
+    const request = createRequestTraceContext(inbound);
+    requestTraceContexts.remember("req:roomagent0001", request);
     const signalWithStart = vi.fn(async () => ({ signaledRunId: "run-2" }));
     const start = vi.fn(async () => ({}));
     const clientFactory = vi.fn(async () => ({ client: { workflow: { signalWithStart, start } }, close: vi.fn(async () => undefined) })) as unknown as TemporalClientFactory;
@@ -222,10 +287,13 @@ describe("workflow starters", () => {
     };
 
     await coordinator.enqueue(item);
-    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[] }])[1];
-    expect(parseTraceparent(signalOptions.signalArgs[0]?.turn.traceparent)?.traceId).toBe(inboundTraceId);
+    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[]; memo: Record<string, string> }])[1];
+    expect(signalOptions.signalArgs[0]?.turn.traceparent).toBe(request.traceparent);
+    expect(parseTraceparent(signalOptions.signalArgs[0]?.turn.traceparent)).toMatchObject({ traceId: inboundTraceId, parentId: request.spanId });
+    expect(signalOptions.memo).toMatchObject({ spaceTraceId: "req:roomagent0001", w3cTraceId: inboundTraceId, traceparent: request.traceparent, missionId: item.missionId });
 
-    requestTraceContexts.remember("req:internal0001", createRequestTraceContext(inbound));
+    const internalRequest = createRequestTraceContext(inbound);
+    requestTraceContexts.remember("req:internal0001", internalRequest);
     await coordinator.enqueueAction("room_agent_action:1", {
       roomId: turn.roomId, missionId: "room_agent_mission:trace", agentPaneId: turn.paneId, agentSessionId: "agent_session:1",
       requestId: "req:roomagent0001", selectedToolIds: [], actions: []
@@ -235,7 +303,9 @@ describe("workflow starters", () => {
       spaceTraceId: "req:internal0001",
       parentSpaceTraceId: "req:roomagent0001",
       missionId: "room_agent_mission:trace",
-      w3cTraceId: inboundTraceId
+      w3cTraceId: inboundTraceId,
+      traceparent: internalRequest.traceparent
     });
+    expect(parseTraceparent(actionOptions.memo.traceparent)?.parentId).toBe(internalRequest.spanId);
   });
 });

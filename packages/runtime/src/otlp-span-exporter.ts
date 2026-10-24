@@ -4,8 +4,8 @@
  * `<base>/v1/traces`). No dependency, no collector required: Space logs stay
  * joinable by W3C trace id without it.
  *
- * Spans carry only the method, route template, status code, service name and
- * Space request id; never URLs with parameters, headers, bodies or user data.
+ * Callers supply allowlisted route/workflow/activity metadata and correlation
+ * identifiers; never URLs with parameters, headers, bodies or user data.
  * Export is best effort: a bounded queue drops (and counts) spans instead of
  * growing, each POST has a timeout, and a failing collector never affects a
  * request.
@@ -22,6 +22,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Causal links, such as a prior workflow run or an incoming signal's span. */
+  links?: readonly { traceId: string; spanId: string }[];
 }
 
 export interface SpanExporterStats {
@@ -70,24 +72,34 @@ function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
+function otlpLinks(links: ServerSpan["links"]) {
+  return links?.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId)
+    && !/^0+$/.test(link.traceId) && !/^0+$/.test(link.spanId))
+    .map(link => ({ traceId: link.traceId, spanId: link.spanId }));
+}
+
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string) {
   return {
     resourceSpans: [{
       resource: { attributes: [{ key: "service.name", value: { stringValue: serviceName } }] },
       scopeSpans: [{
         scope: { name: serviceName },
-        spans: spans.map(span => ({
-          traceId: span.traceId,
-          spanId: span.spanId,
-          ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
-          name: span.name,
-          kind: span.kind ?? 2,
-          startTimeUnixNano: span.startTimeUnixNano.toString(),
-          endTimeUnixNano: span.endTimeUnixNano.toString(),
-          attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
-          // STATUS_CODE_ERROR or STATUS_CODE_UNSET
-          status: { code: span.error ? 2 : 0 }
-        }))
+        spans: spans.map(span => {
+          const links = otlpLinks(span.links);
+          return {
+            traceId: span.traceId,
+            spanId: span.spanId,
+            ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
+            name: span.name,
+            kind: span.kind ?? 2,
+            startTimeUnixNano: span.startTimeUnixNano.toString(),
+            endTimeUnixNano: span.endTimeUnixNano.toString(),
+            attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+            ...(links?.length ? { links } : {}),
+            // STATUS_CODE_ERROR or STATUS_CODE_UNSET
+            status: { code: span.error ? 2 : 0 }
+          };
+        })
       }]
     }]
   };
@@ -122,6 +134,9 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
+      // With an empty queue the async body would finish before the assignment,
+      // leaving its resolved promise in inFlight and preventing future exports.
+      if (!queue.length) return Promise.resolve();
       inFlight = (async () => {
         try {
           while (queue.length) await flushOnce();

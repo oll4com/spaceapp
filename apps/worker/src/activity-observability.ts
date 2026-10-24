@@ -8,9 +8,11 @@ import {
   isSafeErrorCode,
   parseTraceparent,
   traceIdFromTraceparent,
-  type FailureCategory
+  type FailureCategory,
+  type ParsedTraceparent
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
+import { correlationIdentifier, decodeActivityTraceContext } from "./temporal-trace-context.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -30,6 +32,7 @@ export type ActivityOutcome = "COMPLETED" | "FAILED_RESULT" | "FAILED" | "CANCEL
 
 interface ActivityObservation {
   reasonCode: string | null;
+  traceparent: string | null;
 }
 
 const observations = new AsyncLocalStorage<ActivityObservation>();
@@ -51,17 +54,23 @@ export function noteActivityFailureReason(reasonCode: string): void {
 export function failureReasonScope<T>(execute: () => Promise<T>): { promise: Promise<T>; reasonCode: () => string | null } {
   const existing = observations.getStore();
   if (existing) return { promise: execute(), reasonCode: () => existing.reasonCode };
-  const observation: ActivityObservation = { reasonCode: null };
+  const observation: ActivityObservation = { reasonCode: null, traceparent: null };
   return { promise: observations.run(observation, execute), reasonCode: () => observation.reasonCode };
 }
 
-/** traceparent for an outbound call: same W3C trace, new span id; null if none. */
-export function childTraceparent(traceparent: string | null | undefined): string | null {
-  const parsed = parseTraceparent(traceparent);
-  if (!parsed) return null;
+function randomSpanId(): string {
   let spanId = randomBytes(8).toString("hex");
   while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
-  return formatTraceparent(parsed.traceId, spanId, parsed.flags);
+  return spanId;
+}
+
+/** Continue the exported activity attempt on outbound calls, or use the legacy input fallback. */
+export function childTraceparent(traceparent: string | null | undefined): string | null {
+  const active = observations.getStore()?.traceparent;
+  if (active) return active;
+  const parsed = parseTraceparent(traceparent);
+  if (!parsed) return null;
+  return formatTraceparent(parsed.traceId, randomSpanId(), parsed.flags);
 }
 
 // Keys whose values are identifiers. Prompts, content and messages are never read.
@@ -135,8 +144,10 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity attempt. */
   spans?: SpanExporter | null;
+  /** Propagated workflow span from Temporal headers; legacy inputs remain a fallback. */
+  traceContext?: ParsedTraceparent | null;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -144,6 +155,36 @@ function activityTraceparent(args: readonly unknown[]) {
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
 }
+
+// Observability must never turn a successful activity into a retry, or replace
+// the original business failure. In particular, exporting is never awaited.
+function bestEffort<T>(observe: () => T): T | undefined {
+  try { return observe(); } catch { return undefined; }
+}
+
+// Temporal-assigned identities; the Space correlation IDs below must also have the generated `<kind>:<token>` shape.
+const temporalSpanKeys = {
+  activityId: "space.activity_id",
+  workflowType: "space.workflow_type",
+  workflowId: "space.workflow_id",
+  temporalRunId: "space.temporal_run_id"
+} as const;
+
+const spanCorrelationKeys = {
+  traceId: "space.trace_id",
+  parentTraceId: "space.request_id",
+  missionId: "space.mission_id",
+  roomId: "space.room_id",
+  paneId: "space.pane_id",
+  agentRunId: "space.agent_run_id",
+  agentSessionId: "space.agent_session_id",
+  actionId: "space.action_id",
+  goalId: "space.goal_id",
+  dotId: "space.dot_id",
+  turnId: "space.turn_id",
+  cliTaskId: "space.cli_task_id",
+  revisionId: "space.revision_id"
+} as const;
 
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
@@ -165,60 +206,94 @@ export async function observeActivityExecution<T>(
     workflowId: info.workflowExecution?.workflowId ?? null,
     temporalRunId: info.workflowExecution?.runId ?? null,
     attempt: info.attempt,
-    ...activityCorrelation(args)
+    ...(bestEffort(() => activityCorrelation(args)) ?? {}),
+    ...(dependencies.traceContext ? { w3cTraceId: dependencies.traceContext.traceId } : {})
   };
   const labels = { activity_type: activityType };
-  if (info.attempt > 1) metrics.activityRetries.inc(labels);
-  if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
-  metrics.activitiesInFlight.inc(labels);
-  workerLog("info", "activity.started", { ...base, queueMs });
-  const observation: ActivityObservation = { reasonCode: null };
+  bestEffort(() => {
+    if (info.attempt > 1) metrics.activityRetries.inc(labels);
+    if (queueMs !== null) metrics.activityScheduleToStart.observe(labels, queueMs / 1000);
+    metrics.activitiesInFlight.inc(labels);
+    workerLog("info", "activity.started", { ...base, queueMs });
+  });
+  const activitySpan = bestEffort(() => {
+    if (!dependencies.spans) return null;
+    const parent = dependencies.traceContext ?? activityTraceparent(args);
+    return parent ? { parent, spanId: randomSpanId() } : null;
+  });
+  const observation: ActivityObservation = {
+    reasonCode: null,
+    traceparent: activitySpan ? formatTraceparent(activitySpan.parent.traceId, activitySpan.spanId, activitySpan.parent.flags) : null
+  };
 
-  const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => {
+  const finish = (outcome: ActivityOutcome, reasonCode: string | null, errorName: string | null) => bestEffort(() => {
     const durationMs = Math.max(0, now() - startedAt);
-    metrics.activitiesInFlight.inc(labels, -1);
-    metrics.activityExecutions.inc({ activity_type: activityType, outcome });
-    metrics.activityDuration.observe(labels, durationMs / 1000);
-    let category: FailureCategory | null = null;
-    if (outcome !== "COMPLETED") {
-      category = outcome === "CANCELLED" ? "CANCELLED" : categorizeFailureCode(reasonCode);
-      metrics.activityFailures.inc({ activity_type: activityType, category, code: reasonCode ?? "UNSPECIFIED" });
-    }
-    workerLog(outcome === "COMPLETED" ? "info" : outcome === "CANCELLED" ? "warn" : "error", "activity.finished", {
-      ...base,
-      outcome,
-      reasonCode,
-      category,
-      errorName,
-      durationMs,
-      queueMs,
-      rssBytes: process.memoryUsage().rss
+    const category: FailureCategory | null = outcome === "COMPLETED" ? null
+      : outcome === "CANCELLED" ? "CANCELLED" : categorizeFailureCode(reasonCode);
+    bestEffort(() => {
+      metrics.activitiesInFlight.inc(labels, -1);
+      metrics.activityExecutions.inc({ activity_type: activityType, outcome });
+      metrics.activityDuration.observe(labels, durationMs / 1000);
+      if (category !== null) {
+        metrics.activityFailures.inc({ activity_type: activityType, category, code: reasonCode ?? "UNSPECIFIED" });
+      }
+      workerLog(outcome === "COMPLETED" ? "info" : outcome === "CANCELLED" ? "warn" : "error", "activity.finished", {
+        ...base,
+        outcome,
+        reasonCode,
+        category,
+        errorName,
+        durationMs,
+        queueMs,
+        rssBytes: process.memoryUsage().rss
+      });
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
+    if (activitySpan) {
+      const { parent, spanId } = activitySpan;
+      const attributes: Record<string, string | number> = {
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.duration_ms": durationMs
+      };
+      if (Number.isSafeInteger(info.attempt) && info.attempt >= 1) attributes["space.attempt"] = info.attempt;
+      if (queueMs !== null) attributes["space.queue_ms"] = queueMs;
+      for (const [key, attribute] of Object.entries(temporalSpanKeys)) {
+        const identifier = logIdentifier(base[key]);
+        if (identifier !== null) attributes[attribute] = identifier;
+      }
+      for (const [key, attribute] of Object.entries(spanCorrelationKeys)) {
+        const identifier = correlationIdentifier(base[key]);
+        if (identifier !== null) attributes[attribute] = identifier;
+      }
+      if (isSafeErrorCode(reasonCode)) attributes["space.reason_code"] = reasonCode;
+      if (category !== null) attributes["space.failure_category"] = category;
       dependencies.spans!.record({
         traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
+        spanId,
         parentSpanId: parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes,
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
     }
-  };
+  });
 
   try {
     const result = await observations.run(observation, execute);
-    if (isFailedResult(result)) finish("FAILED_RESULT", observation.reasonCode ?? "ACTIVITY_RESULT_FAILED", null);
-    else finish("COMPLETED", null, null);
+    bestEffort(() => {
+      if (isFailedResult(result)) finish("FAILED_RESULT", observation.reasonCode ?? "ACTIVITY_RESULT_FAILED", null);
+      else finish("COMPLETED", null, null);
+    });
     return result;
   } catch (error) {
-    const cancelled = dependencies.cancelled?.() === true || /Cancel/i.test((error as { name?: string } | null)?.name ?? "");
-    const errorName = logIdentifier((error as { name?: unknown } | null)?.name);
-    finish(cancelled ? "CANCELLED" : "FAILED", observation.reasonCode ?? errorCodeOf(error), errorName);
+    bestEffort(() => {
+      const cancelled = dependencies.cancelled?.() === true || /Cancel/i.test((error as { name?: string } | null)?.name ?? "");
+      const errorName = logIdentifier((error as { name?: unknown } | null)?.name);
+      finish(cancelled ? "CANCELLED" : "FAILED", observation.reasonCode ?? errorCodeOf(error), errorName);
+    });
     throw error;
   }
 }
@@ -229,6 +304,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        traceContext: decodeActivityTraceContext(input.headers),
         cancelled: () => context.cancellationSignal.aborted
       })
     }

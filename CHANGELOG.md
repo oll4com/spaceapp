@@ -5,6 +5,20 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Observability
+
+- Optional OTLP tracing connects API requests to workflow executions, child
+  workflows and activity attempts in the main worker and both memory workers.
+  Each Room Agent mission stays under its own request; the long-lived supervisor
+  run has its own trace, so its background polling never joins an earlier
+  request's trace. Continued runs and background missions link to the work they
+  continue. Exported correlation attributes accept only values with a bounded
+  identifier syntax.
+- Room Agent queues preserve the originating trace across retries and recovery.
+  Workflow replay emits no spans, and a slow or failing collector does not block
+  business execution. Export remains off unless an endpoint is configured.
+- Fixed an idle exporter flush that could prevent later spans from being sent.
+
 ## [1.1.7] - 2026-10-21
 
 Source: sanitized Space app @ 3e4572bc97 (4729 files: SpaceApp 77d00f6895 with

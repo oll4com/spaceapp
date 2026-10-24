@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request } from "node:http";
-import { MetricsRegistry } from "@space/runtime";
+import { MetricsRegistry, type ServerSpan, type SpanExporter } from "@space/runtime";
 import {
   activityCorrelation,
   childTraceparent,
@@ -35,6 +35,23 @@ function capture() {
   const lines: string[] = [];
   const restore = captureWorkerLogs((line) => { lines.push(line); records.push(JSON.parse(line)); });
   return { records, lines, restore };
+}
+
+function captureSpans() {
+  const recorded: ServerSpan[] = [];
+  const spans: SpanExporter = {
+    record: span => void recorded.push(span),
+    flush: async () => undefined,
+    close: async () => undefined,
+    stats: () => ({ exported: recorded.length, dropped: 0, failed: 0 })
+  };
+  return { recorded, spans };
+}
+
+// A Temporal binary/plain header, constructed independently of the encoder.
+function traceHeaders(value: string) {
+  const encoder = new TextEncoder();
+  return { "space-traceparent": { metadata: { encoding: encoder.encode("binary/plain") }, data: encoder.encode(value) } };
 }
 
 let restoreLogs: (() => void) | null = null;
@@ -135,6 +152,127 @@ describe("observeActivityExecution", () => {
     expect(value).toBe("done");
     expect(logs.records.map((record) => record.event)).toEqual(["activity.started", "activity.finished"]);
   });
+
+  it.each([
+    { name: "no arguments", args: [] },
+    { name: "legacy arguments", args: [{ traceparent, prompt: secretPrompt }] }
+  ])("uses the workflow header for activities with $name", async ({ args }) => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const { recorded, spans } = captureSpans();
+    const metrics = createWorkerMetrics(new MetricsRegistry());
+    const workflowParent = "00-11111111111111111111111111111111-2222222222222222-01";
+    const interceptors = createActivityObservabilityInterceptors({ metrics, spans })({
+      info: info(), cancellationSignal: new AbortController().signal
+    } as never);
+    const input = { args, headers: traceHeaders(workflowParent) };
+    const result = { value: secretPrompt };
+    const returned = await interceptors.inbound!.execute!(input, async nextInput => {
+      expect(nextInput).toBe(input);
+      return result;
+    });
+    expect(returned).toBe(result);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ traceId: "11111111111111111111111111111111", parentSpanId: "2222222222222222", kind: 1 });
+    expect(logs.records[0]).toMatchObject({ w3cTraceId: "11111111111111111111111111111111" });
+    expect(JSON.stringify(recorded[0]!.attributes)).not.toContain(secretPrompt);
+  });
+
+  it("falls back to the legacy argument context when a workflow header is malformed", async () => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const { recorded, spans } = captureSpans();
+    const interceptors = createActivityObservabilityInterceptors({ metrics: createWorkerMetrics(new MetricsRegistry()), spans })({
+      info: info(), cancellationSignal: new AbortController().signal
+    } as never);
+    await interceptors.inbound!.execute!({ args: [{ turn: { traceparent } }], headers: traceHeaders("invalid") }, async () => "ok");
+    await interceptors.inbound!.execute!({ args: [], headers: traceHeaders("invalid") }, async () => "ok");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7" });
+  });
+
+  it("gives retry attempts distinct spans with safe failure and correlation metadata", async () => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const { recorded, spans } = captureSpans();
+    const metrics = createWorkerMetrics(new MetricsRegistry());
+    let clock = 1_000;
+    const args = [{ turn: { traceparent, traceId: "req:abcdefghijkl", requestId: "req:parent00001",
+      roomId: "room:1", paneId: "pane:1", roomAgentMissionId: "mission:1", agentRunId: "agent_run:1",
+      prompt: secretPrompt, output: secretPrompt, path: "/private/transcript", url: "https://private.example/?token=secret",
+      headers: { authorization: secretPrompt } } }];
+    const failedResult = { status: "FAILED", message: secretPrompt };
+    expect(await observeActivityExecution(info(), args, async () => {
+      noteActivityFailureReason("CODEX_APP_SERVER_TURN_TIMEOUT");
+      clock += 125;
+      return failedResult;
+    }, { metrics, spans, now: () => clock })).toBe(failedResult);
+    expect(await observeActivityExecution(info({ attempt: 2 }), args, async () => {
+      clock += 75;
+      return "ok";
+    }, { metrics, spans, now: () => clock })).toBe("ok");
+
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0]!.spanId).not.toBe(recorded[1]!.spanId);
+    for (const exported of recorded) {
+      expect(exported.spanId).toMatch(/^[0-9a-f]{16}$/);
+      expect(exported.spanId).not.toBe("0000000000000000");
+      expect(exported).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7" });
+      expect(exported.attributes).toMatchObject({ "space.activity_id": "3", "space.workflow_type": "codexAppServerTurnWorkflow",
+        "space.workflow_id": info().workflowExecution.workflowId, "space.temporal_run_id": "run-uuid-1",
+        "space.trace_id": "req:abcdefghijkl", "space.request_id": "req:parent00001", "space.room_id": "room:1",
+        "space.pane_id": "pane:1", "space.mission_id": "mission:1", "space.agent_run_id": "agent_run:1" });
+    }
+    expect(recorded[0]).toMatchObject({ error: true, attributes: { "space.attempt": 1, "space.outcome": "FAILED_RESULT",
+      "space.reason_code": "CODEX_APP_SERVER_TURN_TIMEOUT", "space.failure_category": "TIMEOUT", "space.duration_ms": 125 } });
+    expect(recorded[1]).toMatchObject({ error: false, attributes: { "space.attempt": 2, "space.outcome": "COMPLETED", "space.duration_ms": 75 } });
+    expect(recorded[1]!.attributes).not.toHaveProperty("space.reason_code");
+    const exportedText = JSON.stringify(recorded.map(({ name, attributes }) => ({ name, attributes })));
+    expect(exportedText).not.toMatch(/PRIVATE PROMPT|sk-live|private\.example|transcript|authorization/);
+  });
+
+  it("parents outbound calls to the exported attempt and keeps concurrent activity scopes separate", async () => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const { recorded, spans } = captureSpans();
+    const metrics = createWorkerMetrics(new MetricsRegistry());
+    const outgoing = await Promise.all(["1", "2"].map(activityId => observeActivityExecution(info({ activityId }), [{ traceparent }], async () => {
+      await Promise.resolve();
+      return { activityId, traceparent: childTraceparent(null) };
+    }, { metrics, spans })));
+    expect(recorded).toHaveLength(2);
+    for (const call of outgoing) {
+      const activity = recorded.find(span => span.attributes["space.activity_id"] === call.activityId)!;
+      expect(call.traceparent).toBe(`00-${activity.traceId}-${activity.spanId}-01`);
+    }
+    expect(outgoing[0]!.traceparent).not.toBe(outgoing[1]!.traceparent);
+    expect(childTraceparent(null)).toBeNull();
+  });
+
+  it("never lets a throwing span exporter replace a result or an original activity failure", async () => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const { recorded, spans } = captureSpans();
+    let flushes = 0;
+    spans.record = span => { recorded.push(span); throw new Error("collector is unavailable"); };
+    spans.flush = async () => { flushes += 1; };
+    const dependencies = { metrics: createWorkerMetrics(new MetricsRegistry()), spans };
+    const result = { status: "COMPLETED", value: secretPrompt };
+    expect(await observeActivityExecution(info(), [{ traceparent }], async () => result, dependencies)).toBe(result);
+    const failure = Object.assign(new Error(secretPrompt), { code: "TOOL_UNAVAILABLE" });
+    await expect(observeActivityExecution(info(), [{ traceparent }], async () => { throw failure; }, dependencies)).rejects.toBe(failure);
+    expect(recorded.map(span => span.attributes["space.outcome"])).toEqual(["COMPLETED", "FAILED"]);
+    expect(recorded[1]).toMatchObject({ error: true, attributes: { "space.reason_code": "TOOL_UNAVAILABLE", "space.failure_category": "TOOL_UNAVAILABLE" } });
+    expect(flushes).toBe(0);
+  });
+
+  it("keeps telemetry failures and cancellation classification from changing business outcomes", async () => {
+    const logs = capture(); restoreLogs = logs.restore;
+    const { recorded, spans } = captureSpans();
+    const metrics = createWorkerMetrics(new MetricsRegistry());
+    metrics.activitiesInFlight.inc = () => { throw new Error("broken metrics sink"); };
+    expect(await observeActivityExecution(info(), [{ traceparent }], async () => "ok", { metrics, spans })).toBe("ok");
+    const failure = new Error(secretPrompt);
+    await expect(observeActivityExecution(info(), [{ traceparent }], async () => { throw failure; }, { metrics, spans, cancelled: () => true }))
+      .rejects.toBe(failure);
+    expect(recorded.map(span => span.attributes["space.outcome"])).toEqual(["COMPLETED", "CANCELLED"]);
+    expect(recorded[1]).toMatchObject({ error: false, attributes: { "space.failure_category": "CANCELLED" } });
+  });
 });
 
 describe("worker log", () => {
@@ -184,9 +322,18 @@ describe("worker metrics endpoint", () => {
 
 it("registers the activity interceptor on every Temporal worker, including both memory workers", async () => {
   const { readFile } = await import("node:fs/promises");
+  const { createWorkerTracing } = await import("../src/worker-tracing.js");
+  const logs = capture(); restoreLogs = logs.restore;
+  const tracing = createWorkerTracing(null);
+  expect(tracing.interceptors?.activity).toHaveLength(1);
+  const interceptors = tracing.interceptors!.activity![0]!({
+    info: info(), cancellationSignal: new AbortController().signal
+  } as never);
+  await interceptors.inbound!.execute!({ args: [], headers: {} }, async () => "ok");
+  expect(logs.records.map(record => record.event)).toEqual(["activity.started", "activity.finished"]);
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/\.\.\.createWorkerTracing\(spans\)/);
   }
 });
 
@@ -202,4 +349,17 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+
+it("exports only generated correlation identifiers and a valid attempt on activity spans", async () => {
+  const { recorded, spans } = captureSpans();
+  const args = [{ turn: { traceparent, traceId: "req:abcdefghijkl", roomId: "room:1",
+    roomAgentMissionId: "PRIVATE-PROMPT-and-tool-output-must-stay-local", paneId: "private-notes.txt" } }];
+  await observeActivityExecution(info(), args, async () => "ok", { spans });
+  await observeActivityExecution(info({ attempt: -1 }), args, async () => "ok", { spans });
+  expect(recorded[0]!.attributes).toMatchObject({ "space.room_id": "room:1", "space.trace_id": "req:abcdefghijkl", "space.attempt": 1 });
+  expect(recorded[0]!.attributes).not.toHaveProperty("space.mission_id");
+  expect(recorded[0]!.attributes).not.toHaveProperty("space.pane_id");
+  expect(JSON.stringify(recorded.map(({ name, attributes }) => ({ name, attributes })))).not.toMatch(/PRIVATE-PROMPT|private-notes/);
+  expect(recorded[1]!.attributes).not.toHaveProperty("space.attempt");
 });
