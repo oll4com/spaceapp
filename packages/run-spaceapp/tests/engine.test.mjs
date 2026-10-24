@@ -11,7 +11,8 @@ import {
   normalizeEngine,
   parseEngineVersion,
   podmanMachineResizeGuidance,
-  podmanMachineResourceInfo
+  podmanMachineResourceInfo,
+  validatePodmanVersion
 } from "../src/engine.mjs";
 
 describe("engine support", () => {
@@ -77,6 +78,7 @@ describe("engine support", () => {
   test("listPodmanMachines returns parsed array", async () => {
     const execute = async (spec, io) => {
       assert.equal(spec.command, "podman");
+      assert.deepEqual(spec.args, ["machine", "list", "--format", "json"]);
       io.stdout.write(JSON.stringify([{ Name: "test", Running: true }]));
       return 0;
     };
@@ -97,6 +99,18 @@ describe("engine support", () => {
     assert.equal(info.diskBytes, 65536 * 1024 ** 2);
   });
 
+  test("podmanMachineResourceInfo prefers Resources object", () => {
+    const info = podmanMachineResourceInfo({
+      CPUs: 2,
+      Memory: 4096,
+      DiskSize: 32768,
+      Resources: { CPUs: 8, Memory: 16384, DiskSize: 131072 }
+    });
+    assert.equal(info.cpuCount, 8);
+    assert.equal(info.memoryBytes, 16384 * 1024 ** 2);
+    assert.equal(info.diskBytes, 131072 * 1024 ** 2);
+  });
+
   test("podmanMachineResourceInfo accepts string byte sizes", () => {
     const info = podmanMachineResourceInfo({ cpus: 2, memory: "4 GiB", diskSize: "32g" });
     assert.equal(info.cpuCount, 2);
@@ -114,5 +128,28 @@ describe("engine support", () => {
     const guidance = podmanMachineResizeGuidance("dev");
     assert.match(guidance, /podman machine set dev/);
     assert.match(guidance, /podman machine start dev/);
+  });
+
+  test("validatePodmanVersion accepts supported versions", async () => {
+    const execute = async (spec, io) => {
+      assert.equal(spec.command, "podman");
+      assert.deepEqual(spec.args, ["--version"]);
+      io.stdout.write("podman version 5.2.0\n");
+      return 0;
+    };
+    assert.equal(await validatePodmanVersion(execute), true);
+  });
+
+  test("validatePodmanVersion rejects unsupported versions", async () => {
+    const execute = async (spec, io) => {
+      io.stdout.write("podman version 4.8.0\n");
+      return 0;
+    };
+    assert.equal(await validatePodmanVersion(execute), false);
+  });
+
+  test("validatePodmanVersion returns false on probe failure", async () => {
+    const execute = async () => 1;
+    assert.equal(await validatePodmanVersion(execute), false);
   });
 });

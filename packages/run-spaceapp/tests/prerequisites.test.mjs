@@ -1025,9 +1025,16 @@ test("macOS Podman engine reports missing Podman machine", async () => {
     stdout: capture().stream,
     stderr: stderr.stream,
     engine: "podman",
-    execute: async (spec) => {
+    execute: async (spec, io) => {
       if (spec.command === "podman" && spec.args[0] === "machine" && spec.args[1] === "list") {
         return 1;
+      }
+      if (spec.command === "podman" && spec.args[0] === "--version") {
+        if (io.stdout) io.stdout.write("podman version 5.2.0\n");
+        return 0;
+      }
+      if (spec.command === "podman" && spec.args[0] === "info") {
+        return 0;
       }
       return 127;
     }
@@ -1052,6 +1059,13 @@ test("macOS Podman engine reports under-resourced running machine", async () => 
       }
       if (spec.command === "podman" && spec.args[0] === "machine" && spec.args[1] === "inspect") {
         io.stdout.write(JSON.stringify({ Name: "podman-machine-default", CPUs: 2, Memory: 4096, DiskSize: 32768 }));
+        return 0;
+      }
+      if (spec.command === "podman" && spec.args[0] === "--version") {
+        if (io.stdout) io.stdout.write("podman version 5.2.0\n");
+        return 0;
+      }
+      if (spec.command === "podman" && spec.args[0] === "info") {
         return 0;
       }
       return 127;

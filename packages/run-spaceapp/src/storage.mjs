@@ -129,9 +129,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     let cached = null;
     for (const ref of refs) {
       cached = await captureProbe(execute, { command: binary, args: ["image", "inspect", "--format", "{{.Id}}", ref] });
-      if (/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) break;
+      if (/^(?:sha256:)?[a-f0-9]{64}$/.test(cached ?? "")) break;
     }
-    if (!/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) {
+    if (!/^(?:sha256:)?[a-f0-9]{64}$/.test(cached ?? "")) {
       missingImages.push(image);
       let reserve = imageReserve[type] ?? GiB;
       if (engine && existingConfig && cachedLayers.size && typeof fetch === "function") {
@@ -156,10 +156,11 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const free = await captureProbe(execute, composeCommand("storageFree", root, existingConfig));
     if (/^\d+$/.test(free ?? "")) dockerFreeDiskBytes = Number(free);
   }
-  // Linux can measure the Docker filesystem directly even on a fresh install.
-  if (engine?.DockerRootDir && process.platform === "linux") {
+  // Linux can measure the container filesystem directly even on a fresh install.
+  const engineRootDir = engine?.DockerRootDir || engine?.store?.graphRoot;
+  if (engineRootDir && process.platform === "linux") {
     const { inspectSystemResources } = await import("./index.mjs");
-    try { dockerFreeDiskBytes = (await inspectSystemResources(engine.DockerRootDir)).freeDiskBytes; } catch {}
+    try { dockerFreeDiskBytes = (await inspectSystemResources(engineRootDir)).freeDiskBytes; } catch {}
   }
   return { ...plan, missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
     resources: { ...resources,
