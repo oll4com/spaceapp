@@ -9,7 +9,8 @@ COPY . .
 RUN npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev \
-    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' -o -name '*.d.ts' -o -name '*.d.mts' \) -delete \
+    && node scripts/stage-container-target.mjs /app /out
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
@@ -55,16 +56,8 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
 COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
 COPY --from=build --chown=spaceapp:spaceapp /app/THIRD_PARTY_LICENSES ./THIRD_PARTY_LICENSES
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -73,6 +66,14 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
        done
 
 FROM runtime-base AS core
+COPY --from=build --chown=spaceapp:spaceapp /out/core/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /out/core/apps ./apps
+COPY --from=build --chown=spaceapp:spaceapp /out/core/packages ./packages
+COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 RUN install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -85,6 +86,9 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
+COPY --from=build --chown=spaceapp:spaceapp /out/browser/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /out/browser/apps ./apps
+COPY --from=build --chown=spaceapp:spaceapp /out/browser/packages ./packages
 RUN apt-get update \
     && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
@@ -97,6 +101,9 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --from=build --chown=spaceapp:spaceapp /out/cli/node_modules ./node_modules
+COPY --from=build --chown=spaceapp:spaceapp /out/cli/packages ./packages
+COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md

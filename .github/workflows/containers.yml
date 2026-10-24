@@ -71,3 +71,54 @@ jobs:
           node scripts/container-image-size-budget.mjs
           --target "${{ matrix.target }}"
           --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Smoke check target runtime closure
+        run: |
+          set -euo pipefail
+          IMAGE="spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+          PLATFORM="linux/${{ matrix.arch }}"
+          if [ "${{ matrix.target }}" = "cli" ]; then
+            docker run --rm --platform "$PLATFORM" --entrypoint sh "$IMAGE" -c '
+              gosu spaceapp node packages/cli-host/dist/main.js &
+              HOST_PID=$!
+              for _ in $(seq 1 30); do
+                [ -S /run/space-codex-pane-host/pane-host.sock ] && break
+                sleep 0.2
+              done
+              test -S /run/space-codex-pane-host/pane-host.sock
+              kill -TERM "$HOST_PID" && wait "$HOST_PID" || true
+            '
+          elif [ "${{ matrix.target }}" = "browser" ]; then
+            docker run --rm --platform "$PLATFORM" --entrypoint sh "$IMAGE" -c '
+              chromium --headless --no-sandbox --disable-gpu --dump-dom about:blank >/dev/null
+              node -e "import(\"./apps/api/dist/config.js\"); import(\"@space/browser-host\"); import(\"@space/db\");"
+            '
+          elif [ "${{ matrix.target }}" = "core" ]; then
+            PG_CID="$(docker run -d -e POSTGRES_USER=spaceapp -e POSTGRES_PASSWORD=spaceapp -e POSTGRES_DB=spaceapp pgvector/pgvector:pg16)"
+            trap "docker rm -f $PG_CID >/dev/null 2>&1 || true" EXIT
+            for _ in $(seq 1 30); do
+              docker exec "$PG_CID" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1 && break
+              sleep 1
+            done
+            PG_IP="$(docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" "$PG_CID")"
+            docker run --rm --platform "$PLATFORM" --entrypoint sh "$IMAGE" -c "
+              printf 'postgresql://spaceapp:spaceapp@%s:5432/spaceapp' '$PG_IP' > /tmp/db-url
+              printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' > /tmp/session-secret
+              printf 'setup-token-smoke-test-0123456789abcdef' > /tmp/setup-token
+              export SPACE_DATABASE_URL_SOURCE_FILE=/tmp/db-url
+              export SPACE_SESSION_SECRET_FILE=/tmp/session-secret
+              export SPACE_SETUP_TOKEN_SOURCE_FILE=/tmp/setup-token
+              export SPACE_RUNTIME_STORE=postgres
+              export SPACEAPP_WORKFLOWS_ENABLED=false
+              /app/deploy/docker/core-entrypoint.sh &
+              CORE_PID=\$!
+              for _ in \$(seq 1 45); do
+                if node -e \"fetch('http://127.0.0.1:4911/readyz').then(async r=>{const b=await r.json();if(!r.ok||b.ok!==true)process.exit(1)}).catch(()=>process.exit(1))\"; then
+                  kill -TERM \"\$CORE_PID\" && wait \"\$CORE_PID\" || true
+                  exit 0
+                fi
+                sleep 1
+              done
+              exit 1
+            "
+          fi
