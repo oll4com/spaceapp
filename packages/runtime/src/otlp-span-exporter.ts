@@ -11,6 +11,11 @@
  * request.
  */
 
+export interface OtlpSpanLink {
+  traceId: string;
+  spanId: string;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -22,6 +27,7 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  links?: readonly OtlpSpanLink[];
 }
 
 export interface SpanExporterStats {
@@ -82,6 +88,8 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
           kind: span.kind ?? 2,
+          ...(span.links?.length ? { links: span.links.filter(link => traceIdPattern.test(link.traceId) && spanIdPattern.test(link.spanId)
+            && !/^0+$/.test(link.traceId) && !/^0+$/.test(link.spanId)).slice(0, 8).map(link => ({ traceId: link.traceId, spanId: link.spanId })) } : {}),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
@@ -122,13 +130,15 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
+      // Assign before draining: an empty async body otherwise clears inFlight
+      // synchronously, then overwrites it with a settled promise forever.
+      inFlight = Promise.resolve().then(async () => {
         try {
           while (queue.length) await flushOnce();
         } finally {
           inFlight = null;
         }
-      })();
+      });
     }
     return inFlight;
   };

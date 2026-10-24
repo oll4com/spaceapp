@@ -9,6 +9,7 @@ import {
 import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { roomActionSummary } from "./room-action-summary.js";
 import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
+import { continuationSourceTraceparent } from "./workflow-span-context.js";
 
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
   // Count the entire mission, including synchronous actions. Background roots
@@ -130,7 +131,10 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`,
+    traceparent: undefined,
+    sourceTraceparent: continuationSourceTraceparent({ workflowId: source.run.workflowId,
+      temporalRunId: source.run.temporalRunId, turn: source.queueItem.turn })
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({

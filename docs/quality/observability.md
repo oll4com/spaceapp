@@ -220,8 +220,12 @@ SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
 OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
 2026-10-16 the worker and both memory workers use the same exporter (services
 `space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+one INTERNAL span per workflow run and one per activity attempt. A workflow
+started by the API is parented to the exported API SERVER span; activities
+and child workflows are nested beneath their scheduling workflow. Activity
+spans include attempts, outcomes and safe failure codes/categories. Local
+activities are covered too. Without request context, a run has a deterministic
+root trace derived from its Temporal run id.
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
@@ -233,11 +237,40 @@ that span, with the activity type, outcome and attempt only.
 - **Worker:** worker logs read the trace ID from the activity input. Internal
   room-action calls from the worker send a child `traceparent`, so the internal
   API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+- **Workflow tracing:** an opt-in workflow interceptor propagates a bounded
+  identifier-only Temporal header. A worker-side sink exports completed spans
+  with `callDuringReplay: false`; workflow code does no tracing I/O. The sink and
+  activity interceptor share an attribute allowlist. Prompts, model output,
+  paths, URLs, exception messages and arbitrary user text are never exported.
+- **Continuations:** continue-as-new links the next run to the previous run's
+  span. Background turns keep a separate trace and link to their source via
+  optional `sourceTraceparent`. A distinct request processed by a long-lived
+  supervisor takes precedence over that supervisor's inherited trace.
+- **Delivery:** the API and all three workers reuse the bounded, best-effort
+  exporter. Its queue drops and counts excess spans, and each POST times out.
+  Collector failure is isolated from workflow and activity results. No tracing
+  SDK is added. Configure the endpoint on each process that should export.
 
 ### Replay compatibility
+
+`apps/worker/tests/workflow-span-integration.test.ts` runs real workflows and
+stub activities against a time-skipping Temporal test server and a loopback
+OTLP HTTP collector. It checks parentage, retries, local activities, child
+workflows, continuation links, distinct request traces and sensitive-data
+exclusion, then replays a recorded history and asserts no additional spans.
+No Docker, production data or AI provider is required. The historical notes
+below describe the earlier introduction of trace correlation, not a production
+replay proof for this instrumentation.
+
+`npm test -w @space/worker` prepares the pinned Temporal test server (1.40.0)
+before starting Vitest. The preparation step reuses a persistent checkout-local
+cache under `.cache/temporal-test-server/<version>/<platform>-<arch>`; only its
+first run needs network access. To prepare an offline checkout ahead of time,
+run `npm run test:setup -w @space/worker` while online and retain that cache, or
+set `SPACE_TEMPORAL_TEST_SERVER_PATH` to an already provisioned executable for
+the host platform. An invalid override fails with setup instructions rather
+than falling back to a download. The integration suite always uses the SDK's
+`existing-path` option and performs no test-server downloads itself.
 
 No file under `apps/worker/src` that the workflow bundle imports was changed
 (`workflows.ts`, `room-supervisor-state.ts`, `turn-runtime-policy.ts`,
@@ -315,7 +348,8 @@ No credential or transcript export was added.
   continuation from the run it continues (`roomAgentContinuation.sourceRunId`,
   indexed by migration 0206, at most 50 generations and the row limit) and
   marks it with `continuationOf`. Its events and logs remain under its own
-  trace ID. Chat-pane sends from room actions use `<actionId>:chat`.
+  trace ID; their OTLP workflow spans now link to the source trace. Chat-pane
+  sends from room actions use `<actionId>:chat`.
 - **CLI terminal task IDs are not linked.** `cliTaskId` and `revisionId` are not
   tied to request IDs.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
@@ -337,7 +371,7 @@ No credential or transcript export was added.
   trace's workflows, joined by workflow id, with their status and error code, and
   names a failed run's code as the cause when no event carries one.
 - **Hosts emit no spans.** Since 2026-10-16 the OTLP exporter sends API SERVER
-  spans and worker activity spans (the worker and both memory workers); the CLI
+  spans and worker workflow/activity spans (the worker and both memory workers); the CLI
   and Browser Hosts still join traces through log lines only.
 - **Recovery counters are partial.** Recovery counters exist for plan model
   retries, CLI terminal reconnects and worker activity retries only.

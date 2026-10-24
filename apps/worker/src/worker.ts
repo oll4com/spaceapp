@@ -7,6 +7,7 @@ import { TelegramDeliveryWorker, TelegramSecretStore, otlpSpanExporterFromEnv } 
 import { NativeConnection, Runtime, Worker } from "@temporalio/worker";
 import * as activities from "./activities.js";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { workflowSpanOptions, workflowSpanSinks } from "./workflow-span-export.js";
 import { resolveTemporalCoreMetricsBind, resolveWorkerMetricsListen, startWorkerMetricsServer } from "./worker-metrics.js";
 import { workerLog } from "./worker-log.js";
 import { sweepCodexCliCompletions } from "./codex-cli-completion.js";
@@ -43,9 +44,8 @@ const worker = await Worker.create({
   taskQueue,
   workflowsPath,
   activities,
-  // Structured, correlated activity records and worker metrics. Activity-side
-  // only: the workflow sandbox and its replay behaviour are unchanged.
-  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+  interceptors: { activity: [createActivityObservabilityInterceptors({ spans })], ...workflowSpanOptions(spans) },
+  sinks: workflowSpanSinks(spans)
 });
 
 // Optional loopback-only Prometheus endpoint for worker metrics.
