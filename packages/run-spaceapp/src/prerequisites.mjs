@@ -119,6 +119,17 @@ export async function prepareDockerCliPath({
   return directory;
 }
 
+// Podman must already be installed and running. Never silently install Docker
+// when the operator explicitly selected Podman.
+export async function ensurePodmanAvailable({platform=process.platform,execute}) {
+  if(platform!=="linux"&&platform!=="darwin") return {code:1,reexecuted:false};
+  for(const args of [["--version"],["compose","version"],["info"]]) {
+    try {if(await execute({command:"podman",args},{stdout:null,stderr:null})!==0) return {code:1,reexecuted:false};}
+    catch {return {code:1,reexecuted:false};}
+  }
+  return {code:0,reexecuted:false};
+}
+
 export async function ensureDockerAvailable({
   platform = process.platform,
   arch = process.arch,

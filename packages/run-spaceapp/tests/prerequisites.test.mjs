@@ -6,6 +6,7 @@ import {
   DOCKER_REPOSITORY_KEY_FINGERPRINTS,
   downloadFile,
   ensureDockerAvailable,
+  ensurePodmanAvailable,
   openPgpFingerprint,
   openPgpPrimaryFingerprints,
   dockerDnfRepository,
@@ -1015,4 +1016,11 @@ test('Linux waits for a stopped engine to become ready without unnecessarily cha
   assert.equal(result.code,0);assert.ok(sleeps>=2);
   assert.ok(calls.some(s=>s.args.includes('systemctl')));
   assert.ok(!calls.some(s=>s.args.includes('usermod')));
+});
+
+test("Podman prerequisite never falls back to Docker",async()=>{
+ const commands=[];const execute=async x=>{commands.push(x);return x.args[0]==="info"?1:0;};
+ const result=await ensurePodmanAvailable({platform:"linux",execute});
+ assert.equal(result.code,1);assert.deepEqual(commands.map(x=>x.command),["podman","podman","podman"]);
+ assert.equal((await ensurePodmanAvailable({platform:"win32",execute})).code,1);
 });

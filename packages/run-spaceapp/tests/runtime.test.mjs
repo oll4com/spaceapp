@@ -176,3 +176,12 @@ test("workspace override renders explicit bind mounts without Docker socket acce
   assert.match(compose, /target: "\/workspaces\/project"/);
   assert.doesNotMatch(compose, /docker\.sock/);
 });
+
+test("composeCommand supports explicit Podman while preserving Docker defaults", () => {
+  const podman = composeCommand("up", home, {engine:"podman"});
+  const docker = composeCommand("up", home);
+  assert.equal(podman.command, "podman");
+  assert.equal(docker.command, "docker");
+  assert.deepEqual(podman.args, docker.args);
+  assert.throws(() => composeCommand("up", home, {engine:"unknown"}), /unsupported container engine/i);
+});

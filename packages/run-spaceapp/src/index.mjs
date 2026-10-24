@@ -124,6 +124,7 @@ const CONFIG_KEYS = new Set([
   "port",
   "telemetry",
   "profile",
+  "engine",
   "accessMode",
   "workspaces",
   "companionsEnabled",
@@ -308,7 +309,8 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine = "docker"
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
@@ -323,6 +325,7 @@ export function createDefaultConfig({
     port: 4911,
     telemetry: false,
     profile,
+    ...(engine === "podman" ? { engine } : {}),
     accessMode: resolvedAccessMode,
     companionsEnabled,
     optionalModules: "none",
@@ -360,6 +363,9 @@ export function validateConfig(config) {
   }
   if (!INSTALL_PROFILES.includes(config.profile)) {
     throw new Error("profile must be small, medium, large, light, or standard.");
+  }
+  if (config.engine !== undefined && config.engine !== "docker" && config.engine !== "podman") {
+    throw new Error("engine must be docker or podman.");
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
@@ -905,7 +911,11 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  const engine = options.engine ?? "docker";
+  if (engine !== "docker" && engine !== "podman") {
+    throw new Error("Unsupported container engine: expected docker or podman.");
+  }
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -956,7 +966,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -979,9 +990,11 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine: engine ?? "docker"
     });
   }
+  if (engine !== undefined) config = { ...config, engine };
   if (config.version !== version) {
     config = {
       ...config,
