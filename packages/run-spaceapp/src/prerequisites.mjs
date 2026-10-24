@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { detectEngine, engineInstallHelp, MIN_PODMAN_VERSION } from "./engine.mjs";
+import { PROFILE_REQUIREMENTS } from "./index.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -1143,6 +1145,166 @@ export async function downloadFile(url, target, {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// Runs one probe and returns its stdout, or null on failure. Follows the
+// launcher convention: execute(spec, io) returns the exit code and writes
+// output to io.stdout / io.stderr.
+async function probeStdout(execute, spec) {
+  let value = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      value += chunk.toString();
+      callback();
+    }
+  });
+  const code = await execute(spec, { stdin: null, stdout: stream, stderr: null });
+  return code === 0 ? value : null;
+}
+
+// Returns the machines from `podman machine list --format json`, or null when
+// the probe itself fails (machine state unknown). An empty array means that
+// no machine exists yet.
+async function podmanMachineList(execute) {
+  const output = await probeStdout(execute, {
+    command: "podman",
+    args: ["machine", "list", "--format", "json"]
+  });
+  if (output === null) {
+    return null;
+  }
+  try {
+    const machines = JSON.parse(output);
+    return Array.isArray(machines) ? machines : [];
+  } catch {
+    return [];
+  }
+}
+
+// `podman machine list` reports machine memory in bytes; tolerate
+// MiB-style values from older podman releases.
+function machineMemoryBytes(machine) {
+  const memory = Number(machine?.Memory ?? machine?.Mem ?? 0);
+  if (!Number.isFinite(memory) || memory <= 0) {
+    return null;
+  }
+  return memory < 1024 ** 2 ? memory * 1024 ** 2 : memory;
+}
+
+// `podman machine list` reports disk size in bytes (DiskSize); tolerate
+// GiB-style values from older podman releases.
+function machineDiskBytes(machine) {
+  const disk = Number(machine?.DiskSize ?? machine?.Disk ?? 0);
+  if (!Number.isFinite(disk) || disk <= 0) {
+    return null;
+  }
+  return disk < 1024 ** 3 ? disk * 1024 ** 3 : disk;
+}
+
+// Rootless Podman prerequisite check. Podman is never auto-installed; every
+// failure explains the exact command the user must run.
+export async function ensurePodmanAvailable({
+  execute,
+  platform = process.platform,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  stdin = process.stdin,
+  profile,
+  nonInteractive = false
+}) {
+  const facts = await detectEngine("podman", { execute });
+
+  if (!facts.cli.ok) {
+    stderr.write(`${engineInstallHelp("podman", platform)}\n`);
+    return { code: 1, reexecuted: false };
+  }
+
+  if (!facts.versionOk) {
+    stderr.write(
+      `Podman >= ${MIN_PODMAN_VERSION} is required; found ${facts.cli.version ?? "an unknown version"}. ` +
+      "Update Podman and run the same command again.\n"
+    );
+    return { code: 1, reexecuted: false };
+  }
+
+  if (!facts.compose.ok) {
+    stderr.write(
+      "Podman Compose is required but is not available. Update Podman to a release that ships the compose provider, " +
+      "or install the podman-compose package (for example: sudo dnf install -y podman-compose or sudo apt install -y podman-compose), then rerun.\n"
+    );
+    return { code: 1, reexecuted: false };
+  }
+
+  if (!facts.daemon.ok) {
+    if (platform === "darwin") {
+      const machines = await podmanMachineList(execute);
+      if (machines === null) {
+        stderr.write(
+          "Podman is not reachable. Start the Podman machine with: podman machine start " +
+          "(or run 'podman machine init && podman machine start' if no machine exists yet).\n"
+        );
+      } else if (machines.length === 0) {
+        stderr.write(
+          "No Podman machine exists. Create and start one with: podman machine init && podman machine start.\n"
+        );
+      } else {
+        const name = machines[0]?.Name;
+        stderr.write(
+          `Podman is not reachable. Start the machine with: podman machine start${name ? ` ${name}` : ""}.\n`
+        );
+      }
+    } else {
+      stderr.write(
+        "Podman is not reachable. Enable the rootless Podman socket with: systemctl --user enable --now podman.socket " +
+        "(log out and back in afterwards). For rootful Podman, check the podman.socket system service instead.\n"
+      );
+    }
+    return { code: 1, reexecuted: false };
+  }
+
+  if (platform === "darwin" && profile !== undefined) {
+    const requirements = PROFILE_REQUIREMENTS[profile];
+    const machines = await podmanMachineList(execute);
+    const machine = machines?.find((entry) => entry?.Running) ?? machines?.[0];
+    if (requirements && machine) {
+      const cpus = Number(machine.CPUs ?? machine.CPUS ?? 0);
+      const memoryBytes = machineMemoryBytes(machine);
+      const diskBytes = machineDiskBytes(machine);
+      const requiredCpus = requirements.cpuCount;
+      const requiredMemoryMiB = Math.ceil(requirements.memoryBytes / 1024 ** 2);
+      const requiredDiskGiB = Math.ceil(requirements.freshDiskBytes / 1024 ** 3);
+      const cpuOk = Number.isFinite(cpus) && cpus >= requiredCpus;
+      const memoryOk = memoryBytes !== null && memoryBytes >= requirements.memoryBytes;
+      const diskOk = diskBytes === null || diskBytes >= requirements.freshDiskBytes;
+      if (!cpuOk || !memoryOk || !diskOk) {
+        const actualCpus = Number.isFinite(cpus) ? String(cpus) : "unknown";
+        const actualMemory = memoryBytes === null
+          ? "unknown"
+          : `${Math.ceil(memoryBytes / 1024 ** 2)} MiB`;
+        const actualDisk = diskBytes === null
+          ? "unknown"
+          : `${Math.ceil(diskBytes / 1024 ** 3)} GiB`;
+        const name = machine.Name ? ` ${machine.Name}` : "";
+        stderr.write(
+          `The Podman machine${machine.Name ? ` "${machine.Name}"` : ""} does not meet the "${profile}" profile requirements ` +
+          `(${requiredCpus} CPUs, ${requiredMemoryMiB} MiB memory, ${requiredDiskGiB} GiB disk). ` +
+          `It has ${actualCpus} CPUs, ${actualMemory} memory and ${actualDisk} disk. ` +
+          `Resize it with: podman machine set --cpus ${requiredCpus} --memory ${requiredMemoryMiB} --disk-size ${requiredDiskGiB}${name}, then rerun.\n`
+        );
+        return { code: 1, reexecuted: false };
+      }
+    }
+  }
+
+  if (platform !== "darwin" && facts.cgroupVersion === "v1") {
+    stdout.write(
+      "WARNING: cgroup v1 detected. Container CPU/memory limits will not be enforced.\n"
+    );
+  }
+
+  const access = facts.rootless === true ? " (rootless)" : facts.rootless === false ? " (rootful)" : "";
+  stdout.write(`Podman is ready${access}.\n`);
+  return { code: 0, reexecuted: false };
 }
 
 function launchDetachedCommand(spec) {

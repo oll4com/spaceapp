@@ -62,6 +62,39 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
+### Container engines
+
+Docker is the default container engine. Rootless Podman is a supported
+alternative on Linux (Podman machine on macOS):
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+Requirements:
+
+- Podman 5 or newer (older versions are rejected with a clear error).
+- A compose provider: the bundled `podman compose` plugin or the
+  separate `podman-compose` package.
+- cgroup v2 is recommended; on cgroup v1 the launcher warns that CPU
+  and memory limits cannot be enforced.
+- macOS: size the Podman machine to fit the profile with
+  `podman machine set --cpus`, `--memory`, and `--disk-size` (for
+  example `--cpus 4 --memory 8g --disk-size 100g` for the `small`
+  profile).
+- SELinux hosts (for example Fedora): workspace bind mounts are
+  labeled automatically with the shared `:z` SELinux flag, so no
+  manual relabeling is needed.
+
+Limits:
+
+- `--access host-root` is refused on Podman.
+- An existing Docker installation cannot switch engines in place:
+  Docker volumes are not visible to Podman. Run `backup`, `uninstall`,
+  reinstall with `--engine podman`, then `restore`.
+- Podman is never installed automatically; when it is missing the
+  launcher prints distro-specific install instructions only.
+
 ### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard lists what is sent

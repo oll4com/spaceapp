@@ -645,6 +645,7 @@ test("install accepts the usable memory reported by an 8 GB-class Linux guest", 
       argument.endsWith("compose.host-access.yml") ? "compose.host-access.yml" : argument
     )
   ]), [
+    ["docker", "docker", "--version"].slice(1), // engine detection probe in wizard
     ["docker", "docker", "--version"].slice(1),
     ["docker", "compose", "version"],
     ["docker", "info"],
@@ -756,7 +757,7 @@ test("host-root install is rejected on non-Linux hosts before Docker or installa
       prepareDockerPath: 0,
       inspectResources: 1,
       ensureDocker: 0,
-      execute: platform === "win32" ? 1 : 0
+      execute: 0 // host-root platform check rejects before any engine probe
     });
     await assert.rejects(() => readFile(join(root, "config.json"), "utf8"));
   }
@@ -879,7 +880,7 @@ test("the matching x64 candidate enables Linux host-root through the normal inst
     prepareDockerPath: 1,
     inspectResources: 3,
     ensureDocker: 1,
-    execute: 12
+    execute: 13 // 12 + 1 for the engine detection probe (docker --version) in the wizard
   });
   assert.equal(
     JSON.parse(await readFile(join(root, "config.json"), "utf8")).accessMode,

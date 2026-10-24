@@ -33,7 +33,7 @@ export class PromptController {
       }
     }
 
-    if (!stdin._spaceappBuffer) {
+    if (stdin && !stdin._spaceappBuffer) {
       stdin._spaceappBuffer = "";
     }
   }

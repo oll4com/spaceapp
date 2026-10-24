@@ -5,6 +5,21 @@ in Docker. The host needs Node.js only for the small `spaceapp` launcher,
 and enough resources for the stack. The launcher installs and starts Docker
 automatically when it is missing.
 
+Rootless Podman is a supported alternative container engine on Linux (Podman
+machine on macOS):
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+It requires Podman 5 or newer and a compose provider (`podman compose` or the
+`podman-compose` package); the launcher never installs Podman itself and only
+prints install instructions. Host-root access is refused on Podman, and an
+existing Docker installation cannot switch engines in place: back up, uninstall,
+reinstall with `--engine podman`, then restore. See the
+[launcher README](../packages/run-spaceapp/README.md#container-engines) for
+details.
+
 ## Requirements
 
 Minimum (the `small` profile):

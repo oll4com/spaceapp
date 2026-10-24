@@ -19,6 +19,7 @@ import {
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 import { imageDigestEnv, PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
+import { ENGINE_IDS, engineCli, resolveEngine } from "./engine.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -125,6 +126,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -363,6 +365,9 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !ENGINE_IDS.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -673,12 +678,23 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
-  const mounts = config.workspaces.flatMap((workspace) => [
-    "      - type: bind",
-    `        source: ${JSON.stringify(workspace.hostPath)}`,
-    `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
-  ]);
+  const engine = resolveEngine(config);
+  const mounts = config.workspaces.flatMap((workspace) => {
+    if (engine === "podman") {
+      // Short syntax with the SELinux shared label so bind mounts work on
+      // enforcing hosts (Fedora). Read-only mounts add ":ro,z".
+      const label = workspace.readOnly ? ":ro,z" : ":z";
+      return [
+        `      - ${JSON.stringify(`${workspace.hostPath}:${workspace.containerPath}${label}`)}`
+      ];
+    }
+    return [
+      "      - type: bind",
+      `        source: ${JSON.stringify(workspace.hostPath)}`,
+      `        target: ${JSON.stringify(workspace.containerPath)}`,
+      `        read_only: ${workspace.readOnly}`
+    ];
+  });
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
@@ -688,12 +704,19 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
   const settings = profileRuntimeSettings(config.profile);
-  const bind = (workspace) => [
-    "      - type: bind",
-    `        source: ${JSON.stringify(workspace.hostPath)}`,
-    `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
-  ];
+  const bind = (workspace) => {
+    if (engine === "podman") {
+      // Same SELinux label rule as the shared mounts above.
+      const label = workspace.readOnly ? ":ro,z" : ":z";
+      return [`      - ${JSON.stringify(`${workspace.hostPath}:${workspace.containerPath}${label}`)}`];
+    }
+    return [
+      "      - type: bind",
+      `        source: ${JSON.stringify(workspace.hostPath)}`,
+      `        target: ${JSON.stringify(workspace.containerPath)}`,
+      `        read_only: ${workspace.readOnly}`
+    ];
+  };
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
     return [
@@ -783,6 +806,11 @@ export function renderHostAccessCompose(config) {
 
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
+  const engine = resolveEngine(
+    options.engine !== undefined
+      ? { engine: options.engine }
+      : options.config ?? {}
+  );
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
   const profile = options.profile ?? "standard";
@@ -905,7 +933,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engineCli(engine), args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -956,6 +984,7 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
+  engine,
   companionsEnabled
 }) {
   validateHome(root);
@@ -998,6 +1027,12 @@ export async function prepareInstallation(root, {
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };
+  }
+  if (engine !== undefined && config.engine !== engine) {
+    if (!ENGINE_IDS.includes(engine)) {
+      throw new Error("engine must be docker or podman.");
+    }
+    config = { ...config, engine };
   }
   validateConfig(config);
 

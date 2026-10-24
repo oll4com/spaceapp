@@ -14,9 +14,11 @@ const resources = { cpuCount: 8, totalMemoryBytes: 16 * GiB, freeDiskBytes: 2.1 
 test("cached-image upgrade needs checkpoint and headroom rather than fresh-install space", () => {
   const plan = calculateStoragePlan({ operation: "upgrade", profile: "small", databaseBytes: 100 * 1024 ** 2 });
   assert.ok(plan.requiredDiskBytes < GiB);
-  assert.equal(storageChecks({ ...plan, dockerFreeDiskBytes: GiB }, resources).every(x => x.ok), true);
+  assert.equal(storageChecks({ ...plan, engineFreeDiskBytes: GiB }, resources).every(x => x.ok), true);
   assert.equal(installResourceChecks(resources, "small").at(-1).ok, false);
-  assert.equal(storageChecks({ ...plan, dockerFreeDiskBytes: 100 * 1024 ** 2 }, resources).at(-1).ok, false);
+  assert.equal(storageChecks({ ...plan, engineFreeDiskBytes: 100 * 1024 ** 2 }, resources).at(-1).ok, false);
+  assert.equal(storageChecks({ ...plan, engineFreeDiskBytes: GiB }, resources).at(-1).name, "Docker storage");
+  assert.equal(storageChecks({ ...plan, engine: "podman", engineFreeDiskBytes: GiB }, resources).at(-1).name, "Podman storage");
   assert.ok(calculateStoragePlan({ operation: "upgrade", profile: "small", databaseBytes: 3 * GiB }).requiredDiskBytes > resources.freeDiskBytes);
 });
 
