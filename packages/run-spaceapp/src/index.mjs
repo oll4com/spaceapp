@@ -80,6 +80,7 @@ const PROFILE_RUNTIME_SETTINGS = Object.freeze({
   })
 });
 export const INSTALL_PROFILES = Object.freeze(["small", "medium", "large", "light", "standard"]);
+export const CONTAINER_ENGINES = Object.freeze(["docker", "podman"]);
 export const PROFILE_REQUIREMENTS = Object.freeze({
   small: { cpuCount: 4, memoryBytes: 7 * 1024 ** 3, freshDiskBytes: 6.5 * 1024 ** 3 },
   medium: { cpuCount: 4, memoryBytes: 11 * 1024 ** 3, freshDiskBytes: 8 * 1024 ** 3 },
@@ -125,6 +126,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -192,6 +194,26 @@ export function resolveInstallAccessMode(requestedMode, existingMode = "isolated
     return requestedMode;
   }
   throw new Error("Install access mode must be isolated or host-root.");
+}
+
+export function resolveInstallEngine(requestedEngine, existingEngine = "docker", { existingInstallation = false } = {}) {
+  const normalizedExisting = existingEngine ?? "docker";
+  if (!CONTAINER_ENGINES.includes(normalizedExisting)) {
+    throw new Error("Container engine must be docker or podman.");
+  }
+  if (requestedEngine === undefined) {
+    return normalizedExisting;
+  }
+  if (!CONTAINER_ENGINES.includes(requestedEngine)) {
+    throw new Error("Container engine must be docker or podman.");
+  }
+  if (existingInstallation && requestedEngine !== normalizedExisting) {
+    throw new Error(
+      `Cannot switch container engine from ${normalizedExisting} to ${requestedEngine} on an existing installation because ${normalizedExisting} volumes are not visible to ${requestedEngine}. ` +
+      `To migrate safely, run "${UNIVERSAL_COMMAND} backup", then "${UNIVERSAL_COMMAND} uninstall --purge-data", reinstall with "--engine ${requestedEngine}", and run "${UNIVERSAL_COMMAND} restore".`
+    );
+  }
+  return requestedEngine;
 }
 
 export function versionTuple(version) {
@@ -270,7 +292,7 @@ export async function inspectSystemResources(root) {
   };
 }
 
-export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
+export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh", engine = resources?.engine ?? "docker" } = {}) {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
   const freeDiskBytes = Number(resources?.freeDiskBytes);
@@ -281,6 +303,15 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
   if (!requirements) throw new Error("Unknown installation profile.");
   const minFreeDisk = requiredDiskBytes ?? (operation === "fresh" ? requirements.freshDiskBytes : 512 * 1024 ** 2);
   const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
+  const engineLabel = engine === "podman" ? "Podman" : "Docker";
+  const requiredEngineCpus = Math.max(4, requirements.cpuCount);
+  const targetMemoryMiB = Math.ceil(engineMemoryBytes / (1024 ** 2));
+  const currentDiskGiB = Math.ceil((resources?.engineDiskBytes ?? 0) / (1024 ** 3));
+  const requiredDiskGiB = Math.ceil(minFreeDisk / (1024 ** 3));
+  const targetDiskGiB = currentDiskGiB > 0 ? currentDiskGiB + requiredDiskGiB : requiredDiskGiB;
+  const podmanResizeCmd = (includeDisk = false) => engine === "podman"
+    ? ` (resize with: podman machine stop && podman machine set --cpus ${requiredEngineCpus} --memory ${targetMemoryMiB}${includeDisk ? ` --disk-size ${targetDiskGiB}` : ""} && podman machine start)`
+    : "";
   return [
     {
       name: "CPU",
@@ -297,10 +328,12 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
       ok: freeDiskBytes >= minFreeDisk,
       detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
-      detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
-      detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
+    ...(resources.engineMemoryBytes > 0 ? [{ name: `${engineLabel} memory`, ok: resources.engineMemoryBytes >= engineMemoryBytes,
+      detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}${resources.engineMemoryBytes < engineMemoryBytes ? podmanResizeCmd(false) : ""}` }] : []),
+    ...(resources.engineCpuCount > 0 ? [{ name: `${engineLabel} CPU`, ok: resources.engineCpuCount >= requiredEngineCpus,
+      detail: `${resources.engineCpuCount} allocated; ${requiredEngineCpus} required${resources.engineCpuCount < requiredEngineCpus ? podmanResizeCmd(false) : ""}` }] : []),
+    ...(resources.engineDiskBytes > 0 ? [{ name: `${engineLabel} disk`, ok: resources.engineDiskBytes >= minFreeDisk,
+      detail: `${formatGibibytes(resources.engineDiskBytes)} GiB allocated; ${formatGibibytes(minFreeDisk)} GiB required${resources.engineDiskBytes < minFreeDisk ? podmanResizeCmd(true) : ""}` }] : [])
   ];
 }
 
@@ -308,13 +341,18 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  const resolvedEngine = engine === undefined ? undefined : resolveInstallEngine(engine);
+  if (resolvedEngine === "podman" && resolvedAccessMode === "host-root") {
+    throw new Error("Host-root access is not supported on Podman. Use --access isolated.");
+  }
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -324,6 +362,7 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    ...(resolvedEngine !== undefined ? { engine: resolvedEngine } : {}),
     companionsEnabled,
     optionalModules: "none",
     workspaces: []
@@ -363,6 +402,12 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !CONTAINER_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Host-root access is not supported on Podman. Use --access isolated.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -536,6 +581,13 @@ export async function addWorkspace(config, hostPath, { readOnly = false, userId 
     throw new Error("Workspace path must be absolute.");
   }
   const absolutePath = resolve(hostPath);
+  if (config.engine === "podman") {
+    const home = homedir();
+    const protectedDirs = new Set(["/", home, "/root", "/home", "/etc", "/usr", "/var", "/boot", "/sys", "/proc", "/dev"]);
+    if (protectedDirs.has(absolutePath)) {
+      throw new Error(`Workspace path "${absolutePath}" cannot be added under Podman (protected system or home directory).`);
+    }
+  }
   const pathStat = await stat(absolutePath);
   if (!pathStat.isDirectory()) {
     throw new Error("Workspace path must be an existing directory.");
@@ -673,12 +725,18 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
-  const mounts = config.workspaces.flatMap((workspace) => [
+  const isPodman = config.engine === "podman";
+  const bind = (workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
-  ]);
+    `        read_only: ${workspace.readOnly}`,
+    ...(isPodman ? [
+      "        bind:",
+      "          selinux: z"
+    ] : [])
+  ];
+  const mounts = config.workspaces.flatMap(bind);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
@@ -688,12 +746,6 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
   const settings = profileRuntimeSettings(config.profile);
-  const bind = (workspace) => [
-    "      - type: bind",
-    `        source: ${JSON.stringify(workspace.hostPath)}`,
-    `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
-  ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
     return [
@@ -785,6 +837,7 @@ export function composeCommand(action, root, options = {}) {
   validateHome(root);
   const stateRoot = options.stateRoot ?? root;
   validateHome(stateRoot);
+  const engine = resolveInstallEngine(options.engine, "docker");
   const profile = options.profile ?? "standard";
   const settings = profileRuntimeSettings(profile);
   const base = [
@@ -905,7 +958,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: engine, args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -956,7 +1009,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -969,8 +1023,10 @@ export async function prepareInstallation(root, {
     ? undefined
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
   let config;
+  let existingInstallation = false;
   try {
     config = await loadConfig(root);
+    existingInstallation = true;
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -979,8 +1035,15 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      ...(engine !== undefined ? { engine } : {})
     });
+  }
+  if (existingInstallation && engine !== undefined) {
+    const resolvedEngine = resolveInstallEngine(engine, config.engine ?? "docker", { existingInstallation: true });
+    if (config.engine !== undefined || resolvedEngine !== "docker") {
+      config = { ...config, engine: resolvedEngine };
+    }
   }
   if (config.version !== version) {
     config = {

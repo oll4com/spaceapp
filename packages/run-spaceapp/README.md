@@ -114,9 +114,54 @@ before enabling it:
 npx --yes run-spaceapp@latest install --access host-root
 ```
 
-Host-root is supported only on Linux. Run
+Host-root is supported only on Linux with Docker (`--engine docker`). Rootless
+Podman cannot provide true host-root access, so `--access host-root` is refused
+when `--engine podman` is selected. Run
 `npx --yes run-spaceapp@latest install --access isolated` to remove the host
 mount while keeping SpaceApp data and volumes.
+
+### Rootless Podman (`--engine podman`)
+
+On Linux and macOS, you can run the entire SpaceApp stack with rootless Podman
+5+ instead of a root-equivalent Docker daemon:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+When Docker is not installed and `podman` is found on `PATH`, interactive setup
+offers rootless Podman automatically. The selected engine (`"docker"` or
+`"podman"`) is saved in `config.json` and used across all lifecycle commands
+(`up`, `down`, `status`, `logs`, `update`, `rollback`, `backup`, `restore`,
+`doctor`, `repair`, `reinstall`, `uninstall`, `factory-reset`, `provider`,
+`credentials`, and `owner`).
+
+**Prerequisites & known differences:**
+- **No automatic Podman installation**: Unlike Docker, `run-spaceapp` does not
+  auto-install Podman. Install Podman 5.0+ and a Compose v2 provider manually so
+  native `podman compose version` succeeds (the legacy Python `podman-compose`
+  wrapper and `docker-compose` v1 are not supported).
+- **Linux**: Requires rootless mode, unified `cgroup v2`, and delegated `cpu`
+  and `memory` controllers (`podman info` is checked by `install` and `doctor`).
+  Registered workspaces automatically use `userns_mode: "keep-id:uid=10001,gid=10001"`
+  and SELinux shared bind labels (`:z`) so container user `10001:10001` can
+  read and write host workspace files without `chown` on the host.
+- **macOS (`podman machine`)**: Initialize and start a Podman VM with enough
+  resources for your chosen profile before running `install`:
+  ```bash
+  podman machine init --cpus 4 --memory 8192 --disk-size 20
+  podman machine start
+  ```
+  To resize an existing Podman machine:
+  ```bash
+  podman machine stop && podman machine set --cpus 4 --memory 8192 --disk-size 20 && podman machine start
+  ```
+- **No `--access host-root`**: Rejected on Podman because rootless user
+  namespaces cannot map true host root.
+- **Engine migration**: Switching engines on an existing installation is refused
+  because Docker and Podman volumes are separate. To migrate safely, run
+  `spaceapp backup`, then `spaceapp uninstall --purge-data`, reinstall with
+  `--engine docker|podman`, and run `spaceapp restore`.
 
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in
