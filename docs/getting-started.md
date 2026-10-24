@@ -334,3 +334,14 @@ Then set a new `SPACEAPP_HOME` and follow `init → doctor → workspace add →
 pull. This proves a source build; it does **not** prove the public npm tarball
 or GHCR manifests. Follow [Clean-room testing](clean-room-testing.md) for the
 complete acceptance checklist.
+
+
+## Rootless Podman Support
+
+SpaceApp also supports **rootless Podman** on Linux (Podman >= 5 with cgroup v2 and `docker-compose` v2 as the `podman compose` provider) and **Podman machine** on macOS:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The selected engine (`docker` or `podman`) is stored in `config.json` and used automatically by `up`, `down`, `status`, `logs`, `doctor`, `backup`, `restore`, `update`, `rollback`, and `uninstall`. Switching engines on an existing installation is refused to protect existing volumes; use `backup` and `restore` when migrating between engines. `--access host-root` is not supported on Podman.
