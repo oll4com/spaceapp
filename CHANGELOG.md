@@ -5,6 +5,11 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Optional OTLP export now links API requests to Temporal workflow runs, child
+  workflows and individual activity attempts across all three workers. Continued
+  and background runs carry causal span links. Workflow export is suppressed
+  during replay; span attributes remain restricted to identifiers and outcomes.
+
 ## [1.1.7] - 2026-10-21
 
 Source: sanitized Space app @ 3e4572bc97 (4729 files: SpaceApp 77d00f6895 with

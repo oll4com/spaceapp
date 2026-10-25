@@ -41,6 +41,28 @@ outside this registry. Full cross-service configuration coverage remains open.
 
 ## Optional modules
 
+### Optional trace export (API and workers)
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` enables the shared dependency-free OTLP/HTTP
+JSON exporter in the API, turn worker, memory-maintenance worker and memory-mutation
+worker. Set it to a collector **base URL**, for example `http://127.0.0.1:4318`;
+the exporter appends `/v1/traces`. Only HTTP(S) URLs without credentials, query or
+fragment are accepted. An absent, empty or invalid value leaves export off.
+
+An enabled worker exports workflow-run spans and one span for every activity
+attempt, with parent context in Temporal headers. Continued runs and background
+turns carry causal span links. Workflows perform no collector I/O. Export uses a
+4096-span queue, 256-span batches, a 5-second interval and a 3-second HTTP timeout;
+overflows and failures are counted, and delivery is best effort. There are no new
+tracing dependencies or mandatory collector services.
+
+Only allowlisted identifiers, types, outcomes, attempts, durations and safe failure
+codes/categories are exported. Never put credentials in the endpoint. See
+[observability](quality/observability.md#replay-compatibility) for replay behavior,
+privacy limits and the provider-free local integration test.
+
+### Feature modules
+
 `SPACE_OPTIONAL_MODULES` turns on modules beyond the coding workspace:
 `games` (chess and Asteroids benchmarks), `job-copilot`, `mail-copilot`,
 `marketing-copilot`, `channels` (Slack and Teams), `telegram`, `waitlist` and

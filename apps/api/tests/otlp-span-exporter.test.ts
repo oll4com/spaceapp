@@ -53,6 +53,29 @@ describe("OTLP span export configuration", () => {
 });
 
 describe("OTLP span exporter", () => {
+  it("flushes spans recorded after an empty flush", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    await created.flush();
+    created.record(span());
+    await created.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(created.stats().exported).toBe(1);
+  });
+
+  it("exports only valid predecessor span links", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    const created = exporter(fetchImpl);
+    created.record(span({ links: [
+      { traceId, spanId: parentId },
+      { traceId: "private prompt", spanId: parentId },
+      { traceId, spanId: "0000000000000000" }
+    ] }));
+    await created.flush();
+    const body = JSON.parse(fetchImpl.mock.calls[0]![1].body);
+    expect(body.resourceSpans[0].scopeSpans[0].spans[0].links).toEqual([{ traceId, spanId: parentId }]);
+    expect(JSON.stringify(body)).not.toContain("private prompt");
+  });
   it("posts OTLP/HTTP JSON server spans with only route-level attributes", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true }));
     const created = exporter(fetchImpl);

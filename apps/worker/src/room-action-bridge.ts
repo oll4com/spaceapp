@@ -10,7 +10,7 @@ import {
   type SpaceAgentRoomActionEnvelope,
   type SpaceRoomToolId
 } from "@space/contracts";
-import { childTraceparent } from "./activity-observability.js";
+import { currentActivityTraceparent } from "./activity-observability.js";
 import type { SpaceAgentRoomActionBridgeRequest } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import { cancellationSignal } from "@temporalio/activity";
@@ -32,8 +32,10 @@ export async function executeBackgroundRoomAction(
   fetchImpl: typeof undiciFetch = undiciFetch
 ): Promise<SpaceAgentRoomActionBridgeResponse> {
   if (!config.internalApiToken) throw new Error("Room actions require internal API authentication.");
+  const traceparent = currentActivityTraceparent();
   const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`, {
-    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken,
+      ...(traceparent ? { traceparent } : {}) },
     body: JSON.stringify({ ...bridge, backgroundExecution: true }), dispatcher: roomActionBridgeDispatcher,
     signal: activeActivityCancellationSignal()
   });
@@ -374,7 +376,7 @@ export async function executeRoomActionBridge(input: {
   let response: Pick<Response, "ok" | "status" | "json">;
   try {
     const url = `${input.config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`;
-    const traceparent = childTraceparent(input.turnInput.traceparent);
+    const traceparent = currentActivityTraceparent() ?? input.turnInput.traceparent;
     const headers: Record<string, string> = {
       "content-type": "application/json",
       "x-space-internal-token": input.config.internalApiToken,

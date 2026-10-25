@@ -4,6 +4,7 @@ import { MetricsRegistry } from "@space/runtime";
 import {
   activityCorrelation,
   childTraceparent,
+  currentActivityTraceparent,
   createActivityObservabilityInterceptors,
   noteActivityFailureReason,
   observeActivityExecution
@@ -186,8 +187,33 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toContain("...workerTracingOptions(spans)");
   }
+});
+
+it("propagates the recorded activity span to outbound calls and isolates concurrent attempts", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (span: Record<string, unknown>) => recorded.push(span) };
+  const seen: string[] = [];
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  await Promise.all([1, 2].map(attempt => observeActivityExecution(info({ attempt }), [], async () => {
+    const before = currentActivityTraceparent();
+    await Promise.resolve();
+    expect(currentActivityTraceparent()).toBe(before);
+    seen.push(before!);
+    return "ok";
+  }, { metrics, traceparent, spans: spans as never })));
+  expect(new Set(seen).size).toBe(2);
+  expect(recorded.map(span => `00-${span.traceId}-${span.spanId}-01`).sort()).toEqual(seen.sort());
+  expect(currentActivityTraceparent()).toBeNull();
+});
+
+it("does not fail or retry work when an exporter throws", async () => {
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const spans = { record: () => { throw new Error("collector failure"); } };
+  await expect(observeActivityExecution(info(), [], async () => "done",
+    { metrics, traceparent, spans: spans as never })).resolves.toBe("done");
+  expect(metrics.registry.render()).toContain('space_worker_activity_executions_total{activity_type="runCodexAppServerTurn",outcome="COMPLETED"} 1');
 });
 
 it("exports one INTERNAL span per activity under the caller's traceparent", async () => {

@@ -22,6 +22,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Causal predecessors across continued/background runs. Identifiers only. */
+  links?: readonly { traceId: string; spanId: string }[];
 }
 
 export interface SpanExporterStats {
@@ -82,6 +84,10 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           ...(span.parentSpanId ? { parentSpanId: span.parentSpanId } : {}),
           name: span.name,
           kind: span.kind ?? 2,
+          ...(span.links?.length ? { links: span.links
+            .filter(link => traceIdPattern.test(link.traceId) && !/^0+$/.test(link.traceId)
+              && spanIdPattern.test(link.spanId) && !/^0+$/.test(link.spanId))
+            .map(link => ({ traceId: link.traceId, spanId: link.spanId })) } : {}),
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
@@ -121,6 +127,9 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
     }
   };
   const flush = (): Promise<void> => {
+    // An empty async drain completes synchronously, before assigning inFlight.
+    // Do not leave its resolved promise installed and strand later spans.
+    if (!inFlight && !queue.length) return Promise.resolve();
     if (!inFlight) {
       inFlight = (async () => {
         try {
