@@ -269,6 +269,9 @@ workflows, supervisor cancellation and zero new spans after `runReplayHistory`.
 It needs no Docker, database, provider account or credentials. The Temporal testing
 SDK downloads its official local server on first use. Run it with
 `npm test -w @space/worker -- workflow-tracing.integration`.
+Offline or restricted contributors can set `SPACE_SKIP_TEMPORAL_INTEGRATION=1`
+to skip this suite when the server is not already cached. A skipped suite is not
+evidence that the integration or replay checks passed.
 
 ## Redaction policy
 

@@ -28,7 +28,7 @@ const traceparent = `00-${traceId}-00f067aa0ba902b7-01`;
 const workflowPath = fileURLToPath(new URL("./fixtures/tracing-workflows.ts", import.meta.url));
 const interceptorPath = fileURLToPath(new URL("../src/workflow-tracing.ts", import.meta.url));
 
-describe("real Temporal OTLP tracing (local server, no Docker or provider)", () => {
+describe.skipIf(process.env.SPACE_SKIP_TEMPORAL_INTEGRATION === "1")("real Temporal OTLP tracing (local server, no Docker or provider)", () => {
   let env: TestWorkflowEnvironment;
   let bundle: WorkflowBundleWithSourceMap;
   let exporter: SpanExporter;
