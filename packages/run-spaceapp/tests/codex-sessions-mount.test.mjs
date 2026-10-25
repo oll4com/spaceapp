@@ -4,8 +4,10 @@ import { readFile } from "node:fs/promises";
 
 // 1.1.7 (Nous decision 2026-10-18): the API reads Codex's session logs to see a Codex pane's turns. It gets only
 // Codex's sessions/ (its own volume, read-only), never the Codex home, auth.json or any other credential.
-const template = await readFile(new URL("../templates/compose.yml", import.meta.url), "utf8");
-const credentialInstall = await readFile(new URL("../../../deploy/docker/credential-install.mjs", import.meta.url), "utf8");
+// A Windows checkout has CRLF line endings (1.1.7 Platform matrix, windows-latest); the patterns below read LF.
+const read = async (path) => (await readFile(new URL(path, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+const template = await read("../templates/compose.yml");
+const credentialInstall = await read("../../../deploy/docker/credential-install.mjs");
 const service = (name) => template.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:\\n|^[a-z])`, "m"))?.[1] ?? "";
 const mounts = (block) => [...(block.match(/^    volumes:\n((?:      (?:- |#).*\n)+)/m)?.[1] ?? "").matchAll(/^      - (\S+)\s*$/gm)].map((match) => match[1]);
 const sessions = "/var/lib/spaceapp-cli/providers/codex/sessions";

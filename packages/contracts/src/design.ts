@@ -56,6 +56,10 @@ export const DESIGN_FORMATS = Object.freeze([
   // YouTube shows only the centred 1546×423 on every device.
   format("yt-banner", "YOUTUBE", "YouTube banner", 2560, 1440, "IMAGE", { top: 508, right: 507, bottom: 509, left: 507 }),
   format("tiktok", "TIKTOK", "TikTok video", 1080, 1920, "BOTH", { top: 130, right: 140, bottom: 480, left: 60 }),
+  // Video-only presets (Video pane, 2026-10-21): a YouTube video, a Short (3 minutes since 2024) and a Reel.
+  format("youtube", "YOUTUBE", "YouTube video", 1920, 1080, "VIDEO", inset(0), 3600),
+  format("youtube-short", "YOUTUBE", "YouTube Short", 1080, 1920, "VIDEO", { top: 200, right: 60, bottom: 400, left: 60 }, 180),
+  format("ig-reel", "INSTAGRAM", "Instagram Reel", 1080, 1920, "VIDEO", { top: 250, right: 60, bottom: 340, left: 60 }, 90),
   format("pinterest", "PINTEREST", "Pinterest pin", 1000, 1500, "BOTH"),
   format("ph-gallery", "PRODUCT_HUNT", "Product Hunt gallery", 1270, 760, "IMAGE"),
   format("ph-thumb", "PRODUCT_HUNT", "Product Hunt thumbnail", 240, 240, "BOTH", inset(0), 10),

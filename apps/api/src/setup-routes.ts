@@ -6,12 +6,15 @@ import {
   idSchema, setupClaimInputSchema, setupClaimResponseSchema, setupConnectionCheckRunSchema, setupConnectionSchema,
   setupOverviewSchema, setupStarterRoomResponseSchema, setupStatusSchema
 } from "@space/contracts";
-import { nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
+import { nowIso, SETUP_RECEIPT_RENEWAL_WINDOW_MS, SetupExecutionError, SpaceConflictError, type SetupActionInspection, type SetupExecutionCoordinator, type SpaceStore } from "@space/runtime";
+import type { SetupFeatureId, SetupPlan, SetupTask } from "@space/contracts";
 import { type AuthConfig, cookieName, hashPassword, operatorSessionTtlSeconds, signSession } from "./auth.js";
 import { sendApiError } from "./http-errors.js";
 import { recordAudit } from "./request-audit.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 import type { SetupConnectionCheckRunManager } from "./setup-connection-check-runs.js";
+import { setupSettingsMatch } from "./setup-production-actions.js";
+import { planSetupSettings, setupLiveDefaults } from "./setup-settings.js";
 import { type SetupConnectionsService, summarizeSetupConnections } from "./setup-connections.js";
 import { formatSseMessage, startSseHeartbeat } from "./sse.js";
 
@@ -27,6 +30,9 @@ const emptySetupConnectionCheckRunSchema = z.object({}).strict();
  * Single-owner setup: claim, overview, connection checks and the starter room; the parent retains authentication,
  * CSRF, errors and rate limits.
  */
+/** Finishing trusts a provider check this recent; an older one is repeated live (review 2026-10-21 #4). */
+const providerCheckMaxAgeMs = 5 * 60_000;
+
 export function registerSetupRoutes(app: FastifyInstance, options: {
   auth: AuthConfig;
   store: SpaceStore;
@@ -35,8 +41,17 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
   routeOptions: Pick<RouteShorthandOptions, "config">;
   optionalModules?: string[];
   onOwnerClaimed?: () => void;
+  /** First Setup: finishing needs the owner's current run, its plan and fresh receipts for every selected task. */
+  execution: {
+    coordinator: () => SetupExecutionCoordinator;
+    inspectTask: (task: SetupTask, ownerId: string, plan: SetupPlan) => Promise<SetupActionInspection>;
+    memoryRoot?: string;
+    handoffRoot?: string;
+    /** Finishing asks the Live provider whether the saved connection still works (no audio). */
+    liveReauthorize?: (ownerId: string) => Promise<boolean>;
+  };
 }) {
-  const { auth, store, setupConnections, setupConnectionCheckRuns, routeOptions: defaultRouteRateLimitOptions } = options;
+  const { auth, store, setupConnections, setupConnectionCheckRuns, execution, routeOptions: defaultRouteRateLimitOptions } = options;
   app.get("/api/setup/status", defaultRouteRateLimitOptions, async () => {
     return setupStatusSchema.parse(await store.getOwnerSetupStatus());
   });
@@ -322,16 +337,138 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
     if (request.user?.role !== "ADMIN") {
       return sendApiError(reply, 403, "FORBIDDEN", "Owner access is required.");
     }
-    const [onboarding, connections] = await Promise.all([
-      store.completeOwnerOnboarding(nowIso()),
-      setupConnections.overview()
-    ]);
-    await recordAudit(store, request, {
-      action: "setup.onboarding.finish",
-      targetType: "owner_setup",
-      targetId: request.user!.id,
-      metadata: { onboardingVersion: onboarding.onboardingVersion }
-    });
+    const currentOnboarding = await store.getOwnerOnboarding();
+    let onboarding = currentOnboarding;
+    const hasRequestedRun = request.body != null && Object.keys(Object(request.body)).length > 0;
+    const validatesRun = !currentOnboarding.isComplete || hasRequestedRun;
+    if (validatesRun) {
+      const input = z.object({
+        runId: z.string().regex(/^run:[a-zA-Z0-9._:-]{3,123}$/),
+        draftRevision: z.number().int().nonnegative(),
+        planDigest: z.string().regex(/^[a-f0-9]{64}$/)
+      }).strict().safeParse(request.body);
+      if (!input.success) {
+        return sendApiError(reply, 409, "SETUP_RUN_REQUIRED", "Complete the current setup run before finishing.");
+      }
+      const coordinator = execution.coordinator();
+      const state = await coordinator.getState(request.user.id);
+      const run = state.runs.find((item) => item.id === input.data.runId);
+      const plan = state.plans.find((item) => item.id === run?.planId);
+      if (!run || !plan || !state.draft || plan.planDigest !== input.data.planDigest ||
+        plan.draftRevision !== input.data.draftRevision || state.draft.revision !== input.data.draftRevision) {
+        return sendApiError(reply, 409, "SETUP_PLAN_STALE", "Setup choices changed. Review the current plan.");
+      }
+      if (process.env.SPACE_PUBLIC_DISTRIBUTION === "true") {
+        const [{ readVerifiedFreeModel }, { readSetupAssistantProof }] = await Promise.all([
+          import("./verified-free-model.js"), import("./installation-handoff.js")
+        ]);
+        const memoryRoot = execution.memoryRoot ?? process.env.SPACE_MEMORY_ROOT;
+        const handoffRoot = execution.handoffRoot ?? process.env.SPACE_INSTALLATION_HANDOFF_ROOT;
+        const [modelId, proof] = await Promise.all([
+          readVerifiedFreeModel(memoryRoot), readSetupAssistantProof(handoffRoot, memoryRoot, auth.sessionSecret)
+        ]);
+        if (!modelId || !proof) {
+          return sendApiError(reply, 422, "SETUP_NOT_READY", "The free OpenCode task and installation memory must be verified again.");
+        }
+      }
+      if (process.env.SPACE_PUBLIC_DISTRIBUTION === "true") {
+        const { projectSetupInstallationMemory, setupInstallationMemoryMatches } = await import("./setup-installation-memory.js");
+        const { readVerifiedFreeModel } = await import("./verified-free-model.js");
+        const { readSetupAssistantProof } = await import("./installation-handoff.js");
+        const memoryRoot = execution.memoryRoot ?? process.env.SPACE_MEMORY_ROOT;
+        const [modelId, proof] = await Promise.all([readVerifiedFreeModel(memoryRoot), readSetupAssistantProof(
+          execution.handoffRoot ?? process.env.SPACE_INSTALLATION_HANDOFF_ROOT, memoryRoot, auth.sessionSecret, true)]);
+        const task = state.tasks.find((item) => item.runId === run.id && item.actionId === "WRITE_INSTALLATION_MEMORY");
+        const content = task && modelId && proof ? projectSetupInstallationMemory(state, plan, task, modelId, proof) : null;
+        if (!memoryRoot || !content || !await setupInstallationMemoryMatches(memoryRoot, content)) {
+          return sendApiError(reply, 422, "SETUP_NOT_READY", "Installation memory must be saved and verified before finishing.");
+        }
+      }
+      const currentFingerprints: Partial<Record<SetupFeatureId, string>> = {};
+      // Review 2026-10-21 #4: an unchanged local credential is no proof that the provider still accepts it. An agent whose
+      // last provider check is older than five minutes is checked live now; a selected Live connection must be accepted
+      // by its provider now.
+      const runTasks = state.tasks.filter((item) => item.runId === run.id);
+      // Review 2026-10-21 #8: results that expired before finish (or are about to) are checked again in this run, which
+      // keeps the work done; nothing asks the providers for a run that cannot finish anyway.
+      const expiredTaskIds = run.status !== "READY" ? [] : runTasks.filter((task) => !state.receipts.some((receipt) =>
+        receipt.taskId === task.id && receipt.outcome === "PASSED" &&
+        Date.parse(receipt.expiresAt) > Date.now() + SETUP_RECEIPT_RENEWAL_WINDOW_MS)).map((task) => task.id);
+      if (expiredTaskIds.length) {
+        return sendApiError(reply, 422, "SETUP_CHECKS_EXPIRED", "Some setup checks expired. Setup checks them again before finishing.", {
+          missingTaskIds: expiredTaskIds
+        });
+      }
+      for (const connectionId of new Set(runTasks.filter((item) => item.featureId.startsWith("agent:")).map((item) => `cli:${item.featureId.slice(6)}`))) {
+        const saved = await store.getSetupConnectionVerification(connectionId);
+        const age = saved?.verifiedAt ? Date.now() - Date.parse(saved.verifiedAt) : Infinity;
+        if (!(age >= 0 && age < providerCheckMaxAgeMs)) await setupConnections.verify(connectionId).catch(() => undefined);
+      }
+      if (runTasks.some((task) => task.actionId === "VERIFY_LIVE_AUDIO") &&
+        !(execution.liveReauthorize && await execution.liveReauthorize(request.user.id).catch(() => false))) {
+        return sendApiError(reply, 422, "SETUP_NOT_READY", "The selected Live connection must be accepted by its provider again.", {
+          missingTaskIds: runTasks.filter((task) => task.actionId === "VERIFY_LIVE_AUDIO").map((task) => task.id)
+        });
+      }
+      const observedAgents = new Map((await setupConnections.overview()).map((connection) => [connection.id, connection]));
+      for (const task of runTasks) {
+        if (task.featureId.startsWith("agent:")) {
+          const connectionId = `cli:${task.featureId.slice(6)}`;
+          const observed = observedAgents.get(connectionId);
+          const saved = await store.getSetupConnectionVerification(connectionId);
+          const age = saved?.verifiedAt ? Date.now() - Date.parse(saved.verifiedAt) : Infinity;
+          if (!(age >= 0 && age < providerCheckMaxAgeMs)) continue;
+          if (observed?.functionalState === "FUNCTIONAL" && observed.liveVerificationState === "VERIFIED" &&
+            observed.verifiedAt && saved?.state === "CONNECTED" && saved.verifiedAt && saved.fingerprintHash) {
+            currentFingerprints[task.featureId] = saved.fingerprintHash;
+          }
+        } else {
+          const observed = await execution.inspectTask(task, request.user.id, plan);
+          if (observed.outcome === "VERIFIED") currentFingerprints[task.featureId] = observed.receipt.subjectFingerprint;
+        }
+      }
+      const readiness = await coordinator.checkReadiness(request.user.id, run.id, currentFingerprints);
+      if (!readiness.ready) {
+        return sendApiError(reply, 422, "SETUP_NOT_READY", "Selected setup tasks need current verification.", {
+          missingTaskIds: readiness.missingTaskIds
+        });
+      }
+      const currentSettings = await store.getUserSettings(request.user.id);
+      if (!setupSettingsMatch(currentSettings, planSetupSettings(plan.effectiveFeatureIds, currentSettings, setupLiveDefaults(state.draft, plan)))) {
+        return sendApiError(reply, 422, "SETUP_NOT_READY", "Workspace settings changed. Review and apply the current setup selection again.");
+      }
+      for (const task of state.tasks.filter((item) => item.runId === run.id)) {
+        const observed = await execution.inspectTask(task, request.user.id, plan);
+        if (observed.outcome !== "VERIFIED" || observed.receipt.subjectFingerprint !== currentFingerprints[task.featureId]) {
+          return sendApiError(reply, 422, "SETUP_NOT_READY", "A selected setup capability needs verification again.", {
+            missingTaskIds: [task.id]
+          });
+        }
+      }
+      try {
+        onboarding = await store.completeSetupExecution({
+          ownerId: request.user.id, expectedStateRevision: state.revision,
+          runId: run.id, draftRevision: input.data.draftRevision,
+          planDigest: input.data.planDigest, currentFingerprints,
+          reconfigure: currentOnboarding.isComplete,
+          completedAt: nowIso()
+        });
+      } catch (cause) {
+        if (cause instanceof SetupExecutionError) {
+          return sendApiError(reply, cause.code === "SETUP_NOT_READY" ? 422 : 409, cause.code, cause.message);
+        }
+        throw cause;
+      }
+    }
+    const connections = await setupConnections.overview();
+    if (validatesRun) {
+      await recordAudit(store, request, {
+        action: currentOnboarding.isComplete ? "setup.reconfiguration.finish" : "setup.onboarding.finish",
+        targetType: "owner_setup",
+        targetId: request.user!.id,
+        metadata: { onboardingVersion: onboarding.onboardingVersion }
+      });
+    }
     return setupOverviewSchema.parse({
       ...onboarding,
       summary: summarizeSetupConnections(connections),

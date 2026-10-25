@@ -140,6 +140,17 @@ describe("sensitive data mask helpers", () => {
     expect(masks).not.toContain("!important");
   });
 
+  it("keeps a component's manual marker when masking is switched off and on again", async () => {
+    const { container, rerender } = render(<SensitiveDataMask enabled={true} />);
+    const target = document.createElement("span");
+    target.dataset.sensitiveMasked = "manual";
+    target.textContent = "Call the dentist on Friday";
+    container.appendChild(target);
+    rerender(<SensitiveDataMask enabled={false} />);
+    await waitFor(() => expect(document.documentElement.hasAttribute("data-sensitive-mode")).toBe(false));
+    expect(target.dataset.sensitiveMasked).toBe("manual");
+  });
+
   it("upgrades manual markers to text masking instead of skipping them", async () => {
     const { container } = render(<SensitiveDataMask enabled={true} />);
     const target = document.createElement("strong");

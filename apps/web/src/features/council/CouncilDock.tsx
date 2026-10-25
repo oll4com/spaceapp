@@ -209,7 +209,7 @@ function HomeView({ catalog, runs, busy, onAsk, onOpen, onDelete }: {
             {runs.map((item) => (
               <li key={item.id}>
                 <button type="button" className="council-history-item" title={item.question} onClick={() => onOpen(item.id)}>
-                  <span>{item.question}</span>
+                  <span data-sensitive-masked="manual">{item.question}</span>
                   <small className={`council-status is-${item.status.toLowerCase()}`}>{STATUS_LABELS[item.status]}</small>
                 </button>
                 <DockIconButton label="Delete run" icon={Trash2} tone="danger" onClick={() => onDelete(item.id)} disabled={busy} />
@@ -238,7 +238,7 @@ function RunView({ run, models, busy, act, confirm }: { run: CouncilRun; models:
   };
   return (
     <div className="council-run">
-      <h3 className="council-question">{run.question}</h3>
+      <h3 className="council-question" data-sensitive-masked="manual">{run.question}</h3>
       <ol className="council-steps" aria-label="Progress">
         {STEPS.map((step, index) => (
           <li key={step.stage} className={run.stage === "DONE" || index < stepIndex ? "is-done" : index === stepIndex ? "is-current" : undefined}>
@@ -419,7 +419,7 @@ function FinalView({ run, busy, act }: { run: CouncilRun; busy: boolean; act: Ac
           ? `The council agreed on ${final.top.length} ${final.top.length === 1 ? "answer" : "answers"}; weaker options are listed in the answer.`
           : "No answer reached agreement; this is the best scored one."}</p>
       ) : null}
-      <div className="council-answer"><ChatMarkdown content={final.text} /></div>
+      <div className="council-answer" data-sensitive-masked="manual"><ChatMarkdown content={final.text} /></div>
       <div className="council-actions">
         <ChatCopyButton text={final.text} label="Copy" />
         {run.rounds.length < COUNCIL_MAX_TOTAL_ROUNDS ? (
@@ -453,13 +453,13 @@ function Details({ run, models }: { run: CouncilRun; models: CouncilModel[] }) {
       ) : null}
       <h5>Independent answers</h5>
       {run.answers.map((answer) => (
-        <details key={answer.modelId} className="council-answer-item">
+        <details key={answer.modelId} className="council-answer-item" data-sensitive-masked="manual">
           <summary>{nameOf(models, answer.modelId)} <small>{answer.status === "DONE" ? `${Math.round((answer.ms ?? 0) / 1000)} s` : answer.status.toLowerCase()}</small></summary>
           {answer.status === "DONE" ? <ChatMarkdown content={answer.text} /> : <p className="council-muted">{answer.error ?? "No answer."}</p>}
         </details>
       ))}
       {run.rounds.map((round) => (
-        <details key={round.round} className="council-answer-item">
+        <details key={round.round} className="council-answer-item" data-sensitive-masked="manual">
           <summary>Round {round.round}: merged answer and scores</summary>
           <ChatMarkdown content={round.merged} />
           <div className="council-table-wrap">

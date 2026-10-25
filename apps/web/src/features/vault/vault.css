@@ -35,8 +35,11 @@
 }
 .vault-form input[type="number"] { width: 6rem; }
 .vault-form-actions, .vault-items-bar, .vault-row-actions, .vault-row-review { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
-.vault-items-bar, .vault-row-actions { flex-wrap: nowrap; }
-.vault-items-bar > :first-child { flex: 1 1 0; min-width: 0; }
+.vault-row-actions { flex-wrap: nowrap; }
+/* The search takes its own line; the buttons wrap under it instead of running out of a narrow dock. */
+.vault-items-bar > :first-child { flex: 1 1 100%; min-width: 0; }
+.vault-items-bar > .dock-kit-button { white-space: nowrap; }
+.vault-check { display: inline-flex; align-items: center; gap: 0.35rem; font-size: var(--dock-font-sm); color: var(--dock-muted); }
 .vault-password-row { display: flex; gap: 0.4rem; align-items: flex-end; }
 .vault-password-row label { flex: 1 1 auto; }
 .vault-generator { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1rem; }
@@ -56,9 +59,12 @@
 .vault-origins { font-size: var(--dock-font-sm); color: var(--dock-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vault-tags { display: flex; gap: 0.3rem; flex-wrap: wrap; }
 .vault-tag { font-size: var(--dock-font-xs, 0.75rem); padding: 0 0.4rem; border-radius: 999px; border: 1px solid var(--dock-border); color: var(--dock-muted); }
-.vault-tag.is-pending, .vault-tag.is-changed { border-color: var(--dock-warning); color: var(--dock-warning); }
+.vault-tag.is-pending { border-color: var(--dock-warning); color: var(--dock-warning); }
 .vault-audit-row { flex-direction: column; gap: 0.1rem; padding: 0.4rem 0.6rem; font-size: var(--dock-font-sm); color: var(--dock-text); }
 .vault-audit-time { font-size: var(--dock-font-xs, 0.75rem); color: var(--dock-muted); white-space: nowrap; }
+.vault-filter { display: flex; align-items: center; gap: 0.4rem; font-size: var(--dock-font-sm); color: var(--dock-muted); }
+.vault-filter select { font: inherit; color: var(--dock-text); background: var(--dock-input-bg, transparent); border: 1px solid var(--dock-border); border-radius: 6px; padding: 0.2rem 0.4rem; min-width: 0; }
+.vault-import-summary { display: flex; flex-direction: column; gap: 0.2rem; }
 .vault-settings { display: flex; flex-direction: column; gap: 0.6rem; }
 .vault-more { display: flex; flex-direction: column; gap: 0.5rem; }
 .vault-more > summary { cursor: pointer; font-size: var(--dock-font-sm); color: var(--dock-muted); }

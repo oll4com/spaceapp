@@ -95,7 +95,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 
   assert.match(
     normalizedRuntimeStage,
-    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.1 undici@6\.28\.1 postcss-selector-parser@7\.1\.6/
+    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.28\.1 postcss-selector-parser@7\.1\.6/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -107,7 +107,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
   );
   assert.match(
     normalizedRuntimeStage,
-    /tar -xzf \/tmp\/npm-security-patches\/ip-address-10\.7\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/ip-address --strip-components=1/
+    /tar -xzf \/tmp\/npm-security-patches\/ip-address-10\.7\.4\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/ip-address --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -232,6 +232,15 @@ test("an OpenCode pane still starts when the first-run free-model check fails; c
   assert.match(wrapper, /^set -euo pipefail$/m);
 });
 
+test("the core image carries the Python the SQLite worker needs (1.1.8)", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const stages = Object.fromEntries(dockerfile.split(/^(?=FROM )/m).map((stage) => [stage.match(/^FROM \S+ AS (\S+)/)?.[1], stage]));
+  const core = stages.core.replace(/\\\n/g, " ");
+  assert.match(core, /apt-get install -y --no-install-recommends python3\s+&& rm -rf \/var\/lib\/apt\/lists\/\*/);
+  assert.match(stages.core, /import sqlite3, sys; assert sys\.version_info >= \(3, 12\)/);
+  assert.ok((await readFile(join(root, "apps", "api", "src", "databases", "sqlite-adapter.ts"), "utf8")).includes("python3"));
+});
+
 test("core never runs OpenCode itself", async () => {
   // 1.1.7 (decision B): CLIs live only in the CLI container; core asks its credential agent instead.
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
@@ -245,7 +254,7 @@ test("core never runs OpenCode itself", async () => {
   const direct = /spawn\("opencode"|"\/usr\/local\/bin\/opencode"|\["credential-smoke"\]|\[definition\.credentialObservationAction\]/;
   const found = execFileSync("grep", ["-rlE", direct.source, "--include=*.ts", "--exclude-dir=__tests__", src], { encoding: "utf8" })
     .trim().split("\n").map((path) => path.slice(src.length + 1)).sort();
-  assert.deepEqual(found, ["cli-runtimes.ts", "cli-terminal.ts", "opencode-model-bench.ts", "room-agent-model-resolver.ts"]);
+  assert.deepEqual(found, ["cli-runtimes.ts", "cli-terminal.ts", "opencode-model-bench.ts", "room-agent-model-resolver.ts", "setup-assistant.ts", "setup-room-agent-check.ts"]);
   // Each one takes the public credential host's path when there is one.
   const app = await read("app.ts");
   assert.match(app, /const publicCredentialHost = createPublicCredentialHost\(config\);\n  const runOpenCode = publicCredentialHost\?\.openCodeText \?\? runOpenCodeText;/);
@@ -257,6 +266,16 @@ test("core never runs OpenCode itself", async () => {
   assert.match(app, /completeRoomAgentPrompt\(\{[^}]*runOpenCode \}\)/);
   assert.doesNotMatch(app, /createOpenCodeTextModel\(\)|checkCliRuntimeCredential\(runtime\)|observeCliRuntimeCredential\(runtime\)/);
   assert.match(await read("cli-terminal.ts"), /this\.options\.credentialHost\n\s+\? await this\.options\.credentialHost\.execute\(runtime\.detectedCommandPath, \["credential-smoke"\]/);
+  // First Setup (1.1.8): the setup assistant and the Room Agent check take the credential host's OpenCode before their own.
+  const setupWiring = await read("setup-wiring.ts");
+  assert.match(setupWiring, /\.\.\.\(publicCredentialHost \? \{ openCodeText: publicCredentialHost\.openCodeText, openCodeModels: publicCredentialHost\.openCodeModels \} : \{\}\)/);
+  assert.match(setupWiring, /\.\.\.\(publicCredentialHost \? \{ openCodeModels: publicCredentialHost\.openCodeModels,\s+checkFreeModel: \(modelId: string\) => checkNativeSetupFreeModel\(publicCredentialHost, "opencode-vscode-parity", modelId\) \} : \{\}\)/);
+  const setupAssistant = await read("setup-assistant.ts");
+  assert.ok(setupAssistant.indexOf("if (options.openCodeText && options.openCodeModels)") >= 0 &&
+    setupAssistant.indexOf("if (options.openCodeText && options.openCodeModels)") < setupAssistant.indexOf("openCodeExecutor("));
+  const roomAgentCheck = await read("setup-room-agent-check.ts");
+  assert.ok(roomAgentCheck.indexOf("if (options.checkFreeModel && options.openCodeModels)") >= 0 &&
+    roomAgentCheck.indexOf("if (options.checkFreeModel && options.openCodeModels)") < roomAgentCheck.indexOf("openCodeExecutor("));
   assert.match(await read("room-agent.ts"), /runOpenCode = runOpenCodeText \} = input;/);
   assert.doesNotMatch(await read("room-agent.ts"), /await runOpenCodeText\(/);
 });

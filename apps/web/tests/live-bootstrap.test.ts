@@ -69,6 +69,8 @@ describe("Live bootstrap", () => {
   it("describes every advertised tool and parameter without mutating their shared definitions", async () => {
     const context = await buildLiveSessionContext({ model: "gpt-live-1" });
     expect(context.tools.some(tool => tool.name === "space_debug")).toBe(false);
+    // With Space Control on, Live can ask the Video pane for a video (off with the other control tools).
+    expect(context.tools.some(tool => tool.name === "space_request_video")).toBe(true);
     const check = (schema: any) => {
       for (const value of Object.values(schema?.properties ?? {}) as any[]) {
         expect(value.description?.trim()).toBeTruthy();

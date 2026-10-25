@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { eventSchema, nousDecisionCategorySchema, type NousDecision } from "@space/contracts";
+import { eventSchema, nousAnswerIntent, nousDecisionCategorySchema, type NousDecision } from "@space/contracts";
 import { InMemoryControlRepository, InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { InMemorySpaceStore, makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -95,6 +95,49 @@ describe("Nous's gates", () => {
     await expect(service.answer(owner, approved.id, { answer: "APPROVE" })).rejects.toThrow("already answered");
     expect(executeAction).toHaveBeenCalledTimes(1);
     expect((executeAction.mock.calls[0] as unknown as [NousDecision])[0]).toMatchObject({ id: approved.id, status: "APPROVED" });
+    await service.idle(owner);
+  });
+
+  it("reads a bare yes or no in words as the operator's decision, and leaves conditions as words (operator gap 2026-10-24)", async () => {
+    expect(nousAnswerIntent("ναι")).toBe("APPROVE");
+    expect(nousAnswerIntent("Yes!")).toBe("APPROVE");
+    expect(nousAnswerIntent("ok, send nothing else")).toBe("APPROVE");
+    expect(nousAnswerIntent("προχώρα - και πες μου μετά")).toBe("APPROVE");
+    expect(nousAnswerIntent("no thanks")).toBe("DECLINE");
+    expect(nousAnswerIntent("όχι.")).toBe("DECLINE");
+    expect(nousAnswerIntent("ναι, αλλά αύριο")).toBeNull();
+    expect(nousAnswerIntent("yes, only if the tests pass")).toBeNull();
+    expect(nousAnswerIntent("ναι ναι")).toBeNull();
+    expect(nousAnswerIntent("why?")).toBeNull();
+    expect(nousAnswerIntent(`yes, ${"x".repeat(201)}`)).toBeNull();
+
+    const executeAction = vi.fn(async () => "ran");
+    const repository = new InMemoryNousRepository();
+    const service = createNousService({
+      repository,
+      runner: async () => ({ text: "ok", isError: false }),
+      world: async () => ({ text: "world", overview: {} }),
+      settings: async () => ({ enabled: false, maxTurnsPerHour: 20 }),
+      notifications: { raise: vi.fn(async () => null), resolve: vi.fn(async () => 0) },
+      executeAction
+    } as unknown as NousServiceDeps);
+    const owner = "user:operator";
+    const ask = (title: string, action = true) => service.ask({ ownerUserId: owner, category: "EXTERNAL", title, body: "", options: ["Send", "Hold"], recommendation: "send", refs: {},
+      action: action ? { type: "PANE_TEXT", roomId: "room:gates2", paneId: "pane:jill", text: "send the proposal", mode: "PROMPT" } : null });
+
+    const yes = await service.answer(owner, (await ask("Send the proposal to Acme?")).id, { answer: "ANSWER", text: "ναι, και πες μου πότε" });
+    expect(yes).toMatchObject({ status: "APPROVED", answer: "ναι, και πες μου πότε", outcome: "ran" });
+    const no = await service.answer(owner, (await ask("Send the proposal to Beta?")).id, { answer: "ANSWER", text: "no" });
+    expect(no).toMatchObject({ status: "DECLINED", outcome: null });
+    const words = await service.answer(owner, (await ask("Send the proposal to Gamma?")).id, { answer: "ANSWER", text: "ναι, αλλά μετά το demo" });
+    expect(words).toMatchObject({ status: "ANSWERED", outcome: null });
+    // Without an action a yes is still words for Nous to read (nothing to run).
+    const noAction = await service.answer(owner, (await ask("Which one first?", false)).id, { answer: "ANSWER", text: "ναι" });
+    expect(noAction.status).toBe("ANSWERED");
+    expect(executeAction).toHaveBeenCalledTimes(1);
+    const notes = (await repository.listMessages(owner, 50)).filter((message) => message.kind === "DECISION").map((message) => message.content);
+    expect(notes.find((text) => text.includes("Acme"))).toContain("approved (read from their words)");
+    expect(notes.find((text) => text.includes("Gamma"))).toContain("The action was not run.");
     await service.idle(owner);
   });
 

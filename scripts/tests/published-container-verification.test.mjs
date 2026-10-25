@@ -1,166 +1,60 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import {
-  evaluatePublishedContainer,
-  loadPublishedContainerEvidence
-} from "../verify-published-containers.mjs";
+import { loadImageAttestations } from "../../packages/run-spaceapp/src/image-attestations.mjs";
+import { attestedImage, fakeRegistry } from "../../packages/run-spaceapp/tests/fixtures/attested-image.mjs";
+import { runCli } from "../verify-published-containers.mjs";
 
-const manifest = {
-  manifests: [
-    {
-      digest: "sha256:amd64",
-      platform: { os: "linux", architecture: "amd64" }
-    },
-    {
-      digest: "sha256:arm64",
-      platform: { os: "linux", architecture: "arm64" }
-    },
-    {
-      digest: "sha256:amd64-attestation",
-      annotations: {
-        "vnd.docker.reference.digest": "sha256:amd64",
-        "vnd.docker.reference.type": "attestation-manifest"
-      },
-      platform: { os: "unknown", architecture: "unknown" }
-    },
-    {
-      digest: "sha256:arm64-attestation",
-      annotations: {
-        "vnd.docker.reference.digest": "sha256:arm64",
-        "vnd.docker.reference.type": "attestation-manifest"
-      },
-      platform: { os: "unknown", architecture: "unknown" }
-    }
-  ]
-};
+const sha = "f1c4e8351bb899ab9bd741b6e0d531b6ba8436c8";
 
-const attestationManifest = {
-  layers: [
-    {
-      annotations: {
-        "in-toto.io/predicate-type": "https://spdx.dev/Document"
-      }
-    },
-    {
-      annotations: {
-        "in-toto.io/predicate-type": "https://slsa.dev/provenance/v1"
-      }
-    }
-  ]
-};
+// runCli prints its verdict; keep the test output clean and hand the verdict back.
+async function verify(images, argv) {
+  const tags = Object.fromEntries(images.map((image) => [`${image.repository}:1.1.8`, image.digest]));
+  const registry = fakeRegistry(images, { tags });
+  const write = process.stdout.write;
+  process.stdout.write = () => true;
+  try {
+    return await runCli(["--version", "1.1.8", ...argv], (repository, reference) => loadImageAttestations(repository, reference, { get: registry.get }));
+  } finally {
+    process.stdout.write = write;
+    process.exitCode = 0;
+  }
+}
 
-test("published container verification requires both platforms and attestations", () => {
-  assert.deepEqual(
-    evaluatePublishedContainer({
-      image: "ghcr.io/oll4com/spaceapp-core:0.1.4",
-      manifest,
-      attestations: [
-        {
-          descriptor: manifest.manifests[2],
-          manifest: attestationManifest
-        },
-        {
-          descriptor: manifest.manifests[3],
-          manifest: attestationManifest
-        }
-      ]
-    }),
-    { ok: true, blockers: [] }
-  );
+const all = (options = {}) => ["core", "cli", "browser"].map((target) => attestedImage({ repository: `oll4com/spaceapp-${target}`, ...options }));
+
+test("the release verifies both platforms of each image by its provenance, from this run's commit", async () => {
+  assert.deepEqual(await verify(all(), ["--workflow-sha", sha]), { ok: true, blockers: [] });
 });
 
-test("published container verification accepts an explicit amd64-only release", () => {
-  assert.deepEqual(
-    evaluatePublishedContainer({
-      image: "ghcr.io/oll4com/spaceapp-core:0.1.15-hostroot.2",
-      manifest: {
-        manifests: [manifest.manifests[0], manifest.manifests[2]]
-      },
-      attestations: [
-        {
-          descriptor: manifest.manifests[2],
-          manifest: attestationManifest
-        }
-      ],
-      architectures: ["amd64"]
-    }),
-    { ok: true, blockers: [] }
-  );
+test("an explicit amd64-only release needs amd64 only", async () => {
+  const images = all({ architectures: ["amd64"] });
+  assert.deepEqual(await verify(images, ["--architectures", "amd64"]), { ok: true, blockers: [] });
+  assert.deepEqual((await verify(images, [])).blockers, [
+    "ghcr.io/oll4com/spaceapp-core:1.1.8 is missing linux/arm64.",
+    "ghcr.io/oll4com/spaceapp-cli:1.1.8 is missing linux/arm64.",
+    "ghcr.io/oll4com/spaceapp-browser:1.1.8 is missing linux/arm64."
+  ]);
 });
 
-test("published container verification aggregates split attestations for one platform", () => {
-  assert.deepEqual(
-    evaluatePublishedContainer({
-      image: "ghcr.io/oll4com/spaceapp-core:0.1.4",
-      manifest,
-      attestations: [
-        {
-          descriptor: manifest.manifests[2],
-          manifest: { layers: [attestationManifest.layers[0]] }
-        },
-        {
-          descriptor: manifest.manifests[2],
-          manifest: { layers: [attestationManifest.layers[1]] }
-        },
-        {
-          descriptor: manifest.manifests[3],
-          manifest: attestationManifest
-        }
-      ]
-    }),
-    { ok: true, blockers: [] }
-  );
-});
-
-test("published container verification reports missing architecture and evidence", () => {
-  const result = evaluatePublishedContainer({
-    image: "ghcr.io/oll4com/spaceapp-core:0.1.4",
-    manifest: { manifests: [manifest.manifests[0], manifest.manifests[2]] },
-    attestations: [
-      {
-        descriptor: manifest.manifests[2],
-        manifest: { layers: [] }
-      }
-    ]
-  });
-
+test("missing evidence and images built from another commit are blockers", async () => {
+  const core = attestedImage();
+  const amd64Attestation = core.index.manifests[2];
+  core.index = { ...core.index, manifests: core.index.manifests.filter((entry) => entry !== amd64Attestation) };
+  const bytes = Buffer.from(JSON.stringify(core.index));
+  core.digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  core.objects.set(core.digest, bytes);
+  const result = await verify([core, ...all().slice(1)], ["--targets", "core", "--workflow-sha", sha]);
   assert.deepEqual(result.blockers, [
-    "ghcr.io/oll4com/spaceapp-core:0.1.4 does not expose an SBOM for linux/amd64.",
-    "ghcr.io/oll4com/spaceapp-core:0.1.4 does not expose provenance for linux/amd64.",
-    "ghcr.io/oll4com/spaceapp-core:0.1.4 is missing linux/arm64."
+    "ghcr.io/oll4com/spaceapp-core:1.1.8 does not expose an SBOM for linux/amd64.",
+    "ghcr.io/oll4com/spaceapp-core:1.1.8 does not expose provenance for linux/amd64."
+  ]);
+  const other = "0".repeat(40);
+  assert.deepEqual((await verify(all({ workflowSha: other }), ["--targets", "cli", "--architectures", "arm64", "--workflow-sha", sha])).blockers, [
+    `ghcr.io/oll4com/spaceapp-cli:1.1.8 linux/arm64 was built from ${other}, not ${sha}.`
   ]);
 });
 
-test("published container verification reads compact attestation manifests instead of full SBOM documents", () => {
-  const calls = [];
-  const inspectRaw = (reference) => {
-    calls.push(reference);
-    if (reference.endsWith(":0.1.4")) return manifest;
-    return attestationManifest;
-  };
-
-  assert.deepEqual(
-    loadPublishedContainerEvidence(
-      "ghcr.io/oll4com/spaceapp-core:0.1.4",
-      inspectRaw
-    ),
-    {
-      manifest,
-      attestations: [
-        {
-          descriptor: manifest.manifests[2],
-          manifest: attestationManifest
-        },
-        {
-          descriptor: manifest.manifests[3],
-          manifest: attestationManifest
-        }
-      ]
-    }
-  );
-  assert.deepEqual(calls, [
-    "ghcr.io/oll4com/spaceapp-core:0.1.4",
-    "ghcr.io/oll4com/spaceapp-core@sha256:amd64-attestation",
-    "ghcr.io/oll4com/spaceapp-core@sha256:arm64-attestation"
-  ]);
+test("the workflow commit must be a full commit id", async () => {
+  await assert.rejects(verify(all(), ["--workflow-sha", "f1c4e83"]), /Usage: verify-published-containers\.mjs/);
 });

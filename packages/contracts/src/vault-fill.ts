@@ -9,13 +9,21 @@ import {
 
 const code = z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/);
 
+/**
+ * Whether the host must start from a fresh document (a reload) before it looks for fields: false only when the API knows no
+ * agent session scripted or changed this document in the page's own world (the CDP proxy's document marks); absent or true
+ * reloads, the safe default (Vault review 2026-10-22).
+ */
+const freshDocument = z.boolean().optional();
+
 export const vaultHostFillRequestSchema = z.object({
   mode: z.enum(["FILL", "TOTP", "GENERATE"]),
   capability: vaultUseCapabilitySchema,
   /** The delegation's fill key under the ARK-derived generation key; only the broker opens it. */
   keyEnvelope: vaultSymmetricEnvelopeSchema,
   /** The item's fill fields under the fill key. */
-  fieldEnvelopes: z.partialRecord(z.enum(VAULT_FIELD_ROLES), vaultSymmetricEnvelopeSchema)
+  fieldEnvelopes: z.partialRecord(z.enum(VAULT_FIELD_ROLES), vaultSymmetricEnvelopeSchema),
+  freshDocument
 }).strict();
 export type VaultHostFillRequest = z.infer<typeof vaultHostFillRequestSchema>;
 
@@ -28,12 +36,16 @@ export const vaultHostSignupRequestSchema = z.object({
   mode: z.literal("SIGNUP"), certificate: vaultSignupGrantCertificateSchema, ownerUserId: z.string().min(1).max(200),
   vaultId: z.string().regex(/^vault:[A-Za-z0-9_-]{16,64}$/), paneId: z.string().min(1).max(200), targetId: z.string().min(1).max(128),
   frameId: z.string().min(1).max(128), origin: z.string().max(300), roles: z.array(z.enum(["NEW_PASSWORD", "CONFIRM_PASSWORD"])).min(1).max(2),
-  inboxPublicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/), submit: z.boolean()
+  inboxPublicKey: z.string().regex(/^[A-Za-z0-9_-]{40,80}$/), submit: z.boolean(), freshDocument
 }).strict();
 export type VaultHostSignupRequest = z.infer<typeof vaultHostSignupRequestSchema>;
 
 export const vaultHostFillResultSchema = z.object({
-  status: z.enum(VAULT_AGENT_STATUSES), reason: code.nullable(), sealedGenerated: vaultTransportEnvelopeSchema.nullable()
+  status: z.enum(VAULT_AGENT_STATUSES), reason: code.nullable(), sealedGenerated: vaultTransportEnvelopeSchema.nullable(),
+  /** True once a value entered the page, whatever happened after: the API then keeps the fence (absent from hosts before 2026-10-22). */
+  typed: z.boolean().optional(),
+  /** The top frame's document the fill ran in: the host reloads the page first, so it differs from the one the API fenced (absent from older hosts). */
+  document: z.string().max(128).nullable().optional()
 }).strict();
 export type VaultHostFillResult = z.infer<typeof vaultHostFillResultSchema>;
 
@@ -41,7 +53,9 @@ export type VaultHostFillResult = z.infer<typeof vaultHostFillResultSchema>;
 export const vaultHostTargetSchema = z.object({
   eligible: z.boolean(), reason: code.nullable(), targetId: z.string().max(128).nullable(), frameId: z.string().max(128).nullable(), origin: z.string().max(300).nullable(),
   /** The top frame's document (CDP loaderId); it changes only when a new document loads. Absent from hosts started before 2026-10-18. */
-  document: z.string().max(128).nullable().optional()
+  document: z.string().max(128).nullable().optional(),
+  /** True from a host that takes `freshDocument` in fill requests (2026-10-22); the API sends the field only then, so an older host's strict schema never sees it. */
+  freshDocument: z.boolean().optional()
 }).strict();
 export type VaultHostTarget = z.infer<typeof vaultHostTargetSchema>;
 

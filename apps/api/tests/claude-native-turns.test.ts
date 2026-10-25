@@ -96,6 +96,33 @@ it("records the latest answer's account usage limit (429) with its reset, until 
   expect(claudeTaskTimeline([...stopped, assistant("2026-10-20T14:02:00.000Z")], false, observedAt).rateLimit).toBeNull();
 });
 
+// Managed plans read each stage's end and final answer here (plan clipboard:t_7CKCjc3C7r).
+it("returns the newest turns' ends and final answers, and keeps an auto-compacted turn as one turn", () => {
+  const said = (timestamp: string, id: string, text: string, extra: Record<string, unknown> = {}) =>
+    line({ type: "assistant", timestamp, effort: "low", message: { id, model: "claude-haiku-4-5", content: [{ type: "text", text }] }, ...extra });
+  const lines = [
+    prompt("2026-10-21T01:00:00.000Z", "[space-plan:a] stage one"),
+    said("2026-10-21T01:00:05.000Z", "m1", "Working."),
+    prompt("2026-10-21T01:01:00.000Z", "This session is being continued from a previous conversation", { isCompactSummary: true }),
+    said("2026-10-21T01:02:00.000Z", "m2", "Done."),
+    said("2026-10-21T01:02:01.000Z", "m2", "```json\n{\"outcome\":\"COMPLETED\"}\n```"),
+    turnDuration("2026-10-21T01:02:02.000Z", 122_000),
+    prompt("2026-10-21T01:03:00.000Z", "[space-plan:b] stage two"),
+    prompt("2026-10-21T01:03:05.000Z", [{ type: "text", text: "[Request interrupted by user]" }]),
+    prompt("2026-10-21T01:04:00.000Z", "[space-plan:c] stage two again"),
+    said("2026-10-21T01:04:10.000Z", "m3", "limit", { isApiErrorMessage: true, error: "rate_limit", quotaLimits: { resetsAt: 1792519200 } })
+  ];
+  const timeline = claudeTaskTimeline(lines, false, observedAt);
+  expect(timeline.tasks.map(task => [task.title, task.status])).toEqual([
+    ["[space-plan:a] stage one", "COMPLETED"], ["[space-plan:b] stage two", "INTERRUPTED"], ["[space-plan:c] stage two again", "INTERRUPTED"]]);
+  expect(timeline.turnResults).toEqual([
+    { taskId: "prompt-2026-10-21T01:00:00.000Z", ended: "COMPLETED", answer: "Done.\n```json\n{\"outcome\":\"COMPLETED\"}\n```", apiError: null, resetsAt: null },
+    { taskId: "prompt-2026-10-21T01:03:00.000Z", ended: "INTERRUPTED", answer: null, apiError: null, resetsAt: null },
+    // Only the idle session closes this one: not an end the transcript recorded.
+    { taskId: "prompt-2026-10-21T01:04:00.000Z", ended: null, answer: null, apiError: "rate_limit", resetsAt: new Date(1792519200_000).toISOString() }
+  ]);
+});
+
 async function fixture(options: { environ?: string; procStart?: string; ancestors?: number[]; session?: Record<string, unknown> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "claude-native-turns-"));
   roots.push(root);

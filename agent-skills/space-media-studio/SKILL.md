@@ -82,7 +82,8 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 ## Targets
 
 - `--room room:<id>`: the room to show. `--pane <id>`: select a pane; add `--crop pane` for just that pane.
-- `--dock <id>`: open a dock (`--crop dock` crops to it). `--settings <key>`: open the Settings dock at a section.
+- `--dock <id>`: open a dock (`--crop dock` crops to it); `--dock none`: the app with its dock closed (a capture otherwise
+  opens with the Rooms dock showing). `--settings <key>`: open the Settings dock at a section.
   `--health <section>`: open the Health dock at a section (`usage` is Token usage).
 - `--view app|help|benchmark`. On the mock, `--scene <chapter>:<step>` runs one showcase scene.
 - `--format png|jpeg|webp`, `--quality 1-100`.
@@ -126,8 +127,10 @@ Space pane). Close every pane and the room you opened.
 ## Video
 
 A scenario file is `{"steps":[...]}` with 1-20 steps and at most 180 seconds; each step may hold `dock`, `settings`,
-`health` (or `scene` on the mock) and `dwellMs` (500-30000, default 3000). The engine records device-pixel frames and
-encodes a 30 fps H.264 MP4 (`--gif` adds a GIF). One room per clip: record several clips for a multi-room tour and join
+`health` (or `scene` on the mock) and `dwellMs` (500-30000, default 3000); `"dock": "none"` closes the open dock. The
+engine records Chrome's screencast at device pixels and encodes a constant 30 fps H.264 MP4 (`--gif` adds a GIF); the
+report's `frames` / `durationMs` is the real frame rate. Measured 2026-10-23 (60 s stable take, two CLIs typing): desktop-hd
+about 18 fps, 2560x1440 about 12, desktop-4k about 7 (refused for video; it is for stills). One room per clip: record several clips for a multi-room tour and join
 them with the `space-hyperframes` skill, which also adds captions, music and motion.
 
 ## Space Control `space_screenshot`
@@ -138,6 +141,7 @@ result in the room's Media (kept 7 days; a Marketing Copilot post that attaches 
 
 - Size: `aspect` = `16:9` (1920x1080), `1:1` (1080x1080), `4:5` (1080x1350), `9:16` (1080x1920, the phone layout) or
   `full` (the desktop window), the social ratios of the desktop titlebar menu; or `viewport` = desktop, desktop-hd,
+  desktop-4k (3840x2160, stills only),
   laptop, tablet, tablet-landscape, mobile, android, square, portrait or story (`viewport` wins).
 - What is shown: `paneId` (selected), `dock`, `settings` or `health` (the lists above); `crop` = `pane` or `dock` cuts
   a photo to it.
@@ -147,6 +151,9 @@ result in the room's Media (kept 7 days; a Marketing Copilot post that attaches 
   {"operation":"get","id":"<operationId>"}` until COMPLETED, whose result holds the `artifactId` and the real
   `durationMs` (opening a dock or section between steps adds to the dwell time).
 - Every result lists under `skipped` the docks or sections it could not open: retry or change the step.
+- `fitTerminals: true` (room owner only, never Dots): CLI panes wrap at the width their PTY was last given, so in a read-only
+  capture words can break mid-word; this first resizes each CLI pane's PTY to the columns the shot shows (`terminalsFitted`).
+  The fit holds until a controlling client resizes: fit, re-send the prompts, then capture.
 
 From a CLI in a Studio room:
 `node /opt/spaceapp/scripts/space-admin-action.mjs control space_screenshot '{"roomId":"room:<studio>","aspect":"9:16","dock":"tasks","video":{"steps":[{"dwellMs":5000},{"settings":"appearance","dwellMs":5000}]}}'`

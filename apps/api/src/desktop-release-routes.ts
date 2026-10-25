@@ -39,16 +39,6 @@ export function registerDesktopReleaseRoutes(app: FastifyInstance, options: {
     reply.header("Content-Type", "text/plain; charset=utf-8");
     return reply.send(createReadStream(filePath));
   });
-  app.get("/api/desktop/update.sh", defaultRouteRateLimitOptions, async (_request, reply) => {
-    const filePath = resolve(process.cwd(), "apps/desktop/release/update.sh");
-    const fileStat = await stat(filePath).catch(() => null);
-    if (!fileStat || !fileStat.isFile()) {
-      return reply.status(404).send({ error: "Update shell script not found" });
-    }
-    reply.header("Content-Type", "text/x-shellscript; charset=utf-8");
-    await signatureHeader(reply, filePath);
-    return reply.send(createReadStream(filePath));
-  });
   app.get("/api/desktop/install.sh", defaultRouteRateLimitOptions, async (_request, reply) => {
     const filePath = resolve(process.cwd(), "apps/desktop/release/install-linux-spaceapp.sh");
     const fileStat = await stat(filePath).catch(() => null);

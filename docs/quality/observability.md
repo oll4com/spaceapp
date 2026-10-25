@@ -12,10 +12,10 @@ redaction (`apps/api/src/request-logging.ts`) and the rate-limit coverage test
 (OBS-010..012).
 
 **Probe contract.** `/livez` answers whether the API process is up. `/readyz` without
-parameters always returns HTTP 200 and reports readiness in its JSON `ok` field, because
-the web proxy's recovery loop reads that field. A load balancer, orchestrator or uptime
-check that looks only at the status code must call `/readyz?strict=1`, which returns 503
-while any required dependency is unavailable.
+parameters always returns HTTP 200 and reports readiness in its JSON `ok` field.
+`/readyz?strict=1` returns 503 while any required dependency is unavailable; the web
+proxy's recovery loop uses it, and so must a load balancer, orchestrator or uptime check
+that looks only at the status code.
 
 ## The shared ID
 

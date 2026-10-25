@@ -182,4 +182,32 @@ describe("WorktreeBadge", () => {
       expect(screen.getByRole("button", { name: "Isolated Worktree wt-cycle" })).toBeTruthy();
     });
   });
+
+  it("decides the Remove warning from a fresh status read, not the polled one", async () => {
+    const worktreePath = "/opt/spaceapp/var/worktrees/space/wt-remove-check";
+    const item = (isDirty: boolean) => ({ ok: true, json: async () => ({ data: { worktreePath, branch: "wt-remove-check", isDirty, aheadCount: 1, behindCount: 0, status: isDirty ? "DIRTY" : "ACTIVE" } }) });
+    let freshDirty: boolean | null = true;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") return { ok: true, json: async () => ({ ok: true }) };
+      if (url.includes("fresh=1")) return freshDirty === null ? { ok: false, json: async () => ({}) } : item(freshDirty);
+      return item(false);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    render(<WorktreeBadge worktreePath={worktreePath} branch="wt-remove-check" />);
+    fireEvent.click(screen.getByRole("button", { name: "Isolated Worktree wt-remove-check" }));
+
+    fireEvent.click(screen.getByTitle("Discard worktree"));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith("Worktree has uncommitted changes. Force discard?"));
+    freshDirty = null;
+    fireEvent.click(screen.getByTitle("Discard worktree"));
+    await waitFor(() => expect(confirm).toHaveBeenLastCalledWith("Could not check the worktree for uncommitted changes. Force discard?"));
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(false);
+
+    freshDirty = false;
+    fireEvent.click(screen.getByTitle("Discard worktree"));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => (init as RequestInit | undefined)?.method === "DELETE" && String(url).includes("force=true"))).toBe(true));
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
 });

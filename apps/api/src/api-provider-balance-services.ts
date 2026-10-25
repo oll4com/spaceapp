@@ -2,8 +2,11 @@ import { readFile } from "node:fs/promises";
 import { createSign } from "node:crypto";
 import {
   type ApiProviderAccount,
-  type ApiProviderAccountList
+  type ApiProviderAccountList,
+  type GatewayAnthropicBillingReport,
+  type GatewaySettings
 } from "@space/contracts";
+import { anthropicMonthSpendUsd } from "./claude-usage-services.js";
 import { getLastKnownJevCredits } from "./room-decisions.js";
 
 const CACHE_TTL_MS = 60_000;
@@ -939,30 +942,92 @@ async function queryJevTypeSafe(apiKey: string): Promise<ApiProviderAccount> {
   };
 }
 
+/**
+ * The Claude API (operator request 2026-10-24) from Space Gateway's Anthropic bill sync: a day Anthropic has not posted yet
+ * counts the gateway's estimate. Anthropic's Admin API has no credit balance, so with the credits set in Space Gateway the
+ * balance is those credits minus the recorded bill (`postedUsd`: every posted cost row); without them `usage` is this UTC
+ * month's spend and `limit` the monthly budget.
+ * shortcut: every recorded day counts against the credits, so a bill paid by card before the grants would lower the balance;
+ * add a start date to the credits if that happens.
+ */
+export function anthropicProviderAccount(report: GatewayAnthropicBillingReport, settings: { budgetUsd: number | null; creditsUsd: number | null },
+  postedUsd: number, nowMs: number): ApiProviderAccount {
+  const base = { id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", currency: "USD" } as const;
+  if (!report.status.configured) {
+    return { ...base, status: "UNCONFIGURED", balance: null,
+      detail: "Add the Anthropic Admin API key in Space Gateway › Settings › Anthropic billing", sampledAt: null };
+  }
+  const money = (usd: number) => `$${usd.toFixed(2)}`;
+  const percent = (left: number, of: number) => Math.min(100, Math.max(0, Math.round((left / of) * 100)));
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  const weekStart = new Date(nowMs - 6 * 86_400_000).toISOString().slice(0, 10);
+  const spent = (keep: (day: string) => boolean) => report.days.filter((day) => keep(day.day))
+    .reduce((sum, day) => sum + (day.reported ? day.organizationUsd : day.gatewayEstimateUsd), 0);
+  const { budgetUsd, creditsUsd } = settings;
+  const month = anthropicMonthSpendUsd(report, nowMs) ?? 0;
+  const budgetLeft = budgetUsd === null ? null : budgetUsd - month;
+  const used = postedUsd + report.days.filter((day) => !day.reported).reduce((sum, day) => sum + day.gatewayEstimateUsd, 0);
+  const creditsLeft = creditsUsd === null ? null : creditsUsd - used;
+  const posted = report.days.find((day) => day.day === today)?.reported ?? false;
+  const { lastSyncAt, lastError } = report.status;
+  const meter = creditsUsd !== null && creditsLeft !== null
+    ? { balance: money(creditsLeft), usage: money(used), limit: money(creditsUsd), remainingPercent: percent(creditsLeft, creditsUsd) }
+    : { balance: null, usage: money(month), limit: budgetUsd === null ? null : money(budgetUsd),
+      remainingPercent: budgetUsd === null || budgetLeft === null ? null : percent(budgetLeft, budgetUsd) };
+  return {
+    ...base,
+    ...meter,
+    status: (creditsLeft !== null && creditsLeft <= 0) || (budgetLeft !== null && budgetLeft <= 0) ? "EXHAUSTED" : "CONNECTED",
+    detail: [
+      ...(creditsUsd !== null ? [`Credits used ${money(used)}`] : []),
+      `Today ${money(spent((day) => day === today))}${posted ? "" : " (estimate)"}`,
+      `7 days ${money(spent((day) => day >= weekStart))}`,
+      creditsUsd !== null ? `This month ${money(month)}` : `31 days ${money(spent(() => true))}`,
+      ...(budgetUsd !== null && budgetLeft !== null ? [`Budget ${money(budgetUsd)}: ${money(Math.max(0, budgetLeft))} left`] : []),
+      ...(lastError ? [`Last sync failed: ${lastError}`] : lastSyncAt ? [] : ["Not synced with Anthropic yet"])
+    ].join(" · "),
+    sampledAt: lastSyncAt
+  };
+}
+
 export function createApiProviderAccountProvider(
   options: {
     now?: () => Date;
+    /** Space Gateway's Anthropic bill, settings and recorded usage rows; without them no Claude API card is listed. */
+    anthropic?: {
+      billing: () => Promise<GatewayAnthropicBillingReport>;
+      settings: () => Promise<Pick<GatewaySettings, "anthropicMonthlyBudgetUsd" | "anthropicCreditsUsd">>;
+      usage: () => Promise<Array<{ source: string; value: number }>>;
+    };
   } = {}
 ): () => Promise<ApiProviderAccountList> {
   const now = options.now ?? (() => new Date());
+  const { anthropic } = options;
 
   let cached: { value: ApiProviderAccountList; collectedAtMs: number } | null = null;
   let inFlight: Promise<ApiProviderAccountList> | null = null;
 
-  return async (): Promise<ApiProviderAccountList> => {
-    const currentMs = now().getTime();
-    if (cached && currentMs - cached.collectedAtMs < CACHE_TTL_MS) {
-      return cached.value;
-    }
-
+  function refresh(): Promise<ApiProviderAccountList> {
     if (inFlight) {
       return inFlight;
     }
+    const currentMs = now().getTime();
 
     inFlight = (async () => {
       try {
         const keys = await discoverApiProviderKeys();
         const queries: Promise<ApiProviderAccount>[] = [];
+
+        if (anthropic) {
+          queries.push(Promise.all([anthropic.billing(), anthropic.settings(), anthropic.usage()])
+            .then(([report, settings, rows]) => anthropicProviderAccount(report,
+              { budgetUsd: settings.anthropicMonthlyBudgetUsd ?? null, creditsUsd: settings.anthropicCreditsUsd ?? null },
+              rows.filter((row) => row.source === "COST").reduce((sum, row) => sum + row.value, 0) / 100, now().getTime()))
+            .catch((err: unknown): ApiProviderAccount => ({
+              id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", status: "ERROR", balance: null, currency: "USD",
+              detail: `Anthropic bill unavailable: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`, sampledAt: null
+            })));
+        }
 
         if (keys.deepseek) {
           queries.push(queryDeepSeek(keys.deepseek));
@@ -1049,6 +1114,14 @@ export function createApiProviderAccountProvider(
       }
     })();
 
-    return await inFlight;
+    return inFlight;
+  }
+
+  // The last sample answers at once whatever its age; an old one asks the providers again in the background, so the
+  // quota views never wait for their remote balance calls.
+  return async (): Promise<ApiProviderAccountList> => {
+    if (!cached) return refresh();
+    if (now().getTime() - cached.collectedAtMs >= CACHE_TTL_MS) void refresh();
+    return cached.value;
   };
 }

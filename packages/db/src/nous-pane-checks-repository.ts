@@ -3,7 +3,8 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 // Nous's pane watch (migration 0223, plan clipboard:MAongwnxq9Ro): one row per pane with Nous's last check, its verdict and
 // the next check. A read records only the time; a verdict (space_pane_checked) also sets the verdict, note and next check.
 
-export const NOUS_PANE_VERDICTS = ["OK_WORKING", "WAITING_OPERATOR", "WAITING_DATE", "NEEDS_ACTION", "BLOCKED", "OPERATOR_TEST"] as const;
+// KEEP_OPEN (migration 0243, standing orders): a finished pane Nous keeps open until its next check.
+export const NOUS_PANE_VERDICTS = ["OK_WORKING", "WAITING_OPERATOR", "WAITING_DATE", "NEEDS_ACTION", "BLOCKED", "OPERATOR_TEST", "KEEP_OPEN"] as const;
 export type NousPaneVerdict = typeof NOUS_PANE_VERDICTS[number];
 export interface NousPaneCheck { paneId: string; roomId: string; checkedAt: string; verdict: NousPaneVerdict | null; note: string | null; nextCheckAt: string | null }
 export interface NousPaneCheckInput { paneId: string; roomId: string; at: string; verdict?: { verdict: NousPaneVerdict; note: string | null; nextCheckAt: string | null } }

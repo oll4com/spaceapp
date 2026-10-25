@@ -6,7 +6,7 @@ import { createApp } from '../src/app.js';
 import { getApiConfig } from '../src/config.js';
 import { signSession, createCsrfToken } from '../src/auth.js';
 import { googleBrowserProfilePathFor, sharedCliProfilePathFor } from '../src/browser-sessions.js';
-import { freelanceProfileKey, youtubeAccountProfileKey } from '../src/youtube-accounts.js';
+import { youtubeAccountProfileKey } from '../src/youtube-accounts.js';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -228,11 +228,11 @@ describe('verified browser account selection compatibility', () => {
     expect((await app.inject({ method: 'PUT', url: path, headers, payload: { profileId: null } })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: path, headers })).json().selectedProfileId).toBeNull();
   });
-  it('opens every Freelance Copilot pane on the account\'s one Freelance profile (its own routes), never the account\'s Chrome of other panes', async () => {
+  it('opens Freelance Copilot panes on the account\'s one shared Chrome like every other browser pane (operator 2026-10-21)', async () => {
     if (!store.getCliAccountProfile('cli:gemini', 'ind')) store.createCliAccountProfile('cli:gemini', { runtimeId: 'cli:gemini', profileId: 'ind', displayName: 'ind' }, 'trace:gemini-freelance');
     const freelanceRoom = store.createRoom({ name: 'Freelance Copilot profile', initialPaneCount: 0 }, 'trace', user.id);
-    const createFreelance = async () => {
-      const created = await app.inject({ method: 'POST', url: '/api/panes', headers, payload: { roomId: freelanceRoom.id, title: 'Freelance Copilot', mode: 'FREELANCE_COPILOT' } });
+    const createPane = async (mode: string) => {
+      const created = await app.inject({ method: 'POST', url: '/api/panes', headers, payload: { roomId: freelanceRoom.id, title: mode, mode } });
       expect(created.statusCode, created.body).toBe(200);
       return created.json() as { id: string };
     };
@@ -242,37 +242,26 @@ describe('verified browser account selection compatibility', () => {
       expect(opened.statusCode, opened.body).toBeLessThan(300);
       return start.mock.calls.at(-1)![0] as Record<string, unknown>;
     };
-    const first = await createFreelance();
+    const browser = await createPane('BROWSER');
+    const first = await createPane('FREELANCE_COPILOT');
     expect((await accountsOf(first.id)).selectedProfileId).toBe(account.id);
-    adopt.mockClear();
     const opened = await openedWith(first.id);
-    expect(opened.googleAccount).toBeUndefined();
-    expect(opened.sharedProfileKey).toMatch(/^[a-f0-9]{64}$/);
-    expect(adopt).not.toHaveBeenCalled();
-    // The menu shows the sign-in of the Freelance profile, not of the account's Chrome of other panes.
-    const freelanceStatus = async (paneId: string, profileId: string) => (await accountsOf(paneId)).profiles.find((entry: { profileId: string }) => entry.profileId === profileId).browserStatus;
-    expect(await freelanceStatus(first.id, account.id)).toBe('NOT_CONNECTED');
-    const profile = sharedCliProfilePathFor(root + '/profiles', String(opened.sharedProfileKey));
-    await mkdir(join(profile, 'Default'), { recursive: true });
-    const db = new DatabaseSync(join(profile, 'Default', 'Cookies'));
-    db.exec('CREATE TABLE cookies (host_key TEXT, name TEXT, is_persistent INTEGER, expires_utc INTEGER)');
-    db.prepare('INSERT INTO cookies VALUES (?, ?, 1, ?)').run('.google.com', 'SID', (Date.now() + 11644473600000 + 86_400_000) * 1000);
-    db.close();
-    expect(await freelanceStatus(first.id, account.id)).toBe('SIGNED_IN');
-    // A later Freelance pane continues the account and opens the same profile, so the sign-in stays.
+    expect(opened).toMatchObject({ googleAccount: { ownerUserId: user.id, accountId: account.id }, profileKey: null });
+    expect(opened.sharedProfileKey).toBeUndefined();
+    expect((await openedWith(browser.id)).googleAccount).toEqual(opened.googleAccount);
+    // The menu shows the same sign-in as every other pane's.
+    expect((await accountsOf(first.id)).profiles).toEqual((await accountsOf(browser.id)).profiles);
+    // A later Freelance pane continues the account.
     store.updatePane(first.id, { isClosed: true, status: 'CLOSED' });
-    const second = await createFreelance();
+    const second = await createPane('FREELANCE_COPILOT');
     expect((await accountsOf(second.id)).selectedProfileId).toBe(account.id);
-    expect((await openedWith(second.id)).sharedProfileKey).toBe(opened.sharedProfileKey);
-    // A Gemini account has its own Freelance profile, apart from the shared one other panes open for it.
+    // A Gemini account opens the one profile every pane opens for it.
     expect((await app.inject({ method: 'PUT', url: `/api/panes/${second.id}/browser/accounts`, headers, payload: { profileId: 'ind' } })).statusCode).toBe(200);
     const gemini = await openedWith(second.id);
     expect(gemini.googleAccount).toBeUndefined();
-    expect(gemini.sharedProfileKey).toMatch(/^[a-f0-9]{64}$/);
-    expect(gemini.sharedProfileKey).not.toBe(opened.sharedProfileKey);
-    expect(gemini.sharedProfileKey).not.toBe(youtubeAccountProfileKey(user.id, 'ind'));
+    expect(gemini.sharedProfileKey).toBe(youtubeAccountProfileKey(user.id, 'ind'));
   });
-  it('opens a Freelance Copilot bookmark of another account by reopening the pane in that account\'s Freelance profile', async () => {
+  it('opens a bookmark in Browser and Freelance panes; a Freelance bookmark of another account reopens the pane in that account', async () => {
     if (!store.getCliAccountProfile('cli:gemini', 'ind')) store.createCliAccountProfile('cli:gemini', { runtimeId: 'cli:gemini', profileId: 'ind', displayName: 'ind' }, 'trace:gemini-freelance-bookmark');
     const freelanceRoom = store.createRoom({ name: 'Freelance bookmark fixture', initialPaneCount: 0 }, 'trace', user.id);
     const created = await app.inject({ method: 'POST', url: '/api/panes', headers, payload: { roomId: freelanceRoom.id, title: 'Freelance Copilot', mode: 'FREELANCE_COPILOT' } });
@@ -290,7 +279,11 @@ describe('verified browser account selection compatibility', () => {
       expect((await open(own.id)).statusCode).toBe(200);
       expect(createPage).toHaveBeenLastCalledWith(expect.objectContaining({ id: pane.id }), 'https://www.upwork.com/nx/find-work/', true, expect.any(String), expect.anything());
       expect(stop).not.toHaveBeenCalled();
-      // Another account: the pane reopens in that account's Freelance profile (its routes) with the page, never a tab in another Chrome.
+      // Every browser pane with a Google account opens the same bookmarks (operator 2026-10-21).
+      const browserPane = store.createPane({ roomId: freelanceRoom.id, title: 'Browser', mode: 'BROWSER' });
+      expect((await app.inject({ method: 'POST', url: `/api/panes/${browserPane.id}/marketing-copilot/bookmarks/${own.id}/open`, headers, payload: {} })).statusCode).toBe(200);
+      expect(createPage).toHaveBeenLastCalledWith(expect.objectContaining({ id: browserPane.id }), 'https://www.upwork.com/nx/find-work/', true, expect.any(String), expect.anything());
+      // Another account: the Freelance pane reopens in that account (its routes) with the page, never a tab in another Chrome.
       const fiverr = await save({ url: 'https://www.fiverr.com/users/oll4_com/manage_gigs', profileId: 'ind', accountLabel: 'ind@gemini.example.test' });
       createPage.mockClear(); start.mockClear();
       const opened = await open(fiverr.id);
@@ -298,7 +291,7 @@ describe('verified browser account selection compatibility', () => {
       expect(stop).toHaveBeenCalledWith(pane.id, expect.any(String), expect.anything());
       expect(createPage).not.toHaveBeenCalled();
       expect(start).toHaveBeenCalledTimes(1);
-      expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ sharedProfileKey: freelanceProfileKey(user.id, 'ind'), targetUrl: 'https://www.fiverr.com/users/oll4_com/manage_gigs' }), expect.anything());
+      expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ sharedProfileKey: youtubeAccountProfileKey(user.id, 'ind'), targetUrl: 'https://www.fiverr.com/users/oll4_com/manage_gigs' }), expect.anything());
       expect(start.mock.calls.at(-1)![0]).not.toHaveProperty('accountTab');
       expect((await app.inject({ method: 'GET', url: `/api/panes/${pane.id}/browser/accounts`, headers })).json().selectedProfileId).toBe('ind');
     } finally {

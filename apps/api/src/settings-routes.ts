@@ -10,7 +10,7 @@ import { parseBody } from "./route-parsing.js";
 const agentAppearanceSettings = new Set(["uiTheme", "modernAppearance", "modernIconPack", "uiBackground", "liquidGlassTint", "roomTheme", "uiZoom", "sensitiveDataMasked"]);
 const agentRefusedSettings = new Set(["nous", "notifications", "suppressNotifications", "livePane", "voice", "promptVariables", "promptVariablesEnabled",
   "promptVariablesAutoExpandOnSubmit", "workspaceQuickActions", "projectPresets", "worktreeDefaultEnabled", "roomWorktreeOverrides",
-  "jobCopilot", "mailCopilot", "marketingCopilot", "freelanceCopilot", "design", "appStudio"]);
+  "jobCopilot", "mailCopilot", "marketingCopilot", "freelanceCopilot", "design", "appStudio", "video", "securityCopilot"]);
 
 /** Provider settings and per-user settings; the parent retains authentication, CSRF, errors and rate limits. */
 export function registerSettingsRoutes(app: FastifyInstance, options: {

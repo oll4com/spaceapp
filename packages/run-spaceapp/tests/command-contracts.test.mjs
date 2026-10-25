@@ -328,6 +328,8 @@ test("update and rollback persist version state only after both Docker operation
   ]);
   assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
   assert.match(stdout.value(), new RegExp(`Rolled back to SpaceApp ${RUNTIME_VERSION}`));
+  // A source checkout has no image lock, so nothing was recorded: the plan says the rollback pulls by tag (1.1.8).
+  assert.match(stdout.value(), new RegExp(`No digests were recorded for ${RUNTIME_VERSION.replaceAll(".", "\\.")} \\(installed before digest pinning\\): its images are pulled by version tag`));
 });
 
 test("doctor is read-only for installation configuration and generated runtime files", async () => {

@@ -205,6 +205,14 @@ describe("pane managed integration", () => {
     const start = vi.fn(); const legacy = vi.fn(); await routePanePlanSelection(runtime, start, legacy);
     expect(start).not.toHaveBeenCalled(); expect(legacy).toHaveBeenCalledTimes(1);
   });
+  // Plan clipboard:t_7CKCjc3C7r: Claude starts staged plans as managed executions; a plain plan keeps today's send.
+  it("starts a staged plan as a managed execution on Claude and keeps the plain send for a stageless one", async () => {
+    const plain = { ...plan, text: "1. Fix the voice prewarm\n2. Verify" } as ClipboardItem;
+    for (const [runtime, selected, managed] of [["cli:claude", plan, true], ["cli:claude", plain, false], ["cli:codex", plain, true], ["cli:opencode", plan, false]] as const) {
+      const start = vi.fn(); const legacy = vi.fn(); await routePanePlanSelection(runtime, start, legacy, selected);
+      expect([start.mock.calls.length, legacy.mock.calls.length], `${runtime} ${selected.text}`).toEqual(managed ? [1, 0] : [0, 1]);
+    }
+  });
   it("routes the pane picker through the exact active stage, then permits ordinary settings after completion", async () => {
     const api = backend(); const client = new ManagedPlanClient(api, "pane:1", "session:1"); await client.refresh();
     const unmanaged = vi.fn(async () => ({ current: settings.current, message: null }));

@@ -73,5 +73,8 @@ export function registerAppStudio(app: FastifyInstance, deps: AppStudioWiring): 
     }
   });
   registerAppStudioRoutes(app, service, deps);
+  const queuePass = setInterval(() => void service.dispatchPending().catch((error: unknown) => deps.log.warn({ err: error }, "App Studio queue pass failed")), 60_000);
+  queuePass.unref();
+  app.addHook("onClose", async () => clearInterval(queuePass));
   return service;
 }

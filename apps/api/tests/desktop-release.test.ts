@@ -36,6 +36,7 @@ describe("desktop release metadata", () => {
     expect(result.headers["cache-control"]).toBe("no-store");
     expect(result.json()).toEqual({
       ...manifest,
+      targets: manifest.targets.map((target) => ({ ...target, size: 42 })),
       download7zUrl: "/api/desktop/download/SpaceApp-Windows-x64-v1.2.3.7z",
       downloadZipUrl: "/api/desktop/download/SpaceApp-Windows-x64-v1.2.3.zip",
       installerUrl: "/api/desktop/download/SpaceApp-Setup-1.2.3.exe",

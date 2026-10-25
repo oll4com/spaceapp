@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   VAULT_KDF_DEFAULTS, generateVaultSigningKey, generateVaultTransportKey, joinVaultRootKey, newVaultHandle, openPasswordEnvelope, openRecoveryEnvelope, sealRecoveryEnvelope, openWithVaultPrivateKey,
   sealPasswordEnvelope, sealToVaultPublicKey, sealVaultEnvelope, signVaultMessage, splitVaultRootKey, vaultBase64url, vaultDelegationOperatorMessage,
-  vaultDigest, vaultRandomBytes, vaultUnlockChallengeMessage, vaultSignupGrantOperatorMessage, type VaultKdfParams
+  vaultDigest, vaultOperatorRequestMessage, vaultRandomBytes, vaultUnlockChallengeMessage, vaultSignupGrantOperatorMessage, type VaultKdfParams, type VaultOperatorSignedKind
 } from "@space/contracts";
 import { runVaultSignup } from "../src/vault/signup.js";
 import { createVaultBroker, createVaultBrokerHttpServer } from "../src/vault/broker-server.js";
@@ -31,6 +31,9 @@ const kdf = async (password: string, params: VaultKdfParams) => {
   const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(b64.decode(params.salt)), iterations: 1000 }, base, 256));
 };
+// The dock's unlock-key signature over a key change or delete (Vault review 2026-10-22).
+const signed = async (vaultId: string, kind: VaultOperatorSignedKind, body: Record<string, unknown>, key: Uint8Array) =>
+  ({ ...body, operatorSignature: await signVaultMessage(key, vaultOperatorRequestMessage(kind, { ownerUserId: owner, vaultId, ...body })) });
 
 describe("Vault end to end: browser crypto, API routes and the real broker", () => {
   it("enrolls, unlocks only with password AND broker, delegates with the operator's signature, and revocation reaches the broker", async () => {
@@ -82,8 +85,8 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       // Recovery (hardening step 14): the recovery key opens the recovery envelope, the broker answers as on unlock, and a
       // new master password replaces the old one under a new epoch, audited as RECOVERY_USE.
       const recoveryKey = vaultRandomBytes(32);
-      expect((await as("PUT", "/api/space-vault/recovery", { keyVersion: 1, createdAt: new Date().toISOString(),
-        envelope: await sealRecoveryEnvelope(recoveryKey, { passwordShare, unlockPrivateKey: unlockKey.privateKey }, scope) })).statusCode).toBe(200);
+      expect((await as("PUT", "/api/space-vault/recovery", await signed(vaultId, "recovery", { keyVersion: 1, createdAt: new Date().toISOString(), epoch: challenge.epoch,
+        envelope: await sealRecoveryEnvelope(recoveryKey, { passwordShare, unlockPrivateKey: unlockKey.privateKey }, scope) }, unlockKey.privateKey))).statusCode).toBe(200);
       const stored = (await as("GET", "/api/space-vault/recovery")).json().recovery;
       await expect(openRecoveryEnvelope(vaultRandomBytes(32), stored.envelope, scope)).rejects.toThrow();
       const recovered = await openRecoveryEnvelope(recoveryKey, stored.envelope, scope);
@@ -93,8 +96,8 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const reopened = (await as("POST", "/api/space-vault/unlock", { challenge: third.challenge, replyPublicKey: b64.encode(recoveryReply.publicKey), signature: recoverySignature })).json();
       expect(joinVaultRootKey(recovered.passwordShare, await openWithVaultPrivateKey(recoveryReply.privateKey, recoveryReply.publicKey, reopened.sealedServerShare, scope))).toEqual(vrk);
       const newKdf = { ...VAULT_KDF_DEFAULTS, salt: b64.encode(vaultRandomBytes(16)) };
-      const rotated = await as("POST", "/api/space-vault/password", { expectedEpoch: reopened.epoch, kdf: newKdf, recovery: true,
-        passwordEnvelope: await sealPasswordEnvelope(kdf, `${PASSWORD}-new`, newKdf, recovered, scope), unlockPublicKey: b64.encode(unlockKey.publicKey), unlockKeyVersion: 1 });
+      const rotated = await as("POST", "/api/space-vault/password", await signed(vaultId, "password", { expectedEpoch: reopened.epoch, kdf: newKdf, recovery: true,
+        passwordEnvelope: await sealPasswordEnvelope(kdf, `${PASSWORD}-new`, newKdf, recovered, scope), unlockPublicKey: b64.encode(unlockKey.publicKey), unlockKeyVersion: 1 }, recovered.unlockPrivateKey));
       expect(rotated.json()).toEqual({ epoch: reopened.epoch + 1 });
       const afterRecovery = (await as("POST", "/api/space-vault/unlock/challenge", {})).json();
       await expect(openPasswordEnvelope(kdf, PASSWORD, afterRecovery.kdf, afterRecovery.passwordEnvelope, scope)).rejects.toThrow();
@@ -180,7 +183,8 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
         sealedServerShare: await sealToVaultPublicKey(b64.decode(transport.publicKey), serverShare, scope), unlockPublicKey: b64.encode(unlockKey.publicKey), unlockKeyVersion: 1
       })).statusCode).toBe(201);
       const inbox = await generateVaultTransportKey();
-      await as("PUT", "/api/space-vault/inbox", { publicKey: b64.encode(inbox.publicKey), privateKeyEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), inbox.privateKey, { ...scope, purpose: "INBOX_KEY" }) });
+      await as("PUT", "/api/space-vault/inbox", await signed(vaultId, "inbox", { publicKey: b64.encode(inbox.publicKey), privateKeyEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), inbox.privateKey, { ...scope, purpose: "INBOX_KEY" }),
+        epoch: (await as("GET", "/api/space-vault/state")).json().vault.epoch }, unlockKey.privateKey));
 
       // The dock signs exact sites, a cap and an expiry with the unlock key; the broker certifies, the API stores.
       const epoch = (await as("GET", "/api/space-vault/state")).json().vault.epoch;
@@ -231,7 +235,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const agent = await harness.app.inject({ method: "POST", url: "/api/cli/space-vault/generate-fill", headers: { [cliBrowserBridgeTokenHeader]: token, "content-type": "application/json" },
         payload: { purpose: "NEW_ACCOUNT", label: "Synthetic shop" } });
       seen.push(agent.body);
-      expect(agent.json()).toEqual({ status: "BLOCKED", auditId: expect.any(String) });
+      expect(agent.json()).toMatchObject({ status: "BLOCKED", auditId: expect.any(String) });
       expect((await as("GET", "/api/space-vault/pending")).json().pending).toEqual([]);
 
       const signedUp = await signup();
@@ -293,7 +297,8 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
         sealedServerShare: await sealToVaultPublicKey(b64.decode(transport.publicKey), serverShare, scope), unlockPublicKey: b64.encode(unlockKey.publicKey), unlockKeyVersion: 1
       })).statusCode).toBe(201);
       const inbox = await generateVaultTransportKey();
-      await as("PUT", "/api/space-vault/inbox", { publicKey: b64.encode(inbox.publicKey), privateKeyEnvelope: await sealVaultEnvelope(vrk, inbox.privateKey, { ...scope, purpose: "INBOX_KEY" }) });
+      await as("PUT", "/api/space-vault/inbox", await signed(vaultId, "inbox", { publicKey: b64.encode(inbox.publicKey), privateKeyEnvelope: await sealVaultEnvelope(vrk, inbox.privateKey, { ...scope, purpose: "INBOX_KEY" }),
+        epoch: (await as("GET", "/api/space-vault/state")).json().vault.epoch }, unlockKey.privateKey));
       const handle = newVaultHandle("vault_item");
       const dek = vaultRandomBytes(32);
       const itemScope = { ...scope, itemId: handle };
@@ -370,4 +375,55 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       await harness.app.close();
     }
   });
+  it("delegates thousands of logins through the API and the real broker, and agents list them all (no count limit, operator rule 2026-10-20)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "space-vault-e2e-"));
+    roots.push(root);
+    const core = await createVaultBroker({ ark: vaultRandomBytes(32), stateDir: join(root, "state") });
+    const server = createVaultBrokerHttpServer(core);
+    await new Promise<void>((resolve) => server.listen(join(root, "broker.sock"), resolve));
+    closers.push(() => server.close());
+    const harness = await fixture({ broker: createSocketVaultBroker(join(root, "broker.sock")) });
+    try {
+      const alice = await harness.session({ id: owner, email: "alice@space.local", role: "OPERATOR" });
+      const as = (method: "GET" | "PUT" | "POST", url: string, payload?: unknown) => harness.app.inject({ method, url, headers: alice.headers, payload: payload as never });
+      const vaultId = newVaultHandle("vault");
+      const scope = { ownerUserId: owner, vaultId, keyVersion: 1 };
+      const { passwordShare, serverShare } = splitVaultRootKey(vaultRandomBytes(32));
+      const unlockKey = await generateVaultSigningKey();
+      const kdfParams = { ...VAULT_KDF_DEFAULTS, salt: b64.encode(vaultRandomBytes(16)) };
+      const transport = (await as("GET", "/api/space-vault/broker")).json();
+      expect((await as("POST", "/api/space-vault/enroll", {
+        vaultId, kdf: kdfParams, passwordEnvelope: await sealPasswordEnvelope(kdf, PASSWORD, kdfParams, { passwordShare, unlockPrivateKey: unlockKey.privateKey }, scope),
+        sealedServerShare: await sealToVaultPublicKey(b64.decode(transport.publicKey), serverShare, scope), unlockPublicKey: b64.encode(unlockKey.publicKey), unlockKeyVersion: 1
+      })).statusCode).toBe(201);
+      expect((await as("PUT", "/api/space-vault/agent-access", { enabled: true })).statusCode).toBe(200);
+      // A large Chrome import: well past the old 200 cap and the API's default 1 MiB body.
+      const fillKey = vaultRandomBytes(32);
+      const envelope = await sealVaultEnvelope(fillKey, new TextEncoder().encode(SENTINEL), { ...scope, purpose: "FILL_FIELD", field: "PASSWORD", generation: 1 });
+      const items = [];
+      const fillEnvelopes: Record<string, { PASSWORD: typeof envelope }> = {};
+      for (let index = 0; index < 2_000; index += 1) {
+        const handle = newVaultHandle("vault_item");
+        const origin = `https://site-${index}.example`;
+        await harness.repository!.saveItem(owner, { metadata: { id: handle, label: `Synthetic ${index}`, origins: [origin], fieldRoles: ["PASSWORD"], status: "ACTIVE",
+          policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 60, acceptedOriginRisks: [] } }, keyVersion: 1, history: [], dekEnvelope: envelope, fields: { PASSWORD: envelope } } as never);
+        items.push({ handle, origins: [origin], fields: ["PASSWORD" as const], approvalMode: "FULL" as const, submit: true });
+        fillEnvelopes[handle] = { PASSWORD: envelope };
+      }
+      const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+      const operatorSignature = await signVaultMessage(unlockKey.privateKey, vaultDelegationOperatorMessage({ ownerUserId: owner, vaultId, envelopeDigest: await vaultDigest(fillEnvelopes),
+        generation: 1, unlockEpoch: 1, expiresAt, items }));
+      const delegated = await as("POST", "/api/space-vault/delegations", { items, fillEnvelopes, generation: 1, unlockEpoch: 1, expiresAt, operatorSignature,
+        sealedFillKey: await sealToVaultPublicKey(b64.decode(transport.publicKey), fillKey, scope) });
+      expect(delegated.json()).toEqual({ generation: 1 });
+      const room = (await as("POST", "/api/rooms", { name: "E2E many", initialPaneCount: 0 })).json();
+      const pane = harness.store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+      const cli = harness.store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING", purpose: "NORMAL" });
+      const token = issueCliBrowserBridgeToken(harness.config, { roomId: room.id, paneId: pane.id, cliSessionId: cli.sessionId })!;
+      const listed = (await harness.app.inject({ method: "POST", url: "/api/cli/space-vault/list", headers: { [cliBrowserBridgeTokenHeader]: token, "content-type": "application/json" }, payload: {} })).json();
+      expect(listed.items).toHaveLength(2_000);
+    } finally {
+      await harness.app.close();
+    }
+  }, 60_000);
 });

@@ -24,6 +24,7 @@ import {
   AgentFiles
 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
+import { agentFileName } from "./agent-files-api.js";
 import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { setArtifactDragData } from "../artifacts/artifact-drag.js";
 import { FileInfoDialog } from "../file-info/FileInfoDialog.js";
@@ -154,11 +155,7 @@ function metadataString(artifact: Artifact, key: string): string | null {
 }
 
 function artifactFilename(artifact: Artifact): string {
-  return (
-    metadataString(artifact, "originalFilename") ??
-    metadataString(artifact, "storedFilename") ??
-    `agent-file-${artifact.id}`
-  );
+  return agentFileName(artifact) ?? `agent-file-${artifact.id}`;
 }
 
 function previewKindFor(artifact: Artifact): AgentFilePreviewKind {
@@ -224,15 +221,24 @@ function mergeAgentFiles(current: Artifact[], incoming: Artifact[]): Artifact[] 
   return sortAgentFiles(Array.from(byId.values()));
 }
 
-function agentFileEntries(artifacts: Artifact[], paneTitles?: Readonly<Record<string, string>>): AgentFileEntry[] {
-  return sortAgentFiles(artifacts).filter(isAgentFileArtifact).map((artifact) => ({
+function agentFileEntry(artifact: Artifact, paneTitles?: Readonly<Record<string, string>>): AgentFileEntry {
+  return {
     artifact,
     filename: artifactFilename(artifact),
     previewKind: previewKindFor(artifact),
     provenance: agentFileProvenance(artifact, paneTitles),
     timestamp: formatTimestamp(artifact.createdAt),
     size: formatBytes(artifact.byteSize)
-  }));
+  };
+}
+
+function agentFileEntries(artifacts: Artifact[], paneTitles?: Readonly<Record<string, string>>): AgentFileEntry[] {
+  return sortAgentFiles(artifacts).filter(isAgentFileArtifact).map((artifact) => agentFileEntry(artifact, paneTitles));
+}
+
+// The folder rows hide their scrollbar, so a plain mouse wheel scrolls them sideways.
+function scrollTabsSideways(event: React.WheelEvent<HTMLElement>) {
+  if (!event.deltaX) event.currentTarget.scrollLeft += event.deltaY;
 }
 
 function smartFolder(id: string): FolderDef | undefined {
@@ -294,6 +300,16 @@ export function getAssignedFolder(artifact: Artifact, folderMap: Record<string, 
     return normalizeFolderPath(metaFolder.trim());
   }
   return null;
+}
+
+/** Every folder Agent Files knows (its folders, the dock's own and the files', with their parents), for folder pickers elsewhere. */
+export function knownAgentFileFolders(artifacts: Artifact[]): string[] {
+  const folders = new Set(SMART_FOLDERS.filter((folder) => folder.id !== "ALL" && folder.id !== "UPLOADS").map((folder) => folder.id));
+  const folderMap = getStoredFolderMap();
+  for (const path of [...getStoredCustomFolders(), ...artifacts.map((artifact) => getAssignedFolder(artifact, folderMap) ?? "")]) {
+    for (let current: string | null = normalizeFolderPath(path); current; current = getParentFolderPath(current)) folders.add(current);
+  }
+  return [...folders].sort((left, right) => left.localeCompare(right));
 }
 
 // Agent Files are shared by every room: one list, one cache and one set of folders.
@@ -557,6 +573,188 @@ function kindIcon(kind: AgentFilePreviewKind) {
   return File;
 }
 
+/** Downloads an Agent File after checking its size, type and SHA-256 against the record. */
+async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
+  const savePicker = windowsAgentFileSavePicker(entry);
+  let fileHandle: AgentFileHandle | null = null;
+  if (savePicker) {
+    try {
+      fileHandle = await savePicker({
+        suggestedName: entry.filename,
+        types: [{
+          description: "Microsoft Word document",
+          accept: { [entry.artifact.mimeType]: [".docx"] }
+        }]
+      });
+    } catch (pickerError) {
+      if (pickerError instanceof DOMException && pickerError.name === "AbortError") return;
+      throw pickerError;
+    }
+  }
+
+  const response = await fetch(api.agentFileDownloadUrl(entry.artifact.id), {
+    credentials: "same-origin",
+    headers: { accept: entry.artifact.mimeType }
+  });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  const contentLengthHeader = response.headers.get("content-length");
+  const contentEncoding = response.headers.get("content-encoding");
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    contentLengthHeader !== null
+    && !contentEncoding
+    && Number(contentLengthHeader) !== entry.artifact.byteSize
+  ) {
+    throw new Error("Download size verification failed.");
+  }
+  if (contentType !== entry.artifact.mimeType.toLowerCase()) {
+    throw new Error("Download type verification failed.");
+  }
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength !== entry.artifact.byteSize) {
+    throw new Error("Downloaded file is incomplete.");
+  }
+  const digest = bytesToHex(await crypto.subtle.digest("SHA-256", buffer));
+  if (digest !== entry.artifact.sha256.toLowerCase()) {
+    throw new Error("Download integrity verification failed.");
+  }
+
+  const blob = new Blob([buffer], { type: entry.artifact.mimeType });
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return;
+  }
+
+  const spaceNative = (window as unknown as { SpaceNative?: { saveFile?: (b64: string, name: string, mime: string) => boolean } }).SpaceNative;
+  if (typeof spaceNative?.saveFile === "function") {
+    const base64 = await blobToBase64(blob);
+    const saved = spaceNative.saveFile(base64, entry.filename, entry.artifact.mimeType);
+    if (saved) return;
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = entry.filename;
+  anchor.rel = "noopener";
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+/** The Agent Files preview. CLI panes open it over the pane for a file an agent names (AgentFileLinks.tsx). */
+export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
+  artifact: Artifact;
+  paneTitles?: Readonly<Record<string, string>>;
+  onClose: () => void;
+}) {
+  const entry = useMemo(() => agentFileEntry(artifact, paneTitles), [artifact, paneTitles]);
+  const [textPreview, setTextPreview] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const previewUrl = api.agentFilePreviewUrl(entry.artifact.id);
+
+  useEffect(() => {
+    setTextPreview(null);
+    setPreviewError(null);
+    if (entry.previewKind !== "TEXT") return;
+    let live = true;
+    fetch(previewUrl, { credentials: "same-origin", headers: { accept: "text/plain" } })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+        return response.text();
+      })
+      .then(
+        (content) => { if (live) setTextPreview(content); },
+        (previewLoadError: unknown) => { if (live) setPreviewError(previewLoadError instanceof Error ? previewLoadError.message : "Preview failed"); }
+      );
+    return () => { live = false; };
+  }, [entry.previewKind, previewUrl]);
+
+  // The dock's own Escape handler stops the event first; outside the dock this one closes the preview.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function download() {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      await saveAgentFile(entry);
+    } catch (failure) {
+      setDownloadError(failure instanceof Error ? failure.message : "The file could not be downloaded.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  function previewBody() {
+    if (entry.previewKind === "IMAGE") {
+      return <img src={previewUrl} alt={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "VIDEO") {
+      return <video src={previewUrl} controls playsInline preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "AUDIO") {
+      return <audio src={previewUrl} controls preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "PDF") {
+      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "DOCX") {
+      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} sandbox="" />;
+    }
+    if (entry.previewKind === "TEXT") {
+      if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
+      if (textPreview === null) return <div className="agent-files-preview-note" role="status">Loading preview…</div>;
+      return <pre className="agent-files-text-preview">{textPreview}</pre>;
+    }
+    return (
+      <div className="agent-files-preview-note">
+        <File aria-hidden="true" />
+        <strong>Preview is not available for this file type.</strong>
+        <small>You can still download the original file.</small>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="attachment-modal agent-files-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${entry.filename}`}
+      onClick={onClose}
+    >
+      <div className="attachment-modal-body agent-files-modal-body is-preview" onClick={(event) => event.stopPropagation()}>
+        <div className="agent-files-modal-head">
+          <div className="agent-files-modal-heading">
+            <span className="dock-kit-card-title" data-sensitive-masked="manual" title={entry.filename}>{entry.filename}</span>
+            <span className="dock-kit-meta-text">{entry.provenance} · {entry.timestamp} · {entry.size}</span>
+            {downloadError ? <DockNotice onDismiss={() => setDownloadError(null)}>{downloadError}</DockNotice> : null}
+          </div>
+          <div className="agent-files-modal-actions">
+            <DockIconButton
+              label={`Download ${entry.filename}`}
+              title={`Download and verify ${entry.filename}`}
+              icon={Download}
+              busy={downloading}
+              disabled={downloading}
+              onClick={() => void download()}
+            />
+            <DockIconButton label="Close Agent File preview" icon={X} autoFocus onClick={onClose} />
+          </div>
+        </div>
+        <div className="agent-files-modal-preview">{previewBody()}</div>
+      </div>
+    </div>
+  );
+}
+
 export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: AgentFilesDockProps) {
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();
@@ -570,9 +768,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   const [clearingAll, setClearingAll] = useState(false);
   const [isFullscreen, setIsFullscreen] = useDockFullscreen();
   const [selected, setSelected] = useState<AgentFileEntry | null>(null);
-  const [textPreview, setTextPreview] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -613,7 +808,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   });
 
   const loadSequence = useRef(0);
-  const previewSequence = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const activeRoomId = useRef<string | null>(activeRoom?.id ?? null);
@@ -850,9 +1044,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setArtifacts(getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY));
     setHasLoaded(sharedFilesLoaded());
     setSelected(null);
-    setTextPreview(null);
-    setPreviewError(null);
-    setPreviewLoading(false);
     setLoading(false);
     setLoadError(null);
     setError(null);
@@ -873,7 +1064,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     if (!activeRoom) setIsFullscreen(false);
     return () => {
       loadSequence.current += 1;
-      previewSequence.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id]);
@@ -1078,35 +1268,11 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   }
 
   function closePreview() {
-    previewSequence.current += 1;
     setSelected(null);
-    setTextPreview(null);
-    setPreviewLoading(false);
-    setPreviewError(null);
   }
 
-  async function openPreview(entry: AgentFileEntry) {
-    const sequence = ++previewSequence.current;
+  function openPreview(entry: AgentFileEntry) {
     setSelected(entry);
-    setTextPreview(null);
-    setPreviewError(null);
-    setPreviewLoading(entry.previewKind === "TEXT");
-    if (entry.previewKind !== "TEXT") return;
-    try {
-      const response = await fetch(api.agentFilePreviewUrl(entry.artifact.id), {
-        credentials: "same-origin",
-        headers: { accept: "text/plain" }
-      });
-      if (!response.ok) throw new Error(`Preview failed (${response.status})`);
-      const content = await response.text();
-      if (sequence !== previewSequence.current) return;
-      setTextPreview(content);
-    } catch (previewLoadError) {
-      if (sequence !== previewSequence.current) return;
-      setPreviewError(previewLoadError instanceof Error ? previewLoadError.message : "Preview failed");
-    } finally {
-      if (sequence === previewSequence.current) setPreviewLoading(false);
-    }
   }
 
   async function deleteAgentFile(entry: AgentFileEntry) {
@@ -1134,72 +1300,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setDownloadingId(entry.artifact.id);
     setError(null);
     try {
-      const savePicker = windowsAgentFileSavePicker(entry);
-      let fileHandle: AgentFileHandle | null = null;
-      if (savePicker) {
-        try {
-          fileHandle = await savePicker({
-            suggestedName: entry.filename,
-            types: [{
-              description: "Microsoft Word document",
-              accept: { [entry.artifact.mimeType]: [".docx"] }
-            }]
-          });
-        } catch (pickerError) {
-          if (pickerError instanceof DOMException && pickerError.name === "AbortError") return;
-          throw pickerError;
-        }
-      }
-
-      const response = await fetch(api.agentFileDownloadUrl(entry.artifact.id), {
-        credentials: "same-origin",
-        headers: { accept: entry.artifact.mimeType }
-      });
-      if (!response.ok) throw new Error(`Download failed (${response.status})`);
-      const contentLengthHeader = response.headers.get("content-length");
-      const contentEncoding = response.headers.get("content-encoding");
-      const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-      if (
-        contentLengthHeader !== null
-        && !contentEncoding
-        && Number(contentLengthHeader) !== entry.artifact.byteSize
-      ) {
-        throw new Error("Download size verification failed.");
-      }
-      if (contentType !== entry.artifact.mimeType.toLowerCase()) {
-        throw new Error("Download type verification failed.");
-      }
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength !== entry.artifact.byteSize) {
-        throw new Error("Downloaded file is incomplete.");
-      }
-      const digest = bytesToHex(await crypto.subtle.digest("SHA-256", buffer));
-      if (digest !== entry.artifact.sha256.toLowerCase()) {
-        throw new Error("Download integrity verification failed.");
-      }
-
-      const blob = new Blob([buffer], { type: entry.artifact.mimeType });
-      if (fileHandle) {
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        return;
-      }
-
-      const spaceNative = (window as unknown as { SpaceNative?: { saveFile?: (b64: string, name: string, mime: string) => boolean } }).SpaceNative;
-      if (typeof spaceNative?.saveFile === "function") {
-        const base64 = await blobToBase64(blob);
-        const saved = spaceNative.saveFile(base64, entry.filename, entry.artifact.mimeType);
-        if (saved) return;
-      }
-
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = entry.filename;
-      anchor.rel = "noopener";
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      await saveAgentFile(entry);
     } catch (downloadError) {
       setError(downloadError instanceof Error ? downloadError.message : "The file could not be downloaded.");
     } finally {
@@ -1276,37 +1377,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     void uploadFiles(Array.from(event.dataTransfer.files));
   }
 
-  function previewBody(entry: AgentFileEntry) {
-    const previewUrl = api.agentFilePreviewUrl(entry.artifact.id);
-    if (entry.previewKind === "IMAGE") {
-      return <img src={previewUrl} alt={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "VIDEO") {
-      return <video src={previewUrl} controls playsInline preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "AUDIO") {
-      return <audio src={previewUrl} controls preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "PDF") {
-      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "DOCX") {
-      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} sandbox="" />;
-    }
-    if (entry.previewKind === "TEXT") {
-      if (previewLoading) return <div className="agent-files-preview-note" role="status">Loading preview…</div>;
-      if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
-      return <pre className="agent-files-text-preview">{textPreview ?? ""}</pre>;
-    }
-    return (
-      <div className="agent-files-preview-note">
-        <File aria-hidden="true" />
-        <strong>Preview is not available for this file type.</strong>
-        <small>You can still download the original file.</small>
-      </div>
-    );
-  }
-
   function folderOptionGroups() {
     return (
       <>
@@ -1380,7 +1450,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         {activeRoom ? (
           <div ref={foldersRef} className="dock-kit-controls agent-files-controls">
             <div className="agent-files-folders">
-              <div className="agent-files-folder-tabs" role="tablist" aria-label="Agent Files Folders">
+              <div className="agent-files-folder-tabs" role="tablist" aria-label="Agent Files Folders" onWheel={scrollTabsSideways}>
                 {SMART_FOLDERS.map((folder) => {
                   const isSelected = activeFolder === folder.id || activeRootFolder === folder.id;
                   const Icon = folder.id === "GRAPHICS" ? Images : folder.id === "DOCUMENTS" ? FileText : folder.id === "ALL" ? FolderOpen : Folder;
@@ -1434,12 +1504,12 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 title={activeFolder === "ALL" ? "Create a new folder" : `Create a folder inside ${getFolderDisplayPath(activeFolder)}`}
                 onClick={openNewFolderModal}
               >
-                New folder
+                <span className="agent-files-new-folder-label">New folder</span>
               </DockButton>
             </div>
 
             {activeRootFolder !== "ALL" && subfoldersForActiveRoot.length > 0 ? (
-              <div className="agent-files-folder-tabs is-sub" role="tablist" aria-label="Agent Files Subfolders">
+              <div className="agent-files-folder-tabs is-sub" role="tablist" aria-label="Agent Files Subfolders" onWheel={scrollTabsSideways}>
                 <button
                   type="button"
                   role="tab"
@@ -1708,7 +1778,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 </button>
 
                 <div className="agent-files-item-body">
-                  <div className="dock-kit-card-title" title={entry.filename}>{entry.filename}</div>
+                  <div className="dock-kit-card-title" data-sensitive-masked="manual" title={entry.filename}>{entry.filename}</div>
                   <div className="dock-kit-meta">
                     <span className="dock-kit-meta-text" title={entry.provenance}>{entry.provenance}</span>
                   </div>
@@ -1771,36 +1841,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
           onChange={(event) => void uploadFiles(Array.from(event.target.files ?? []))}
         />
 
-        {selected ? (
-          <div
-            className="attachment-modal agent-files-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Preview ${selected.filename}`}
-            onClick={closePreview}
-          >
-            <div className="attachment-modal-body agent-files-modal-body is-preview" onClick={(event) => event.stopPropagation()}>
-              <div className="agent-files-modal-head">
-                <div className="agent-files-modal-heading">
-                  <span className="dock-kit-card-title" title={selected.filename}>{selected.filename}</span>
-                  <span className="dock-kit-meta-text">{selected.provenance} · {selected.timestamp} · {selected.size}</span>
-                </div>
-                <div className="agent-files-modal-actions">
-                  <DockIconButton
-                    label={`Download ${selected.filename}`}
-                    title={`Download and verify ${selected.filename}`}
-                    icon={Download}
-                    busy={downloadingId === selected.artifact.id}
-                    disabled={downloadingId === selected.artifact.id}
-                    onClick={() => void downloadAgentFile(selected)}
-                  />
-                  <DockIconButton label="Close Agent File preview" icon={X} autoFocus onClick={closePreview} />
-                </div>
-              </div>
-              <div className="agent-files-modal-preview">{previewBody(selected)}</div>
-            </div>
-          </div>
-        ) : null}
+        {selected ? <AgentFilePreviewDialog artifact={selected.artifact} paneTitles={paneTitles} onClose={closePreview} /> : null}
 
         {detailsEntry ? <FileInfoDialog artifactId={detailsEntry.artifact.id} filename={detailsEntry.filename} onClose={() => setDetailsEntry(null)} /> : null}
 

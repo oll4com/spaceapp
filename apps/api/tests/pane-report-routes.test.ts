@@ -42,6 +42,10 @@ describe("CLI progress bridge", () => {
         needs: "Greece or Thailand; I recommend Greece", report: "full text" });
       expect(created.statusCode).toBe(201);
       expect(created.json()).toMatchObject({ status: "NEEDS_DECISION", summary: "Deploy with Authorization: Bearer [REDACTED]?" });
+      // needs-you (operator request 2026-10-24): the status every CLI calls the operator with.
+      const asked = await post(andy.headers, { status: "needs-you", summary: "Check the invoice before I send it", needs: "Approve or change" });
+      expect(asked.statusCode).toBe(201);
+      expect(asked.json()).toMatchObject({ status: "NEEDS_YOU" });
       // The pane comes from the token: a body cannot name another pane, and caps and formats are enforced.
       for (const payload of [
         { status: "done", summary: "x", paneId: bob.pane.id },
@@ -53,7 +57,7 @@ describe("CLI progress bridge", () => {
         { status: "done", summary: "x", ticket: "1234" },
         { status: "done", summary: "x", percent: 101 }
       ]) expect((await post(andy.headers, payload)).statusCode, JSON.stringify(payload).slice(0, 80)).toBe(422);
-      for (let index = 1; index < 30; index += 1) expect((await post(andy.headers, { status: "progress", summary: `step ${index}` })).statusCode).toBe(201);
+      for (let index = 2; index < 30; index += 1) expect((await post(andy.headers, { status: "progress", summary: `step ${index}` })).statusCode).toBe(201);
       expect((await post(andy.headers, { status: "progress", summary: "one too many" })).statusCode).toBe(429);
       // Another pane has its own budget; a stopped CLI's token reports nothing.
       expect((await post(bob.headers, { status: "started", summary: "Bob starts" })).statusCode).toBe(201);

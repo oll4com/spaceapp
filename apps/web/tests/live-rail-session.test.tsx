@@ -83,6 +83,16 @@ describe("persistent rail Live ownership", () => {
     expect(view.container.querySelector(".live-rail-caption")).toBeNull();
     expect(localStorage.getItem("space.liveRail.captionsDisabled.v1")).toBe("true");
   });
+  it("does not reconnect Live left on by itself inside the phone app (Android bridge), but one tap does", async () => {
+    localStorage.setItem("space.live.coordinator.v2:owner:a", JSON.stringify({ enabled: true, muted: true }));
+    Object.defineProperty(window, "SpaceNative", { value: {}, configurable: true });
+    try {
+      render(surface()); await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+      expect(openLiveConversationSession).not.toHaveBeenCalled();
+      await act(async () => { dispatch(); });
+      expect(openLiveConversationSession).toHaveBeenCalledTimes(1); expect(handle.setMuted).toHaveBeenCalledWith(true);
+    } finally { delete (window as { SpaceNative?: unknown }).SpaceNative; }
+  });
   it("disconnects and clears visible private history on an owner change", async () => {
     const view = render(surface()); await act(async () => { dispatch(); });
     act(() => { callbacks.onTranscriptUpdate?.({ id: "private", role: "user", text: "owner one", timestamp: "" }); dispatch("space-live-rail-conversation-toggle"); });

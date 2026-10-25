@@ -108,6 +108,10 @@ export const hostSecretEntries = ["google-oauth.json", "telegram"];
 // dumped with the app database so a restore brings back workflow histories of the same moment.
 export const temporalDatabases = ["temporal", "temporal_visibility"];
 export const requiredBackupFiles = ["database.dump", "data.tar.gz", "memory.tar.gz"];
+// The writers are paused during the dumps: a paused process that holds a table lock would block pg_dump, and with it the
+// whole installation, without end. pg_dump gives up after two minutes of waiting for a lock instead; the backup then fails
+// and the launcher resumes the writers (1.1.7 review, Claude T1).
+export const dumpLockWait = "--lock-wait-timeout=120000";
 export const optionalBackupFiles = temporalDatabases.map((name) => `${name}.dump`);
 
 export async function createPortableBackup({
@@ -136,6 +140,7 @@ export async function createPortableBackup({
       "--format=custom",
       "--no-owner",
       "--no-acl",
+      dumpLockWait,
       `--file=${databaseDump}`,
       ...database.args
     ], { env: postgresEnv });
@@ -149,6 +154,7 @@ export async function createPortableBackup({
         "--format=custom",
         "--no-owner",
         "--no-acl",
+        dumpLockWait,
         `--file=${join(target, `${name}.dump`)}`,
         `--dbname=${name}`
       ], { env: { ...postgresEnv, PGDATABASE: name } });

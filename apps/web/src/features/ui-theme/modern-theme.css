@@ -808,7 +808,6 @@
 .space-shell[data-ui-theme="modern"] :where(
   .browser-url-form svg,
   .browser-tools-menu-label,
-  .browser-bookmark-list > span,
   .browser-recording-progress > div,
   .browser-debug-body,
   .browser-debug-entry time,
@@ -841,12 +840,6 @@
   border-color: var(--modern-accent);
   background: var(--modern-accent-soft);
   color: var(--modern-accent);
-}
-
-.space-shell[data-ui-theme="modern"] .browser-bookmark-popover a.browser-bookmark-command {
-  border-color: var(--modern-border);
-  background: var(--modern-surface);
-  color: var(--modern-text);
 }
 
 .space-shell[data-ui-theme="modern"] :where(.browser-frame-shell, .browser-persisted-recording video) {
@@ -1027,7 +1020,7 @@
   color: var(--modern-accent);
 }
 
-.space-shell[data-ui-theme="modern"] :is(.memory-workspace-error, .memory-graph-error-state, .memory-graph-boundary-message, .memory-node-action-message.is-error, .memory-change-warning, .room-agent-error, .form-error, :where([role="alert"]:not([class*="dock-kit-"]))) {
+.space-shell[data-ui-theme="modern"] :is(.memory-workspace-error, .memory-graph-error-state, .memory-graph-boundary-message, .memory-node-action-message.is-error, .memory-change-warning, .room-agent-error, .form-error, :where([role="alert"]:not([class*="dock-kit-"], .nous-focus-banner))) {
   border-color: var(--modern-danger);
   background: var(--modern-danger-soft);
   color: var(--modern-danger);

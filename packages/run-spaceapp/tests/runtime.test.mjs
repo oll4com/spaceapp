@@ -176,3 +176,21 @@ test("workspace override renders explicit bind mounts without Docker socket acce
   assert.match(compose, /target: "\/workspaces\/project"/);
   assert.doesNotMatch(compose, /docker\.sock/);
 });
+
+test("the CLI settings export skips tar when no settings file exists yet (1.1.8: no 'empty archive' noise in backup)", {
+  skip: process.platform === "win32" ? "runs the container's POSIX shell script" : false
+}, async () => {
+  const { execFileSync, spawnSync } = await import("node:child_process");
+  const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+  const args = composeCommand("exportCliSettings", home).args;
+  const script = args[args.indexOf("-c") + 1];
+  const providers = await mkdtemp(join(tmpdir(), "spaceapp-cli-settings-"));
+  const local = script.replace("/var/lib/spaceapp-cli/providers", providers);
+  const none = spawnSync("sh", ["-c", local], { encoding: "utf8" });
+  assert.equal(none.status, 3);
+  assert.equal(none.stderr, "");
+  await mkdir(join(providers, "codex"));
+  await writeFile(join(providers, "codex", "config.toml"), "model = \"x\"\n");
+  const listed = execFileSync("sh", ["-c", `${local} | tar -tzf -`], { encoding: "utf8" });
+  assert.equal(listed.trim(), "codex/config.toml");
+});

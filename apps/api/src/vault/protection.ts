@@ -4,6 +4,7 @@ import type { PostgresVaultRepository, VaultFillTarget } from "@space/db";
 import { cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "../cli-browser-bridge.js";
 import type { SpaceApiConfig } from "../config.js";
 import { sendApiError } from "../http-errors.js";
+import { SpaceConflictError } from "@space/runtime";
 
 // Vault protected panes (ADR-012; automatic since operator decision 2026-10-18, plan clipboard:Ml8zElMcc4Ac). Each agent or
 // Nous fill protects the browser it fills: one hook fences every generic read of it, so the filled value can never be read
@@ -117,6 +118,19 @@ const paneBrowserRoute = /^\/api\/panes\/:id\/browser(\/|$)/;
 const ownerRefused = /^\/api\/panes\/:id\/browser\/(captures|diagnostics)(\/|$)/;
 const cliBrowserRoutes = new Set(["/api/cli/browser/actions", "/api/cli/browser/commands", "/api/cli/browser/cdp", "/api/cli/browser/cdp/status", "/api/cli/browser/context"]);
 const interactionActions = new Set(["navigate", "click", "type", "scroll", "set_viewport", "press"]);
+// The operator handoff stays open under a fence (2026-10-22, Nous decision): a human check or CAPTCHA after a fill, before
+// Submit. Its answers are handoff and lease records only, never page content; the fence holds through and after it.
+const handoffCommands = new Set(["REQUEST_HANDOFF", "HANDOFF_STATUS", "CANCEL_HANDOFF", "RECLAIM_CONTROL"]);
+
+/**
+ * The fence for in-process callers that reach a browser without the HTTP routes the hook covers (the Dot gateway, the
+ * internal agent route): an action that returns page content (text, a recording, a capture) is refused while the pane
+ * holds a Vault fill; navigation, clicks, typing and scrolling stay open (1.1.7 review, Codex #4).
+ */
+export async function assertVaultBrowserActionAllowed(protection: Pick<VaultProtection, "ownerOf" | "release">, paneId: string, actionType: string): Promise<void> {
+  if (interactionActions.has(actionType) || !await protection.ownerOf(paneId) || await protection.release(paneId)) return;
+  throw new SpaceConflictError("This browser holds a Vault fill: until it shows the next page, it can only be navigated, clicked, typed into and scrolled.");
+}
 
 export function registerVaultFences(app: FastifyInstance, deps: { protection: VaultProtection; config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret"> }): void {
   const refuse = (reply: FastifyReply, code: "VAULT_PROTECTED_PANE_PRIVATE" | "VAULT_PROTECTED_SESSION_REQUIRED", message: string) =>
@@ -162,10 +176,12 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       if (onlyInteraction) return;
       // Closing a tab stays open, so an agent is never stuck behind the tab that holds the fence; its answer keeps only the
       // remaining tab ids (preSerialization below), never their addresses or titles.
-      if (route === "/api/cli/browser/commands" && (body as { command?: { type?: unknown } }).command?.type === "CLOSE_PAGE") {
+      const commandType = route === "/api/cli/browser/commands" ? (body as { command?: { type?: unknown } }).command?.type : undefined;
+      if (commandType === "CLOSE_PAGE") {
         fencedCloses.add(request);
         return;
       }
+      if (handoffCommands.has(String(commandType))) return;
       let released = true;
       for (const id of protectedPanes) released = await deps.protection.release(id) && released;
       if (released) return;

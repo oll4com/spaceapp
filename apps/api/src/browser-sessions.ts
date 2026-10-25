@@ -72,6 +72,16 @@ interface ViewportSize {
 
 const DEEPSEEK_HARNESS_BROWSER_ORIGIN = "http://10.254.240.21:3080";
 
+/**
+ * Caps a pane profile's HTTP cache at 256 MB and stops Chrome's on-device model downloads: caches were 8.4 of the
+ * 10.9 GB of pane profiles on 2026-10-21 (plan clipboard:LPzoMHnHzK9A F7). One --disable-features only: Chrome
+ * honours the last one, so Vulkan stays in this list.
+ */
+export const PANE_CHROME_STORAGE_ARGS = [
+  "--disk-cache-size=268435456",
+  "--disable-features=Vulkan,OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction,OptimizationGuideOnDeviceModel"
+];
+
 /** Chrome's saved-login stores in a profile (and their SQLite side files). */
 export const CHROME_SAVED_LOGIN_FILES = ["Login Data", "Login Data For Account"]
   .flatMap(store => ["", "-journal", "-wal", "-shm"].map(suffix => store + suffix));
@@ -247,6 +257,8 @@ interface BrowserRuntime {
   accountWork: Promise<unknown>;
   /** Set by a Vault sealed fill: this page keeps no console or network entries from then on (ADR-012). */
   vaultProtected?: boolean;
+  /** The proxy routes this pane needs (a Freelance Copilot's); null: any Chrome of its account. */
+  egressKey: string | null;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -371,6 +383,8 @@ export interface BrowserSessionManager {
    */
   adoptPaneGoogleProfile?(source: PaneProfileSource, context?: BrowserHostActorContext): Promise<PaneProfileAdoptionResult>;
 }
+
+const SCREENCAST = { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 };
 
 const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
   mobile: { width: 390, height: 844, deviceScaleFactor: 2, mobile: true },
@@ -2312,7 +2326,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--use-gl=angle",
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
-        "--disable-features=Vulkan",
+        ...PANE_CHROME_STORAGE_ARGS,
         ...(egress?.args ?? []),
         "about:blank"
       ],
@@ -2705,13 +2719,16 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       await closeProfile(profile, session.profilePath);
       profile = undefined;
     }
-    // A Freelance Copilot pane only joins a Chrome started with its own routes: an idle one restarts with them, one
-    // that another pane uses is refused (the pane would otherwise leave from the wrong country).
+    // A Freelance Copilot pane only joins a Chrome started with its own routes (else it leaves from the wrong country):
+    // the account's Chrome restarts with them and the panes sharing the account come back on it with their tabs.
+    // Another Freelance pane's routes are refused: two route sets would restart each other's Chrome in turn.
     let egress: Awaited<ReturnType<typeof egressFor>> = null;
+    let moved: string[] = [];
     try {
       egress = await egressFor(session.paneId);
       if (egress && profile && (profile.egressKey ?? null) !== egress.key) {
-        if (profile.members.size) throw new SpaceConflictError("FREELANCE_EGRESS: this browser account is open in another pane without the Freelance Copilot's routes; close it there or give the Freelance Copilot its own browser account.");
+        if ([...profile.members].some(member => member.egressKey)) throw new SpaceConflictError("FREELANCE_EGRESS: another Freelance Copilot pane uses this browser account with other routes; close it there or give this Freelance Copilot another browser account.");
+        moved = [...runtimes].filter(([, member]) => member.profile === profile).map(([id]) => id);
         await closeProfile(profile, session.profilePath);
         profile = undefined;
       }
@@ -2732,13 +2749,15 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         pageSessions: new Map(),
         consoleEntries: [],
         networkEntries: [],
-        streamSubscribers: new Map(),
+        // The live views of the Chrome this one replaces (a crash, a restart onto Freelance routes) stream from it.
+        streamSubscribers: stale?.streamSubscribers ?? new Map(),
         screencastActive: false,
         streamSequence: 0,
         detachDiagnostics: () => undefined,
         accountTabs: new Map(),
         pageProfiles: new Map(),
-        accountWork: Promise.resolve()
+        accountWork: Promise.resolve(),
+        egressKey: egress?.key ?? null
       };
       profile.members.add(runtime);
       runtime.targetId = await createOwnedPage(runtime, "about:blank");
@@ -2757,6 +2776,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         await createOwnedPage(runtime, url, true);
       }
       runtimes.set(session.sessionId, runtime);
+      if (runtime.streamSubscribers.size && capacity.acquireLive(`stream:${session.sessionId}`, capacity.maxSessions)) {
+        try {
+          await client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
+          runtime.screencastActive = true;
+        } catch { capacity.releaseLive(`stream:${session.sessionId}`); }
+      }
+      // They wait for this profile lock, so they join this Chrome.
+      for (const id of moved) void Promise.resolve(store.getPaneBrowserSession(id)).then(other => other?.isActive ? ensureRuntime(other) : undefined).catch(() => undefined);
       scheduleGoogleAccountCheck(session.profilePath, 6_000, googleCheckStaleMs);
       return runtime;
     } catch (error) {
@@ -2797,11 +2824,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     runtime.streamSubscribers.set(id, { id, profile, lastSentAt: 0, onFrame });
     try {
       if (!runtime.screencastActive) {
-        await runtime.client.send(
-          "Page.startScreencast",
-          { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
-          runtime.cdpSessionId
-        );
+        await runtime.client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
         runtime.screencastActive = true;
       }
     } catch (error) {
@@ -2816,14 +2839,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       async stop() {
         if (stopped) return;
         stopped = true;
-        runtime.streamSubscribers.delete(id);
-        if (runtime.streamSubscribers.size || !runtime.screencastActive) return;
-        runtime.screencastActive = false;
+        // A relaunched Chrome's runtime took this stream over (same subscribers) and stops its screencast.
+        const live = runtimes.get(sessionId);
+        const current = live?.streamSubscribers === runtime.streamSubscribers ? live : runtime;
+        current.streamSubscribers.delete(id);
+        if (current.streamSubscribers.size || !current.screencastActive) return;
+        current.screencastActive = false;
         // A runtime that was replaced after a crash (or stopped) already gave up
         // this session's slot; it now belongs to the replacement's stream.
-        if (runtimes.get(sessionId) !== runtime) return;
+        if (runtimes.get(sessionId) !== current) return;
         capacity.releaseLive(workloadKey);
-        await runtime.client.send("Page.stopScreencast", {}, runtime.cdpSessionId).catch(() => undefined);
+        await current.client.send("Page.stopScreencast", {}, current.cdpSessionId).catch(() => undefined);
         void pumpCaptureQueue();
       }
     };
@@ -2983,11 +3009,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await setViewport(runtime, session.viewport, runtime.viewportDimensions);
     await runtime.client.send("Target.activateTarget", { targetId: pageId });
     if (wasStreaming && runtime.streamSubscribers.size) {
-      await runtime.client.send(
-        "Page.startScreencast",
-        { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
-        runtime.cdpSessionId
-      );
+      await runtime.client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
     }
   }
 

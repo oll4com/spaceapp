@@ -2,6 +2,7 @@ import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import type { BrowserControlLease, PaneBrowserSession } from "@space/contracts";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
+import { browserAgentOf, type BrowserControlActivity } from "./browser-control-activity.js";
 import type { BrowserSessionManager } from "./browser-sessions.js";
 import { sendApiError } from "./http-errors.js";
 import { vaultFencedTargets } from "./vault/fence-hooks.js";
@@ -75,17 +76,20 @@ export async function browserCensus(deps: {
   operatorIdleMs?: (lease: Pick<BrowserControlLease, "leaseId" | "acquiredAt">) => number;
   fencedTargets?: (paneId: string) => Promise<string[]>;
   geminiEmails?: GeminiEmails;
+  /** The CLI pane that last drove the browser (the frame label's `agent`). */
+  agentOf?: (paneId: string) => Promise<Awaited<ReturnType<typeof browserAgentOf>>>;
 }) {
   const sessions: PaneBrowserSession[] = await deps.store.listActivePaneBrowserSessions();
   const accountEmailOf = await accountEmailResolver(deps.store, deps.geminiEmails);
   const fenced = deps.fencedTargets ?? (async (paneId: string) => vaultFencedTargets(deps.store, paneId));
   const rows = await Promise.all(sessions.map(async (session) => {
-    const [pane, lease, handoff, fence, accountEmail] = await Promise.all([
+    const [pane, lease, handoff, fence, accountEmail, agent] = await Promise.all([
       Promise.resolve(deps.store.getPane(session.paneId)).catch(() => null),
       Promise.resolve(deps.store.getActiveBrowserControlLease(session.sessionId)).catch(() => null),
       Promise.resolve(deps.store.getActiveBrowserHandoffRequest(session.sessionId)).catch(() => null),
       fenced(session.paneId),
-      accountEmailOf(session).catch(() => null)
+      accountEmailOf(session).catch(() => null),
+      deps.agentOf ? deps.agentOf(session.paneId).catch(() => null) : null
     ]);
     const fencedTabs = new Set(fence);
     return {
@@ -107,6 +111,7 @@ export async function browserCensus(deps: {
       } : null,
       handoff: handoff ? { status: handoff.status, requestedAt: handoff.requestedAt } : null,
       fencedTabs: fencedTabs.size,
+      agent,
       startedAt: session.startedAt,
       updatedAt: session.updatedAt,
       lastFrameAt: session.lastFrameAt,
@@ -126,7 +131,8 @@ export async function browserCensus(deps: {
 export function registerBrowserCensusRoutes(app: FastifyInstance, options: {
   store: CensusStore;
   browserSessionManager: Pick<BrowserSessionManager, "status">;
-  controlActivity: { idleMs(lease: Pick<BrowserControlLease, "leaseId" | "acquiredAt">): number };
+  controlActivity: Pick<BrowserControlActivity, "idleMs" | "agentFor">;
+  cdpConnectionCount?: (paneId: string) => number;
   geminiEmails?: GeminiEmails;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
@@ -136,7 +142,8 @@ export function registerBrowserCensusRoutes(app: FastifyInstance, options: {
       store: options.store,
       capacity: () => options.browserSessionManager.status().capacity ?? null,
       operatorIdleMs: (lease) => options.controlActivity.idleMs(lease),
-      geminiEmails: options.geminiEmails
+      geminiEmails: options.geminiEmails,
+      agentOf: (paneId) => browserAgentOf(options.store, options.controlActivity, paneId, (options.cdpConnectionCount?.(paneId) ?? 0) > 0)
     });
   });
 }

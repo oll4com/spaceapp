@@ -49,11 +49,11 @@ export interface ProviderQuotaMetrics {
   activeAccounts5h?: number;
   activeAccountsWeekly?: number;
   pool5h: number;
-  available5h: number;
-  percent5h: number;
+  available5h: number | null;
+  percent5h: number | null;
   poolWeekly: number;
-  availableWeekly: number;
-  percentWeekly: number;
+  availableWeekly: number | null;
+  percentWeekly: number | null;
   accounts: QuotaBreakdownItem[];
 }
 
@@ -76,11 +76,11 @@ export interface AllQuotaAggregates {
   apiProviders: ApiProviderMetrics;
   totalAiPool: {
     pool5h: number;
-    available5h: number;
-    percent5h: number;
+    available5h: number | null;
+    percent5h: number | null;
     poolWeekly: number;
-    availableWeekly: number;
-    percentWeekly: number;
+    availableWeekly: number | null;
+    percentWeekly: number | null;
     totalAccounts: number;
   };
   lastCheckedAt: string | null;
@@ -133,7 +133,7 @@ export function computeQuotaAggregates(
     return {
       id: a.id,
       label: a.label,
-      status: isExceeded ? "QUOTA_EXCEEDED" : "ACTIVE",
+      status: isExceeded ? "QUOTA_EXCEEDED" : a.fiveHourRemainingPercent == null || a.weeklyRemainingPercent == null ? "UNKNOWN" : "ACTIVE",
       tier: a.planType || "plus",
       weight,
       fiveHourPercent: a.fiveHourRemainingPercent,
@@ -165,14 +165,14 @@ export function computeQuotaAggregates(
   const isCodexActive5h = (a: CodexUsageAccount) => {
     const week = a.weeklyRemainingPercent;
     const fiveH = a.fiveHourRemainingPercent;
-    const weekOk = week == null || week >= 1;
-    const fiveHOk = fiveH == null || fiveH >= 1;
+    const weekOk = week != null && week >= 1;
+    const fiveHOk = fiveH != null && fiveH >= 1;
     return weekOk && fiveHOk;
   };
 
   const isCodexActiveW = (a: CodexUsageAccount) => {
     const week = a.weeklyRemainingPercent;
-    return week == null || week >= 1;
+    return week != null && week >= 1;
   };
 
   const codexActive5h = codexAccounts.filter(isCodexActive5h).length;
@@ -185,7 +185,7 @@ export function computeQuotaAggregates(
     activeAccounts: codexActive5h,
     activeAccounts5h: codexActive5h,
     activeAccountsWeekly: codexActiveW,
-    exhaustedAccounts: Math.max(0, codexTotal - codexActive5h),
+    exhaustedAccounts: codexItems.filter(item => item.status === "QUOTA_EXCEEDED").length,
     pool5h: codexPool5h,
     available5h: Math.round(codexAvail5h),
     percent5h: codexPool5h > 0 ? (codexAvail5h / codexPool5h) * 100 : 0,
@@ -202,8 +202,8 @@ export function computeQuotaAggregates(
     if (!group || status === "UNLICENSED" || status === "EXPIRED" || status === "ERROR") return false;
     const week = group.weeklyRemainingPercent;
     const fiveH = group.fiveHourRemainingPercent;
-    const weekOk = week == null || week >= 1;
-    const fiveHOk = fiveH == null || fiveH >= 1;
+    const weekOk = week != null && week >= 1;
+    const fiveHOk = fiveH != null && fiveH >= 1;
     return weekOk && fiveHOk;
   };
 
@@ -213,7 +213,7 @@ export function computeQuotaAggregates(
   ) => {
     if (!group || status === "UNLICENSED" || status === "EXPIRED" || status === "ERROR") return false;
     const week = group.weeklyRemainingPercent;
-    return week == null || week >= 1;
+    return week != null && week >= 1;
   };
 
   // Antigravity Gemini metrics
@@ -225,7 +225,8 @@ export function computeQuotaAggregates(
       const isExceeded =
         (a.gemini?.weeklyRemainingPercent !== null && a.gemini?.weeklyRemainingPercent !== undefined && a.gemini.weeklyRemainingPercent <= 0) ||
         (a.gemini?.fiveHourRemainingPercent !== null && a.gemini?.fiveHourRemainingPercent !== undefined && a.gemini.fiveHourRemainingPercent <= 0);
-      const status = isUnlicensed ? a.status : isExceeded ? "QUOTA_EXCEEDED" : (a.status || "ACTIVE");
+      const status = isUnlicensed ? a.status : isExceeded ? "QUOTA_EXCEEDED" :
+        a.gemini.fiveHourRemainingPercent == null || a.gemini.weeklyRemainingPercent == null ? "UNKNOWN" : (a.status || "ACTIVE");
       return {
         id: `${a.id}-gemini`,
         label: `${a.label || a.email || a.id} (Gemini)`,
@@ -265,7 +266,7 @@ export function computeQuotaAggregates(
     activeAccounts: geminiActive5h,
     activeAccounts5h: geminiActive5h,
     activeAccountsWeekly: geminiActiveW,
-    exhaustedAccounts: Math.max(0, geminiTotal - geminiActive5h),
+    exhaustedAccounts: geminiItems.filter(item => item.status === "QUOTA_EXCEEDED").length,
     pool5h: geminiPool5h,
     available5h: Math.round(geminiAvail5h),
     percent5h: geminiPool5h > 0 ? (geminiAvail5h / geminiPool5h) * 100 : 0,
@@ -284,7 +285,8 @@ export function computeQuotaAggregates(
       const isExceeded =
         (a.claude?.weeklyRemainingPercent !== null && a.claude?.weeklyRemainingPercent !== undefined && a.claude.weeklyRemainingPercent <= 0) ||
         (a.claude?.fiveHourRemainingPercent !== null && a.claude?.fiveHourRemainingPercent !== undefined && a.claude.fiveHourRemainingPercent <= 0);
-      const status = isUnlicensed ? a.status : isExceeded ? "QUOTA_EXCEEDED" : (a.status || "ACTIVE");
+      const status = isUnlicensed ? a.status : isExceeded ? "QUOTA_EXCEEDED" :
+        a.claude.fiveHourRemainingPercent == null || a.claude.weeklyRemainingPercent == null ? "UNKNOWN" : (a.status || "ACTIVE");
       return {
         id: `${a.id}-claude`,
         label: `${a.label || a.email || a.id} (Claude)`,
@@ -324,7 +326,7 @@ export function computeQuotaAggregates(
     activeAccounts: claudeActive5h,
     activeAccounts5h: claudeActive5h,
     activeAccountsWeekly: claudeActiveW,
-    exhaustedAccounts: Math.max(0, claudeTotal - claudeActive5h),
+    exhaustedAccounts: claudeItems.filter(item => item.status === "QUOTA_EXCEEDED").length,
     pool5h: claudePool5h,
     available5h: Math.round(claudeAvail5h),
     percent5h: claudePool5h > 0 ? (claudeAvail5h / claudePool5h) * 100 : 0,
@@ -363,7 +365,7 @@ export function computeQuotaAggregates(
   const totalPoolW = codexPoolW + geminiPoolW + claudePoolW;
   const totalAvailW = codexAvailW + geminiAvailW + claudeAvailW;
 
-  return {
+  const result: AllQuotaAggregates = {
     codex: codexMetrics,
     gemini: geminiMetrics,
     claude: claudeMetrics,
@@ -381,4 +383,21 @@ export function computeQuotaAggregates(
     lastCheckedAt: codexList?.checkedAt || agyList?.checkedAt || apiList?.checkedAt || null,
     isStale: Boolean(codexList?.isStale || agyList?.isStale || apiList?.isStale)
   };
+  const codexFailed = Boolean(codexList?.isStale || codexList?.error);
+  const agyFailed = Boolean(agyList?.isStale || agyList?.error);
+  // Unknown limits cannot contribute a fabricated zero to capacity totals.
+  function preserveUnknown(metric: { percent5h: number | null; available5h: number | null; percentWeekly: number | null; availableWeekly: number | null }, items: QuotaBreakdownItem[], failed: boolean) {
+    if (failed || !items.length || items.some(item => item.fiveHourPercent == null || item.weeklyPercent == null)) {
+      // Either observed zero limit is sufficient to establish unusable short-window quota.
+      if (failed || !items.length || items.some(item => item.fiveHourPercent !== 0 && item.weeklyPercent !== 0 &&
+        (item.fiveHourPercent == null || item.weeklyPercent == null))) metric.percent5h = metric.available5h = null;
+    }
+    if (failed || !items.length || items.some(item => item.weeklyPercent == null)) metric.percentWeekly = metric.availableWeekly = null;
+  }
+  preserveUnknown(codexMetrics, codexItems, codexFailed);
+  preserveUnknown(geminiMetrics, geminiItems, agyFailed);
+  preserveUnknown(claudeMetrics, claudeItems, agyFailed);
+  preserveUnknown(antigravityCombined, [...geminiItems, ...claudeItems], agyFailed);
+  preserveUnknown(result.totalAiPool, [...codexItems, ...geminiItems, ...claudeItems], codexFailed || agyFailed);
+  return result;
 }

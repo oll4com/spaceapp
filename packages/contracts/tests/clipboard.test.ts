@@ -8,6 +8,7 @@ import {
   setClipboardItemCompletedRequestSchema,
   spaceAgentClipboardActionEnvelopeSchema,
   planStepSchema,
+  updatePlanProgressRequestSchema,
   upsertClipboardItemInputSchema
 } from "../src/index.js";
 
@@ -204,6 +205,21 @@ describe("plan reasoning recommendations", () => {
     expect(saveAgentClipboardPlanInputSchema.parse({ text: "full plan", minimumModel: "gpt-6.1-sol", minimumReasoning: "medium" })).toMatchObject({ minimumReasoning: "medium" });
     expect(() => createClipboardItemRequestSchema.parse({ ...plan, minimumReasoning: "arbitrary" })).toThrow();
     expect(() => createClipboardItemRequestSchema.parse({ text: "note", source: "COPY", minimumReasoning: "high" })).toThrow();
+  });
+
+  it("numbers steps given without an order by position, on every step input (2026-10-24: six steps all arrived as Stage 1)", () => {
+    const steps = [{ title: "Contracts" }, { title: "API" }, { title: "Web" }];
+    const plan = { text: "A plan with three steps", minimumModel: "claude-fable-5-1" };
+    const created = createClipboardItemRequestSchema.parse({ ...plan, source: "PLAN", steps });
+    expect(created.steps!.map((step) => [step.id, step.order])).toEqual([["step-1", 1], ["step-2", 2], ["step-3", 3]]);
+    expect(saveAgentClipboardPlanInputSchema.parse({ ...plan, steps }).steps!.map((step) => step.order)).toEqual([1, 2, 3]);
+    expect(upsertClipboardItemInputSchema.parse({ ...plan, ownerUserId: "user:operator", source: "PLAN", steps }).steps!.map((step) => step.order)).toEqual([1, 2, 3]);
+    expect(updatePlanProgressRequestSchema.parse({ steps }).steps!.map((step) => step.order)).toEqual([1, 2, 3]);
+    // Explicit unique orders stay as given; an explicit id survives the renumbering of duplicates.
+    const explicit = createClipboardItemRequestSchema.parse({ ...plan, source: "PLAN", steps: [{ title: "b", order: 2 }, { title: "a", order: 1 }] });
+    expect(explicit.steps!.map((step) => [step.id, step.order])).toEqual([["step-2", 2], ["step-1", 1]]);
+    const named = updatePlanProgressRequestSchema.parse({ steps: [{ id: "deploy", title: "Deploy" }, { title: "Verify" }] });
+    expect(named.steps!.map((step) => [step.id, step.order])).toEqual([["deploy", 1], ["step-2", 2]]);
   });
 
   it("coerces PLANNED status to PENDING and supplies default id and order", () => {

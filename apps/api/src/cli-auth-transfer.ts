@@ -11,9 +11,12 @@ import { openCodeRunAnswer } from "./room-agent-model-resolver.js";
 const execFileAsync = promisify(execFile);
 const maxFileBytes = 64 * 1024;
 
-type CredentialAction = "credential-status" | "credential-install" | "credential-smoke" | "credential-observation" | "opencode-text" | "opencode-models";
+// inspect-env lists a wrapper's operations; select-free-model applies an owner's free OpenCode model pick (1.1.8).
+type CredentialAction = "credential-status" | "credential-install" | "credential-smoke" | "credential-observation" | "opencode-text" | "opencode-models" |
+  "inspect-env" | "select-free-model" | "check-free-model";
 interface CredentialActionResult { exitCode: number; stdout: string }
-interface CredentialRequestOptions { timeoutMs?: number; signal?: AbortSignal }
+// argument: the one checked value of select-free-model (the agent refuses it on every other action).
+interface CredentialRequestOptions { timeoutMs?: number; signal?: AbortSignal; argument?: string }
 // The public core image has no OpenCode (decision B, 1.1.7): these run the CLI container's `opencode --standalone`.
 const openCodeWrapper = "opencode-vscode-parity";
 
@@ -69,7 +72,8 @@ export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicD
   if (!config.publicDistribution || !config.cliEnabled) return null;
   const socketPath = join(dirname(config.cliHostSocketPath), "credentials.sock");
   const run = (commandPath: string, action: CredentialAction, input?: string, options?: CredentialRequestOptions) =>
-    credentialAgentRequest(socketPath, { command: basename(commandPath), action, ...(input === undefined ? {} : { input }) }, options);
+    credentialAgentRequest(socketPath, { command: basename(commandPath), action, ...(input === undefined ? {} : { input }),
+      ...(options?.argument === undefined ? {} : { argument: options.argument }) }, options);
   return {
     run,
     status: async (commandPath) => {

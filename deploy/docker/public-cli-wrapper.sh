@@ -36,7 +36,7 @@ case "$runtime_name" in
     export XDG_CACHE_HOME="$state_root/cache"
     export XDG_STATE_HOME="$state_root/state"
     # The image pins OpenCode and run-spaceapp releases update it: OpenCode's own update check opened an "Update available"
-    # dialog over a new pane that took the user's first prompt, Enter choosing Update (1.1.7 devtest, VM219, 2026-10-20).
+    # dialog over a new pane that took the user's first prompt, Enter choosing Update (1.1.7 devtest, Windows lab, 2026-10-20).
     # The pane TUIs and the shared server inherit this; the standalone helpers set it in their own environments.
     export OPENCODE_DISABLE_AUTOUPDATE=true
     export OPENCODE_API_KEY="$(cat "$credential_file" 2>/dev/null || true)"
@@ -193,7 +193,7 @@ ensure_runtime_dirs
 ensure_optional_provider
 # OpenCode 2 starts a per-user background service unless a command runs --standalone (help and version need neither).
 # A pane (a fresh or resumed TUI) attaches to the one shared server below with --server: two --standalone servers on this
-# provider store fail ("Standalone server exited before reporting readiness", two panes started together, VM218 2026-10-20).
+# provider store fail ("Standalone server exited before reporting readiness", two panes started together, Linux lab, 2026-10-20).
 opencode_pane=0
 if [ "$runtime_name" = "opencode" ]; then
   case "${1:-}" in

@@ -90,22 +90,29 @@ export function preferDefault(candidates){
 }
 // Catalog (20 s) plus selection stays under the 130 s OpenCode credential-smoke timeout in the API.
 const SELECTION_BUDGET_MS=100000;
+// OpenCode runs here with a throwaway home: never the owner's keys or configuration.
+const isolatedEnvironment=(env,directory)=>({PATH:env.PATH,LANG:env.LANG,USER:env.USER,OPENCODE_DISABLE_AUTOUPDATE:'true',HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')});
+// The free models in the native catalog, or null when the catalog cannot be read. Overlapping OpenCode starts after the
+// owner claim answer 503 (Windows lab, 2026-10-20): up to `attempts` tries, 3 s apart; never a 4xx.
+async function listFreeModels(isolated,directory,executeNative,deadline,attempts=3,timeout=20000){
+  let listed;
+  // --standalone everywhere: without it OpenCode 2 starts its per-user background service.
+  for(let attempt=1;;attempt++){
+    listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,timeout);
+    const transient=listed.code===124||/\bHTTP 503\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(listed.stderr??'');
+    if(listed.code===0||!transient||attempt===attempts||deadline-Date.now()<3000+timeout)break;
+    await delay(3000);
+  }
+  return listed.code===0?parseCatalog(listed.stdout):null;
+}
 export async function selectWorkingFreeModel({env=process.env,executeNative=execute}={}) {
   const directory=await mkdtemp(join(tmpdir(),'spaceapp-free-model-'));
-  const isolated={PATH:env.PATH,LANG:env.LANG,USER:env.USER,OPENCODE_DISABLE_AUTOUPDATE:'true',HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')};
+  const isolated=isolatedEnvironment(env,directory);
   try {
     const deadline=Date.now()+SELECTION_BUDGET_MS;
-    // --standalone everywhere: without it OpenCode 2 starts its per-user background service.
-    // Overlapping OpenCode starts after the owner claim answer 503 (VM219 2026-10-20): 3 tries, 3 s apart; never a 4xx.
-    let listed;
-    for(let attempt=1;;attempt++){
-      listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,20000);
-      const transient=listed.code===124||/\bHTTP 503\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(listed.stderr??'');
-      if(listed.code===0||!transient||attempt===3||deadline-Date.now()<3000+20000)break;
-      await delay(3000);
-    }
-    if(listed.code!==0)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
-    const candidates=preferDefault(parseCatalog(listed.stdout));
+    const listedModels=await listFreeModels(isolated,directory,executeNative,deadline);
+    if(listedModels===null)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
+    const candidates=preferDefault(listedModels);
     const work=join(directory,'work');await mkdir(work);
     for(const candidate of candidates.slice(0,5)) {
       const remaining=deadline-Date.now(); if(remaining<10000)break;
@@ -120,7 +127,18 @@ export async function selectWorkingFreeModel({env=process.env,executeNative=exec
     throw new Error('No free OpenCode model completed a tool call. The app remains available; retry OpenCode later or choose a provider in Settings.');
   } finally {await rm(directory,{recursive:true,force:true});}
 }
-export async function configureFirstRun(env=process.env) {
+// The model the first run saved is checked against the catalog at most once a day. Only that model is replaced, and only when
+// OpenCode Zen no longer lists it as a free tool model: a model the owner chose is never touched (1.1.7 review, Claude T3).
+export const MODEL_RECHECK_MS=24*60*60*1000;
+// true: retired; false: still listed; null: the catalog could not be read (the model is kept).
+export async function firstRunModelRetired({model,env=process.env,executeNative=execute}) {
+  const directory=await mkdtemp(join(tmpdir(),'spaceapp-free-model-'));
+  try {
+    const listed=await listFreeModels(isolatedEnvironment(env,directory),directory,executeNative,Date.now()+10000,1,10000);
+    return listed===null?null:!listed.some(candidate=>candidate.id===model);
+  } finally {await rm(directory,{recursive:true,force:true});}
+}
+export async function configureFirstRun(env=process.env,{memoryDirectory=MEMORY_DIRECTORY,executeNative=execute,now=Date.now}={}) {
   const configDir=env.XDG_CONFIG_HOME;
   if(!configDir)throw new Error('OpenCode config directory is required');
   const directory=join(configDir,'opencode');
@@ -145,15 +163,26 @@ export async function configureFirstRun(env=process.env) {
     // starts OpenCode anyway, and without them the first task stops at "Access external directory".
     // No model is saved, so the next launch checks again.
     let model=null,failure=null;
-    if(!config.model)try{model=await selectWorkingFreeModel({env});}catch(error){failure=error;}
+    const recordPath=join(memoryDirectory,'installation-model.json');
+    if(!config.model)try{model=await selectWorkingFreeModel({env,executeNative});}catch(error){failure=error;}
+    else {
+      const record=JSON.parse(await readFile(recordPath,'utf8').catch(()=>'null'));
+      const checked=Date.parse(record?.checkedAt??record?.verifiedAt??'');
+      if(record?.id===config.model&&!(now()-checked<MODEL_RECHECK_MS)){
+        const retired=await firstRunModelRetired({model:config.model,env,executeNative});
+        if(retired)try{model=await selectWorkingFreeModel({env,executeNative});}catch(error){failure=error;}
+        // A retired model with no working replacement is checked again at the next launch, like a first run.
+        else await writeFile(recordPath,JSON.stringify({...record,checkedAt:new Date(now()).toISOString()},null,2),{mode:0o600}).catch(()=>{});
+      }
+    }
     const next=withBootstrap(model?{...config,model:model.id}:config,{tmpdir:env.TMPDIR});
     if(JSON.stringify(next)!==JSON.stringify(config)) {
       const current=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
       if(current!==previous)throw new Error('OpenCode configuration changed during discovery. Retry to preserve your settings.');
       await writeFile(path,JSON.stringify(next,null,2),{mode:0o600,flag:previous===null?'wx':'w'});
       if(model) {
-        const memory='/var/lib/spaceapp/memory';await mkdir(memory,{recursive:true});
-        await writeFile(join(memory,'installation-model.json'),JSON.stringify(model,null,2),{mode:0o600});
+        await mkdir(memoryDirectory,{recursive:true});
+        await writeFile(recordPath,JSON.stringify(model,null,2),{mode:0o600});
       }
     }
     if(failure)throw failure;

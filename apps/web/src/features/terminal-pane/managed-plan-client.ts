@@ -162,10 +162,14 @@ export async function switchManagedStageModel(client: ManagedPlanClient, selecti
 }
 
 export function usesManagedPlanExecution(runtimeId: string | null | undefined): boolean {
-  return runtimeId === "cli:codex";
+  return runtimeId === "cli:codex" || runtimeId === "cli:claude";
 }
-export async function routePanePlanSelection(runtimeId: string | null | undefined, start: () => Promise<unknown>, legacy: () => Promise<unknown> | void) {
-  if (usesManagedPlanExecution(runtimeId)) return start();
+/** Codex starts every plan as a managed execution; Claude only a plan with executable stages and keeps the plain send for the rest. */
+export function startsManagedPlan(runtimeId: string | null | undefined, plan?: ClipboardItem): boolean {
+  return runtimeId === "cli:codex" || (runtimeId === "cli:claude" && Boolean(plan) && preparePlanStages(plan!).stages.length > 0);
+}
+export async function routePanePlanSelection(runtimeId: string | null | undefined, start: () => Promise<unknown>, legacy: () => Promise<unknown> | void, plan?: ClipboardItem) {
+  if (startsManagedPlan(runtimeId, plan)) return start();
   return legacy();
 }
 export interface ManagedStageScope { executionId: string; stageId: string; }

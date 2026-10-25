@@ -63,7 +63,12 @@ export function createNotificationService(deps: NotificationServiceDeps) {
      * per-pane card when its list changed, plan clipboard:8FfXWclYUfOH). `held`: recorded and listed, but no Telegram or push
      * (Nous's own alerts while the operator is away, plan clipboard:B7eTUHTJYg3X).
      */
-    async raise(rawInput: NotificationRaiseInput, options: { realert?: boolean; held?: boolean } = {}): Promise<SpaceNotification> {
+    /**
+     * `telegramSend`: a producer that delivers the Telegram text itself (Nous's decision cards with Approve/Decline buttons, 2026-10-24)
+     * takes the outbox's place when it answers true; false or an error falls back to the outbox, so nothing is lost. The same rules
+     * decide whether Telegram is wanted at all (held, suppressed, the channel switches).
+     */
+    async raise(rawInput: NotificationRaiseInput, options: { realert?: boolean; held?: boolean; telegramSend?: (text: string) => Promise<boolean> } = {}): Promise<SpaceNotification> {
       const parsed = notificationRaiseInputSchema.parse(rawInput);
       const settings = await deps.userSettings(parsed.ownerUserId).catch(() => null);
       // The operator's night (plan clipboard:9XSwTPyxXP1W): a hand request waits for the morning batch, recorded with when it is held
@@ -79,7 +84,9 @@ export function createNotificationService(deps: NotificationServiceDeps) {
           || (input.severity === "ATTENTION" && input.source !== "NOUS" && !needsOperatorHands(input.source, input.kind) && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false)));
         const telegram = !held && (input.telegram ?? (notificationChannelEnabled(channels, input.source, "telegram") && input.severity !== "INFO"));
         if (telegram && !settings?.suppressNotifications) {
-          await deps.repository.enqueueTelegram(notification, { source: NOTIFICATION_SOURCE_LABELS[notification.source] }, created ? undefined : notification.updatedAt)
+          const sent = options.telegramSend ? await options.telegramSend(`${NOTIFICATION_SOURCE_LABELS[notification.source]}: ${notification.title}${notification.body ? `\n${notification.body}` : ""}`)
+            .catch((error) => { deps.log?.warn({ err: error, notificationId: notification.id }, "Notification Telegram direct send failed."); return false; }) : false;
+          if (!sent) await deps.repository.enqueueTelegram(notification, { source: NOTIFICATION_SOURCE_LABELS[notification.source] }, created ? undefined : notification.updatedAt)
             .catch((error) => deps.log?.warn({ err: error, notificationId: notification.id }, "Notification Telegram enqueue failed."));
         }
         // Like Telegram: what needs the user, per the channel and source switches; the producer's Telegram override is Telegram's own.

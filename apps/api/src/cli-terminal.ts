@@ -1,3 +1,4 @@
+import { codexChoosesDefaults } from "./codex-cli-mode-defaults.js";
 import { mayCreateCliSessionDirectory } from "./project-paths.js";
 import { WORKTREES_ROOT } from "./worktrees/worktree-service.js";
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
@@ -276,7 +277,9 @@ const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
 const hostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set(["cli:opencode", "cli:hermes"]);
 // Without an API transport (the last browser detached) nothing copies host output into the DB, so its tail stops
 // mid-turn: Qoder pane Cody kept a 14 s spinner for 2.5 h after it had finished. Those sessions read the host too.
-const detachedHostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set([...hostReplayRoomScreenRuntimes, "cli:qoder"]);
+// Claude Code too (stable 2026-10-21 00:13-00:46 UTC: a detached pane kept "Fiddle-faddling… ↓ 805 tokens", read UNKNOWN,
+// and every Space Control prompt answered "not confirmed ready for input" while Claude sat idle at an empty prompt).
+const detachedHostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set([...hostReplayRoomScreenRuntimes, "cli:qoder", "cli:claude"]);
 // Codex rewrites only its spinner, one shimmer letter and the timer about 40 times a second, so the tail loses
 // "Working (… esc to interrupt)" within ~6 s (Codex 0.145.0, 1.1.6 lab, 2026-10-18). Where its native turn tracking is
 // off (public installs) the dashboard reads Codex from this screen, so there it comes from the host as well.
@@ -319,6 +322,7 @@ interface CliTerminalSocketContext {
   clientMode: PaneCliClientMode;
   requestedLeaseId: string | null;
   proofScope: "READ_ONLY" | null;
+  onOperatorInput?: (paneId: string, data: string) => void;
   leaseId: string | null;
   requestId: string;
   connectionOrder: number;
@@ -363,6 +367,10 @@ interface ManagedCliSession {
   detached: boolean;
   transportReady: boolean;
   inputReady: boolean;
+  /** The composer showed once in this attachment's output: Claude draws its footer once, so a long turn pushes it out of both buffers. */
+  composerSeen?: boolean;
+  /** Space started this CLI again after its host lost it: the saved output and screen are the previous process's. */
+  restartedAfterHostLoss?: boolean;
   codexModelControlReady: boolean;
   startupOutput: string;
   pendingHostEvents: CliHostEvent[];
@@ -1359,6 +1367,9 @@ function cliHostLaneIndex(sessionId: string, laneCount: number): number {
 export class CliTerminalManager {
   private readonly tickets = new Map<string, TicketRecord>();
   private readonly sessions = new Map<string, ManagedCliSession>();
+  // Detached Claude panes are read by the room monitor, the limit-move check, task schedules and Nous: one live host read per
+  // pane and view serves ~2 s of callers, and a host slower than 1.5 s leaves them the DB tail.
+  private readonly detachedRoomScreenReads = new Map<string, { expires: number; value: Promise<{ text: string; revision: number } | null> }>();
   private readonly terminalMutationQueues = new Map<string, Promise<void>>();
   private readonly sessionAttachPromises = new Map<string, Promise<ManagedCliSessionAttach>>();
   private readonly sessionAllocations = new Map<string, CliSessionAllocationRecord>();
@@ -1889,7 +1900,11 @@ export class CliTerminalManager {
     userId: string;
     proofScope?: "READ_ONLY";
     proofSession?: boolean;
+    /** Set only for the operator in person (isOperatorPerson): what they type (queue-operator-grants.ts noteOperatorPaneInput). */
+    onOperatorInput?: (paneId: string, data: string) => void;
     requestId: string;
+    /** The route's request log: attach failures are logged there (ids, code, capped message; never terminal text). */
+    log?: { warn(fields: Record<string, unknown>, message: string): void };
   }) {
     const connectionPromise = this.openConnection(socket, {
       ...input,
@@ -1901,7 +1916,7 @@ export class CliTerminalManager {
     socket.on("message", (raw) => {
       operationQueue = operationQueue
         .then(async () => (await connectionPromise).handleMessage(raw))
-        .catch((error: unknown) => this.closeWithError(socket, error));
+        .catch((error: unknown) => this.closeWithError(socket, error, input));
     });
     const queueDetach = () => {
       if (detachQueued) return;
@@ -1912,7 +1927,7 @@ export class CliTerminalManager {
     };
     socket.on("close", queueDetach);
     socket.on("error", queueDetach);
-    void connectionPromise.catch((error: unknown) => this.closeWithError(socket, error));
+    void connectionPromise.catch((error: unknown) => this.closeWithError(socket, error, input));
   }
 
   async interrupt(
@@ -1997,9 +2012,7 @@ export class CliTerminalManager {
     if (!interrupted) {
       const previous = await this.options.store.getPaneCliSession(sessionId);
       if (previous) {
-        const inspected = await this.hostForRuntime(previous.runtimeId, previous.sessionId).inspect(
-          await this.buildHostIdentity(previous)
-        ).catch((error: unknown) => {
+        const inspected = await this.inspectSessionHost(previous).catch((error: unknown) => {
           if (cliHostSessionUnavailable(error)) return null;
           throw error;
         });
@@ -2024,9 +2037,8 @@ export class CliTerminalManager {
   async activeSessionPids(sessions: readonly PaneCliSession[]): Promise<Map<string, number>> {
     const resolved = await Promise.all(sessions.map(async (session) => {
       try {
-        const summary = await this.hostForRuntime(session.runtimeId, session.sessionId).inspect(
-          await this.buildHostIdentity(session)
-        );
+        // A moved pane's PTY keeps its launch room: without the recovery its Claude status was never read (Cleo/Dana 2026-10-21).
+        const summary = await this.inspectSessionHost(session);
         return summary?.status === "RUNNING" ? [session.sessionId, summary.pid] as const : null;
       } catch {
         return null;
@@ -2040,7 +2052,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -2055,7 +2067,8 @@ export class CliTerminalManager {
     if (!session) {
       let modelId = pane.modelId ?? runtime.defaultModelId;
       let reasoningEffort = pane.reasoningEffort;
-      if (isCodexDirectParityRuntime(runtime.id)) {
+      // Without a Codex app-server to ask (public installs, dev) Codex resolves its own defaults at launch.
+      if (isCodexDirectParityRuntime(runtime.id) && !codexChoosesDefaults(this.options.config)) {
         const buildDefaults = this.options.codexBuildDefaultsProvider
           ? await this.options.codexBuildDefaultsProvider()
           : {
@@ -2136,9 +2149,10 @@ export class CliTerminalManager {
         const geometry = session.terminalGeometry;
         // A closed observer WebSocket need not leave an API-managed transport.
         // Read the independent host without spawning or taking browser control.
-        const snapshot = geometry ? await readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
-          geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => null) : null;
-        // Hermes and Qoder keep the DB tail as their fallback: an empty screen would read as idle.
+        const snapshot = !geometry ? null : session.runtimeId === "cli:claude" ? await this.readDetachedRoomHostScreen(session, unwrap, false)
+          : await readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
+            geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => null);
+        // Hermes, Qoder and Claude keep the DB tail as their fallback: an empty screen would read as idle.
         if (snapshot || session.runtimeId === "cli:opencode") return snapshot ?? { text: "", revision: 0 };
       }
     }
@@ -2164,9 +2178,36 @@ export class CliTerminalManager {
     return { text, revision };
   }
 
+  private readDetachedRoomHostScreen(session: PaneCliSession, unwrap: boolean, omitFaint: boolean): Promise<{ text: string; revision: number } | null> {
+    const geometry = session.terminalGeometry!;
+    const key = `${session.sessionId}|${geometry.generationId}|${geometry.cols}x${geometry.rows}|${unwrap}|${omitFaint}`;
+    const now = Date.now();
+    const cached = this.detachedRoomScreenReads.get(key);
+    if (cached && cached.expires > now) return cached.value;
+    for (const [entryKey, entry] of this.detachedRoomScreenReads) if (entry.expires <= now) this.detachedRoomScreenReads.delete(entryKey);
+    const value = (async () => {
+      const read = readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, session.sessionId), await this.buildHostIdentity(session),
+        geometry.cols, geometry.rows, unwrap, geometry.generationId, omitFaint).catch(() => null);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1_500); timer.unref?.(); });
+      try { return await Promise.race([read, timeout]); } finally { clearTimeout(timer); }
+    })();
+    this.detachedRoomScreenReads.set(key, { expires: now + 2_000, value });
+    return value;
+  }
+
   /** The room screen with faint cells blanked, read on demand for draft checks; never cached. */
   async observeRoomScreenUndimmed(sessionId: string): Promise<string> {
     const managed = this.sessions.get(sessionId);
+    if (!managed) {
+      // A detached session's DB tail stopped when its last browser left: read its host, as observeRoomScreen does.
+      const session = await this.options.store.getPaneCliSession(sessionId);
+      const geometry = session?.terminalGeometry;
+      if (session && geometry && detachedHostReplayRoomScreenRuntimes.has(session.runtimeId) && session.purpose === "NORMAL") {
+        const snapshot = await this.readDetachedRoomHostScreen(session, true, true);
+        if (snapshot) return snapshot.text;
+      }
+    }
     if (managed) await this.flushHostOutput(managed);
     const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
     const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
@@ -2220,6 +2261,38 @@ export class CliTerminalManager {
     const managed = this.sessions.get(sessionId);
     if (managed) managed.roomScreenSnapshot = undefined;
     return true;
+  }
+
+  /**
+   * space_screenshot's opt-in fitTerminals (Nous Warm approval 2026-10-23, "May approve Warm"): resizes a pane's active CLI
+   * PTY once to the grid the capture's layout shows, through a temporary host attachment as nudgeHostRepaint does. The fit
+   * holds until a controlling client resizes again. Browser attach is untouched: observers still never resize.
+   * Returns null when the pane has no active CLI to fit.
+   */
+  async fitPaneTerminal(paneId: string, cols: number, rows: number): Promise<{ sessionId: string; before: string | null; after: string } | null> {
+    const session = await this.options.store.getActivePaneCliSession(paneId);
+    if (!session?.isActive || session.status === "EXITED" || session.status === "ERROR") return null;
+    const managed = this.sessions.get(session.sessionId);
+    // Codex's model control holds its own minimum geometry while it runs.
+    if (managed?.codexModelControlGeometry) return null;
+    const known = managed?.roomScreenGeometryKnown ? { cols: managed.roomScreenCols, rows: managed.roomScreenRows } : session.terminalGeometry;
+    const identity = managed?.identity ?? await this.buildHostIdentity(session);
+    const host = this.hostForRuntime(session.runtimeId, session.sessionId);
+    const observer = await host.attach({ identity, afterSequence: Number.MAX_SAFE_INTEGER });
+    try {
+      await host.resize(identity, observer.attachmentId, cols, rows);
+    } finally {
+      await host.detach(identity, observer.attachmentId).catch(() => null);
+    }
+    if (managed) {
+      managed.roomScreenCols = cols;
+      managed.roomScreenRows = rows;
+      managed.roomScreenGeometryKnown = true;
+      managed.roomScreenSnapshot = undefined;
+    }
+    const generationId = managed?.generationId ?? session.terminalGeometry?.generationId;
+    if (generationId) await this.options.store.updatePaneCliTerminalGeometry(session.sessionId, { generationId, cols, rows });
+    return { sessionId: session.sessionId, before: known ? `${known.cols}x${known.rows}` : null, after: `${cols}x${rows}` };
   }
 
   async ensurePaneControlReady(
@@ -2624,6 +2697,7 @@ export class CliTerminalManager {
       userId: string;
       proofScope?: "READ_ONLY";
       proofSession?: boolean;
+      onOperatorInput?: (paneId: string, data: string) => void;
       requestId: string;
       connectionOrder: number;
     }
@@ -2700,6 +2774,7 @@ export class CliTerminalManager {
         : input.clientMode ?? "INTERACTIVE",
       requestedLeaseId: input.requestedLeaseId ?? null,
       proofScope: proofScope ?? null,
+      onOperatorInput: input.onOperatorInput,
       leaseId: null,
       requestId: input.requestId,
       connectionOrder: input.connectionOrder,
@@ -2984,7 +3059,7 @@ export class CliTerminalManager {
       this.options.config,
       runtime,
       buildCliSpawnArgs(runtime, spawnSession, {
-        codexChoosesDefaults: this.options.config.publicDistribution === true, publicDistribution: this.options.config.publicDistribution === true, devInstance: this.options.config.instance === "dev"
+        codexChoosesDefaults: codexChoosesDefaults(this.options.config), publicDistribution: this.options.config.publicDistribution === true, devInstance: this.options.config.instance === "dev"
       })
     );
     const attachInput: CliHostAttachInput = {
@@ -3077,6 +3152,7 @@ export class CliTerminalManager {
       detached: false,
       transportReady: false,
       inputReady: restoredInputReady,
+      restartedAfterHostLoss: restoringAfterHostLoss,
       codexModelControlReady: restoredCodexModelControlReady,
       startupOutput,
       pendingHostEvents,
@@ -3125,7 +3201,9 @@ export class CliTerminalManager {
       session.sessionId,
       {
         status: "RUNNING",
-        launchMode: restoringAfterHostLoss ? "RESUME" : "FRESH",
+        // The mode the session was allocated with stays on record (a RESUME session spawned with its native ref is
+        // still a resume); only a host-loss restore that resumed exactly upgrades it.
+        launchMode: restoringAfterHostLoss ? "RESUME" : session.launchMode,
         statusReason:
           replayContinuity === "TRUNCATED"
             ? "CLI terminal reattached after earlier unpersisted output exceeded the host replay window."
@@ -3811,6 +3889,7 @@ export class CliTerminalManager {
       const sanitizedInput = sanitizeCliTerminalInput(managed.runtimeId, message.data);
       const terminalData = message.display === "hidden" ? dropStaleCliColorReplies(sanitizedInput, managed.colorQueryAtMs, Date.now()) : sanitizedInput;
       if (!terminalData) return;
+      if (message.display !== "hidden" && managed.purpose === "NORMAL") client.onOperatorInput?.(managed.paneId, terminalData);
       const receivedAtMs = Date.now();
       const diagnosticSinceMs = receivedAtMs - 1000;
       const hiddenInput = message.display === "hidden";
@@ -4131,8 +4210,13 @@ export class CliTerminalManager {
     this.sendSerialized(socket, replayBuffer);
   }
 
-  private closeWithError(socket: WebSocket, error: unknown) {
+  private closeWithError(socket: WebSocket, error: unknown,
+    origin?: { sessionId: string; paneId: string; log?: { warn(fields: Record<string, unknown>, message: string): void } }) {
     const message = error instanceof Error ? error.message : "CLI terminal attach failed.";
+    // Until 2026-10-21 these reached only the socket. Ids, the error's code and its message: never input, transcript or screen text.
+    const code = (error as { code?: unknown } | null)?.code;
+    origin?.log?.warn({ event: "cli_terminal.attach_failed", sessionId: origin.sessionId, paneId: origin.paneId,
+      code: typeof code === "string" ? code.slice(0, 64) : null, message: redactMemoryText(message).slice(0, 200) }, "CLI terminal attach failed.");
     this.send(socket, { type: "error", code: "CLI_TERMINAL_ATTACH_FAILED", message });
     if (socketIsOpen(socket)) {
       socket.close(1008, "CLI terminal unavailable");
@@ -4160,19 +4244,18 @@ export class CliTerminalManager {
       const redacted = redactMemoryText(chunk);
       if (!redacted) continue;
       const sequence = managed.nextTranscriptSequence;
-      await this.options.store.appendPaneCliTranscriptChunk(
-        {
-          sessionId: managed.sessionId,
-          paneId: managed.paneId,
-          roomId: managed.roomId,
-          sequence,
-          stream,
-          content: redacted,
-          byteLength: Buffer.byteLength(redacted, "utf8")
-        },
-        traceId
-      );
-      managed.nextTranscriptSequence = sequence + 1;
+      const input = { sessionId: managed.sessionId, paneId: managed.paneId, roomId: managed.roomId, stream, content: redacted,
+        byteLength: Buffer.byteLength(redacted, "utf8") };
+      try {
+        await this.options.store.appendPaneCliTranscriptChunk({ ...input, sequence }, traceId);
+        managed.nextTranscriptSequence = sequence + 1;
+      } catch (error) {
+        // A detaching transport's last host-output flush (numbered by the DB) can take the sequence this attachment
+        // cached from its transcript read (stable 2026-10-21): continue after the newest chunk instead of failing the attach.
+        const taken = error as { code?: unknown; constraint?: unknown } | null;
+        if (taken?.code !== "23505" || taken.constraint !== "idx_pane_cli_transcript_chunks_session_sequence") throw error;
+        managed.nextTranscriptSequence = (await this.options.store.appendPaneCliTranscriptChunkAtNextSequence(input, traceId)).sequence + 1;
+      }
     }
   }
 
@@ -4299,6 +4382,7 @@ export class CliTerminalManager {
     if (!data) return;
     managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
     managed.controlOutputRevision += 1;
+    if (!managed.inputReady && !managed.composerSeen) managed.composerSeen = cliComposerReady(managed.runtimeId, managed.controlOutput) === true;
     if (cliColorQuery.test(data)) managed.colorQueryAtMs = Date.now();
     this.scheduleQwenAuthBootstrap(managed);
     if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
@@ -4680,8 +4764,11 @@ export class CliTerminalManager {
       const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliComposerReadyTimeoutMs);
       let screenReadAt = 0;
       const composerOpen = async () => {
-        if (cliComposerReady(managed.runtimeId, managed.startupOutput + managed.controlOutput)) return true;
-        if (Date.now() - screenReadAt < 1000) return false;
+        // After host loss only the new process's own output counts: the old footer let scheduled tasks reach a booting
+        // Claude Code as early input, its Enter was dropped and the text stayed a draft (stable 2026-10-22/23).
+        const saved = managed.restartedAfterHostLoss ? "" : managed.startupOutput;
+        if (managed.composerSeen || cliComposerReady(managed.runtimeId, saved + managed.controlOutput)) return true;
+        if (managed.restartedAfterHostLoss || Date.now() - screenReadAt < 1000) return false;
         screenReadAt = Date.now();
         // A CLI already idle when this attachment began never redraws its composer: read its saved screen.
         return Boolean(cliComposerReady(managed.runtimeId, (await this.observeRoomScreen(managed.sessionId).catch(() => null))?.text ?? ""));

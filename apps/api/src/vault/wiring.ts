@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthUser, Pane, VaultHostFillResult, VaultHostTarget } from "@space/contracts";
 import { PostgresVaultRepository } from "@space/db";
 import { cookieName, verifySession } from "../auth.js";
+import type { ConnectorCrypto } from "../dot-connectors.js";
 import { parseBody, parseQuery } from "../route-parsing.js";
 import { GitControlError } from "../source-control/errors.js";
 import { createVaultAgent, registerVaultAgentRoutes, type VaultAgent } from "./agent.js";
@@ -28,7 +29,12 @@ export function registerVault(app: FastifyInstance, deps: {
     getRoom(roomId: string): Promise<{ ownerUserId?: string | null }> | { ownerUserId?: string | null };
     getPaneOwner?(paneId: string): Promise<string | null> | string | null;
     listPanes(roomId: string): Promise<Pane[]> | Pane[];
+    listGoogleAccounts?(userId: string): Promise<Array<{ id: string; email: string }>> | Array<{ id: string; email: string }>;
   };
+  /** The Google account a pane's browser opens with (its id), or null. */
+  paneAccount?(owner: string, pane: Pane): Promise<string | null>;
+  /** Whether an agent session scripted this document in the page's own world (the CDP proxy's marks); absent: every fill reloads. */
+  documentDirty?(paneId: string, targetId: string, document: string | null): boolean | Promise<boolean>;
   /** The Browser Host's sealed fill (absent where no Browser Host runs). */
   browser?: {
     vaultTarget?(pane: Pane): Promise<VaultHostTarget>;
@@ -37,6 +43,8 @@ export function registerVault(app: FastifyInstance, deps: {
   };
   routeOptions: Record<string, unknown>;
   overrides?: VaultOverrides;
+  /** Seals the API keys the operator hands to agents (plan clipboard:-qvpC_Q0rAVg). */
+  crypto: ConnectorCrypto;
 }): VaultModule {
   const { config, overrides = {}, browser } = deps;
   const repository = overrides.repository !== undefined ? overrides.repository
@@ -71,7 +79,7 @@ export function registerVault(app: FastifyInstance, deps: {
     fencedTargets: (paneId) => protection.fencedTargets(paneId)
   });
   registerVaultRoutes(app, {
-    repository, parseBody, parseQuery, broker,
+    repository, parseBody, parseQuery, broker, crypto: deps.crypto,
     routeOptions: deps.routeOptions,
     strictRouteOptions: { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     owner: async (request) => {
@@ -81,7 +89,8 @@ export function registerVault(app: FastifyInstance, deps: {
       return (await deps.store.upsertUser(request.user)).id;
     }
   });
-  const agent = createVaultAgent({ repository, broker, protection, browser, paneOwner, listPanes: async (roomId) => deps.store.listPanes(roomId) });
+  const agent = createVaultAgent({ repository, broker, protection, browser, paneOwner, crypto: deps.crypto, listPanes: async (roomId) => deps.store.listPanes(roomId),
+    googleAccounts: deps.store.listGoogleAccounts ? async (owner) => deps.store.listGoogleAccounts!(owner) : undefined, paneAccount: deps.paneAccount, documentDirty: deps.documentDirty });
   return { repository, protection, broker, agent };
 }
 

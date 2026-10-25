@@ -237,7 +237,7 @@ describe("Space terminal panes", () => {
       replace: false
     });
     expect(buildTerminalVoiceSubmit("replacement", "[File #1] old", "replace")).toEqual({
-      data: "\u0015replacement",
+      data: "replacement",
       enter: "\r",
       replace: true
     });
@@ -2061,27 +2061,7 @@ describe("Space terminal panes", () => {
             checkedAt: browserTimestamp
           },
           "/api/panes/pane%3Abrowser/browser/session": browserSessionResponse,
-          "/api/panes/pane%3Abrowser/browser/bookmarks": {
-            sessionId: "browser_session:pane_browser",
-            paneId: browserPane.id,
-            roomId: browserPane.roomId,
-            bookmarks: []
-          },
-          "/api/panes/pane%3Abrowser/browser/bookmarks/import": {
-            sessionId: "browser_session:pane_browser",
-            paneId: browserPane.id,
-            roomId: browserPane.roomId,
-            importedCount: 1,
-            skippedCount: 0,
-            bookmarks: [
-              {
-                id: "5",
-                title: "Imported",
-                url: "https://example.com/",
-                addedAt: browserTimestamp
-              }
-            ]
-          },
+          "/api/marketing-copilot/bookmarks": { bookmarks: [] },
           "/api/panes/pane%3Acli/cli/session?includeTranscript=false": {
             session: {
               sessionId: "cli_session:debug-badge",
@@ -2609,13 +2589,8 @@ describe("Space terminal panes", () => {
 
       fireEvent.click(await screen.findByLabelText("More browser actions Browser 3"));
       fireEvent.click(await screen.findByLabelText("Browser bookmarks Browser 3"));
-      await waitFor(() => expect(requests).toContain("GET /api/panes/pane%3Abrowser/browser/bookmarks"));
-      expect(await screen.findByText("No bookmarks")).toBeTruthy();
-      fireEvent.click(await screen.findByLabelText("Save current browser page Browser 3"));
-      await waitFor(() => expect(requests).toContain("POST /api/panes/pane%3Abrowser/browser/bookmarks"));
-      expect(((await screen.findByLabelText("Export browser bookmarks Browser 3")) as HTMLAnchorElement).getAttribute("href")).toBe(
-        "/api/panes/pane%3Abrowser/browser/bookmarks/export"
-      );
+      await waitFor(() => expect(requests).toContain("GET /api/marketing-copilot/bookmarks"));
+      expect(await screen.findByText("No bookmarks yet")).toBeTruthy();
 
       // Since 8d7e305950 a hidden dock stays mounted (inert, aria-hidden), so check its accessible role.
       fireEvent.click(await screen.findByLabelText("Hide rooms"));

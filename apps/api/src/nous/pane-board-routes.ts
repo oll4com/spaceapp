@@ -5,6 +5,7 @@ import {
   type NousCopilot, type NousMessage, type NousPaneBoardAnswerResult, type Pane, type Room
 } from "@space/contracts";
 import { SpaceConflictError, SpaceNotFoundError } from "@space/runtime";
+import { isOperatorPerson, noteOperatorPromoteLine } from "../queue-operator-grants.js";
 import { paneLabel } from "./digest.js";
 import type { PaneBoardService } from "./pane-board.js";
 import type { NousToolOutcome } from "./tools.js";
@@ -58,6 +59,10 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
     const { room, pane } = found;
     const refs = { roomId: room.id, paneId: pane.id };
     const label = `[${room.name} · ${paneLabel(pane)}]`;
+    let person = true;
+    try { deps.assertPerson(request); } catch { person = false; }
+    // The operator's own reply asking this pane to promote holds its promote grant, however the reply is routed (2026-10-21).
+    if (person && isOperatorPerson(request.user)) noteOperatorPromoteLine(pane.id, input.text, "pane-board");
     if (input.target.kind === "PROMPT") {
       deps.assertPerson(request);
       const outcome = await deps.answerPrompt(owner, room, pane, input.text);
@@ -72,8 +77,6 @@ export function registerNousPaneBoardRoutes(app: FastifyInstance, deps: PaneBoar
       const copilot = nousCopilotSchema.parse(input.target.copilot);
       return { routed: "COPILOT_QUESTION", display: await deps.answerCopilot(owner, { copilot, questionId: input.target.questionId, paneId: pane.id, answer: input.text }) };
     }
-    let person = true;
-    try { deps.assertPerson(request); } catch { person = false; }
     await deps.send(owner, `${label} ${input.text}`, { person, refs });
     return { routed: "NOUS", display: `Sent to Nous about ${paneLabel(pane)}.` };
   });

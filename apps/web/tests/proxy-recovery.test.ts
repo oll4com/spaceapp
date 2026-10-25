@@ -113,7 +113,7 @@ describe("Space web API recovery proxy", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 120));
     await startApi(apiPort, (incoming, response) => {
-      if (incoming.url === "/readyz") {
+      if (incoming.url?.startsWith("/readyz")) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end('{"ok":true}');
         return;
@@ -126,6 +126,34 @@ describe("Space web API recovery proxy", () => {
 
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ recovered: true });
+  });
+
+  it("keeps holding while the API is up but not ready (strict readiness), then returns the recovered 200", async () => {
+    const apiPort = await reservePort();
+    const probes: string[] = [];
+    await startApi(apiPort, (incoming, response) => {
+      if (incoming.url?.startsWith("/readyz")) {
+        probes.push(incoming.url);
+        // The API answers strict probes with 503 until its dependencies are ready (health-routes.ts).
+        response.writeHead(probes.length < 3 ? 503 : 200, { "content-type": "application/json" });
+        response.end(probes.length < 3 ? '{"ok":false}' : '{"ok":true}');
+        return;
+      }
+      if (probes.length < 3) {
+        incoming.socket.destroy();
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"recovered":true}');
+    });
+    const webPort = await startWeb(apiPort, 3_000);
+
+    const response = await request(webPort);
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ recovered: true });
+    expect(probes.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(probes)).toEqual(new Set(["/readyz?strict=1"]));
   });
 
   it("returns the unchanged structured UPSTREAM_UNAVAILABLE contract after the deadline", async () => {
@@ -150,7 +178,7 @@ describe("Space web API recovery proxy", () => {
     let mutationAttempts = 0;
     let readinessProbes = 0;
     await startApi(apiPort, (incoming, response) => {
-      if (incoming.url === "/readyz") {
+      if (incoming.url?.startsWith("/readyz")) {
         readinessProbes += 1;
         response.writeHead(200);
         response.end();
@@ -178,7 +206,7 @@ describe("Space web API recovery proxy", () => {
     await new Promise((resolve) => setTimeout(resolve, 120));
     let readinessProbes = 0;
     await startApi(apiPort, (incoming, response) => {
-      if (incoming.url === "/readyz") {
+      if (incoming.url?.startsWith("/readyz")) {
         readinessProbes += 1;
         response.writeHead(200, { "content-type": "application/json" });
         response.end('{"ok":true}');

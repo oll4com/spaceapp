@@ -35,6 +35,8 @@ async function setup(options: { busy?: boolean; mode?: "TERMINAL" | "DESIGN" } =
     + `if [ -f '${join(root, "busy")}' ]; then printf '\\342\\234\\242 Nesting\\342\\200\\246\\n'; else printf '\\342\\235\\257 \\n'; fi\nexec sleep 60\n`, "utf8");
   await chmod(join(root, "claude-vscode-parity"), 0o755);
   const socketPath = join(root, "pane-host.sock");
+  // Unix socket paths hold about 104-107 bytes: a long TMPDIR fails here, not later as ENOENT or EADDRINUSE (1.1.7 review).
+  if (socketPath.length > 103) throw new Error(`TMPDIR is too long for a Unix socket path (${socketPath.length} bytes); use a short TMPDIR such as /tmp/s.`);
   const host = await createCliHostServer({ socketPath, registry: new CliHostSessionRegistry({ spawn: spawnNodePty }) });
   const store = new InMemorySpaceStore();
   store.createCliAccountProfile("cli:claude", { runtimeId: "cli:claude", profileId: "space-gateway", displayName: "Space Gateway" }, "user:admin");
@@ -130,5 +132,14 @@ describe("Claude Code pane account switch (Space Control configure accountProfil
     const f = await setup({ mode: "DESIGN", busy: true });
     const later = await f.configure("space-gateway", "AFTER_TURN", "request:design-after-turn");
     expect(later.results?.[0]).toMatchObject({ status: "PENDING", detail: "Change scheduled after the current native turn." });
+  });
+});
+
+describe("switchClaudePaneAccount at a usage limit (Cleo/Dana 2026-10-21)", () => {
+  it("says why a limited turn Claude keeps running cannot switch now and when AFTER_TURN fires", async () => {
+    const { switchClaudePaneAccount } = await import("../src/claude-account-switch.js");
+    const deps = { store: { getCliAccountProfile: async () => ({ id: "space-gateway" }) }, inspect: async () => ({ state: "RUNNING", usageLimited: true }) };
+    const refused = switchClaudePaneAccount(deps as never, { id: "pane:dana0001" } as never, { accountProfileId: null } as never, "space-gateway", "trace:1");
+    await expect(refused).rejects.toThrow("It waits at its usage limit while Claude keeps the turn running (background agents or shells), so AFTER_TURN fires only when that work ends");
   });
 });

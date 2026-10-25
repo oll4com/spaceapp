@@ -221,6 +221,16 @@ export const gatewaySettingsSchema = z.object({
    * account (paid per token); the accounts take over again at their next reset. Off: the key is never used.
    */
   claudeApiKeyFallback: z.boolean(),
+  /**
+   * What the operator may spend on the Anthropic API each month (operator request 2026-10-24); the Claude API-key account
+   * shows this month's Anthropic bill as a share of it. Null: not set.
+   */
+  anthropicMonthlyBudgetUsd: z.number().positive().max(10_000_000).nullable(),
+  /**
+   * The organization's Claude Console credit grants in total (operator request 2026-10-24); the API providers tab shows
+   * them minus Anthropic's recorded bill, as the Console's remaining balance. Null: not set.
+   */
+  anthropicCreditsUsd: z.number().positive().max(10_000_000).nullable(),
   /** Limit warm-up: one tiny request right after a confirmed window reset, so the next window starts counting at once. */
   warmupEnabled: z.boolean(),
   warmupWindows: gatewayWindowChoiceSchema,

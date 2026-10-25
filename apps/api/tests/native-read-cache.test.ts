@@ -50,6 +50,18 @@ describe("native read cache", () => {
     expect((await h.cache.read("pane", h.load(false)))?.n).toBe(1);
   });
 
+  it("expire drops a pane's finished and in-flight reads only", async () => {
+    const h = harness();
+    await h.cache.read("pane:a|cli_session:1|10", h.load(false));
+    await h.cache.read("pane:b|cli_session:2|11", h.load(false));
+    const running = h.cache.read("pane:a|cli_session:3|12", h.load(false));
+    h.cache.expire("pane:a|");
+    expect(h.cache.size()).toBe(1);
+    expect((await h.cache.read("pane:a|cli_session:1|10", h.load(false)))?.n).toBe(4);
+    expect((await h.cache.read("pane:b|cli_session:2|11", h.load(false)))?.n).toBe(2);
+    await running;
+  });
+
   it("keeps different panes and sessions apart", async () => {
     const h = harness();
     await h.cache.read("pane:a|cli_session:1|10", h.load(false));

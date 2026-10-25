@@ -9,7 +9,7 @@ import { YouTubeNativePlayer } from '../src/features/browser-pane/YouTubeNativeP
 import { parseYouTubePlayback, youtubePlaybackUrl } from '../src/features/browser-pane/youtube-playback.js';
 import { USER_LINKS_UPDATED_EVENT } from '../src/features/user-links/UserLinks.js';
 
-const mocks = vi.hoisted(() => ({ createLink: vi.fn(), links: vi.fn(), youtubeAccounts: vi.fn(), selectYouTubeAccount: vi.fn(), me: vi.fn(), youtubePlayback: vi.fn(), saveYouTubePlayback: vi.fn(), stopBrowserSession: vi.fn(), watchYouTube: vi.fn(), browserPages: vi.fn(), youtubeVideoText: vi.fn(), load: vi.fn() }));
+const mocks = vi.hoisted(() => ({ createLink: vi.fn(), links: vi.fn(), youtubeAccounts: vi.fn(), selectYouTubeAccount: vi.fn(), me: vi.fn(), youtubePlayback: vi.fn(), saveYouTubePlayback: vi.fn(), stopBrowserSession: vi.fn(), watchYouTube: vi.fn(), browserPages: vi.fn(), youtubeVideoText: vi.fn(), youtubeDownload: vi.fn(), youtubeDownloadJob: vi.fn(), userSettings: vi.fn(), updateUserSettings: vi.fn(), artifacts: vi.fn(), artifactFileUrl: vi.fn((id: string) => `/api/artifacts/${id}/file`), load: vi.fn() }));
 vi.mock('../src/api.js', () => ({ api: mocks }));
 vi.mock('../src/features/vibe-music/youtubePlaylistPlayer.js', () => ({ loadYouTubeIframeApi: mocks.load }));
 vi.mock('../src/features/browser-pane/ManagedYouTubeBrowser.js', () => ({ ManagedYouTubeBrowser: ({ targetUrl }: { targetUrl?: string }) => <div data-testid="managed-youtube" data-target-url={targetUrl}>Managed browser</div> }));
@@ -145,18 +145,62 @@ describe('YouTube native resume', () => {
     render(<YouTubePane pane={pane} agentNumber={1} />);
     await waitFor(() => expect(players).toHaveLength(1));
     fireEvent.click(screen.getByRole('button', { name: 'Full text' }));
-    expect(await screen.findByText(/writing down everything said/)).toHaveProperty('role', 'status');
+    expect(await screen.findByText(/Reading the video's captions/)).toHaveProperty('role', 'status');
     expect(screen.getByRole('button', { name: 'Summarize with AI' })).toHaveProperty('disabled', true);
     await act(async () => answer({ text: '0:00 Hello everyone.', model: 'gemini-3.8-flash-tiered' }));
     expect(mocks.youtubeVideoText).toHaveBeenCalledWith('pane:test', 'abcdefghijk', 'transcript');
     expect((await screen.findByRole('region', { name: 'Full text' })).textContent).toContain('0:00 Hello everyone.');
+  });
+  it('downloads the video playing now into Agent Files and the Video library and offers the file', async () => {
+    const job = { id: 'vjob:one', paneId: 'pane:test', op: 'fetch', progress: 5, message: 'Downloading', result: null, error: null, createdAt: '2026-10-21T00:00:00.000Z', endedAt: null };
+    mocks.youtubeDownload.mockResolvedValue({ job: { ...job, status: 'RUNNING' } });
+    let finish: (value: unknown) => void = () => undefined;
+    mocks.youtubeDownloadJob.mockImplementation(() => new Promise((done) => { finish = done; }));
+    render(<YouTubePane pane={pane} agentNumber={1} />);
+    await waitFor(() => expect(players).toHaveLength(1));
+    await act(async () => players[0]!.options.events.onReady());
+    players[0]!.videoId = 'lmnopqrstuv';
+    players[0]!.title = 'Oday Hacks';
+    fireEvent.click(screen.getByRole('button', { name: 'Download video' }));
+    expect(await screen.findByText(/Notifications tell you when it is done/)).toHaveProperty('role', 'status');
+    expect(screen.getByRole('button', { name: 'Downloading video' })).toHaveProperty('disabled', true);
+    expect(mocks.youtubeDownload).toHaveBeenCalledWith('pane:test', 'lmnopqrstuv', 'Oday Hacks');
+    await act(async () => finish({ job: { ...job, status: 'DONE', result: { asset: { artifactId: 'artifact:abc123', width: 3840, height: 2160 }, folder: 'MEDIA/YouTube' } } }));
+    const saved = await screen.findByRole('region', { name: 'Downloaded video' });
+    expect(saved.textContent).toContain('Agent Files › Media / YouTube and the Video library · 3840×2160');
+    expect(screen.getByRole('link', { name: 'Save file' }).getAttribute('href')).toBe('/api/artifacts/artifact:abc123/file');
+    mocks.youtubeDownload.mockRejectedValueOnce(new Error('Video job vjob:two (assemble) is still running'));
+    fireEvent.click(screen.getByRole('button', { name: 'Download video' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('still running'));
+  });
+  it('opens the pane settings: summary model, the Agent Files folder downloads go to and their resolution', async () => {
+    mocks.userSettings.mockResolvedValue({ youtubeSummaryModel: 'gemini-3-flash', youtubeDownload: { folder: 'MEDIA/YouTube', maxHeight: 0 } });
+    mocks.updateUserSettings.mockResolvedValue({});
+    mocks.artifacts.mockResolvedValue({ data: [{ id: 'artifact:f1', metadata: { folder: 'Clips/Talks' } }], pagination: { totalPages: 1 } });
+    render(<YouTubePane pane={pane} agentNumber={1} />);
+    await waitFor(() => expect(players).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'YouTube settings' }));
+    const panel = await screen.findByRole('region', { name: 'YouTube pane settings' });
+    expect(panel.textContent).toContain('Download folder');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Clips / Talks' })).toBeTruthy());
+    expect(screen.getByRole('option', { name: 'Media / YouTube' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Download folder' }), { target: { value: 'Clips/Talks' } });
+    expect(mocks.updateUserSettings).toHaveBeenLastCalledWith({ youtubeDownload: { folder: 'Clips/Talks', maxHeight: 0 } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Download resolution' }), { target: { value: '1080' } });
+    expect(mocks.updateUserSettings).toHaveBeenLastCalledWith({ youtubeDownload: { folder: 'Clips/Talks', maxHeight: 1080 } });
+    mocks.updateUserSettings.mockRejectedValueOnce(new Error('Settings are read-only here'));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Download resolution' }), { target: { value: '720' } });
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Settings are read-only here');
+    expect((screen.getByRole('combobox', { name: 'Download resolution' }) as HTMLSelectElement).value).toBe('1080');
+    fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+    expect(screen.queryByRole('region', { name: 'YouTube pane settings' })).toBeNull();
   });
   it('shows in the toolbar only what applies now and never the Float of the titlebar', async () => {
     mocks.youtubePlayback.mockResolvedValue({ playback: null });
     mocks.browserPages.mockResolvedValue({ pages: [{ isActive: true, url: 'https://www.youtube.com/' }] });
     render(<YouTubePane pane={pane} agentNumber={1} onToggleFloat={vi.fn()} />);
     await screen.findByTestId('managed-youtube');
-    for (const name of ['Summarize with AI', 'Full text', 'Add to Playlist', 'Play', 'Previous track', 'Next track', 'Play current video', 'Float mini player']) {
+    for (const name of ['Summarize with AI', 'Full text', 'Download video', 'Add to Playlist', 'Play', 'Previous track', 'Next track', 'Play current video', 'Float mini player']) {
       expect(screen.queryByRole('button', { name })).toBeNull();
     }
     expect(screen.queryByRole('combobox', { name: 'YouTube playlist' })).toBeNull();

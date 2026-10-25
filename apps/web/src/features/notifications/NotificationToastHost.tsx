@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { createElement, useEffect } from "react";
 import { NOTIFICATION_SOURCE_LABELS } from "@space/contracts";
-import { Bell, X } from "../ui-theme/app-icons.js";
+import { X } from "../ui-theme/app-icons.js";
 import { dismissNotificationToast, openNotification, useNotificationStore } from "./notification-store.js";
+import { notificationSourceIcons } from "./notification-source-icons.js";
 import "./notifications.css";
 
 const TOAST_MS = 8_000;
@@ -20,11 +21,11 @@ export function NotificationToastHost() {
       {toasts.map(({ id, notification }) => (
         <aside key={id} className={`notification-toast severity-${notification.severity.toLowerCase()}`} role="status" data-notification-id={id}>
           <button type="button" className="notification-toast-main" onClick={() => openNotification(notification)}>
-            <Bell aria-hidden="true" />
+            {createElement(notificationSourceIcons[notification.source], { "aria-hidden": true })}
             <span className="notification-toast-copy">
               <span className="notification-toast-source">{NOTIFICATION_SOURCE_LABELS[notification.source]}</span>
-              <strong>{notification.title}</strong>
-              {notification.body ? <small>{notification.body.slice(0, 160)}</small> : null}
+              <strong data-sensitive-masked="manual">{notification.title}</strong>
+              {notification.body ? <small data-sensitive-masked="manual">{notification.body.slice(0, 160)}</small> : null}
             </span>
           </button>
           <button type="button" className="notification-toast-close" aria-label="Dismiss notification" onClick={() => dismissNotificationToast(id)}><X aria-hidden="true" /></button>

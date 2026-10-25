@@ -66,10 +66,20 @@ export function isValidTimeZone(timeZone: string): boolean {
   try { new Intl.DateTimeFormat("en-US", { timeZone }).format(0); return true; } catch { return false; }
 }
 
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+/** One formatter per zone: building one costs about 8x formatting with it, and the Tasks calendar converts every repeat on every day. */
+function zoneParts(utcMs: number, timeZone: string): Record<string, string> {
+  let format = zoneFormats.get(timeZone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", weekday: "short" });
+    zoneFormats.set(timeZone, format);
+  }
+  return Object.fromEntries(format.formatToParts(new Date(utcMs)).map((part) => [part.type, part.value]));
+}
 /** Offset (ms) of `timeZone` from UTC at the instant `utcMs`. */
 function zoneOffset(utcMs: number, timeZone: string): number {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit",
-    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(utcMs)).map((part) => [part.type, part.value]));
+  const parts = zoneParts(utcMs, timeZone);
   const asUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
   return asUtc - Math.floor(utcMs / 1000) * 1000;
 }
@@ -81,8 +91,7 @@ export function zonedWallTimeToUtc(year: number, month: number, day: number, hou
   return result;
 }
 function localDate(utcMs: number, timeZone: string) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
-    weekday: "short" }).formatToParts(new Date(utcMs)).map((part) => [part.type, part.value]));
+  const parts = zoneParts(utcMs, timeZone);
   const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(String(parts.weekday));
   return { year: Number(parts.year), month: Number(parts.month) - 1, day: Number(parts.day), weekday };
 }

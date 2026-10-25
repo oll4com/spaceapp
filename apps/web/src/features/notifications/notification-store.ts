@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { NotificationLink, NotificationsPending, NotificationStreamPayload, SpaceNotification } from "@space/contracts";
+import { needsYou, type NotificationLink, type NotificationsPending, type NotificationStreamPayload, type SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
 import { requestNousFocus } from "../nous-focus/nous-focus-events.js";
 
@@ -116,9 +116,9 @@ export async function readAllNotifications(): Promise<void> {
   emit({ ...state, toasts: [] });
   await refreshNotifications();
 }
-/** Opens what the notification points at and marks it read; Nous's pane card takes the operator to the pane through Nous focus. */
+/** Opens what the notification points at and marks it read; a needs-you request takes the operator to its pane at once (maximized, focused, back when it resolves). */
 export function openNotification(notification: SpaceNotification): void {
-  if (isNousPaneCard(notification)) requestNousFocus({ roomId: notification.roomId!, paneId: notification.paneId!, ownerUserId: null, immediate: true });
+  if (needsYou(notification)) requestNousFocus({ roomId: notification.roomId!, paneId: notification.paneId!, immediate: true, notification });
   else navigator?.(notification.link, notification);
   void markNotificationRead(notification.id);
 }

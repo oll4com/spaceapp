@@ -598,10 +598,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The same check the launcher runs at install time; these images must come from this run's commit.
       - name: Verify architectures, SBOMs, and provenance
         run: >-
           node scripts/verify-published-containers.mjs
           --version "${{ inputs.version }}"
+          --workflow-sha "${{ github.sha }}"
 
   verify-amd64-containers:
     name: Verify published amd64 manifests and attestations

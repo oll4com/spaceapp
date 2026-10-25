@@ -220,6 +220,18 @@ describe("Codex VS Code parity API", () => {
     expect(response.pagination).toMatchObject({ page: 1, pageSize: 50, totalItems: 1101, totalPages: 23 });
   });
 
+  it("reads no Codex history when Codex has never run (public core, fresh install)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "space-codex-none-"));
+    cleanup.push(root);
+    const service = createCodexParityService({ codexHome: join(root, "missing"), stateDbPath: join(root, "missing", "state_5.sqlite") });
+
+    for (const input of [{ page: 1, pageSize: 1 }, { page: 1, pageSize: 50, dedupeTitles: true }]) {
+      const response = await service.listHistory(input);
+      expect(response.data).toEqual([]);
+      expect(response.totalItems).toBe(0);
+    }
+  });
+
   it("paginates Codex history and preserves filtered pagination counts", async () => {
     const fixture = await createCodexHomeFixture();
     cleanup.push(fixture.root);

@@ -168,7 +168,8 @@ export function railPopoverPosition(trigger: HTMLElement | null, width: number) 
   const rect = rail.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
   const viewport = window.visualViewport;
-  const top = (viewport?.offsetTop ?? 0) + 8;
+  // The desktop app's title bar (hidden in fullscreen) covers the window's top 32px.
+  const top = Math.max(viewport?.offsetTop ?? 0, document.querySelector(".desktop-window-titlebar")?.getBoundingClientRect().bottom ?? 0) + 8;
   const bottom = Math.min(rect.bottom, (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight) - 8);
   return { left: Math.max(8, rect.left - width - 8), bottom: Math.max(8, window.innerHeight - bottom), maxHeight: Math.max(100, bottom - top) };
 }

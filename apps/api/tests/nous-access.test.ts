@@ -1,7 +1,7 @@
 // Nous reaches everything (operator order 2026-10-19, plan clipboard:ajcJqa3IW6Eh): the Research Council as the operator, text files
 // of the agent workspace and of the owner's artifacts (read only, never secrets, never outside the root), and the connected Gmail
 // accounts (read only).
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -78,6 +78,49 @@ describe("Nous files (space_files_list, space_files_read)", () => {
     expect((await nous.execute("space_files_list", { path: "../" }, ctx)).ok).toBe(false);
   });
 
+  it("says what is there when a path is wrong, a file was listed, or a file is private (daily review 2026-10-21)", async () => {
+    const nous = tools();
+    const missing = await nous.execute("space_files_list", { path: "active/study-final" }, ctx);
+    expect(missing.ok).toBe(false);
+    expect(missing.result).toContain("No file or folder active/study-final under the agent workspace. Closest names in active: study.");
+    expect((await nous.execute("space_files_list", { path: "active/nothing-alike/x" }, ctx)).result).toContain("active exists: list it with space_files_list");
+    expect((await nous.execute("space_files_list", { path: "active/app/notes.md" }, ctx)).result).toContain("active/app/notes.md is a file: read it with space_files_read.");
+    writeFileSync(join(root, "active", "app", "private.md"), "kept private");
+    chmodSync(join(root, "active", "app", "private.md"), 0o000);
+    const kept = await nous.execute("space_files_read", { path: "active/app/private.md" }, ctx);
+    expect(kept.ok).toBe(false);
+    expect(kept.result).toContain("active/app/private.md is private to the agent that wrote it");
+    // A path inside a folder its agent keeps private is private too, not missing (stable 2026-10-22).
+    mkdirSync(join(root, "active", "closed", "proposals"), { recursive: true });
+    chmodSync(join(root, "active", "closed"), 0o000);
+    const inside = await nous.execute("space_files_read", { path: "active/closed/proposals/x.diff" }, ctx);
+    chmodSync(join(root, "active", "closed"), 0o755);
+    expect(inside.result).toContain("active/closed/proposals/x.diff is private to the agent that wrote it");
+    // A symlinked folder leading out of the root never shows the names outside.
+    symlinkSync(base, join(root, "active", "out-link"));
+    const out = await nous.execute("space_files_list", { path: "active/out-link/outside-x" }, ctx);
+    expect(out.ok).toBe(false);
+    expect(out.result).not.toContain("outside.txt");
+  });
+
+  it("finds names by their words instead of guessing paths (stable 2026-10-22: 43 guessed paths failed in 24 h)", async () => {
+    const nous = tools();
+    mkdirSync(join(root, "reports", "20261015-olla-sale-dd", "dataroom"), { recursive: true });
+    writeFileSync(join(root, "reports", "20261015-olla-sale-dd", "dataroom", "index.md"), "rooms");
+    mkdirSync(join(root, "reports", "node_modules", "olla-dataroom"), { recursive: true });
+    mkdirSync(join(root, "reports", "olla-secrets", "dataroom"), { recursive: true });
+    const found = await nous.execute("space_files_list", { find: "olla dataroom" }, ctx);
+    expect(found.ok).toBe(true);
+    expect(found.display).toBe("Searched the agent workspace for \"olla dataroom\"");
+    expect(found.result).toContain("- reports/20261015-olla-sale-dd/dataroom/");
+    // Inside it only the folder itself matches; node_modules, secret-looking names and links are never entered.
+    expect(found.result).not.toMatch(/index\.md|node_modules|olla-secrets|out-link/);
+    expect((await nous.execute("space_files_list", { path: "active", find: "olla" }, ctx)).result).toContain("No name under");
+    const missing = await nous.execute("space_files_list", { path: "active/olla-dataroom" }, ctx);
+    expect(missing.ok).toBe(false);
+    expect(missing.result).toContain("Search names with space_files_list find");
+  });
+
   it("reads only the owner's Agent Files and Media artifacts", async () => {
     const nous = tools();
     const listed = await nous.execute("space_files_list", { artifacts: "ROOM_MEDIA" }, ctx);
@@ -85,6 +128,15 @@ describe("Nous files (space_files_list, space_files_read)", () => {
     expect(listed.result).not.toContain("artifact:theirs01");
     expect((await nous.execute("space_files_read", { artifactId: "artifact:mine0001" }, ctx)).result).toContain("Artifact report text");
     expect((await nous.execute("space_files_read", { artifactId: "artifact:theirs01" }, ctx)).ok).toBe(false);
+  });
+
+  it("reads a decision's files whole for \"Show everything\", through the same guards (operator request 2026-10-21)", async () => {
+    const read = await files.decisionFiles(owner, ["active/study/final/STUDY.md", "artifact:mine0001", "artifact:theirs01", "secrets/key.txt", "../outside.txt"]);
+    expect(read[0]).toMatchObject({ ref: "active/study/final/STUDY.md", total: expect.any(Number), truncated: false });
+    expect(read[0]!.text).toMatch(/^# Study\n[\s\S]*\nend$/);
+    expect(read[0]!.text).toContain("Bearer [REDACTED]");
+    expect(read[1]).toMatchObject({ ref: "artifact:mine0001", text: "Artifact report text" });
+    for (const refused of read.slice(2)) expect(refused).toMatchObject({ text: null, error: expect.any(String) });
   });
 });
 

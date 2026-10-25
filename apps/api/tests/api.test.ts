@@ -2031,6 +2031,26 @@ describe("Space API", () => {
   });
 
 
+  it("leaves test rooms out of the room limit and takes the limit from the user's settings (operator 2026-10-21)", async () => {
+    const store = new InMemorySpaceStore();
+    const { app, cookie, csrfToken } = await authedApp({ store });
+    const headers = { cookie, [csrfHeaderName]: csrfToken };
+    const create = () => app.inject({ method: "POST", url: "/api/rooms", headers, payload: { initialPaneCount: 0 } });
+    const me = (await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } })).json();
+    for (let index = 0; index < 3; index++) {
+      await store.createRoom({ name: `Proof ${index}`, initialPaneCount: 0, kind: "AGENT_PROOF" }, undefined, me.user.id);
+    }
+    const rooms = (await app.inject({ method: "GET", url: "/api/rooms", headers: { cookie } })).json().data as { kind: string }[];
+    for (let index = rooms.filter((room) => room.kind === "WORKSPACE").length; index < 6; index++) {
+      expect((await create()).statusCode).toBe(200);
+    }
+    expect((await create()).json().error.message).toContain("Maximum room limit of 6 rooms reached");
+    expect((await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { roomLimit: 7 } })).statusCode).toBe(200);
+    expect((await create()).statusCode).toBe(200);
+    expect((await create()).json().error.message).toContain("Maximum room limit of 7 rooms reached");
+    expect((await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { roomLimit: 17 } })).statusCode).toBe(422);
+  });
+
   it("persists minimized pane state through PATCH and validates the layout invariant", async () => {
     const { app, cookie, csrfToken } = await authedApp();
     const roomResponse = await app.inject({
@@ -4423,6 +4443,29 @@ describe("Space API", () => {
     expect(list.json().pagination.totalItems).toBe(1);
   });
 
+  it("stores a Live session recording as a VIDEO Media artifact with source LIVE_RECORDING", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-live-recording-"));
+    const { app, cookie, csrfToken } = await authedApp({
+      config: getApiConfig({ SPACE_ARTIFACT_ROOT: artifactRoot })
+    });
+    const roomResponse = await app.inject({
+      method: "POST",
+      url: "/api/rooms",
+      headers: { cookie, [csrfHeaderName]: csrfToken },
+      payload: { name: "Live Room", initialPaneCount: 0 }
+    });
+    const roomId = roomResponse.json().id as string;
+    const recording = multipartImagePayload([{ filename: "live-2026-10-21T10-00-00-000Z.webm", mimeType: "video/webm", body: Buffer.from("webm", "utf8") }]);
+    const recorded = await app.inject({
+      method: "POST",
+      url: `/api/artifacts/file-uploads?roomId=${encodeURIComponent(roomId)}&source=LIVE_RECORDING`,
+      headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": recording.contentType },
+      payload: recording.payload
+    });
+    expect(recorded.statusCode).toBe(200);
+    expect(recorded.json().artifacts[0]).toMatchObject({ roomId, kind: "VIDEO", mimeType: "video/webm", metadata: { source: "LIVE_RECORDING" } });
+  });
+
   it("serves and permanently deletes local artifact files", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-media-artifacts-"));
     const { app, cookie, csrfToken } = await authedApp({
@@ -4722,47 +4765,52 @@ describe("Space API", () => {
 
   it("accepts larger MP4 uploads for room artifacts and stores them as VIDEO", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-video-artifacts-"));
-    const { app, cookie, csrfToken } = await authedApp({
-      config: getApiConfig({ SPACE_ARTIFACT_ROOT: artifactRoot })
-    });
-    const roomResponse = await app.inject({
-      method: "POST",
-      url: "/api/rooms",
-      headers: { cookie, [csrfHeaderName]: csrfToken },
-      payload: { name: "Video Room", initialPaneCount: 0 }
-    });
-    const roomId = roomResponse.json().id as string;
-    const body = Buffer.alloc(11 * 1024 * 1024, 7);
-    const multipart = multipartImagePayload([{ filename: "capture.mp4", mimeType: "video/mp4", body }]);
+    try {
+      const { app, cookie, csrfToken } = await authedApp({
+        config: getApiConfig({ SPACE_ARTIFACT_ROOT: artifactRoot })
+      });
+      const roomResponse = await app.inject({
+        method: "POST",
+        url: "/api/rooms",
+        headers: { cookie, [csrfHeaderName]: csrfToken },
+        payload: { name: "Video Room", initialPaneCount: 0 }
+      });
+      const roomId = roomResponse.json().id as string;
+      const body = Buffer.alloc(11 * 1024 * 1024, 7);
+      const multipart = multipartImagePayload([{ filename: "capture.mp4", mimeType: "video/mp4", body }]);
 
-    const uploaded = await app.inject({
-      method: "POST",
-      url: `/api/artifacts/file-uploads?roomId=${encodeURIComponent(roomId)}&source=USER_UPLOAD`,
-      headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": multipart.contentType },
-      payload: multipart.payload
-    });
+      const uploaded = await app.inject({
+        method: "POST",
+        url: `/api/artifacts/file-uploads?roomId=${encodeURIComponent(roomId)}&source=USER_UPLOAD`,
+        headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": multipart.contentType },
+        payload: multipart.payload
+      });
 
-    expect(uploaded.statusCode).toBe(200);
-    expect(uploaded.json().artifacts[0]).toMatchObject({
-      kind: "VIDEO",
-      mimeType: "video/mp4",
-      byteSize: body.byteLength,
-      metadata: expect.objectContaining({
-        originalFilename: "capture.mp4",
-        declaredMimeType: "video/mp4",
-        resolvedMimeType: "video/mp4"
-      })
-    });
+      expect(uploaded.statusCode).toBe(200);
+      expect(uploaded.json().artifacts[0]).toMatchObject({
+        kind: "VIDEO",
+        mimeType: "video/mp4",
+        byteSize: body.byteLength,
+        metadata: expect.objectContaining({
+          originalFilename: "capture.mp4",
+          declaredMimeType: "video/mp4",
+          resolvedMimeType: "video/mp4"
+        })
+      });
 
-    const artifactId = uploaded.json().artifacts[0]?.id as string;
-    const file = await app.inject({
-      method: "GET",
-      url: `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
-      headers: { cookie }
-    });
-    expect(file.statusCode).toBe(200);
-    expect(file.headers["content-type"]).toContain("video/mp4");
-    expect(Number(file.headers["content-length"])).toBe(body.byteLength);
+      const artifactId = uploaded.json().artifacts[0]?.id as string;
+      const file = await app.inject({
+        method: "GET",
+        url: `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
+        headers: { cookie }
+      });
+      expect(file.statusCode).toBe(200);
+      expect(file.headers["content-type"]).toContain("video/mp4");
+      expect(Number(file.headers["content-length"])).toBe(body.byteLength);
+    } finally {
+      // The upload is 11 MB; a leftover folder per run filled the CLI temp dirs (47 of them, 0.5 GB on 2026-10-21).
+      await rm(artifactRoot, { recursive: true, force: true });
+    }
   });
 
   it("fails closed for non-local artifact file access and deletion", async () => {
@@ -5078,7 +5126,7 @@ describe("Space API", () => {
     const pane = store.createPane({ roomId: room.id, title: "YouTube", mode: "YOUTUBE" });
     const chat = store.createPane({ roomId: room.id, title: "Chat", mode: "CHAT" });
     const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_ARTIFACT_ROOT: join(root, "artifacts"), SPACE_GATEWAY_KEY_FILE: keyFile }),
-      browserSessionManager: fakeBrowserSessionManager() });
+      browserSessionManager: fakeBrowserSessionManager(), videoEngine: async () => ({ path: null }) });
     const headers = { cookie, [csrfHeaderName]: csrfToken };
     const realFetch = globalThis.fetch;
     const gateway = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => String(input).endsWith("/gemini/v1/generate")
@@ -5647,7 +5695,7 @@ describe("Space API", () => {
     expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
   });
 
-  it("releases an operator lease nobody has pressed for 2 minutes on its heartbeat, never one still in use", async () => {
+  it("releases an operator lease nobody has pressed for 60 s on its heartbeat, never one still in use", async () => {
     // Operator report 2026-10-15: a Space tab on an old web bundle kept heartbeating a lease for an hour and blocked the agents.
     const start = Date.parse("2026-10-15T10:00:00.000Z");
     vi.useFakeTimers({ toFake: ["Date"], now: start });
@@ -5692,15 +5740,15 @@ describe("Space API", () => {
       });
       expect(input.statusCode).toBe(200);
       // A bare hover is not use: it does not keep the browser.
-      vi.setSystemTime(start + 5 * 60_000);
+      vi.setSystemTime(start + 4 * 60_000 + 30_000);
       const hover = await app.inject({
         method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/input`, headers,
         payload: { type: "POINTER", leaseId, eventType: "mouseMoved", x: 140, y: 90, button: "none" }
       });
       expect(hover.statusCode).toBe(200);
-      // Five minutes after taking control but one after the last press: the operator keeps it.
+      // Four and a half minutes after taking control but 30 s after the last press: the operator keeps it.
       expect((await heartbeat()).json().lease.status).toBe("ACTIVE");
-      // Operator decision 2026-10-15: back to the agent 2 minutes after the last press.
+      // Operator decision 2026-10-24: back to the agent 60 s after the last press (2 minutes until then).
       vi.setSystemTime(start + 6 * 60_000 + 1000);
       const idle = await heartbeat();
       expect(idle.statusCode).toBe(200);
@@ -5714,7 +5762,7 @@ describe("Space API", () => {
     }
   });
 
-  it("lets a CLI agent reclaim the browser from an operator only after 2 minutes without input", async () => {
+  it("lets a CLI agent reclaim the browser from an operator only after 60 s without input", async () => {
     const start = Date.parse("2026-10-15T10:00:00.000Z");
     vi.useFakeTimers({ toFake: ["Date"], now: start });
     try {
@@ -5750,12 +5798,12 @@ describe("Space API", () => {
         headers: { cookie, [csrfHeaderName]: csrfToken }, payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 }
       });
       expect(acquired.statusCode).toBe(200);
-      vi.setSystemTime(start + 90_000);
-      expect(await reclaim()).toMatchObject({ reclaimed: false, reason: "OPERATOR_ACTIVE", idleSeconds: 90, retryAfterSeconds: 30 });
-      vi.setSystemTime(start + 120_000);
-      expect(await reclaim()).toMatchObject({ reclaimed: true, reason: "RECLAIMED", idleSeconds: 120, lease: { status: "RELEASED" } });
+      vi.setSystemTime(start + 45_000);
+      expect(await reclaim()).toMatchObject({ reclaimed: false, reason: "OPERATOR_ACTIVE", idleSeconds: 45, retryAfterSeconds: 15 });
+      vi.setSystemTime(start + 60_000);
+      expect(await reclaim()).toMatchObject({ reclaimed: true, reason: "RECLAIMED", idleSeconds: 60, lease: { status: "RELEASED" } });
       expect(store.listAuditEvents().filter((event) => event.action === "pane.browser.control.agent_reclaim")).toEqual([
-        expect.objectContaining({ targetId: browserPane.id, metadata: { sessionId, leaseId: "browser_lease:test", agent: `cli:t3code:${t3Pane.id}`, idleSeconds: 120 } })
+        expect.objectContaining({ targetId: browserPane.id, metadata: { sessionId, leaseId: "browser_lease:test", agent: `cli:t3code:${t3Pane.id}`, idleSeconds: 60 } })
       ]);
       // A handoff the operator took and then left (his tab stopped renewing the lease) reads COMPLETED to the agent.
       const handoff = store.createBrowserHandoffRequest({
@@ -6128,7 +6176,8 @@ describe("Space API", () => {
     ]);
     // The browser's corner label names the CLI pane that drove it and its room (operator 2026-10-20).
     const pagesWithAgent = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(browserPane.id)}/browser/pages`, headers: { cookie } });
-    expect(pagesWithAgent.json().agent).toEqual({ paneId: cliPane.id, title: "Codex CLI", roomId: room.id, roomName: "CLI Browser Bridge" });
+    expect(pagesWithAgent.json().agent).toEqual({ paneId: cliPane.id, title: "Codex CLI", paneName: cliPane.paneName ?? null, roomId: room.id, roomName: "CLI Browser Bridge",
+      drivenAt: expect.any(String), active: true });
     expect(failedActions.statusCode).toBe(200);
     expect(failedActions.json().results).toEqual([
       expect.objectContaining({

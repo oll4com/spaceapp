@@ -630,3 +630,4 @@ export async function readOpenCodeSpaceChatControl(): Promise<OpenCodeServerCont
     return null;
   }
 }
+export * from "./free-model.js";

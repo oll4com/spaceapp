@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareDesktopVersions,
   desktopReleaseDownloadUrl,
+  desktopUpdateIsDownloadOnly,
   isDesktopVersionNewer,
   parseDesktopRelease
 } from "../src/features/desktop-titlebar/desktop-release.js";
@@ -82,5 +83,15 @@ describe("desktop release payload", () => {
     });
     expect(release).not.toBeNull();
     expect(desktopReleaseDownloadUrl(release, "win32")).toBeNull();
+  });
+});
+
+describe("desktop update path", () => {
+  it("downloads through the page for Linux apps before 0.1.25, whose script updater cannot work", () => {
+    expect(desktopUpdateIsDownloadOnly("linux", "0.1.23")).toBe(true);
+    expect(desktopUpdateIsDownloadOnly("linux", "0.1.24")).toBe(true);
+    expect(desktopUpdateIsDownloadOnly("linux", undefined)).toBe(true);
+    expect(desktopUpdateIsDownloadOnly("linux", "0.1.25")).toBe(false);
+    expect(desktopUpdateIsDownloadOnly("win32", "0.1.23")).toBe(false);
   });
 });

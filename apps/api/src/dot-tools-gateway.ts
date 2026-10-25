@@ -92,6 +92,8 @@ export type DotApprovalPayload =
   | { kind: "deliverable"; tool: "deliverable.publish"; path: string; sha256: string }
   /** A design request costs image generation and lands in the owner's Media: it waits for the owner. */
   | { kind: "design"; tool: "design.request"; arguments: Record<string, unknown> }
+  /** A video request costs minutes of encoding and lands in the owner's Media: it waits for the owner. */
+  | { kind: "video"; tool: "video.request"; arguments: Record<string, unknown> }
   /** Starting another Dot's work always waits for the owner. */
   | { kind: "delegate"; tool: "dot.delegate"; arguments: Record<string, unknown> }
   /** Binding email and calendar actions (send, create event) run only after the owner approves them. */
@@ -125,6 +127,9 @@ export interface DotToolGatewayDeps {
     Promise<{ deliverable: { version: number; artifactId: string | null; name: string }; unchanged: boolean }>;
   /** `design.request`: asks the owner's Design pane for a graphic, after the owner approves it. */
   designRequest?(session: { sessionId: string; dotId: string; roomId: string }, owner: string, args: Record<string, unknown>):
+    Promise<{ status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string }>;
+  /** `video.request`: asks the owner's Video pane for a finished video, after the owner approves it. */
+  videoRequest?(session: { sessionId: string; dotId: string; roomId: string }, owner: string, args: Record<string, unknown>):
     Promise<{ status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string }>;
   /** The workspace file's current sha256, pinned in the approval so exactly the approved content is published. */
   deliverableFingerprint?(owner: string, dotId: string, path: string): Promise<string>;
@@ -262,6 +267,10 @@ export function describeDotApproval(payload: DotApprovalPayload): string {
   if (payload.kind === "design") {
     const formats = Array.isArray(payload.arguments.formatIds) && payload.arguments.formatIds.length ? payload.arguments.formatIds.slice(0, 8).join(", ") : "the Design pane's default format";
     return `Ask the Design pane for ${String(formats).slice(0, 200)}: “${String(payload.arguments.brief ?? "").slice(0, 300)}”`;
+  }
+  if (payload.kind === "video") {
+    const formats = Array.isArray(payload.arguments.formatIds) && payload.arguments.formatIds.length ? payload.arguments.formatIds.slice(0, 8).join(", ") : "the Video pane's default formats";
+    return `Ask the Video pane for ${String(formats).slice(0, 200)}: “${String(payload.arguments.brief ?? "").slice(0, 300)}”`;
   }
   if (payload.kind === "memory") {
     const text = `“${String(payload.arguments.text ?? "").slice(0, 300)}”`;
@@ -473,6 +482,11 @@ export async function executeDotGatewayCall(deps: DotToolGatewayDeps, request: F
         if (typeof args.brief !== "string" || !args.brief.trim()) return blocked(entry.id, "design.request needs a brief.");
         return parkForApproval(deps, resolved, entry.id, input.invocationId, { kind: "design", tool: "design.request", arguments: args });
       }
+      if (entry.id === "video.request") {
+        if (!deps.videoRequest) return blocked(entry.id, "The Video pane is unavailable on this server.");
+        if (typeof args.brief !== "string" || !args.brief.trim()) return blocked(entry.id, "video.request needs a brief.");
+        return parkForApproval(deps, resolved, entry.id, input.invocationId, { kind: "video", tool: "video.request", arguments: args });
+      }
       if (entry.id === "deliverable.publish") {
         if (!deps.publishDeliverable || !deps.deliverableFingerprint) return blocked(entry.id, "Deliverables are unavailable.");
         const parsed = dotWorkspaceRelativePathSchema.safeParse(args.path);
@@ -542,7 +556,8 @@ export async function decideDotApproval(deps: DotToolGatewayDeps, request: Fasti
         : payload.kind === "connector" && payload.tool.startsWith("channel.") && deps.channelTool ? await deps.channelTool(target, input.owner, payload.tool, payload.arguments)
         : payload.kind === "connector" && deps.connectorTool ? await deps.connectorTool(input.owner, payload.tool, payload.arguments)
         : payload.kind === "delegate" && deps.delegate ? await deps.delegate(target, input.owner, payload.arguments)
-        : payload.kind === "design" && deps.designRequest ? await deps.designRequest(target, input.owner, payload.arguments) : null;
+        : payload.kind === "design" && deps.designRequest ? await deps.designRequest(target, input.owner, payload.arguments)
+        : payload.kind === "video" && deps.videoRequest ? await deps.videoRequest(target, input.owner, payload.arguments) : null;
       outcome = opened ? opened.status === "COMPLETED" ? { status: "COMPLETED", statusReason: null, toolId: invocation.toolId, result: bounded(opened.result) }
           : { status: "FAILED", statusReason: opened.statusReason, toolId: invocation.toolId }
         : payload.kind === "browser"

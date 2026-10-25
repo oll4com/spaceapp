@@ -1,4 +1,4 @@
-import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
+import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached, SETUP_CATALOG, SETUP_CATALOG_VERSION, buildSetupSelection } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
@@ -879,6 +879,23 @@ export class DemoStore {
         });
       }
       case "setupOverview": return Promise.resolve(this.setupOverview());
+      case "getSetupCatalog": return Promise.resolve({
+        protocolVersion: 2, catalogVersion: SETUP_CATALOG_VERSION,
+        features: SETUP_CATALOG.map((feature) => ({
+          ...feature,
+          availability: feature.requiredForFirstSetup ? "AVAILABLE" : "UNAVAILABLE",
+          reasonCode: feature.requiredForFirstSetup ? null : "DEMO_RUNTIME_ONLY"
+        }))
+      });
+      case "getSetupDraft": return Promise.resolve({
+        id: null, ownerId: "user:owner", protocolVersion: 2, revision: null,
+        persona: "everyday", level: "minimal",
+        requestedFeatureIds: buildSetupSelection("everyday", "minimal",
+          Object.fromEntries(SETUP_CATALOG.map((feature) => [feature.id,
+            feature.requiredForFirstSetup ? "AVAILABLE" : "UNAVAILABLE"])), []).requestedIds,
+        connectionChoices: [], catalogVersion: SETUP_CATALOG_VERSION
+      });
+      case "getCurrentSetup": return Promise.resolve({ run: null, plan: null, tasks: [], receipts: [] });
       case "setupStarterRoom": return Promise.resolve({
         room: structuredClone(this.fixture.rooms[0]),
         onboarding: {
@@ -1943,6 +1960,8 @@ export class DemoStore {
       case "saveYouTubePlayback": return { ok: true };
       case "watchYouTube": return { currentUrl: null };
       case "youtubeVideoText": throw new SpaceApiError("Video summaries and full text need a live Space with Space Gateway. Demo mode cannot read videos.", { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "youtubeDownload":
+      case "youtubeDownloadJob": throw new SpaceApiError("Downloading videos needs a live Space. Demo mode cannot download videos.", { status: 409, code: "DEMO_LOCAL_ONLY" });
       case "browserAccounts": return { selectedProfileId: null, profiles: [] };
       case "browserStatus": return Promise.resolve({ enabled: true, statusReason: "Local canvas fixture; no browser host is connected.", defaultUrl: "https://demo.invalid/space-launch", checkedAt: DEMO_FIXED_AT });
       case "browserSession":
@@ -2132,10 +2151,11 @@ export class DemoStore {
       case "deleteClipboardItem": if (this.publicMock) this.fixture.clipboardItems = this.fixture.clipboardItems.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clearClipboardItems": { const deletedCount = this.publicMock ? this.fixture.clipboardItems.length : 0; if (this.publicMock) this.fixture.clipboardItems = []; return Promise.resolve({ deletedCount }); }
       case "taskItems": {
-        const query = (args[0] ?? {}) as { q?: string; status?: TaskItem["status"]; page?: number; pageSize?: number };
+        const query = (args[0] ?? {}) as { q?: string; status?: TaskItem["status"]; source?: TaskItem["source"]; page?: number; pageSize?: number };
         const needle = query.q?.trim().toLowerCase();
         const items = this.fixture.taskItems.filter((item) =>
           (query.status === undefined || item.status === query.status) &&
+          (query.source === undefined || item.source === query.source) &&
           (!needle || item.title.toLowerCase().includes(needle) || item.objective.toLowerCase().includes(needle))
         );
         return Promise.resolve(structuredClone(requestedPage(items, query)));
@@ -2178,8 +2198,9 @@ export class DemoStore {
       case "deleteTaskItem": if (this.publicMock) this.fixture.taskItems = this.fixture.taskItems.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clearTaskItems": { const deletedCount = this.publicMock ? this.fixture.taskItems.length : 0; if (this.publicMock) this.fixture.taskItems = []; return Promise.resolve({ deletedCount }); }
       case "createRoom": {
-        if (this.fixture.rooms.length >= MAX_ROOMS) {
-          throw new SpaceApiError(`Maximum room limit (${MAX_ROOMS}) reached.`, { status: 409, code: "ROOM_LIMIT_REACHED" });
+        const roomLimit = this.fixture.auth.settings?.roomLimit ?? MAX_ROOMS;
+        if (roomLimitReached(this.fixture.rooms, roomLimit)) {
+          throw new SpaceApiError(`Maximum room limit (${roomLimit}) reached.`, { status: 409, code: "ROOM_LIMIT_REACHED" });
         }
         const name = String(args[0] ?? "").trim() || pickNextAvailableRoomName(this.fixture.rooms.map((r) => r.name));
         const initialPaneCount = Math.min(16, Math.max(0, Number(args[1] ?? 4)));
@@ -2580,7 +2601,7 @@ export class DemoStore {
     stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const, compressionCodeText: "ON" as const,
     compressionTimeBudgetMs: 250, compressionProviders: {}, requestLogRetentionDays: 30, displayTimeFormat: "24H" as const, displayAccountWindows: "BOTH" as const,
     displayBurnProjection: true, upstreamStreamTransport: "DEFAULT" as const, promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false,
-    warmupWindows: "BOTH" as const, warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false,
+    warmupWindows: "BOTH" as const, warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false, anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null,
     lanMode: "ENV" as const, lanHost: null, lanPort: null, lanAllowedSources: [] as string[], updatedAt: DEMO_FIXED_AT
   };
 

@@ -1,82 +1,75 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import type { ClipboardItem } from "@space/contracts";
 import type { NousNote } from "@space/db";
 import { NOUS_LOG_NOTE } from "./digest.js";
 
 /**
  * Notes housekeeping (plan clipboard:bTm-5PGrt9po U5): Nous writes a turn log note almost every turn, and on stable 690 note
- * keys filled its world (2026-10-20). Log notes untouched for 48 hours move into clipboard AGENT_NOTE archives, "Nous: notes
- * archive <date> (part n/N)", each within the clipboard's agent note limit; a note is deleted only after the records holding it were saved.
+ * keys filled its world (2026-10-20). Log notes untouched for 48 hours are appended to the owner's archive file of the day,
+ * `<var>/nous-notes-archive/<owner>/<YYYY-MM-DD>.md`; a note is deleted only after the file took it. Until 2026-10-21 they
+ * went to a clipboard AGENT_NOTE record per turn (212 in a day filled the operator's Notes, operator order 2026-10-21).
  */
 export const NOUS_NOTE_ARCHIVE_AGE_MS = 48 * 3_600_000;
+const CLIPBOARD_ARCHIVE = /^Nous: notes archive (\d{4}-\d{2}-\d{2}) \(part \d+\/\d+\)\n\n/;
 
 export function notesToArchive(notes: NousNote[], now: number): NousNote[] {
   return notes.filter((note) => NOUS_LOG_NOTE.test(note.key) && Date.parse(note.updatedAt) < now - NOUS_NOTE_ARCHIVE_AGE_MS)
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.key.localeCompare(right.key));
 }
 
-/**
- * One archive record's text at most (stable 2026-10-20: one 100,000-character archive failed "Agent notes may contain at most
- * 10000 characters", so nothing was archived). Below agentClipboardNoteMaxCharacters, with room for the header.
- */
-export const NOUS_NOTE_ARCHIVE_PART_CHARS = 9_500;
-const HEADER_RESERVE = 200;
-
-/**
- * The archive records, oldest notes first, each at most NOUS_NOTE_ARCHIVE_PART_CHARS characters. A note is never cut unless it
- * alone is over the limit: then it is split into numbered pieces, one or more per record. `keys`: the notes with a piece in it.
- */
-export function archiveTexts(notes: NousNote[], now: number): Array<{ text: string; keys: string[] }> {
-  const date = new Date(now).toISOString().slice(0, 10);
-  const budget = NOUS_NOTE_ARCHIVE_PART_CHARS - HEADER_RESERVE;
-  const heading = (note: NousNote, piece?: string) => `### ${note.key} (updated ${note.updatedAt.slice(0, 16).replace("T", " ")} UTC${piece ? `, piece ${piece}` : ""})\n`;
-  const pieces: Array<{ key: string; text: string }> = [];
-  for (const note of notes) {
-    const whole = `${heading(note)}${note.text}`;
-    if (whole.length <= budget) { pieces.push({ key: note.key, text: whole }); continue; }
-    // Code points, so a split never cuts a character in two.
-    const chars = Array.from(note.text);
-    const size = budget - heading(note, "999/999").length;
-    const count = Math.ceil(chars.length / size);
-    for (let index = 0; index < count; index += 1) {
-      pieces.push({ key: note.key, text: `${heading(note, `${index + 1}/${count}`)}${chars.slice(index * size, (index + 1) * size).join("")}` });
-    }
-  }
-  const parts: Array<{ entries: string[]; keys: string[] }> = [];
-  for (const piece of pieces) {
-    const last = parts.at(-1);
-    if (last && last.entries.join("\n\n").length + 2 + piece.text.length <= budget) {
-      last.entries.push(piece.text);
-      if (!last.keys.includes(piece.key)) last.keys.push(piece.key);
-    } else parts.push({ entries: [piece.text], keys: [piece.key] });
-  }
-  return parts.map((part, index) => ({ keys: part.keys,
-    text: `Nous: notes archive ${date} (part ${index + 1}/${parts.length})\n\nNous's turn and day log notes older than 48 hours, moved out of its world.\n\n${part.entries.join("\n\n")}` }));
+/** The notes as archive entries, in the given order, each whole. */
+export function archiveText(notes: NousNote[]): string {
+  return notes.map((note) => `### ${note.key} (updated ${note.updatedAt.slice(0, 16).replace("T", " ")} UTC)\n${note.text}\n\n`).join("");
 }
 
 export function createNotesArchive(deps: {
-  save(owner: string, text: string): Promise<unknown>;
+  root: string;
   remove(owner: string, key: string): Promise<void>;
-  /** A record that could not be saved (its notes stay for the next run). */
+  /** The owner's clipboard AGENT_NOTE records and their delete, to move the old archive records into the files. */
+  clipboard?: { list(owner: string): Promise<ClipboardItem[]>; remove(owner: string, id: string): Promise<unknown> };
+  /** An archive write that failed (its notes or record stay for the next run). */
   warn?(error: unknown): void;
   now?: () => number;
 }) {
   const now = deps.now ?? Date.now;
   const running = new Set<string>();
+  const clipboardMoved = new Set<string>();
+
+  async function append(owner: string, date: string, text: string) {
+    const folder = join(deps.root, encodeURIComponent(owner));
+    await mkdir(folder, { recursive: true, mode: 0o750 });
+    await appendFile(join(folder, `${date}.md`), text, { mode: 0o640 });
+  }
+
+  // shortcut: moves the clipboard archive records written before 2026-10-21 once per process; remove when no instance has any.
+  async function moveClipboardArchives(owner: string, clipboard: NonNullable<typeof deps.clipboard>) {
+    const records = (await clipboard.list(owner)).filter((record) => CLIPBOARD_ARCHIVE.test(record.text))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    for (const record of records) {
+      const [title, date] = CLIPBOARD_ARCHIVE.exec(record.text)!;
+      // Without the title and the "older than 48 hours" line; the record goes only after the file took its notes.
+      const rest = record.text.slice(title.length);
+      await append(owner, date!, `${rest.slice(rest.indexOf("\n\n") + 2)}\n\n`);
+      await clipboard.remove(owner, record.id);
+    }
+  }
+
   return {
     /** Archives the owner's old log notes; returns the keys that left the notes. */
     async run(owner: string, notes: NousNote[]): Promise<Set<string>> {
       const moved = new Set<string>();
-      const due = notesToArchive(notes, now());
-      if (!due.length || running.has(owner)) return moved;
+      if (running.has(owner)) return moved;
       running.add(owner);
       try {
-        // A note goes only after every record holding it was saved; a failed record keeps its notes for the next tick.
-        const unsaved = new Set<string>();
-        for (const part of archiveTexts(due, now())) {
-          try { await deps.save(owner, part.text); }
-          catch (error) { deps.warn?.(error); for (const key of part.keys) unsaved.add(key); }
+        if (deps.clipboard && !clipboardMoved.has(owner)) {
+          await moveClipboardArchives(owner, deps.clipboard).then(() => { clipboardMoved.add(owner); }, (error) => deps.warn?.(error));
         }
+        const due = notesToArchive(notes, now());
+        if (!due.length) return moved;
+        try { await append(owner, new Date(now()).toISOString().slice(0, 10), archiveText(due)); }
+        catch (error) { deps.warn?.(error); return moved; }
         for (const note of due) {
-          if (unsaved.has(note.key)) continue;
           await deps.remove(owner, note.key);
           moved.add(note.key);
         }

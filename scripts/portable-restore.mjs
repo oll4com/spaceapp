@@ -19,7 +19,21 @@ const stagingName = ".spaceapp-restore-staging";
 // The databases as they were before the restore, and the files the restore replaced, kept until it has finished.
 const rollbackName = ".spaceapp-restore-rollback";
 const previousName = ".spaceapp-restore-previous";
-const restoreArgs = ["--clean", "--if-exists", "--no-owner", "--no-acl", "--single-transaction", "--exit-on-error"];
+const restoreArgs = ["--no-owner", "--no-acl", "--single-transaction", "--exit-on-error"];
+// Each database is restored into an emptied public schema instead of pg_restore --clean: tables a newer SpaceApp added that
+// reference tables in the dump no longer block their drop, so a backup made by an older version restores (1.1.7 review,
+// Claude F6). The pre-restore copy covers a restore that fails after the schema was emptied.
+const emptySchemaSql = "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;";
+const emptySchemaArgs = (databaseName) => ["--no-psqlrc", "--quiet", "--set=ON_ERROR_STOP=1", `--dbname=${databaseName}`, `--command=${emptySchemaSql}`];
+async function restoreDatabase(databaseName, dump, env) {
+  await runCommand("psql", emptySchemaArgs(databaseName), { env });
+  await runCommand("pg_restore", [...restoreArgs, `--dbname=${databaseName}`, dump], { env });
+}
+// Exit code of a restore that changed nothing or put everything back: the launcher may start SpaceApp again (1.1.8).
+export const RESTORE_UNCHANGED_EXIT = 3;
+
+/** A restore failure after which the installation is exactly as it was before the restore. */
+export class RestoreUnchangedError extends Error {}
 
 export async function selectLatestBackup(root) {
   const entries = await readdir(root, { withFileTypes: true });
@@ -88,7 +102,18 @@ export async function validateBackupManifest(backupDirectory) {
   return manifest;
 }
 
-export async function restorePortableBackup({
+export async function restorePortableBackup(options = {}) {
+  const state = { changed: false };
+  try {
+    return await restoreBackup(options, state);
+  } catch (error) {
+    // Anything that fails before the first database is restored leaves the installation untouched.
+    if (state.changed || error instanceof RestoreUnchangedError) throw error;
+    throw new RestoreUnchangedError(`${error instanceof Error ? error.message : String(error)} Nothing was changed.`);
+  }
+}
+
+async function restoreBackup({
   env = process.env,
   stdout = process.stdout,
   inputRoot = "/backups",
@@ -96,7 +121,7 @@ export async function restorePortableBackup({
   confirmation = "",
   dataRoot = "/var/lib/spaceapp",
   memoryRoot = "/var/lib/spaceapp/memory"
-} = {}) {
+} = {}, state = { changed: false }) {
   if (confirmation !== "RESTORE") {
     throw new Error("Portable restore requires explicit RESTORE confirmation.");
   }
@@ -141,6 +166,16 @@ export async function restorePortableBackup({
       `--command=SELECT datname FROM pg_database WHERE datname IN (${temporalDatabases.map((name) => `'${name}'`).join(", ")}) ORDER BY datname`,
       ...database.args
     ], { env: postgresEnv(database.databaseName), capture: true })).split(/\r?\n/).filter((name) => temporalDatabases.includes(name))]);
+    // Every database of the backup must exist here before anything changes: a backup with workflow history (Temporal) on an
+    // installation without Temporal (profile small) is refused with the way forward (1.1.7 review, Claude F2).
+    const absent = restores.map(([databaseName]) => databaseName).filter((databaseName) => !present.has(databaseName));
+    if (absent.length) {
+      throw new RestoreUnchangedError([
+        `This backup holds workflow history (${absent.join(", ")}) that this installation has no database for: it runs without`,
+        "workflows (profile small). Nothing was changed. Install the medium or large profile, for example",
+        "'npx --yes run-spaceapp@latest install --profile medium', and run the restore again."
+      ].join("\n"));
+    }
     await rm(rollbackDirectory, { recursive: true, force: true });
     await mkdir(rollbackDirectory, { mode: 0o700 });
     for (const [databaseName] of restores) {
@@ -154,9 +189,10 @@ export async function restorePortableBackup({
       ], { env: postgresEnv(databaseName) });
     }
 
+    state.changed = true;
     try {
       for (const [databaseName, dump] of restores) {
-        await runCommand("pg_restore", [...restoreArgs, `--dbname=${databaseName}`, join(backupDirectory, dump)], { env: postgresEnv(databaseName) });
+        await restoreDatabase(databaseName, join(backupDirectory, dump), postgresEnv(databaseName));
         restored.push(databaseName);
       }
       swapped = { data: await swapEntries(dataRoot, dataStaging, new Set(["memory", stagingName, rollbackName, ...hostSecretEntries])) };
@@ -167,18 +203,18 @@ export async function restorePortableBackup({
       for (const databaseName of [...restored].reverse()) {
         if (!present.has(databaseName)) { stillRestored.push(databaseName); continue; }
         try {
-          await runCommand("pg_restore", [...restoreArgs, `--dbname=${databaseName}`, join(rollbackDirectory, `${databaseName}.dump`)], { env: postgresEnv(databaseName) });
+          await restoreDatabase(databaseName, join(rollbackDirectory, `${databaseName}.dump`), postgresEnv(databaseName));
         } catch {
           stillRestored.push(databaseName);
         }
       }
       const reason = error instanceof Error ? error.message : String(error);
       if (!stillRestored.length && !fileProblem) {
-        throw new Error(`Restore failed (${reason}). Every database and file was put back as it was before the restore.`);
+        throw new RestoreUnchangedError(`Restore failed (${reason}). Every database and file was put back as it was before the restore.`);
       }
       keepRollback = true;
       const steps = stillRestored.map((databaseName) => present.has(databaseName)
-        ? `pg_restore ${restoreArgs.join(" ")} --dbname=${databaseName} ${join(rollbackDirectory, `${databaseName}.dump`)}`
+        ? `psql --dbname=${databaseName} --command="${emptySchemaSql}" && pg_restore ${restoreArgs.join(" ")} --dbname=${databaseName} ${join(rollbackDirectory, `${databaseName}.dump`)}`
         : `(no copy: ${databaseName} did not exist before the restore)`);
       throw new Error([
         `Restore failed (${reason}) and could not be fully undone.`,
@@ -273,6 +309,6 @@ if (isMain) {
     await restorePortableBackup(parseArguments(process.argv.slice(2)));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : "Portable restore failed."}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof RestoreUnchangedError ? RESTORE_UNCHANGED_EXIT : 1;
   }
 }

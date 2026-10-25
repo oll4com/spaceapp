@@ -28,8 +28,8 @@ export type NousFollowupArgs = z.infer<typeof nousFollowupArgsSchema>;
 
 export interface NousFollowupsDeps {
   repository: NousFollowupsRepository;
-  /** Puts a line into the owner's inbox (the Nous service's notice). */
-  notice(owner: string, key: string, line: string): Promise<void>;
+  /** Puts a line into the owner's inbox (the Nous service's notice); `onDone` runs after the turn that carried it completed. */
+  notice(owner: string, key: string, line: string, onDone?: () => Promise<void>): Promise<void>;
   /** A ticket's status in either merge queue, null when it is not found. */
   ticketStatus?(ticketId: string): Promise<DeployQueueTicket["status"] | null>;
   now?: () => number;
@@ -53,9 +53,11 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
   const now = deps.now ?? Date.now;
   const ticketStatus = deps.ticketStatus ?? ((id: string) => readTicketStatus(id));
 
+  // The row stays OPEN until the turn that saw the line completed (2026-10-21): a restart or a failed turn used to lose it, and the
+  // tick re-notices the same key (the line is replaced, never doubled) until then.
   async function fire(item: NousFollowup, outcome: string): Promise<void> {
-    const closed = await deps.repository.close(item.ownerUserId, item.id, "FIRED", outcome);
-    if (closed) await deps.notice(item.ownerUserId, `followup:${item.id}`, `Follow-up you set ${item.createdAt.slice(0, 16)} (${outcome}): ${item.note}`);
+    await deps.notice(item.ownerUserId, `followup:${item.id}`, `Follow-up you set ${item.createdAt.slice(0, 16)} (${outcome}): ${item.note}`,
+      async () => { await deps.repository.close(item.ownerUserId, item.id, "FIRED", outcome); });
   }
 
   return {

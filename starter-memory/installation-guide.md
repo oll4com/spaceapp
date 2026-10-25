@@ -66,8 +66,10 @@ directories and the task waits until someone answers.
 
 After checking each item with the owner, create/update
 `/var/lib/spaceapp/memory/installation-completion.md` with date, installed runtime,
-platform, observed health, owner setup complete (boolean only), chosen model,
-actual test task result, shared workspace names (only with consent), enabled
+platform, observed health, owner setup complete (boolean only), chosen model (read
+it from `/var/lib/spaceapp/memory/installation-model.json`; do not search
+`/var/lib/spaceapp` for it: OpenCode asks the owner before it reads outside the
+memory directory, and the task waits), actual test task result, shared workspace names (only with consent), enabled
 optional features, unresolved issues and next action. Preserve prior owner notes.
 If interrupted, read this record and continue from verified facts. Do not mark
 onboarding complete while there is an unresolved critical issue.

@@ -438,6 +438,22 @@ describe("agent proof rooms API", () => {
     }
   });
 
+  it("creates Codex proof panes on dev, whose API has no Codex app-server to ask for launch defaults (2026-10-23)", async () => {
+    const store = new InMemorySpaceStore();
+    const host = readyHostClient();
+    const unresolved = { build: vi.fn(async () => { throw new Error("no app-server on dev"); }), read: vi.fn() } as unknown as NonNullable<CreateAppOptions["codexCliModeDefaultsService"]>;
+    const { app, cookie, csrfToken } = await authedApp({ store, cliHostClient: host.client, codexCliModeDefaultsService: unresolved,
+      config: { ...await enabledProofConfig(), instance: "dev" } });
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/proof-rooms", headers: { cookie, [csrfHeaderName]: csrfToken }, payload: { paneCount: 2 } });
+      expect(response.statusCode, response.body).toBe(201);
+      expect(proofRoomSchema.parse(response.json()).sessionIds).toHaveLength(2);
+      expect(unresolved.build).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates a fixed CLI input proof pane without pre-spawning its terminal transport", async () => {
     const store = new InMemorySpaceStore();
     const host = readyHostClient();
@@ -1067,4 +1083,147 @@ describe("agent proof rooms API", () => {
       await app.close();
     }
   });
+});
+
+describe('dev-only mixed diagnostic fixtures', () => {
+  it('creates exactly eighteen synthetic terminals and guards read/cleanup and foreign manifests', async () => {
+    const store=new InMemorySpaceStore(), host=readyHostClient();
+    const {app,cookie,csrfToken}=await authedApp({store,cliHostClient:host.client,config:{...await enabledProofConfig(),instance:'dev'}});
+    const headers={cookie,[csrfHeaderName]:csrfToken}, records: Array<ReturnType<typeof proofRoomSchema.parse>>=[];
+    try {
+      for(const [variant,count,sessions] of [['C',4,4],['B',5,4],['P',5,5],['M',6,5]] as const) {
+        const response=await app.inject({method:'POST',url:'/api/proof-rooms',headers,payload:{profile:`WARM_MIXED_${variant}`,paneCount:count}});
+        expect(response.statusCode,response.body).toBe(201);
+        const record=proofRoomSchema.parse(response.json());records.push(record);
+        expect(record.panes).toHaveLength(count);expect(record.sessionIds).toHaveLength(sessions);
+        for(const mutation of [
+          {panes:record.panes.slice(1)}, {panes:[...record.panes,record.panes[0]]},
+          {panes:record.panes.map((pane,i)=>i===0?{...pane,roomId:'room:foreign'}:pane)},
+          {panes:record.panes.map((pane,i)=>i===0?{...pane,terminalRuntimeId:'cli:gemini'}:pane)},
+          {panes:record.panes.map((pane,i)=>i===0?{...pane,isClosed:true}:pane)},
+          {panes:record.panes.map((pane,i)=>i===0?{...pane,isMinimized:true}:pane)},
+          {panes:[record.panes[1],record.panes[0],...record.panes.slice(2)]},
+          {sessionIds:record.sessionIds.slice(1)}, {sessionIds:record.sessionIds.map(()=>record.sessionIds[0])}
+        ])expect(proofRoomSchema.safeParse({...record,...mutation}).success).toBe(false);
+        expect((await app.inject({method:'GET',url:`/api/proof-rooms/${record.room.id}`,headers})).statusCode).toBe(200);
+        expect((await app.inject({method:'POST',url:`/api/proof-rooms/${record.room.id}/cli-render/start`,headers,payload:{}})).statusCode).toBe(409);
+      }
+      expect(host.attach).toHaveBeenCalledTimes(18);
+      expect(host.attach.mock.calls.every(([call])=>call.spawn?.command==='/bin/sh'&&call.spawn.args[1]==="printf 'SPACE_WARM_READY\\r\\n'; exec /bin/sleep 240")).toBe(true);
+      const mixed=records[3]!;
+      const bad={...mixed,panes:mixed.panes.map((pane,index)=>index===4?{...pane,mode:'CHAT'}:pane)};
+      expect(proofRoomSchema.safeParse(bad).success).toBe(false);
+      await store.updatePane(mixed.panes[4]!.id,{title:'changed'});
+      expect((await app.inject({method:'POST',url:`/api/proof-rooms/${mixed.room.id}/cli-render/cleanup`,headers,payload:{}})).statusCode).toBe(409);
+      await store.updatePane(mixed.panes[4]!.id,{title:mixed.panes[4]!.title});
+      for(const record of records) expect((await app.inject({method:'POST',url:`/api/proof-rooms/${record.room.id}/cli-render/cleanup`,headers,payload:{}})).json().ownedProcessStopped).toBe(true);
+      expect(host.terminate).toHaveBeenCalledTimes(18);
+    } finally {await app.close();}
+  });
+
+  it('refuses stable, readonly and non-admin creation; cleans partial creation failures', async () => {
+    for(const instance of ['stable','dev'] as const) {
+      const store=new InMemorySpaceStore(),host=readyHostClient({failAttachAt:3});
+      const {app,cookie,csrfToken}=await authedApp({store,cliHostClient:host.client,config:{...await enabledProofConfig(),instance}});
+      const headers={cookie,[csrfHeaderName]:csrfToken};
+      try {
+        const response=await app.inject({method:'POST',url:'/api/proof-rooms',headers,payload:{profile:'WARM_MIXED_C',paneCount:4}});
+        expect(response.statusCode).toBe(instance==='dev'?500:403);
+        expect((await store.listRooms()).filter(room=>room.kind==='AGENT_PROOF')).toHaveLength(0);
+        if(instance==='dev') {
+          expect((await app.inject({method:'POST',url:'/api/proof-rooms',headers:signedHeaders('OPERATOR'),payload:{profile:'WARM_MIXED_C',paneCount:4}})).statusCode).toBe(403);
+          const token=signSession({id:'user:proofreadonly',email:'proof@space.test',role:'ADMIN',proofScope:'READ_ONLY'},testSessionSecret);
+          expect((await app.inject({method:'POST',url:'/api/proof-rooms',headers:{cookie:`space_session=${token}`,[csrfHeaderName]:createCsrfToken(token,testSessionSecret)!},payload:{profile:'WARM_MIXED_C',paneCount:4}})).statusCode).toBe(403);
+        } else expect(host.attach).not.toHaveBeenCalled();
+      } finally {await app.close();}
+    }
+  });
+});
+
+it('accepts all eighteen mixed synthetic terminals through the real pane host with the dev real-CLI cap of two', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mixed-host-'));
+  temporaryRoots.push(root);
+  const socketPath = join(root, 'host.sock');
+  const spawn = vi.fn(spawnNodePty);
+  const registry = new CliHostSessionRegistry({ spawn });
+  const server = await createCliHostServer({ socketPath, registry });
+  const host = new CliHostClient({ socketPath });
+  const store = new InMemorySpaceStore();
+  const { app, cookie, csrfToken } = await authedApp({ store, cliHostClient: host, codexAgentControl: null,
+    config: { ...await enabledProofConfig(), instance: 'dev', cliMaxRunningSessions: 2, cliHostSocketPath: socketPath } });
+  const headers = { cookie, [csrfHeaderName]: csrfToken };
+  const records: ReturnType<typeof proofRoomSchema.parse>[] = [];
+  const sockets: Awaited<ReturnType<typeof app.injectWS>>[] = [];
+  try {
+    for (const [variant, paneCount] of [['C',4],['B',5],['P',5],['M',6]] as const) {
+      const response = await app.inject({method:'POST',url:'/api/proof-rooms',headers,
+        payload:{profile:`WARM_MIXED_${variant}`,paneCount}});
+      expect(response.statusCode).toBe(201);
+      records.push(proofRoomSchema.parse(response.json()));
+    }
+    const original = registry.inspectAll().map(s=>({id:s.cliSessionId,pid:s.pid}));
+    expect(original).toHaveLength(18);
+    for (const pane of records.flatMap(r=>r.panes).filter(p=>p.mode!=='BROWSER')) {
+      const response=await app.inject({method:'GET',url:`/api/panes/${encodeURIComponent(pane.id)}/cli/session`,headers});
+      expect(response.statusCode).toBe(200);
+      const session=response.json();
+      expect(session.session.status).toBe('RUNNING');
+      const messages: {type:string;status?:string;data?:string}[]=[];
+      sockets.push(await app.injectWS(`/api/panes/${encodeURIComponent(pane.id)}/cli/terminal?sessionId=${encodeURIComponent(session.session.sessionId)}&token=${encodeURIComponent(session.websocket.token)}`,
+        {headers:{cookie}},{onInit(socket){socket.on('message',raw=>messages.push(JSON.parse(raw.toString())));}}));
+      await vi.waitFor(()=>{
+        expect(messages.filter(m=>m.type==='error')).toEqual([]);
+        expect(messages.some(m=>m.type==='status'&&m.status==='RUNNING')).toBe(true);
+        expect(messages.some(m=>m.type==='output'&&m.data?.includes('SPACE_WARM_READY'))).toBe(true);
+      },{timeout:5000});
+    }
+    expect(registry.inspectAll().filter(s=>s.status==='RUNNING')).toHaveLength(18);
+    expect(registry.inspectAll().map(s=>({id:s.cliSessionId,pid:s.pid}))).toEqual(original);
+    expect(spawn).toHaveBeenCalledTimes(18);
+    expect(spawn.mock.calls.every(([spec])=>spec.command==='/bin/sh'&&spec.args.join(' ').includes('exec /bin/sleep 240'))).toBe(true);
+    for (const record of records) {
+      const stopped=await app.inject({method:'POST',url:`/api/proof-rooms/${encodeURIComponent(record.room.id)}/cli-render/cleanup`,headers,payload:{}});
+      expect(stopped.statusCode).toBe(200);
+      expect(stopped.json().ownedProcessStopped).toBe(true);
+    }
+    expect(registry.inspectAll().filter(s=>s.status==='RUNNING')).toHaveLength(0);
+  } finally {
+    for(const socket of sockets)socket.terminate();
+    await app.close();registry.terminateAll();await host.close();await server.close();
+  }
+},30000);
+
+it('cleans an owned mixed creation when its HTTP requester disconnects before handoff',async()=>{
+  const store=new InMemorySpaceStore(),host=readyHostClient();
+  const original=host.attach.getMockImplementation()!;
+  let release!:()=>void;
+  const pending=new Promise<void>(resolve=>{release=resolve;});
+  host.attach.mockImplementation(async(...args)=>{await pending;return original(...args);});
+  const {app,cookie,csrfToken}=await authedApp({store,cliHostClient:host.client,config:{...await enabledProofConfig(),instance:'dev'}});
+  const abort=new AbortController();
+  try {
+    const origin=await app.listen({host:'127.0.0.1',port:0});
+    const request=fetch(`${origin}/api/proof-rooms`,{method:'POST',headers:{cookie,[csrfHeaderName]:csrfToken,'content-type':'application/json'},
+      body:JSON.stringify({profile:'WARM_MIXED_C',paneCount:4}),signal:abort.signal}).catch(()=>null);
+    await vi.waitFor(()=>expect(host.attach).toHaveBeenCalledTimes(4));
+    abort.abort();await request;
+    release();
+    await vi.waitFor(()=>expect(store.listRooms()).toHaveLength(0),{timeout:5000});
+    expect(host.terminate).toHaveBeenCalledTimes(4);
+  }finally{release();abort.abort();await app.close();}
+});
+
+it('retains mixed creation recovery identity if synthetic process cleanup fails',async()=>{
+  const store=new InMemorySpaceStore(),host=readyHostClient({failAttachAt:3});
+  host.terminate.mockRejectedValue(Error('owned process could not stop'));
+  const {app,cookie,csrfToken}=await authedApp({store,cliHostClient:host.client,config:{...await enabledProofConfig(),instance:'dev'}});
+  try {
+    const response=await app.inject({method:'POST',url:'/api/proof-rooms',headers:{cookie,[csrfHeaderName]:csrfToken},payload:{profile:'WARM_MIXED_C',paneCount:4}});
+    expect(response.statusCode).toBe(500);
+    expect(store.listRooms()).toHaveLength(1);
+    const room=store.listRooms()[0]!;
+    expect(room.kind).toBe('AGENT_PROOF');
+    expect(store.listPanes(room.id)).toHaveLength(4);
+    expect(host.terminate).toHaveBeenCalledTimes(4);
+  }finally{host.terminate.mockResolvedValue(true);await app.close();}
 });

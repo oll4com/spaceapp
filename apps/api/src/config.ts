@@ -114,6 +114,11 @@ export interface SpaceApiConfig {
   memoryEmbeddingKeyFile: string | null;
   /** The Design pane's Space Gateway key (`space-admin-action design-key`): image models only, a daily cost cap. */
   designGatewayKeyFile: string;
+  /** The Video pane's engine files (one folder per pane; never /tmp) and its pinned tools (venv, models, auto-editor). */
+  videoWorkRoot: string;
+  videoToolsDir: string;
+  /** The Studio's source upload cap; nginx allows 500 MB. */
+  videoSourceMaxBytes: number;
   /** The dedicated key that seals connector tokens and copilot mailbox passwords (hardening plan step 9). */
   connectorKeyFile: string;
   memoryEmbeddingKeyName: string | null;
@@ -269,7 +274,7 @@ function parseGatewayUrl(raw: string | undefined): string {
 }
 
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "video", "security-copilot", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -378,6 +383,10 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
     designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || "/opt/spaceapp/secrets/space-design.key",
+    // Next to the artifact root (stable /opt/spaceapp/var/video, dev /opt/spaceapp-dev/var/video): the dev API may write only under its own var.
+    videoWorkRoot: env.SPACE_VIDEO_WORK_ROOT || join(dirname(artifactRoot), "video"),
+    videoToolsDir: env.SPACE_VIDEO_TOOLS_DIR || "/opt/spaceapp/var/models/video",
+    videoSourceMaxBytes: Number.parseInt(env.SPACE_VIDEO_SOURCE_MAX_BYTES || "", 10) || 480 * 1024 * 1024,
     // Dev never reads stable's key: it has its own under its var directory.
     connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? "/opt/spaceapp-dev/var/connector/space-connector.key" : "/opt/spaceapp/secrets/space-connector.key"),
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,

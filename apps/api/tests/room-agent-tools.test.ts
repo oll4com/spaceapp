@@ -109,6 +109,30 @@ describe("Room Agent tools", () => {
     expect(idle.result).toContain("send the answer as its next prompt (send_to_pane)");
   });
 
+  it("answers a question Claude waits on at an empty prompt as its next prompt, and a delivered send settles the wait (daily review 2026-10-22)", async () => {
+    const c = fixture("❯ ");
+    const base = await c.deps.inspectPane(c.bob as never);
+    c.deps.monitor.listEvents.mockResolvedValue([{ ...(await c.deps.monitor.listEvents())[0]!, title: "Bob is waiting: Question for you" }]);
+    c.deps.inspectPane.mockResolvedValue({ ...base, state: "IDLE" as never });
+    c.deps.controlExecute.mockImplementation(async (_actorId: string, command: { roomId: string; requestId: string }) =>
+      ({ ...operation(command), results: [{ index: 0, paneId: c.bob.id, status: "COMPLETED", detail: "Sent.", evidence: {} }] }) as never);
+    const answered = await c.tools.execute("answer_pane_prompt", { pane: "Bob", answer: "1" }, c.ctx);
+    expect(answered).toMatchObject({ ok: true, result: expect.stringContaining("so it went as its next prompt") });
+    expect(c.deps.answerCli).not.toHaveBeenCalled();
+    expect(c.deps.controlExecute).toHaveBeenCalledWith("user:operator", expect.objectContaining({
+      actions: [{ kind: "pane", operation: "prompt", target: { paneIds: [c.bob.id], state: "OPEN" }, text: "1", when: "NOW" }] }));
+    expect(c.deps.monitor.updateEvent).toHaveBeenCalledWith("event:waiting", { status: "HANDLED", decision: 'The Room Agent answered "1" for you.' }, ["OPEN", "ESCALATED"]);
+    c.deps.monitor.updateEvent.mockClear();
+    expect(await c.tools.execute("send_to_pane", { panes: ["Bob"], text: "Option 2, then  continue.", when: "now" }, c.ctx)).toMatchObject({ ok: true });
+    expect(c.deps.monitor.updateEvent).toHaveBeenCalledWith("event:waiting", { status: "HANDLED", decision: 'The Room Agent sent "Option 2, then continue." for you.' }, ["OPEN", "ESCALATED"]);
+    // A send that is only scheduled (after the turn) answers nothing yet.
+    c.deps.monitor.updateEvent.mockClear();
+    c.deps.controlExecute.mockImplementation(async (_actorId: string, command: { roomId: string; requestId: string }) =>
+      ({ ...operation(command, "RUNNING"), results: [{ index: 0, paneId: c.bob.id, status: "PENDING", detail: "After the turn.", evidence: {} }] }) as never);
+    await c.tools.execute("send_to_pane", { panes: ["Bob"], text: "Later." }, c.ctx);
+    expect(c.deps.monitor.updateEvent).not.toHaveBeenCalled();
+  });
+
   it("asks before closing, stopping or restarting and closes only when confirmed", async () => {
     const c = fixture();
     for (const [name, args] of [["close_pane", { panes: ["Bob"] }], ["restart_pane", { panes: ["Bob"] }], ["stop_pane", { pane: "Bob" }]] as const) {

@@ -169,7 +169,7 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       if (!raw.available) {
         const lower = `${action} ${target}`.toLowerCase();
         const matchesDestructive = /rm\s+-r|drop\s+table|mkfs|truncate\s+table|delete\s+from|git\s+reset\s+--hard|pveceph/i.test(lower);
-        const matchesProd = /\/srv\/space|\/etc\/|pve|production/i.test(lower);
+        const matchesProd = /\/srv\/space|\/opt\/spaceapp|\/etc\/|pve|production/i.test(lower);
         return {
           available: false,
           isDestructive: matchesDestructive,

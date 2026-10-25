@@ -341,7 +341,8 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const run = await repository.getActiveRun(pane.id);
       const mine = run && run.ownerUserId === owner ? run : null;
       const briefs = await repository.listEvents(owner, { types: ["BRIEF"], status: ["PENDING"], limit: 200 });
-      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: briefs.length + (await service.duePosts(owner, pane)).length };
+      const own = briefs.filter((brief) => !brief.paneId || brief.paneId === pane.id);
+      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: own.length + (await service.duePosts(owner, pane)).length };
     },
     activeRun: (paneId: string) => repository.getActiveRun(paneId),
     async startRun(owner: string, paneId: string): Promise<{ run: MarketingRun; kickoff: boolean }> {
@@ -376,7 +377,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     },
     /**
      * The agent's loop: waits (up to `waitMs`) while the run is RUNNING for a work item. A brief (oldest first) is
-     * taken for this pane; otherwise an approved post that is due comes back for publishing. With neither left the
+     * taken for this pane (a brief given to another pane is that pane's alone; one with no pane is anyone's); otherwise an approved post that is due comes back for publishing. With neither left the
      * run finishes (Start, a new brief's kickoff or the scheduler starts the next one).
      */
     async nextItem(owner: string, pane: Pane, input: { waitMs: number }) {

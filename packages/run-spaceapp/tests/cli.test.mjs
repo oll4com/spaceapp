@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
-import { executeCommand, run } from "../src/cli.mjs";
+import { executeCommand, RESTORE_UNCHANGED_EXIT, run } from "../src/cli.mjs";
 import { ensureDockerAvailable } from "../src/prerequisites.mjs";
 import {
   addWorkspace,
@@ -1647,6 +1647,7 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
   // npm 11 warns about (and will block) install scripts not approved in package.json allowScripts; Claude Code's
   // postinstall puts its native binary in place, so the vendor project approves exactly the pinned version first.
   const script = calls[0].at(-3);
+  assert.match(script, /^\[ ! -f \/app\/deploy\/docker\/provider-locks\/claude\.json \] \|\| exec node \/app\/deploy\/docker\/provider-install\.mjs claude --reinstall; /);
   assert.match(script, /manifest\.allowScripts=\{\.\.\.manifest\.allowScripts,\[process\.argv\[1\]\]:true\}/);
   assert.match(script, /" && exec npm install --prefix \/var\/lib\/spaceapp-cli\/vendor\/claude --no-audit --no-fund "\$1"$/);
   assert.doesNotMatch(script, /--allow-scripts|--ignore-scripts/);
@@ -1934,6 +1935,35 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     "--backup-id", "spaceapp-backup-20260723T140000000Z",
     "--confirm", "RESTORE"
   ]);
+  // A restore that may be partial keeps SpaceApp stopped and says how to go on (1.1.8, 1.1.7 known issue restore-left-stopped).
+  assert.match(stderr.value(), /failed and SpaceApp stays stopped/);
+  assert.match(stderr.value(), /run "npx --yes run-spaceapp@[a-z]+ up"/);
+  assert.match(stderr.value(), /kept in the backup spaceapp-backup-/);
+});
+
+test("restore starts SpaceApp again when the restore changed nothing or put everything back (1.1.8)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-restore-unchanged-"));
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      calls.push(spec.args);
+      return calls.length === 5 ? RESTORE_UNCHANGED_EXIT : 0;
+    }
+  };
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
+  await mkdir(join(root, "backups", "spaceapp-backup-20260723T150000000Z"));
+
+  assert.equal(await run(["restore"], { ...options, stdin: Readable.from(["RESTORE\n"]) }), RESTORE_UNCHANGED_EXIT);
+  assert.equal(calls.length, 6);
+  assert.deepEqual(calls[5].slice(-3), ["up", "-d", "--remove-orphans"]);
+  assert.match(stderr.value(), /did not happen; SpaceApp runs again with its data from before the restore/);
 });
 
 test("install succeeds on 8 GiB disk for light profile and automatically starts inactive Docker", async () => {

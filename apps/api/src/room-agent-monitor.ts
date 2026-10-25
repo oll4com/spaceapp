@@ -24,6 +24,7 @@ function attentionKind(reason: string | null): RoomAgentEventKind {
   if (reason === "Sign-in required") return "SIGN_IN";
   if (reason === "CLI error" || reason === "Run failed") return "ERROR";
   if (reason === "API error") return "STUCK";
+  if (reason === "Question for you") return "QUESTION";
   return "WAITING";
 }
 
@@ -50,7 +51,8 @@ export function roomMonitorEventText(kind: RoomAgentEventKind, name: string, rea
       : kind === "SIGN_IN" ? `${name} needs sign-in`
         : kind === "ERROR" ? (reason === "Not running" ? `${name} stopped` : `${name} stopped with an error`)
           : kind === "STUCK" ? (reason === "API error" ? `${name} stopped on an API error` : `${name} seems stuck`)
-            : `${name} is waiting: ${reason ?? "Needs input"}`;
+            : kind === "QUESTION" ? `${name} has a question for you`
+              : `${name} is waiting: ${reason ?? "Needs input"}`;
   const detail = [task.title, task.summary].filter(Boolean).join(" — ") || null;
   return { title, detail };
 }

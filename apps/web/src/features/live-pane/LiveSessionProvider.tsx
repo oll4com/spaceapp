@@ -53,6 +53,8 @@ export function LiveSessionProvider({ ownerId, roomId, roomName = "", children }
     history: createLiveHistorySync({ load: () => api.getLiveHistory(), save: (turns, owner) => api.saveLiveHistory(turns, owner), clear: room => api.clearVoiceRealtimeLogs(room), storage: window.localStorage,
       onError: message => window.dispatchEvent(new CustomEvent("space-live-debug", { detail: { message, type: "error" } })) }),
     acquireMicrophone: acquireLiveMicrophone,
+    // The phone app (Android shell bridge) opens the microphone only on a tap: it pauses the phone's other audio.
+    restoreEnabled: !(window as { SpaceNative?: unknown }).SpaceNative,
     notifications: { list: () => api.getPendingWatches(), ack: (room, id) => api.ackWatch(room, id), visible: () => document.visibilityState === "visible" },
     // The Room Agent's questions for the operator are spoken once; they stay in the Room Agent until answered.
     announcements: {

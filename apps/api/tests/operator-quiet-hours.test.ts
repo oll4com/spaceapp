@@ -3,7 +3,6 @@ import { eventSchema, type Event, type Pane, type Room } from "@space/contracts"
 import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { SpaceEventBus, makeSpaceId } from "@space/runtime";
 import { createNotificationService } from "../src/notifications/service.js";
-import { createNousFocus } from "../src/nous/focus.js";
 import { handoffTtlSeconds, isOwnerQuietTime, nextOwnerWakeTime, ownerHandsAnswer, ownerQuietState, ownerTimeHeader } from "../src/owner-clock.js";
 
 // Operator request 2026-10-20 (plan clipboard:9XSwTPyxXP1W): never expect the operator at a computer during their night.
@@ -74,20 +73,4 @@ describe("operator quiet hours", () => {
     expect(await service.morningBatch("user:1")).toBeNull(); // once per wake time
   });
 
-  it("holds Nous's focus at night with the local time and offers it once at the end of the night", async () => {
-    vi.useFakeTimers({ now: at("2026-10-19T17:44:00Z") });
-    const published: Event[] = [];
-    const focus = createNousFocus({ eventBus: { publish: (event) => { published.push(event); } }, now: () => Date.now(),
-      quiet: async () => ownerQuietState(bangkok, new Date()) });
-    const room = { id: "room:main0001", name: "Main" } as Room;
-    const pane = { id: "pane:andy0001", paneName: "Andy", title: "Andy" } as Pane;
-    const held = await focus.request("user:1", room, pane, "CAPTCHA on Upwork");
-    expect(held).toMatchObject({ ok: true, display: "HELD: bringing the operator to Andy waits for the morning",
-      result: "HELD: it is night for the operator (Tue 20 Oct 00:44 GMT+7). Their screen offers Andy in Main once at 09:00 GMT+7; keep the work ready and continue other work." });
-    expect(published).toEqual([]);
-    await vi.advanceTimersByTimeAsync(8 * 3_600_000 + 16 * 60_000); // 09:00
-    expect(published.map((event) => [event.type, event.paneId])).toEqual([["NOUS_FOCUS_REQUESTED", "pane:andy0001"]]);
-    await vi.advanceTimersByTimeAsync(3_600_000);
-    expect(published).toHaveLength(1);
-  });
 });

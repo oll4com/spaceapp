@@ -90,3 +90,12 @@ export function desktopReleaseDownloadUrl(release: DesktopReleaseInfo | null, pl
   if (platform === "linux") return release.appImageUrl ?? release.debUrl;
   return null;
 }
+
+/**
+ * Linux apps before 0.1.25 update through a server script that cannot work there (0.1.23 needs a direct network path
+ * the VPN-only server does not offer and quits after 3 s; 0.1.24 refuses it unsigned): the page downloads the package
+ * through the app instead. An unknown version counts as old.
+ */
+export function desktopUpdateIsDownloadOnly(platform?: string, version?: string): boolean {
+  return platform === "linux" && (compareDesktopVersions(version ?? "", "0.1.25") ?? -1) < 0;
+}

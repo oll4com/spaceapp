@@ -70,7 +70,9 @@ imports an earlier tracker. These refuse once set: identity changes only in Setu
 
 ## The run loop (the operator presses Start; you pull the work)
 
-The kickoff prompt in this terminal names the run. From then on:
+The kickoff prompt in this terminal names the run. When it says nothing queued can be taken now (empty queue,
+or every posting waits for an employer limit), first find new postings (`references/discovery.md`) and queue
+those scoring 3 or more with `space_job_application_start` status `QUEUED`. From then on:
 
 1. `space_job_next {waitMs: 120000}`. It returns either `done: true` (the run was stopped or the
    queue is empty: say so in one line and stop looping) or a **task packet**: `application`
@@ -192,7 +194,8 @@ same steps, and still record fields and memory.
   site, the page and what to click, then `space_job_handoff_wait {timeoutMs: 600000}`. The pane shows the operator an
   overlay with "Take control"; while the operator holds control, `space_playwright_pane` refuses
   connections.
-- After `space_job_handoff_wait` returns `resumed: true`, re-snapshot: the page may have moved.
+- `space_job_handoff_wait` returns `resumed: true` only when the handoff is over (the operator gave the browser back, or it was
+  cancelled or expired), never while the request still waits for them. After it, re-snapshot: the page may have moved.
   If the operator did not take over before the timeout, withdraw the request with
   `space_browser_cancel_handoff` (otherwise its card stays up for 30 minutes), then `NEEDS_USER`,
   `space_job_report {outcome: "needs_user"}` and move on.

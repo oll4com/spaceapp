@@ -139,9 +139,9 @@ export function CommandBar({ pane, runtimeOptions, counts, stats = null, runStat
         {runState === "RUNNING" ? (
           <button type="button" className="jc-button" disabled={runBusy} onClick={() => onRun("pause")} title="Pause after the current application"><Pause aria-hidden="true" /> Pause</button>
         ) : (
-          <button type="button" className="jc-button primary" disabled={runBusy || (runState !== "PAUSED" && counts.queued === 0)} onClick={() => onRun("start")}
+          <button type="button" className="jc-button primary" disabled={runBusy} onClick={() => onRun("start")}
             title={runState === "PAUSED" ? "Resume the run" : counts.queued > 0 ? "Start working through the queue"
-              : counts.deferred ? `Every queued posting waits for an employer limit; the next one is free on ${counts.nextFreeAt?.slice(0, 10)}` : "Queue a posting first"}>
+              : `Find new postings, queue them and apply${counts.deferred ? ` (every queued posting waits for an employer limit; the next one is free on ${counts.nextFreeAt?.slice(0, 10)})` : ""}`}>
             <Play aria-hidden="true" /> {runState === "PAUSED" ? "Resume" : "Start"}
           </button>
         )}

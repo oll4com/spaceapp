@@ -207,7 +207,7 @@ export function GatewaySettingsTab({ settings, status, client, onSaved }: {
       <WarmupSection settings={settings} client={client} onSaved={onSaved} />
       <PoliciesSection settings={settings} client={client} onSaved={onSaved} />
       <LanSection settings={settings} status={status} client={client} onSaved={onSaved} />
-      <AnthropicBillingSection client={client} />
+      <AnthropicBillingSection settings={settings} client={client} onSaved={onSaved} />
       <section className="gw-card" aria-label="Sign-in">
         <header><h3>Sign-in</h3></header>
         <p className="space-gateway-note">Space sign-in replaces a separate dashboard password, session lifetime and TOTP: only Space administrators can open Space Gateway, their sessions follow Space's sign-in rules, and every change here is recorded in the audit log.</p>

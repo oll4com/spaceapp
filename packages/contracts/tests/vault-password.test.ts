@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  VAULT_PASSWORD_DEFAULTS, VAULT_PASSWORD_DIGITS, VAULT_PASSWORD_LOWER, VAULT_PASSWORD_SYMBOLS, VAULT_PASSWORD_UPPER, VaultPasswordPolicyError,
-  generateVaultPassword, vaultItemMetadataSchema, vaultPasswordPolicyForField, vaultPasswordPolicySchema, vaultUniformIndex
+  VAULT_PASSWORD_DEFAULTS, VAULT_PASSWORD_DIGITS, VAULT_PASSWORD_LOWER, VAULT_PASSWORD_SYMBOLS, VAULT_PASSWORD_UPPER, VAULT_PATTERN_MAX_LENGTH, VaultPasswordPolicyError,
+  generateVaultPassword, vaultItemMetadataSchema, vaultPasswordPolicyForField, vaultPasswordPolicySchema, vaultPatternIsSafe, vaultUniformIndex
 } from "../src/index.js";
 
 const has = (value: string, set: string) => [...value].some((char) => set.includes(char));
@@ -60,6 +60,17 @@ describe("Vault password generator: policy", () => {
     expect(password).toMatch(/^[A-Za-z0-9]{24}$/);
     expect(() => generateVaultPassword({ pattern: "\\d{4}" })).toThrow("UNSATISFIABLE");
     expect(() => generateVaultPassword({ pattern: "(" })).toThrow("UNSATISFIABLE");
+  });
+
+  it("ignores a pattern that could stall the Browser Host: nested or alternating quantified groups, or one that is too long (Vault review 2026-10-22)", () => {
+    // Real-world password patterns pass; the classic exponential shapes do not, however they are dressed.
+    for (const safe of ["(?=.*[A-Z])(?=.*\\d).{8,}", "[A-Za-z0-9!@#$%^&*]{12,64}", "(abc|def)\\d+", "\\((a+)\\)", "[(+*]+x"]) expect(vaultPatternIsSafe(safe), safe).toBe(true);
+    for (const risky of ["(a+)+", "^(a|aa)*$", "(?:x*)*y", "((ab)*)*", "(.*a){20}", "a{1,".padEnd(VAULT_PATTERN_MAX_LENGTH + 1, "9"), "(", "[a-z"]) expect(vaultPatternIsSafe(risky), risky).toBe(false);
+    // A page that sets minlength=128 and a catastrophic pattern gets a password that follows the other rules, within a bounded time.
+    const started = Date.now();
+    const password = generateVaultPassword({ pattern: "^(a|aa)*$", minLength: 128 });
+    expect(password).toHaveLength(128);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
 
