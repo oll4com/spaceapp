@@ -136,6 +136,13 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
     assert(index > 0); await call('Network.setCookie', { url: origin, name: cookie.slice(0, index), value: cookie.slice(index + 1), httpOnly: true, sameSite: 'Lax' });
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await call('Page.navigate', { url: `${origin}/` });
+    // The source stack deliberately has no provider account or model proof.
+    // Use the existing wizard action; never mark that setup as complete.
+    await eventually(() => evaluate(`(() => { const buttons = document.querySelectorAll('.first-setup-overlay button[aria-label="Save and close setup"]'); return buttons.length === 1 && !buttons[0].disabled; })()`), 'Actual unfinished first-setup wizard');
+    await mkdir(artifacts, { recursive: true });
+    await writeFile(join(artifacts, 'setup-deferred-before.png'), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    assert.equal(await evaluate(`(() => { const button = document.querySelector('.first-setup-overlay button[aria-label="Save and close setup"]'); if (!button || button.disabled) return false; button.click(); return true; })()`), true);
+    await eventually(() => evaluate('!document.querySelector(".first-setup-overlay")'), 'Real save-and-close removes the setup overlay');
     await eventually(() => evaluate('document.body.innerText.toLowerCase().includes("getting started")'), 'Actual Getting Started web room');
     await evaluate(`(() => { const room = [...document.querySelectorAll('button,[role="button"]')].find(x => /getting started/i.test(x.textContent || x.getAttribute('title') || '')); room?.click(); return Boolean(room); })()`);
     const paneExpression = `document.querySelector('[data-space-pane-id="' + CSS.escape(${JSON.stringify(paneId)}) + '"]')`;
@@ -152,6 +159,6 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
       }
     };
     const capture = async name => writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    return { evaluate, terminalState, key, diagnostic, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await capture(name); }, async failureScreenshot() { await capture('opencode-failure.png'); }, close };
+    return { evaluate, terminalState, key, diagnostic, setupDeferred: true, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await capture(name); }, async failureScreenshot() { await capture('opencode-failure.png'); }, close };
   } catch (error) { error.browserRuntime = diagnostic('application-browser'); await close(); throw error; }
 }

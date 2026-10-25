@@ -43,7 +43,11 @@ try {
   await request('/api/setup/claim', { token, email, password }, 409); marker('normal one-use owner claim');
   await request('/api/auth/login', { email, password }); csrf = await request('/api/auth/csrf'); marker('normal owner sign-in');
   const starter = await request('/api/setup/starter-room', {}); assert.equal(starter.room.name, 'Getting Started');
-  await request('/api/setup/finish', {});
+  const unfinished = await request('/api/setup/overview');
+  assert.equal(unfinished.isComplete, false, 'Fresh owner onboarding must remain incomplete before provider verification.');
+  const refused = await request('/api/setup/finish', {}, 409);
+  assert.equal(refused.error.code, 'SETUP_RUN_REQUIRED');
+  marker('production setup completion still requires a real verified run');
   const catalog = await request(`/api/panes?roomId=${encodeURIComponent(starter.room.id)}`);
   let pane = catalog.data.find(x => x.terminalRuntimeId === 'cli:opencode');
   if (!pane) pane = await request('/api/panes', { roomId: starter.room.id, title: 'OpenCode CLI', mode: 'TERMINAL', terminalRuntimeId: 'cli:opencode', cwd: join(config.state, 'workspaces') });
@@ -70,6 +74,9 @@ try {
     return interactive.sequence > 0;
   }, 'Current matching OpenCode API/WS session');
   browser = await browserProof({ state: config.state, origin, cookie, artifacts, paneId: pane.id });
+  assert.equal(browser.setupDeferred, true, 'Use the real wizard save-and-close action for offline development.');
+  assert.equal((await request('/api/setup/overview')).isComplete, false, 'Closing the wizard must not certify provider setup.');
+  marker('real wizard saves and closes; source workspace remains usable with onboarding explicitly incomplete');
   // Exercise real terminal keyboard input through the actual matching browser pane.
   // No Enter or provider/model command is sent: only a local palette and filter.
   const deadline = Date.now() + 120000;
@@ -161,7 +168,8 @@ try {
   const packageRestored = await checkpoint({ supervisor: apiInitial, before: packageCanary, changed: ['api', 'worker', 'cli-host'], timeout: 300000, files: [{ name: 'restored API source', read: () => readFile(apiSource), expected: originalApi, forbidden: canary }, { name: 'restored shared source', read: () => readFile(packageFile), expected: originalPackage, forbidden: canary }, { name: 'restored shared output', read: () => readFile(compiledPackage), expected: originalCompiled, forbidden: canary }] });
   restored.push({ phase: 'shared-package restoration', ...packageRestored });
   marker('shared package rebuilt and API/worker restarted');
-  await writeFile(join(artifacts, 'acceptance.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, checks, restorations: restored, model_inference: false, real_operator_data: false }, null, 2) + '\n');
+  assert.equal((await request('/api/setup/overview')).isComplete, false);
+  await writeFile(join(artifacts, 'acceptance.json'), JSON.stringify({ source: process.env.SPACE_DEV_CANDIDATE, platform: process.platform, checks, restorations: restored, onboarding: { completed: false, deferred_via_real_wizard: browser.setupDeferred, empty_finish_rejected: true }, model_inference: false, real_operator_data: false }, null, 2) + '\n');
 } catch (error) {
   // Selected synthetic state only. Never serialize a session response, ticket,
   // cookie, websocket URL, environment or real provider/owner credentials.

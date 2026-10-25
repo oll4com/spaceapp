@@ -28,8 +28,12 @@ containers, builds the workspace, installs the pinned OpenCode package under tha
 state, applies database migrations and starts the four source services. It prints
 the web/API URLs and the one-time owner setup token. Open the web URL, claim the
 owner with that token and your own new local credentials, then sign in through
-the normal owner flow. After setup, create/open the Getting Started room and an
-OpenCode terminal pane. No development-login bypass is enabled.
+the normal owner flow. In the first-setup wizard, use **Save and close setup** to
+save your draft and open the development workspace. Create/open the Getting
+Started room and an OpenCode terminal pane. Onboarding stays incomplete: the
+production setup requires a verified model tool call and installation memory,
+which this offline development wrapper does not provide. You can resume the
+wizard later. No development-login bypass is enabled.
 
 This OpenCode wrapper opens its actual terminal UI with an empty private provider
 profile. It does not copy an operator’s credentials or perform the production
