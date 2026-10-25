@@ -142,7 +142,7 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
     await mkdir(artifacts, { recursive: true });
     await writeFile(join(artifacts, 'setup-deferred-before.png'), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     assert.equal(await evaluate(`(() => { const button = document.querySelector('.first-setup-overlay button[aria-label="Save and close setup"]'); if (!button || button.disabled) return false; button.click(); return true; })()`), true);
-    await eventually(() => evaluate('!document.querySelector(".first-setup-overlay")'), 'Real save-and-close removes the setup overlay');
+    await eventually(() => evaluate('!document.querySelector(".first-setup-overlay")'), 'Real close action removes the setup overlay');
     await eventually(() => evaluate('document.body.innerText.toLowerCase().includes("getting started")'), 'Actual Getting Started web room');
     await evaluate(`(() => { const room = [...document.querySelectorAll('button,[role="button"]')].find(x => /getting started/i.test(x.textContent || x.getAttribute('title') || '')); room?.click(); return Boolean(room); })()`);
     const paneExpression = `document.querySelector('[data-space-pane-id="' + CSS.escape(${JSON.stringify(paneId)}) + '"]')`;

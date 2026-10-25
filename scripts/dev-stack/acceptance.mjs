@@ -76,7 +76,7 @@ try {
   browser = await browserProof({ state: config.state, origin, cookie, artifacts, paneId: pane.id });
   assert.equal(browser.setupDeferred, true, 'Use the real wizard save-and-close action for offline development.');
   assert.equal((await request('/api/setup/overview')).isComplete, false, 'Closing the wizard must not certify provider setup.');
-  marker('real wizard saves and closes; source workspace remains usable with onboarding explicitly incomplete');
+  marker('real wizard closes; source workspace remains usable with onboarding explicitly incomplete');
   // Exercise real terminal keyboard input through the actual matching browser pane.
   // No Enter or provider/model command is sent: only a local palette and filter.
   const deadline = Date.now() + 120000;

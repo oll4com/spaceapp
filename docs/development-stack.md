@@ -29,7 +29,7 @@ state, applies database migrations and starts the four source services. It print
 the web/API URLs and the one-time owner setup token. Open the web URL, claim the
 owner with that token and your own new local credentials, then sign in through
 the normal owner flow. In the first-setup wizard, use **Save and close setup** to
-save your draft and open the development workspace. Create/open the Getting
+close the wizard and open the development workspace. Create/open the Getting
 Started room and an OpenCode terminal pane. Onboarding stays incomplete: the
 production setup requires a verified model tool call and installation memory,
 which this offline development wrapper does not provide. You can resume the
@@ -127,9 +127,9 @@ permissions, pins, environment isolation, redaction, PID reuse and failed comman
 These tests do not establish a working Docker stack or browser.
 
 `.github/workflows/dev-stack.yml` prepares only standard public `ubuntu-latest`
-and `macos-15-intel` runners and checks the exact source. Both run all 80 launcher
+and `macos-15-intel` runners and checks the exact source. Both run the launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
-Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs all 13
+Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs the
 private-instance API regressions in the four `instance-storage`/`dev-*-storage`
 and `dev-docx-isolation` test files, followed by the same complete real-stack proof.
 macOS also runs the CLI-host regressions, including its native `/bin/stty` selection;
@@ -189,7 +189,10 @@ synthetic installed ports `4910`/`4911` occupied by an independent process. It e
 HTTP owner claim and sign-in, invalidates the consumed token, creates the actual
 Getting Started/OpenCode pane, observes the real PTY UI, and renders that pane in
 the runner’s existing headless Chrome. Its current matching API/WS session must
-remain active/RUNNING; error, exit or unexpected close is fatal. Keyboard input
+remain active/RUNNING; error, exit or unexpected close is fatal. The wizard is
+closed through its existing **Save and close setup** action, and onboarding is
+checked to remain incomplete. Draft persistence and provider setup completion
+are not verified by this proof. Keyboard input
 targets only that pane's attached error-free terminal: Ctrl+P opens the pinned
 command menu, a unique local filter produces the matching empty-result state,
 Escape dismisses it, and Ctrl+P opens a fresh menu again. Only new output after
