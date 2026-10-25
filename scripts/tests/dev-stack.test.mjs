@@ -14,6 +14,82 @@ import { knownHelperRepair } from '../dev-stack/pty-capability.mjs';
 import { isPublicExportPath } from '../public-export.mjs';
 import { assertBrowserRunning, eventually, proofBrowserArguments, safeBrowserStderr, selectedBrowserDiagnostic, syntheticCookieCapability, typeTerminalFilter } from '../dev-stack/browser-proof.mjs';
 import { debounceSourceChanges } from '../dev-stack/reload-debounce.mjs';
+function startupDockerFixture(owner, mode, ports, log, labelKey) {
+  const fs = require('node:fs');
+  const args = process.argv.slice(2);
+  fs.appendFileSync(log, JSON.stringify(args) + '\n');
+  const done = value => { process.stdout.write(value); process.exit(0); };
+  const running = mode === 'owned-container' || mode === 'foreign-container';
+  if (args[0] === 'compose' && args[1] === 'version') done('Docker Compose fixture\n');
+  if (args[1] === 'ls') done(args[0] === 'container' && running ? 'aaaaaaaaaaaa\n' : '');
+  if (args[0] === 'container' && args[1] === 'inspect') {
+    if (args.includes('{{json .Config.Labels}}')) done(JSON.stringify({ [labelKey]: mode === 'foreign-container' ? 'foreign' : owner.nonce }));
+    if (args.includes('{{json .NetworkSettings.Ports}}')) done(JSON.stringify({ '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: String(ports.postgres) }] }));
+  }
+  if (args[0] === 'compose' && args.includes('ps')) done(JSON.stringify(running ? [{ ID: 'aaaaaaaaaaaa', Service: 'postgres', Publishers: [{ URL: '127.0.0.1', TargetPort: 5432, PublishedPort: ports.postgres, Protocol: 'tcp' }] }] : []));
+  process.stderr.write('Unexpected Docker fixture command\n');
+  process.exit(79);
+}
+
+for (const mode of ['live-supervisor', 'live-child', 'owned-container', 'foreign-container', 'unrelated-port']) {
+  test('startup reports ' + mode + ' before any unsafe restart', { skip: process.platform === 'win32' }, async t => {
+    const { createServer } = await import('node:net');
+    const { dirname } = await import('node:path');
+    const temporaryRoot = await realpath(tmpdir());
+    const base = await realpath(await mkdtemp(join(temporaryRoot, 'space-startup-')));
+    const listeners = [];
+    t.after(async () => {
+      for (const server of listeners) await new Promise(resolveClose => server.close(resolveClose));
+      assert.equal(dirname(base), temporaryRoot);
+      assert.equal(await realpath(base), base);
+      await rm(base, { recursive: true, force: true });
+    });
+    const ports = {};
+    for (const name of ['api', 'web', 'postgres', 'temporal']) {
+      const server = createServer();
+      await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolveListen); });
+      listeners.push(server);
+      ports[name] = server.address().port;
+    }
+    const config = { ...locations(base), ports };
+    const owner = await initialize(config);
+    await privateWrite(config.compose, JSON.stringify({ services: {} }));
+    if (mode === 'live-supervisor' || mode === 'live-child') {
+      const live = { pid: process.pid, identity: await processIdentity(process.pid) };
+      await privateWrite(config.supervisor, JSON.stringify(mode === 'live-supervisor'
+        ? { nonce: owner.nonce, ...live, children: [] }
+        : { nonce: owner.nonce, pid: 2147483647, identity: null, children: [live] }));
+    }
+    const bin = join(base, 'bin'), commands = join(base, 'docker-commands.jsonl');
+    await mkdir(bin);
+    const docker = join(bin, 'docker');
+    await writeFile(docker, '#!/usr/bin/env node\n(' + startupDockerFixture.toString() + ')(' + [owner, mode, ports, commands, ownerLabel].map(value => JSON.stringify(value)).join(',') + ');\n', { mode: 0o700 });
+    const childSource = 'const {start}=await import(' + JSON.stringify(new URL('../dev-stack/supervisor.mjs', import.meta.url).href) + ');try{await start(JSON.parse(process.argv[1]));process.exitCode=61;}catch(error){console.error(error.message);process.exitCode=21;}';
+    const result = await new Promise((resolveChild, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', childSource, JSON.stringify(config)], { env: { ...process.env, PATH: bin + ':' + process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '', expired = false;
+      const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, 15000);
+      child.stdout.on('data', chunk => { output += chunk; });
+      child.stderr.on('data', chunk => { output += chunk; });
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('close', code => { clearTimeout(timer); resolveChild({ code, output, expired }); });
+    });
+    assert.equal(result.expired, false, result.output);
+    assert.equal(result.code, 21, result.output);
+    const expected = mode.startsWith('live-') ? /prior supervisor\/child is still alive; use down/
+      : mode === 'owned-container' ? /Owned PostgreSQL or Temporal containers are still running; use down/
+        : mode === 'foreign-container' ? /Foreign container shares this project name/
+          : /Loopback port \d+ is already in use/;
+    assert.match(result.output, expected);
+    const calls = (await readFile(commands, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert(calls.every(args => !args.includes('up') && !args.includes('down')), 'Refused startup must not start or remove containers.');
+    if (mode.startsWith('live-')) {
+      assert.deepEqual(calls, [['compose', 'version']], 'A living owned process is checked before container/port probing.');
+      assert.equal((await readFile(config.supervisor, 'utf8')).includes(owner.nonce), true);
+    }
+    assert.equal(listeners.every(server => server.listening), true, 'Independent occupied listeners must survive every refusal.');
+  });
+}
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 test('only Darwin CI proof browsers request a mock keychain and every other browser argument stays unchanged', () => {

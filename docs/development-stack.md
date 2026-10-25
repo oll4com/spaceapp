@@ -115,6 +115,9 @@ the matching generated ownership label. A foreign resource, unavailable daemon
 or failed process/container removal fails the command and keeps recovery state.
 Restore the original Docker context and retry `down`/`reset`; do not delete the
 manifest as a shortcut. Stop the supervisor before manually repairing owned state.
+Startup checks for a living supervisor, its children and leftover owned containers
+before checking free ports. If any are still running, use `down` with the same
+state and port settings before restarting.
 Linux records include the kernel boot ID as well as process start ticks. A legacy
 ticks-only record is refused and recovery state is kept; it is never guessed or
 upgraded into permission to signal a process. Stop that stack with its original
@@ -130,8 +133,8 @@ These tests do not establish a working Docker stack or browser.
 and `macos-15-intel` runners and checks the exact source. Both run the launcher
 regressions, `npm run check`, `npm run build` and `npm run hygiene:preflight`.
 Ubuntu also runs the full unmodified `npm test` suite. Native macOS runs the
-private-instance API regressions in the four `instance-storage`/`dev-*-storage`
-and `dev-docx-isolation` test files, followed by the same complete real-stack proof.
+targeted private-instance API, governance and Git worktree regressions, including
+normal and bare repository removal, followed by the same complete real-stack proof.
 macOS also runs the CLI-host regressions, including its native `/bin/stty` selection;
 Linux keeps the existing `/usr/bin/stty` command.
 The broader native-macOS stock suites retain upstream limitations, including the

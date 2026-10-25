@@ -932,19 +932,19 @@ export class WorktreeService {
         realPath = await realpath(worktreePath);
       } catch {}
 
-      // Discover repository root from the worktree
+      // Worktree metadata commands also accept the common directory of a bare repository.
       const toplevel = await execGit(realPath, ["rev-parse", "--git-common-dir"]);
-      let repoRoot = "";
+      let metadataRoot = "";
       if (toplevel.code === 0) {
         const commonDir = resolve(realPath, toplevel.stdout.trim());
-        repoRoot = commonDir.endsWith("/.git") ? dirname(commonDir) : dirname(dirname(commonDir));
+        metadataRoot = commonDir;
       }
 
-      if (repoRoot && repoRoot !== realPath) {
+      if (metadataRoot && metadataRoot !== realPath) {
         const removeArgs = force ? ["worktree", "remove", "--force", realPath] : ["worktree", "remove", realPath];
-        await withWorktreeMetadata(repoRoot, async () => {
-          await execGit(repoRoot, removeArgs);
-          await execGit(repoRoot, ["worktree", "prune"]);
+        await withWorktreeMetadata(metadataRoot, async () => {
+          await execGit(metadataRoot, removeArgs);
+          await execGit(metadataRoot, ["worktree", "prune"]);
         });
       }
 

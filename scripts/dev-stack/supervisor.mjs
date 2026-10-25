@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPlainState, composeDocument, extractPins, initialize, loadOwner, locations, privateWrite, readJson, secrets, serviceEnvironment } from './state.mjs';
 import { delay, descendants, LaunchBarrier, lineRedactor, processIdentity, sameProcess, stopRecorded } from './processes.mjs';
-import { assertOwnedDocker, compose, dockerEnvironment, removeOwnedDocker, run } from './resources.mjs';
+import { assertOwnedDocker, compose, dockerEnvironment, readOwnedPortPublications, removeOwnedDocker, run } from './resources.mjs';
 import { verifyOpenCode } from './opencode-runtime.mjs';
 import { verifyPtyCapability } from './pty-capability.mjs';
 import { ReadinessEpoch } from './readiness.mjs';
@@ -52,11 +52,14 @@ export async function reset(config) {
 export async function start(config, inherited = process.env) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run dev:stack in Linux, macOS, or Windows 11 WSL2. Native Windows is not the supported Unix-socket environment.');
   await run('docker', ['compose', 'version'], { env: dockerEnvironment(inherited) });
-  await Promise.all(Object.values(config.ports).map(assertFreePort));
   const owner = await initialize(config);
   if (JSON.stringify(owner.ports) !== JSON.stringify(config.ports)) throw new Error('Existing state has different ports. Reset it first or use its original SPACE_DEV_*_PORT values.');
   const old = await readJson(config.supervisor).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
   if (old) { if (old.nonce !== owner.nonce || await sameProcess(old) || (await Promise.all((old.children || []).map(x => sameProcess(x)))).some(Boolean)) throw new Error('A prior supervisor/child is still alive; use down before restarting.'); await unlink(config.supervisor); }
+  if (await lstat(config.compose).catch(e => { if (e.code === 'ENOENT') return null; throw e; })) {
+    if ((await readOwnedPortPublications(config, owner, { env: dockerEnvironment(inherited) })).length) throw new Error('Owned PostgreSQL or Temporal containers are still running; use down before restarting.');
+  }
+  await Promise.all(Object.values(config.ports).map(assertFreePort));
   const reload = new ReloadReceipt();
   const record = { nonce: owner.nonce, pid: process.pid, identity: await processIdentity(process.pid), children: [], reload: reload.snapshot() };
   await privateWrite(config.supervisor, JSON.stringify(record), { flag: 'wx' });
