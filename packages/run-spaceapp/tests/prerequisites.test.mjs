@@ -1058,7 +1058,7 @@ test("macOS Podman engine reports under-resourced running machine", async () => 
         return 0;
       }
       if (spec.command === "podman" && spec.args[0] === "machine" && spec.args[1] === "inspect") {
-        io.stdout.write(JSON.stringify({ Name: "podman-machine-default", CPUs: 2, Memory: 4096, DiskSize: 32768 }));
+        io.stdout.write(JSON.stringify({ Name: "podman-machine-default", CPUs: 2, Memory: 4096, DiskSize: 100 }));
         return 0;
       }
       if (spec.command === "podman" && spec.args[0] === "--version") {

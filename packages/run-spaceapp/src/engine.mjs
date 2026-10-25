@@ -167,7 +167,8 @@ export function podmanMachineResourceInfo(machine) {
   const cpus = Number(resources.CPUs ?? machine.CPUs ?? machine.cpus);
   const memoryBytes = parseByteSize(resources.Memory ?? machine.Memory ?? machine.memory);
   const diskSize = resources.DiskSize ?? machine.DiskSize ?? machine.diskSize ?? machine.ImageVolumeSize ?? machine.imageVolumeSize;
-  const diskBytes = parseByteSize(diskSize);
+  // Podman machine inspect reports numeric DiskSize in GiB (Memory is MiB).
+  const diskBytes = typeof diskSize === "number" ? Math.floor(diskSize * 1024 ** 3) : parseByteSize(diskSize);
   if (!Number.isFinite(cpus) || cpus <= 0) return null;
   return {
     cpuCount: cpus,
@@ -177,7 +178,7 @@ export function podmanMachineResourceInfo(machine) {
 }
 
 function parseByteSize(value) {
-  // Podman machine inspect returns memory/disk sizes as plain numbers in MiB.
+  // Numeric values follow the podman machine inspect convention for memory: MiB.
   if (typeof value === "number") return Math.floor(value * 1024 ** 2);
   if (typeof value !== "string") return null;
   const trimmed = value.trim().toLowerCase();

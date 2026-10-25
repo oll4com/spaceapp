@@ -93,22 +93,23 @@ describe("engine support", () => {
   });
 
   test("podmanMachineResourceInfo extracts resources", () => {
-    const info = podmanMachineResourceInfo({ CPUs: 4, Memory: 8192, DiskSize: 65536 });
+    // Realistic `podman machine inspect` values: Memory in MiB, DiskSize in GiB.
+    const info = podmanMachineResourceInfo({ CPUs: 4, Memory: 8192, DiskSize: 100 });
     assert.equal(info.cpuCount, 4);
     assert.equal(info.memoryBytes, 8192 * 1024 ** 2);
-    assert.equal(info.diskBytes, 65536 * 1024 ** 2);
+    assert.equal(info.diskBytes, 100 * 1024 ** 3);
   });
 
   test("podmanMachineResourceInfo prefers Resources object", () => {
     const info = podmanMachineResourceInfo({
       CPUs: 2,
       Memory: 4096,
-      DiskSize: 32768,
-      Resources: { CPUs: 8, Memory: 16384, DiskSize: 131072 }
+      DiskSize: 50,
+      Resources: { CPUs: 8, Memory: 16384, DiskSize: 100 }
     });
     assert.equal(info.cpuCount, 8);
     assert.equal(info.memoryBytes, 16384 * 1024 ** 2);
-    assert.equal(info.diskBytes, 131072 * 1024 ** 2);
+    assert.equal(info.diskBytes, 100 * 1024 ** 3);
   });
 
   test("podmanMachineResourceInfo accepts string byte sizes", () => {
