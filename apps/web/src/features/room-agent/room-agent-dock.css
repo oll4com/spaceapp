@@ -1,0 +1,574 @@
+/* Room Agent dock on the shared dock kit: a header with the room in one line,
+   one conversation timeline and the composer. Colors come from the --dock-*
+   tokens so Classic, Modern, light and dark follow the active theme. */
+
+.room-agent-dock .room-agent-head .dock-kit-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.room-agent-dock .room-agent-status.dock-kit-badge {
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  text-transform: none;
+}
+
+.room-agent-dock .room-agent-status.dock-kit-badge::before {
+  content: "";
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.room-agent-dock .room-agent-room-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Settings: three switches behind the toolbar's settings button */
+.room-agent-dock .room-agent-settings {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+}
+
+.room-agent-dock .room-agent-setting {
+  width: 100%;
+  justify-content: space-between;
+  font-size: var(--dock-font-sm);
+}
+
+.room-agent-dock .room-agent-setting small {
+  color: var(--dock-muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+/* Header: toolbar, then one line about the panes that opens their list */
+.room-agent-dock .room-agent-header {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.room-agent-dock .room-agent-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  min-height: 1.75rem;
+  padding: 0 0.4rem;
+  border: 0;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-muted);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+
+.room-agent-dock .room-agent-summary:hover:not(:disabled) { background: var(--dock-raised); color: var(--dock-text); }
+.room-agent-dock .room-agent-summary:disabled { cursor: default; }
+.room-agent-dock .room-agent-summary[data-attention="true"] { color: var(--dock-warning); }
+.room-agent-dock .room-agent-summary svg { width: 0.85rem; height: 0.85rem; margin-left: auto; }
+
+.room-agent-dock .room-agent-pane-list {
+  display: grid;
+  max-height: 11.5rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid var(--dock-border);
+}
+
+/* Pane rows */
+.room-agent-dock .room-agent-pane {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.1rem;
+  padding: 0.2rem 0.15rem 0.2rem 0.35rem;
+  border-bottom: 1px solid var(--dock-border);
+}
+
+.room-agent-dock .room-agent-pane:hover { background: var(--dock-raised); }
+
+.room-agent-dock .room-agent-pane-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--dock-muted);
+  opacity: 0.5;
+}
+
+.room-agent-dock .room-agent-pane[data-activity="WORKING"] .room-agent-pane-dot { background: var(--dock-success); opacity: 1; }
+.room-agent-dock .room-agent-pane[data-activity="WAITING"] .room-agent-pane-dot { background: var(--dock-warning); opacity: 1; }
+.room-agent-dock .room-agent-pane[data-activity="DONE"] .room-agent-pane-dot { background: var(--dock-accent); opacity: 1; }
+.room-agent-dock .room-agent-pane[data-activity="WAITING"] { background: var(--dock-warning-soft); }
+
+.room-agent-dock .room-agent-pane-ask {
+  display: flex;
+  align-items: center;
+  line-height: 1.3;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.15rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.room-agent-dock .room-agent-pane-ask:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 4px; }
+.room-agent-dock .room-agent-pane-ask strong { flex: 0 0 auto; font-weight: 650; }
+
+.room-agent-dock .room-agent-pane-task {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dock-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-agent-dock .room-agent-pane-state {
+  max-width: 8.5rem;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-agent-dock .room-agent-pane[data-activity="WAITING"] .room-agent-pane-state { color: var(--dock-warning); font-weight: 600; }
+.room-agent-dock .room-agent-pane[data-activity="WORKING"] .room-agent-pane-state { color: var(--dock-success); }
+
+/* Row actions stay quiet until the row is in use. */
+.room-agent-dock .room-agent-pane .dock-kit-icon-button,
+.room-agent-dock .room-agent-system-actions .dock-kit-icon-button {
+  width: 1.75rem;
+  height: 1.75rem;
+  min-width: 1.75rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--dock-muted);
+}
+
+.room-agent-dock .room-agent-pane .dock-kit-icon-button:hover,
+.room-agent-dock .room-agent-system-actions .dock-kit-icon-button:hover {
+  border-color: var(--dock-border);
+  background: var(--dock-soft);
+  color: var(--dock-text);
+}
+
+/* @mention suggestions above the composer */
+.room-agent-dock .room-agent-mentions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.35rem;
+}
+
+.room-agent-dock .room-agent-mention {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.room-agent-dock .room-agent-mention span:last-child {
+  overflow: hidden;
+  color: var(--dock-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-agent-dock .room-agent-mention[data-activity="WORKING"] .room-agent-pane-dot { background: var(--dock-success); opacity: 1; }
+.room-agent-dock .room-agent-mention[data-activity="WAITING"] .room-agent-pane-dot { background: var(--dock-warning); opacity: 1; }
+
+/* Assistant replies in markdown */
+.room-agent-dock .room-agent-markdown {
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.room-agent-dock .room-agent-markdown > :first-child { margin-top: 0; }
+.room-agent-dock .room-agent-markdown > :last-child { margin-bottom: 0; }
+.room-agent-dock .room-agent-markdown pre { max-width: 100%; overflow-x: auto; }
+
+/* Conversation timeline */
+.room-agent-dock.dock-panel > .room-agent-timeline-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.room-agent-dock .room-agent-timeline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 0.55rem;
+  min-width: 0;
+  padding-bottom: 0.25rem;
+}
+
+.room-agent-dock .room-agent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.room-agent-dock .room-agent-bubble {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.room-agent-dock .room-agent-bubble p { margin: 0; white-space: pre-wrap; }
+
+.room-agent-dock .room-agent-bubble time {
+  justify-self: end;
+  color: var(--dock-muted);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-agent-dock .room-agent-bubble.is-user {
+  justify-self: end;
+  max-width: 88%;
+  border-color: color-mix(in srgb, var(--dock-accent) 40%, var(--dock-border));
+  background: var(--dock-accent-soft);
+}
+
+.room-agent-dock .room-agent-row[data-pending="true"] .room-agent-bubble { opacity: 0.7; }
+
+.room-agent-dock .room-agent-bubble.is-assistant {
+  justify-self: stretch;
+  background: var(--dock-raised);
+}
+
+.room-agent-dock .room-agent-bubble.is-interrupted { border-style: dashed; }
+.room-agent-dock .room-agent-bubble.is-failed { border-color: color-mix(in srgb, var(--dock-danger) 45%, var(--dock-border)); }
+
+.room-agent-dock .room-agent-thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--dock-muted);
+  font-style: italic;
+}
+
+.room-agent-dock .room-agent-caret {
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 0.15em;
+  vertical-align: text-bottom;
+  background: var(--dock-accent);
+  animation: roomAgentCaret 1s steps(2, start) infinite;
+}
+
+@keyframes roomAgentCaret { to { visibility: hidden; } }
+
+/* A tool the Room Agent used: one quiet line before the turn's answer */
+.room-agent-dock .room-agent-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0 0.35rem;
+  color: var(--dock-muted);
+  font-size: 0.72rem;
+}
+
+.room-agent-dock .room-agent-tool-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-agent-dock .room-agent-tool-row svg { flex: 0 0 auto; width: 0.85rem; height: 0.85rem; }
+.room-agent-dock .room-agent-tool-row[data-status="DONE"] svg { color: var(--dock-success); }
+.room-agent-dock .room-agent-tool-row[data-status="FAILED"] { color: var(--dock-danger); }
+.room-agent-dock .room-agent-tool-row[data-status="REFUSED"] { color: var(--dock-warning); }
+.room-agent-dock .is-spinning { animation: roomAgentSpin 1s linear infinite; }
+
+@keyframes roomAgentSpin { to { transform: rotate(360deg); } }
+
+/* What the room monitor saw */
+.room-agent-dock .room-agent-system-row {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.4rem 0.55rem;
+  border-left: 3px solid var(--dock-border-strong, var(--dock-border));
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-soft);
+  font-size: var(--dock-font-sm);
+}
+
+.room-agent-dock .room-agent-system-row[data-event-kind="FINISHED"] { border-left-color: var(--dock-success); }
+.room-agent-dock .room-agent-system-row[data-event-kind="ERROR"] { border-left-color: var(--dock-danger); }
+.room-agent-dock .room-agent-system-row[data-attention="true"] { border-left-color: var(--dock-warning); background: var(--dock-warning-soft); }
+
+.room-agent-dock .room-agent-system-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+  color: var(--dock-text);
+}
+
+.room-agent-dock .room-agent-system-head svg { flex: 0 0 auto; align-self: center; width: 0.85rem; height: 0.85rem; color: var(--dock-muted); }
+.room-agent-dock .room-agent-system-row[data-attention="true"] .room-agent-system-head svg { color: var(--dock-warning); }
+.room-agent-dock .room-agent-system-head strong { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+
+.room-agent-dock .room-agent-system-head time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--dock-muted);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-agent-dock .room-agent-system-detail,
+.room-agent-dock .room-agent-system-decision {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dock-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+/* The operator answers from this text, so a question is shown whole and scrolls instead of clamping. */
+.room-agent-dock .room-agent-system-row[data-event-kind="WAITING"] .room-agent-system-detail {
+  display: block;
+  max-height: 16rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dock-text) 6%, transparent);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+}
+
+.room-agent-dock .room-agent-system-decision { color: var(--dock-text); }
+
+.room-agent-dock .room-agent-system-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.room-agent-dock .room-agent-system-status {
+  margin-right: auto;
+  white-space: nowrap;
+  color: var(--dock-muted);
+  font-size: 0.68rem;
+}
+
+.room-agent-dock .room-agent-system-row[data-attention="true"] .room-agent-system-status { color: var(--dock-warning); font-weight: 600; }
+
+.room-agent-dock .room-agent-system-answer {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.room-agent-dock .room-agent-system-answer input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface, transparent);
+  color: var(--dock-text);
+  font: inherit;
+}
+
+.room-agent-dock .room-agent-system-answer input:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 0; }
+
+.room-agent-dock .room-agent-system-actions .dock-kit-chip,
+.room-agent-dock .room-agent-system-answer .dock-kit-chip,
+.room-agent-dock .room-agent-confirmation-actions .dock-kit-chip {
+  min-height: 1.75rem;
+  padding: 0 0.65rem;
+  font-size: 0.72rem;
+}
+
+/* An action waiting for the operator's yes */
+.room-agent-dock .room-agent-confirmation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px dashed color-mix(in srgb, var(--dock-accent) 55%, var(--dock-border));
+  border-radius: var(--dock-radius-sm);
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+}
+
+.room-agent-dock .room-agent-confirmation-row > svg { flex: 0 0 auto; width: 0.9rem; height: 0.9rem; color: var(--dock-accent); }
+.room-agent-dock .room-agent-confirmation-text { flex: 1 1 8rem; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.room-agent-dock .room-agent-confirmation-actions { display: flex; gap: 0.3rem; margin-left: auto; }
+
+.room-agent-dock .room-agent-confirmation-actions .dock-kit-chip.is-primary {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent);
+  color: var(--dock-on-accent, #fff);
+}
+
+.room-agent-dock .room-agent-confirmation-status { margin-left: auto; color: var(--dock-muted); font-size: 0.7rem; }
+.room-agent-dock .room-agent-confirmation-row:not([data-status="PENDING"]) { border-style: solid; border-color: var(--dock-border); }
+
+/* Day separators */
+.room-agent-dock .room-agent-separator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--dock-muted);
+  font-size: 0.66rem;
+}
+
+.room-agent-dock .room-agent-separator::before,
+.room-agent-dock .room-agent-separator::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--dock-border);
+}
+
+.room-agent-dock .room-agent-jump {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 1.9rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font-size: 0.72rem;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 18%);
+  cursor: pointer;
+}
+
+.room-agent-dock .room-agent-jump svg { width: 0.85rem; height: 0.85rem; }
+
+/* Empty state with suggestion chips */
+.room-agent-dock .room-agent-start {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.room-agent-dock .room-agent-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.room-agent-dock .room-agent-suggestions .dock-kit-chip {
+  min-height: 2.25rem;
+  padding: 0 0.85rem;
+  border-radius: 999px;
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+}
+
+/* Notices */
+.room-agent-dock .room-agent-stop-button:not(:disabled) svg {
+  color: var(--dock-danger);
+}
+
+.room-agent-dock .room-agent-error.dock-kit-notice,
+.room-agent-dock .room-agent-voice-status.dock-kit-notice,
+.room-agent-dock .room-agent-blocked.dock-kit-notice {
+  max-height: 6rem;
+  margin: 0;
+  overflow-y: auto;
+  padding: 0.5rem 0.4rem 0.5rem 0.65rem;
+  border-radius: var(--dock-radius-sm);
+  font-size: var(--dock-font-sm);
+}
+
+.room-agent-dock .room-agent-voice-status.dock-kit-notice {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+  color: var(--dock-text);
+}
+
+/* Composer */
+.room-agent-dock .room-agent-composer {
+  border-color: var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+}
+
+.room-agent-dock .room-agent-composer:focus-within {
+  border-color: var(--dock-accent);
+}
+
+.room-agent-dock .room-agent-composer textarea {
+  color: var(--dock-text);
+}
+
+.room-agent-dock .room-agent-composer textarea::placeholder {
+  color: var(--dock-muted);
+}
+
+.room-agent-dock .room-agent-composer-hint {
+  color: var(--dock-muted);
+}
+
+/* The send button keeps a 40px target for touch and the browser proof. */
+.room-agent-dock .room-agent-composer-actions .room-agent-submit {
+  min-height: 2.5rem;
+  margin-left: auto;
+  padding: 0 0.95rem;
+  border-radius: var(--dock-radius-sm);
+  font-size: var(--dock-font-sm);
+}
+
+/* Sent to Nous (plan clipboard:xEQOrVRQgeAn): read, not waiting for the operator. */
+.room-agent-dock .room-agent-system-status.is-nous { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--dock-muted); }
+.room-agent-dock .room-agent-system-status.is-nous svg { width: 0.85rem; height: 0.85rem; }

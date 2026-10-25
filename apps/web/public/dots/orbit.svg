@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320" fill="none" role="img" aria-labelledby="orbit-title">
+  <title id="orbit-title">Orbit, original Space Dots astronaut</title>
+  <defs>
+    <radialGradient id="orbit-suit" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(128 143) rotate(58) scale(119 101)">
+      <stop stop-color="#FFFCED"/><stop offset=".47" stop-color="#EFEADB"/><stop offset=".82" stop-color="#D7D7CE"/><stop offset="1" stop-color="#AEBFC4"/>
+    </radialGradient>
+    <radialGradient id="orbit-helmet" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(136 75) rotate(53) scale(112 108)">
+      <stop stop-color="#FFFEF1"/><stop offset=".5" stop-color="#EEEBDD"/><stop offset=".85" stop-color="#C8D1CE"/><stop offset="1" stop-color="#94ABB4"/>
+    </radialGradient>
+    <radialGradient id="orbit-glass" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(143 96) rotate(57) scale(69 84)">
+      <stop stop-color="#395163"/><stop offset=".4" stop-color="#20374B"/><stop offset=".82" stop-color="#13283B"/><stop offset="1" stop-color="#0D2030"/>
+    </radialGradient>
+    <linearGradient id="orbit-trim" x1="111" y1="166" x2="190" y2="249" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#98AFB8"/><stop offset=".5" stop-color="#6E8A99"/><stop offset="1" stop-color="#496A7D"/>
+    </linearGradient>
+    <linearGradient id="orbit-gold" x1="128" y1="86" x2="174" y2="115" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF2C7"/><stop offset=".55" stop-color="#E8C88B"/><stop offset="1" stop-color="#BA9765"/>
+    </linearGradient>
+    <linearGradient id="orbit-reflection" x1="129" y1="88" x2="156" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E6EEEA" stop-opacity=".56"/><stop offset="1" stop-color="#BDCFD4" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="orbit-grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".78" numOctaves="3" seed="11" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".11"/></feComponentTransfer>
+      <feComposite in2="SourceGraphic" operator="in" result="texture"/>
+      <feBlend in="SourceGraphic" in2="texture" mode="soft-light"/>
+    </filter>
+    <filter id="orbit-shadow" x="-30%" y="-180%" width="160%" height="460%"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="orbit-soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.5"/></filter>
+  </defs>
+  <ellipse cx="162" cy="266" rx="64" ry="5" fill="#263D50" opacity=".15" filter="url(#orbit-shadow)"/>
+  <!-- A little exposed backpack makes the padded silhouette read as a suit. -->
+  <path d="M109 151C100 151 96 158 97 169L99 206C100 215 105 220 115 219L131 214L129 157Z" fill="url(#orbit-trim)"/>
+  <path d="M102 161L105 199" stroke="#BED0CE" stroke-width="3" stroke-linecap="round" opacity=".64"/>
+  <g filter="url(#orbit-grain)">
+    <path d="M120 164C109 159 99 166 95 177L82 201C77 210 82 220 91 223C100 226 111 216 116 205L130 181Z" fill="url(#orbit-suit)"/>
+    <path d="M92 197L113 208L108 217L85 207Z" fill="url(#orbit-trim)"/>
+    <path d="M83 207C77 209 75 217 79 223C81 227 86 229 91 227L104 222C108 220 109 216 106 213C103 209 99 210 95 211C93 207 88 205 83 207Z" fill="url(#orbit-suit)"/>
+    <path d="M87 218L95 217" stroke="#BEC8C5" stroke-width="2" stroke-linecap="round"/>
+    <path d="M195 163C207 165 218 159 223 149L232 133C237 126 244 127 250 132C256 137 253 145 250 151L235 177C227 191 215 199 201 196L185 179Z" fill="url(#orbit-suit)"/>
+    <path d="M229 136L249 148L254 139L235 127Z" fill="url(#orbit-trim)"/>
+    <path d="M235 131C228 127 229 118 232 112L234 97C235 91 240 91 242 97L245 110L247 89C248 83 253 84 254 90L255 109L262 96C265 91 269 94 267 100L263 115L269 111C274 108 278 113 274 118L265 130C260 137 248 141 242 136Z" fill="url(#orbit-suit)"/>
+    <path d="M239 116C242 114 246 116 248 120" stroke="#BEC7C0" stroke-width="2" stroke-linecap="round"/>
+    <path d="M254 112L252 120M262 116L259 122" stroke="#B3C1BE" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M126 221C123 228 123 242 125 248C129 254 143 255 150 249L155 223Z" fill="url(#orbit-suit)"/>
+    <path d="M171 223L173 248C179 255 192 255 198 249C200 241 198 229 195 221Z" fill="url(#orbit-suit)"/>
+    <path d="M125 242C119 245 114 250 113 254C112 260 119 264 132 263L148 262C154 261 157 257 155 251L152 243Z" fill="url(#orbit-trim)"/>
+    <path d="M174 244C169 249 169 257 175 260L201 263C210 264 215 260 212 254C209 249 202 246 198 244Z" fill="url(#orbit-trim)"/>
+    <path d="M117 254C128 257 141 256 151 254M176 253C187 257 199 258 207 258" stroke="#ADC1C4" stroke-width="2.5" stroke-linecap="round" opacity=".65"/>
+    <path d="M137 145C122 148 113 162 113 181L116 211C117 229 127 238 145 240L173 240C190 240 203 231 205 213L207 178C207 159 194 146 178 144Z" fill="url(#orbit-suit)"/>
+    <path d="M195 173C202 196 198 223 184 230L183 238C200 233 206 220 205 201L207 180Z" fill="#809BA8" opacity=".18" filter="url(#orbit-soft)"/>
+    <path d="M122 178C120 196 120 207 125 215" stroke="#FFFFF1" stroke-width="4" stroke-linecap="round" opacity=".7"/>
+    <path d="M119 218C140 225 180 227 201 218" stroke="#A8B9BC" stroke-width="3" stroke-linecap="round"/>
+    <path d="M121 216C143 223 178 224 200 216" stroke="#FCFAE9" stroke-width="2" stroke-linecap="round" opacity=".75"/>
+    <path d="M156 171L157 213" stroke="#A7B9BD" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+    <path d="M137 155C142 166 179 168 188 155" stroke="#738F9C" stroke-width="9" stroke-linecap="round"/>
+    <path d="M136 153C147 161 176 162 187 152" stroke="#D2DDDA" stroke-width="4" stroke-linecap="round"/>
+    <rect x="166" y="180" width="26" height="22" rx="7" fill="url(#orbit-trim)"/>
+    <rect x="169" y="183" width="20" height="16" rx="5" fill="#486579"/>
+    <circle cx="175" cy="190" r="3" fill="#E5C38B"/>
+    <path d="M182 189H185M182 194H185" stroke="#C1D6D6" stroke-width="2" stroke-linecap="round"/>
+    <path d="M137 180L139 186L145 188L139 190L137 196L135 190L129 188L135 186Z" fill="#C2A16D" opacity=".9"/>
+    <path d="M159 53C126 53 105 70 101 99C98 122 103 142 120 153C132 161 147 164 164 163C194 163 216 144 219 117C222 80 198 53 159 53Z" fill="url(#orbit-helmet)"/>
+    <path d="M199 73C215 91 218 119 207 137C193 155 176 157 164 156" stroke="#6E8B9B" stroke-width="7" stroke-linecap="round" opacity=".2" filter="url(#orbit-soft)"/>
+    <path d="M110 94C113 77 132 63 152 63" stroke="#FFFFF4" stroke-width="4" stroke-linecap="round" opacity=".83"/>
+    <path d="M124 84C114 91 109 104 111 117C113 137 131 150 158 151C184 152 204 139 207 121C212 97 193 80 164 79C146 78 133 79 124 84Z" fill="#849DA5"/>
+    <path d="M126 87C116 93 112 104 114 116C116 134 133 147 158 148C182 149 201 137 204 120C208 98 191 83 164 82C148 81 135 82 126 87Z" fill="url(#orbit-glass)"/>
+    <path d="M126 96C134 86 149 85 163 87C150 93 139 100 133 113C129 118 122 110 123 104Z" fill="url(#orbit-reflection)"/>
+    <path d="M133 96C139 90 150 89 158 90" stroke="url(#orbit-gold)" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M129 102L127 107" stroke="#EFD8A5" stroke-width="2.5" stroke-linecap="round" opacity=".62"/>
+    <path d="M187 133L192 130" stroke="#D2B782" stroke-width="2" stroke-linecap="round" opacity=".65"/>
+    <path d="M125 138C136 146 151 149 167 147" stroke="#72929F" stroke-width="1.8" stroke-linecap="round" opacity=".42"/>
+    <path d="M96 106C91 109 91 122 97 126L104 125L104 106Z" fill="url(#orbit-trim)"/>
+    <path d="M97 111V119" stroke="#DCE5DD" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M218 104C224 105 227 116 221 122L215 123L216 105Z" fill="url(#orbit-trim)"/>
+    <path d="M145 156C153 159 169 159 177 155" stroke="#F5F2E4" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+</svg>

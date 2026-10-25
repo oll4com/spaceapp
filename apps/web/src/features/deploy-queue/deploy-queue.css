@@ -1,0 +1,113 @@
+.deploy-queue-card {
+  display: grid;
+  gap: 10px;
+  color: var(--room-text, #f4efe5);
+}
+
+.deploy-queue-card h4 {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--room-muted, #a7a59e);
+}
+
+.deploy-queue-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.deploy-queue-summary p {
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.deploy-queue-refresh {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--room-muted, #a7a59e);
+  cursor: pointer;
+}
+
+.deploy-queue-refresh:hover,
+.deploy-queue-refresh:focus-visible {
+  color: var(--room-text, #f4efe5);
+  border-color: var(--room-muted, #a7a59e);
+}
+
+.deploy-queue-muted {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--room-muted, #a7a59e);
+}
+
+.deploy-queue-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.deploy-queue-ticket {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+}
+
+.deploy-queue-ticket-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.deploy-queue-ticket-body strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.deploy-queue-meta,
+.deploy-queue-note,
+.deploy-queue-files {
+  font-size: 0.82rem;
+  color: var(--room-muted, #a7a59e);
+  overflow-wrap: anywhere;
+}
+
+.deploy-queue-card code {
+  font-size: 0.8em;
+}
+
+.deploy-queue-chip {
+  justify-self: start;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+}
+
+.deploy-queue-chip.tone-ok { color: #4caf7d; }
+.deploy-queue-chip.tone-busy { color: var(--room-accent, #58a6ff); }
+.deploy-queue-chip.tone-warn { color: #d9a441; }
+.deploy-queue-chip.tone-bad { color: #e5675b; }
+.deploy-queue-chip.tone-idle { color: var(--room-muted, #a7a59e); }
+
+@media (max-width: 480px) {
+  .deploy-queue-ticket {
+    grid-template-columns: 1fr;
+  }
+}

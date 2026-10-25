@@ -1,0 +1,4 @@
+interface:
+  display_name: "Job Copilot"
+  short_description: "Work the operator's posting queue inside a Space Job Copilot pane: fill, upload, submit, verify with evidence, remember every answer."
+  default_prompt: "Use $space-job-applications: call space_job_next until it returns done, work each posting with space_job_fields_record, space_job_memory_recall before asking, handoff for CAPTCHA or login, and evidence before VERIFIED."

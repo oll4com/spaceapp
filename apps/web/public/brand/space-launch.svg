@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="882 -40 320 400" width="320" height="400" role="img" aria-label="SpaceApp rocket igniting">
+  <!-- Loading graphic: the favicon's brand rocket during its first burn. Shared by index.html and the room pane loader. -->
+  <style>
+    .star { fill: #dbeafe; animation: twinkle 2.6s ease-in-out infinite; }
+    .star:nth-of-type(2n) { animation-delay: -0.9s; }
+    .star:nth-of-type(3n) { animation-delay: -1.7s; }
+    .lift { animation: lift 2.6s cubic-bezier(.55, 0, .3, 1) .5s both; }
+    .shake { animation: shake .12s linear infinite; }
+    .ignite { transform-box: fill-box; transform-origin: 50% 0; animation: ignite .55s cubic-bezier(.2, .8, .3, 1.2) .15s both; }
+    .flame { transform-box: fill-box; transform-origin: 50% 0; animation: flicker .16s ease-in-out infinite alternate; }
+    .plume { transform-box: fill-box; transform-origin: 50% 0; animation: flicker .23s ease-in-out infinite alternate-reverse; }
+    .glow { transform-box: fill-box; transform-origin: 50% 30%; animation: glow 1.1s ease-in-out .2s infinite alternate both; }
+    .pad-glow { transform-box: fill-box; transform-origin: center; animation: glow 1.1s ease-in-out .2s infinite alternate both; }
+    .puff { fill: #a9bbd8; transform-box: fill-box; transform-origin: center; opacity: 0; }
+    .puff.l { animation: puff-left 2.4s ease-out infinite; }
+    .puff.r { animation: puff-right 2.4s ease-out infinite; }
+    .puff:nth-of-type(2) { animation-delay: .5s; }
+    .puff:nth-of-type(3) { animation-delay: 1.1s; }
+    .puff:nth-of-type(4) { animation-delay: 1.7s; }
+    .puffs-b .puff { animation-duration: 2.9s; }
+    @keyframes twinkle { 0%, 100% { opacity: .25; } 50% { opacity: .9; } }
+    @keyframes lift { from { transform: translateY(0); } to { transform: translateY(-16px); } }
+    @keyframes shake {
+      0% { transform: translate(0, 0); }
+      25% { transform: translate(.9px, -.6px); }
+      50% { transform: translate(-.8px, .5px); }
+      75% { transform: translate(.6px, .7px); }
+      100% { transform: translate(0, 0); }
+    }
+    @keyframes ignite { from { transform: scale(.25, 0); opacity: 0; } }
+    @keyframes flicker { from { transform: scale(1, 1); } to { transform: scale(.9, .84); } }
+    @keyframes glow { from { opacity: .55; transform: scale(.92); } to { opacity: 1; transform: scale(1.06); } }
+    @keyframes puff-left {
+      0% { opacity: 0; transform: translate(0, 0) scale(.55); }
+      18% { opacity: .6; transform: translate(-14px, -2px) scale(.95); }
+      100% { opacity: 0; transform: translate(-92px, -22px) scale(2.2); }
+    }
+    @keyframes puff-right {
+      0% { opacity: 0; transform: translate(0, 0) scale(.55); }
+      18% { opacity: .6; transform: translate(14px, -2px) scale(.95); }
+      100% { opacity: 0; transform: translate(92px, -22px) scale(2.2); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; }
+      .puff { opacity: .3; }
+    }
+  </style>
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="40%" r="50%">
+      <stop offset="0" stop-color="#cffafe" stop-opacity=".75" />
+      <stop offset=".45" stop-color="#67d9f5" stop-opacity=".28" />
+      <stop offset="1" stop-color="#67d9f5" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e0fbff" />
+      <stop offset=".45" stop-color="#67d9f5" />
+      <stop offset="1" stop-color="#3b82f6" stop-opacity=".2" />
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#cffafe" stop-opacity=".3" />
+    </linearGradient>
+    <linearGradient id="plume" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#67d9f5" stop-opacity=".55" />
+      <stop offset="1" stop-color="#3b82f6" stop-opacity="0" />
+    </linearGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" /></filter>
+    <linearGradient id="pad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#93e9fa" stop-opacity="0" />
+      <stop offset=".5" stop-color="#93e9fa" stop-opacity=".55" />
+      <stop offset="1" stop-color="#93e9fa" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <g>
+    <circle class="star" cx="922" cy="10" r="2.2" />
+    <circle class="star" cx="1158" cy="-6" r="1.8" />
+    <circle class="star" cx="946" cy="128" r="1.6" />
+    <circle class="star" cx="1172" cy="96" r="2.4" />
+    <circle class="star" cx="1132" cy="196" r="1.4" />
+    <circle class="star" cx="908" cy="232" r="1.8" />
+    <circle class="star" cx="1004" cy="-24" r="1.4" />
+  </g>
+
+  <ellipse class="pad-glow" cx="1042.4" cy="306" rx="96" ry="10" fill="url(#glow)" />
+  <rect x="922" y="305" width="240" height="2" rx="1" fill="url(#pad)" />
+
+  <g filter="url(#soft)">
+    <circle class="puff l" cx="1030" cy="298" r="16" />
+    <circle class="puff l" cx="1024" cy="300" r="20" />
+    <circle class="puff r" cx="1054" cy="298" r="16" />
+    <circle class="puff r" cx="1060" cy="300" r="20" />
+  </g>
+  <g class="puffs-b" filter="url(#soft)">
+    <circle class="puff r" cx="1046" cy="300" r="14" />
+    <circle class="puff l" cx="1038" cy="300" r="18" />
+    <circle class="puff r" cx="1050" cy="302" r="22" />
+    <circle class="puff l" cx="1034" cy="302" r="22" />
+  </g>
+
+  <g class="lift">
+    <g class="shake">
+      <g class="ignite">
+        <ellipse class="glow" cx="1042.4" cy="236" rx="70" ry="52" fill="url(#glow)" />
+        <ellipse class="plume" cx="1042.4" cy="290" rx="18" ry="52" fill="url(#plume)" />
+        <g class="flame">
+          <path d="M 1020 204 C 1015 236, 1029 272, 1042.4 316 C 1055.8 272, 1069.8 236, 1064.8 204 Z" fill="url(#flame)" />
+          <path d="M 1029 204 C 1026 228, 1034 254, 1042.4 284 C 1050.8 254, 1058.8 228, 1055.8 204 Z" fill="url(#core)" />
+        </g>
+      </g>
+      <circle cx="1042.4" cy="91.4" r="19.8" fill="#0a0e24" />
+      <circle cx="1036.4" cy="85.4" r="5" fill="#93e9fa" opacity=".35" />
+      <path d="M 982.653 148.182 C 979.625 151.581, 975.201 158.219, 972.824 162.932 L 968.500 171.500 968.515 185.500 C 968.526 195.928, 968.947 200.648, 970.165 204 C 971.064 206.475, 972.313 210.412, 972.940 212.750 C 973.567 215.088, 974.682 217, 975.418 217 C 976.153 217, 982.273 211.488, 989.017 204.750 C 998.411 195.365, 1001.259 191.915, 1001.197 190 C 1001.152 188.625, 1000.010 183.675, 998.658 179 C 997.306 174.325, 995.019 164.476, 993.575 157.113 C 992.131 149.751, 990.709 143.338, 990.415 142.863 C 989.380 141.188, 988.104 142.062, 982.653 148.182 M 1102.147 148.182 C 1105.175 151.581 1109.599 158.219 1111.976 162.932 L 1116.3 171.5 1116.285 185.5 C 1116.274 195.928 1115.853 200.648 1114.635 204 C 1113.736 206.475 1112.487 210.412 1111.86 212.75 C 1111.233 215.088 1110.118 217 1109.382 217 C 1108.647 217 1102.527 211.488 1095.783 204.75 C 1086.389 195.365 1083.541 191.915 1083.603 190 C 1083.648 188.625 1084.79 183.675 1086.142 179 C 1087.494 174.325 1089.781 164.476 1091.225 157.113 C 1092.669 149.751 1094.091 143.338 1094.385 142.863 C 1095.42 141.188 1096.696 142.062 1102.147 148.182" fill="#80e3f8" />
+      <path d="M 1042.4 6.0 C 1033.5 13.5, 1022.5 28, 1013.5 45 C 1003.5 64, 999 80, 996.5 98 C 994.5 118, 996 145, 998.5 158 C 1001.5 174, 1006 190, 1014 203 C 1016 206.5, 1017.5 208, 1021 208 C 1032.4 206.5, 1052.4 206.5, 1063.8000000000002 208.0 C 1067.3 208, 1068.8 206.5, 1070.8 203 C 1078.8 190, 1083.3 174, 1086.3 158 C 1088.8 145, 1090.3 118, 1088.3 98 C 1085.8 80, 1081.3 64, 1071.3 45 C 1062.3 28, 1051.3 13.5, 1042.4 6 Z M 1042.4 71.6 A 19.8 19.8 0 1 0 1042.4 111.2 A 19.8 19.8 0 1 0 1042.4 71.6 Z" fill="#93e9fa" fill-rule="evenodd" />
+    </g>
+  </g>
+</svg>

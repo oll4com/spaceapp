@@ -1,0 +1,179 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { evaluatePublicRelease } from "../public-release-readiness.mjs";
+
+const policy = {
+  schemaVersion: 1,
+  packages: {
+    "@anthropic-ai/claude-code": {
+      version: "2.1.301",
+      distribution: "owner-installed-only",
+      imageBundled: false
+    }
+  }
+};
+
+const notices = [
+  "Claude Code (`@anthropic-ai/claude-code@2.1.301`)",
+  "Claude Code is therefore not included in published SpaceApp images.",
+  "owner-initiated"
+].join("\n");
+
+test("public release readiness blocks version drift", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.1",
+    packageVersion: "0.1.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.blockers, [
+    "Requested version 0.1.1 does not match run-spaceapp 0.1.0.",
+    "Requested runtime version 0.1.1 does not match run-spaceapp runtime 0.1.0."
+  ]);
+});
+
+test("public release readiness accepts exact semantic prerelease versions", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.0",
+    requestedNpmTag: "personal",
+    packageVersion: "0.1.15-hostroot.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("launcher-only readiness accepts a new launcher pinned to an older runtime", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.1",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "launcher-only",
+    requestedRuntimeVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.1",
+    packageRuntimeVersion: "0.1.15-hostroot.0",
+    packageHostRootRuntimeCompatible: false,
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("launcher-only readiness blocks runtime input drift", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.1",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "launcher-only",
+    requestedRuntimeVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.1",
+    packageRuntimeVersion: "0.1.15-hostroot.9",
+    packageHostRootRuntimeCompatible: false,
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.blockers.join("\n"), /runtime.*does not match/i);
+});
+
+test("amd64 core and CLI readiness accepts a matching host-root runtime for an x64 launcher", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.2",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "amd64-core-cli",
+    requestedRuntimeVersion: "0.1.15-hostroot.2",
+    requestedBrowserSourceVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.2",
+    packageRuntimeVersion: "0.1.15-hostroot.2",
+    packageHostRootRuntimeCompatible: true,
+    packageCpu: ["x64"],
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("amd64 core and CLI readiness blocks a launcher that could install on arm64", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.2",
+    requestedNpmTag: "personal",
+    requestedReleaseMode: "amd64-core-cli",
+    requestedRuntimeVersion: "0.1.15-hostroot.2",
+    requestedBrowserSourceVersion: "0.1.15-hostroot.0",
+    packageVersion: "0.1.15-hostroot.2",
+    packageRuntimeVersion: "0.1.15-hostroot.2",
+    packageHostRootRuntimeCompatible: true,
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.blockers.join("\n"), /must support x64 hosts/i);
+});
+
+test("public release readiness reserves host-root versions for the personal tag", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.15-hostroot.0",
+    requestedNpmTag: "next",
+    packageVersion: "0.1.15-hostroot.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.blockers, [
+    "Host-root prereleases must publish only to the npm personal tag."
+  ]);
+});
+
+test("public release readiness requires a positive owner-installed-only Claude record", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.0",
+    packageVersion: "0.1.0",
+    notices: notices.replace("owner-initiated", "manual"),
+    dockerfile: "RUN npm install @anthropic-ai/claude-code@2.1.301\n",
+    distributionPolicy: {
+      ...policy,
+      packages: {
+        "@anthropic-ai/claude-code": {
+          ...policy.packages["@anthropic-ai/claude-code"],
+          imageBundled: true
+        }
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.blockers, [
+    "Claude Code distribution policy must be owner-installed-only and imageBundled=false.",
+    "The distributed Dockerfile must not install @anthropic-ai/claude-code.",
+    "Third-party notices must document the owner-initiated Claude installation boundary."
+  ]);
+});
+
+test("public release readiness accepts the exact non-redistribution policy", () => {
+  const result = evaluatePublicRelease({
+    requestedVersion: "0.1.0",
+    packageVersion: "0.1.0",
+    notices,
+    dockerfile: "FROM node:22\n",
+    distributionPolicy: policy
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});

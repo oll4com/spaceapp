@@ -1,0 +1,2600 @@
+{
+  "schemaVersion": 2,
+  "planId": "clipboard:wxc6q7AaaMt6",
+  "current": {
+    "recordedAt": "2026-10-16T05:10:00+00:00",
+    "liveSha": "39d6023113",
+    "liveShaSource": "Stable: git -C /opt/spaceapp rev-parse refs/space-queue/live-verified. Dev: git -C /opt/spaceapp rev-parse refs/heads/dev and npm run live:verify:dev. Per-commit facts: node scripts/quality-snapshot.mjs <sha>",
+    "estimatedOverallCompletionPercent": 93,
+    "estimationMethod": "Mean of the ten plan steps' progress recorded in PLAN clipboard:wxc6q7AaaMt6. Engineering judgement, not a test pass rate.",
+    "estimateIsTestPassRate": false,
+    "deployed": true,
+    "deployPath": "Merge queue only. Since 2026-10-12 every batch deploys to the dev instance (http://127.0.0.1:4911:4940) after an isolated build and npm run test:deploy; stable changes only when the operator runs space-queue promote (docs/runbooks/stable-dev-instances.md)",
+    "independentReview": {
+      "status": "Internal reviews of the public run-spaceapp 1.1.5 tree (oll4com/spaceapp 8a3e1f0, the release commit; npm next 1.1.5), each given the byte-for-byte source archive and the snapshot README with the neutral prompt of review-pack.md. Neither reviewer had network access for npm ci.",
+      "reviews": [
+        {
+          "reviewer": "Codex CLI (gpt-6.1-sol)",
+          "rating": "3/5",
+          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-1.1.5-8a3e1f0/codex.md",
+          "note": "Main findings: docs/quality/baseline.json names an older source commit; no live provider proofs; first-party images pulled by tag (third-party pinned); observability and off-host backup gaps; readiness timeouts not cancelled; domain-boundaries.md says npm test runs test:architecture (only check does)."
+        },
+        {
+          "reviewer": "Claude (claude-opus-5-5, subagent)",
+          "rating": "3/5",
+          "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-1.1.5-8a3e1f0/claude.md",
+          "note": "Confirmed defect: WebSocket handshakes (VNC stream, shared chat) skipped the same-site Origin check; fixed on dev dbb253756e for 1.1.6. Also reported: child-process env scrubbing incomplete, SEC-009 mkdir from request path, CORE-011 rollback pattern at other sites, a 0057 migration collision in the public tree, provenance check skips files outside the manifest, factory-reset ignores backup failure, stale install locks, no isolation between agents in the CLI container. These still need verification and go to the 1.1.6 plan."
+        }
+      ]
+    },
+    "orchestrationReduction": {
+      "apps/api/src/app.ts": {
+        "baselineLines": 19487,
+        "devLines": 7593,
+        "devSha": "860ae01ced",
+        "reductionPercent": 61,
+        "targetPercent": 60,
+        "targetMet": true
+      },
+      "apps/web/src/App.tsx": {
+        "baselineLines": 18192,
+        "devLines": 7238,
+        "devSha": "860ae01ced",
+        "reductionPercent": 60.2,
+        "targetPercent": 60,
+        "targetMet": true
+      }
+    },
+    "fullCiGreen": false,
+    "fullCiNote": "Full npm test on dev 9db908d25e (2026-10-12, loaded VM): every package, architecture, test:deploy and contributor suite green; worker 232/232; api 3,701/3,724 (3 fail, 20 skip); web 3,478/3,485 (7 fail). The 10 failures are load-dependent and pass at maxWorkers=1. No public CI URL yet; public CI is checked on the published 1.1.3 SHA.",
+    "openGates": [
+      "operator: next promote (ADD_*_CLI proof fixes, memory-worker metrics, browser abandoned-navigation fix, docs) and the guarded Browser Host restart that activates the browser fix",
+      "operator-postponed: warm proofs (stable PERF-001 gate; A/B for the blank 16th-terminal fix d5f0ad6784, not deployed)",
+      "1.1.3: small on all three platforms and Linux medium passed; Windows/macOS medium and large wait for host memory under the 20 GiB floor; then publish and npm approval",
+      "operator-only: off-VM backups, WAL/PITR, DeepSeek account balance"
+    ],
+    "executionStatus": "IN_PROGRESS",
+    "devSha": "51618cf8fb",
+    "devVerified": "npm run live:verify:dev ok at 2026-10-12T16:22Z (devHead 51618cf8fb)",
+    "perf001": {
+      "fixSha": "8bb433157d",
+      "devSha": "860ae01ced",
+      "stagingAB": {
+        "fixWarmP95Ms": 238.5,
+        "baseWarmP95Ms": 713.8,
+        "fixColdOpenS": "1.8-2.6",
+        "baseColdOpenS": "2.4-5.0",
+        "results": "/var/lib/spaceapp-user/agent-workspace/reports/20261011-perf001-bisect/results.jsonl (cv-q1, cv-base-q1)"
+      },
+      "layoutInvariant": "fails in fix and base: the 16th terminal of a revealed room shows 6-9 blank frames during a glyph-width geometry repair (pre-existing, open)",
+      "stableProof": "pending the operator-run promote"
+    },
+    "vmArchiveRestoreDrill": {
+      "archive": "vzdump-qemu-207-2026_10_07-09_03_36.vma.lzo",
+      "ranAt": "2026-10-12T13:11Z-16:26Z",
+      "archiveIntact": true,
+      "filesystems": "whole (e2fsck -fn: snapshot orphan/bitmap differences only)",
+      "postgres": "WAL recovery 0.37 s; 3 databases verified; 29 migrations applied; store ok",
+      "rtoSeconds": 10.3,
+      "cleanup": "images, container and local copy removed",
+      "report": "/var/lib/spaceapp-user/agent-workspace/reports/20261012-vm-restore-drill/"
+    }
+  },
+  "history": [
+    {
+      "checkpoint": "pre-1.1.5-internal-review",
+      "recordedAt": "2026-10-12T16:30:00+00:00",
+      "liveSha": "39d6023113",
+      "liveShaSource": "Stable: git -C /opt/spaceapp rev-parse refs/space-queue/live-verified. Dev: git -C /opt/spaceapp rev-parse refs/heads/dev and npm run live:verify:dev. Per-commit facts: node scripts/quality-snapshot.mjs <sha>",
+      "estimatedOverallCompletionPercent": 93,
+      "estimationMethod": "Mean of the ten plan steps' progress recorded in PLAN clipboard:wxc6q7AaaMt6. Engineering judgement, not a test pass rate.",
+      "estimateIsTestPassRate": false,
+      "deployed": true,
+      "deployPath": "Merge queue only. Since 2026-10-12 every batch deploys to the dev instance (http://127.0.0.1:4911:4940) after an isolated build and npm run test:deploy; stable changes only when the operator runs space-queue promote (docs/runbooks/stable-dev-instances.md)",
+      "independentReview": {
+        "status": "Final reviews on dev bc484aa8c6 (2026-10-12), each given a Git clone of that commit and QUALITY_SNAPSHOT.json",
+        "reviews": [
+          {
+            "reviewer": "Claude CLI (claude-opus-4-8)",
+            "rating": "4/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/claude.md",
+            "note": "F1 (revocation in memory only) is a misreading: persistence is attached at startup (app.ts:4951, migration 0154); F6 found the unexempted 0157 collision, fixed in 81185073ba"
+          },
+          {
+            "reviewer": "Codex CLI (gpt-6.1-sol)",
+            "rating": "3/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/codex.md",
+            "note": "stale README status fixed; VM archive restore drill run; full suites measured since"
+          },
+          {
+            "reviewer": "OpenCode (opencode/big-pickle)",
+            "rating": "4/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/final-bc484aa8c6/opencode-big-pickle.md"
+          }
+        ],
+        "preliminary": {
+          "sha": "521f81acee",
+          "ratings": {
+            "claude": "4/5",
+            "codex": "3/5",
+            "opencode": "2/5"
+          }
+        },
+        "unavailable": "DeepSeek: provider account 402 Insufficient Balance; Gemini and Qwen: no quota",
+        "snapshotReviews": [
+          {
+            "snapshot": "spaceapp.dev/review/1.1.4 (public 837e0b034b, tag v1.1.4; quality/ from dev 99e713ac4d)",
+            "date": "2026-10-14",
+            "reviews": [
+              {
+                "reviewer": "ChatGPT (gpt-6.1-sol)",
+                "rating": "3/5",
+                "note": "could not run checks without node_modules; provenance, observability, runtime proofs, host mode, composition roots"
+              },
+              {
+                "reviewer": "Claude (claude-opus-5-5)",
+                "rating": "2/5 (provisional; 3 if F17 were not exploitable)",
+                "note": "F17 credentialed CORS for local origins; export leaked operator markers (F1) and changed code (F18)"
+              }
+            ],
+            "findings": "EXT-C-F1..F20 and EXT-G-1..7 in review-findings.json; status in KNOWN_LIMITATIONS.md"
+          }
+        ]
+      },
+      "orchestrationReduction": {
+        "apps/api/src/app.ts": {
+          "baselineLines": 19487,
+          "devLines": 7593,
+          "devSha": "860ae01ced",
+          "reductionPercent": 61,
+          "targetPercent": 60,
+          "targetMet": true
+        },
+        "apps/web/src/App.tsx": {
+          "baselineLines": 18192,
+          "devLines": 7238,
+          "devSha": "860ae01ced",
+          "reductionPercent": 60.2,
+          "targetPercent": 60,
+          "targetMet": true
+        }
+      },
+      "fullCiGreen": false,
+      "fullCiNote": "Full npm test on dev 9db908d25e (2026-10-12, loaded VM): every package, architecture, test:deploy and contributor suite green; worker 232/232; api 3,701/3,724 (3 fail, 20 skip); web 3,478/3,485 (7 fail). The 10 failures are load-dependent and pass at maxWorkers=1. No public CI URL yet; public CI is checked on the published 1.1.3 SHA.",
+      "openGates": [
+        "operator: next promote (ADD_*_CLI proof fixes, memory-worker metrics, browser abandoned-navigation fix, docs) and the guarded Browser Host restart that activates the browser fix",
+        "operator-postponed: warm proofs (stable PERF-001 gate; A/B for the blank 16th-terminal fix d5f0ad6784, not deployed)",
+        "1.1.3: small on all three platforms and Linux medium passed; Windows/macOS medium and large wait for host memory under the 20 GiB floor; then publish and npm approval",
+        "operator-only: off-VM backups, WAL/PITR, DeepSeek account balance"
+      ],
+      "executionStatus": "IN_PROGRESS",
+      "devSha": "51618cf8fb",
+      "devVerified": "npm run live:verify:dev ok at 2026-10-12T16:22Z (devHead 51618cf8fb)",
+      "perf001": {
+        "fixSha": "8bb433157d",
+        "devSha": "860ae01ced",
+        "stagingAB": {
+          "fixWarmP95Ms": 238.5,
+          "baseWarmP95Ms": 713.8,
+          "fixColdOpenS": "1.8-2.6",
+          "baseColdOpenS": "2.4-5.0",
+          "results": "/var/lib/spaceapp-user/agent-workspace/reports/20261011-perf001-bisect/results.jsonl (cv-q1, cv-base-q1)"
+        },
+        "layoutInvariant": "fails in fix and base: the 16th terminal of a revealed room shows 6-9 blank frames during a glyph-width geometry repair (pre-existing, open)",
+        "stableProof": "pending the operator-run promote"
+      },
+      "vmArchiveRestoreDrill": {
+        "archive": "vzdump-qemu-207-2026_10_07-09_03_36.vma.lzo",
+        "ranAt": "2026-10-12T13:11Z-16:26Z",
+        "archiveIntact": true,
+        "filesystems": "whole (e2fsck -fn: snapshot orphan/bitmap differences only)",
+        "postgres": "WAL recovery 0.37 s; 3 databases verified; 29 migrations applied; store ok",
+        "rtoSeconds": 10.3,
+        "cleanup": "images, container and local copy removed",
+        "report": "/var/lib/spaceapp-user/agent-workspace/reports/20261012-vm-restore-drill/"
+      }
+    },
+    {
+      "checkpoint": "2026-10-03 pause",
+      "recordedAt": "2026-10-03T17:54:17.631315+00:00",
+      "verifiedBuildSourceSha": "b825b4db7272d2dddbf9918b22d3127642d31b0d",
+      "estimatedOverallCompletionPercent": 38,
+      "estimateIsTestPassRate": false,
+      "fullCiGreen": false,
+      "publicCiRunUrl": null,
+      "deployed": false,
+      "independentReview": "Not performed; inline author self-review only, as required by supplied no-agents plan.",
+      "scopedChecks": [
+        {
+          "name": "API security/containment/uploads/auth/MCP profiles plus real PG transport loss",
+          "sourceSha": "7b9ab593cf2fa3521e40d303f6b866e0788f5a76",
+          "command": [
+            "npm",
+            "test",
+            "-w",
+            "@space/api",
+            "--",
+            "src/__tests__/files.test.ts",
+            "src/__tests__/files-containment.test.ts",
+            "src/__tests__/files-search-errors.test.ts",
+            "tests/files-routes-security.test.ts",
+            "tests/file-upload.test.ts",
+            "tests/agent-files.test.ts",
+            "tests/agent-file-upload.test.ts",
+            "tests/multipart-upload.test.ts",
+            "tests/upload-record.test.ts",
+            "tests/control-uploads-security.test.ts",
+            "tests/upload-record-postgres.integration.test.ts",
+            "tests/auth-auto-login-boundary.test.ts",
+            "tests/devtools-http-adapter.test.ts",
+            "--testTimeout=30000"
+          ],
+          "exitCode": 0,
+          "seconds": 71.117,
+          "summary": [
+            "Test Files  13 passed (13)",
+            "Tests  115 passed (115)",
+            "Duration  70.44s (transform 7.54s, setup 0ms, import 16.38s, tests 118.08s, environment 2ms)"
+          ],
+          "logSha256": "68f09c291b2b8e47c664c74c75aa1f6b421c26f80a1ed6aef8faae6a96e62fa2"
+        },
+        {
+          "name": "Artifact domain extraction and deletion follow-up",
+          "sourceTreeMatchesCommit": "6c68110cff445a993df02f2b53659cac88bfe906",
+          "command": [
+            "npm",
+            "test",
+            "-w",
+            "@space/api",
+            "--",
+            "tests/artifact-read-routes.test.ts",
+            "tests/artifact-deletion-security.test.ts",
+            "tests/agent-files.test.ts",
+            "src/__tests__/files-containment.test.ts",
+            "--testTimeout=30000"
+          ],
+          "exitCode": 0,
+          "seconds": 65.883,
+          "summary": [
+            "Test Files  4 passed (4)",
+            "Tests  32 passed (32)",
+            "Duration  65.22s (transform 5.29s, setup 0ms, import 9.96s, tests 73.69s, environment 0ms)"
+          ],
+          "log": "artifact-domain-green.txt",
+          "sha256": "40b8c4336d052c6f3b200bcc882b809f967c26d049cf84ee64d9de515e3558d7"
+        },
+        {
+          "name": "Artifact deletion red/green",
+          "sourceTreeMatchesCommit": "269279e8b0f282432b90f03c7108b0d2b6e12e7f",
+          "red": "Two failures reproduced ancestor-symlink deletion; missing-file cases already passed.",
+          "command": [
+            "npm",
+            "test",
+            "-w",
+            "@space/api",
+            "--",
+            "tests/artifact-deletion-security.test.ts",
+            "tests/agent-files.test.ts",
+            "src/__tests__/files-containment.test.ts",
+            "--testTimeout=30000"
+          ],
+          "exitCode": 0,
+          "seconds": 67.72,
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  29 passed (29)",
+            "Duration  67.17s (transform 6.93s, setup 0ms, import 10.54s, tests 76.29s, environment 0ms)"
+          ]
+        },
+        {
+          "name": "Retention compatibility and unlink race/final-symlink follow-up",
+          "exitCode": 0,
+          "log": "artifact-delete-retention.txt",
+          "sha256": "1e8dd0ca6c49728e28aed537964580a4c896d71efe55a322d24bfa0dcda54384",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  3 passed | 104 skipped (107)",
+            "Duration  5.62s (transform 3.73s, setup 0ms, import 5.67s, tests 161ms, environment 0ms)"
+          ]
+        },
+        {
+          "name": "Worker",
+          "sourceSha": "929388d598e6e573a8bdda339c4a63a63cd2b34a",
+          "passed": 155,
+          "failed": 0,
+          "log": "worker-all-green.txt",
+          "sha256": "46c458d462805c674f94a8d2ecd56db2779930ebd0db69df45accdfbcd9e8f9d",
+          "summary": [
+            "Test Files  18 passed (18)",
+            "Tests  155 passed (155)",
+            "Duration  16.41s (transform 3.22s, setup 0ms, import 20.57s, tests 8.65s, environment 3ms)"
+          ]
+        },
+        {
+          "name": "DB deterministic suite",
+          "passed": 161,
+          "skipped": 25,
+          "limitation": "Recorded earlier in this task; the25 optional DB cases subsequently passed in isolated PostgreSQL.",
+          "log": "db-all-final.txt",
+          "sha256": "ad317d4ee1d144537628fd87624f66af0efc606bee50771dcf6425e6b8fee94e",
+          "summary": [
+            "Test Files  22 passed | 5 skipped (27)",
+            "Tests  161 passed | 25 skipped (186)",
+            "Duration  9.18s (transform 12.21s, setup 0ms, import 62.57s, tests 19.02s, environment 4ms)"
+          ]
+        },
+        {
+          "name": "Approved observer-control checks",
+          "passed": 5,
+          "skipped": 195,
+          "limitation": "Historical scoped run; full TerminalPane suite subsequently passed201/201 at3213ef2bae.",
+          "log": "observer-control-green.txt",
+          "sha256": "30726049d34d2c85977108e0621723d68b2d36431f6d658585f6575af6a807b3",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  5 passed | 195 skipped (200)",
+            "Duration  3.99s (transform 1.89s, setup 0ms, import 2.75s, tests 525ms, environment 544ms)"
+          ]
+        },
+        {
+          "name": "Earlier host/memory characterization",
+          "limitation": "Recorded earlier in this task, not an authenticated upstream provider proof.",
+          "results": [
+            {
+              "log": "cli-resilience.txt",
+              "sha256": "8dd615cf1dbe642ad327b64bc4acb1774b30cdde1d3f6df04e8738f3ab565f64",
+              "summary": [
+                "Test Files  2 passed (2)",
+                "Tests  28 passed (28)",
+                "Duration  645ms (transform 298ms, setup 0ms, import 392ms, tests 337ms, environment 0ms)"
+              ]
+            },
+            {
+              "log": "browser-resilience.txt",
+              "sha256": "b52721a4d46ba30dd871ffa6f5d8d881ca92aeb427bb2776f59b3eb43b75296f",
+              "summary": [
+                "Test Files  1 passed (1)",
+                "Tests  9 passed (9)",
+                "Duration  475ms (transform 125ms, setup 0ms, import 156ms, tests 182ms, environment 0ms)"
+              ]
+            },
+            {
+              "log": "memory-resilience.txt",
+              "sha256": "391a46d302e34e5c9af2e67c43a54c57194b38a754e419a77b3291acf9da4f95",
+              "summary": [
+                "Test Files  1 passed (1)",
+                "Tests  11 passed (11)",
+                "Duration  1.64s (transform 639ms, setup 0ms, import 1.29s, tests 221ms, environment 0ms)"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "TerminalPane complete",
+          "sourceSha": "3213ef2bae",
+          "log": "terminal-full-green.txt",
+          "sha256": "a37fff058c4c159e19d2b73a7f8e96a80e02f8c3c2466ac83ddf5f463c51af4d",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  201 passed (201)",
+            "Duration  36.36s (transform 1.82s, setup 0ms, import 2.71s, tests 32.90s, environment 573ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Login lifecycle complete",
+          "sourceSha": "f579c6bbf1",
+          "log": "cli-login-contract-final.txt",
+          "sha256": "f5292be40272f0fa0caf7e778a868228c70bf19b5a19617086e265acc09884f8",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  22 passed (22)",
+            "Duration  106.40s (transform 3.51s, setup 0ms, import 5.21s, tests 101.06s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "API bootstrap complete before private-route extraction",
+          "sourceSha": "da6f6f6606",
+          "log": "api-contract-full.txt",
+          "sha256": "7b8c27bff20fde50af3758e21d26625f312a66af392ca8e2dd7b2826bccb2469",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  98 passed (98)",
+            "Duration  451.17s (transform 3.93s, setup 0ms, import 5.74s, tests 445.28s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Private route extraction integrated",
+          "sourceSha": "fefd765d1f",
+          "log": "private-domains-integrated.txt",
+          "sha256": "453c02afabefd82c93a6cc58acc1fe27077ea61325c9ca0961d4b86e86384c67",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  10 passed | 91 skipped (101)",
+            "Duration  43.55s (transform 4.51s, setup 0ms, import 7.72s, tests 37.77s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "History artifact rollback and concurrent mutation safety",
+          "sourceSha": "2c85b4cfc3",
+          "log": "history-final.txt",
+          "sha256": "60d7bf544db0be5f07acca9509b317aa486d1a2342a4c2b72c5224b15e737310",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  23 passed (23)",
+            "Duration  6.60s (transform 99ms, setup 0ms, import 128ms, tests 6.34s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Bounded catalog stream",
+          "sourceSha": "b48be28c5f",
+          "log": "catalog-stream-final.txt",
+          "sha256": "ed04d71fb03b093a34534db51cb42eea1a4c7f922dfa3baa9dda7f1e0c8db511",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  8 passed (8)",
+            "Duration  361ms (transform 75ms, setup 0ms, import 97ms, tests 102ms, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Control no optimistic completion",
+          "sourceSha": "3f5d0e3dd8",
+          "log": "control-disconnected-green.txt",
+          "sha256": "051ae4697e3ba8f9f162ffcf4f9113f1aba898c064a28de050394c6db67e4036",
+          "summary": [
+            "Test Files  4 passed (4)",
+            "Tests  89 passed (89)",
+            "Duration  5.84s (transform 1.36s, setup 0ms, import 4.23s, tests 5.72s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Request logging domain and request correlation",
+          "sourceSha": "70e5fa2af0",
+          "log": "request-domain-final.txt",
+          "sha256": "fac36b28e1cc2698aa537c4a984b243cb642c493f1fc1a31a3e0bfc81d72e2c1",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  7 passed (7)",
+            "Duration  10.38s (transform 3.63s, setup 0ms, import 5.52s, tests 4.79s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Login capability rejection before allocation",
+          "sourceSha": "9f1e0618c4",
+          "log": "login-capability-green.txt",
+          "sha256": "5a5b8bf75bb277dd89b5a5c5799a5bcf8136b615324ff90be844ccc4e5171742",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  12 passed (12)",
+            "Duration  11.91s (transform 4.01s, setup 0ms, import 6.08s, tests 5.92s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Current security and correctness aggregate",
+          "sourceSha": "f579c6bbf1",
+          "log": "current-aggregate.txt",
+          "sha256": "b87b20a82d02fe5e779a7210caf9435046a86be996a797795e42a709921ef0cf",
+          "summary": [
+            "Test Files  13 passed (13)",
+            "Tests  99 passed (99)",
+            "Duration  37.44s (transform 4.36s, setup 0ms, import 14.01s, tests 53.15s, environment 2ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Live provider fixture",
+          "sourceSha": "70e5fa2af0",
+          "log": "live-provider-fixture.txt",
+          "sha256": "15b39b09eef4cb480d5d292841a6b2c81df9dea281a2aff401f0336ef36f6973",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  9 passed (9)",
+            "Duration  3.96s (transform 880ms, setup 0ms, import 1.64s, tests 1.47s, environment 705ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Frozen chat retry",
+          "sourceSha": "70e5fa2af0",
+          "log": "agent-retry-final.txt",
+          "sha256": "515d0844d3a860cbb68fd35e36e2d75a9ff5c4bb43c69cc6c1be4fc47fc89f3e",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  9 passed (9)",
+            "Duration  4.92s (transform 1.06s, setup 0ms, import 2.40s, tests 1.57s, environment 808ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Queue characterization",
+          "sourceSha": "f946e2118c",
+          "log": "web-queue-final.txt",
+          "sha256": "5c43b65c9f425532d5a75d40dc6e5332f84e6e0b77887872e7cfbd07c8694756",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  7 passed | 41 skipped (48)",
+            "Duration  5.27s (transform 3.48s, setup 0ms, import 4.87s, tests 77ms, environment 1.17s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Provider registry characterization",
+          "sourceSha": "30cf23c829",
+          "log": "cli-registry-final.txt",
+          "sha256": "b6dc0604cdef6912d9af9639095020c6c645f90b629ba43ffcb735ea6d8986f0",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  7 passed | 132 skipped (139)",
+            "Duration  15.17s (transform 3.85s, setup 0ms, import 5.62s, tests 9.40s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Approved HTTP restart control",
+          "sourceSha": "63fcb33cc4",
+          "log": "http-restart-control-green.txt",
+          "sha256": "594fa4f3c7110e571280ab6db2e3decb0f9e2ae885d62243a0892cc0bde8eb6c",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  11 passed (11)",
+            "Duration  60.72s (transform 4.01s, setup 0ms, import 5.89s, tests 54.70s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Restart and read-only reconnect",
+          "sourceSha": "63fcb33cc4",
+          "log": "http-restart-reconnect-final.txt",
+          "sha256": "06c49b62f9a9af836d858795f313ef7e62d2f0c6b593c42ffdd15da28b9f0caf",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  3 passed | 136 skipped (139)",
+            "Duration  27.40s (transform 5.95s, setup 0ms, import 8.61s, tests 18.61s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Versioned CLI declarations",
+          "sourceSha": "797c0da8d1",
+          "log": "adapter-contract-green.txt",
+          "sha256": "f071e062023340ef0c59f9a16a79570b9682dc0d760691a4c2db1412bbc07684",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  31 passed (31)",
+            "Duration  10.91s (transform 4.20s, setup 0ms, import 7.28s, tests 5.18s, environment 1ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "All contracts after adapter declaration",
+          "sourceSha": "797c0da8d1",
+          "log": "adapter-contracts-full.txt",
+          "sha256": "29c270e6838378fd9f239bb9c94d16075cf9979353ddee6702fd4244a3c62b82",
+          "summary": [
+            "Test Files  34 passed (34)",
+            "Tests  228 passed (228)",
+            "Duration  4.40s (transform 9.38s, setup 0ms, import 50.58s, tests 1.49s, environment 5ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Worker budgets, cancellation and private-log regression",
+          "sourceSha": "9bdda72f0f",
+          "log": "worker-observability-final.txt",
+          "sha256": "27037fe60c076d8215f03af61a17c610352245693dba5d65a794a89a5c97d211",
+          "summary": [
+            "Test Files  19 passed (19)",
+            "Tests  165 passed (165)",
+            "Duration  7.95s (transform 11.00s, setup 0ms, import 69.73s, tests 9.11s, environment 3ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Independent MCP policy and authenticated integration",
+          "sourceSha": "6e93c248d9",
+          "log": "mcp-domain-green.txt",
+          "sha256": "caacd9cfce57e6ceacb55b134defc536e0df476b7d7bccf771b80f863e8f9402",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  27 passed | 90 skipped (117)",
+            "Duration  45.55s (transform 4.13s, setup 0ms, import 7.30s, tests 42.38s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Task History pagination",
+          "sourceSha": "9b1c13d279",
+          "log": "task-history-total-green.txt",
+          "sha256": "e129b040fcebd9e5382a652aa45731444fc84eef4d58152be013abab66a6fab7",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  8 passed | 16 skipped (24)",
+            "Duration  11.51s (transform 4.35s, setup 0ms, import 7.10s, tests 6.03s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Workspace, restart and control actor fixtures",
+          "sourceSha": "263a3f4b13",
+          "log": "cli-workspace-characterization-final.txt",
+          "sha256": "96e03cbbac9d0c438f835ceff9b89cb8493f46485ff3faa4fdcbbdd78196be39",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  9 passed | 147 skipped (156)",
+            "Duration  47.99s (transform 8.36s, setup 0ms, import 12.68s, tests 47.06s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Pane-close cause runtime contract",
+          "sourceSha": "d26ba36544",
+          "log": "pane-close-store-green.txt",
+          "sha256": "d83704dcc25df6704b3a6b0d99977032b1f65a6e1222d14742fa439047c894d6",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  57 passed (57)",
+            "Duration  4.59s (transform 737ms, setup 0ms, import 1.29s, tests 3.16s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Pane-close cause real PostgreSQL",
+          "sourceSha": "d26ba36544",
+          "log": "pane-close-postgres-green.txt",
+          "sha256": "30d72c5e9ef360209e08f3ca9662fcabfca41824d78f7a3d211100de6ecd0296",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  4 passed (4)",
+            "Duration  1.96s (transform 830ms, setup 0ms, import 1.45s, tests 375ms, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Pane-close cause authenticated route",
+          "sourceSha": "d26ba36544",
+          "log": "pane-close-api-green.txt",
+          "sha256": "0dc8bdbcfc38b1e83a40da8167a732b7695de3e0b1125de17b8a69e8987d0a2e",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  1 passed | 138 skipped (139)",
+            "Duration  10.12s (transform 3.80s, setup 0ms, import 5.49s, tests 4.49s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Executed launcher workspace and hook contracts",
+          "sourceSha": "e0ea8ccc48",
+          "log": "cli-launcher-contracts.txt",
+          "sha256": "e59b52782583f7d70c655b13ba0e8c0aa2c72977ae269222f7efa1feac524cc3",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  10 passed | 134 skipped (144)",
+            "Duration  10.59s (transform 3.96s, setup 0ms, import 5.65s, tests 4.94s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Routing renderer, stop guard and maintenance wrappers",
+          "sourceSha": "e0ea8ccc48",
+          "log": "cli-routing-deploy-contracts.txt",
+          "sha256": "aeb1a7adfdb9b231f0c677f7c025041bc00007eaf5c361f06cb86c22f517a3db",
+          "summary": [
+            "# tests 18",
+            "# pass 18",
+            "# fail 0",
+            "# skipped 0"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Streaming domains authenticated integration",
+          "sourceSha": "1d640286a3",
+          "log": "streaming-domain-integrated.txt",
+          "sha256": "15c2c1e12fce5f78e37d125a85f6bb63d6a8ec03113d488092e62edc1ab24304",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  11 passed (11)",
+            "Duration  49.23s (transform 3.32s, setup 0ms, import 4.97s, tests 44.12s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Streaming standalone domains",
+          "sourceSha": "1d640286a3",
+          "log": "streaming-domain-standalone.txt",
+          "sha256": "f698de5b2eeddccba44ab1a97263eeab61ada722170f643290cc8e733e5ab479",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  4 passed (4)",
+            "Duration  2.95s (transform 1.22s, setup 0ms, import 2.30s, tests 488ms, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Complete five-file CLI suite after telemetry isolation",
+          "sourceSha": "f349ce6d99",
+          "log": "cli-five-files-isolated.txt",
+          "sha256": "f3873ec5f79cb632c5c339f0f2c67e52d097d949d37b76c4a400b8d56324e48a",
+          "summary": [
+            "Test Files  5 passed (5)",
+            "Tests  194 passed (194)",
+            "Duration  137.29s (transform 7.53s, setup 0ms, import 14.53s, tests 254.92s, environment 1ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Contributor offline smoke acceptance and cleanup",
+          "sourceSha": "7c15ea22fc",
+          "log": "contributor-smoke-green.txt",
+          "sha256": "b5473bc854ff1d15b709c5d084c54134ee95e797e1a23fcc68bd1dbf6088ab7a",
+          "summary": [
+            "# tests 3",
+            "# pass 3",
+            "# fail 0",
+            "# skipped 0"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "History purge privacy and authenticated routes",
+          "sourceSha": "a0aa7de312",
+          "log": "purge-privacy-final.txt",
+          "sha256": "a2ef26f6f3340c48fce2a7631f2f1c683af350dfccd14d1dbc14391ca4b18cbf",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  15 passed (15)",
+            "Duration  43.50s (transform 3.74s, setup 0ms, import 6.09s, tests 38.45s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Native model settings without fabricated current defaults",
+          "sourceSha": "d2a812d843",
+          "log": "native-model-truth-green.txt",
+          "sha256": "9732297d0318b194e549fb08deffcec0b10c5869bc51f8e757de3fbd6a9534a2",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  84 passed (84)",
+            "Duration  11.72s (transform 4.10s, setup 0ms, import 6.95s, tests 5.92s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Diagnostics, OAuth and synthetic proof fixtures",
+          "sourceSha": "464a8265b1",
+          "log": "api-fixtures-green.txt",
+          "sha256": "4682d79d58143c98a34552c8229cfab3edbf3c56e7228c9edf38f315b48d39c2",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  23 passed (23)",
+            "Duration  84.80s (transform 6.58s, setup 0ms, import 10.74s, tests 105.85s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Codex cache synchronization",
+          "sourceSha": "d3c6dc3c34",
+          "log": "codex-parity-synchronized.txt",
+          "sha256": "a9865532ad51ab1b1bb8e48245668dcd83dc937908395a7551f03ae0287ad014",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  33 passed (33)",
+            "Duration  126.57s (transform 4.13s, setup 0ms, import 6.03s, tests 120.30s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Typed API configuration registry",
+          "sourceSha": "4159cc0de8",
+          "log": "config-registry-final.txt",
+          "sha256": "bd505ba18fef6911dce5b312853ae63cfec8db59855e8c8f29a0c94d50ea6e4b",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  15 passed (15)",
+            "Duration  3.67s (transform 1.06s, setup 0ms, import 2.39s, tests 2.35s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Image preview preference bootstrap and explicit persistence",
+          "sourceSha": "dd1ee0a38a",
+          "log": "preview-persistence-final.txt",
+          "sha256": "d9ee34c42bce6fcce09d89c8edd792d0217acdc585749c7f0023ba126606eb09",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  3 passed | 213 skipped (216)",
+            "Duration  8.87s (transform 7.89s, setup 0ms, import 12.10s, tests 1.88s, environment 1.71s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Owner setup, settings and CLI dock regression",
+          "sourceSha": "dd1ee0a38a",
+          "log": "preview-persistence-regression.txt",
+          "sha256": "73a1592cf3841f950460e03009734df349db565aaa0d6f0d21a88eca220dfa4a",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  32 passed (32)",
+            "Duration  7.63s (transform 4.43s, setup 0ms, import 8.03s, tests 3.21s, environment 2.34s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Independent voice settings domain",
+          "sourceSha": "681d48533a",
+          "log": "voice-card-after-extraction.txt",
+          "sha256": "ecebfdef0a8240b1ecc212b7c2935069e3c096900ef3d8025d2c80996fcddd8d",
+          "exitCode": 0,
+          "passed": 15,
+          "summary": [
+            "Test Files  4 passed (4)",
+            "Tests  15 passed (15)",
+            "Duration  2.46s (transform 1.33s, setup 0ms, import 4.17s, tests 1.51s, environment 2.06s)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Agent pane pointer and attachment characterization",
+          "sourceSha": "229f1b68bf",
+          "log": "agent-pane-characterization.txt",
+          "sha256": "17db3bde83cb0cde2efeea0fcf5dba4c79e27dca45fdf56b15e16747104a33f1",
+          "exitCode": 0,
+          "passed": 4,
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  4 passed (4)",
+            "Duration  10.25s (transform 3.18s, setup 0ms, import 4.21s, tests 5.40s, environment 499ms)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Configuration authorization and standalone domain",
+          "sourceSha": "7cd4d6c502",
+          "log": "config-domain-final.txt",
+          "sha256": "ea29910cea0fed1346faeccf0adc76ea9b4c36552836fda0a16f344244e98c91",
+          "exitCode": 0,
+          "passed": 16,
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  16 passed (16)",
+            "Duration  10.15s (transform 5.24s, setup 0ms, import 9.88s, tests 5.96s, environment 0ms)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Configuration UI runtime and role boundaries",
+          "sourceSha": "7cd4d6c502",
+          "log": "config-ui-final.txt",
+          "sha256": "71e0327803d5d8e07ee7856abe40be48ecfc186aa88aca23ec732833dd49f157",
+          "exitCode": 0,
+          "passed": 19,
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  19 passed (19)",
+            "Duration  8.84s (transform 5.38s, setup 0ms, import 9.21s, tests 2.30s, environment 1.30s)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Real API schemas cached across isolated client tests",
+          "sourceSha": "2fc5178ded",
+          "log": "web-api-shared-real-contracts.txt",
+          "sha256": "de1a4d6f3f38f577f49e6d083f2e0bdda4bac90536f9bed42c0d4c3693b93ddb",
+          "exitCode": 0,
+          "passed": 42,
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  42 passed (42)",
+            "Duration  2.29s (transform 921ms, setup 0ms, import 880ms, tests 2.05s, environment 1.06s)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Composer and recoverable chat shortcut characterization",
+          "sourceSha": "2a8ebf325d",
+          "log": "composer-shortcuts-final.txt",
+          "sha256": "146545ffb14b1c89782bac9985617c91e7fb931ffb03c41565a46055407aec41",
+          "exitCode": 0,
+          "passed": 32,
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  32 passed (32)",
+            "Duration  10.80s (transform 1.19s, setup 0ms, import 3.80s, tests 12.14s, environment 1.48s)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Independent agent settings composition",
+          "sourceSha": "fd942234fd",
+          "log": "settings-domain-after.txt",
+          "sha256": "c7ad7c3980666cb9dcf10ba1a9283d7e496165af1fe1837d5d7b26b65c4a0e53",
+          "exitCode": 0,
+          "passed": 19,
+          "summary": [
+            "Test Files  4 passed (4)",
+            "Tests  19 passed (19)",
+            "Duration  5.30s (transform 1.42s, setup 0ms, import 4.35s, tests 2.98s, environment 2.03s)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Current lazy pane, demo and deployment contracts",
+          "sourceSha": "7b3c230e64",
+          "log": "frontend-contracts-after.txt",
+          "sha256": "c2b296b6b31e8e8f3245c689b3b2109d87593a38d3fdd76947dc0cd4464ccc59",
+          "exitCode": 0,
+          "passed": 28,
+          "summary": [
+            "Test Files  6 passed (6)",
+            "Tests  28 passed (28)",
+            "Duration  4.88s (transform 1.19s, setup 0ms, import 3.24s, tests 1.67s, environment 2.48s)"
+          ],
+          "scope": "Local scoped verification; not public CI or live deployment."
+        },
+        {
+          "name": "Embedded responsive layout and focus characterization",
+          "sourceSha": "a1828772ac",
+          "log": "responsive-layout-final.txt",
+          "sha256": "ec4a3a4ce94feb8d44ae6547b9caf60c50fae9cce47f36e915513efb68b0f671",
+          "exitCode": 0,
+          "passed": 12,
+          "scope": "Local selected cases; no live proof or full frontend pass."
+        },
+        {
+          "name": "Immediate favicon failure and navigation regression",
+          "sourceSha": "b825b4db72",
+          "log": "favicon-race-green.txt",
+          "sha256": "da4048e3d19e30ffc165a1f0af3d8b059842ddb53f07f9cd3f977a33fe47514a",
+          "exitCode": 0,
+          "passed": 40,
+          "scope": "Local selected cases; no live proof or full frontend pass."
+        },
+        {
+          "name": "Merged web regression",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-web-regression.txt",
+          "sha256": "49b248fd426271a8e8a77538369a851e707e8d3755f907718cc43f274db00171",
+          "exitCode": 0,
+          "passed": 191,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Merged API domain regression",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-api-regression-final.txt",
+          "sha256": "a2bb9de3672dec343f515e8b361b4dbb1427056b92a1dcd0c4a185fe34e70dbb",
+          "exitCode": 0,
+          "passed": 70,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Merged contracts",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-contracts-test.txt",
+          "sha256": "bbfb1272b0758d76994ef63ac22294dd6f19e279f11c5c80055ac40b84f37a0c",
+          "exitCode": 0,
+          "passed": 229,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Merged worker",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-worker.txt",
+          "sha256": "040f77b521a483d9629895f98d30f3e0867337990fef2664cd00d7b683e1a019",
+          "exitCode": 0,
+          "passed": 166,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Merged script contracts",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-script-contracts.txt",
+          "sha256": "760a53b201ab3096f103099c003d9dae027eb26443d4c08aca72614167266212",
+          "exitCode": 0,
+          "passed": 62,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Merged terminal regression",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-terminal-full.txt",
+          "sha256": "c3c1a82378b7e2181be85cab142d999c3c732b355d938b7a0efaf858c43a6b54",
+          "exitCode": 0,
+          "passed": 209,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Merged HTTP control lease",
+          "sourceSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+          "log": "combined-http-control.txt",
+          "sha256": "d1c05e101f2ed8d1311c23c9afc821611ae949233fa8f110bd9c89d218e25ced",
+          "exitCode": 0,
+          "passed": 11,
+          "scope": "Local merged candidate; no live proof or public CI claim."
+        },
+        {
+          "name": "Stable model accessible names",
+          "log": "model-a11y-green-final.txt",
+          "sourceSha": "03552a9401",
+          "sha256": "4ee030b6a89db0f8d1c2afa2277af656bcceff7fd7169393b7dda72252f570ff",
+          "passed": 41,
+          "exitCode": 0
+        },
+        {
+          "name": "Current browser lifecycle contracts",
+          "log": "browser-current-contracts-final.txt",
+          "sourceSha": "c896b44b07",
+          "sha256": "f738a82c556f47412130f500e7b23add5e2e49a5bc1aa9fca2c7c179da0c0d02",
+          "passed": 33,
+          "exitCode": 0
+        },
+        {
+          "name": "Embedded setup login and navigation",
+          "log": "setup-inline-login-verified.txt",
+          "sourceSha": "1f12028f02",
+          "sha256": "ae33f7760e951f7d366173f2b9725caf7a5080db13fde2dfefd06e6be2754093",
+          "passed": 26,
+          "exitCode": 0
+        },
+        {
+          "name": "Exact historical clipboard wrappers",
+          "log": "context-history-green.txt",
+          "sourceSha": "ccf627e5e1",
+          "sha256": "b96a970bf266d7ef374a93f09c921782b84531b54c64b2d93a64de11349efd12",
+          "passed": 35,
+          "exitCode": 0
+        },
+        {
+          "name": "Independent health presentation",
+          "log": "health-domain-after-final.txt",
+          "sourceSha": "7748e9cb08",
+          "sha256": "b3a6eccb8d422ffe80dadfa822f8ef5fd41b65c3cc5923d5c8ea0330408107f0",
+          "passed": 9,
+          "exitCode": 0
+        },
+        {
+          "name": "Responsive settled controls",
+          "log": "responsive-current-async-verified.txt",
+          "sourceSha": "dc813de1dc",
+          "sha256": "76f6b1fe34f2fd16dd8e52c704afd4f383840bc1bfe3965eae676649c51e86ed",
+          "passed": 8,
+          "exitCode": 0
+        },
+        {
+          "name": "Canonical source-control UI integration",
+          "sourceSha": "71236c7122",
+          "log": "canonical-source-control-web.txt",
+          "sha256": "23f514d0e6c6c15118949a1d415c3c42a770e5e4aa7606904948c7b01d1cee9f",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  38 passed (38)",
+            "Duration  6.09s (transform 867ms, setup 0ms, import 1.67s, tests 7.78s, environment 1.21s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Canonical source-control responsive integration",
+          "sourceSha": "71236c7122",
+          "log": "canonical-source-control-responsive.txt",
+          "sha256": "560126ede4f1c5cd0d0c5da9008ec8bf49db1caefb84f2f7778879a844d39a75",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  3 passed | 193 skipped (196)",
+            "Duration  8.40s (transform 4.39s, setup 0ms, import 6.02s, tests 1.62s, environment 598ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Telegram domain characterization before extraction",
+          "sourceSha": "71236c7122",
+          "log": "telegram-characterization-verified.txt",
+          "sha256": "0d1e215fe3b6350b300291275dd27e9ac42e6fc8d384035b494af0a3ca39fd56",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  3 passed (3)",
+            "Duration  19.23s (transform 3.63s, setup 0ms, import 5.32s, tests 13.77s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Telegram standalone and authenticated domain checks",
+          "sourceSha": "d529560bb4",
+          "log": "telegram-domain-verified.txt",
+          "sha256": "f41c2c831d1525b556bccba2d8ffa803c21fa38651d1e97bcaa53f27785f5cf5",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  5 passed (5)",
+            "Duration  18.53s (transform 3.78s, setup 0ms, import 6.19s, tests 13.58s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Owned analytics for model-control fixture",
+          "sourceSha": "309e5841ac",
+          "log": "codex-model-isolated-analytics.txt",
+          "sha256": "5da93693827572874c411ab27bde4a96efacec4701cc00edb950e74c11fccb9d",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  13 passed (13)",
+            "Duration  13.50s (transform 3.34s, setup 0ms, import 5.03s, tests 8.34s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Demo native capture boundary and snip checks",
+          "sourceSha": "a0a602b23c",
+          "log": "demo-native-capture-verified.txt",
+          "sha256": "1ef7ebc65250cf3d8cbc93a3de068c1d420bbb64a03e433c6e57ad0aac4d1c26",
+          "summary": [
+            "Test Files  4 passed (4)",
+            "Tests  39 passed (39)",
+            "Duration  4.23s (transform 862ms, setup 0ms, import 2.18s, tests 2.57s, environment 2.59s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Four demo navigation fixtures",
+          "sourceSha": "a0a602b23c",
+          "log": "demo-bounded-fixtures-verified.txt",
+          "sha256": "302a42fac36db0b09a97b701b54485339d9c480070dc0ee35d5ad6d1b4fd155b",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  4 passed | 17 skipped (21)",
+            "Duration  10.52s (transform 4.01s, setup 0ms, import 4.85s, tests 4.88s, environment 614ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Action surfaces before extraction",
+          "sourceSha": "a0a602b23c",
+          "log": "action-surfaces-before.txt",
+          "sha256": "8f411f8d0c14aab7169d69a90aa9a5474346135ee1c15852fcb39157949e51ed",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  8 passed (8)",
+            "Duration  6.55s (transform 3.48s, setup 0ms, import 4.97s, tests 790ms, environment 622ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Independent action surfaces after extraction",
+          "sourceSha": "b8cf82ef9f",
+          "log": "action-surfaces-after.txt",
+          "sha256": "630fe397b37852a7a0e153881d5c93a4a5fb16002984afb9a8ffe39b023d0cf7",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  40 passed (40)",
+            "Duration  7.20s (transform 1.18s, setup 0ms, import 2.21s, tests 5.89s, environment 1.55s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Demo login and observed speed checks",
+          "sourceSha": "55be1e485f",
+          "log": "demo-auth-speed-scoped.txt",
+          "sha256": "bfa756ac3447547144419c284be71e09c72591ef3f8b6b7806299b43b0e8f3ad",
+          "summary": [
+            "Test Files  5 passed (5)",
+            "Tests  33 passed (33)",
+            "Duration  6.27s (transform 4.15s, setup 0ms, import 8.12s, tests 2.78s, environment 2.62s)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Demo login and current Manage integration",
+          "sourceSha": "55be1e485f",
+          "log": "demo-login-speed-verified.txt",
+          "sha256": "ed3307f0f9b3bba8ecbe62fa05d3ecca962c5ea6fbcfde97acc250803ac2c5a3",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  4 passed | 17 skipped (21)",
+            "Duration  11.95s (transform 4.03s, setup 0ms, import 4.51s, tests 6.69s, environment 576ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Canonical provider address-family integration",
+          "sourceSha": "8203e2fcff",
+          "log": "canonical-provider-family-api.txt",
+          "sha256": "ba63b3f786a4235284de57156211909855141be9a7dd97ef26cc9f4c9c6968a7",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  28 passed (28)",
+            "Duration  25.83s (transform 4.40s, setup 0ms, import 7.50s, tests 23.17s, environment 0ms)"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "Current demo and embedded streaming navigation",
+          "sourceSha": "da74b098c0",
+          "log": "demo-navigation-accepted.txt",
+          "sha256": "cfc2943832e9d9a965e49e075565cfbfd5ff478b090e6e3b54bb55b8f0cdf373",
+          "summary": [
+            "Test Files  2 passed (2)",
+            "Tests  13 passed | 10 skipped (23)",
+            "Duration  23.59s (transform 7.43s, setup 0ms, import 9.62s, tests 23.00s, environment 1.63s)"
+          ],
+          "exitCode": 0,
+          "limitation": "13 selected checks; ten unrelated cases filtered. Not a full frontend acceptance."
+        },
+        {
+          "name": "Selected repository comparison API",
+          "sourceSha": "20df7cd3896331fdf06d419e02fd2b6178d430f7",
+          "exitCode": 0,
+          "log": "canonical-compare-api.txt",
+          "sha256": "feb93a282ebd051c0fbfd64e700f6aa0d8198a2b86a1019e9b39cdc71af630e6",
+          "summary": [
+            "Test Files  3 passed (3)",
+            "Tests  29 passed (29)",
+            "Duration  26.68s (transform 4.09s, setup 0ms, import 7.08s, tests 25.51s, environment 0ms)"
+          ]
+        },
+        {
+          "name": "Selected repository comparison UI",
+          "sourceSha": "20df7cd3896331fdf06d419e02fd2b6178d430f7",
+          "exitCode": 0,
+          "log": "canonical-compare-web.txt",
+          "sha256": "d0769355ed5bef0c113d43b9d5b18f1f8d425258098ccbd5f7369370246f9bcc",
+          "summary": [
+            "Test Files  1 passed (1)",
+            "Tests  8 passed (8)",
+            "Duration  4.89s (transform 220ms, setup 0ms, import 528ms, tests 3.65s, environment 557ms)"
+          ]
+        },
+        {
+          "name": "Selected repository proof script",
+          "sourceSha": "20df7cd3896331fdf06d419e02fd2b6178d430f7",
+          "exitCode": 0,
+          "log": "canonical-compare-script.txt",
+          "sha256": "968d80d819caba3ca019866e2e17a4acec44e930ff8987c970462979b50e6a30",
+          "summary": [
+            "# tests 5",
+            "# pass 5",
+            "# fail 0",
+            "# skipped 0"
+          ]
+        },
+        {
+          "name": "Waitlist and pane batch with owned analytics",
+          "sourceSha": "00d7ad3777",
+          "log": "api-timeout-owned-analytics.txt",
+          "exitCode": 0,
+          "sha256": "063e10e8183bc64143c85945e5a1cdc136c775567e59493333d5a20dd51306c9",
+          "summary": [
+            "13 passed in 11.78s",
+            "Previous unchanged files took 43.68s; temporary close-phase instrumentation identified ~4–5s analytics wait. No production timeout changes."
+          ]
+        },
+        {
+          "name": "Embedded Settings and complete demo regression suites",
+          "sourceSha": "5c4b25eb16f0823726a8abc56c1fd8233a8b514a",
+          "log": "embedded-settings-accepted.txt",
+          "exitCode": 0,
+          "sha256": "4aa0f9bc03b5583dc9d30ddcf9c3638df75639095278b79bb3f2e77b3aed8383",
+          "summary": [
+            "33 passed across demo-app, agent-settings-dock and settings-disclosure",
+            "Provider catalog RED in live-runtime fixture and disabled selector RED in demo before fix."
+          ]
+        },
+        {
+          "name": "Embedded Settings live-runtime and demo regressions",
+          "sourceSha": "5c4b25eb16f0823726a8abc56c1fd8233a8b514a",
+          "log": "demo-settings-resources-verified.txt",
+          "exitCode": 0,
+          "sha256": "883e7a5563c50ad4b641f9d68365a8d6778d7587c5ae265bcfdbf253d060c113",
+          "summary": [
+            "7 passed; 212 filtered",
+            "Scoped name selection, not full responsive suite."
+          ]
+        },
+        {
+          "name": "API fixtures typecheck",
+          "sourceSha": "00d7ad3777",
+          "log": "api-owned-analytics-check.txt",
+          "exitCode": 0,
+          "sha256": "41b15b83767a99a23633810132b7a61238a06ce71577ea94e863848f86dd42bc",
+          "summary": [
+            "PASS"
+          ]
+        },
+        {
+          "name": "Embedded Settings web typecheck",
+          "sourceSha": "5c4b25eb16f0823726a8abc56c1fd8233a8b514a",
+          "log": "embedded-settings-final-check.txt",
+          "exitCode": 0,
+          "sha256": "58837720c4bcbe1b23ecac070b9444f8841e49bd55b88aba4f3359bd463a913b",
+          "summary": [
+            "PASS"
+          ]
+        },
+        {
+          "name": "Broad settings name-filter reconnaissance",
+          "sourceSha": "5c4b25eb16f0823726a8abc56c1fd8233a8b514a",
+          "log": "embedded-settings-scoped.txt",
+          "exitCode": 1,
+          "summary": [
+            "13 passed; 1 failed; 215 filtered",
+            "Existing responsive test still targets retired Server actions menu; not fixed by provider loading."
+          ],
+          "sha256": "f3cb036b9af34ca798cba4f8c3ae417c8824af0a88701989a703f56224a60e11"
+        },
+        {
+          "name": "Login and SSE fallback characterization",
+          "sourceSha": "ff8291a52826687678d10b11d824408269479858",
+          "log": "smoke-auth-recovery.txt",
+          "exitCode": 0,
+          "passed": 4,
+          "sha256": "478bf905b808b8dfe627b80d0b2ba3a16be1029d310577362c49b42dad450347",
+          "limitation": "Selected names only; not the complete smoke/responsive suites."
+        },
+        {
+          "name": "Guarded Manage navigation and OPERATOR denial",
+          "sourceSha": "ff8291a52826687678d10b11d824408269479858",
+          "log": "responsive-manage-final.txt",
+          "exitCode": 0,
+          "passed": 4,
+          "sha256": "34d9ec597f7ce1a81d99e25faad803736190e15b805cb627bce8b3828c25f719",
+          "limitation": "Selected names only; not the complete smoke/responsive suites."
+        },
+        {
+          "name": "Navigation fixtures web typecheck",
+          "sourceSha": "ff8291a52826687678d10b11d824408269479858",
+          "log": "navigation-fixture-final-check.txt",
+          "exitCode": 0,
+          "sha256": "58837720c4bcbe1b23ecac070b9444f8841e49bd55b88aba4f3359bd463a913b"
+        },
+        {
+          "name": "Authenticated real HTTP multipart concurrency and limits",
+          "sourceSha": "0baa613b7f",
+          "status": "PASS",
+          "exitCode": 0,
+          "passed": 24,
+          "failed": 0,
+          "filesPassed": 4,
+          "log": "files-upload-http-accepted.txt",
+          "sha256": "6cf0267a0621d733128a6e900302c707c115f469b48c92c4a93419b7807ccc1d",
+          "summary": [
+            "Real createApp on owned localhost listener; real fixture login and CSRF.",
+            "Four 64 MiB streamed uploads; fifth 429; interrupted connection cleanup and slot reuse.",
+            "RSS growth <128 MiB for 256 MiB completed bodies, including in-process HTTP client. Exact persisted SHA-256 and sizes verified.",
+            "100 MiB+1 rejected with 413; existing destination retained; no staged residue."
+          ],
+          "limitation": "Owned local fixture, not live deployment/browser/proxy throughput proof. No production source changed."
+        },
+        {
+          "name": "Responsive fixture cache isolation and navigation",
+          "sourceSha": "16841681dd",
+          "passed": 167,
+          "failed": 29,
+          "pending": 0,
+          "status": "FAILED",
+          "exitCode": 1,
+          "log": "responsive-after-fixture-isolation.json",
+          "limitation": "Five previously failing cases now pass, no newly failing test names. Remaining29 are not waived. Not a full frontend result.",
+          "sha256": "b98c4f94271cb23c70299bfdd8587a0b86682c3d90c78c9726bd4eabe0ecd261"
+        },
+        {
+          "name": "Review domain before extraction",
+          "sourceSha": "16841681dd",
+          "passed": 2,
+          "failed": 0,
+          "unselected": 96,
+          "status": "PASS",
+          "exitCode": 0,
+          "log": "review-domain-before.txt",
+          "sha256": "45d8eba490711c7601bcc7ba18b0ed90f78d7f75df85c942d3aca405a2cea693"
+        },
+        {
+          "name": "Review domain independent and integrated acceptance",
+          "sourceSha": "6f11f701c4",
+          "passed": 10,
+          "failed": 0,
+          "unselected": 96,
+          "status": "PASS",
+          "exitCode": 0,
+          "log": "review-domain-accepted.txt",
+          "limitation": "The wider name-filter run also selected unrelated CLI-count tests and hit one5s timeout:14passed/1failed in review-domain-green.txt. Full API rerun is active.",
+          "sha256": "5e133efed810e2250270ef3dcbae6e9c9cb52029ee8823b831748096ce29cfb8"
+        },
+        {
+          "name": "Global icon selection across files/settings/widgets",
+          "sourceSha": "b58fb622c3",
+          "status": "PASS",
+          "exitCode": 0,
+          "passed": 89,
+          "filesPassed": 7,
+          "log": "app-icon-routing-accepted.txt",
+          "redLog": "app-icon-routing-red.txt",
+          "upstreamMaterialSourceSha": "737e3324305806514d7909874fa1818ae1808232",
+          "limitation": "Local rendering, typecheck and widget regression evidence; not live authenticated UI proof.",
+          "sha256": "1a3bf94c006e16f3b9da3a6b9695d8a3625d91378833d93bec219bb038a73086"
+        },
+        {
+          "name": "Sensitive mask functional and scoped CSS regressions",
+          "status": "PASS",
+          "exitCode": 0,
+          "passed": 12,
+          "log": "sensitive-mask-scoped.txt",
+          "limitation": "Only privacy mask CSS is covered; other global CSS safety failures remain open.",
+          "sha256": "7603c609e6fc0cea11a3eafd695913b6f7dfe9439fd6ff200353f134b05b2ebc"
+        },
+        {
+          "name": "Bounded CLI version probes",
+          "recordedAt": "2026-10-03T17:40:56.992650+00:00",
+          "versions": {
+            "codex": "0.160.0",
+            "claude": "2.1.206",
+            "gemini": "0.37.1",
+            "opencode": "1.18.34"
+          },
+          "exitCode": 0,
+          "limitation": "Task host PATH only. Not live pane executable/image attestation or lifecycle compatibility. No provider task or login performed."
+        }
+      ],
+      "buildAndDeploymentContractChecks": [
+        {
+          "name": "api-build-review",
+          "sourceSha": "6c68110cff445a993df02f2b53659cac88bfe906",
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "-w",
+            "@space/api"
+          ],
+          "exitCode": 0,
+          "seconds": 17.454
+        },
+        {
+          "name": "deploy-review",
+          "sourceSha": "6c68110cff445a993df02f2b53659cac88bfe906",
+          "command": [
+            "npm",
+            "run",
+            "test:deploy"
+          ],
+          "exitCode": 0,
+          "seconds": 21.075
+        },
+        {
+          "name": "All workspace typechecks",
+          "sourceSha": "f579c6bbf1",
+          "log": "check-all-current.txt",
+          "sha256": "db1dd167daf6c103495f065e84f39af82d8d2e3905150731825f0061a1e555a2",
+          "summary": [
+            "# tests 5",
+            "# pass 5",
+            "# fail 0",
+            "# skipped 0"
+          ],
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "API typecheck after approved replacement guard",
+          "sourceSha": "63fcb33cc4",
+          "log": "http-restart-typecheck.txt",
+          "sha256": "41b15b83767a99a23633810132b7a61238a06ce71577ea94e863848f86dd42bc",
+          "command": [
+            "npm",
+            "run",
+            "check",
+            "-w",
+            "@space/api"
+          ],
+          "exitCode": 0
+        },
+        {
+          "name": "All workspace typechecks after worker observation",
+          "sourceSha": "9bdda72f0f",
+          "log": "check-current-continuation.txt",
+          "sha256": "ff670855ea24cdfb1dabb10b12be2b09abadfe9b9a40ea3820b33cdc4572e9be",
+          "summary": [],
+          "exitCode": 0,
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "limitation": "Run began on6e93c248d9 with verified worker observation changes in the checkout, subsequently committed as9bdda72f0f. Not immutable public CI."
+        },
+        {
+          "name": "All workspace checks after streaming and contributor smoke",
+          "sourceSha": "7c15ea22fc",
+          "log": "check-continuation-final.txt",
+          "sha256": "292840f8acb5e37f870eb7512dff8498352a139e8bc91b2c8a84bb2842bc1421",
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ],
+          "exitCode": 0,
+          "limitation": "README edits were pending during run. Local source check, not public immutable CI."
+        },
+        {
+          "name": "Settings extraction web typecheck",
+          "sourceSha": "fd942234fd",
+          "log": "settings-domain-check-final.txt",
+          "sha256": "58837720c4bcbe1b23ecac070b9444f8841e49bd55b88aba4f3359bd463a913b",
+          "exitCode": 0
+        },
+        {
+          "name": "Latest frontend contracts typecheck",
+          "sourceSha": "7b3c230e64",
+          "log": "frontend-contracts-check-final.txt",
+          "sha256": "58837720c4bcbe1b23ecac070b9444f8841e49bd55b88aba4f3359bd463a913b",
+          "exitCode": 0
+        },
+        {
+          "name": "Settings domain dependency policy",
+          "sourceSha": "fd942234fd",
+          "log": "settings-domain-architecture.txt",
+          "sha256": "8e8b1756e5ca501b70746d7a14addf01de03bb3e64f30fb6683e73c870b2681d",
+          "exitCode": 0
+        },
+        {
+          "name": "Configuration domain API typecheck",
+          "sourceSha": "7cd4d6c502",
+          "log": "config-domain-check.txt",
+          "sha256": "41b15b83767a99a23633810132b7a61238a06ce71577ea94e863848f86dd42bc",
+          "exitCode": 0
+        },
+        {
+          "name": "All workspace typechecks after settings extraction",
+          "sourceSha": "b825b4db7272d2dddbf9918b22d3127642d31b0d",
+          "log": "root-check-current.txt",
+          "sha256": "75b89277737230e62b4d3e8b414044c8ddb68a725bacf6fb8e69ac2954a1e5ea",
+          "exitCode": 0,
+          "command": [
+            "npm",
+            "run",
+            "check"
+          ]
+        },
+        {
+          "name": "All workspace checks after health extraction",
+          "log": "root-check-followup.txt",
+          "sourceSha": "7748e9cb08",
+          "sha256": "895ba02fc4e092dea5939d4cbafbf8145af2ef328f8e6c8a3107d4ed4293470a",
+          "exitCode": 0,
+          "limitation": "Responsive test fixtures changed during check; no application source changes."
+        }
+      ],
+      "deploymentContractSummary": {
+        "log": "deploy-review.txt",
+        "sha256": "ff8871c052d961475122ccdcca692fef2a2035bf32160446274e3a1caf5763fe",
+        "summary": [
+          "# tests 294",
+          "# pass 293",
+          "# fail 0",
+          "# skipped 1"
+        ]
+      },
+      "postgres": {
+        "integration": {
+          "sourceSha": "929388d598e6e573a8bdda339c4a63a63cd2b34a",
+          "imageDigest": "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
+          "network": "none",
+          "results": [
+            {
+              "test": "room-pane-commands",
+              "command": [
+                "npm",
+                "test",
+                "-w",
+                "@space/db",
+                "--",
+                "tests/room-pane-commands-postgres.integration.test.ts",
+                "--maxWorkers=1",
+                "--testTimeout=30000"
+              ],
+              "exitCode": 0,
+              "seconds": 6.87
+            },
+            {
+              "test": "room-continuation",
+              "command": [
+                "npm",
+                "test",
+                "-w",
+                "@space/db",
+                "--",
+                "tests/room-continuation-postgres.integration.test.ts",
+                "--maxWorkers=1",
+                "--testTimeout=30000"
+              ],
+              "exitCode": 0,
+              "seconds": 5.2
+            },
+            {
+              "test": "cli-host-output",
+              "command": [
+                "npm",
+                "test",
+                "-w",
+                "@space/db",
+                "--",
+                "tests/cli-host-output-postgres.integration.test.ts",
+                "--maxWorkers=1",
+                "--testTimeout=30000"
+              ],
+              "exitCode": 0,
+              "seconds": 4.836
+            },
+            {
+              "test": "codex-native-ref",
+              "command": [
+                "npm",
+                "test",
+                "-w",
+                "@space/db",
+                "--",
+                "tests/codex-native-ref-postgres.integration.test.ts",
+                "--maxWorkers=1",
+                "--testTimeout=30000"
+              ],
+              "exitCode": 0,
+              "seconds": 4.593
+            },
+            {
+              "test": "task-titles",
+              "command": [
+                "npm",
+                "test",
+                "-w",
+                "@space/db",
+                "--",
+                "tests/task-titles-postgres.integration.test.ts",
+                "--maxWorkers=1",
+                "--testTimeout=30000"
+              ],
+              "exitCode": 0,
+              "seconds": 3.876
+            }
+          ]
+        },
+        "counts": {
+          "room-pane-commands": 4,
+          "room-continuation": 8,
+          "cli-host-output": 3,
+          "codex-native-ref": 5,
+          "task-titles": 5
+        },
+        "restore": {
+          "sourceSha": "929388d598e6e573a8bdda339c4a63a63cd2b34a",
+          "status": "PASS",
+          "scope": "quiescent synthetic PostgreSQL database only",
+          "image": "pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d",
+          "network": "none",
+          "resources": {
+            "memoryBytes": 536870912,
+            "nanoCpus": 1000000000,
+            "storage": "tmpfs"
+          },
+          "backupSeconds": 0.336,
+          "restoreSeconds": 1.002,
+          "restoreAndVerificationSeconds": 17.992,
+          "rpo": {
+            "lostCommittedFixtureRows": 0,
+            "condition": "No concurrent writes; not a production time-based RPO measurement"
+          },
+          "dumpSha256": "fc86f1125b17cdc5eebcdf0637af5690d0667ca6eb84940c8c4f7486d14f6c59",
+          "dumpBytes": 395713,
+          "tables": 125,
+          "rows": 187,
+          "validatedForeignKeys": 157,
+          "deliberateMutationDetected": true,
+          "exclusions": [
+            "artifact/workspace files",
+            "credentials",
+            "provider-native session files",
+            "live processes",
+            "external integrations",
+            "concurrent writes",
+            "physical disk durability",
+            "production-scale RTO",
+            "authenticated native continuation"
+          ]
+        },
+        "cleanup": {
+          "ownedContainerRemoved": true,
+          "ownedSocketDirectoryRemoved": true,
+          "liveServicesTouched": false
+        }
+      },
+      "memoryEvaluation": {
+        "commit": "929388d598e6e573a8bdda339c4a63a63cd2b34a",
+        "fixtureHash": "7b2b03a0185208ab2d60137659104199bf0e28e8507c51e09b7bf1aec97a0599",
+        "counts": {
+          "documents": 15,
+          "positiveQueries": 30,
+          "negativeQueries": 10
+        },
+        "thresholds": {
+          "recallAt5": 0.85,
+          "meanReciprocalRank": 0.75,
+          "falsePositiveRate": 0.05
+        },
+        "metrics": {
+          "recallAt5": 1,
+          "meanReciprocalRank": 1,
+          "falsePositiveRate": 0
+        }
+      },
+      "broadChecks": [
+        {
+          "name": "API",
+          "sourceSha": "929388d598e6e573a8bdda339c4a63a63cd2b34a",
+          "exitCode": 124,
+          "status": "TIMEOUT",
+          "budgetSeconds": 600,
+          "observedFailures": [
+            "Obsolete local Codex hooks.json expectation, fixed in7b9ab593cf; profile suite subsequently34/34 pass."
+          ],
+          "limitation": "No complete broad API result. The timeout is not a pass; additional failures may remain.",
+          "historical": true
+        },
+        {
+          "name": "TerminalPane",
+          "status": "FAILED",
+          "passed": 168,
+          "failed": 32,
+          "log": "terminal-pane-full.txt",
+          "sha256": "a432af5e5e017ef7d09f82f6d67116d3aa6e11db72178e20cca247a106462030",
+          "summary": [
+            "Test Files  1 failed (1)",
+            "Tests  32 failed | 168 passed (200)",
+            "Duration  57.46s (transform 1.84s, setup 0ms, import 2.71s, tests 54.10s, environment 499ms)"
+          ],
+          "failureTests": [
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > replays a pasted key the API rejected for a stale protocol-v2 control lease",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > refreshes the model catalog in the background for each room activation without fetching on selector opens",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > updates a live catalog after submitted terminal output and preserves the last-known-good catalog on refresh failure",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > ignores a stale catalog response after the active CLI session is replaced",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > attaches pasted images to the Codex prompt through bracketed paste",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > hides and restores the floating controls without replacing the active CLI session or sending input",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > keeps 12 image previews by default while batching API uploads within the per-request limit",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > uses the configured image preview limit when retaining uploaded previews",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > scrolls the xterm viewport when dragging vertically on the live CLI pane",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > falls back to xterm scrollback when the live CLI viewport has no native scroll range",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > labels video and file uploads separately and injects their hidden paths only on native Enter",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > resolves managed attachment paths through floating Send and restarts numbering after submit",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > preserves managed tokens across non-mutating terminal capability replies",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > drops stale paths but keeps numbering monotonic after unknown prompt mutation",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > retains a managed path when supported cursor movement leaves its token unchanged",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > clears pending paths and restarts numbering when the CLI prompt is cleared",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > dedupes duplicate clipboard file entries from the same native paste",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > keeps one preview after the first paste, accumulates a second preview on the next paste, and allows removing each image",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > clears all terminal image previews at once",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > portals the image modal to the body, traps focus, closes safely, and restores thumbnail focus",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > refocuses the terminal after removing a preview so the next Ctrl+V paste still works",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > reroutes document-level Ctrl+V back to the terminal after focus drifts to the hidden file input",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > uploads a Clip Tool action as SCREEN_CAPTURE, shows its preview, and sends only hidden bracketed terminal input",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > uploads large Clipboard-card action text as exact UTF-8 TXT and resolves its token on submit",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > keeps DeepSeek terminal file controls absent and blocks indirect upload actions",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > does not let a stale ready frame unlock a replacement socket for the same session",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > automatically reconnects a live CLI transport after its WebSocket closes without showing restart noise",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > keeps retrying short CLI reconnect outages without showing restart noise",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > keeps automatic CLI reconnect silent even during a longer API restart",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > coalesces parsed-output geometry checks without repainting and disposes the listener on unmount",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > preserves stable terminal geometry when the browser regains focus",
+            "FAIL  tests/terminal-pane-upload.test.tsx > TerminalPane uploads and paste > marks hidden PREFILL ready from the final asynchronous xterm callback"
+          ],
+          "historical": true,
+          "supersededBy": "Full201/201 scoped entry at3213ef2bae; old32 failures are historical, not current."
+        },
+        {
+          "name": "Full API",
+          "sourceSha": "38fbdf315a",
+          "log": "api-complete-run.txt",
+          "sha256": "0cfd5c00f27936c9c83a5fbbe3300ff905550c43a6d6192df2a467f66310b81d",
+          "summary": [
+            "Test Files  17 failed | 180 passed | 1 skipped (199)",
+            "Tests  125 failed | 1917 passed | 8 skipped (2064)",
+            "Duration  2179.58s (transform 11.26s, setup 0ms, import 171.07s, tests 2551.66s, environment 25ms)"
+          ],
+          "status": "FAILED",
+          "exitCode": 1,
+          "limitation": "Contains failures subsequently fixed by scoped runs. No full green claim. Full API/web also reported unexpected test-worker exits."
+        },
+        {
+          "name": "Full web",
+          "sourceSha": "3213ef2bae",
+          "log": "web-complete-run.txt",
+          "sha256": "11f7e25e2720a836f830ff08815b1936f0c97738722efa6fbf44a58111dc5183",
+          "summary": [
+            "Test Files  24 failed | 194 passed (219)",
+            "Tests  125 failed | 2260 passed (2392)",
+            "Duration  326.42s (transform 14.02s, setup 0ms, import 111.23s, tests 363.78s, environment 121.56s)"
+          ],
+          "status": "FAILED",
+          "exitCode": 1,
+          "limitation": "Contains failures subsequently fixed by scoped runs. No full green claim. Full API/web also reported unexpected test-worker exits."
+        },
+        {
+          "name": "CLI four-file characterization",
+          "sourceSha": "fefd765d1f",
+          "log": "cli-current-contracts.txt",
+          "sha256": "0f596cf8326d4b2db2ba28f997a2ad4b89b01ff67ab9ed48f255b8227f3cb4a0",
+          "summary": [
+            "Test Files  4 failed (4)",
+            "Tests  39 failed | 151 passed (190)",
+            "Duration  430.48s (transform 8.01s, setup 0ms, import 15.49s, tests 666.94s, environment 1ms)"
+          ],
+          "status": "FAILED",
+          "exitCode": 1,
+          "limitation": "151pass/39fail before login/registry/control follow-up; not a green suite."
+        },
+        {
+          "name": "CLI four-file follow-up",
+          "sourceSha": "6e93c248d9",
+          "log": "cli-contracts-current.txt",
+          "sha256": "2e4547271a038c65971397a487d9f2270d15efb6d4d6aad5579a0bdae1871990",
+          "summary": [
+            "⎯⎯⎯⎯⎯⎯ Failed Tests 17 ⎯⎯⎯⎯⎯⎯⎯",
+            "Test Files  2 failed | 2 passed (4)",
+            "Tests  17 failed | 172 passed (189)",
+            "Duration  400.95s (transform 8.19s, setup 0ms, import 15.34s, tests 520.27s, environment 0ms)"
+          ],
+          "exitCode": 1,
+          "status": "FAILED",
+          "limitation": "172PASS/17FAIL. Subsequent9 scoped fixture fixes and pagination regression pass; seven failures still unverified. Root/API/frontend full CI remains open."
+        },
+        {
+          "name": "Five-file CLI before telemetry fixture isolation",
+          "sourceSha": "e0ea8ccc48",
+          "log": "cli-current-five-files.txt",
+          "sha256": "31bde1a1bce5da0fb54138f0c49cd66b8ab88ce154fcfd48ba34308ccddd6945",
+          "summary": [
+            "Test Files  1 failed | 4 passed (5)",
+            "Tests  2 failed | 192 passed (194)",
+            "Duration  397.46s (transform 7.12s, setup 0ms, import 13.89s, tests 517.04s, environment 1ms)"
+          ],
+          "exitCode": 1,
+          "status": "FAILED",
+          "historical": true,
+          "limitation": "192PASS/2timeouts. Superseded by194/194 after isolating unrelated analytics ingestion in tests.10s PTY timeout preserved."
+        },
+        {
+          "name": "API reconnaissance",
+          "sourceSha": "c0ba8315f0",
+          "status": "FAILED",
+          "passed": 2100,
+          "failed": 8,
+          "skipped": 8,
+          "errors": 0,
+          "log": "api-full-current-c0ba8315f0.txt",
+          "sha256": "c472ce9ac7d1cdaf41d299cc90345c3899ac2b637be93f835d2535336efd8c35",
+          "summary": [
+            "Test Files  7 failed | 199 passed | 1 skipped (207)",
+            "Tests  8 failed | 2100 passed | 8 skipped (2116)",
+            "Duration  1401.81s (transform 13.40s, setup 0ms, import 188.50s, tests 2581.54s, environment 27ms)"
+          ],
+          "failureTests": [
+            "FAIL  tests/app-diagnostics-api.test.ts > app diagnostics API > keeps app-diagnostics automation read-only outside diagnostics and bounded CLI telemetry",
+            "FAIL  tests/cli-native-model-routes.test.ts > native model settings routes > serves all eight native CLI catalogs through the authenticated pane route without inventing current settings",
+            "FAIL  tests/codex-history-purge-api.test.ts > Codex history purge API > blocks history purge preview and execution when no CLI runtime is enabled",
+            "FAIL  tests/codex-history-purge-service.test.ts > Codex history purge command service > reports execute failures as unconfirmed instead of claiming the helper is unavailable",
+            "FAIL  tests/codex-history-purge-service.test.ts > Codex history purge command service > replaces command failures and forged helper output with one safe error",
+            "FAIL  tests/codex-parity.test.ts > Codex VS Code parity API > returns stale Codex environment cache immediately while revalidating in the background",
+            "FAIL  tests/oauth-credential-identity.test.ts > OAuth credential identity fingerprints > wires only the OAuth wrappers to the stable identity helper",
+            "FAIL  tests/proof-rooms.test.ts > agent proof rooms API > attaches a warm-capacity fixture through the real host and terminal WebSocket without launching an AI CLI"
+          ],
+          "limitation": "Local run, not public immutable-SHA CI. API rerun used d3c6dc3c34 application code; later new configuration module verified separately. Web has seven collected tests without outcomes and one worker exit. Reconnaissance received scoped fixes after its affected files had executed."
+        },
+        {
+          "name": "Web full baseline",
+          "sourceSha": "464a8265b1",
+          "status": "FAILED",
+          "passed": 2272,
+          "failed": 113,
+          "skipped": 0,
+          "errors": 1,
+          "log": "web-full-d2a812d843.txt",
+          "sha256": "70373289c4d846e0ea7c849df46f1c7b6c7b25df3e3009eb92f0a7579c296b0a",
+          "summary": [
+            "Test Files  22 failed | 196 passed (219)",
+            "Tests  113 failed | 2272 passed (2392)",
+            "Errors  1 error",
+            "Duration  335.22s (transform 15.20s, setup 0ms, import 110.42s, tests 370.25s, environment 118.42s)"
+          ],
+          "failureTests": [
+            "FAIL  tests/agent-pane.test.tsx > Space native agent panes > renders native CHAT panes and shares one Codex environment request across panes",
+            "FAIL  tests/agent-pane.test.tsx > Space native agent panes > keeps mobile chat panes mounted across pane switches and shell resizes",
+            "FAIL  tests/agent-pane.test.tsx > Space native agent panes > recovers from a stale selected room and still sends in the fallback native pane",
+            "FAIL  tests/agent-pane.test.tsx > Space native agent panes > renders voice input controls when transcription is configured",
+            "FAIL  tests/app-icons.test.tsx > Space app icon packs > prevents app surfaces from bypassing the global icon module",
+            "FAIL  tests/browser-pane.test.tsx > BrowserPane > navigates to a bare domain from a CLOSED blank tab",
+            "FAIL  tests/browser-pane.test.tsx > BrowserPane > starts a stopped browser using the normalized address and shows useful invalid-address errors",
+            "FAIL  tests/browser-pane.test.tsx > BrowserPane > keeps a completed proof stopped until Start browser is pressed",
+            "FAIL  tests/browser-pane.test.tsx > BrowserPane > wires bookmarks, import, export and human handoff through mediated browser actions",
+            "FAIL  tests/chat-mode-shortcuts.test.tsx > Chat mode controls > sends plan_progress from the menu and routed keyboard action",
+            "FAIL  tests/chat-mode-shortcuts.test.tsx > Chat mode controls > sends deploy from the menu and routed keyboard action",
+            "FAIL  tests/chat-mode-shortcuts.test.tsx > Chat mode controls > sends clean_worktree from the menu and routed keyboard action",
+            "FAIL  tests/checkbox-switch-inventory.test.ts > Space checkbox switch inventory > routes every native checkbox through SpaceToggle except the protected CLI selector",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > keeps demo CLI VPN settings contract-complete and direct",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > creates one selected empty room, keeps the compact Rooms drawer open, and quick-adds one pane",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > renders the shared workspace without native network transports and supports local sign-out/sign-in",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > writes settings only to demo memory and restores the Graphite fixture after reset",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > routes print and desktop capture through the local platform gateway",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > copies Chat content locally and shows the exact demo disclosure",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > keeps the Clip Tool disclosure visible in the tablet demo shell",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > opens the shared Health dock with contract-valid local readiness",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > uses contract-valid local telemetry in every shared toolbar metrics surface",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > shows Resets 2 and redeems only the deterministic local demo credit",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > simulates Codex Off locally and enabling it does not reopen closed panes",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > keeps server restart behind the shared confirmation and reports a local no-op",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > previews admin history purge and completes it without removing demo history",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > keeps Codex-LB speed defaults unchanged and reports the local simulation",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > uses the shared Links, Quick Links, and Clipboard surfaces with session-only local data",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > uses the shared Media dock with inline local previews and a no-op room clear",
+            "FAIL  tests/demo-app.test.tsx > Space public demo app > uses typed local provider, Telegram, voice, and agent-tool settings",
+            "FAIL  tests/demo-setup.test.ts > DemoStore setup contract > simulates 10 functional CLIs and durable partial check progress",
+            "FAIL  tests/desktop-shell.test.tsx > keeps CLI management and Google accounts available to admins in desktop User mode",
+            "FAIL  tests/desktop-shell.test.tsx > keeps navigation and version visible and launches CLI directly from Create without replacing running panes",
+            "FAIL  tests/desktop-shell.test.tsx > opens Health from resource indicators and retains panes through collapsed-toolbar maintenance",
+            "FAIL  tests/help-navigation.test.tsx > Space Help navigation > opens /help from the permanent room control and returns to the workspace",
+            "FAIL  tests/lazy-pane-loading.test.ts > lazy pane loading boundaries > renders each lazy pane inside a pane-local loading boundary",
+            "FAIL  tests/modern-theme-css.test.ts > Modern theme CSS safety contract > keeps Classic independent and loads Modern only for the opt-in preference",
+            "FAIL  tests/modern-theme-css.test.ts > Modern theme CSS safety contract > avoids expensive relational selectors and CSS-hidden toolbar actions",
+            "FAIL  tests/public-deployment-config.test.ts > spaceapp.dev static deployment config > allows the same-origin homepage iframe but fails the demo workspace closed",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > searches and filters rooms without changing the selected room or mounted panes",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > defers provider and health snapshots until the Health dock opens",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > loads only the provider catalog when the Settings dock opens",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps configured Chat usable while Codex pane actions are Off and preserves other CLI splits",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps Settings and admin Codex controls visible but disabled while Off",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > uses one-pane mobile focus mode and overlay surfaces for 6-pane rooms",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps the tablet agent board mounted and visible while every shared left surface is open",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > traps compact drawer focus and restores the trigger when Escape closes it",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > closes desktop theme and navigation menus with Escape and restores the persistent trigger",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > moves focus through searchable desktop actions and restores the navigation trigger",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > traps focus in the mobile room action dialog and restores its trigger",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > opens all ADMIN server actions from the desktop Admin menu and restores focus",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > opens CLI cleanup and memory reclaim from the server menu without removing their metric triggers",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > runs the protected ADMIN history purge flow from the mobile server menu",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > shows one ADMIN CLI launcher at 1440px and keeps root outside its selector",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > shows one OPERATOR CLI launcher at 390px and keeps root outside its selector",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > closes the CLI selector when the user switches the active room",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps the CLI floats toggle global across rooms and restores it from local storage",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > exposes all six system metrics in the narrow mobile room action sheet",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps cramped pane actions in a second toolbar row without a floating title",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > renders every shown room and pane toolbar action in mobile icon rows",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > routes on-screen keyboard input to the active CLI pane",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > opens a single-image picker on mobile, treats cancel as a no-op, and routes the chosen image to the original CLI target",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > uploads a tablet Clip Tool selection to chat attachments without submitting a prompt",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps desktop display capture, stops every media track, and avoids the server screen-capture fallback",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > opens the image picker on Windows desktop when display capture is unavailable",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps new Links actions visible and retires dashboard icons with an older saved toolbar order",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps classic playback mounted through Help and never stacks Music with Quick Links",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps modern playback mounted through Help and never stacks Music with Quick Links",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps the desktop embedded-link shell inside the viewport",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps the mobile embedded-link shell inside the viewport",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps an overflowing mobile pane title inline without changing the icon row",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps an overflowing desktop pane title inline without hiding title tools",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps Codex Build and Plan defaults usable in the narrow Settings dock",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps Telegram setup accessible at 320px",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > switches 2 panes between stacked and side-by-side layouts without creating panes",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > switches 3 panes between stacked and side-by-side layouts without creating panes",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > applies a 3-column layout to 6 panes in row-major order",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > applies a 4-column layout to 8 panes in row-major order",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > applies a 4-column layout to 16 panes in row-major order",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > applies the Fullscreen layout with one visible pane and header arrows that cycle panes",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > honors explicit one-column Modern layout at 1076px and restores responsive Automatic without recreating panes",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > persists a visible Modern dark room palette across the shell and body",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > persists a visible Modern light room palette across the shell and body",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps the menu open with a clear error after an API failure and closes it on outside click",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps the left surface controls available with a saved desktop room focus preference",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps desktop actions discoverable despite legacy hidden preferences",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps minimized panes mounted, selects the next pane, and restores focus after the pane becomes visible",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > shows persisted minimized panes as full mobile panes without a minimize bar",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > defines wrapping room toolbar actions without horizontal scrolling",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps a dense desktop overview for 16-pane rooms",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > loads a bounded multi-page room catalog when the Rooms surface is visible",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > keeps a persisted selected room active when it is beyond the default room page",
+            "FAIL  tests/responsive-shell.test.tsx > Space responsive shell > adds Agent Proof rooms from global SSE without selecting or loading their runtime",
+            "FAIL  tests/room-pane-composer.test.tsx > RoomPaneComposer > enables quick-add after one selection and submits exactly that pane to the explicit room target",
+            "FAIL  tests/room-pane-composer.test.tsx > RoomPaneComposer > retains the exact draft after a failed apply and retries successfully",
+            "FAIL  tests/sensitive-data-mask.test.tsx > sensitive data mask helpers > ships mask CSS rules without !important",
+            "FAIL  tests/setup-connections-app.test.tsx > Setup & connections App integration > opens Setup & connections inside Manage Connections",
+            "FAIL  tests/setup-connections-app.test.tsx > Setup & connections App integration > reopens only after login exposes a credential (embedded=true)",
+            "FAIL  tests/smoke.test.tsx > Space web shell > renders the login surface when unauthenticated",
+            "FAIL  tests/smoke.test.tsx > Space web shell > explains domain login failures after the canonical hostname cutover",
+            "FAIL  tests/smoke.test.tsx > Space web shell > loads authenticated Space data immediately after login",
+            "FAIL  tests/smoke.test.tsx > Space web shell > suppresses transient upstream restart banners during background room polling",
+            "FAIL  tests/smoke.test.tsx > Space web shell > keeps pane capability details in settings instead of every pane card",
+            "FAIL  tests/smoke.test.tsx > Space web shell > shows canonical golden launch readiness in the launch dock",
+            "FAIL  tests/smoke.test.tsx > Space web shell > runs native Codex web agent panes when the live gate is enabled",
+            "FAIL  tests/smoke.test.tsx > Space web shell > focuses a browser handoff from live SSE only while the server request is active",
+            "FAIL  tests/smoke.test.tsx > Space web shell > runs fail-closed provider validation from the settings dock",
+            "FAIL  tests/smoke.test.tsx > Space web shell > shows host metrics badges and performs an ADMIN-confirmed core restart with recovery polling",
+            "FAIL  tests/space-runtime.test.ts > Space runtime API proxy > keeps native browser transports exclusively in the live runtime",
+            "FAIL  tests/static-compression.test.ts > Space static asset compression > keeps falling back to the SPA document for operator routes",
+            "FAIL  tests/streaming-demo.test.tsx > streaming in the shared local demo > uses local data, preserves tab activation, and hides the overlay on Help",
+            "FAIL  tests/terminal-pane.test.tsx > Space terminal panes > renders CLI panes with runtime gates and creates TERMINAL panes from the toolbar",
+            "FAIL  tests/user-links.test.tsx > Links UI > loads, searches, opens, falls back from a blocked favicon, and toggles Quick"
+          ],
+          "limitation": "Local run, not public immutable-SHA CI. API rerun used d3c6dc3c34 application code; later new configuration module verified separately. Web has seven collected tests without outcomes and one worker exit. Reconnaissance received scoped fixes after its affected files had executed."
+        },
+        {
+          "name": "API full rerun",
+          "sourceSha": "d3c6dc3c34",
+          "status": "PASS_WITH_SKIPS",
+          "passed": 2111,
+          "failed": 0,
+          "skipped": 8,
+          "errors": 0,
+          "log": "api-full-after-eight-fixes.txt",
+          "sha256": "2cbaf76ef19c4c10b19db23391c7394cb431c6dc5184f20c3ca1b5ff2dbc8762",
+          "summary": [
+            "Test Files  206 passed | 1 skipped (207)",
+            "Tests  2111 passed | 8 skipped (2119)",
+            "Duration  1381.59s (transform 14.12s, setup 0ms, import 179.83s, tests 2552.11s, environment 26ms)"
+          ],
+          "failureTests": [],
+          "limitation": "Local run, not public immutable-SHA CI. API rerun used d3c6dc3c34 application code; later new configuration module verified separately. Web has seven collected tests without outcomes and one worker exit. Reconnaissance received scoped fixes after its affected files had executed."
+        },
+        {
+          "name": "Frontend full after worker heap fix",
+          "sourceSha": "7b3c230e64",
+          "status": "FAILED",
+          "passed": 2311,
+          "failed": 98,
+          "collected": 2409,
+          "pending": 0,
+          "reportedFiles": 221,
+          "log": "web-current-continued.txt",
+          "structuredLog": "web-current-continued.json",
+          "sha256": "5e4ee1502fde5249d4fe3ba471bfbed91fcd8130a44d851b74f60c2ea4d8a938",
+          "failureTests": [
+            "Space app icon packs prevents app surfaces from bypassing the global icon module",
+            "Asteroids Jev AI Pilot survives sustained asteroid combat with high efficiency",
+            "BrowserPane navigates to a bare domain from a CLOSED blank tab",
+            "BrowserPane starts a stopped browser using the normalized address and shows useful invalid-address errors",
+            "BrowserPane keeps a completed proof stopped until Start browser is pressed",
+            "BrowserPane wires bookmarks, import, export and human handoff through mediated browser actions",
+            "Space checkbox switch inventory routes every native checkbox through SpaceToggle except the protected CLI selector",
+            "Space public demo app keeps demo CLI VPN settings contract-complete and direct",
+            "Space public demo app creates one selected empty room, keeps the compact Rooms drawer open, and quick-adds one pane",
+            "Space public demo app renders the shared workspace without native network transports and supports local sign-out/sign-in",
+            "Space public demo app writes settings only to demo memory and restores the Graphite fixture after reset",
+            "Space public demo app routes print and desktop capture through the local platform gateway",
+            "Space public demo app copies Chat content locally and shows the exact demo disclosure",
+            "Space public demo app keeps the Clip Tool disclosure visible in the tablet demo shell",
+            "Space public demo app opens the shared Health dock with contract-valid local readiness",
+            "Space public demo app uses contract-valid local telemetry in every shared toolbar metrics surface",
+            "Space public demo app shows Resets 2 and redeems only the deterministic local demo credit",
+            "Space public demo app simulates Codex Off locally and enabling it does not reopen closed panes",
+            "Space public demo app keeps server restart behind the shared confirmation and reports a local no-op",
+            "Space public demo app previews admin history purge and completes it without removing demo history",
+            "Space public demo app keeps Codex-LB speed defaults unchanged and reports the local simulation",
+            "Space public demo app uses the shared Links, Quick Links, and Clipboard surfaces with session-only local data",
+            "Space public demo app uses the shared Media dock with inline local previews and a no-op room clear",
+            "Space public demo app uses typed local provider, Telegram, voice, and agent-tool settings",
+            "keeps CLI management and Google accounts available to admins in desktop User mode",
+            "keeps navigation and version visible and launches CLI directly from Create without replacing running panes",
+            "opens Health from resource indicators and retains panes through collapsed-toolbar maintenance",
+            "Space Help navigation opens /help from the permanent room control and returns to the workspace",
+            "Modern theme CSS safety contract keeps Classic independent and loads Modern only for the opt-in preference",
+            "Modern theme CSS safety contract avoids expensive relational selectors and CSS-hidden toolbar actions",
+            "Space responsive shell searches and filters rooms without changing the selected room or mounted panes",
+            "Space responsive shell defers provider and health snapshots until the Health dock opens",
+            "Space responsive shell loads only the provider catalog when the Settings dock opens",
+            "Space responsive shell keeps configured Chat usable while Codex pane actions are Off and preserves other CLI splits",
+            "Space responsive shell keeps Settings and admin Codex controls visible but disabled while Off",
+            "Space responsive shell uses one-pane mobile focus mode and overlay surfaces for 6-pane rooms",
+            "Space responsive shell keeps the tablet agent board mounted and visible while every shared left surface is open",
+            "Space responsive shell traps compact drawer focus and restores the trigger when Escape closes it",
+            "Space responsive shell closes desktop theme and navigation menus with Escape and restores the persistent trigger",
+            "Space responsive shell moves focus through searchable desktop actions and restores the navigation trigger",
+            "Space responsive shell traps focus in the mobile room action dialog and restores its trigger",
+            "Space responsive shell opens all ADMIN server actions from the desktop Admin menu and restores focus",
+            "Space responsive shell opens CLI cleanup and memory reclaim from the server menu without removing their metric triggers",
+            "Space responsive shell runs the protected ADMIN history purge flow from the mobile server menu",
+            "Space responsive shell shows one ADMIN CLI launcher at 1440px and keeps root outside its selector",
+            "Space responsive shell shows one OPERATOR CLI launcher at 390px and keeps root outside its selector",
+            "Space responsive shell closes the CLI selector when the user switches the active room",
+            "Space responsive shell keeps the CLI floats toggle global across rooms and restores it from local storage",
+            "Space responsive shell exposes all six system metrics in the narrow mobile room action sheet",
+            "Space responsive shell keeps cramped pane actions in a second toolbar row without a floating title",
+            "Space responsive shell renders every shown room and pane toolbar action in mobile icon rows",
+            "Space responsive shell routes on-screen keyboard input to the active CLI pane",
+            "Space responsive shell opens a single-image picker on mobile, treats cancel as a no-op, and routes the chosen image to the original CLI target",
+            "Space responsive shell uploads a tablet Clip Tool selection to chat attachments without submitting a prompt",
+            "Space responsive shell keeps desktop display capture, stops every media track, and avoids the server screen-capture fallback",
+            "Space responsive shell opens the image picker on Windows desktop when display capture is unavailable",
+            "Space responsive shell keeps new Links actions visible and retires dashboard icons with an older saved toolbar order",
+            "Space responsive shell keeps classic playback mounted through Help and never stacks Music with Quick Links",
+            "Space responsive shell keeps modern playback mounted through Help and never stacks Music with Quick Links",
+            "Space responsive shell keeps the desktop embedded-link shell inside the viewport",
+            "Space responsive shell keeps the mobile embedded-link shell inside the viewport",
+            "Space responsive shell keeps an overflowing mobile pane title inline without changing the icon row",
+            "Space responsive shell keeps an overflowing desktop pane title inline without hiding title tools",
+            "Space responsive shell keeps Codex Build and Plan defaults usable in the narrow Settings dock",
+            "Space responsive shell keeps Telegram setup accessible at 320px",
+            "Space responsive shell switches 2 panes between stacked and side-by-side layouts without creating panes",
+            "Space responsive shell switches 3 panes between stacked and side-by-side layouts without creating panes",
+            "Space responsive shell applies a 3-column layout to 6 panes in row-major order",
+            "Space responsive shell applies a 4-column layout to 8 panes in row-major order",
+            "Space responsive shell applies a 4-column layout to 16 panes in row-major order",
+            "Space responsive shell applies the Fullscreen layout with one visible pane and header arrows that cycle panes",
+            "Space responsive shell honors explicit one-column Modern layout at 1076px and restores responsive Automatic without recreating panes",
+            "Space responsive shell persists a visible Modern dark room palette across the shell and body",
+            "Space responsive shell persists a visible Modern light room palette across the shell and body",
+            "Space responsive shell keeps the menu open with a clear error after an API failure and closes it on outside click",
+            "Space responsive shell keeps the left surface controls available with a saved desktop room focus preference",
+            "Space responsive shell keeps desktop actions discoverable despite legacy hidden preferences",
+            "Space responsive shell keeps minimized panes mounted, selects the next pane, and restores focus after the pane becomes visible",
+            "Space responsive shell shows persisted minimized panes as full mobile panes without a minimize bar",
+            "Space responsive shell defines wrapping room toolbar actions without horizontal scrolling",
+            "Space responsive shell keeps a dense desktop overview for 16-pane rooms",
+            "Space responsive shell loads a bounded multi-page room catalog when the Rooms surface is visible",
+            "Space responsive shell keeps a persisted selected room active when it is beyond the default room page",
+            "Space responsive shell adds Agent Proof rooms from global SSE without selecting or loading their runtime",
+            "sensitive data mask helpers ships mask CSS rules without !important",
+            "Setup & connections App integration opens Setup & connections inside Manage Connections",
+            "Setup & connections App integration reopens only after login exposes a credential (embedded=true)",
+            "Space web shell explains domain login failures after the canonical hostname cutover",
+            "Space web shell loads authenticated Space data immediately after login",
+            "Space web shell suppresses transient upstream restart banners during background room polling",
+            "Space web shell keeps pane capability details in settings instead of every pane card",
+            "Space web shell shows canonical golden launch readiness in the launch dock",
+            "Space web shell runs native Codex web agent panes when the live gate is enabled",
+            "Space web shell runs fail-closed provider validation from the settings dock",
+            "Space web shell shows host metrics badges and performs an ADMIN-confirmed core restart with recovery polling",
+            "streaming in the shared local demo uses local data, preserves tab activation, and hides the overlay on Help",
+            "Space terminal panes renders CLI panes with runtime gates and creates TERMINAL panes from the toolbar",
+            "Links UI loads, searches, opens, falls back from a blocked favicon, and toggles Quick"
+          ],
+          "limitation": "Local full run; all2409collected tests have outcomes.98failures remain, no worker OOM. This is not public CI or combined canonical-main acceptance."
+        },
+        {
+          "name": "Responsive shell after embedded menu characterization",
+          "sourceSha": "a1828772ac",
+          "status": "FAILED",
+          "passed": 152,
+          "failed": 41,
+          "collected": 193,
+          "pending": 0,
+          "log": "responsive-current.txt",
+          "structuredLog": "responsive-current.json",
+          "sha256": "de7e18635c426838b9813e0c2c8df30f1d68da3dead39e5661f3bff1699a18fe",
+          "failureTests": [
+            "Space responsive shell searches and filters rooms without changing the selected room or mounted panes",
+            "Space responsive shell defers provider and health snapshots until the Health dock opens",
+            "Space responsive shell loads only the provider catalog when the Settings dock opens",
+            "Space responsive shell keeps configured Chat usable while Codex pane actions are Off and preserves other CLI splits",
+            "Space responsive shell keeps Settings and admin Codex controls visible but disabled while Off",
+            "Space responsive shell uses one-pane mobile focus mode and overlay surfaces for 6-pane rooms",
+            "Space responsive shell keeps the tablet agent board mounted and visible while every shared left surface is open",
+            "Space responsive shell traps compact drawer focus and restores the trigger when Escape closes it",
+            "Space responsive shell traps focus in the mobile room action dialog and restores its trigger",
+            "Space responsive shell opens all ADMIN server actions from the desktop Admin menu and restores focus",
+            "Space responsive shell opens CLI cleanup and memory reclaim from the server menu without removing their metric triggers",
+            "Space responsive shell runs the protected ADMIN history purge flow from the mobile server menu",
+            "Space responsive shell shows one ADMIN CLI launcher at 1440px and keeps root outside its selector",
+            "Space responsive shell shows one OPERATOR CLI launcher at 390px and keeps root outside its selector",
+            "Space responsive shell keeps the CLI floats toggle global across rooms and restores it from local storage",
+            "Space responsive shell exposes all six system metrics in the narrow mobile room action sheet",
+            "Space responsive shell keeps cramped pane actions in a second toolbar row without a floating title",
+            "Space responsive shell renders every shown room and pane toolbar action in mobile icon rows",
+            "Space responsive shell routes on-screen keyboard input to the active CLI pane",
+            "Space responsive shell opens a single-image picker on mobile, treats cancel as a no-op, and routes the chosen image to the original CLI target",
+            "Space responsive shell uploads a tablet Clip Tool selection to chat attachments without submitting a prompt",
+            "Space responsive shell keeps desktop display capture, stops every media track, and avoids the server screen-capture fallback",
+            "Space responsive shell opens the image picker on Windows desktop when display capture is unavailable",
+            "Space responsive shell keeps new Links actions visible and retires dashboard icons with an older saved toolbar order",
+            "Space responsive shell keeps classic playback mounted through Help and never stacks Music with Quick Links",
+            "Space responsive shell keeps modern playback mounted through Help and never stacks Music with Quick Links",
+            "Space responsive shell keeps the desktop embedded-link shell inside the viewport",
+            "Space responsive shell keeps the mobile embedded-link shell inside the viewport",
+            "Space responsive shell keeps an overflowing mobile pane title inline without changing the icon row",
+            "Space responsive shell keeps an overflowing desktop pane title inline without hiding title tools",
+            "Space responsive shell keeps Codex Build and Plan defaults usable in the narrow Settings dock",
+            "Space responsive shell keeps the menu open with a clear error after an API failure and closes it on outside click",
+            "Space responsive shell keeps the left surface controls available with a saved desktop room focus preference",
+            "Space responsive shell keeps desktop actions discoverable despite legacy hidden preferences",
+            "Space responsive shell keeps minimized panes mounted, selects the next pane, and restores focus after the pane becomes visible",
+            "Space responsive shell shows persisted minimized panes as full mobile panes without a minimize bar",
+            "Space responsive shell defines wrapping room toolbar actions without horizontal scrolling",
+            "Space responsive shell keeps a dense desktop overview for 16-pane rooms",
+            "Space responsive shell loads a bounded multi-page room catalog when the Rooms surface is visible",
+            "Space responsive shell keeps a persisted selected room active when it is beyond the default room page",
+            "Space responsive shell adds Agent Proof rooms from global SSE without selecting or loading their runtime"
+          ]
+        },
+        {
+          "name": "Full API before concurrent integration",
+          "sourceSha": "fd942234fd",
+          "status": "PASS_WITH_SKIPS",
+          "passed": 2131,
+          "failed": 0,
+          "skipped": 8,
+          "errors": 0,
+          "reportedFiles": 210,
+          "log": "api-full-fd942234fd.txt",
+          "sha256": "a51a3bb28df5cd333cac7fb08cfd51a2a201178d69ebe4d9c7ecac7ea4d0dca9",
+          "summary": [
+            "209 passed | 1 skipped files (210)",
+            "2131 passed | 8 skipped tests (2139)",
+            "1470.72s, exit 0"
+          ],
+          "failureTests": [],
+          "limitation": "Premerge local snapshot. Does not verify the merged candidate or public CI."
+        },
+        {
+          "name": "Full merged API",
+          "log": "api-full-01149c530b.txt",
+          "sourceSha": "01149c530b",
+          "sha256": "a2f638416d671d38baef9bd7b4816f590f5e8ef9986730d05bc09e7998497900",
+          "status": "FAILED",
+          "exitCode": 1,
+          "passed": 2161,
+          "failed": 2,
+          "skipped": 8,
+          "limitation": "Historical wrapper failures subsequently scoped-green in ccf627e5e1. Two completed later full runs are recorded below."
+        },
+        {
+          "name": "Full merged frontend",
+          "log": "web-merged.json",
+          "sourceSha": "01149c530b",
+          "sha256": "700a56ba70403a00f46fe9a76542cd16f7f9572ffb26d1dfeb2e75412ec03715",
+          "status": "FAILED",
+          "exitCode": 1,
+          "passed": 2354,
+          "failed": 93,
+          "pending": 0
+        },
+        {
+          "name": "Full frontend follow-up",
+          "log": "web-followup.json",
+          "sourceSha": "7748e9cb08",
+          "sha256": "d3057c431270d888d500a5116916bffbf80e58f5334f84042450f79c8dcf0862",
+          "status": "FAILED",
+          "exitCode": 1,
+          "passed": 2382,
+          "failed": 70,
+          "pending": 0,
+          "limitation": "Application source at 7748e9cb08; responsive fixture changed during run and committed as dc813de1dc. Not immutable-SHA acceptance."
+        },
+        {
+          "name": "Full API after historical-wrapper compatibility",
+          "sourceSha": "ccf627e5e1",
+          "log": "api-full-historical-context.txt",
+          "passed": 2164,
+          "failed": 1,
+          "skipped": 8,
+          "failureTests": [
+            "cli-codex-model-settings > safe expected/observed diagnostics (10s timeout)"
+          ],
+          "limitation": "Historical run; owned analytics fixture subsequently passed 13 scoped checks.",
+          "status": "FAILED",
+          "exitCode": 1,
+          "sha256": "3b4aebe986303b4a2f9933758b48d07a58a0e7303675ac5e455596beadff1f61"
+        },
+        {
+          "name": "Full API with owned model-control analytics",
+          "sourceSha": "309e5841ac",
+          "log": "api-full-309e5841ac.txt",
+          "passed": 2166,
+          "failed": 2,
+          "skipped": 8,
+          "failureTests": [
+            "public-waitlist > trusts forwarded client IPs only through the public-host marketing proxy (afterEach 10s timeout)",
+            "room-pane-batch > replays concurrent mixed requests, rejects changed payloads, and preserves defaults (30s timeout)"
+          ],
+          "limitation": "Application API source/tests unchanged during run. These two full files pass unchanged 13/13 separately; broad-run flakiness remains unresolved.",
+          "status": "FAILED",
+          "exitCode": 1,
+          "sha256": "0314454cb9c4ab3bcfa3041ce534611cad332f50142a5cf6d8f6fa745b25882f"
+        },
+        {
+          "name": "Full frontend after action-surface extraction",
+          "sourceSha": "b8cf82ef9f",
+          "log": "web-action-surfaces-full.json",
+          "passed": 2400,
+          "failed": 67,
+          "pending": 0,
+          "limitation": "Run began with completed action-surface source/tests. Only trailing blank EOF cleanup occurred during run; not exact committed-SHA acceptance. Later scoped fixes do not replace this broad result.",
+          "status": "FAILED",
+          "exitCode": 1,
+          "sha256": "5a75a56d3ff3f32b22fbd9f193e9e3d6a9a4bceab192c6578e434a7ae1028186"
+        },
+        {
+          "name": "Root workspace typechecks after action-surface extraction",
+          "sourceSha": "b8cf82ef9f",
+          "log": "root-check-action-surfaces.txt",
+          "sha256": "d9309453cba7b7ca3f462b2e55fa00e51ebb69578c9139224de22029c83d83f2",
+          "status": "PASS",
+          "exitCode": 0,
+          "limitation": "Same trailing blank EOF cleanup caveat as frontend run; no type-level logic changed."
+        },
+        {
+          "name": "All workspace typechecks after fourth canonical integration",
+          "sourceSha": "20df7cd3896331fdf06d419e02fd2b6178d430f7",
+          "status": "PASS",
+          "exitCode": 0,
+          "log": "root-check-canonical-compare.txt",
+          "sha256": "60cf565353e8517e706f7107297ad38dc119a4228a0ea647aac892af8ac7cb91"
+        },
+        {
+          "name": "Full frontend after fourth canonical integration",
+          "sourceSha": "60d6228f66c3f84fbbebac41d58af0b240c25a64",
+          "log": "web-full-fourth-integration.json",
+          "status": "FAILED",
+          "exitCode": 1,
+          "passed": 2416,
+          "failed": 56,
+          "pending": 0,
+          "sha256": "1582a52a01709b7c7c5076cd7780f57bc0021026fc303839f7e2e73f5ed38580",
+          "limitation": "Frontend source/tests stayed unchanged throughout this run. Later scoped fixes do not replace this result."
+        },
+        {
+          "name": "Complete API after owned analytics fixture fix",
+          "sourceSha": "00d7ad3777",
+          "status": "PASS",
+          "exitCode": 0,
+          "passed": 2170,
+          "failed": 0,
+          "skipped": 8,
+          "filesPassed": 214,
+          "filesSkipped": 1,
+          "durationSeconds": 1386.44,
+          "log": "api-full-00d7ad3777.txt",
+          "sha256": "a0b6bd23420b8d1567cb69eb82f5fb279808426aa0606a6c391a94531492a91b",
+          "limitation": "API source/tests unchanged throughout run; unrelated frontend work continued. Not full repository/public CI acceptance."
+        },
+        {
+          "name": "Complete frontend at 37 percent checkpoint",
+          "sourceSha": "bc46e4d6f4",
+          "status": "FAILED",
+          "exitCode": 1,
+          "passed": 2430,
+          "failed": 45,
+          "pending": 0,
+          "log": "web-full-37-checkpoint.json",
+          "sha256": "9ffe40647ae230d77a9b4d8fb162dbe1d5febce2a5f39890f2baf74ddf1a6b12",
+          "limitation": "Frontend source/tests unchanged throughout the run. API suite is separately green, not same-SHA full repository/public CI."
+        },
+        {
+          "name": "Complete frontend at pause checkpoint",
+          "sourceSha": "7586cffb54",
+          "status": "FAILED",
+          "exitCode": 1,
+          "passed": 2438,
+          "failed": 39,
+          "pending": 0,
+          "log": "web-full-icons-checkpoint.json",
+          "sha256": "743b61661a05d697cf50573643b0d5b1d73fbd56f145f2d12c33398493d1cea4",
+          "failureInventory": "web-pause-failures.json",
+          "limitation": "Frontend source/tests unchanged throughout run. Full CI remains failing; six files contain failed assertions."
+        },
+        {
+          "name": "Full API after review extraction, interrupted at user pause",
+          "sourceSha": "6f11f701c4",
+          "status": "INTERRUPTED",
+          "exitCode": 130,
+          "log": "api-full-review-domain.txt",
+          "limitation": "User-requested pause: SIGINT to verified owned Vitest runner; no complete acceptance result. Runner and observed descendants exited."
+        }
+      ],
+      "openGates": [
+        "all confirmed P0 live acceptance",
+        "complete root/API/frontend suites",
+        "60% API/frontend module decomposition",
+        "versioned adapter/CLI native-resume compatibility matrix",
+        "trace/context/cost/configuration registries",
+        "full fault and application backup/restore matrix",
+        "six-room/96-pane authenticated warm proof beyond35s and large-workspace gate",
+        "dedicated Linux/Windows/macOS install/upgrade/repair/stopped-Docker acceptance",
+        "exact public SHA with required CI URL",
+        "fresh independent reviews"
+      ],
+      "fixtureScope": "No live Agent Proof room created. Networkless task-owned PostgreSQL container and socket directory removed. No live services restarted.",
+      "estimationMethod": "Engineering judgement across the ten acceptance packages, weighted by roadmap effort. Not a test pass rate.",
+      "orchestrationReduction": {
+        "apps/api/src/app.ts": {
+          "baselineLines": 19487,
+          "currentLines": 17827,
+          "reductionPercent": 8.52,
+          "targetPercent": 60,
+          "targetMet": false
+        },
+        "apps/web/src/App.tsx": {
+          "baselineLines": 18192,
+          "currentLines": 13314,
+          "reductionPercent": 26.81,
+          "targetPercent": 60,
+          "targetMet": false
+        }
+      },
+      "activeVerification": [],
+      "latestImplementationSourceSha": "7586cffb54",
+      "finalIntegrationRequirement": {
+        "requestedByUser": true,
+        "required": "Include all SpaceApp changes since task start. Refresh from then-current canonical main, preserve concurrent commits and edits, validate combined candidate, repeat freshness check immediately before deployment.",
+        "completed": false,
+        "lastObservedCanonicalHead": "30546b2668",
+        "observationIsNotIntegration": true,
+        "committedChangesFetched": true,
+        "firstIntegrationSha": "01149c530bc1b15f5611d5240d22a05c762f6609",
+        "integratedCanonicalHead": "30546b26686fa81ddeb9f409ec6aca9f70393c64",
+        "firstIntegrationComplete": true,
+        "finalFreshnessRequired": true,
+        "resolvedConflicts": 5,
+        "canonicalUncommittedChangesObserved": [],
+        "secondIntegrationSha": "71236c7122",
+        "thirdIntegrationSha": "8203e2fcff",
+        "fourthIntegrationSha": "20df7cd3896331fdf06d419e02fd2b6178d430f7",
+        "latestReadOnlyObservation": {
+          "canonicalHead": "60ec13dfc0519db5c0033cfb331eab4ec944a8ac",
+          "uncommittedPathCount": 29,
+          "integrated": false
+        }
+      },
+      "executionStatus": "PAUSED",
+      "pauseReason": "Explicit user request: document progress and resume another time; token budget exhausted."
+    },
+    {
+      "checkpoint": "2026-10-12 08:45 (before the stable/dev split)",
+      "recordedAt": "2026-10-12T08:45:00+00:00",
+      "liveSha": "e685adc8c6",
+      "liveShaSource": "git -C /opt/spaceapp rev-parse refs/space-queue/live-verified; per-commit facts: node scripts/quality-snapshot.mjs <sha>",
+      "estimatedOverallCompletionPercent": 93,
+      "estimationMethod": "Mean of the ten plan steps' progress recorded in PLAN clipboard:wxc6q7AaaMt6. Engineering judgement, not a test pass rate.",
+      "estimateIsTestPassRate": false,
+      "deployed": true,
+      "deployPath": "Merge queue only (space-queue submit); each batch passes an isolated build and npm run test:deploy before deploy",
+      "independentReview": {
+        "status": "Preliminary reviews performed on live 521f81acee (2026-10-12); final reviews pending at the final SHA",
+        "reviews": [
+          {
+            "reviewer": "Claude CLI (claude-opus-4-8)",
+            "rating": "4/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/prelim-521f81acee/claude.md"
+          },
+          {
+            "reviewer": "Codex CLI (gpt-6.1-sol)",
+            "rating": "3/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/prelim-521f81acee/codex-gpt5.md"
+          },
+          {
+            "reviewer": "OpenCode (opencode/big-pickle)",
+            "rating": "2/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/prelim-521f81acee/opencode-big-pickle.md"
+          }
+        ],
+        "unavailable": "DeepSeek: provider account returned 402 Insufficient Balance; Gemini and Qwen: no quota",
+        "fixedFromReviews": [
+          "replayed run completion appended a second TURN_COMPLETED (e685adc8c6)",
+          "User Mode exposed nested .git and worktree secrets",
+          "PATCH /api/rooms/:id created directories anywhere",
+          "worktree service deleted recursively without the route's guard",
+          "stale docs: durable revocation, OTLP spans, migration exemptions, /readyz probe contract",
+          "evidence not bound to the reviewed commit (quality snapshot + clone in the review pack)"
+        ]
+      },
+      "orchestrationReduction": {
+        "apps/api/src/app.ts": {
+          "baselineLines": 19487,
+          "liveLines": 7463,
+          "reductionPercent": 61.7,
+          "targetPercent": 60,
+          "targetMet": true
+        },
+        "apps/web/src/App.tsx": {
+          "baselineLines": 18192,
+          "candidateLines": 7225,
+          "candidateSha": "cc3f90c865",
+          "reductionPercent": 60.3,
+          "targetPercent": 60,
+          "targetMet": "pending deploy after the A/B warm proof the room-switch baseline requires"
+        }
+      },
+      "fullCiGreen": null,
+      "fullCiNote": "No single full-suite CI run exists for the private tree; the merge queue gate runs test:deploy and the isolated build. Public CI is checked on the published 1.1.3 SHA.",
+      "openGates": [
+        "PERF-001 warm room-switch p95 (411-467 ms quiet vs 250 ms gate)",
+        "App.tsx step 4 deploy after A/B",
+        "public 1.1.3 release and its CI",
+        "final independent reviews",
+        "operator-only: off-VM backups, full VM restore drill"
+      ],
+      "executionStatus": "IN_PROGRESS"
+    },
+    {
+      "checkpoint": "2026-10-12 12:05 (before the final reviews)",
+      "recordedAt": "2026-10-12T12:05:00+00:00",
+      "liveSha": "a3d314162e",
+      "liveShaSource": "Stable: git -C /opt/spaceapp rev-parse refs/space-queue/live-verified. Dev: git -C /opt/spaceapp rev-parse refs/heads/dev and npm run live:verify:dev. Per-commit facts: node scripts/quality-snapshot.mjs <sha>",
+      "estimatedOverallCompletionPercent": 93,
+      "estimationMethod": "Mean of the ten plan steps' progress recorded in PLAN clipboard:wxc6q7AaaMt6. Engineering judgement, not a test pass rate.",
+      "estimateIsTestPassRate": false,
+      "deployed": true,
+      "deployPath": "Merge queue only. Since 2026-10-12 every batch deploys to the dev instance (http://127.0.0.1:4911:4940) after an isolated build and npm run test:deploy; stable changes only when the operator runs space-queue promote (docs/runbooks/stable-dev-instances.md)",
+      "independentReview": {
+        "status": "Preliminary reviews performed on live 521f81acee (2026-10-12); final reviews pending at the final SHA",
+        "reviews": [
+          {
+            "reviewer": "Claude CLI (claude-opus-4-8)",
+            "rating": "4/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/prelim-521f81acee/claude.md"
+          },
+          {
+            "reviewer": "Codex CLI (gpt-6.1-sol)",
+            "rating": "3/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/prelim-521f81acee/codex-gpt5.md"
+          },
+          {
+            "reviewer": "OpenCode (opencode/big-pickle)",
+            "rating": "2/5",
+            "report": "/var/lib/spaceapp-user/agent-workspace/reviews/prelim-521f81acee/opencode-big-pickle.md"
+          }
+        ],
+        "unavailable": "DeepSeek: provider account returned 402 Insufficient Balance; Gemini and Qwen: no quota",
+        "fixedFromReviews": [
+          "replayed run completion appended a second TURN_COMPLETED (e685adc8c6)",
+          "User Mode exposed nested .git and worktree secrets",
+          "PATCH /api/rooms/:id created directories anywhere",
+          "worktree service deleted recursively without the route's guard",
+          "stale docs: durable revocation, OTLP spans, migration exemptions, /readyz probe contract",
+          "evidence not bound to the reviewed commit (quality snapshot + clone in the review pack)"
+        ]
+      },
+      "orchestrationReduction": {
+        "apps/api/src/app.ts": {
+          "baselineLines": 19487,
+          "devLines": 7593,
+          "devSha": "860ae01ced",
+          "reductionPercent": 61,
+          "targetPercent": 60,
+          "targetMet": true
+        },
+        "apps/web/src/App.tsx": {
+          "baselineLines": 18192,
+          "devLines": 7238,
+          "devSha": "860ae01ced",
+          "reductionPercent": 60.2,
+          "targetPercent": 60,
+          "targetMet": true
+        }
+      },
+      "fullCiGreen": null,
+      "fullCiNote": "No single full-suite CI run exists for the private tree; the merge queue gate runs test:deploy and the isolated build. Public CI is checked on the published 1.1.3 SHA.",
+      "openGates": [
+        "operator: space-queue promote of dev 860ae01ced to stable, then a stable BENCHMARK_WARM_CAPACITY proof of the 250 ms gate",
+        "pre-existing: 16th-terminal blank frames during geometry repair (layout invariant of the warm proof)",
+        "public 1.1.3 release and its CI",
+        "final independent reviews at the final SHA",
+        "operator-only: off-VM backups, full VM restore drill, WAL/PITR, DeepSeek account balance"
+      ],
+      "executionStatus": "IN_PROGRESS",
+      "devSha": "860ae01ced",
+      "devVerified": "npm run live:verify:dev ok at 2026-10-12T11:45Z (devHead 860ae01ced, caller 7efde85897)",
+      "perf001": {
+        "fixSha": "8bb433157d",
+        "devSha": "860ae01ced",
+        "stagingAB": {
+          "fixWarmP95Ms": 238.5,
+          "baseWarmP95Ms": 713.8,
+          "fixColdOpenS": "1.8-2.6",
+          "baseColdOpenS": "2.4-5.0",
+          "results": "/var/lib/spaceapp-user/agent-workspace/reports/20261011-perf001-bisect/results.jsonl (cv-q1, cv-base-q1)"
+        },
+        "layoutInvariant": "fails in fix and base: the 16th terminal of a revealed room shows 6-9 blank frames during a glyph-width geometry repair (pre-existing, open)",
+        "stableProof": "pending the operator-run promote"
+      }
+    }
+  ]
+}

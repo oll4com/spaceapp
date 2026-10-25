@@ -1,0 +1,1908 @@
+import {
+  DOT_PROACTIVE_REQUEST_PREFIX, DOT_SCHEDULE_REQUEST_PREFIX, decideAutoRoute, isDotProactiveRequest, transitionAgentRunLedger,
+  type AutoRouteCandidate, type AutoRouteShadow, type ModelPriceCatalog
+} from "@space/contracts";
+import { Client, Connection } from "@temporalio/client";
+import { artifactContextOpening, artifactImageGuidance, artifactReadGuidance, attachedRequestRules } from "./attachment-context.js";
+import {
+  permissionParamsForMode,
+  validatePermissionModeRequirements,
+  type CodexAppServerControlService,
+  type CodexAppServerSocketModelOption,
+  type CodexCollaborationModePreset,
+  type CodexConfigRequirements
+} from "@space/codex-app-server";
+import {
+  agentPaneSessionSchema,
+  cliReasoningEffortSchema,
+  type AgentPaneGoal,
+  type AgentPaneBinding,
+  type AgentPaneHistoryItem,
+  type AgentPaneMessage,
+  type AgentPaneModelOption,
+  type AgentPaneModelProvider,
+  type AgentPaneSession,
+  type AgentPaneToolOption,
+  type Artifact,
+  type AttachmentCoverage,
+  type CodexModelCatalogOption,
+  type CollaborationMode,
+  type DummyTurnInput,
+  imageArtifactMimeTypeSchema,
+  type Pane,
+  type PaneBrowserSession,
+  type PermissionMode,
+  type DotModelChoices,
+  dotFeedOrigin,
+  type SpaceAgentRunRecord,
+  type SpaceAgentSessionRecord
+} from "@space/contracts";
+import { SpaceConflictError, SpaceFeatureDisabledError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
+import {
+  codexChatProviderAdapter,
+  codexChatProviderConfigIdPrefix,
+  codexChatProviderId,
+  opencodeChatProviderAdapter,
+  providerForConfigId,
+  type ChatProviderAdapter,
+  type ChatProviderCatalogResult,
+  type OpenCodeControlResolver,
+  type OpenCodeSessionControlResolver
+} from "./chat-providers.js";
+import type { SpaceApiConfig } from "./config.js";
+import { TurnStarterDisabledError, type TurnStarter } from "./turns.js";
+import type { DecisionsService } from "./decisions-service.js";
+import { chatAttachmentReceipts, resolveChatAttachments } from "./chat-attachments.js";
+import { chatSubmissionFingerprint } from "./chat-submissions.js";
+import { createChatProviderCatalogCache } from "./chat-provider-catalog-cache.js";
+
+export interface SpaceAgentAdapterInput {
+  pane: Pane;
+}
+
+export interface SpaceAgentCreateInput extends SpaceAgentAdapterInput {
+  dotId?: string;
+  ownerUserId?: string;
+  title?: string;
+  sessionId?: string | null;
+  threadId?: string | null;
+  selectedModelConfigId?: string | null;
+  selectedToolIds?: string[] | null;
+}
+
+export interface SpaceAgentSendInput extends SpaceAgentAdapterInput {
+  dotId?: string;
+  sessionId?: string;
+  acceptance?: import("@space/contracts").TaskAcceptance;
+  clientRequestId?: string;
+  content: string;
+  operatorUserId?: string;
+  selectedModelConfigId?: string;
+  selectedToolIds?: string[];
+  artifactIds?: string[];
+  traceId: string;
+}
+
+export interface SpaceAgentInterruptInput extends SpaceAgentAdapterInput {
+  reason?: string;
+}
+
+export interface SpaceAgentSettingsInput extends SpaceAgentAdapterInput {
+  title?: string;
+  selectedModelConfigId?: string | null;
+  selectedToolIds?: string[] | null;
+  permissionMode?: PermissionMode | null;
+  collaborationMode?: CollaborationMode;
+}
+
+export interface SpaceAgentGoalInput extends SpaceAgentAdapterInput {
+  objective: string;
+}
+
+export interface SpaceAgentMutationResult {
+  binding: AgentPaneBinding;
+  session: AgentPaneSession;
+  submission?: { sessionId: string; responseMessageId: string; runId: string };
+}
+
+export interface SpaceAgentAdapter {
+  prepareRetry(input: SpaceAgentAdapterInput): Promise<{ content: string; artifacts: Artifact[]; acceptance?: import("@space/contracts").TaskAcceptance }>;
+  listRoomChatTypes?(): Promise<Array<{ id: string; title: string; mode: "CHAT"; selectedModelConfigId: string }>>;
+  /** Space Dots Stage 8: every model Chat can serve now, for Settings → Dots. */
+  listModelChoices?(): Promise<DotModelChoices>;
+  loadSession(input: SpaceAgentAdapterInput): Promise<AgentPaneSession>;
+  createOrRestoreSession(input: SpaceAgentCreateInput): Promise<AgentPaneSession>;
+  sendMessage(input: SpaceAgentSendInput): Promise<SpaceAgentMutationResult>;
+  interrupt(input: SpaceAgentInterruptInput): Promise<SpaceAgentMutationResult>;
+  updateSettings(input: SpaceAgentSettingsInput): Promise<SpaceAgentMutationResult>;
+  setGoal(input: SpaceAgentGoalInput): Promise<SpaceAgentMutationResult>;
+  clearGoal(input: SpaceAgentAdapterInput): Promise<SpaceAgentMutationResult>;
+}
+
+export type SpaceAgentControl = Pick<
+  CodexAppServerControlService,
+  "readConfigRequirements" | "readConfiguredModel" | "listModels" | "listCollaborationModes" | "setGoal" | "clearGoal"
+>;
+
+export type SpaceAgentGoalReader = (threadId: string) => Promise<AgentPaneGoal | null>;
+
+function titleCase(value: string): string {
+  return value ? `${value[0]?.toUpperCase() ?? ""}${value.slice(1).toLowerCase()}` : value;
+}
+
+function reasoningLabel(reasoningKey: string | null): string | null {
+  if (!reasoningKey) return null;
+  return reasoningKey === "none" ? "No extra reasoning" : `${titleCase(reasoningKey)} reasoning`;
+}
+
+const modelSelectionUnavailableReason =
+  "The selected model and reasoning configuration is not advertised by the current model catalog.";
+
+function closedRuntimeGate(config: SpaceApiConfig): string | null {
+  if (!config.agentPaneEnabled) return "SPACE_AGENT_PANE_ENABLED must be true before native pane agents can run.";
+  if (!config.enableCodexTurns) return "SPACE_ENABLE_CODEX_TURNS must be true before native pane agents can run.";
+  if (!config.codexAppServerEnabled) return "SPACE_CODEX_APP_SERVER_ENABLED must be true before native pane agents can run.";
+  if (config.codexAppServerTransport !== "stdio") return "Space agent runtime currently supports only stdio Codex App Server turns.";
+  if (!config.codexAppServerAllowStdioSpawn) return "SPACE_CODEX_APP_SERVER_ALLOW_STDIO_SPAWN must be true before native pane agents can run.";
+  if (!config.codexAppServerAllowTurnExecution) {
+    return "SPACE_CODEX_APP_SERVER_ALLOW_TURN_EXECUTION must be true before native pane agents can run.";
+  }
+  return null;
+}
+
+function providerModelOptions(provider: ChatProviderAdapter, catalog: CodexModelCatalogOption[]): AgentPaneModelOption[] {
+  return catalog.flatMap((model): AgentPaneModelOption[] =>
+    model.supportedReasoningEfforts.map((reasoningKey) => ({
+      id: `${provider.configIdPrefix}${model.id}|${reasoningKey}`,
+      displayName: model.displayName,
+      providerId: provider.providerId === codexChatProviderId ? null : provider.providerId,
+      providerName: provider.providerId === codexChatProviderId ? null : provider.providerName,
+      model: model.id,
+      reasoningKey,
+      reasoningLabel: reasoningLabel(reasoningKey),
+      isDefault: model.isDefault && reasoningKey === model.defaultReasoningEffort
+    }))
+  );
+}
+
+function toolOptionsFromStore(
+  servers: Awaited<ReturnType<SpaceStore["listMcpServers"]>>,
+  tools: Awaited<ReturnType<SpaceStore["listMcpTools"]>>
+): AgentPaneToolOption[] {
+  const serverById = new Map(servers.map((server) => [server.id, server]));
+  if (!tools.length) {
+    return servers.map((server) => {
+      const isAvailable = server.status === "VERIFIED";
+      return {
+        id: server.id,
+        displayName: server.displayName,
+        description: `${server.displayName} MCP server tools.`,
+        category: "mcp",
+        slug: server.id,
+        availability: isAvailable ? "default_on" : "default_off",
+        authType: server.transport,
+        authConnected: isAvailable,
+        enabled: isAvailable,
+        isAvailable,
+        statusReason: isAvailable ? null : server.statusReason,
+        isForceOn: false
+      };
+    });
+  }
+  return tools.map((tool) => {
+    const server = serverById.get(tool.serverId);
+    const isAvailable = tool.status === "VERIFIED" && server?.status === "VERIFIED";
+    return {
+      id: tool.id,
+      displayName: tool.name,
+      description: `${server?.displayName ?? tool.serverId} MCP tool.`,
+      category: "mcp",
+      slug: tool.name,
+      availability: isAvailable && !tool.approvalRequired ? "default_on" : "default_off",
+      authType: server?.transport ?? null,
+      authConnected: server?.status === "VERIFIED",
+      enabled: isAvailable && !tool.approvalRequired,
+      isAvailable,
+      statusReason: isAvailable ? null : tool.statusReason || server?.statusReason || "MCP tool is unavailable.",
+      isForceOn: false
+    };
+  });
+}
+
+const memoryToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "memory:search",
+    displayName: "Memory search",
+    description: "Search canonical Space operational memory.",
+    category: "memory",
+    slug: "memory.search",
+    availability: "force_on",
+    authType: "space-memory",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "memory:save",
+    displayName: "Memory save",
+    description: "Save approved notes to canonical Space memory.",
+    category: "memory",
+    slug: "memory.save",
+    availability: "force_on",
+    authType: "space-memory",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
+const clipboardToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "clipboard:list",
+    displayName: "Clipboard list",
+    description: "List the authenticated operator's private Space clipboard history when requested.",
+    category: "memory",
+    slug: "clipboard.list",
+    availability: "force_on",
+    authType: "space-clipboard",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "clipboard:get",
+    displayName: "Clipboard get",
+    description: "Read one private Space clipboard item by id when the operator requests it.",
+    category: "memory",
+    slug: "clipboard.get",
+    availability: "force_on",
+    authType: "space-clipboard",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "clipboard:save",
+    displayName: "Clipboard save",
+    description: "Save an operator-requested agent note to the private Space clipboard.",
+    category: "memory",
+    slug: "clipboard.save",
+    availability: "force_on",
+    authType: "space-clipboard",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "clipboard:save-plan",
+    displayName: "Clipboard save plan",
+    description: "Save the full plan an agent designed to the private Space clipboard so it can be dragged into any CLI pane.",
+    category: "memory",
+    slug: "clipboard.save-plan",
+    availability: "force_on",
+    authType: "space-clipboard",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
+const chatToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "chat:send",
+    displayName: "Shared chat send",
+    description: "Send one message from this agent to the Space shared chat room where the operator and every agent pane talk together.",
+    category: "chat",
+    slug: "shared-chat.send",
+    availability: "force_on",
+    authType: "space-shared-chat",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "chat:read",
+    displayName: "Shared chat read",
+    description: "Read the latest messages from the Space shared chat room so this agent can follow the operator and other agents.",
+    category: "chat",
+    slug: "shared-chat.read",
+    availability: "force_on",
+    authType: "space-shared-chat",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "chat:react",
+    displayName: "Shared chat react",
+    description: "React to a shared chat message with an emoji.",
+    category: "chat",
+    slug: "shared-chat.react",
+    availability: "force_on",
+    authType: "space-shared-chat",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
+const taskToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "tasks:list",
+    displayName: "Tasks list",
+    description: "List the authenticated operator's private Space task declarations when requested.",
+    category: "memory",
+    slug: "tasks.list",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "tasks:get",
+    displayName: "Tasks get",
+    description: "Read one private Space task item by id when the operator requests it.",
+    category: "memory",
+    slug: "tasks.get",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "tasks:save",
+    displayName: "Tasks save",
+    description: "Save an operator-requested task declaration with its objective to the private Space task dock.",
+    category: "memory",
+    slug: "tasks.save",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "tasks:update",
+    displayName: "Tasks update",
+    description: "Update the status or objective of a private Space task item when the operator requests it.",
+    category: "memory",
+    slug: "tasks.update",
+    availability: "force_on",
+    authType: "space-tasks",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
+const skillToolOptions: AgentPaneToolOption[] = [
+  {
+    id: "skills:list",
+    displayName: "Skill list",
+    description: "Discover the installed Space agent skills.",
+    category: "skills",
+    slug: "skills.list",
+    availability: "force_on",
+    authType: "space-skills",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  },
+  {
+    id: "skills:read",
+    displayName: "Skill read",
+    description: "Read an installed Space agent skill.",
+    category: "skills",
+    slug: "skills.read",
+    availability: "force_on",
+    authType: "space-skills",
+    authConnected: true,
+    enabled: true,
+    isAvailable: true,
+    statusReason: null,
+    isForceOn: true
+  }
+];
+
+const browserToolDefinitions: Array<{ id: string; displayName: string; slug: string; description: string }> = [
+  { id: "browser:navigate", displayName: "Browser navigate", slug: "browser.navigate", description: "Navigate one managed browser tab without affecting parallel browser panes." },
+  { id: "browser:screenshot", displayName: "Browser screenshot", slug: "browser.screenshot", description: "Capture a browser screenshot as a Space artifact with seven-day retention and Pin support." },
+  { id: "browser:extract_text", displayName: "Browser extract text", slug: "browser.extract_text", description: "Extract sanitized visible text from the active managed browser tab." },
+  { id: "browser:click", displayName: "Browser click", slug: "browser.click", description: "Click coordinates in the active tab while respecting exclusive operator control." },
+  { id: "browser:type", displayName: "Browser type", slug: "browser.type", description: "Type into the active tab while respecting exclusive operator control." },
+  { id: "browser:scroll", displayName: "Browser scroll", slug: "browser.scroll", description: "Scroll the active managed browser tab." },
+  { id: "browser:set_viewport", displayName: "Browser viewport", slug: "browser.set_viewport", description: "Switch the managed browser between desktop, tablet, and mobile viewport profiles." },
+  { id: "browser:press", displayName: "Browser key", slug: "browser.press", description: "Press Enter, Tab or Shift+Tab in the managed browser." },
+  { id: "browser:masked_screenshot", displayName: "Browser masked screenshot", slug: "browser.masked_screenshot", description: "Screenshot the managed browser with every form field drawn as dots." },
+  { id: "browser:diagnostics", displayName: "Browser diagnostics", slug: "browser.diagnostics", description: "Read sanitized console, network, error, frame, and navigation timeline diagnostics." },
+  { id: "browser:record", displayName: "Browser recording", slug: "browser.record", description: "Record bounded WebM and frame evidence for frame-by-frame debugging across parallel browser panes." }
+];
+
+const browserToolIds = new Set(browserToolDefinitions.map((tool) => tool.id));
+
+function browserToolOptionsFromSessions(config: SpaceApiConfig, sessions: PaneBrowserSession[]): AgentPaneToolOption[] {
+  const statusReason = !config.browserSessionsEnabled
+    ? "Managed browser sessions are disabled."
+    : sessions.length === 0
+      ? "Open a Browser pane in this room to enable this tool."
+      : null;
+  return browserToolDefinitions.map((tool) => ({
+    id: tool.id,
+    displayName: tool.displayName,
+    description: tool.description,
+    category: "browser",
+    slug: tool.slug,
+    availability: "default_off",
+    authType: "space-browser",
+    authConnected: statusReason === null,
+    enabled: statusReason === null,
+    isAvailable: statusReason === null,
+    statusReason,
+    isForceOn: false
+  }));
+}
+
+function truncateForPrompt(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+}
+
+function safeBrowserUrl(raw: string | null): string {
+  if (!raw) return "about:blank";
+  try {
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (/(auth|credential|key|pass|secret|session|token)/i.test(key)) {
+        url.searchParams.set(key, "[REDACTED]");
+      }
+    }
+    return truncateForPrompt(url.toString(), 500);
+  } catch {
+    return truncateForPrompt(redactMemoryText(raw), 500);
+  }
+}
+
+function safePromptText(value: string | null, maxLength: number): string {
+  return value ? truncateForPrompt(redactMemoryText(value).replace(/\s+/g, " ").trim(), maxLength) : "";
+}
+
+function selectedBrowserToolIds(selectedToolIds: string[] | null | undefined): string[] {
+  return Array.from(new Set((selectedToolIds ?? []).filter((toolId) => browserToolIds.has(toolId))));
+}
+
+function clipboardToolContext(selectedToolIds: string[] | null | undefined): string | null {
+  const selected = Array.from(
+    new Set((selectedToolIds ?? []).filter((toolId) => toolId.startsWith("clipboard:")))
+  );
+  if (!selected.length) return null;
+  return [
+    "Space private clipboard tools selected:",
+    `tools=${selected.join(", ")}`,
+    "Use these tools only when the operator explicitly asks to list, read, or save Space clipboard history or a designed plan. Never add clipboard history to an ordinary prompt.",
+    "To request a clipboard action, include one fenced block named space-clipboard-actions with JSON only:",
+    '```space-clipboard-actions\n{"version":1,"actions":[{"toolId":"clipboard:list","action":{"type":"list","pageSize":10}}]}\n```',
+    "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text, mandatory minimumModel, recommended minimumReasoning (none/minimal/low/medium/high/xhigh/max/ultra), and an optional title. Choose the least reasoning effort sufficient for the plan.",
+    "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
+  ].join("\n");
+}
+
+function sharedChatToolContext(selectedToolIds: string[] | null | undefined): string | null {
+  const selected = Array.from(
+    new Set((selectedToolIds ?? []).filter((toolId) => toolId.startsWith("chat:")))
+  );
+  if (!selected.length) return null;
+  return [
+    "Space shared chat tools selected:",
+    `tools=${selected.join(", ")}`,
+    "The Space shared chat is the one room where the operator and every agent pane talk together. Use these tools only when the operator asks to read, send, or react in the shared chat, or when an ongoing task already requires reporting there. Answer ordinary conversation, greetings, and test messages directly in this pane without reading shared chat. For a requested shared chat reply, use chat:read before chat:send. Use chat:react only to react to an existing message.",
+    "To request a shared chat action, include one fenced block named space-chat-actions with JSON only:",
+    '```space-chat-actions\n{"version":1,"actions":[{"toolId":"chat:send","action":{"type":"send","content":"message text"}}]}\n```',
+    "Action bodies: chat:send uses type=send with content and optional roomId/replyToId; chat:read uses type=read with optional limit/before/senderType; chat:react uses type=react with messageId and emoji.",
+    "V1 allows at most 3 actions per turn. chat:send and chat:read messages stay permanently recorded in the operator-visible shared chat with the agent pane as sender."
+  ].join("\n");
+}
+
+function taskToolContext(selectedToolIds: string[] | null | undefined): string | null {
+  const selected = Array.from(
+    new Set((selectedToolIds ?? []).filter((toolId) => toolId.startsWith("tasks:")))
+  );
+  if (!selected.length) return null;
+  return [
+    "Space private task tools selected:",
+    `tools=${selected.join(", ")}`,
+    "Use these tools only when the operator explicitly asks to list, read, save, or update Space task declarations. Never add task declarations to an ordinary prompt.",
+    "To request a task action, include one fenced block named space-task-actions with JSON only:",
+    '```space-task-actions\n{"version":1,"actions":[{"toolId":"tasks:list","action":{"type":"list","pageSize":10}}]}\n```',
+    "Action bodies: tasks:list uses type=list with optional q/status/pageSize; tasks:get uses type=get with taskItemId; tasks:save uses type=save with title and objective; tasks:update uses type=update with taskItemId and optional status/objective.",
+    "V1 allows at most 3 actions per turn. tasks:save creates an OPEN task with source AGENT and accepts objectives up to 10,000 characters. CLI agents do not have task API access."
+  ].join("\n");
+}
+
+function browserToolContext(selectedToolIds: string[] | null | undefined, sessions: PaneBrowserSession[]): string | null {
+  const selected = selectedBrowserToolIds(selectedToolIds);
+  const activeSessions = sessions.filter((session) => session.isActive && session.status !== "CLOSED").slice(0, 8);
+  if (!selected.length || !activeSessions.length) return null;
+  const sessionLines = activeSessions.map((session) => {
+    const title = safePromptText(session.title, 120);
+    const parts = [
+      `agent=${session.agentNumber}`,
+      `pane=${session.paneId}`,
+      `session=${session.sessionId}`,
+      `viewport=${session.viewport}`,
+      `stream=${session.streamMode}/${session.resolvedStreamMode}`,
+      `control=${session.controlState}`,
+      `tabs=${session.pages.length}`,
+      `status=${session.status}`,
+      `url=${safeBrowserUrl(session.currentUrl ?? session.targetUrl)}`
+    ];
+    if (title) parts.push(`title=${title}`);
+    return `- ${parts.join("; ")}`;
+  });
+  return [
+    "Space managed browser tools selected:",
+    `tools=${selected.join(", ")}`,
+    "Use only Space-scoped managed browser actions: navigate, screenshot, extract_text, click, type, scroll, set_viewport, diagnostics, record.",
+    "To request browser actions, include one fenced block named space-browser-actions with JSON only:",
+    '```space-browser-actions\n{"version":1,"actions":[{"toolId":"browser:extract_text","targetPaneId":"pane:id","action":{"type":"extract_text"}}]}\n```',
+    "The toolId must match the action type, targetPaneId must be a listed browser pane, and a single turn may request at most 3 actions.",
+    "Diagnostics and recordings return sanitized console/network summaries and Space artifact paths only. Do not request raw browser internals, browser cookies, localStorage, stream tickets, profile paths, or private network targets.",
+    "Up to eight sessions may stay active, with four simultaneous live or recording workloads. Prefer SILENT or PREVIEW for unattended background work and request INTERACTIVE or REALTIME only when visual response is needed.",
+    "If a site requires human login, CAPTCHA, or lock handoff, pause agent input and ask the operator to join that same visible browser pane. Resume only after operator control is released.",
+    "Active browser sessions in this room:",
+    ...sessionLines
+  ].join("\n");
+}
+
+function isImageTurnArtifact(artifact: Artifact): boolean {
+  return artifact.kind === "IMAGE" && imageArtifactMimeTypeSchema.safeParse(artifact.mimeType).success;
+}
+
+/** Model facts the Auto policy may rely on: the runtime catalog's modalities and context windows, and the operator's prices. */
+export interface AutoRouteFacts {
+  capabilities: Map<string, { inputModalities: string[] | null; contextWindow: number | null }>;
+  prices: ModelPriceCatalog | null;
+}
+const backgroundRequestPrefixes = ["goal-", "delegation-", "approval-", DOT_SCHEDULE_REQUEST_PREFIX, DOT_PROACTIVE_REQUEST_PREFIX];
+/** Stage 7: what Auto would choose for this task among the models the user can select now; never applied. */
+export function autoRouteShadowFor(input: {
+  content: string; artifacts: Artifact[]; extractedChars: Map<string, number>; toolGateway: boolean; clientRequestId?: string | null;
+  declaredChecks: boolean; catalog: CodexModelCatalogOption[]; facts: AutoRouteFacts; actualModel: string | null; actualReasoning: string | null;
+}): AutoRouteShadow {
+  const images = input.artifacts.filter(isImageTurnArtifact);
+  const candidates: AutoRouteCandidate[] = input.catalog.map((model) => {
+    const facts = input.facts.capabilities.get(model.id);
+    return { modelId: model.id, inputModalities: facts?.inputModalities ?? null, contextWindow: facts?.contextWindow ?? null,
+      reasoningEfforts: model.supportedReasoningEfforts, isDefault: model.isDefault, quota: "UNKNOWN" };
+  });
+  return decideAutoRoute({
+    task: { promptChars: input.content.length, modalities: images.length ? ["text", "image"] : ["text"], attachments: input.artifacts.length,
+      // Files are read into text; without a recorded reading, assume about half their size is text.
+      attachmentChars: input.artifacts.filter((artifact) => !isImageTurnArtifact(artifact)).reduce((sum, artifact) =>
+        sum + (input.extractedChars.get(artifact.id) ?? Math.min(400_000, Math.floor((artifact.byteSize ?? 0) / 2))), 0),
+      toolGateway: input.toolGateway,
+      background: backgroundRequestPrefixes.some((prefix) => input.clientRequestId?.startsWith(prefix)),
+      declaredChecks: input.declaredChecks },
+    candidates, prices: input.facts.prices,
+    actual: { model: input.actualModel, reasoning: input.actualReasoning, source: input.actualModel ? "USER_SELECTED" : "RUNTIME_DEFAULT" },
+    at: new Date().toISOString()
+  });
+}
+
+function workspaceContext(targetDir?: string | null): string | null {
+  if (!targetDir || !targetDir.startsWith("/") || targetDir === "/etc") return null;
+  return [
+    `Space workspace directory: ${targetDir}`,
+    "All file paths, editing tasks, and shell commands should be executed relative to or within this workspace."
+  ].join("\n");
+}
+
+function artifactContext(artifacts: Artifact[], reads: ReadonlyMap<string, string> = new Map(), typedText = true): string | null {
+  if (!artifacts.length) return null;
+  const lines = artifacts.slice(0, 8).map((artifact) => {
+    const originalFilename = typeof artifact.metadata.originalFilename === "string" ? artifact.metadata.originalFilename : "upload";
+    const read = reads.get(artifact.id);
+    return `- ${artifact.id}: ${originalFilename}; kind=${artifact.kind}; mime=${artifact.mimeType}; bytes=${artifact.byteSize}; uri=${artifact.storageUri}${read ? `; ${read}` : ""}`;
+  });
+  return [
+    artifactContextOpening,
+    ...lines,
+    reads.size ? artifactReadGuidance : artifactImageGuidance,
+    typedText ? attachedRequestRules.typed : attachedRequestRules.whole
+  ].join("\n");
+}
+
+function promptWithAgentContexts(content: string, contexts: Array<string | null>): string {
+  const activeContexts = contexts.filter((context): context is string => Boolean(context));
+  const normalizedContent = content.trim();
+  if (!activeContexts.length) return normalizedContent;
+  if (!normalizedContent) return activeContexts.join("\n\n");
+  return `${activeContexts.join("\n\n")}\n\nUser prompt:\n${normalizedContent}`;
+}
+
+function selectedModelFromOptions(
+  options: AgentPaneModelOption[],
+  catalog: CodexModelCatalogOption[],
+  selectedModelConfigId: string | null,
+  strict: boolean
+): { selectedModel: AgentPaneModelOption | null; modelSelectionGate: string | null } {
+  if (selectedModelConfigId === null) {
+    return {
+      selectedModel: options.find((option) => option.isDefault) ?? options[0] ?? null,
+      modelSelectionGate: null
+    };
+  }
+
+  const exact = options.find((option) => option.id === selectedModelConfigId);
+  if (exact) return { selectedModel: exact, modelSelectionGate: null };
+
+  const legacyCandidates = new Map<string, AgentPaneModelOption>();
+  for (const legacyModel of catalog) {
+    if (legacyModel.id !== selectedModelConfigId) continue;
+    const legacyDefault = options.find(
+      (option) => option.model === legacyModel.id && option.reasoningKey === legacyModel.defaultReasoningEffort
+    );
+    if (legacyDefault) legacyCandidates.set(legacyDefault.id, legacyDefault);
+  }
+  for (const option of options) {
+    if (
+      option.model &&
+      option.reasoningKey &&
+      `${option.model}:${option.reasoningKey}` === selectedModelConfigId
+    ) {
+      legacyCandidates.set(option.id, option);
+    }
+  }
+  if (legacyCandidates.size === 1) {
+    return { selectedModel: legacyCandidates.values().next().value ?? null, modelSelectionGate: null };
+  }
+
+  if (!strict) {
+    return { selectedModel: null, modelSelectionGate: modelSelectionUnavailableReason };
+  }
+
+  throw new SpaceFeatureDisabledError(
+    "SPACE_AGENT_MODEL_CONFIG_NOT_ADVERTISED",
+    modelSelectionUnavailableReason
+  );
+}
+
+function selectedSessionFields(select: {
+  selectedModel: AgentPaneModelOption | null;
+  selectedTools: string[];
+}, fallback?: SpaceAgentSessionRecord) {
+  return {
+    selectedProviderId: select.selectedModel ? select.selectedModel.providerId : fallback?.selectedProviderId ?? null,
+    selectedModelId: select.selectedModel?.model ?? fallback?.selectedModelId ?? null,
+    selectedModelConfigId: select.selectedModel?.id ?? fallback?.selectedModelConfigId ?? null,
+    selectedProviderName: select.selectedModel ? select.selectedModel.providerName : fallback?.selectedProviderName ?? null,
+    selectedModelName: select.selectedModel
+      ? select.selectedModel.model ?? select.selectedModel.displayName
+      : fallback?.selectedModelName ?? null,
+    selectedReasoningKey: select.selectedModel?.reasoningKey ?? fallback?.selectedReasoningKey ?? null,
+    selectedToolIds: select.selectedTools
+  };
+}
+
+function bindingFromSession(session: SpaceAgentSessionRecord): AgentPaneBinding {
+  return {
+    paneId: session.paneId,
+    source: "SPACE",
+    sessionId: session.sessionId,
+    coderChatId: null,
+    status: session.status,
+    title: session.title,
+    selectedModelConfigId: session.selectedModelConfigId,
+    selectedProviderName: session.selectedProviderName,
+    selectedModelName: session.selectedModelName,
+    selectedReasoningKey: session.selectedReasoningKey,
+    selectedToolIds: session.selectedToolIds,
+    lastSyncedAt: session.lastSyncedAt
+  };
+}
+
+function mapMessage(message: Awaited<ReturnType<SpaceStore["listSpaceAgentMessages"]>>[number]): AgentPaneMessage {
+  return {
+    id: message.messageId,
+    role: message.role,
+    content: message.content,
+    status: message.status,
+    createdAt: message.createdAt
+  };
+}
+
+function persistentTranscriptContext(
+  messages: Awaited<ReturnType<SpaceStore["listSpaceAgentMessages"]>>,
+  excludedMessageIds: Set<string>
+): string | null {
+  const priorMessages = messages
+    .filter((message) => !excludedMessageIds.has(message.messageId))
+    .filter((message) => message.status === "COMPLETED" && message.content.trim())
+    .slice(-12);
+  if (!priorMessages.length) return null;
+
+  const lines = priorMessages.map((message) => {
+    const content = safePromptText(message.content, message.role === "tool" ? 900 : 1200);
+    return `- ${message.role}: ${content}`;
+  });
+  return [
+    "Space persistent conversation context:",
+    "Recent completed messages in this agent pane are below. Use them as continuity context for this turn.",
+    ...lines
+  ].join("\n").slice(0, 9000);
+}
+
+function runStatusFromRecord(
+  session: SpaceAgentSessionRecord,
+  run: Awaited<ReturnType<SpaceStore["getLatestSpaceAgentRun"]>>
+): AgentPaneSession["runStatus"] {
+  if (session.status === "BLOCKED") return "BLOCKED";
+  if (!run) return session.status === "RUNNING" ? "RUNNING" : "IDLE";
+  if (run.status === "QUEUED") return "QUEUED";
+  if (run.status === "RUNNING") return "RUNNING";
+  if (run.status === "FAILED") return "ERROR";
+  if (run.status === "INTERRUPTED") return "IDLE";
+  return "IDLE";
+}
+
+function historyFromNativeAndLegacy(nativeHistory: AgentPaneHistoryItem[], legacyHistory: AgentPaneHistoryItem[]): AgentPaneHistoryItem[] {
+  return [...nativeHistory, ...legacyHistory]
+    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+    .slice(0, 100);
+}
+
+function toReasoningEffort(value: string | null): DummyTurnInput["reasoningEffort"] {
+  const parsed = cliReasoningEffortSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+const permissionCopy: Record<PermissionMode, { label: string; description: string }> = {
+  ask_for_approval: {
+    label: "Ask for approval",
+    description: "Work in the workspace and ask before sensitive actions."
+  },
+  approve_for_me: {
+    label: "Approve for me",
+    description: "Use the guardian reviewer for workspace approval requests."
+  },
+  full_access: {
+    label: "Full access",
+    description: "Run without sandbox restrictions or approval prompts."
+  }
+};
+
+function permissionRequirementsGate(mode: PermissionMode, requirements: CodexConfigRequirements | null): string | null {
+  try { validatePermissionModeRequirements(mode, requirements); return null; }
+  catch { return `${permissionCopy[mode].label} is disabled by Codex runtime requirements.`; }
+}
+
+function permissionOptions(requirements: CodexConfigRequirements | null, unavailableReason: string | null,
+  providerId: string | null = null): AgentPaneSession["permissionOptions"] {
+  return (["ask_for_approval", "approve_for_me", "full_access"] as const).map(mode => {
+    const params = permissionParamsForMode(mode)!;
+    const statusReason = providerId
+      ? mode === "full_access" ? null : "Interactive permission approvals are unavailable in this provider's Chat transport. Use its CLI permissions control."
+      : mode === "ask_for_approval" ? "Interactive approval prompts are not supported in Chat. Use the CLI for this permission mode."
+      : unavailableReason ?? permissionRequirementsGate(mode, requirements);
+    return { mode, ...permissionCopy[mode],
+      sandbox: params.sandbox as "workspace-write" | "danger-full-access",
+      approvalPolicy: params.approvalPolicy as "on-request" | "never",
+      reviewer: params.approvalsReviewer as "user" | "guardian_subagent",
+      isAvailable: statusReason === null, statusReason };
+  });
+}
+
+function permissionState(mode: PermissionMode): AgentPaneSession["permissionState"] {
+  const params = permissionParamsForMode(mode)!;
+  return { mode, effectiveMode: mode, isInherited: false,
+    sandbox: params.sandbox as "workspace-write" | "danger-full-access",
+    approvalPolicy: params.approvalPolicy as "on-request" | "never",
+    reviewer: params.approvalsReviewer as "user" | "guardian_subagent",
+    statusReason: `${permissionCopy[mode].label} applies to the next turn.` };
+}
+
+interface SpaceAgentRuntimeCapabilities {
+  requirements: CodexConfigRequirements | null;
+  collaborationModes: CodexCollaborationModePreset[];
+}
+
+interface SpaceAgentModelCatalogResult {
+  catalog: CodexAppServerSocketModelOption[];
+  error: string | null;
+}
+
+type SpaceAgentModelCatalogSnapshot = () => Promise<SpaceAgentModelCatalogResult>;
+
+interface SpaceAgentRuntimeCapabilitiesResult {
+  value: SpaceAgentRuntimeCapabilities | null;
+  error: string | null;
+}
+
+interface SpaceAgentOperationContext {
+  providers: ChatProviderAdapter[];
+  providerCatalogs: (selectedModelConfigId?: string | null) => Promise<ChatProviderCatalogResult[]>;
+  providerEnabled: Promise<boolean[]>;
+  runtimeCapabilities: Promise<SpaceAgentRuntimeCapabilitiesResult>;
+}
+
+/**
+ * SPACE_CODEX_GOAL_TOKEN_BUDGET: a token budget for the Goals Space sets on native
+ * Codex threads (10,000-1,000,000,000). Codex itself stops a Goal at its budget
+ * (`budgetLimited`). Unset or invalid sets no budget, as before.
+ */
+export function codexGoalTokenBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
+  const text = env.SPACE_CODEX_GOAL_TOKEN_BUDGET?.trim() ?? "";
+  if (!/^[0-9]{5,10}$/.test(text)) return null;
+  const value = Number(text);
+  return value >= 10_000 && value <= 1_000_000_000 ? value : null;
+}
+
+export function createSpaceAgentAdapter(options: {
+  store: SpaceStore;
+  config: SpaceApiConfig;
+  codexTurnStarter: TurnStarter;
+  codexAgentControl?: SpaceAgentControl | null;
+  openCodeControlResolver?: OpenCodeControlResolver | null;
+  openCodeSessionControlResolver?: OpenCodeSessionControlResolver | null;
+  cliChatProviderAdapters?: ChatProviderAdapter[];
+  isChatProviderEnabled?: (providerId: string) => Promise<boolean>;
+  readGoal?: SpaceAgentGoalReader;
+  validateDot?: (pane: Pane, dotId: string, ownerUserId?: string) => Promise<void>;
+  readPendingRequest?: (session: SpaceAgentSessionRecord) => Promise<{ kind: "APPROVAL" | "INPUT" } | null>;
+  /**
+   * Dot identity and tool gateway eligibility for a native Codex turn (Space Dots Stage 3). Stage 8 adds what the
+   * turn should know from the rest of the Dot's feed, and a callback once the turn was accepted.
+   */
+  dotTurnContext?: (session: SpaceAgentSessionRecord, workspace: string | null) => Promise<{ toolGateway: boolean; developerContext: string;
+    conversationContext?: string | null; onAccepted?: () => Promise<void> } | null>;
+  /** Who a Dot is and how it speaks, for a Dot turn on another runtime (cli:claude, cli:gemini, ...), which gets no Codex context. */
+  dotIdentity?: (session: SpaceAgentSessionRecord) => Promise<string | null>;
+  /** Stage 8: the model and permissions set for a Dot in SpaceApp Settings; null fields keep the session's own. */
+  dotRuntime?: (session: SpaceAgentSessionRecord) => Promise<{ modelConfigId: string | null; permissionMode: PermissionMode | null } | null>;
+  /** Stage 8: the Dot a pane's first session opens with (Settings → Dots); null keeps the first Dot. */
+  defaultDotId?: (pane: Pane) => Promise<string | null>;
+  /** Stage 5: reads a Dot turn's attachments into the Dot's workspace and reports coverage per file. */
+  readDotAttachments?: (input: { dotId: string; artifacts: Artifact[] }) => Promise<Array<{ artifactId: string; coverage: AttachmentCoverage; line: string }>>;
+  /** Stage 7: facts for the Auto policy's shadow decision; without them no decision is recorded. */
+  autoRouteFacts?: () => Promise<AutoRouteFacts>;
+  requirementsCacheTtlMs?: number;
+  modelCatalogCacheMaxAgeMs?: number;
+  cancelWorkflow?: (workflowId: string) => Promise<void>;
+  decisionsService?: DecisionsService;
+  /** Defaults to SPACE_CODEX_GOAL_TOKEN_BUDGET; null sets Goals without a budget. */
+  goalTokenBudget?: number | null;
+}): SpaceAgentAdapter {
+  const goalTokenBudget = options.goalTokenBudget === undefined ? codexGoalTokenBudgetFromEnv() : options.goalTokenBudget;
+  const {
+    store,
+    config,
+    codexTurnStarter,
+    codexAgentControl,
+    openCodeControlResolver,
+    openCodeSessionControlResolver,
+    readGoal,
+    cancelWorkflow
+  } = options;
+  let cachedRuntimeCapabilities: { value: SpaceAgentRuntimeCapabilities; expiresAt: number } | null = null;
+  const catalogCache = createChatProviderCatalogCache({ maxAgeMs: options.modelCatalogCacheMaxAgeMs });
+
+  function createProviderRegistry(): ChatProviderAdapter[] {
+    const codexSnapshot = createModelCatalogSnapshot();
+    const providers: ChatProviderAdapter[] = [
+      codexChatProviderAdapter(codexAgentControl, () =>
+        codexSnapshot().then((result) => ({
+          models: result.catalog.map((model) => ({
+            id: model.id,
+            displayName: model.displayName,
+            description: model.description,
+            isDefault: model.isDefault,
+            defaultReasoningEffort: model.defaultReasoningEffort,
+            supportedReasoningEfforts: model.supportedReasoningEfforts,
+            reasoningOptions: model.reasoningOptions
+          })),
+          current: null,
+          error: result.error
+        }))
+      )
+    ];
+    if (openCodeControlResolver) {
+      providers.push(opencodeChatProviderAdapter(openCodeControlResolver));
+    }
+    if (options.cliChatProviderAdapters?.length) {
+      providers.push(...options.cliChatProviderAdapters);
+    }
+    return providers;
+  }
+
+  function createModelCatalogSnapshot(): SpaceAgentModelCatalogSnapshot {
+    let pending: Promise<SpaceAgentModelCatalogResult> | null = null;
+    return () => {
+      pending ??= codexAgentControl
+        ? codexAgentControl.listModels()
+            .then((catalog) => ({ catalog: catalog.filter((model) => model.id !== "gpt-5.2"), error: null }))
+            .catch(() => ({ catalog: [], error: "Codex model catalog is unavailable." }))
+        : Promise.resolve({ catalog: [], error: "Codex model catalog control is unavailable." });
+      return pending;
+    };
+  }
+
+  async function runtimeCapabilities(): Promise<SpaceAgentRuntimeCapabilities> {
+    if (cachedRuntimeCapabilities && cachedRuntimeCapabilities.expiresAt > Date.now()) {
+      return cachedRuntimeCapabilities.value;
+    }
+    if (!codexAgentControl) {
+      throw new Error("Codex agent runtime control is unavailable.");
+    }
+    const [requirements, collaborationModes] = await Promise.all([
+      codexAgentControl.readConfigRequirements(),
+      codexAgentControl.listCollaborationModes()
+    ]);
+    const value = { requirements, collaborationModes };
+    cachedRuntimeCapabilities = {
+      value,
+      expiresAt: Date.now() + (options.requirementsCacheTtlMs ?? 30_000)
+    };
+    return value;
+  }
+
+  function createOperationContext(): SpaceAgentOperationContext {
+    const runtimeCapabilitiesSnapshot = runtimeCapabilities()
+      .then((value) => ({ value, error: null }))
+      .catch(() => ({ value: null, error: "Codex runtime requirements are unavailable." }));
+    const providers = createProviderRegistry();
+    const providerEnabledChecks = providers.map((provider) =>
+      options.isChatProviderEnabled?.(provider.providerId) ?? Promise.resolve(true)
+    );
+    const providerEnabled = Promise.all(providerEnabledChecks);
+    const uncached = options.modelCatalogCacheMaxAgeMs === 0;
+    const catalogLoads = providers.map((provider, index) => providerEnabledChecks[index]!.then(enabled => {
+      if (!enabled) { catalogCache.forget(provider.providerId); return; }
+      if (!uncached) catalogCache.warm(provider);
+    }));
+    // Keep one immutable snapshot per selected provider within an operation.
+    const snapshots = new Map<string, Promise<ChatProviderCatalogResult[]>>();
+    const uncachedCatalogs = uncached ? Promise.all(providers.map((provider, index) =>
+      providerEnabledChecks[index]!.then(enabled => enabled ? provider.loadCatalog()
+        : { models: [], current: null, error: `${provider.providerName} is disabled.` })
+    )) : null;
+    return {
+      providers,
+      providerEnabled,
+      providerCatalogs: async selectedModelConfigId => {
+        if (uncachedCatalogs) return uncachedCatalogs;
+        const enabled = await providerEnabled;
+        await Promise.all(catalogLoads);
+        const required = providerForConfigId(providers, selectedModelConfigId ?? null)
+          ?? providers.find((_provider, index) => enabled[index]) ?? providers[0];
+        const key = required?.providerId ?? "";
+        let snapshot = snapshots.get(key);
+        if (!snapshot) {
+          snapshot = Promise.all(providers.map((provider, index) => enabled[index]
+            ? catalogCache.read(provider, provider === required)
+            : Promise.resolve({ models: [], current: null, error: `${provider.providerName} is disabled.` })));
+          snapshots.set(key, snapshot);
+        }
+        return snapshot;
+      },
+      runtimeCapabilities: runtimeCapabilitiesSnapshot
+    };
+  }
+
+  async function selection(
+    roomId: string,
+    providers: ChatProviderAdapter[],
+    providerCatalogs: SpaceAgentOperationContext["providerCatalogs"],
+    providerEnabled: Promise<boolean[]>,
+    selectedModelConfigId?: string | null,
+    selectedToolIds?: string[] | null,
+    strictModelSelection = false
+  ) {
+    const [providerResults, enabled, mcpServers, mcpTools, browserSessions] = await Promise.all([
+      providerCatalogs(selectedModelConfigId),
+      providerEnabled,
+      store.listMcpServers(),
+      store.listMcpTools(),
+      store.listActivePaneBrowserSessions(roomId)
+    ]);
+    // Only a recent successful catalog offers models. Background discovery replaces
+    // it with any failure; cold optional providers remain visibly inactive. A selected
+    // failed provider waits for its own fresh catalog and never changes providers.
+    const providerActive = providers.map((_provider, index) => {
+      const result = providerResults[index];
+      return Boolean(enabled[index] && result && !result.error && result.models.length > 0);
+    });
+    const activeProviders = providers.filter((_provider, index) => providerActive[index]);
+    const configuredProvider = providerForConfigId(providers, selectedModelConfigId ?? null);
+    if (strictModelSelection && configuredProvider && !activeProviders.includes(configuredProvider)) {
+      throw new SpaceFeatureDisabledError(
+        "SPACE_AGENT_PROVIDER_DISABLED",
+        `${configuredProvider.providerName} is disabled for Chat.`
+      );
+    }
+    // Keep rejecting legacy CLI selections when no adapter is registered, while
+    // allowing configured CLI chat providers such as DeepSeek to use their
+    // advertised `${runtimeId}-v1|...` model IDs.
+    const removedChatSelection = Boolean(selectedModelConfigId?.startsWith("cli:") && !configuredProvider);
+    if (strictModelSelection && removedChatSelection) {
+      throw new SpaceFeatureDisabledError(
+        "SPACE_AGENT_PROVIDER_UNSUPPORTED",
+        "The selected provider is not supported inside Chat panes."
+      );
+    }
+    const effectiveSelectedModelConfigId = removedChatSelection ? null : selectedModelConfigId;
+    // Keep an explicitly selected provider as the current provider even when its
+    // catalog is unavailable. This makes the pane visibly blocked until that same
+    // provider recovers or the operator explicitly chooses another model.
+    const currentProvider = configuredProvider
+      ?? providers.find((_provider, index) => Boolean(enabled[index]))
+      ?? providers[0]
+      ?? null;
+    const currentProviderIsRemembered = !configuredProvider || currentProvider === configuredProvider;
+    const currentIndex = currentProvider ? providers.findIndex((provider) => provider === currentProvider) : -1;
+    const currentResult = currentIndex >= 0 ? providerResults[currentIndex] : null;
+    const currentCatalog = currentResult?.models ?? [];
+    const modelList = currentProvider ? providerModelOptions(currentProvider, currentCatalog) : [];
+    const modelSelectionConfigId = currentProviderIsRemembered ? effectiveSelectedModelConfigId : null;
+    const modelSelection = selectedModelFromOptions(
+      modelList,
+      currentCatalog,
+      modelSelectionConfigId ?? null,
+      strictModelSelection
+    );
+    // Only the reason of an enabled-but-inactive provider explains a blocked pane.
+    const inactiveProviderReason = providers.flatMap((provider, index) => {
+      if (!enabled[index]) return [];
+      const error = providerResults[index]?.error;
+      return error ? [`${provider.providerName}: ${error}`] : [];
+    })[0] ?? null;
+    const modelProviders: AgentPaneModelProvider[] = providers.flatMap<AgentPaneModelProvider>((provider, index) => {
+      if (!enabled[index]) return [];
+      const result = providerResults[index];
+      if (!providerActive[index]) {
+        if (!result?.error) return [];
+        const inactive: AgentPaneModelProvider = {
+          providerId: provider.providerId,
+          providerName: provider.providerName,
+          configIdPrefix: provider.configIdPrefix,
+          isCurrent: provider.providerId === currentProvider?.providerId,
+          isInactive: true,
+          statusReason: result.error,
+          models: []
+        };
+        return [inactive];
+      }
+      return [{
+        providerId: provider.providerId,
+        providerName: provider.providerName,
+        configIdPrefix: provider.configIdPrefix,
+        isCurrent: provider.providerId === currentProvider?.providerId,
+        isInactive: false,
+        statusReason: result?.error ?? null,
+        models: result?.models ?? []
+      }];
+    });
+    const tools = [
+      ...memoryToolOptions,
+      ...clipboardToolOptions,
+      ...chatToolOptions,
+      ...taskToolOptions,
+      ...skillToolOptions,
+      ...toolOptionsFromStore(mcpServers, mcpTools),
+      ...browserToolOptionsFromSessions(config, browserSessions)
+    ];
+    const forceToolIds = tools.filter((tool) => tool.isForceOn).map((tool) => tool.id);
+    const defaultToolIds = tools.filter((tool) => tool.enabled).map((tool) => tool.id);
+    const availableToolIds = new Set(tools.filter((tool) => tool.isAvailable).map((tool) => tool.id));
+    const requestedToolIds = (selectedToolIds == null ? defaultToolIds : selectedToolIds).filter((toolId) => availableToolIds.has(toolId));
+    const selectedTools = Array.from(new Set([...requestedToolIds, ...forceToolIds]));
+    return {
+      modelCatalog: currentCatalog,
+      modelList,
+      selectedModel: modelSelection.selectedModel,
+      modelProviders,
+      // False only when there is no resolved model for the remembered provider. Write
+      // paths use this to preserve the persisted model while its provider is inactive.
+      selectionIsRemembered: currentProviderIsRemembered,
+      modelCatalogGate: modelList.length
+        ? null
+        : currentResult?.error
+          ?? (currentProvider
+            ? `${currentProvider.providerName} did not advertise a selectable model.`
+            : inactiveProviderReason
+              ? `No Chat provider is available. ${inactiveProviderReason}`
+              : "No Chat provider is enabled."),
+      modelSelectionGate: modelSelection.modelSelectionGate,
+      tools,
+      selectedTools,
+      browserSessions
+    };
+  }
+
+  /**
+   * A selection is "remembered" when Chat served the provider the session selected. When
+   * it served another provider because the selected one failed, the write paths must not
+   * persist it — otherwise a transient failure would silently change the operator's model.
+   */
+  function isRememberedSelection(
+    select: Awaited<ReturnType<typeof selection>>,
+    session: Pick<SpaceAgentSessionRecord, "selectedModelConfigId">
+  ): boolean {
+    if (!select.selectionIsRemembered) return false;
+    return session.selectedModelConfigId == null || select.selectedModel !== null;
+  }
+
+  async function selectionForExistingSession(
+    session: SpaceAgentSessionRecord,
+    input: SpaceAgentCreateInput,
+    operation: SpaceAgentOperationContext
+  ) {
+    return selection(
+      input.pane.roomId,
+      operation.providers,
+      operation.providerCatalogs,
+      operation.providerEnabled,
+      input.selectedModelConfigId === undefined ? session.selectedModelConfigId : input.selectedModelConfigId,
+      input.selectedToolIds === undefined ? session.selectedToolIds : input.selectedToolIds,
+      input.selectedModelConfigId !== undefined
+    );
+  }
+
+  const sessionMutations = new Map<string, Promise<SpaceAgentSessionRecord>>();
+
+  function sessionRefreshStatus(session: SpaceAgentSessionRecord, gate: string | null): Partial<Pick<SpaceAgentSessionRecord, "status">> {
+    // The worker can accept or finish a turn while catalog discovery is pending.
+    // Let the store retain its locked READY/RUNNING value, rather than replaying
+    // an earlier snapshot over that transition.
+    if (gate) return { status: "BLOCKED" };
+    return session.status === "READY" || session.status === "RUNNING" ? {} : { status: "READY" };
+  }
+  async function ensureSession(input: SpaceAgentCreateInput, operation: SpaceAgentOperationContext): Promise<SpaceAgentSessionRecord> {
+    const previous = sessionMutations.get(input.pane.id);
+    const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(async () => applyDotRuntime(await ensureSessionSerialized(input, operation), input, operation));
+    sessionMutations.set(input.pane.id, pending);
+    try { return await pending; }
+    finally { if (sessionMutations.get(input.pane.id) === pending) sessionMutations.delete(input.pane.id); }
+  }
+
+  async function ensureSessionSerialized(
+    input: SpaceAgentCreateInput,
+    operation: SpaceAgentOperationContext
+  ): Promise<SpaceAgentSessionRecord> {
+    const runtimeGate = closedRuntimeGate(config);
+    if (input.dotId) {
+      if (!options.validateDot) throw new SpaceFeatureDisabledError("DOTS_UNAVAILABLE", "Dot ownership validation is unavailable.");
+      await options.validateDot(input.pane, input.dotId, input.ownerUserId);
+    }
+    const currentActive = await store.getActiveSpaceAgentSession(input.pane.id);
+    if (currentActive?.dotId && options.validateDot) await options.validateDot(input.pane, currentActive.dotId, input.ownerUserId);
+    const retargeting = Boolean(currentActive && (input.sessionId === null
+      || (input.sessionId && input.sessionId !== currentActive.sessionId)
+      || (input.dotId && input.dotId !== currentActive.dotId)
+      || (input.threadId !== undefined && input.threadId !== currentActive.threadId)));
+    if (retargeting && currentActive) {
+      const run = await store.getLatestSpaceAgentRun(currentActive.sessionId);
+      const request = await options.readPendingRequest?.(currentActive);
+      const goal = currentActive.threadId && readGoal ? await readGoal(currentActive.threadId) : null;
+      if (currentActive.status === "RUNNING" || run?.status === "QUEUED" || run?.status === "RUNNING" || request || goal?.status === "active") {
+        throw new SpaceConflictError("Finish or stop the current action before switching Dots.");
+      }
+    }
+    if (input.threadId && (input.threadId !== currentActive?.threadId || (input.dotId && input.dotId !== currentActive?.dotId))) {
+      const history = await store.listSpaceAgentHistory(input.pane.roomId);
+      let matched = false;
+      for (const item of history) {
+        if (!item.sessionId) continue;
+        const candidate = await store.getSpaceAgentSession(item.sessionId);
+        if (candidate?.threadId === input.threadId && candidate.roomId === input.pane.roomId
+          && (input.dotId ? candidate.dotId === input.dotId : candidate.dotId === currentActive?.dotId)) matched = true;
+      }
+      // A first session may carry its own new thread; subsequent thread actions
+      // must resolve to a persisted session for this Dot and room.
+      if (!matched && (input.dotId || currentActive)) throw new SpaceConflictError("This conversation does not belong to the selected Dot and room.");
+    }
+    const forceNewSession = input.sessionId === null;
+    if (input.sessionId) {
+      const existing = await store.getSpaceAgentSession(input.sessionId);
+      if (!existing || existing.roomId !== input.pane.roomId || (input.dotId && existing.dotId !== input.dotId)) {
+        throw new SpaceFeatureDisabledError("SPACE_AGENT_SESSION_UNAUTHORIZED", "Space agent session is not available in this room.");
+      }
+      if (existing.dotId && options.validateDot) await options.validateDot(input.pane, existing.dotId, input.ownerUserId);
+      if (existing.sessionId !== currentActive?.sessionId || existing.paneId !== input.pane.id) {
+        const run = await store.getLatestSpaceAgentRun(existing.sessionId);
+        const request = await options.readPendingRequest?.(existing);
+        const goal = existing.threadId && readGoal ? await readGoal(existing.threadId) : null;
+        if (existing.status === "RUNNING" || run?.status === "RUNNING" || run?.status === "QUEUED" || request || goal?.status === "active") {
+          throw new SpaceConflictError("Finish or stop the current action before switching Dots.");
+        }
+      }
+      const select = await selectionForExistingSession(existing, input, operation);
+      const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
+      return store.updateSpaceAgentSession(existing.sessionId, {
+        paneId: input.pane.id,
+        roomId: input.pane.roomId,
+        isActive: true,
+        ...sessionRefreshStatus(existing, gate),
+        title: input.title ?? existing.title,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+        // A failover read must not overwrite the remembered provider/model.
+        ...(isRememberedSelection(select, existing) ? selectedSessionFields(select, existing) : {}),
+        permissionMode: existing.permissionMode ?? "full_access",
+        lastSyncedAt: nowIso()
+      });
+    }
+
+    const active = forceNewSession || (input.dotId && currentActive?.dotId !== input.dotId) ? null : currentActive;
+    if (active) {
+      const select = await selectionForExistingSession(active, input, operation);
+      const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
+      return store.updateSpaceAgentSession(active.sessionId, {
+        ...sessionRefreshStatus(active, gate),
+        title: input.title ?? active.title,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+        // A failover read must not overwrite the remembered provider/model.
+        ...(isRememberedSelection(select, active) ? selectedSessionFields(select, active) : {}),
+        permissionMode: active.permissionMode ?? "full_access",
+        lastSyncedAt: nowIso()
+      });
+    }
+
+    // A pane was closed or its session deactivated: reuse that session instead of
+    // starting a new one, so the model/provider/reasoning selection the operator made
+    // in this pane is remembered when it is opened again.
+    const remembered = forceNewSession ? null : await store.getLatestSpaceAgentSessionForPane(input.pane.id);
+    if (remembered && (!input.dotId || remembered.dotId === input.dotId) && remembered.roomId === input.pane.roomId && (input.selectedModelConfigId === undefined || input.selectedModelConfigId === null)) {
+      const reactivated = await store.updateSpaceAgentSession(remembered.sessionId, {
+        isActive: true,
+        paneId: input.pane.id,
+        title: input.title ?? remembered.title,
+        lastSyncedAt: nowIso()
+      });
+      const select = await selectionForExistingSession(reactivated, input, operation);
+      const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
+      return store.updateSpaceAgentSession(reactivated.sessionId, {
+        ...sessionRefreshStatus(reactivated, gate),
+        title: input.title ?? reactivated.title,
+        ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+        // A failover read must not overwrite the remembered provider/model.
+        ...(isRememberedSelection(select, reactivated) ? selectedSessionFields(select, reactivated) : {}),
+        permissionMode: reactivated.permissionMode ?? "full_access",
+        lastSyncedAt: nowIso()
+      });
+    }
+
+    const select = await selection(
+      input.pane.roomId,
+      operation.providers,
+      operation.providerCatalogs,
+      operation.providerEnabled,
+      input.selectedModelConfigId,
+      input.selectedToolIds,
+      input.selectedModelConfigId !== undefined
+    );
+    const gate = runtimeGate ?? select.modelCatalogGate ?? select.modelSelectionGate;
+    const status = gate ? "BLOCKED" : "READY";
+    // The default Dot from Settings applies to a pane's first conversation only; later ones keep the pane's choice.
+    const firstForPane = !input.dotId && !await store.getLatestSpaceAgentSessionForPane(input.pane.id);
+    const dotId = input.dotId ?? (firstForPane ? await options.defaultDotId?.(input.pane).catch(() => null) ?? null : null);
+    if (dotId && !input.dotId && options.validateDot) await options.validateDot(input.pane, dotId, input.ownerUserId);
+    const created = await store.createSpaceAgentSession({
+      ...(dotId ? { dotId } : {}),
+      paneId: input.pane.id,
+      roomId: input.pane.roomId,
+      status,
+      title: input.title ?? input.pane.title,
+      threadId: input.threadId ?? null,
+      ...selectedSessionFields(select),
+      permissionMode: "full_access",
+      isActive: true,
+      lastSyncedAt: nowIso()
+    });
+    if (isRememberedSelection(select, created)) return created;
+    // The session was created while its provider was failing (failover). Persist the
+    // provider/model/effort the operator actually chose, defaulting to the preferred
+    // (first) provider when this pane never had one.
+    const preferred = select.modelProviders.find((provider) => provider.isCurrent)
+      ?? select.modelProviders.find((provider) => !provider.isInactive && provider.models.length > 0)
+      ?? null;
+    const preferredModel = preferred?.models.find((model) => model.isDefault) ?? preferred?.models[0] ?? null;
+    return store.updateSpaceAgentSession(created.sessionId, {
+      ...selectedSessionFields(
+        preferred && preferredModel
+          ? {
+              ...select,
+              selectedModel: {
+                id: `${preferred.configIdPrefix}${preferredModel.id}|${preferredModel.defaultReasoningEffort}`,
+                displayName: preferredModel.displayName,
+                providerId: preferred.providerId,
+                providerName: preferred.providerName,
+                model: preferredModel.id,
+                reasoningKey: preferredModel.defaultReasoningEffort,
+                reasoningLabel: reasoningLabel(preferredModel.defaultReasoningEffort),
+                isDefault: true
+              }
+            }
+          : select
+      ),
+      lastSyncedAt: nowIso()
+    });
+  }
+
+  function sessionGateState(
+    session: SpaceAgentSessionRecord,    select: Awaited<ReturnType<typeof selection>>,
+    runtimeResult: SpaceAgentRuntimeCapabilitiesResult
+  ) {
+    const availablePermissionOptions = permissionOptions(runtimeResult.value?.requirements ?? null, runtimeResult.error, session.selectedProviderId ?? null);
+    const selectedPermissionOption = availablePermissionOptions.find(option => option.mode === (session.permissionMode ?? "full_access")) ?? null;
+    const permissionGate = selectedPermissionOption && !selectedPermissionOption.isAvailable
+      ? selectedPermissionOption.statusReason ?? "The selected permissions are unavailable."
+      : null;
+    const collaborationGate =
+      session.collaborationMode === "plan" &&
+      !session.selectedProviderId &&
+      !runtimeResult.value?.collaborationModes.some((mode) => mode.mode === "plan")
+        ? runtimeResult.error ?? "Plan mode is unavailable in this Codex runtime."
+        : null;
+    const nonSelectionGate =
+      closedRuntimeGate(config) ?? select.modelCatalogGate ?? permissionGate ?? collaborationGate;
+    return {
+      availablePermissionOptions,
+      nonSelectionGate,
+      gate: nonSelectionGate ?? select.modelSelectionGate
+    };
+  }
+
+  async function buildSession(
+    session: SpaceAgentSessionRecord,
+    operation: SpaceAgentOperationContext
+  ): Promise<AgentPaneSession> {
+    const runtimeResult = await operation.runtimeCapabilities;
+    const currentSession = (await store.getSpaceAgentSession(session.sessionId)) ?? session;
+    const select = await selection(
+      currentSession.roomId,
+      operation.providers,
+      operation.providerCatalogs,
+      operation.providerEnabled,
+      currentSession.selectedModelConfigId,
+      currentSession.selectedToolIds
+    );
+    const gates = sessionGateState(currentSession, select, runtimeResult);
+    const statusSession =
+      gates.gate && currentSession.status !== "BLOCKED"
+        ? await store.updateSpaceAgentSession(currentSession.sessionId, {
+            status: "BLOCKED",
+            lastSyncedAt: nowIso()
+          })
+        : currentSession;
+    const projectedStatus: SpaceAgentSessionRecord["status"] = gates.gate
+      ? "BLOCKED"
+      : statusSession.status === "RUNNING"
+        ? "RUNNING"
+        : "READY";
+    const projectedSession = {
+      ...statusSession,
+      status: projectedStatus,
+      permissionMode: statusSession.permissionMode ?? "full_access" as const,
+      collaborationMode: statusSession.collaborationMode ?? "default",
+      // Preserve the persisted model while its provider is inactive. A model change
+      // can only come from an explicit selection update.
+      ...selectedSessionFields(select, statusSession)
+    };
+    const [messages, latestRun, nativeHistory, legacyHistory, goal] = await Promise.all([
+      store.listSpaceAgentMessages(projectedSession.sessionId, 500),
+      store.getLatestSpaceAgentRun(projectedSession.sessionId),
+      store.listSpaceAgentHistory(projectedSession.roomId),
+      store.listAgentPaneHistory(projectedSession.roomId),
+      projectedSession.threadId && readGoal
+        ? readGoal(projectedSession.threadId).catch(() => null)
+        : Promise.resolve(null)
+    ]);
+    const ledger = latestRun ? latestRun.ledger ?? transitionAgentRunLedger({ status: latestRun.status, at: null,
+      runtimeModelAtStart: latestRun.runtimeModelAtStart }) : null;
+    const statusReason = gates.gate ?? (latestRun?.errorMessage ? latestRun.errorMessage : "Space agent session is ready.");
+    const runStatus = runStatusFromRecord(projectedSession, latestRun);
+    const pendingRequest = await options.readPendingRequest?.(projectedSession) ?? null;
+    const canSend =
+      !pendingRequest && !gates.gate && runStatus !== "RUNNING" && runStatus !== "QUEUED" && runStatus !== "INTERRUPTING";
+    const history = projectedSession.dotId
+      ? (await Promise.all(nativeHistory.map(async item => {
+          const record = item.sessionId ? await store.getSpaceAgentSession(item.sessionId) : null;
+          return record && record.dotId === projectedSession.dotId && record.roomId === projectedSession.roomId ? item : null;
+        }))).filter((item): item is AgentPaneHistoryItem => item !== null)
+      : historyFromNativeAndLegacy(nativeHistory, legacyHistory);
+    return agentPaneSessionSchema.parse({
+      runtimeState: closedRuntimeGate(config) ? "UNAVAILABLE"
+        : gates.nonSelectionGate || (!projectedSession.selectedProviderId && !runtimeResult.value) ? "UNKNOWN" : "AVAILABLE",
+      pendingRequest,
+      dotId: projectedSession.dotId ?? null,
+      latestRun: latestRun ? {
+        dotId: latestRun.dotId ?? null, runId: latestRun.runId, status: latestRun.status,
+        createdAt: latestRun.createdAt, startedAt: latestRun.startedAt ?? null,
+        completedAt: latestRun.completedAt,
+        execution: latestRun.execution ?? null, runtimeModelAtStart: latestRun.runtimeModelAtStart ?? null,
+        threadId: latestRun.codexThreadId, turnId: latestRun.codexTurnId,
+        // Old clients validate these literals. New clients read the versioned ledger.
+        ledger, costStatus: "UNKNOWN", evaluationStatus: "NOT_EVALUATED"
+      } : null,
+      binding: bindingFromSession(projectedSession),
+      threadId: projectedSession.threadId,
+      messages: messages.map(mapMessage),
+      runStatus,
+      statusReason,
+      modelOptions: select.modelList,
+      modelCatalog: select.modelCatalog,
+      modelProviders: select.modelProviders,
+      selectedModelConfigId: projectedSession.selectedModelConfigId,
+      toolOptions: select.tools,
+      selectedToolIds: select.selectedTools,
+      permissionMode: projectedSession.permissionMode,
+      collaborationMode: projectedSession.collaborationMode,
+      permissionState: permissionState(projectedSession.permissionMode),
+      permissionOptions: gates.availablePermissionOptions,
+      goal: goal ? { ...goal, dotId: projectedSession.dotId ?? null } : null,
+      history,
+      capabilities: {
+        canSend,
+        canInterrupt:
+          !gates.gate && Boolean(latestRun && (latestRun.status === "QUEUED" || latestRun.status === "RUNNING")),
+        // The picker stays usable while the selected provider is inactive: the user
+        // must be able to switch to one of the working providers.
+        canSelectModel: !closedRuntimeGate(config) && select.modelProviders.length > 0,
+        canSelectTools: !gates.gate,
+        supportsTools: true
+      }
+    });
+  }
+
+  /**
+   * Space Dots Stage 8: a Dot session runs with the model and permissions set in SpaceApp Settings. The model
+   * changes only between turns, and only to a model Chat can serve now; otherwise the session keeps its own.
+   */
+  async function applyDotRuntime(session: SpaceAgentSessionRecord, input: SpaceAgentCreateInput,
+    operation: SpaceAgentOperationContext): Promise<SpaceAgentSessionRecord> {
+    if (!session.dotId || !options.dotRuntime) return session;
+    const runtime = await options.dotRuntime(session).catch(() => null);
+    if (!runtime) return session;
+    let update: Partial<ReturnType<typeof selectedSessionFields> & { permissionMode: PermissionMode }> = {};
+    let providerId = session.selectedProviderId === codexChatProviderId ? null : session.selectedProviderId ?? null;
+    if (runtime.modelConfigId && runtime.modelConfigId !== session.selectedModelConfigId && session.status !== "RUNNING") {
+      const run = await store.getLatestSpaceAgentRun(session.sessionId);
+      if (run?.status !== "QUEUED" && run?.status !== "RUNNING") {
+        const select = await selection(input.pane.roomId, operation.providers, operation.providerCatalogs, operation.providerEnabled,
+          runtime.modelConfigId, session.selectedToolIds);
+        if (select.selectedModel?.id === runtime.modelConfigId) {
+          update = selectedSessionFields(select, session);
+          providerId = select.selectedModel.providerId ?? null;
+        }
+      }
+    }
+    if (runtime.permissionMode && runtime.permissionMode !== (session.permissionMode ?? "full_access")) {
+      const capabilities = await operation.runtimeCapabilities;
+      const option = permissionOptions(capabilities.value?.requirements ?? null, capabilities.error, providerId)
+        .find((candidate) => candidate.mode === runtime.permissionMode);
+      if (option?.isAvailable) update.permissionMode = runtime.permissionMode;
+    }
+    if (!Object.keys(update).length) return session;
+    return store.updateSpaceAgentSession(session.sessionId, { ...update, lastSyncedAt: nowIso() });
+  }
+
+  async function loadSession(input: SpaceAgentAdapterInput): Promise<AgentPaneSession> {
+    const operation = createOperationContext();
+    const session = await ensureSession({ pane: input.pane }, operation);
+    return buildSession(session, operation);
+  }
+
+  async function createOrRestoreSession(input: SpaceAgentCreateInput): Promise<AgentPaneSession> {
+    const operation = createOperationContext();
+    const session = await ensureSession(input, operation);
+    return buildSession(session, operation);
+  }
+
+  async function replaySubmission(run: SpaceAgentRunRecord, pane: Pane): Promise<SpaceAgentMutationResult> {
+    const saved = await store.getSpaceAgentSession(run.sessionId);
+    if (!saved || saved.paneId !== pane.id || saved.roomId !== pane.roomId || run.roomId !== pane.roomId) {
+      throw new SpaceConflictError("The accepted task is no longer available in this Chat pane.");
+    }
+    const session = await buildSession(saved, createOperationContext());
+    return { binding: session.binding, session,
+      submission: { sessionId: run.sessionId, responseMessageId: run.responseMessageId, runId: run.runId } };
+  }
+
+  async function prepareRetry(input: SpaceAgentAdapterInput) {
+    const session = await store.getActiveSpaceAgentSession(input.pane.id);
+    const run = session ? await store.getLatestSpaceAgentRun(session.sessionId) : null;
+    if (!session || !run || (run.status !== "FAILED" && run.status !== "INTERRUPTED")) {
+      throw new SpaceConflictError("Only a failed or interrupted task can be prepared for another attempt.");
+    }
+    const receipts = run.execution?.attachments;
+    if (!receipts) throw new SpaceConflictError("The original file list was not recorded. Review the conversation and compose a new request.");
+    const messages = await store.listSpaceAgentMessages(session.sessionId);
+    const prompt = messages.find(message => message.messageId === run.promptMessageId && message.role === "user");
+    if (!prompt) throw new SpaceConflictError("The original request is unavailable. Review the conversation before starting a new attempt.");
+    const artifacts = await resolveChatAttachments(store, input.pane, receipts.map(receipt => receipt.artifactId));
+    if (artifacts.some((artifact, index) => artifact.sha256 !== receipts[index]?.sha256)) {
+      throw new SpaceConflictError("An original attachment changed. Review the files before starting a new attempt.");
+    }
+    return { content: prompt.content, artifacts, ...(run.execution?.acceptance ? { acceptance: run.execution.acceptance } : {}) };
+  }
+
+  async function sendMessage(input: SpaceAgentSendInput): Promise<SpaceAgentMutationResult> {
+    const fingerprint = input.clientRequestId ? chatSubmissionFingerprint(input) : undefined;
+    if (input.clientRequestId) {
+      const existing = await store.getSpaceAgentSubmission(input.pane.id, input.clientRequestId);
+      if (existing) {
+        if (existing.requestFingerprint !== fingerprint) throw new SpaceConflictError("This submission key was already used for a different request.");
+        // A lost acknowledgement is not permission to repeat runtime work, even
+        // if the original file expired or the original run has already failed.
+        return replaySubmission(existing, input.pane);
+      }
+    }
+    if (input.sessionId || input.dotId) {
+      const active = await store.getActiveSpaceAgentSession(input.pane.id);
+      if (!active || (input.sessionId && active.sessionId !== input.sessionId) || (input.dotId && active.dotId !== input.dotId)) {
+        throw new SpaceConflictError("The selected Dot session changed. Reconnect before sending.");
+      }
+    }
+    // Reject the whole submission before session/transcript writes if any ID is unavailable.
+    const attachedArtifacts = await resolveChatAttachments(store, input.pane, input.artifactIds);
+    const operation = createOperationContext();
+    let session = await ensureSession({
+      pane: input.pane,
+      dotId: input.dotId,
+      ownerUserId: input.operatorUserId,
+      selectedModelConfigId: input.selectedModelConfigId,
+      selectedToolIds: input.selectedToolIds
+    }, operation);
+    if (await options.readPendingRequest?.(session)) throw new SpaceConflictError("Finish the pending request before sending.");
+    const sendSelection = await selection(
+      input.pane.roomId,
+      operation.providers,
+      operation.providerCatalogs,
+      operation.providerEnabled,
+      session.selectedModelConfigId,
+      session.selectedToolIds
+    );
+    const sendGates = sessionGateState(session, sendSelection, await operation.runtimeCapabilities);
+    if (sendGates.gate) {
+      session = await store.updateSpaceAgentSession(session.sessionId, { status: "BLOCKED", lastSyncedAt: nowIso() });
+      if (input.clientRequestId) throw new SpaceConflictError(sendGates.gate);
+      const blocked = await buildSession(session, operation);
+      return { binding: blocked.binding, session: blocked };
+    }
+
+    const userMessageId = makeSpaceId("agent_msg");
+    const assistantMessageId = makeSpaceId("agent_msg");
+
+    let providerSessionId: string | undefined;
+    if (session.selectedProviderId === "opencode") {
+      if (!openCodeSessionControlResolver) {
+        throw new SpaceFeatureDisabledError(
+          "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
+          "OpenCode runtime control is unavailable for this Space agent session."
+        );
+      }
+      providerSessionId = (await openCodeSessionControlResolver(session.sessionId)).spaceSessionId;
+    }
+
+    let effectiveTools = sendSelection.selectedTools;
+    if (options.decisionsService) {
+      try {
+        const surface = await options.decisionsService.evaluateToolSurface(input.content, effectiveTools);
+        effectiveTools = surface.filteredTools;
+      } catch {
+        // Fallback to unpruned tools
+      }
+    }
+
+    let targetDir = input.pane.cwd && input.pane.cwd.startsWith("/") && input.pane.cwd !== "/etc" ? input.pane.cwd : null;
+    if (!targetDir) {
+      try {
+        const room = await store.getRoom(input.pane.roomId);
+        if (room?.projectPath && room.projectPath.startsWith("/")) {
+          targetDir = room.projectPath;
+        }
+      } catch {
+        // Best effort
+      }
+    }
+
+    const nativeCodex = !session.selectedProviderId || session.selectedProviderId === codexChatProviderId;
+    const dotTurn = session.dotId && input.operatorUserId && nativeCodex && options.dotTurnContext
+      ? await options.dotTurnContext(session, targetDir).catch(() => null) : null;
+    const dotIdentity = session.dotId && !nativeCodex && options.dotIdentity ? await options.dotIdentity(session).catch(() => null) : null;
+    // Proactive work is read-only, which only the native gateway enforces: refuse it anywhere else.
+    const proactive = Boolean(session.dotId) && isDotProactiveRequest(input.clientRequestId);
+    // Stage 8: only the user's own messages (typed, voice, Slack/Teams) get the Dot's other conversations and its
+    // notices; Goal steps, reminders, approvals, delegation reports and evaluations do not, nor do they consume notices.
+    const userTurn = ["USER", "VOICE", "CHANNEL"].includes(dotFeedOrigin(input.clientRequestId));
+    if (proactive && !dotTurn?.toolGateway) {
+      throw new SpaceConflictError("Proactive work runs only in a Codex conversation with Space tools.");
+    }
+    // Gateway threads receive tools natively and their identity as developer
+    // instructions, so the visible user message carries only the request.
+    // Stage 5: Dot turns read their attachments first and record what was actually read.
+    const reads = dotTurn?.toolGateway && session.dotId && attachedArtifacts.length && options.readDotAttachments
+      ? await options.readDotAttachments({ dotId: session.dotId, artifacts: attachedArtifacts }).catch(() => []) : [];
+    const readLines = new Map(reads.map((read) => [read.artifactId, read.line]));
+    const coverageById = new Map(reads.map((read) => [read.artifactId, read.coverage]));
+    const turnInput: DummyTurnInput = {
+      roomId: input.pane.roomId,
+      paneId: input.pane.id,
+      prompt: promptWithAgentContexts(input.content, dotTurn?.toolGateway ? [userTurn ? dotTurn.conversationContext ?? null : null,
+        artifactContext(attachedArtifacts, readLines, Boolean(input.content.trim()))] : [
+        dotIdentity,
+        workspaceContext(targetDir),
+        clipboardToolContext(effectiveTools),
+        taskToolContext(effectiveTools),
+        sharedChatToolContext(effectiveTools),
+        artifactContext(attachedArtifacts, new Map(), Boolean(input.content.trim()))
+      ]),
+      ...(session.dotId ? { dotId: session.dotId } : {}),
+      ...(dotTurn?.toolGateway ? { toolGateway: "space-dot-tools-v1" as const, developerContext: dotTurn.developerContext } : {}),
+      ...(proactive ? { dotWorkMode: "PROACTIVE" as const } : {}),
+      artifactIds: attachedArtifacts.filter(isImageTurnArtifact).map((artifact) => artifact.id),
+      providerId: session.selectedProviderId ?? null,
+      providerSessionId,
+      modelId: session.selectedModelId === "codex-app-server-default" ? null : session.selectedModelId,
+      reasoningEffort: toReasoningEffort(session.selectedReasoningKey),
+      agentSessionId: session.sessionId,
+      agentUserMessageId: userMessageId,
+      agentAssistantMessageId: assistantMessageId,
+      agentThreadId: session.threadId,
+      operatorUserId: input.operatorUserId,
+      // Gateway turns call Space tools only through the gateway, which applies approvals;
+      // fenced action blocks in the reply never run for them (and proactive work is always a gateway turn).
+      selectedToolIds: dotTurn?.toolGateway ? [] : effectiveTools,
+      permissionMode: session.permissionMode ?? "full_access",
+      collaborationMode: session.collaborationMode ?? "default",
+      traceId: input.traceId
+    };
+    const planned = codexTurnStarter.plan(turnInput);
+    const autoRoute = options.autoRouteFacts ? await options.autoRouteFacts().then((facts) => autoRouteShadowFor({
+      content: input.content, artifacts: attachedArtifacts,
+      extractedChars: new Map(reads.flatMap((read) => read.coverage.chars === null ? [] : [[read.artifactId, read.coverage.chars] as const])),
+      toolGateway: Boolean(dotTurn?.toolGateway), clientRequestId: input.clientRequestId, declaredChecks: Boolean(input.acceptance),
+      catalog: sendSelection.modelCatalog, facts, actualModel: turnInput.modelId ?? null, actualReasoning: turnInput.reasoningEffort ?? null
+    })).catch(() => null) : null;
+    const accepted = await store.createSpaceAgentSubmission({ content: input.content, run: {
+      clientRequestId: input.clientRequestId,
+      requestFingerprint: fingerprint,
+      execution: {
+        ...(input.acceptance ? { acceptance: input.acceptance } : {}),
+        traceId: input.traceId,
+        modelConfigId: session.selectedModelConfigId,
+        providerId: session.selectedProviderId ?? null,
+        providerName: session.selectedProviderName,
+        requestedModel: turnInput.modelId ?? null,
+        requestedReasoning: turnInput.reasoningEffort ?? null,
+        attachments: chatAttachmentReceipts(attachedArtifacts).map((receipt) => {
+          const coverage = coverageById.get(receipt.artifactId);
+          return coverage ? { ...receipt, coverage } : receipt;
+        }),
+        ...(autoRoute ? { autoRoute } : {})
+      },
+      sessionId: session.sessionId,
+      paneId: input.pane.id,
+      roomId: input.pane.roomId,
+      workflowId: planned.workflowId,
+      temporalRunId: planned.runId,
+      status: "QUEUED",
+      promptMessageId: userMessageId,
+      responseMessageId: assistantMessageId,
+      codexThreadId: session.threadId,
+      codexTurnId: null
+    } }, input.traceId);
+    if (!accepted.created) return replaySubmission(accepted.run, input.pane);
+    const run = accepted.run;
+    session = { ...session, status: "RUNNING" };
+
+    try {
+      const started = await codexTurnStarter.start(turnInput);
+      if (started.runId !== run.temporalRunId) {
+        await store.updateSpaceAgentRun(run.runId, { temporalRunId: started.runId, status: "QUEUED" });
+      }
+    } catch (error) {
+      const message =
+        error instanceof TurnStarterDisabledError
+          ? error.message
+          : "Space agent runtime unavailable. Temporal or Codex App Server could not start the run.";
+      await store.updateSpaceAgentRun(run.runId, {
+        status: "FAILED",
+        errorCode: "SPACE_AGENT_RUNTIME_UNAVAILABLE",
+        errorMessage: message
+      });
+      await store.updateSpaceAgentMessage(assistantMessageId, { status: "FAILED", content: message });
+      session = await store.updateSpaceAgentSession(session.sessionId, { status: "BLOCKED", lastSyncedAt: nowIso() });
+      throw new SpaceFeatureDisabledError("SPACE_AGENT_RUNTIME_UNAVAILABLE", message);
+    }
+
+    // The notices in this turn's context count as given to the model once the turn has started.
+    if (dotTurn?.toolGateway && userTurn && dotTurn.conversationContext) await dotTurn.onAccepted?.().catch(() => undefined);
+    const nextSession = await buildSession(session, operation);
+    return { binding: nextSession.binding, session: nextSession,
+      submission: { sessionId: session.sessionId, responseMessageId: assistantMessageId, runId: run.runId } };
+  }
+
+  async function interrupt(input: SpaceAgentInterruptInput): Promise<SpaceAgentMutationResult> {
+    const operation = createOperationContext();
+    const session = await ensureSession({ pane: input.pane }, operation);
+    const run = await store.getLatestSpaceAgentRun(session.sessionId);
+    if (run && (run.status === "QUEUED" || run.status === "RUNNING")) {
+      if (cancelWorkflow) {
+        await cancelWorkflow(run.workflowId).catch(() => null);
+      } else {
+        try {
+          const connection = await Connection.connect({ address: config.temporalAddress, connectTimeout: "5s" });
+          try {
+            const client = new Client({ connection, namespace: config.temporalNamespace });
+            await client.workflow.getHandle(run.workflowId).cancel();
+          } finally {
+            await connection.close();
+          }
+        } catch {
+          // The DB/UI state still records the operator interrupt. Temporal cancellation is best-effort for stdio activities.
+        }
+      }
+      await store.updateSpaceAgentRun(run.runId, {
+        status: "INTERRUPTED",
+        errorCode: "INTERRUPTED",
+        errorMessage: input.reason ?? "Operator interrupted the Space agent run."
+      });
+      await store.updateSpaceAgentMessage(run.responseMessageId, {
+        status: "INTERRUPTED",
+        content: input.reason ?? "Interrupted by operator."
+      });
+    }
+    const ready = await store.updateSpaceAgentSession(session.sessionId, { status: "READY", lastSyncedAt: nowIso() });
+    const nextSession = await buildSession(ready, operation);
+    return { binding: nextSession.binding, session: nextSession };
+  }
+
+  async function updateSettings(input: SpaceAgentSettingsInput): Promise<SpaceAgentMutationResult> {
+    const operation = createOperationContext();
+    const current = await store.getActiveSpaceAgentSession(input.pane.id);
+    const select = await selection(input.pane.roomId, operation.providers, operation.providerCatalogs,
+      operation.providerEnabled, input.selectedModelConfigId === undefined
+        ? current?.selectedModelConfigId : input.selectedModelConfigId,
+      input.selectedToolIds, input.selectedModelConfigId !== undefined);
+    const providerId = select.selectedModel?.providerId ?? null;
+    if (input.permissionMode !== undefined) {
+      const mode = input.permissionMode ?? "full_access";
+      const runtimeResult = await operation.runtimeCapabilities;
+      const option = permissionOptions(runtimeResult.value?.requirements ?? null, runtimeResult.error, providerId).find(option => option.mode === mode)!;
+      if (!option.isAvailable) throw new SpaceFeatureDisabledError("CODEX_PERMISSION_MODE_DISALLOWED", option.statusReason!);
+    }
+    if (input.collaborationMode === "plan" && !providerId) {
+      const runtimeResult = await operation.runtimeCapabilities;
+      if (!runtimeResult.value) {
+        throw new SpaceFeatureDisabledError(
+          "CODEX_COLLABORATION_MODES_UNAVAILABLE",
+          "Plan mode requires current Codex collaboration capabilities."
+        );
+      }
+      if (!runtimeResult.value.collaborationModes.some((mode) => mode.mode === "plan")) {
+        throw new SpaceFeatureDisabledError("CODEX_PLAN_MODE_UNAVAILABLE", "Plan mode is unavailable in this Codex runtime.");
+      }
+    }
+    let session = await ensureSession({
+      pane: input.pane,
+      title: input.title,
+      selectedModelConfigId: input.selectedModelConfigId,
+      selectedToolIds: input.selectedToolIds
+    }, operation);
+    if (input.collaborationMode !== undefined || input.permissionMode !== undefined) {
+      session = await store.updateSpaceAgentSession(session.sessionId, {
+        ...(input.collaborationMode !== undefined ? { collaborationMode: input.collaborationMode } : {}),
+        ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode ?? "full_access" } : {}),
+        lastSyncedAt: nowIso()
+      });
+    }
+    const nextSession = await buildSession(session, operation);
+    return { binding: nextSession.binding, session: nextSession };
+  }
+
+  async function setGoal(input: SpaceAgentGoalInput): Promise<SpaceAgentMutationResult> {
+    if (!codexAgentControl) {
+      throw new SpaceFeatureDisabledError("CODEX_GOAL_CONTROL_UNAVAILABLE", "Codex goal control is unavailable.");
+    }
+    const operation = createOperationContext();
+    let session = await ensureSession({ pane: input.pane }, operation);
+    const result = await codexAgentControl.setGoal({
+      threadId: session.threadId,
+      objective: input.objective,
+      ...(goalTokenBudget !== null ? { tokenBudget: goalTokenBudget } : {})
+    });
+    if (result.threadId !== session.threadId) {
+      session = await store.updateSpaceAgentSession(session.sessionId, {
+        threadId: result.threadId,
+        lastSyncedAt: nowIso()
+      });
+    }
+    const nextSession = await buildSession(session, operation);
+    return { binding: nextSession.binding, session: nextSession };
+  }
+
+  async function clearGoal(input: SpaceAgentAdapterInput): Promise<SpaceAgentMutationResult> {
+    const operation = createOperationContext();
+    const session = await ensureSession({ pane: input.pane }, operation);
+    if (session.threadId) {
+      if (!codexAgentControl) {
+        throw new SpaceFeatureDisabledError("CODEX_GOAL_CONTROL_UNAVAILABLE", "Codex goal control is unavailable.");
+      }
+      await codexAgentControl.clearGoal(session.threadId);
+    }
+    const nextSession = await buildSession(session, operation);
+    return { binding: nextSession.binding, session: nextSession };
+  }
+
+  const paneOperations = new Map<string, Promise<unknown>>();
+  async function serializePane<T>(paneId: string, action: () => Promise<T>): Promise<T> {
+    const previous = paneOperations.get(paneId);
+    const next = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(action);
+    paneOperations.set(paneId, next);
+    try { return await next; }
+    finally { if (paneOperations.get(paneId) === next) paneOperations.delete(paneId); }
+  }
+  return {
+    async listRoomChatTypes() {
+      const types: Array<{ id: string; title: string; mode: "CHAT"; selectedModelConfigId: string }> = [];
+      for (const provider of createProviderRegistry()) {
+        if (options.isChatProviderEnabled && !await options.isChatProviderEnabled(provider.providerId)) continue;
+        const result = await provider.loadCatalog();
+        if (result.error) continue;
+        const models = providerModelOptions(provider, result.models);
+        const selected = models.find((model) => model.isDefault);
+        if (selected) types.push({ id: provider.providerId, title: provider.providerName, mode: "CHAT", selectedModelConfigId: selected.id });
+      }
+      return types;
+    },
+    async listModelChoices() {
+      const providers: DotModelChoices["providers"] = [];
+      for (const provider of createProviderRegistry()) {
+        if (options.isChatProviderEnabled && !await options.isChatProviderEnabled(provider.providerId)) continue;
+        const result = await provider.loadCatalog();
+        providers.push({ providerId: provider.providerId, providerName: provider.providerName, statusReason: result.error ?? null,
+          options: result.error ? [] : providerModelOptions(provider, result.models) });
+      }
+      return { providers };
+    },
+    loadSession,
+    createOrRestoreSession: input => serializePane(input.pane.id, () => createOrRestoreSession(input)),
+    sendMessage: input => serializePane(input.pane.id, () => sendMessage(input)),
+    prepareRetry,
+    interrupt,
+    updateSettings,
+    setGoal,
+    clearGoal
+  };
+}

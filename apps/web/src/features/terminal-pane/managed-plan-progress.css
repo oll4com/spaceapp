@@ -1,0 +1,18 @@
+.managed-plan-progress { padding: 0.75rem; overflow-y: auto; min-height: 0; font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; }
+.managed-plan-progress p { margin: 0.4rem 0; }
+.managed-plan-status { font-weight: 600; }
+.managed-plan-reason, .managed-plan-native-note, .managed-plan-native-identity { color: var(--room-text-muted, #a5ada8); }
+.managed-plan-controls, .managed-plan-stage-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.5rem 0; }
+.managed-plan-stage { padding: 0.75rem 0; border-top: 1px solid var(--room-border, #3c4541); }
+.managed-plan-stage-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; }
+.managed-plan-stage-heading span { color: var(--room-text-muted, #a5ada8); flex-shrink: 0; }
+.managed-plan-stage-editor { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+.managed-plan-stage-editor label { display: grid; gap: 0.25rem; }
+.managed-plan-stage-editor select { width: 100%; min-width: 0; min-height: 2.25rem; color: inherit; background: var(--room-surface, #181b1d); border: 1px solid var(--room-border, #3c4541); border-radius: 0.375rem; padding: 0.25rem 0.5rem; font: inherit; }
+.managed-plan-progress button { min-height: 2rem; }
+.managed-plan-progress button:focus-visible, .managed-plan-progress select:focus-visible, .managed-plan-progress summary:focus-visible { outline: 2px solid var(--room-accent, #9ef0af); outline-offset: 2px; }
+.managed-plan-progress button:disabled { opacity: 0.5; cursor: not-allowed; }
+.managed-plan-attempts summary, .managed-plan-checkpoint summary { cursor: pointer; }
+.managed-plan-attempt { border-left: 2px solid var(--room-border, #3c4541); padding-left: 0.625rem; margin: 0.5rem 0; }
+
+@media (pointer: coarse) { .managed-plan-progress button, .managed-plan-stage-editor select { min-height: 2.75rem; } }

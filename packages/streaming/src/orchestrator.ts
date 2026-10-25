@@ -1,0 +1,362 @@
+import { lstat, readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
+import type { StreamingBotMcpExecuteResponse } from "@space/contracts";
+import { buildBotSystemPrompt, type BotPromptContext } from "./prompts.js";
+import { asksForOperatorPrivateData, containsSensitiveDisclosure, PRIVATE_DATA_REFUSAL } from "./privacy.js";
+import type { StreamingBotRoute } from "./model-selection.js";
+
+export interface StreamingBotLlmConfig {
+  enabled: boolean;
+  baseUrl: string | null;
+  keyFile: string | null;
+  keyName: string | null;
+  model: string | null;
+  timeoutMs: number;
+  maxRounds: number;
+}
+
+export interface BotTurnMessage {
+  id: string;
+  author: string;
+  message: string;
+  platform: "YOUTUBE" | "TWITCH";
+}
+
+export interface BotTurnTools {
+  sendReply(input: { platform: "YOUTUBE" | "TWITCH"; message: string; replyToId?: string }): Promise<{ ok: boolean; error?: string }>;
+  memorySave(input: { title: string; body: string; tags?: string[] }): Promise<{ ok: boolean; error?: string }>;
+  memorySearch(input: { query: string }): Promise<{ ok: boolean; entries: string[]; error?: string }>;
+}
+
+export interface BotTurnResult {
+  replies: Array<{ platform: "YOUTUBE" | "TWITCH"; message: string; replyToId?: string }>;
+  memorySaves: Array<{ title: string; body: string; tags?: string[] }>;
+  skipped: boolean;
+  model: string | null;
+  rounds: number;
+  errorCode: string | null;
+}
+
+export interface RunBotTurnOptions {
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+  modelId?: string;
+  /** Where and how to call the model; without it, OpenAI chat/completions at SPACE_STREAMING_BOT_BASE_URL. */
+  route?: StreamingBotRoute | null;
+}
+
+function boundedInt(raw: string | undefined, fallback: number, maximum: number): number {
+  const parsed = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
+}
+
+export function getStreamingBotLlmConfig(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env
+): StreamingBotLlmConfig {
+  return {
+    enabled: env.SPACE_STREAMING_BOT_ENABLED === "true",
+    baseUrl: env.SPACE_STREAMING_BOT_BASE_URL?.trim() || null,
+    keyFile: env.SPACE_STREAMING_BOT_KEY_FILE?.trim() || null,
+    keyName: env.SPACE_STREAMING_BOT_KEY_NAME?.trim() || null,
+    model: env.SPACE_STREAMING_BOT_MODEL?.trim() || null,
+    timeoutMs: boundedInt(env.SPACE_STREAMING_BOT_TIMEOUT_MS, 20_000, 60_000),
+    maxRounds: boundedInt(env.SPACE_STREAMING_BOT_MAX_ROUNDS, 3, 6)
+  };
+}
+
+interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("LLM returned an invalid response.");
+  }
+  return value as Record<string, unknown>;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function endpoint(baseUrl: string, path: string): string {
+  const base = new URL(baseUrl);
+  if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("unsupported base URL");
+  const normalized = base.href.endsWith("/") ? base : new URL(`${base.href}/`);
+  return new URL(path, normalized).toString();
+}
+
+async function boundedFetch(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function toolDefinitions(): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "function",
+      function: {
+        name: "space_send_reply",
+        description: "Post a chat reply to the viewer question. Call at most once per turn.",
+        parameters: {
+          type: "object",
+          properties: {
+            platform: { type: "string", enum: ["YOUTUBE", "TWITCH"] },
+            message: { type: "string", description: "The reply text in English, 1-3 sentences." },
+            replyToId: { type: "string", description: "Id of the viewer message being answered." }
+          },
+          required: ["platform", "message", "replyToId"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "space_bot_memory_save",
+        description: "Propose a public fact learned from a viewer question for operator review before future use.",
+        parameters: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Short summary of the fact (max 160 chars)." },
+            body: { type: "string", description: "The fact itself (max 500 chars)." },
+            tags: { type: "array", items: { type: "string" } }
+          },
+          required: ["title", "body"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "space_bot_memory_search",
+        description: "Search the bot's separate memory for facts from earlier questions.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" }
+          },
+          required: ["query"]
+        }
+      }
+    }
+  ];
+}
+
+function parseToolCalls(message: Record<string, unknown>): ToolCall[] {
+  const calls = asArray(message.tool_calls).flatMap((value) => {
+    const call = asRecord(value);
+    const fn = asRecord(call.function ?? {});
+    const id = stringValue(call.id);
+    const name = stringValue(fn.name);
+    const rawArguments = stringValue(fn.arguments);
+    if (!id || !name) return [];
+    let parsedArguments: Record<string, unknown> = {};
+    if (rawArguments) {
+      try {
+        const candidate = JSON.parse(rawArguments);
+        parsedArguments = asRecord(candidate);
+      } catch {
+        parsedArguments = {};
+      }
+    }
+    return [{ id, name, arguments: parsedArguments }];
+  });
+  const allowed = new Set(["space_send_reply", "space_bot_memory_save", "space_bot_memory_search"]);
+  return calls.filter((call) => allowed.has(call.name)).slice(0, 3);
+}
+
+/** The same tools in Anthropic's shape. */
+function anthropicToolDefinitions(): Array<Record<string, unknown>> {
+  return toolDefinitions().map((tool) => {
+    const fn = asRecord(tool.function);
+    return { name: fn.name, description: fn.description, input_schema: fn.parameters };
+  });
+}
+
+function parseAnthropicToolCalls(payload: Record<string, unknown>): ToolCall[] {
+  const allowed = new Set(["space_send_reply", "space_bot_memory_save", "space_bot_memory_search"]);
+  return asArray(payload.content).flatMap((value) => {
+    const block = asRecord(value);
+    const id = stringValue(block.id);
+    const name = stringValue(block.name);
+    if (block.type !== "tool_use" || !id || !name || !allowed.has(name)) return [];
+    const input = typeof block.input === "object" && block.input !== null && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
+    return [{ id, name, arguments: input }];
+  }).slice(0, 3);
+}
+
+function skippedResult(model: string | null): BotTurnResult {
+  return { replies: [], memorySaves: [], skipped: true, model, rounds: 0, errorCode: null };
+}
+
+export async function runBotTurn(
+  input: { context: BotPromptContext; messages: BotTurnMessage[]; tools: BotTurnTools },
+  options: RunBotTurnOptions = {}
+): Promise<BotTurnResult> {
+  const config = getStreamingBotLlmConfig(options.env ?? process.env);
+  if (options.modelId) config.model = options.modelId;
+  if (!config.enabled) return { ...skippedResult(null), errorCode: "BOT_GATE_DISABLED" };
+  if (!config.baseUrl || !config.keyFile || !config.keyName || !config.model) {
+    return { ...skippedResult(null), errorCode: "MISSING_CONFIG" };
+  }
+  if (!config.keyName.startsWith("space-streaming-") || !isAbsolute(config.keyFile)) {
+    return { ...skippedResult(null), errorCode: "DEDICATED_KEY_REQUIRED" };
+  }
+
+  let credential: string;
+  try {
+    const metadata = await lstat(config.keyFile);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4096 || (metadata.mode & 0o007) !== 0) {
+      return { ...skippedResult(null), errorCode: "KEY_FILE_NOT_PROTECTED" };
+    }
+    credential = (await readFile(config.keyFile, "utf8")).trim();
+    if (!credential) return { ...skippedResult(null), errorCode: "KEY_FILE_EMPTY" };
+  } catch {
+    return { ...skippedResult(null), errorCode: "KEY_FILE_UNREADABLE" };
+  }
+
+  const privateQuestion = input.messages.find(message => asksForOperatorPrivateData(message.message));
+  if (privateQuestion) {
+    const sent = await input.tools.sendReply({ platform: privateQuestion.platform, message: PRIVATE_DATA_REFUSAL, replyToId: privateQuestion.id });
+    return { replies: sent.ok ? [{ platform: privateQuestion.platform, message: PRIVATE_DATA_REFUSAL, replyToId: privateQuestion.id }] : [], memorySaves: [], skipped: !sent.ok, model: null, rounds: 0, errorCode: sent.ok ? null : (sent.error ?? "PRIVATE_REPLY_FAILED") };
+  }
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const route = options.route ?? { protocol: "openai" as const, url: endpoint(config.baseUrl, "chat/completions") };
+  const anthropic = route.protocol === "anthropic";
+  const headers: Record<string, string> = anthropic
+    ? { "x-api-key": credential, "anthropic-version": "2023-06-01", "Content-Type": "application/json" }
+    : { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" };
+  const systemPrompt = buildBotSystemPrompt(input.context);
+  // space_send_reply must name the platform and the message id it answers, so the model has to see both.
+  const exchange = input.messages.map((message) => `[id=${message.id} platform=${message.platform}] ${message.author}: ${message.message}`).join("\n");
+  const userText = exchange
+    ? `The following are the latest viewer messages in live chat. Answer questions about the stream.\n\n${exchange}`
+    : "There are no new viewer messages this cycle.";
+  // Anthropic takes the system prompt beside the messages; OpenAI takes it as the first message.
+  const conversation: Array<Record<string, unknown>> = anthropic
+    ? [{ role: "user", content: userText }]
+    : [{ role: "system", content: systemPrompt }, { role: "user", content: userText }];
+
+  let replies: BotTurnResult["replies"] = [];
+  const memorySaves: BotTurnResult["memorySaves"] = [];
+  let rounds = 0;
+  let errorCode: string | null = null;
+
+  try {
+    for (; rounds < config.maxRounds; rounds++) {
+      const response = await boundedFetch(fetchImpl, route.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(anthropic
+          ? { model: config.model, system: systemPrompt, messages: conversation, tools: anthropicToolDefinitions(), max_tokens: 800 }
+          : { model: config.model, messages: conversation, tools: toolDefinitions(), tool_choice: "auto", max_completion_tokens: 2000 })
+      }, config.timeoutMs);
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return { ...skippedResult(config.model), errorCode: `LLM_HTTP_${response.status}` };
+      }
+      let payload: Record<string, unknown>;
+      try {
+        payload = asRecord(await response.json());
+      } catch {
+        return { ...skippedResult(config.model), errorCode: "LLM_RESPONSE_INVALID" };
+      }
+      const toolCalls = anthropic
+        ? parseAnthropicToolCalls(payload)
+        : parseToolCalls(asRecord(asRecord(asArray(payload.choices)[0] ?? {}).message ?? {}));
+      // A plain-text answer without a tool call is never sent to chat.
+      if (!toolCalls.length) break;
+      conversation.push(anthropic
+        ? { role: "assistant", content: asArray(payload.content) }
+        : { role: "assistant", content: null, tool_calls: toolCalls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(call.arguments) }
+        })) });
+      const toolResults: Array<Record<string, unknown>> = [];
+      for (const call of toolCalls) {
+        const result = await executeTool(call, input.tools, replies, memorySaves, input.messages);
+        if (anthropic) toolResults.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+        else conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+      }
+      if (anthropic) conversation.push({ role: "user", content: toolResults });
+      if (toolCalls.some((call) => call.name === "space_send_reply")) break;
+    }
+  } catch {
+    errorCode = "LLM_UNAVAILABLE";
+  }
+
+  return { replies, memorySaves, skipped: replies.length === 0, model: config.model, rounds, errorCode };
+}
+
+async function executeTool(
+  call: ToolCall,
+  tools: BotTurnTools,
+  replies: BotTurnResult["replies"],
+  memorySaves: BotTurnResult["memorySaves"],
+  messages: BotTurnMessage[]
+): Promise<Record<string, unknown>> {
+  const args = call.arguments;
+  switch (call.name) {
+    case "space_send_reply": {
+      const platform = args.platform;
+      if (platform !== "YOUTUBE" && platform !== "TWITCH") return { ok: false, error: "INVALID_PLATFORM" };
+      if (!messages.some(input => input.platform === platform)) return { ok: false, error: "PLATFORM_MISMATCH" };
+      const message = typeof args.message === "string" ? args.message.trim() : "";
+      if (!message) return { ok: false, error: "EMPTY_MESSAGE" };
+      if (containsSensitiveDisclosure(message)) return { ok: false, error: "SENSITIVE_OUTPUT_BLOCKED" };
+      if (replies.length >= 1) return { ok: false, error: "REPLY_LIMIT" };
+      const replyToId = typeof args.replyToId === "string" && args.replyToId ? args.replyToId : undefined;
+      if (!replyToId || !messages.some(input => input.platform === platform && input.id === replyToId)) return { ok: false, error: "UNKNOWN_REPLY_TARGET" };
+      const result = await tools.sendReply({ platform, message, replyToId });
+      if (result.ok) replies.push({ platform, message, replyToId });
+      return result;
+    }
+    case "space_bot_memory_save": {
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      const body = typeof args.body === "string" ? args.body.trim() : "";
+      if (!title || !body) return { ok: false, error: "MEMORY_FIELDS_REQUIRED" };
+      if (containsSensitiveDisclosure(`${title} ${body}`)) return { ok: false, error: "SENSITIVE_MEMORY_BLOCKED" };
+      const tags = Array.isArray(args.tags) ? args.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 12) : [];
+      const result = await tools.memorySave({ title: title.slice(0, 160), body: body.slice(0, 500), tags });
+      if (result.ok) memorySaves.push({ title: title.slice(0, 160), body: body.slice(0, 500), tags });
+      return result;
+    }
+    case "space_bot_memory_search": {
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      if (!query) return { ok: false, error: "QUERY_REQUIRED" };
+      return tools.memorySearch({ query: query.slice(0, 200) });
+    }
+    default:
+      return { ok: false, error: "UNKNOWN_TOOL" };
+  }
+}
+
+export function summarizeMcpExecuteResponse(response: StreamingBotMcpExecuteResponse): string {
+  return JSON.stringify({
+    status: response.status,
+    code: response.code,
+    message: response.message,
+    serverId: response.serverId,
+    toolName: response.toolName,
+    observation: response.observation
+  });
+}

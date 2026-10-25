@@ -1,0 +1,1018 @@
+import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { Readable, Writable } from "node:stream";
+import test from "node:test";
+import {
+  DOCKER_REPOSITORY_KEY_FINGERPRINTS,
+  downloadFile,
+  ensureDockerAvailable,
+  openPgpFingerprint,
+  openPgpPrimaryFingerprints,
+  dockerDnfRepository,
+  DOCKER_DNF_KEY_PATH,
+  prepareDockerCliPath,
+  windowsResumeScript,
+  windowsPowerShellArgs
+} from "../src/prerequisites.mjs";
+
+// Docker's real public repository keys; a test "download" writes one to the requested path.
+const keyDownload = (fixture) => async (_url, destination) =>
+  writeFile(destination, await readFile(new URL(`./fixtures/${fixture}`, import.meta.url)));
+
+function capture() {
+  let value = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      value += chunk.toString();
+      callback();
+    }
+  });
+  return { stream, value: () => value };
+}
+
+test("Windows PowerShell operations use fixed scripts and reject arbitrary commands", () => {
+  const operations = [
+    "install-wsl",
+    "windows-restart-pending",
+    "register-spaceapp-resume",
+    "verify-docker-installer",
+    "install-docker-desktop",
+    "start-docker-desktop",
+    "open-spaceapp-browser"
+  ];
+
+  for (const operation of operations) {
+    const args = windowsPowerShellArgs(operation);
+    assert.deepEqual(args.slice(0, 4), [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command"
+    ]);
+    assert.equal(typeof args[4], "string");
+  }
+  assert.throws(
+    () => windowsPowerShellArgs("Write-Output untrusted"),
+    /untrusted PowerShell operation/
+  );
+});
+
+test("Windows browser launch bypasses Edge first-run only for a validated local URL", () => {
+  const browserScript = windowsPowerShellArgs("open-spaceapp-browser")[4];
+
+  assert.match(browserScript, /SPACEAPP_OPEN_URL/);
+  assert.match(browserScript, /--no-first-run/);
+  assert.match(browserScript, /127\.0\.0\.1/);
+  assert.match(browserScript, /0\.0\.0\.0/);
+  assert.match(browserScript, /explorer\.exe/);
+});
+
+test("Windows restart probe is a valid non-admin PowerShell statement", () => {
+  const restartScript = windowsPowerShellArgs("windows-restart-pending")[4];
+
+  assert.match(restartScript, /;\s*if \(\$pending\)/);
+  assert.doesNotMatch(restartScript, /\)\s+if \(\$pending\)/);
+});
+
+test("Windows resume uses the same pinned launcher entrypoint and validated install options", () => {
+  const script = windowsResumeScript({
+    executable: "C:\\Program Files\\nodejs\\node.exe",
+    entrypoint: "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp.mjs",
+    requestedProfile: "light",
+    requestedAccessMode: "isolated",
+    noOpen: true
+  });
+
+  assert.match(
+    script,
+    /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\Admin\\AppData\\Local\\npm-cache\\spaceapp\.mjs" install --profile light --access isolated --no-open/
+  );
+  assert.match(script, /SPACEAPP_RESUME_EXIT/);
+  assert.match(script, /del \/f \/q "%~f0"/);
+  assert.doesNotMatch(script, /\bnpx(?:\.cmd)?\b/i);
+  assert.throws(
+    () => windowsResumeScript({
+      executable: "C:\\Program Files\\nodejs\\node.exe",
+      entrypoint: "C:\\spaceapp.mjs",
+      requestedProfile: "unsafe & whoami",
+      noOpen: false
+    }),
+    /profile/i
+  );
+  assert.throws(
+    () => windowsResumeScript({
+      executable: "C:\\Program Files\\nodejs\\node.exe",
+      entrypoint: "C:\\spaceapp.mjs",
+      requestedAccessMode: "unsafe & whoami"
+    }),
+    /access/i
+  );
+});
+
+test("Docker Desktop CLI discovery is prepared on every supported desktop platform", async () => {
+  const windowsEnv = {
+    LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+    ProgramFiles: "C:\\Program Files",
+    Path: "C:\\Windows\\System32"
+  };
+  const windowsDirectory = "C:\\Program Files\\Docker\\Docker\\resources\\bin";
+  assert.equal(await prepareDockerCliPath({
+    platform: "win32",
+    env: windowsEnv,
+    pathExists: async (path) => path === windowsDirectory
+  }), windowsDirectory);
+  assert.equal(windowsEnv.Path, `${windowsDirectory};C:\\Windows\\System32`);
+
+  const macEnv = { PATH: "/usr/bin:/bin" };
+  const macDirectory = "/Applications/Docker.app/Contents/Resources/bin";
+  assert.equal(await prepareDockerCliPath({
+    platform: "darwin",
+    env: macEnv,
+    pathExists: async (path) => path === macDirectory
+  }), macDirectory);
+  assert.equal(macEnv.PATH, `${macDirectory}:/usr/bin:/bin`);
+
+  const linuxEnv = { PATH: "/usr/bin:/bin" };
+  assert.equal(await prepareDockerCliPath({
+    platform: "linux",
+    env: linuxEnv,
+    pathExists: async () => true
+  }), null);
+  assert.equal(linuxEnv.PATH, "/usr/bin:/bin");
+});
+
+test("Windows with ready WSL2 installs signed Docker Desktop and continues in one command", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const downloads = [];
+  const launches = [];
+  let installed = false;
+  let launched = false;
+  let wslChecks = 0;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from(["y\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") {
+        return installed && launched ? 0 : 127;
+      }
+      if (spec.command === "wsl.exe") {
+        wslChecks += 1;
+        return 0;
+      }
+      if (spec.command === "winget.exe") {
+        return 127;
+      }
+      if (spec.command === "powershell.exe") {
+        if (spec.operation === "windows-wsl-ready") {
+          return 0;
+        }
+        if (
+          spec.operation === "verify-docker-installer" &&
+          spec.env?.SPACEAPP_DOCKER_INSTALLER_PATH?.endsWith("Docker Desktop Installer.exe")
+        ) {
+          return 0;
+        }
+        if (
+          spec.operation === "install-docker-desktop" &&
+          spec.env?.SPACEAPP_DOCKER_INSTALLER_PATH?.endsWith("Docker Desktop Installer.exe")
+        ) {
+          installed = true;
+          return 0;
+        }
+        return 1;
+      }
+      return 0;
+    },
+    download: async (url, target) => {
+      downloads.push({ url, target });
+    },
+    launch: async (spec) => {
+      launches.push(spec);
+      launched = true;
+      return 0;
+    },
+    pathExists: async (path) => installed && path.endsWith("Docker Desktop.exe"),
+    sleep: async () => {}
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  assert.equal(wslChecks, 1);
+  assert.equal(downloads.length, 1);
+  assert.match(downloads[0].url, /^https:\/\/desktop\.docker\.com\/win\/main\/amd64\//);
+  assert.ok(calls.some((spec) =>
+    spec.command === "powershell.exe" &&
+    spec.operation === "verify-docker-installer" &&
+    spec.args === undefined
+  ));
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "powershell.exe" &&
+      spec.operation === "install-wsl"
+    ),
+    false
+  );
+  assert.ok(calls.some((spec) =>
+    spec.command === "powershell.exe" &&
+    spec.operation === "install-docker-desktop" &&
+    spec.args === undefined &&
+    spec.env?.SPACEAPP_DOCKER_INSTALLER_PATH.endsWith("Docker Desktop Installer.exe")
+  ));
+  assert.deepEqual(launches, [{
+    operation: "start-docker-desktop",
+    env: {
+      SPACEAPP_DOCKER_DESKTOP_PATH: "C:\\Users\\Admin\\AppData\\Local\\Programs\\DockerDesktop\\Docker Desktop.exe"
+    }
+  }]);
+  assert.match(stdout.value(), /Docker Desktop is required/i);
+  assert.match(stdout.value(), /Docker Desktop is ready/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows schedules the same install to resume after the WSL2 restart", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const scheduled = [];
+  let wslChecks = 0;
+  let downloaded = false;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from(["y\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") return 127;
+      if (spec.command === "wsl.exe") {
+        wslChecks += 1;
+        return wslChecks === 1 ? 1 : 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "install-wsl") {
+        return 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 0;
+      }
+      if (spec.command === "shutdown.exe") return 0;
+      return 127;
+    },
+    download: async () => {
+      downloaded = true;
+    },
+    launch: async () => 0,
+    pathExists: async () => false,
+    sleep: async () => {},
+    installArgs: {
+      root: "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp",
+      requestedProfile: "light",
+      requestedAccessMode: "isolated",
+      noOpen: true
+    },
+    scheduleResume: async (options) => {
+      scheduled.push(options);
+      return 0;
+    },
+    confirmRestart: async () => true
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: true });
+  assert.equal(downloaded, false);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].root, "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp");
+  assert.equal(scheduled[0].requestedProfile, "light");
+  assert.equal(scheduled[0].requestedAccessMode, "isolated");
+  assert.equal(scheduled[0].noOpen, true);
+  assert.ok(calls.some((spec) =>
+    spec.command === "powershell.exe" &&
+    spec.operation === "windows-restart-pending"
+  ));
+  assert.ok(calls.some((spec) =>
+    spec.command === "shutdown.exe" &&
+    spec.args.join(" ") ===
+      '/r /t 15 /c SpaceApp will continue automatically after you sign in.'
+  ));
+  assert.match(stdout.value(), /resume automatically after you sign in/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows prefers hash-verified winget Docker Desktop installation over the direct downloader", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  let downloaded = false;
+  let installed = false;
+  let launched = false;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from(["y\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") {
+        return installed && launched ? 0 : 127;
+      }
+      if (spec.command === "wsl.exe") {
+        return 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-wsl-ready") {
+        return 0;
+      }
+      if (spec.command === "winget.exe" && spec.args[0] === "--version") {
+        return 0;
+      }
+      if (spec.command === "winget.exe" && spec.args[0] === "install") {
+        installed = true;
+        return 0;
+      }
+      return 1;
+    },
+    download: async () => {
+      downloaded = true;
+    },
+    launch: async () => {
+      launched = true;
+      return 0;
+    },
+    pathExists: async (path) => installed && path.endsWith("Docker Desktop.exe"),
+    sleep: async () => {}
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  assert.equal(downloaded, false);
+  assert.ok(calls.some((spec) =>
+    spec.command === "winget.exe" &&
+    spec.args.join(" ") === [
+      "install",
+      "--id", "Docker.DockerDesktop",
+      "--exact",
+      "--source", "winget",
+      "--silent",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity"
+    ].join(" ")
+  ));
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "powershell.exe" &&
+      spec.operation === "verify-docker-installer"
+    ),
+    false
+  );
+  assert.match(stdout.value(), /Windows Package Manager/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows explains first-run Docker onboarding and continues when the user finishes it", async () => {
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  let dockerInfoChecks = 0;
+  let sleepCalls = 0;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from([]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker" && spec.args[0] === "info") {
+        dockerInfoChecks += 1;
+        return dockerInfoChecks >= 302 ? 0 : 127;
+      }
+      if (spec.command === "docker") return 0;
+      if (spec.command === "wsl.exe") return 0;
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 1;
+      }
+      return 0;
+    },
+    launch: async () => 0,
+    pathExists: async (path) =>
+      path.endsWith("Docker Desktop.exe") ||
+      path.endsWith("resources\\bin"),
+    sleep: async () => {
+      sleepCalls += 1;
+    }
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  assert.equal(sleepCalls, 300);
+  assert.ok(calls.some((spec) =>
+    spec.command === "docker" &&
+    spec.args.join(" ") === "desktop start --detach"
+  ));
+  assert.match(stdout.value(), /Welcome to Docker/i);
+  assert.match(stdout.value(), /Skip/i);
+  assert.match(stdout.value(), /continue automatically/i);
+  assert.match(stdout.value(), /Docker Desktop is ready/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("Windows bounds the first-run Docker onboarding wait at ten minutes", async () => {
+  const stderr = capture();
+  let sleepCalls = 0;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: {
+      LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local",
+      Path: "C:\\Windows\\System32"
+    },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      if (spec.command === "wsl.exe") return 0;
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 1;
+      }
+      return 127;
+    },
+    launch: async () => 0,
+    pathExists: async (path) =>
+      path.endsWith("Docker Desktop.exe") ||
+      path.endsWith("resources\\bin"),
+    sleep: async () => {
+      sleepCalls += 1;
+    }
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.equal(sleepCalls, 300);
+  assert.match(stderr.value(), /first-run setup/i);
+});
+
+test("Windows does not install Docker Desktop when its license is declined", async () => {
+  let downloaded = false;
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: { LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local" },
+    stdin: Readable.from(["n\n"]),
+    stdout: capture().stream,
+    stderr: capture().stream,
+    execute: async (spec) => spec.command === "docker" ? 127 : 0,
+    download: async () => {
+      downloaded = true;
+    },
+    launch: async () => 0,
+    pathExists: async () => false,
+    sleep: async () => {}
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.equal(downloaded, false);
+});
+
+test("Windows with installed WSL and a pending restart schedules resume before Docker", async () => {
+  const calls = [];
+  const stdout = capture();
+  const stderr = capture();
+  const scheduled = [];
+  let downloaded = false;
+  let wslChecks = 0;
+
+  const result = await ensureDockerAvailable({
+    platform: "win32",
+    arch: "x64",
+    env: { LOCALAPPDATA: "C:\\Users\\Admin\\AppData\\Local" },
+    stdin: Readable.from(["y\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") return 127;
+      if (spec.command === "wsl.exe") {
+        wslChecks += 1;
+        return 0;
+      }
+      if (spec.command === "powershell.exe" && spec.operation === "windows-restart-pending") {
+        return 0;
+      }
+      return 0;
+    },
+    download: async () => {
+      downloaded = true;
+    },
+    launch: async () => 0,
+    pathExists: async () => false,
+    sleep: async () => {},
+    installArgs: {
+      root: "C:\\Users\\Admin\\AppData\\Roaming\\SpaceApp",
+      requestedProfile: "light",
+      noOpen: false
+    },
+    scheduleResume: async (options) => {
+      scheduled.push(options);
+      return 0;
+    },
+    confirmRestart: async () => false
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: true });
+  assert.equal(wslChecks, 1);
+  assert.equal(downloaded, false);
+  assert.equal(scheduled.length, 1);
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "powershell.exe" &&
+      spec.operation === "install-wsl"
+    ),
+    false
+  );
+  assert.match(stdout.value(), /Restart Windows when ready/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("macOS Intel and Apple Silicon verify Docker Desktop quietly and use a clear administrator prompt", async () => {
+  for (const [arch, downloadArch] of [["x64", "amd64"], ["arm64", "arm64"]]) {
+    const calls = [];
+    const downloads = [];
+    const stdout = capture();
+    const stderr = capture();
+    let installed = false;
+    let launched = false;
+
+    const result = await ensureDockerAvailable({
+      platform: "darwin",
+      arch,
+      env: { USER: "space-user", PATH: "/usr/bin:/bin" },
+      stdin: Readable.from(["yes\n"]),
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      execute: async (spec, io) => {
+        calls.push({ spec, io });
+        if (spec.command === "docker") return installed && launched ? 0 : 127;
+        if (
+          spec.command === "sudo" &&
+          spec.args.some((argument) => argument.endsWith("/Contents/MacOS/install"))
+        ) {
+          installed = true;
+        }
+        return 0;
+      },
+      download: async (url, target) => {
+        downloads.push({ url, target });
+      },
+      launch: async (spec) => {
+        calls.push({ spec, io: null });
+        launched = true;
+        return 0;
+      },
+      pathExists: async (path) => installed && path === "/Applications/Docker.app",
+      sleep: async () => {}
+    });
+
+    assert.deepEqual(result, { code: 0, reexecuted: false });
+    assert.match(downloads[0].url, new RegExp(`/mac/main/${downloadArch}/`));
+
+    const codesign = calls.find(({ spec }) => spec.command === "codesign");
+    assert.deepEqual(
+      codesign.spec.args,
+      ["--verify", "--deep", "--strict", "/Volumes/Docker/Docker.app"]
+    );
+    assert.equal(codesign.io.stdout, null);
+    assert.equal(codesign.io.stderr, null);
+
+    const gatekeeper = calls.find(({ spec }) => spec.command === "spctl");
+    assert.deepEqual(
+      gatekeeper.spec.args,
+      ["--assess", "--type", "execute", "--verbose=4", "/Volumes/Docker/Docker.app"]
+    );
+    assert.equal(gatekeeper.io.stdout, null);
+    assert.equal(gatekeeper.io.stderr, null);
+
+    const sudo = calls.find(({ spec }) => spec.command === "sudo").spec;
+    assert.equal(sudo.args[0], "-p");
+    assert.match(sudo.args[1], /^SpaceApp.*Mac administrator password.*input hidden/i);
+    assert.ok(sudo.args[2].endsWith("/Contents/MacOS/install"));
+    assert.ok(sudo.args.includes("--accept-license"));
+    assert.ok(sudo.args.includes("--user=space-user"));
+    assert.ok(calls.some(({ spec }) => spec.operation === "open-docker-desktop"));
+
+    assert.match(stdout.value(), /password for your Mac administrator account/i);
+    assert.match(stdout.value(), /not a Docker or SpaceApp password/i);
+    assert.match(stdout.value(), /characters.*not.*displayed/i);
+    assert.match(stdout.value(), /does not read, store, or log/i);
+    assert.match(stdout.value(), /signature and macOS trust verification passed/i);
+    assert.equal(stderr.value(), "");
+  }
+});
+
+test("macOS authorization failure stops before SpaceApp image downloads and names the required account", async () => {
+  const calls = [];
+  const stdout = capture();
+  const stderr = capture();
+
+  const result = await ensureDockerAvailable({
+    platform: "darwin",
+    arch: "x64",
+    env: { USER: "space-user", PATH: "/usr/bin:/bin" },
+    stdin: Readable.from(["yes\n"]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec, io) => {
+      calls.push({ spec, io });
+      if (spec.command === "docker") return 127;
+      if (spec.command === "sudo") return 1;
+      return 0;
+    },
+    download: async () => {},
+    launch: async () => {
+      throw new Error("Docker Desktop must not launch after authorization failure.");
+    },
+    pathExists: async () => false,
+    sleep: async () => {}
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.ok(calls.some(({ spec }) => spec.command === "sudo"));
+  assert.equal(
+    calls.some(({ spec }) => spec.command === "docker" && spec.args.includes("pull")),
+    false
+  );
+  assert.match(stdout.value(), /password for your Mac administrator account/i);
+  assert.match(stderr.value(), /macOS authorization failed/i);
+  assert.match(stderr.value(), /Mac administrator account/i);
+  assert.match(stderr.value(), /not a Docker or SpaceApp password/i);
+  assert.match(stderr.value(), /No SpaceApp images were downloaded/i);
+});
+
+test("Ubuntu installs Docker Engine from Docker's official repository and re-enters the docker group", async () => {
+  const calls = [];
+  let serviceStarted = false;
+
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "spaceuser", PATH: "/usr/bin:/bin" },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: capture().stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") return serviceStarted ? 1 : 127;
+      if (spec.command === "sudo" && spec.args.includes("systemctl")) {
+        serviceStarted = true;
+      }
+      if (spec.command === "sg") return 0;
+      return 0;
+    },
+    download: keyDownload("docker-apt-key.asc"),
+    launch: async () => 0,
+    pathExists: async () => true,
+    sleep: async () => {},
+    osRelease: {
+      ID: "ubuntu",
+      VERSION_CODENAME: "noble"
+    },
+    installArgs: {
+      requestedProfile: "auto",
+      requestedAccessMode: "host-root",
+      noOpen: false
+    }
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: true });
+  assert.ok(calls.some((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") === "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+  ));
+  assert.ok(calls.some((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") === "usermod -aG docker spaceuser"
+  ));
+  assert.ok(calls.some((spec) =>
+    spec.command === "sg" &&
+    spec.args[0] === "docker" &&
+    spec.args[1] === "-c" &&
+    spec.args[2].includes("SPACEAPP_PREREQUISITES_BOOTSTRAPPED=1") &&
+    spec.args[2].includes("'install' '--profile' 'auto' '--access' 'host-root'")
+  ));
+});
+
+test("Linux starts an installed inactive Docker Engine, grants group access, and continues in one command", async () => {
+  const calls = [];
+  const stdout = capture();
+  const stderr = capture();
+
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "spaceuser", PATH: "/usr/bin:/bin" },
+    stdin: Readable.from([]),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker") {
+        return spec.args.includes("info") ? 1 : 0;
+      }
+      return 0;
+    },
+    download: async () => {
+      throw new Error("An installed Docker Engine must not trigger a package download.");
+    },
+    sleep: async () => {},
+    installArgs: {
+      requestedProfile: "light",
+      requestedAccessMode: "isolated",
+      noOpen: true
+    }
+  });
+
+  assert.deepEqual(result, { code: 0, reexecuted: true });
+  const serviceIndex = calls.findIndex((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") === "systemctl enable --now docker"
+  );
+  const groupIndex = calls.findIndex((spec) =>
+    spec.command === "sudo" &&
+    spec.args.join(" ") === "usermod -aG docker spaceuser"
+  );
+  const reentryIndex = calls.findIndex((spec) => spec.command === "sg");
+  assert.ok(serviceIndex >= 0);
+  assert.ok(groupIndex > serviceIndex);
+  assert.ok(reentryIndex > groupIndex);
+  assert.equal(
+    calls.some((spec) =>
+      spec.command === "sudo" &&
+      ["apt-get", "dnf", "pacman"].includes(spec.args[0])
+    ),
+    false
+  );
+  assert.match(stdout.value(), /Membership grants root-level privileges/i);
+  assert.match(stdout.value(), /Continuing SpaceApp installation with the new group membership/i);
+  assert.equal(stderr.value(), "");
+});
+
+test("CachyOS and Arch-family derivatives install Docker through fixed pacman arguments", async () => {
+  for (const release of [
+    { ID: "cachyos", ID_LIKE: "arch" },
+    { ID: "custom-desktop", ID_LIKE: "arch linux" }
+  ]) {
+    const calls = [];
+    let serviceStarted = false;
+
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: capture().stream,
+      execute: async (spec) => {
+        calls.push(spec);
+        if (spec.command === "docker") return serviceStarted ? 0 : 127;
+        if (spec.command === "sudo" && spec.args.includes("systemctl")) {
+          serviceStarted = true;
+        }
+        return 0;
+      },
+      download: async () => {
+        throw new Error("Arch-family installation must not download repository bootstrap files.");
+      },
+      sleep: async () => {},
+      osRelease: release,
+      installArgs: { requestedProfile: "auto", requestedAccessMode: "host-root" }
+    });
+
+    assert.deepEqual(result, { code: 0, reexecuted: false });
+    assert.ok(calls.some((spec) =>
+      spec.command === "sudo" &&
+      spec.args.join(" ") ===
+        "pacman -S --needed --noconfirm docker docker-compose"
+    ));
+    assert.ok(calls.some((spec) =>
+      spec.command === "sudo" &&
+      spec.args.join(" ") === "systemctl enable --now docker"
+    ));
+    assert.equal(calls.some((spec) => spec.command === "sg"), false);
+  }
+});
+
+async function dnfInstall(osRelease) {
+  const calls = [];
+  let serviceStarted = false;
+  const written = {};
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "spaceuser" },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: capture().stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      // The repository file is written to a temporary folder that is removed afterwards: keep what sudo installs.
+      if (spec.command === "sudo" && spec.args[0] === "install") written[spec.args.at(-1)] = await readFile(spec.args.at(-2), "utf8");
+      if (spec.command === "docker") return serviceStarted ? 0 : 127;
+      if (spec.command === "sudo" && spec.args.includes("systemctl")) serviceStarted = true;
+      return 0;
+    },
+    download: keyDownload("docker-rpm-key.asc"),
+    launch: async () => 0,
+    pathExists: async () => true,
+    sleep: async () => {},
+    osRelease,
+    installArgs: { requestedProfile: "auto", noOpen: true }
+  });
+  return { result, calls, written, lines: calls.filter((spec) => spec.command === "sudo").map((spec) => spec.args.join(" ")) };
+}
+
+test("Fedora installs Docker from a locally written repository that trusts only the checked key (1.1.7 review)", async () => {
+  const { result, calls, written, lines } = await dnfInstall({ ID: "fedora", VERSION_ID: "42" });
+  assert.deepEqual(result, { code: 0, reexecuted: false });
+  // Docker's own .repo file is never downloaded: its gpgkey= URLs would let dnf -y import another key.
+  assert.equal(lines.some((line) => line.includes("config-manager") || line.includes("docker-ce.repo") && line.startsWith("dnf")), false);
+  assert.equal(written[DOCKER_DNF_KEY_PATH], await readFile(new URL("./fixtures/docker-rpm-key.asc", import.meta.url), "utf8"));
+  assert.equal(written["/etc/yum.repos.d/docker-ce.repo"], dockerDnfRepository("fedora"));
+  assert.match(dockerDnfRepository("fedora"), /^baseurl=https:\/\/download\.docker\.com\/linux\/fedora\/\$releasever\/\$basearch\/stable$/m);
+  assert.match(dockerDnfRepository("fedora"), /^gpgcheck=1$/m);
+  assert.deepEqual(dockerDnfRepository("fedora").match(/^gpgkey=.*$/gm), [`gpgkey=file://${DOCKER_DNF_KEY_PATH}`]);
+  const importIndex = lines.indexOf(`rpm --import ${DOCKER_DNF_KEY_PATH}`);
+  const repositoryIndex = lines.findIndex((line) => line.endsWith(" /etc/yum.repos.d/docker-ce.repo"));
+  const installIndex = lines.indexOf("dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin");
+  assert.ok(importIndex !== -1 && repositoryIndex > importIndex && installIndex > repositoryIndex, lines.join("\n"));
+  assert.ok(calls.some((spec) => spec.command === "sudo" && spec.args.includes("systemctl")));
+});
+
+test("RHEL and CentOS use the same local repository with their own path", async () => {
+  for (const id of ["rhel", "centos"]) {
+    const { result, written } = await dnfInstall({ ID: id, VERSION_ID: "9" });
+    assert.deepEqual(result, { code: 0, reexecuted: false }, id);
+    assert.equal(written["/etc/yum.repos.d/docker-ce.repo"], dockerDnfRepository(id));
+    assert.match(written["/etc/yum.repos.d/docker-ce.repo"], new RegExp(`linux/${id}/\\$releasever/`));
+  }
+});
+
+test("Docker's repository keys are trusted only with their published fingerprints (review INT5-C-F14)", async () => {
+  const fixture = async (name) => readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  assert.equal(openPgpFingerprint(await fixture("docker-apt-key.asc")), DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt);
+  assert.equal(openPgpFingerprint(await fixture("docker-rpm-key.asc")), DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm);
+  assert.equal(openPgpFingerprint("not a key"), null);
+  for (const [osRelease, wrongKey, trusted] of [
+    [{ ID: "ubuntu", VERSION_CODENAME: "noble" }, "docker-rpm-key.asc", "/etc/apt/keyrings/docker.asc"],
+    [{ ID: "fedora", VERSION_ID: "42" }, "docker-apt-key.asc", "--import"]
+  ]) {
+    const calls = [];
+    const stderr = capture();
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: stderr.stream,
+      execute: async (spec) => { calls.push(spec); return spec.command === "docker" ? 127 : 0; },
+      download: keyDownload(wrongKey),
+      launch: async () => 0,
+      pathExists: async () => true,
+      sleep: async () => {},
+      osRelease,
+      installArgs: { requestedProfile: "auto", noOpen: true }
+    });
+    assert.equal(result.code, 1, osRelease.ID);
+    assert.match(stderr.value(), /does not have its published fingerprint/);
+    assert.equal(calls.some((spec) => spec.args?.includes(trusted)), false, osRelease.ID);
+    assert.equal(calls.some((spec) => spec.args?.includes("docker-ce")), false, osRelease.ID);
+  }
+});
+
+test("a Docker key file is trusted only when every primary key in it is the published one (1.1.7 review)", async () => {
+  const fixture = async (name) => readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  const dearmor = (armored) => {
+    const lines = armored.split(/\r?\n/);
+    let index = lines.findIndex((line) => line.startsWith("-----BEGIN")) + 1;
+    while (lines[index].trim() !== "") index += 1;
+    const body = [];
+    for (index += 1; !lines[index].startsWith("=") && !lines[index].startsWith("-----END"); index += 1) body.push(lines[index].trim());
+    return Buffer.from(body.join(""), "base64");
+  };
+  const armor = (bytes) => ["-----BEGIN PGP PUBLIC KEY BLOCK-----", "", ...bytes.toString("base64").match(/.{1,64}/g), "-----END PGP PUBLIC KEY BLOCK-----", ""].join("\n");
+  const apt = await fixture("docker-apt-key.asc"), rpm = await fixture("docker-rpm-key.asc");
+  assert.deepEqual(openPgpPrimaryFingerprints(apt), [DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt]);
+  assert.deepEqual(openPgpPrimaryFingerprints(rpm), [DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm]);
+  // The published certificate with another primary key appended in the same block, or in a second block: gpg imports both.
+  const sameBlock = armor(Buffer.concat([dearmor(apt), dearmor(rpm)]));
+  assert.deepEqual(openPgpPrimaryFingerprints(sameBlock), [DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt, DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm]);
+  assert.equal(openPgpPrimaryFingerprints(`${apt}\n${rpm}`), null);
+  assert.equal(openPgpPrimaryFingerprints(armor(dearmor(apt).subarray(0, 40))), null);
+  assert.equal(openPgpPrimaryFingerprints("not a key"), null);
+  for (const [extra, message] of [[sameBlock, /must hold only Docker's published key/], [`${apt}\n${rpm}`, /does not have its published fingerprint/]]) {
+    const calls = [];
+    const stderr = capture();
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: stderr.stream,
+      execute: async (spec) => { calls.push(spec); return spec.command === "docker" ? 127 : 0; },
+      download: async (_url, destination) => writeFile(destination, extra),
+      launch: async () => 0,
+      pathExists: async () => true,
+      sleep: async () => {},
+      osRelease: { ID: "ubuntu", VERSION_CODENAME: "noble" },
+      installArgs: { requestedProfile: "auto", noOpen: true }
+    });
+    assert.equal(result.code, 1);
+    assert.match(stderr.value(), message);
+    assert.equal(calls.some((spec) => spec.args?.includes("/etc/apt/keyrings/docker.asc")), false);
+    assert.equal(calls.some((spec) => spec.args?.includes("docker-ce")), false);
+  }
+});
+
+test("Linux rejects an unsafe username before granting docker-group access", async () => {
+  const calls = [];
+  const stderr = capture();
+
+  const result = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    env: { USER: "user;touch-pwned" },
+    stdin: Readable.from([]),
+    stdout: capture().stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      calls.push(spec);
+      if (spec.command === "docker" && spec.args.includes("info")) return 1;
+      return 0;
+    },
+    download: async () => {},
+    launch: async () => 0,
+    pathExists: async () => true,
+    sleep: async () => {},
+    installArgs: { requestedProfile: "auto", noOpen: true }
+  });
+
+  assert.deepEqual(result, { code: 1, reexecuted: false });
+  assert.equal(calls.some((spec) => spec.args?.includes("user;touch-pwned")), false);
+  assert.equal(calls.some((spec) => spec.command === "sg"), false);
+  assert.match(stderr.value(), /valid non-root Linux username/i);
+});
+
+test("Docker downloads abort after a bounded timeout", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      reject(signal.reason);
+    }, { once: true });
+  });
+
+  await assert.rejects(
+    downloadFile("https://desktop.docker.com/example", "/tmp/unused-spaceapp-download", {
+      timeoutMs: 5
+    }),
+    /timed out/i
+  );
+});
+
+test('Linux waits for a stopped engine to become ready without unnecessarily changing groups', async()=>{
+  let probes=0;let started=false;let sleeps=0;const calls=[];
+  const result=await ensureDockerAvailable({platform:'linux',env:{USER:'tester'},stdout:capture().stream,stderr:capture().stream,
+    sleep:async()=>{sleeps++;},
+    execute:async(spec)=>{calls.push(spec);if(spec.command==='sudo'){started=true;return 0;}if(spec.args[0]==='info')return started&&++probes>=3?0:1;return 0;}
+  });
+  assert.equal(result.code,0);assert.ok(sleeps>=2);
+  assert.ok(calls.some(s=>s.args.includes('systemctl')));
+  assert.ok(!calls.some(s=>s.args.includes('usermod')));
+});

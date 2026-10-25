@@ -1,0 +1,738 @@
+name: Public OIDC release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact semantic version from packages/run-spaceapp/package.json
+        required: true
+        type: string
+      runtime_version:
+        description: Exact existing or newly built SpaceApp runtime image version
+        required: true
+        type: string
+      browser_source_version:
+        description: Existing browser image version reused by an amd64 core and CLI release
+        required: false
+        type: string
+      release_mode:
+        description: Select full, launcher-only, or x64 core and CLI publication
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - launcher-only
+          - amd64-core-cli
+      npm_tag:
+        description: npm prerelease channel
+        required: true
+        default: next
+        type: choice
+        options:
+          - next
+          - personal
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-oidc-release-${{ inputs.version }}-${{ inputs.runtime_version }}-${{ inputs.release_mode }}-${{ inputs.npm_tag }}
+  cancel-in-progress: false
+
+jobs:
+  release-policy:
+    name: Enforce main and exact release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Reject non-main dispatches
+        if: github.ref != 'refs/heads/main'
+        run: exit 1
+
+      - name: Confirm main dispatch
+        if: github.ref == 'refs/heads/main'
+        run: echo "Release source is main."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Require exact-candidate cross-platform installation evidence
+        run: node scripts/release-evidence.mjs
+
+      - name: Enforce legal, version, and npm channel readiness
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          RELEASE_BROWSER_SOURCE_VERSION: ${{ inputs.browser_source_version }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
+          RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
+        run: >-
+          node scripts/public-release-readiness.mjs
+          --version "$RELEASE_VERSION"
+          --npm-tag "$RELEASE_DIST_TAG"
+          --release-mode "$RELEASE_MODE"
+          --runtime-version "$RELEASE_RUNTIME_VERSION"
+          --browser-source-version "$RELEASE_BROWSER_SOURCE_VERSION"
+
+  source-candidate:
+    name: Verify sanitized source and npm candidate
+    needs: release-policy
+    runs-on: ubuntu-latest
+    # The full workspace suites take about 25 minutes (review F15).
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Create sanitized source candidate
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - name: Archive immutable sanitized source
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-artifacts"
+          tar -C "$RUNNER_TEMP" \
+            -czf "$RUNNER_TEMP/release-artifacts/spaceapp-public-export-${{ inputs.version }}.tar.gz" \
+            spaceapp-public-export
+
+      - name: Install candidate dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm ci
+
+      - name: Audit candidate dependencies
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm audit --audit-level=high
+
+      - name: Install ripgrep and ffmpeg (the file search tests run the real rg, the Nous attachment tests make media with ffmpeg)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep ffmpeg
+
+      - name: Test candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run test:public
+
+      - name: Typecheck candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run check
+
+      - name: Build candidate
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run build
+
+      - name: Pack dry run
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm run pack:dry-run -w run-spaceapp
+
+      - name: Block fixable source vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/spaceapp-public-export
+          format: table
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Stamp the reviewed public git head
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: npm pkg set "gitHead=${{ github.sha }}" -w run-spaceapp
+
+      - name: Pack npm candidate from sanitized source
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          npm pack ./packages/run-spaceapp
+          --pack-destination "$RUNNER_TEMP/release-artifacts"
+
+      - name: Record npm candidate checksum
+        working-directory: ${{ runner.temp }}/release-artifacts
+        run: >-
+          sha256sum "run-spaceapp-${{ inputs.version }}.tgz"
+          > "run-spaceapp-${{ inputs.version }}.tgz.sha256"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts/
+          if-no-files-found: error
+
+  container-candidate:
+    name: Sanitized ${{ matrix.target }} / linux-${{ matrix.arch }}
+    needs: release-policy
+    if: inputs.release_mode == 'full'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - browser
+          - cli
+        arch:
+          - amd64
+          - arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create sanitized container context
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: true
+          tags: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          provenance: false
+          cache-from: type=gha,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Enforce container size budget
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          node scripts/container-image-size-budget.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+
+      - name: Block fixable container vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          format: table
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Capture full candidate image report
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
+          format: json
+          output: trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Summarize full candidate image report
+        if: always() && hashFiles(format('trivy-full-{0}-{1}.json', matrix.target, matrix.arch)) != ''
+        run: >-
+          node scripts/trivy-report-summary.mjs
+          --input "trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json"
+          --label "${{ matrix.target }} / linux-${{ matrix.arch }}"
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full candidate image report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-full-${{ matrix.target }}-${{ matrix.arch }}
+          path: trivy-full-${{ matrix.target }}-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  amd64-container-candidate:
+    name: Sanitized ${{ matrix.target }} / linux-amd64
+    needs: release-policy
+    if: inputs.release_mode == 'amd64-core-cli'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create sanitized container context
+        run: >-
+          node scripts/public-export.mjs
+          --output "$RUNNER_TEMP/spaceapp-public-export"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: spaceapp-ci:${{ matrix.target }}-amd64
+          provenance: false
+          cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
+          cache-to: type=gha,mode=max,scope=candidate-${{ matrix.target }}-amd64
+
+      - name: Enforce container size budget
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: >-
+          node scripts/container-image-size-budget.mjs
+          --target "${{ matrix.target }}"
+          --image "spaceapp-ci:${{ matrix.target }}-amd64"
+
+      - name: Block fixable container vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-amd64
+          format: table
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Capture full candidate image report
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: spaceapp-ci:${{ matrix.target }}-amd64
+          format: json
+          output: trivy-full-${{ matrix.target }}-amd64.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Summarize full candidate image report
+        if: always() && hashFiles(format('trivy-full-{0}-amd64.json', matrix.target)) != ''
+        run: >-
+          node scripts/trivy-report-summary.mjs
+          --input "trivy-full-${{ matrix.target }}-amd64.json"
+          --label "${{ matrix.target }} / linux-amd64"
+          >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full candidate image report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-full-${{ matrix.target }}-amd64
+          path: trivy-full-${{ matrix.target }}-amd64.json
+          if-no-files-found: error
+
+  existing-runtime:
+    name: Verify existing runtime manifests and attestations
+    needs: release-policy
+    if: inputs.release_mode == 'launcher-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Verify existing architectures, SBOMs, and provenance
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.runtime_version }}"
+
+  existing-browser:
+    name: Verify the reused browser manifest and attestations
+    needs: release-policy
+    if: inputs.release_mode == 'amd64-core-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Verify the reusable browser architectures, SBOMs, and provenance
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.browser_source_version }}"
+          --targets browser
+          --architectures amd64,arm64
+
+  publish-preflight:
+    name: Approve and prove release tags are new
+    needs:
+      - source-candidate
+      - container-candidate
+      - amd64-container-candidate
+      - existing-runtime
+      - existing-browser
+    if: >-
+      always() &&
+      needs.source-candidate.result == 'success' &&
+      (
+        (
+          inputs.release_mode == 'full' &&
+          needs.container-candidate.result == 'success' &&
+          needs.amd64-container-candidate.result == 'skipped' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'launcher-only' &&
+          needs.container-candidate.result == 'skipped' &&
+          needs.amd64-container-candidate.result == 'skipped' &&
+          needs.existing-runtime.result == 'success' &&
+          needs.existing-browser.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'amd64-core-cli' &&
+          needs.container-candidate.result == 'skipped' &&
+          needs.amd64-container-candidate.result == 'success' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'success'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        if: inputs.release_mode != 'launcher-only'
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        if: inputs.release_mode != 'launcher-only'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail closed if any exact artifact already exists
+        run: >-
+          node scripts/release-artifact-preflight.mjs
+          --version "${{ inputs.version }}"
+          --release-mode "${{ inputs.release_mode }}"
+
+  publish-containers:
+    name: Publish ${{ matrix.target }} multi-arch image
+    needs: publish-preflight
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      inputs.release_mode == 'full'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - browser
+          - cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts
+
+      - name: Restore verified sanitized source
+        run: |
+          mkdir -p "$RUNNER_TEMP/publish-context"
+          tar -C "$RUNNER_TEMP/publish-context" \
+            -xzf "$RUNNER_TEMP/release-artifacts/spaceapp-public-export-${{ inputs.version }}.tar.gz"
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable exact-version image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/publish-context/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/oll4com/spaceapp-${{ matrix.target }}:${{ inputs.version }}
+          sbom: true
+          provenance: mode=max,version=v1
+          cache-from: type=gha,scope=publish-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}
+
+  publish-amd64-containers:
+    name: Publish ${{ matrix.target }} linux-amd64 image
+    needs: publish-preflight
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      inputs.release_mode == 'amd64-core-cli'
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - core
+          - cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts
+
+      - name: Restore verified sanitized source
+        run: |
+          mkdir -p "$RUNNER_TEMP/publish-context"
+          tar -C "$RUNNER_TEMP/publish-context" \
+            -xzf "$RUNNER_TEMP/release-artifacts/spaceapp-public-export-${{ inputs.version }}.tar.gz"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable exact-version amd64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ runner.temp }}/publish-context/spaceapp-public-export
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/oll4com/spaceapp-${{ matrix.target }}:${{ inputs.version }}
+          sbom: true
+          provenance: mode=max,version=v1
+          cache-from: type=gha,scope=candidate-${{ matrix.target }}-amd64
+          cache-to: type=gha,mode=max,scope=publish-${{ matrix.target }}-amd64
+
+  reuse-browser-manifest:
+    name: Reuse the existing signed browser manifest
+    needs: publish-preflight
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      inputs.release_mode == 'amd64-core-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy the immutable browser manifest without rebuilding it
+        run: >-
+          docker buildx imagetools create
+          --tag "ghcr.io/oll4com/spaceapp-browser:${{ inputs.version }}"
+          "ghcr.io/oll4com/spaceapp-browser:${{ inputs.browser_source_version }}"
+
+  verify-containers:
+    name: Verify published manifests and attestations
+    needs: publish-containers
+    if: >-
+      always() &&
+      needs.publish-containers.result == 'success' &&
+      inputs.release_mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify architectures, SBOMs, and provenance
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.version }}"
+
+  verify-amd64-containers:
+    name: Verify published amd64 manifests and attestations
+    needs:
+      - publish-amd64-containers
+      - reuse-browser-manifest
+    if: >-
+      always() &&
+      needs.publish-amd64-containers.result == 'success' &&
+      needs.reuse-browser-manifest.result == 'success' &&
+      inputs.release_mode == 'amd64-core-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify amd64 SBOMs and provenance for every runtime service
+        run: >-
+          node scripts/verify-published-containers.mjs
+          --version "${{ inputs.version }}"
+          --targets core,cli,browser
+          --architectures amd64
+
+  publish-npm:
+    name: Publish run-spaceapp with npm OIDC
+    needs:
+      - publish-preflight
+      - publish-containers
+      - verify-containers
+      - publish-amd64-containers
+      - reuse-browser-manifest
+      - verify-amd64-containers
+      - existing-runtime
+      - existing-browser
+    if: >-
+      always() &&
+      needs.publish-preflight.result == 'success' &&
+      (
+        (
+          inputs.release_mode == 'full' &&
+          needs.publish-containers.result == 'success' &&
+          needs.verify-containers.result == 'success' &&
+          needs.publish-amd64-containers.result == 'skipped' &&
+          needs.reuse-browser-manifest.result == 'skipped' &&
+          needs.verify-amd64-containers.result == 'skipped' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'launcher-only' &&
+          needs.publish-containers.result == 'skipped' &&
+          needs.verify-containers.result == 'skipped' &&
+          needs.publish-amd64-containers.result == 'skipped' &&
+          needs.reuse-browser-manifest.result == 'skipped' &&
+          needs.verify-amd64-containers.result == 'skipped' &&
+          needs.existing-runtime.result == 'success' &&
+          needs.existing-browser.result == 'skipped'
+        ) ||
+        (
+          inputs.release_mode == 'amd64-core-cli' &&
+          needs.publish-containers.result == 'skipped' &&
+          needs.verify-containers.result == 'skipped' &&
+          needs.publish-amd64-containers.result == 'success' &&
+          needs.reuse-browser-manifest.result == 'success' &&
+          needs.verify-amd64-containers.result == 'success' &&
+          needs.existing-runtime.result == 'skipped' &&
+          needs.existing-browser.result == 'success'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: public-release-source-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/release-artifacts
+
+      - name: Verify npm candidate checksum
+        working-directory: ${{ runner.temp }}/release-artifacts
+        run: sha256sum --check "run-spaceapp-${{ inputs.version }}.tgz.sha256"
+
+      - name: Install trusted-publishing npm CLI
+        run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.18.0
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The images are published and verified by now: pin their digests into the package, so installs pull them by
+      # digest, and refuse if anything but templates/images.lock.json differs from the tested candidate.
+      - name: Pin the verified image digests into the npm candidate
+        run: >-
+          node scripts/embed-image-lock.mjs
+          --tarball "$RUNNER_TEMP/release-artifacts/run-spaceapp-${{ inputs.version }}.tgz"
+          --runtime-version "${{ inputs.runtime_version }}"
+          --out-dir "$RUNNER_TEMP/pinned-npm-candidate"
+
+      - name: Publish or verify the exact npm candidate
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_DIST_TAG: ${{ inputs.npm_tag }}
+          RELEASE_GIT_HEAD: ${{ github.sha }}
+        run: node scripts/publish-npm-candidate.mjs "$RUNNER_TEMP/pinned-npm-candidate/run-spaceapp-${{ inputs.version }}.tgz"

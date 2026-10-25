@@ -1,0 +1,4 @@
+interface:
+  display_name: "Media Studio"
+  short_description: "Screenshots and short videos of SpaceApp in device and social sizes, with a capture-only theme preview and a Studio room built through Space Control."
+  default_prompt: "Use $space-media-studio: capture SpaceApp with scripts/space-media-capture.mjs (live rooms read-only, changes only in a Studio room), preview themes without changing the account, frame social cards, record short tours, look at every image, and report the folder and files."

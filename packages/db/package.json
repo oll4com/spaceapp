@@ -1,0 +1,31 @@
+{
+  "name": "@space/db",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "migrate": "npm run build && node dist/migrate.js"
+  },
+  "dependencies": {
+    "@space/contracts": "0.2.5",
+    "@space/runtime": "0.2.5",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  },
+  "license": "MIT"
+}

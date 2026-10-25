@@ -1,0 +1,211 @@
+.worktree-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(56, 139, 253, 0.12);
+  border: 1px solid rgba(56, 139, 253, 0.3);
+  border-radius: 9999px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #58a6ff;
+  font-family: inherit;
+  user-select: none;
+  transition: all 0.15s ease;
+  height: 24px;
+  min-height: 0;
+  max-height: 24px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.worktree-badge button {
+  font-family: inherit;
+  min-height: 0;
+}
+
+.worktree-badge.collapsed {
+  padding: 0 6px;
+  height: 24px;
+  min-height: 0;
+  max-height: 24px;
+  cursor: pointer;
+  background: rgba(56, 139, 253, 0.12);
+  border: 1px solid rgba(56, 139, 253, 0.3);
+  border-radius: 6px;
+  color: #58a6ff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.worktree-badge.collapsed:hover {
+  background: rgba(56, 139, 253, 0.24);
+  border-color: rgba(56, 139, 253, 0.55);
+  color: #79b8ff;
+}
+
+.worktree-toggle-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  height: 100%;
+  min-height: 0;
+  line-height: 1.2;
+}
+
+.worktree-toggle-btn:focus-visible {
+  outline: none;
+}
+
+.worktree-badge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 0;
+}
+
+.worktree-branch-name {
+  font-weight: 500;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d29922;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.worktree-badge-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+  height: 100%;
+}
+
+.worktree-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  border-radius: 4px;
+  padding: 0 5px;
+  height: 18px;
+  min-height: 0;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  box-sizing: border-box;
+}
+
+.worktree-action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: transparent;
+}
+
+.worktree-action-btn.merge:hover:not(:disabled) {
+  background: rgba(46, 160, 67, 0.25);
+  color: #3fb950;
+  border-color: transparent;
+}
+
+.worktree-action-btn.discard:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.25);
+  color: #f85149;
+  border-color: transparent;
+}
+
+.worktree-action-btn.close:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+  color: #e6edf3;
+  border-color: transparent;
+}
+
+.worktree-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.worktree-error-tooltip {
+  color: #f85149;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.worktree-badge.merged {
+  background: rgba(46, 160, 67, 0.15);
+  border-color: rgba(46, 160, 67, 0.4);
+  color: #3fb950;
+  height: 24px;
+  min-height: 0;
+  max-height: 24px;
+}
+
+/* Responsive compact mode for small containers / windows: hide text and display icons only */
+@container pane-card (max-width: 520px) {
+  .worktree-badge.expanded {
+    padding: 0 5px;
+    gap: 4px;
+  }
+
+  .worktree-badge.expanded .worktree-branch-name,
+  .worktree-badge.merged .worktree-branch-name,
+  .worktree-badge .worktree-action-label {
+    display: none;
+  }
+}
+
+@container (max-width: 520px) {
+  .worktree-badge.expanded {
+    padding: 0 5px;
+    gap: 4px;
+  }
+
+  .worktree-badge.expanded .worktree-branch-name,
+  .worktree-badge.merged .worktree-branch-name,
+  .worktree-badge .worktree-action-label {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .worktree-badge.expanded {
+    padding: 0 5px;
+    gap: 4px;
+  }
+
+  .worktree-badge.expanded .worktree-branch-name,
+  .worktree-badge.merged .worktree-branch-name,
+  .worktree-badge .worktree-action-label {
+    display: none;
+  }
+}
+
+.space-shell[data-shell-mode="mobile"] .worktree-badge.expanded {
+  padding: 0 5px;
+  gap: 4px;
+}
+
+.space-shell[data-shell-mode="mobile"] .worktree-badge.expanded .worktree-branch-name,
+.space-shell[data-shell-mode="mobile"] .worktree-badge.merged .worktree-branch-name,
+.space-shell[data-shell-mode="mobile"] .worktree-badge .worktree-action-label {
+  display: none;
+}

@@ -1,0 +1,770 @@
+/* Copilot kit (Job Copilot, Mail Copilot): command bar / main surface + collapsible rail (tabs · Terminal …).
+   Button rules are scoped under :is(.jc-pane, .jc-launch): the theme's
+   [data-ui-theme="modern"] :where(button) has the same specificity as one class and loads
+   later, so an unscoped .jc-chip or .jc-event-link turned into a dark raised box. */
+/* The launch dialog shares the pane's palette (buttons, tags and fields read these variables). */
+.jc-pane, .jc-launch {
+  --jc-bg: var(--room-surface, #121619);
+  --jc-raised: color-mix(in srgb, var(--room-surface, #121619) 88%, #ffffff 12%);
+  --jc-border: var(--room-border, rgba(255, 255, 255, 0.1));
+  --jc-text: var(--room-text, #e8e6e0);
+  --jc-muted: var(--room-muted, #9aa3a0);
+  --jc-accent: var(--room-accent, #6db7aa);
+  --jc-ok: #7fd3a3;
+  --jc-warn: #f0c36b;
+  --jc-bad: #f08a8a;
+  --jc-info: #8fb8f0;
+  /* The mailbox's language (tinted pills, soft cards) for the rail: tints follow the text color, so light mode works. */
+  --jc-tint: color-mix(in srgb, var(--jc-text) 6%, transparent);
+  --jc-tint-strong: color-mix(in srgb, var(--jc-text) 11%, transparent);
+  --jc-card: color-mix(in srgb, var(--jc-text) 4.5%, var(--jc-bg));
+  --jc-on-accent: var(--modern-on-accent, #0b1412);
+  --jc-rail-width: 400px;
+}
+.jc-pane {
+  position: relative;
+  /* A flex item of the pane body like the browser pane: fills the body on every shell, phone included.
+     A column itself, so the body takes whatever the bar and an optional notice leave. */
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  container: jc-pane / inline-size;
+  background: var(--jc-bg);
+  color: var(--jc-text);
+  font-size: 12px;
+}
+/* styles.css keeps every `.pane-card strong` on one line (an old pane-title rule): copilot text wraps, so a long lead or
+   post title no longer widens its panel past the pane. Rules below that want one line set it again. */
+.jc-pane strong { overflow: visible; white-space: normal; text-overflow: clip; }
+
+/* ---- command bar ------------------------------------------------------- */
+.jc-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--jc-border);
+  background: var(--jc-raised);
+}
+.jc-agent { position: relative; }
+:is(.jc-pane, .jc-launch) .jc-agent-chip,
+:is(.jc-pane, .jc-launch) .jc-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 10px 4px 6px;
+  border: 1px solid var(--jc-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--jc-accent) 10%, transparent);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+:is(.jc-pane, .jc-launch) .jc-agent-chip:hover { border-color: color-mix(in srgb, var(--jc-accent) 60%, var(--jc-border)); }
+:is(.jc-pane, .jc-launch) .jc-agent-chip:disabled { cursor: progress; opacity: 0.7; }
+:is(.jc-pane, .jc-launch) .jc-agent-chip img, :is(.jc-pane, .jc-launch) .jc-menu-item img, :is(.jc-pane, .jc-launch) .jc-agent-chip svg, :is(.jc-pane, .jc-launch) .jc-menu-item svg { width: 16px; height: 16px; flex: 0 0 auto; object-fit: contain; }
+:is(.jc-pane, .jc-launch) .jc-agent-chip > svg:last-child { width: 12px; height: 12px; color: var(--jc-muted); }
+.jc-agent-name { font-weight: 650; white-space: nowrap; }
+.jc-agent-model { padding: 1px 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); color: var(--jc-muted); font-size: 11px; white-space: nowrap; }
+.jc-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 8;
+  display: grid;
+  gap: 2px;
+  min-width: 260px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--jc-border);
+  border-radius: 10px;
+  background: var(--jc-raised);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.jc-menu-hint { margin: 2px 6px 6px; color: var(--jc-muted); font-size: 11px; }
+:is(.jc-pane, .jc-launch) .jc-menu-item { width: 100%; border-radius: 8px; border-color: transparent; background: transparent; text-align: left; }
+:is(.jc-pane, .jc-launch) .jc-menu-item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+:is(.jc-pane, .jc-launch) .jc-menu-item.selected { background: color-mix(in srgb, var(--jc-accent) 16%, transparent); }
+:is(.jc-pane, .jc-launch) .jc-menu-item:disabled:not(.selected) { opacity: 0.55; cursor: not-allowed; }
+.jc-menu-item-copy { display: grid; min-width: 0; flex: 1 1 auto; }
+:is(.jc-pane, .jc-launch) .jc-menu-default { margin-top: 6px; }
+.jc-menu-item-copy strong { font-weight: 600; }
+.jc-menu-item-copy small { color: var(--jc-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:is(.jc-pane, .jc-launch) .jc-menu-item > svg:last-child { color: var(--jc-accent); }
+
+.jc-run-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px 3px 6px;
+  border: 1px solid var(--jc-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  white-space: nowrap;
+}
+.jc-run-pill.state-running { border-color: color-mix(in srgb, var(--jc-accent) 55%, transparent); }
+.jc-run-pill.state-paused { border-color: color-mix(in srgb, var(--jc-warn) 55%, transparent); }
+.jc-run-ring { width: 18px; height: 18px; transform: rotate(-90deg); }
+.jc-run-ring-track { fill: none; stroke: rgba(255, 255, 255, 0.12); stroke-width: 2.5; }
+.jc-run-ring-value { fill: none; stroke: var(--jc-accent); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 300ms ease; }
+.jc-run-ring[data-state="paused"] .jc-run-ring-value { stroke: var(--jc-warn); }
+.jc-run-ring[data-state="running"] .jc-run-ring-track { animation: jc-ring-breathe 1.8s ease-in-out infinite; }
+@keyframes jc-ring-breathe { 50% { stroke: rgba(255, 255, 255, 0.28); } }
+.jc-run-label { font-weight: 650; }
+.jc-run-queue { color: var(--jc-muted); }
+
+.jc-counters { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; white-space: nowrap; }
+.jc-counter { color: var(--jc-muted); white-space: nowrap; }
+.jc-counter strong { color: var(--jc-text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.jc-counter.ok strong { color: var(--jc-ok); }
+.jc-counter.warn strong { color: var(--jc-warn); }
+.jc-counter.bad strong { color: var(--jc-bad); }
+.jc-bar-toggles { display: inline-flex; align-items: center; gap: 12px; }
+.jc-toggle { font-size: 12px; }
+.jc-toggle svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 2px; }
+
+:is(.jc-pane, .jc-launch) .jc-icon-button,
+:is(.jc-pane, .jc-launch) .jc-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--jc-border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+:is(.jc-pane, .jc-launch) .jc-icon-button { padding: 4px 5px; }
+:is(.jc-pane, .jc-launch) .jc-icon-button svg, :is(.jc-pane, .jc-launch) .jc-button svg { width: 14px; height: 14px; }
+:is(.jc-pane, .jc-launch) .jc-icon-button:hover, :is(.jc-pane, .jc-launch) .jc-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.09); }
+:is(.jc-pane, .jc-launch) .jc-icon-button.selected { border-color: var(--jc-accent); background: color-mix(in srgb, var(--jc-accent) 16%, transparent); }
+:is(.jc-pane, .jc-launch) .jc-button.primary { border-color: color-mix(in srgb, var(--jc-accent) 70%, transparent); background: color-mix(in srgb, var(--jc-accent) 22%, transparent); font-weight: 650; }
+:is(.jc-pane, .jc-launch) .jc-button.ghost { background: transparent; }
+:is(.jc-pane, .jc-launch) .jc-button.danger { color: var(--jc-bad); }
+:is(.jc-pane, .jc-launch) .jc-button:disabled { opacity: 0.5; cursor: default; }
+
+.jc-notice { flex: 0 0 auto; padding: 6px 12px; border-bottom: 1px solid color-mix(in srgb, var(--jc-warn) 40%, transparent); background: color-mix(in srgb, var(--jc-warn) 12%, transparent); }
+
+/* ---- body: browser + rail ---------------------------------------------- */
+.jc-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6px var(--jc-rail-width);
+  min-height: 0;
+}
+.jc-pane[data-rail="collapsed"] .jc-body { grid-template-columns: minmax(0, 1fr) 0 44px; }
+.jc-browser, .jc-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.jc-browser > *, .jc-main > * { flex: 1 1 auto; min-height: 0; }
+.jc-rail-handle { cursor: col-resize; background: transparent; border-left: 1px solid var(--jc-border); touch-action: none; }
+.jc-rail-handle:hover { background: color-mix(in srgb, var(--jc-accent) 35%, transparent); }
+.jc-pane[data-rail="collapsed"] .jc-rail-handle { pointer-events: none; }
+
+.jc-rail {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: var(--jc-bg);
+  container: jc-rail / inline-size;
+}
+/* Tabs are pills like the mailbox's label chips: tinted on hover, accent-tinted when selected. */
+.jc-rail-tabs { display: flex; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--jc-border); overflow-x: auto; scrollbar-width: none; }
+.jc-rail-tabs::-webkit-scrollbar { display: none; }
+:is(.jc-pane, .jc-launch) .jc-rail-tab {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  min-height: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--jc-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+:is(.jc-pane, .jc-launch) .jc-rail-tab svg { width: 15px; height: 15px; }
+:is(.jc-pane, .jc-launch) .jc-rail-tab:hover { background: var(--jc-tint); color: var(--jc-text); }
+:is(.jc-pane, .jc-launch) .jc-rail-tab:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: -2px; }
+:is(.jc-pane, .jc-launch) .jc-rail-tab.selected { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); color: var(--jc-text); }
+:is(.jc-pane, .jc-launch) .jc-rail-tab.selected svg { color: var(--jc-accent); }
+.jc-rail-badge { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--jc-accent); color: var(--jc-on-accent); font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.jc-rail[data-collapsed="true"] .jc-rail-tabs { flex-direction: column; align-items: center; padding: 8px 4px; border-bottom: 0; overflow: visible; }
+:is(.jc-pane, .jc-launch) .jc-rail[data-collapsed="true"] .jc-rail-tab { justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 12px; }
+.jc-rail[data-collapsed="true"] .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+.jc-rail[data-collapsed="true"] .jc-rail-badge { position: absolute; top: -3px; right: -4px; }
+.jc-rail-body { position: relative; min-height: 0; overflow: hidden; }
+/* The panels read at the mailbox's size; the terminal keeps its own. */
+.jc-rail-body > :not(.jc-panel-terminal) { font-size: 13px; line-height: 1.45; }
+.jc-rail-body > [role="tabpanel"] { position: absolute; inset: 0; overflow: auto; }
+.jc-panel-terminal { display: flex; flex-direction: column; overflow: hidden; }
+.jc-panel-terminal > * { flex: 1 1 auto; min-height: 0; }
+/* The terminal keeps its size while hidden so xterm never fits to a zero box. */
+.jc-panel-terminal[data-active="false"] { visibility: hidden; pointer-events: none; }
+.jc-rail[data-collapsed="true"] .jc-rail-body { display: none; }
+.jc-panel-loading { padding: 12px; }
+
+/* ---- shared bits ------------------------------------------------------- */
+.jc-muted { color: var(--jc-muted); }
+.jc-message { margin: 6px 0 0; padding: 6px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); word-break: break-word; }
+.jc-pill, :is(.jc-pane, .jc-launch) .jc-chip, .jc-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--jc-border);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.jc-tag.accent { border-color: color-mix(in srgb, var(--jc-accent) 60%, transparent); color: var(--jc-accent); }
+:is(.jc-pane, .jc-launch) .jc-chip { min-height: 0; cursor: pointer; color: inherit; font: inherit; font-size: 11px; }
+:is(.jc-pane, .jc-launch) .jc-chip:hover { background: rgba(255, 255, 255, 0.09); }
+:is(.jc-pane, .jc-launch) .jc-chip.selected { border-color: var(--jc-accent); background: color-mix(in srgb, var(--jc-accent) 16%, transparent); }
+.status-verified { border-color: color-mix(in srgb, var(--jc-ok) 55%, transparent); color: var(--jc-ok); }
+.status-submitted { border-color: color-mix(in srgb, var(--jc-info) 55%, transparent); color: var(--jc-info); }
+.status-needs_user { border-color: color-mix(in srgb, var(--jc-warn) 60%, transparent); color: var(--jc-warn); }
+.status-failed { border-color: color-mix(in srgb, var(--jc-bad) 55%, transparent); color: var(--jc-bad); }
+.status-filling { border-color: rgba(167, 139, 250, 0.55); color: #c4b5fd; }
+.status-queued { color: var(--jc-muted); }
+
+/* ---- queue ------------------------------------------------------------- */
+/* The list scrolls in what is left: the rows above it vary (the source chips appear only with imported history). */
+.jc-queue { display: flex; flex-direction: column; }
+.jc-queue > :not(.jc-list) { flex: none; }
+.jc-queue > .jc-list { flex: 1; min-height: 0; }
+.jc-queue-add { display: grid; gap: 6px; padding: 10px 10px 8px; border-bottom: 1px solid var(--jc-border); }
+.jc-queue-add textarea, .jc-queue-csv textarea, .jc-field input, .jc-field select, .jc-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--jc-border);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+.jc-queue-add textarea:focus-visible, .jc-field input:focus-visible, .jc-field select:focus-visible, .jc-field textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--jc-accent) 70%, transparent); outline-offset: 1px; }
+/* The select's background is translucent, so the browser draws the open list on its own light popup: give the options opaque colours. */
+.jc-field select :is(option, optgroup) { background: var(--jc-bg); color: var(--jc-text); }
+.jc-queue-add-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+:is(.jc-pane, .jc-launch) .jc-queue-add-actions .jc-icon-button { margin-left: auto; }
+.jc-queue-csv { display: grid; gap: 6px; }
+.jc-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--jc-border); }
+.jc-list { list-style: none; margin: 0; padding: 0; overflow: auto; }
+.jc-row { display: grid; gap: 4px; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--jc-border) 60%, transparent); }
+.jc-row.selected { background: color-mix(in srgb, var(--jc-accent) 10%, transparent); box-shadow: inset 2px 0 0 var(--jc-accent); }
+:is(.jc-pane, .jc-launch) .jc-row-main { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; min-height: 0; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+:is(.jc-pane, .jc-launch) .jc-row-main strong { font-weight: 650; }
+:is(.jc-pane, .jc-launch) .jc-row-main span { color: var(--jc-muted); }
+.jc-row-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+:is(.jc-pane, .jc-launch) .jc-row-meta .jc-icon-button { margin-left: auto; padding: 2px 4px; }
+.jc-notes { margin: 2px 0 0; color: var(--jc-muted); white-space: pre-wrap; }
+.jc-empty { display: grid; gap: 4px; padding: 28px 16px; color: var(--jc-muted); text-align: center; }
+.jc-empty strong { color: var(--jc-text); }
+
+/* ---- setup wizard ------------------------------------------------------ */
+.jc-setup { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+.jc-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 8px 10px 0; container: jc-steps / inline-size; }
+:is(.jc-pane, .jc-launch) .jc-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--jc-muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+:is(.jc-pane, .jc-launch) .jc-step.selected { border-color: var(--jc-border); background: rgba(255, 255, 255, 0.05); color: var(--jc-text); }
+.jc-step-index { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 255, 255, 0.08); font-size: 10px; }
+.jc-step-index svg { width: 11px; height: 11px; }
+:is(.jc-pane, .jc-launch) .jc-step.done .jc-step-index { background: color-mix(in srgb, var(--jc-ok) 25%, transparent); color: var(--jc-ok); }
+.jc-meter { position: relative; height: 22px; margin: 8px 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
+.jc-meter-bar { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--jc-accent) 35%, transparent); transition: width 300ms ease; }
+.jc-meter-label { position: relative; display: block; line-height: 22px; padding: 0 8px; font-size: 11px; }
+.jc-form { display: flex; flex-direction: column; gap: 10px; padding: 4px 10px 14px; overflow: auto; }
+.jc-form-section { display: grid; gap: 8px; }
+/* Job Copilot "Start over": set apart at the end of Setup → Agent. */
+.jc-start-over { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--jc-border); }
+.jc-form-section h4 { margin: 6px 0 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jc-muted); }
+.jc-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.jc-field { display: grid; gap: 3px; min-width: 0; }
+.jc-field > span { color: var(--jc-muted); font-size: 11px; }
+.jc-card { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--jc-border); border-radius: 8px; }
+:is(.jc-pane, .jc-launch) .jc-card .jc-button { justify-self: start; }
+.jc-caps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; border: 1px solid var(--jc-border); border-radius: 8px; padding: 8px; }
+.jc-caps legend { padding: 0 4px; color: var(--jc-muted); }
+.jc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.jc-actions.sticky { position: sticky; bottom: 0; padding: 8px 0 0; background: linear-gradient(transparent, var(--jc-raised) 40%); }
+
+/* Setup → Google account: the pane browser's account rows, the copilot's Google access and the IMAP fallback. */
+.jc-google { display: grid; gap: 8px; }
+.jc-account-list { display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--jc-border); border-radius: 8px; background: rgba(255, 255, 255, 0.02); }
+.jc-account-list[aria-busy="true"] { opacity: 0.6; pointer-events: none; }
+.jc-google-access { display: grid; gap: 8px; padding: 8px 10px; border: 1px solid var(--jc-border); border-radius: 8px; }
+.jc-google-access-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.jc-google-access strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jc-google-heading { margin: 6px 0 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jc-muted); }
+.jc-google-access ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.jc-google-access li { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; gap: 6px; }
+.jc-google-access li svg { width: 13px; height: 13px; color: var(--jc-ok); }
+.jc-google-access li[data-granted="false"] { color: var(--jc-muted); }
+.jc-google-access li[data-granted="false"] > span:first-child { width: 7px; height: 7px; margin-left: 3px; border-radius: 50%; background: var(--jc-warn); }
+.jc-help summary, .jc-imap > summary { cursor: pointer; color: var(--jc-muted); }
+.jc-help p { margin: 6px 0 0; color: var(--jc-muted); line-height: 1.45; }
+.jc-imap { padding: 8px 10px; border: 1px solid var(--jc-border); border-radius: 8px; }
+.jc-imap .jc-form { padding: 10px 0 0; overflow: visible; }
+
+/* ---- handoff strip ----------------------------------------------------- */
+.jc-handoff-posting { color: var(--jc-muted); }
+.jc-handoff-elapsed { color: var(--jc-muted); font-variant-numeric: tabular-nums; }
+.jc-handoff-pulse { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--jc-warn); box-shadow: 0 0 0 0 color-mix(in srgb, var(--jc-warn) 60%, transparent); animation: jc-pulse 1.6s ease-out infinite; }
+@keyframes jc-pulse { 70% { box-shadow: 0 0 0 10px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+/* While the agent waits, the browser's control icon pulses too: pressing it takes control. */
+.jc-pane[data-handoff="requested"] .browser-control-toggle { box-shadow: 0 0 0 0 color-mix(in srgb, var(--jc-warn) 60%, transparent); animation: jc-pulse 1.6s ease-out infinite; }
+/* In flow above the live browser, never over it, whether the agent waits or the operator holds control: the
+   operator must reach the page, its tabs and address bar (a sign-in popup opening, the page they are on). */
+.jc-handoff-strip {
+  order: -1;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--jc-info) 45%, transparent);
+  background: color-mix(in srgb, var(--jc-info) 18%, var(--jc-raised));
+}
+.jc-handoff-strip[data-state="requested"] {
+  border-bottom-color: color-mix(in srgb, var(--jc-warn) 55%, transparent);
+  background: color-mix(in srgb, var(--jc-warn) 16%, var(--jc-raised));
+}
+.jc-handoff-strip svg { width: 15px; height: 15px; color: var(--jc-info); }
+.jc-handoff-strip > .jc-handoff-text { flex: 1 1 auto; min-width: 0; }
+:is(.jc-pane, .jc-launch) .jc-handoff-strip .jc-button { margin-left: auto; }
+
+/* ---- launch dialog ----------------------------------------------------- */
+/* Above the floating rails and orbs (z-index 70-220), like the terminal upload dialog: on a phone the
+   right-hand rail covered the end of the Open button and the Remember switch. */
+.attachment-modal.jc-launch-modal { z-index: 1100; }
+/* A column inside the modal: the head, account row, notes and actions keep their height and the agent list
+   takes, and scrolls in, what is left. As a grid the dialog let its rows overflow its own max-height (a 390px
+   phone pushed the actions out of the box), and the list's rows shrank to the global button min-height. */
+.jc-launch {
+  box-sizing: border-box;
+  width: min(34rem, 100%);
+  max-width: 100%;
+  max-height: 88vh;
+  max-height: min(88vh, calc(100dvh - 2rem));
+  display: flex;
+  flex-direction: column;
+  place-items: stretch;
+  gap: 12px;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  color: var(--room-text, #e8e6e0);
+}
+.jc-launch > * { flex: 0 0 auto; min-width: 0; }
+:is(.jc-pane, .jc-launch) .jc-launch-close { position: absolute; top: 0.75rem; right: 0.75rem; }
+.jc-launch-head { display: grid; gap: 4px; padding-right: 2.5rem; }
+.jc-launch-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--room-accent, #6db7aa); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.jc-launch-eyebrow svg { width: 14px; height: 14px; }
+.jc-launch-head strong { font-size: 16px; }
+.jc-launch-head small { color: var(--room-muted, #9aa3a0); }
+/* Rows keep their content height (max-content): auto rows of a height-limited scroll list shrink to the button min-height. */
+.jc-launch .jc-launch-options { flex: 0 1 auto; min-height: 6.5rem; max-height: 28rem; display: grid; grid-auto-rows: max-content; align-content: start; gap: 4px; overflow: auto; overscroll-behavior: contain; }
+:is(.jc-pane, .jc-launch) .jc-launch-option {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto auto;
+  grid-template-rows: auto;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  height: auto;
+  min-height: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.1));
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+:is(.jc-pane, .jc-launch) .jc-launch-option img, :is(.jc-pane, .jc-launch) .jc-launch-option > svg:first-child { width: 1.1rem; height: 1.1rem; object-fit: contain; }
+:is(.jc-pane, .jc-launch) .jc-launch-option:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); }
+:is(.jc-pane, .jc-launch) .jc-launch-option.selected { border-color: var(--room-accent, #6db7aa); background: color-mix(in srgb, var(--room-accent, #6db7aa) 14%, transparent); }
+:is(.jc-pane, .jc-launch) .jc-launch-option:disabled { opacity: 0.55; cursor: not-allowed; }
+.jc-launch-option-copy { display: grid; min-width: 0; }
+/* A not-ready runtime's reason wraps: phones have no tooltip to read a cut-off line. */
+.jc-launch-option-copy small { color: var(--room-muted, #9aa3a0); white-space: normal; overflow-wrap: anywhere; }
+.jc-launch-check { width: 14px; height: 14px; color: var(--room-accent, #6db7aa); }
+.jc-launch-remember { min-width: 0; }
+.jc-launch-state { margin: 0; color: var(--room-muted, #9aa3a0); }
+.jc-launch-state.error { color: #f08a8a; }
+.jc-launch-state.warn { color: var(--jc-warn); }
+.jc-default-agent { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.jc-default-agent .jc-muted { flex: 1 1 14rem; margin: 0; }
+.jc-account-fixed { display: grid; gap: 2px; margin: 0; padding: 6px 8px; border: 1px solid var(--jc-border); border-radius: 7px; }
+.jc-account-fixed small { color: var(--jc-muted); }
+.jc-launch-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+:is(.jc-pane, .jc-launch) .jc-launch-actions .jc-button { min-width: 0; max-width: 100%; justify-content: center; }
+.jc-launch .jc-button.primary { border-color: color-mix(in srgb, var(--room-accent, #6db7aa) 70%, transparent); background: color-mix(in srgb, var(--room-accent, #6db7aa) 22%, transparent); }
+
+/* ---- narrow panes: rail stacks under the browser ----------------------- */
+/* Named: unnamed, the collapsed rail's tabs measured the rail itself (44px), so a wide pane's collapsed rail turned
+   its icon column into a row that showed one tab. */
+@container jc-pane (max-width: 900px) {
+  /* The rail keeps at least 240px (60% of a short pane): at two fifths of a short pane its panel was a sliver. */
+  .jc-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 3fr) 6px minmax(min(240px, 60%), 2fr); }
+  .jc-pane[data-rail="collapsed"] .jc-body { grid-template-rows: minmax(0, 1fr) 0 auto; }
+  .jc-rail-handle { cursor: default; border-left: 0; border-top: 1px solid var(--jc-border); }
+  .jc-rail[data-collapsed="true"] .jc-rail-tabs { flex-direction: row; }
+  :is(.jc-pane, .jc-launch) .jc-rail[data-collapsed="true"] .jc-rail-tab { width: auto; height: 32px; padding: 0 10px; border-radius: 16px; }
+  .jc-counters { margin-left: 0; }
+}
+/* Forms in a rail (never wider than 720px) keep one column. */
+@container (max-width: 900px) {
+  .jc-form-grid, .jc-caps { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* A split rail narrower than its six labelled tabs shows icons only (labels stay for assistive tech and tooltips). */
+@container (max-width: 500px) {
+  .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs { justify-content: space-between; }
+  :is(.jc-pane, .jc-launch) .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tab { flex: 1 1 0; justify-content: center; min-width: 0; padding: 0 4px; }
+  .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+  .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-badge { position: absolute; top: -3px; right: 2px; }
+}
+
+/* ---- light mode -------------------------------------------------------- */
+:is([data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.jc-pane, .jc-launch) {
+  --jc-raised: color-mix(in srgb, var(--room-surface, #f5f6f7) 92%, #000000 8%);
+  --jc-ok: #1e7f52;
+  --jc-warn: #9a6a00;
+  --jc-bad: #b43a3a;
+  --jc-info: #2a5fa8;
+}
+:is([data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .jc-pane :is(.jc-queue-add textarea, .jc-queue-csv textarea, .jc-field input, .jc-field select, .jc-field textarea) { background: rgba(255, 255, 255, 0.7); }
+
+@media (prefers-reduced-motion: reduce) {
+  .jc-run-ring-value, .jc-meter-bar, .jc-rail-tab, .jc-rail-tab svg, .jc-event, .jc-event-link, .jc-rail :is(.jc-button, .jc-chip, .jc-search) { transition: none; }
+  .jc-run-ring[data-state="running"] .jc-run-ring-track, .jc-handoff-pulse, .jc-pane[data-handoff="requested"] .browser-control-toggle { animation: none; }
+}
+
+/* ---- run controls, activity, fields, memory (S5) --------------------- */
+.jc-run-needs { padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--jc-warn) 22%, transparent); color: var(--jc-warn); font-weight: 650; }
+.jc-run-controls { display: inline-flex; align-items: center; gap: 6px; }
+
+.jc-activity { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+/* Job Copilot overview: totals since the first day and the per-day history. */
+.jc-overview-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; }
+.jc-overview-totals { display: flex; flex-wrap: wrap; gap: 10px; }
+.jc-overview p { margin: 0; font-size: 12px; }
+.jc-overview-days summary { cursor: pointer; color: var(--jc-muted); font-size: 12px; }
+.jc-overview-days table { width: 100%; margin-top: 4px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.jc-overview-days :is(th, td) { padding: 2px 4px; text-align: right; }
+.jc-overview-days :is(thead th:first-child, tbody th) { text-align: left; font-weight: 500; }
+.jc-overview-days thead th { color: var(--jc-muted); font-weight: 500; }
+.jc-activity-filter { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--jc-muted); }
+/* Timeline: tinted icon discs on a quiet rail line, rows that light up under the pointer like mailbox rows. */
+.jc-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.jc-event { --jc-tone: var(--jc-info); position: relative; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding: 8px 8px 10px; border-radius: 12px; transition: background-color 140ms ease-out; }
+.jc-event:hover { background: color-mix(in srgb, var(--jc-text) 3.5%, transparent); }
+.jc-event::before { content: ""; position: absolute; left: 23.5px; top: 44px; bottom: -6px; width: 1px; background: var(--jc-border); }
+.jc-event:last-child::before { display: none; }
+.jc-event.tone-ok { --jc-tone: var(--jc-ok); }
+.jc-event.tone-warn { --jc-tone: var(--jc-warn); }
+.jc-event.tone-bad { --jc-tone: var(--jc-bad); }
+.jc-event.tone-muted { --jc-tone: var(--jc-muted); }
+.jc-event-icon { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--jc-tone) 16%, transparent); color: var(--jc-tone); }
+.jc-event.tone-muted .jc-event-icon { background: var(--jc-tint); }
+.jc-event-icon svg { width: 15px; height: 15px; }
+.jc-event-body { display: grid; gap: 5px; min-width: 0; padding-top: 6px; }
+.jc-event-body p { margin: 0; color: var(--jc-text); overflow-wrap: anywhere; }
+.jc-event-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 11.5px; }
+:is(.jc-pane, .jc-launch) .jc-event-link { display: inline-flex; align-items: center; gap: 5px; height: 24px; text-decoration: none; min-height: 0; padding: 0 10px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--jc-accent) 14%, transparent);
+  color: var(--jc-accent); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease-out; }
+:is(.jc-pane, .jc-launch) .jc-event-link svg { flex: none; width: 13px; height: 13px; }
+:is(.jc-pane, .jc-launch) .jc-event-link:hover { background: color-mix(in srgb, var(--jc-accent) 26%, transparent); }
+:is(.jc-pane, .jc-launch) .jc-event-link:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
+.jc-event-shot { display: block; max-width: 220px; margin-top: 4px; border: 1px solid var(--jc-border); border-radius: 6px; overflow: hidden; background: rgba(0, 0, 0, 0.3); }
+.jc-event-shot img { display: block; width: 100%; height: auto; }
+
+/* What waits for the operator: a raised card with a warm edge, above the timeline. */
+.jc-pending { display: grid; gap: 10px; padding: 14px; border: 1px solid color-mix(in srgb, var(--jc-warn) 38%, transparent); border-radius: 16px;
+  background: color-mix(in srgb, var(--jc-warn) 7%, var(--jc-bg)); box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); }
+.jc-pending header { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.jc-pending header svg { box-sizing: content-box; width: 15px; height: 15px; padding: 6px; border-radius: 50%; background: color-mix(in srgb, var(--jc-warn) 18%, transparent); color: var(--jc-warn); }
+.jc-pending p { margin: 0; }
+.jc-pending-options { display: flex; flex-wrap: wrap; gap: 4px; }
+:is(.jc-pane, .jc-launch) .jc-pending-options .jc-chip { padding: 4px 12px; font-size: 12px; }
+.jc-pending-answer { display: flex; gap: 8px; }
+.jc-pending-answer input { flex: 1 1 auto; min-width: 0; padding: 6px 8px; border: 1px solid var(--jc-border); border-radius: 7px; background: rgba(0, 0, 0, 0.25); color: inherit; font: inherit; }
+.jc-review-fields { display: grid; gap: 6px; max-height: 40vh; overflow: auto; }
+
+.jc-fields { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+.jc-fields-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.jc-step-group h4 { margin: 0 0 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jc-muted); }
+.jc-fieldlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.jc-fieldrow { display: grid; gap: 4px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--jc-border) 70%, transparent); border-radius: 8px; }
+.jc-fieldrow-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; }
+.jc-fieldrow-label { font-weight: 650; font-size: 12px; color: var(--jc-text); }
+.jc-fieldrow-value { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.jc-fieldrow-value > span { flex: 1 1 auto; }
+.jc-fieldrow-edit { display: flex; gap: 6px; }
+.jc-fieldrow-edit input { flex: 1 1 auto; min-width: 0; padding: 5px 8px; border: 1px solid var(--jc-border); border-radius: 7px; background: rgba(0, 0, 0, 0.25); color: inherit; font: inherit; }
+.jc-tag.ok { border-color: color-mix(in srgb, var(--jc-ok) 55%, transparent); color: var(--jc-ok); }
+.jc-tag.warn { border-color: color-mix(in srgb, var(--jc-warn) 55%, transparent); color: var(--jc-warn); }
+.jc-tag svg { width: 11px; height: 11px; }
+
+.jc-memory-tab { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.jc-memory-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.jc-search { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; padding: 0 8px; border: 1px solid var(--jc-border); border-radius: 7px; background: rgba(0, 0, 0, 0.25); }
+.jc-search svg { width: 14px; height: 14px; color: var(--jc-muted); flex: 0 0 auto; }
+.jc-search input { flex: 1 1 auto; min-width: 0; padding: 6px 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.jc-search input:focus-visible { outline: none; }
+.jc-memory-tab .jc-chips { padding: 0; border-bottom: 0; align-items: center; }
+.jc-chips-total { margin-left: auto; font-size: 11px; }
+.jc-teach { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--jc-border); border-radius: 10px; }
+/* Memory and rule entries are soft cards like the mailbox's messages. */
+.jc-memory-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.jc-memory, .jc-rule { display: grid; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--jc-card); }
+.jc-memory.pinned, .jc-rule.status-proposed { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--jc-accent) 55%, transparent); }
+.jc-rule:is(.status-rejected, .status-retired) { opacity: 0.72; }
+.jc-memory-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 11.5px; }
+.jc-memory-key { font-weight: 650; color: var(--jc-text); font-size: 13px; }
+.jc-memory-actions { display: inline-flex; gap: 2px; margin-left: auto; }
+:is(.jc-pane, .jc-launch) .jc-memory-actions .jc-icon-button { padding: 2px 4px; }
+.jc-memory-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.jc-memory-edit { display: grid; gap: 6px; }
+.jc-memory-edit textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--jc-border); border-radius: 7px; background: rgba(0, 0, 0, 0.25); color: inherit; font: inherit; resize: vertical; }
+.jc-memory-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; }
+.jc-tag.kind-answer { border-color: color-mix(in srgb, var(--jc-info) 55%, transparent); color: var(--jc-info); }
+.jc-tag.kind-lesson { border-color: color-mix(in srgb, var(--jc-warn) 55%, transparent); color: var(--jc-warn); }
+.jc-tag.kind-preference { border-color: color-mix(in srgb, var(--jc-accent) 55%, transparent); color: var(--jc-accent); }
+.jc-tag.kind-company, .jc-tag.kind-site { border-color: color-mix(in srgb, var(--jc-ok) 45%, transparent); color: var(--jc-ok); }
+
+/* ---- discover panel (S7) ---------------------------------------------- */
+.jc-discover { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--jc-border); border-radius: 10px; }
+.jc-discover-form { display: grid; gap: 8px; }
+.jc-discover-form .jc-form-grid { align-items: end; }
+.jc-discover-list { max-height: 40vh; overflow: auto; border-top: 1px solid var(--jc-border); }
+:is(.jc-pane, .jc-launch) .jc-button.selected { border-color: var(--jc-accent); background: color-mix(in srgb, var(--jc-accent) 16%, transparent); }
+
+/* ---- command bar rows -------------------------------------------------- */
+/* Split layout: the two rows are only grouping; the bar still wraps as one flex line. */
+.jc-bar-row { display: contents; }
+.jc-agent-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- stacked layout (phones, panes up to 640px) ------------------------ */
+/* One surface at a time: the browser is a tab, the strip is a bottom bar. The hidden surface
+   keeps its size (visibility, not display) so the live browser and xterm never fit to a zero box. */
+.jc-pane[data-layout="stacked"] .jc-bar {
+  display: grid;
+  /* First column sized by the Start button only: the agent chip spans into the flexible column,
+     so it never squeezes the run pill (an auto first column absorbed the chip's width). */
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px;
+}
+.jc-pane[data-layout="stacked"] .jc-bar-row { display: contents; }
+.jc-pane[data-layout="stacked"] .jc-agent { grid-area: 1 / 1 / 2 / 3; min-width: 0; }
+.jc-pane[data-layout="stacked"] .jc-agent-chip { max-width: 100%; }
+.jc-pane[data-layout="stacked"] .jc-agent-model { display: none; }
+.jc-pane[data-layout="stacked"] .jc-bar-toggles { grid-area: 1 / 3; justify-self: end; gap: 6px; }
+.jc-pane[data-layout="stacked"] .jc-toggle { font-size: 11px; }
+.jc-pane[data-layout="stacked"] .jc-toggle svg { width: 15px; height: 15px; margin-right: 0; }
+.jc-pane[data-layout="stacked"] .jc-run-controls { grid-area: 2 / 1; }
+.jc-pane[data-layout="stacked"] .jc-run-pill { grid-area: 2 / 2 / 3 / 4; justify-self: start; gap: 5px; min-width: 0; max-width: 100%; padding-inline: 7px; overflow: hidden; }
+.jc-pane[data-layout="stacked"] .jc-run-ring { width: 16px; height: 16px; flex: 0 0 auto; }
+.jc-pane[data-layout="stacked"] .jc-run-pill > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A 390px phone leaves about 300px for the bar: the run state is already the Start / Pause / Resume
+   button, so the pill keeps the ring, the queue count and the needs-you badge. */
+.jc-pane[data-layout="stacked"] .jc-run-label { display: none; }
+.jc-pane[data-layout="stacked"] .jc-agent-chip { gap: 6px; padding-right: 8px; }
+/* The counters get a row of their own: beside the run controls they squeezed the pill to its ring and pushed the
+   pause switch out of the pane. */
+.jc-pane[data-layout="stacked"] .jc-counters { grid-area: 3 / 1 / 4 / -1; justify-self: start; flex-wrap: wrap; gap: 2px 10px; margin-left: 0; font-size: 11px; }
+.jc-pane[data-layout="stacked"] .jc-counters:empty { display: none; }
+.jc-pane[data-layout="stacked"] .jc-menu { max-width: calc(100vw - 24px); }
+
+.jc-pane[data-layout="stacked"] .jc-body {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.jc-pane[data-layout="stacked"] .jc-rail-handle { display: none; }
+.jc-pane[data-layout="stacked"] .jc-browser, .jc-pane[data-layout="stacked"] .jc-main { grid-area: 1 / 1; }
+/* The aside dissolves so its strip and body become rows of the pane body. */
+.jc-pane[data-layout="stacked"] .jc-rail { display: contents; }
+.jc-pane[data-layout="stacked"] .jc-rail-body { grid-area: 1 / 1; background: var(--jc-bg); }
+.jc-pane[data-layout="stacked"] .jc-rail-tabs {
+  grid-area: 2 / 1;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 2px 2px calc(4px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--jc-border);
+  border-bottom: 0;
+  background: color-mix(in srgb, var(--jc-text) 4%, var(--jc-bg));
+  overflow-x: auto;
+}
+/* A phone navigation bar: the selected tab's icon sits in an accent pill above its label. */
+.jc-pane[data-layout="stacked"] .jc-rail-tab {
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  height: auto;
+  padding: 6px 0 4px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+/* The icon pill narrows with its tab (padding % reads the tab's width): eight tabs on a phone no longer push the strip wider than the pane. */
+.jc-pane[data-layout="stacked"] .jc-rail-tab svg { box-sizing: content-box; width: 18px; height: 18px; padding: 4px min(16px, calc(50% - 13px)); border-radius: 14px; transition: background-color 140ms ease-out; }
+.jc-pane[data-layout="stacked"] .jc-rail-tab:hover svg { background: var(--jc-tint); }
+.jc-pane[data-layout="stacked"] .jc-rail-tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.jc-pane[data-layout="stacked"] .jc-rail-tab.selected { color: var(--jc-text); }
+.jc-pane[data-layout="stacked"] .jc-rail-tab.selected svg { background: color-mix(in srgb, var(--jc-accent) 24%, transparent); }
+.jc-pane[data-layout="stacked"] .jc-rail-badge { position: absolute; top: 1px; right: 50%; transform: translateX(30px); }
+/* The surface that is not active stays mounted at full size but out of sight and reach. */
+.jc-pane[data-layout="stacked"] .jc-browser[data-active="false"], .jc-pane[data-layout="stacked"] .jc-main[data-active="false"],
+/* The main surface is the browser in Job Copilot (data-browser) and the mailbox in Mail Copilot (data-mail);
+   while it is shown, the rail body that shares its grid cell must not cover it. */
+.jc-pane[data-layout="stacked"]:is([data-browser="visible"], [data-mail="visible"]) .jc-rail-body { visibility: hidden; pointer-events: none; }
+.jc-pane[data-layout="stacked"]:is([data-browser="visible"], [data-mail="visible"]) .jc-rail-body { z-index: 0; }
+.jc-pane[data-layout="stacked"]:is([data-browser="hidden"], [data-mail="hidden"]) .jc-rail-body { z-index: 1; }
+.jc-pane[data-layout="stacked"] .jc-handoff-card { max-width: 100%; }
+.jc-pane[data-layout="stacked"] .jc-form-grid, .jc-pane[data-layout="stacked"] .jc-caps { grid-template-columns: minmax(0, 1fr); }
+.jc-pane[data-layout="stacked"] .jc-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.jc-pane[data-layout="stacked"] .jc-step { padding: 6px 2px; font-size: 11px; }
+
+/* ---- rail controls ----------------------------------------------------- */
+/* Inside the rail, buttons, chips, tags, fields and cards speak the mailbox's language: tonal pills, a filled
+   accent primary, quiet fields that ring in the accent on focus, soft cards. The command bar and the launch
+   dialog keep theirs. */
+.jc-rail .jc-button { min-height: 34px; padding: 6px 14px; gap: 7px; border: 0; border-radius: 17px; background: var(--jc-tint); font-weight: 600; line-height: 1.2;
+  transition: background-color 140ms ease-out, box-shadow 140ms ease-out; }
+.jc-rail .jc-button svg { width: 15px; height: 15px; }
+.jc-rail .jc-button:hover:not(:disabled) { background: var(--jc-tint-strong); }
+.jc-rail :is(.jc-button, .jc-icon-button, .jc-chip, .jc-step):focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
+.jc-rail .jc-button.primary { background: var(--jc-accent); color: var(--jc-on-accent); }
+.jc-rail .jc-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-accent) 88%, #ffffff); box-shadow: 0 4px 14px color-mix(in srgb, var(--jc-accent) 30%, transparent); }
+.jc-rail .jc-button.ghost { background: transparent; color: var(--jc-accent); }
+.jc-rail .jc-button.ghost:hover:not(:disabled) { background: var(--jc-tint); }
+.jc-rail .jc-button.danger { color: var(--jc-bad); }
+.jc-rail .jc-button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-bad) 14%, transparent); }
+.jc-rail .jc-button.selected { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); }
+.jc-rail .jc-icon-button { justify-content: center; width: 30px; height: 30px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--jc-muted); }
+.jc-rail .jc-icon-button svg { width: 15px; height: 15px; }
+.jc-rail .jc-icon-button:hover:not(:disabled) { background: var(--jc-tint); color: var(--jc-text); }
+.jc-rail .jc-icon-button.selected { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); color: var(--jc-accent); }
+
+/* Chips like the mailbox's labels; a radio group of chips is a segmented control. */
+.jc-rail .jc-chips { gap: 6px; }
+.jc-rail .jc-chip { height: 30px; padding: 0 12px; gap: 6px; border: 1px solid var(--jc-border); border-radius: 15px; background: transparent; color: var(--jc-text); font-size: 12.5px;
+  transition: background-color 140ms ease-out; }
+.jc-rail .jc-chip:hover:not(:disabled) { background: var(--jc-tint); }
+.jc-rail .jc-chip.selected { border-color: transparent; background: color-mix(in srgb, var(--jc-accent) 22%, transparent); font-weight: 600; }
+.jc-rail .jc-chips[role="radiogroup"] { align-self: flex-start; display: inline-flex; gap: 2px; padding: 3px; border: 0; border-radius: 18px; background: var(--jc-tint); }
+.jc-rail .jc-chips[role="radiogroup"] .jc-chip { height: 28px; border: 0; border-radius: 14px; color: var(--jc-muted); }
+.jc-rail .jc-chips[role="radiogroup"] .jc-chip:hover:not(:disabled) { color: var(--jc-text); }
+.jc-rail .jc-chips[role="radiogroup"] .jc-chip.selected { background: color-mix(in srgb, var(--jc-accent) 26%, var(--jc-bg)); color: var(--jc-text); box-shadow: 0 1px 3px rgb(0 0 0 / 0.25); }
+
+/* Tags are tinted capsules in their tone. */
+.jc-rail .jc-tag { min-height: 20px; padding: 1px 8px; border-color: transparent; background: var(--jc-tint); font-size: 11px; font-weight: 600; }
+.jc-rail .jc-tag:is(.accent, .kind-preference, .kind-style, .status-proposed) { background: color-mix(in srgb, var(--jc-accent) 16%, transparent); color: var(--jc-accent); }
+.jc-rail .jc-tag:is(.ok, .status-verified, .status-approved, .kind-company, .kind-site, .kind-contact) { background: color-mix(in srgb, var(--jc-ok) 15%, transparent); color: var(--jc-ok); }
+.jc-rail .jc-tag:is(.warn, .status-needs_user, .kind-lesson) { background: color-mix(in srgb, var(--jc-warn) 15%, transparent); color: var(--jc-warn); }
+.jc-rail .jc-tag:is(.status-failed, .status-rejected) { background: color-mix(in srgb, var(--jc-bad) 15%, transparent); color: var(--jc-bad); }
+.jc-rail .jc-tag:is(.status-submitted, .kind-answer, .kind-fact, .kind-template) { background: color-mix(in srgb, var(--jc-info) 15%, transparent); color: var(--jc-info); }
+.jc-rail .jc-tag.status-filling { background: rgb(167 139 250 / 0.16); }
+
+/* Fields: quiet tinted wells that ring in the accent on focus. */
+.jc-rail :is(.jc-field input, .jc-field select, .jc-field textarea, .jc-pending input, .jc-pending textarea, .jc-memory-edit textarea, .jc-fieldrow-edit input, .jc-queue-add textarea, .jc-queue-csv textarea) {
+  padding: 9px 12px; border: 1px solid transparent; border-radius: 12px; background: var(--jc-tint); color: var(--jc-text); box-shadow: none; outline: none;
+  transition: border-color 140ms ease-out, box-shadow 140ms ease-out; }
+.jc-rail :is(.jc-field input, .jc-field select, .jc-field textarea, .jc-pending input, .jc-pending textarea, .jc-memory-edit textarea, .jc-fieldrow-edit input, .jc-queue-add textarea, .jc-queue-csv textarea):focus-visible,
+.jc-rail .jc-search:focus-within { border-color: color-mix(in srgb, var(--jc-accent) 65%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--jc-accent) 18%, transparent); outline: none; }
+.jc-rail .jc-search { height: 38px; padding: 0 14px; gap: 8px; border: 1px solid transparent; border-radius: 19px; background: var(--jc-tint); transition: border-color 140ms ease-out, box-shadow 140ms ease-out; }
+.jc-rail .jc-search svg { width: 16px; height: 16px; }
+.jc-rail .jc-search input, .jc-rail .jc-search input:focus-visible { height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; outline: none; caret-color: var(--jc-accent); }
+
+/* Cards, notes and empty states. */
+.jc-rail :is(.jc-card, .jc-teach, .jc-discover, .jc-google-access, .jc-imap, .jc-account-list, .jc-fieldrow) { border-color: transparent; border-radius: 14px; background: var(--jc-card); }
+.jc-rail .jc-caps { border-radius: 14px; }
+.jc-rail .jc-message { padding: 8px 12px; border-radius: 10px; background: var(--jc-tint); }
+.jc-rail .jc-empty { gap: 6px; margin: 2px 0; padding: 28px 20px; border: 1px dashed color-mix(in srgb, var(--jc-text) 14%, transparent); border-radius: 16px; font-size: 12.5px; line-height: 1.5; }
+.jc-rail .jc-empty strong { font-size: 14px; }
+.jc-rail .jc-actions.sticky { background: linear-gradient(transparent, var(--jc-bg) 40%); }
+
+/* Setup steps: pills with a numbered disc that fills with the accent on the current step. */
+.jc-rail .jc-steps { gap: 4px; padding: 10px 12px 0; }
+.jc-rail .jc-step { height: 34px; min-height: 0; border: 0; border-radius: 17px; transition: background-color 140ms ease-out; }
+.jc-rail .jc-step:hover { background: var(--jc-tint); color: var(--jc-text); }
+.jc-rail .jc-step.selected { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); color: var(--jc-text); }
+.jc-rail .jc-step-index { width: 20px; height: 20px; }
+.jc-rail .jc-step.selected .jc-step-index { background: var(--jc-accent); color: var(--jc-on-accent); }
+
+/* ---- crowded strips ---------------------------------------------------- */
+/* A narrow Setup puts each step's label under its disc, where it may wrap: side by side, "Google account" ran into the
+   next step. */
+@container jc-steps (max-width: 520px) {
+  :is(.jc-pane, .jc-launch) .jc-step { flex-direction: column; gap: 3px; height: auto; padding: 5px 2px; border-radius: 12px; font-size: 11px; line-height: 1.2; text-align: center; white-space: normal; }
+}
+/* A split rail fits its labelled tabs only from about 560px (five tabs, Mail), 650px (six, Job) or 820px (seven,
+   Marketing and Freelance), and the strip hid the last ones (its scrollbar is hidden): until then the selected tab keeps
+   its label and the others show their icon (the label stays for assistive tech and the tooltip). Narrower than 500px
+   every tab is an icon (rule above). */
+@container jc-rail (min-width: 501px) and (max-width: 820px) { .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); } }
+@container jc-rail (min-width: 501px) and (max-width: 650px) { .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs:has(> :nth-child(6)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); } }
+@container jc-rail (min-width: 501px) and (max-width: 560px) { .jc-rail[data-layout="split"]:not([data-collapsed="true"]) .jc-rail-tabs:has(> :nth-child(5)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); } }
+/* The phone tab bar: with eight tabs under 560px (seven under 380px) labels were cut to "Platfor…" and "Bookm…".
+   Then only the selected tab shows its label; it may run under its neighbours' icons, which have none. */
+@container jc-pane (max-width: 560px) {
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { visibility: hidden; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab.selected .jc-rail-tab-label { max-width: none; overflow: visible; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab.selected:first-child .jc-rail-tab-label { align-self: flex-start; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(8)) .jc-rail-tab.selected:last-child .jc-rail-tab-label { align-self: flex-end; }
+}
+@container jc-pane (max-width: 380px) {
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab:not(.selected) .jc-rail-tab-label { visibility: hidden; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab.selected .jc-rail-tab-label { max-width: none; overflow: visible; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab.selected:first-child .jc-rail-tab-label { align-self: flex-start; }
+  .jc-pane[data-layout="stacked"] .jc-rail-tabs:has(> :nth-child(7)) .jc-rail-tab.selected:last-child .jc-rail-tab-label { align-self: flex-end; }
+}
+/* Pause and Stop side by side become icon buttons on a phone-width bar (their titles and text still name them), so
+   the run pill keeps its words. */
+@container jc-pane (max-width: 420px) {
+  .jc-pane[data-layout="stacked"] .jc-run-controls:has(> :nth-child(2)) .jc-button { justify-content: center; gap: 0; padding-inline: 8px; font-size: 0; }
+}

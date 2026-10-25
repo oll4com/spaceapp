@@ -1,0 +1,849 @@
+/* CLI account visuals shared by the pane account picker and the CLI accounts settings. */
+:root {
+  --cli-account-surface: rgba(11, 16, 16, 0.97);
+  --cli-account-border: rgba(126, 196, 181, 0.3);
+  --cli-account-text: #ecf3f1;
+  --cli-account-muted: #8fa9a3;
+  --cli-account-hover: rgba(255, 255, 255, 0.05);
+  --cli-account-active: rgba(120, 200, 184, 0.12);
+  --cli-account-accent: #78c8b8;
+  --cli-account-track: rgba(255, 255, 255, 0.09);
+  --cli-account-avatar-text: #f6faf9;
+  --cli-account-shadow: 0 0.9rem 2.4rem rgba(0, 0, 0, 0.5);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) {
+  --cli-account-surface: var(--modern-surface, #ffffff);
+  --cli-account-border: var(--modern-border-strong, #d1d5db);
+  --cli-account-text: var(--modern-text, #111827);
+  --cli-account-muted: var(--modern-text-muted, #6b7280);
+  --cli-account-hover: rgba(15, 23, 42, 0.05);
+  --cli-account-active: rgba(2, 132, 199, 0.09);
+  --cli-account-accent: var(--modern-accent, #0284c7);
+  --cli-account-track: rgba(15, 23, 42, 0.09);
+  --cli-account-avatar-text: #0f172a;
+  --cli-account-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+}
+
+/* Avatar: initials in a ring of the availability colour. */
+.cli-account-avatar {
+  --cli-account-color: hsl(195 10% 50%);
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 1.95rem;
+  height: 1.95rem;
+  border-radius: 6px;
+  border: 2px solid var(--cli-account-color);
+  background: color-mix(in srgb, var(--cli-account-color) 20%, transparent);
+  color: var(--cli-account-avatar-text);
+  font: 700 0.62rem/1 Inter, system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cli-account-color) 12%, transparent);
+}
+
+.cli-account-avatar[data-tone="blocked"] {
+  background: color-mix(in srgb, var(--cli-account-color) 26%, transparent);
+}
+
+.cli-account-avatar[data-tone="pending"] {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.cli-account-avatar[data-tone="off"] {
+  background: color-mix(in srgb, var(--cli-account-color) 18%, transparent);
+  box-shadow: none;
+}
+
+.cli-account-avatar-check {
+  position: absolute;
+  right: -0.28rem;
+  bottom: -0.24rem;
+  display: inline-grid;
+  place-items: center;
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 3px;
+  background: var(--cli-account-accent);
+  color: #06201b;
+  box-shadow: 0 0 0 2px var(--cli-account-surface);
+}
+
+.cli-account-avatar-check svg {
+  width: 0.62rem;
+  height: 0.62rem;
+  stroke-width: 3.2;
+}
+
+/* Quota bar in the availability colour. */
+.cli-account-meter {
+  --cli-account-color: hsl(195 10% 50%);
+  position: relative;
+  display: block;
+  height: 0.24rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--cli-account-track);
+}
+
+.cli-account-meter[data-tone="blocked"] {
+  background: color-mix(in srgb, var(--cli-account-color) 24%, transparent);
+}
+
+/* One thin bar per quota window (5h and week, or each model group), each in its own colour. */
+.cli-account-meter-split {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+}
+
+.cli-account-meter-split .cli-account-meter {
+  height: 0.16rem;
+}
+
+.cli-account-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cli-account-color);
+  transition: width 0.35s ease, background-color 0.35s ease;
+}
+
+.cli-account-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--cli-account-muted);
+  font: 500 0.6rem/1.2 Inter, system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+.cli-account-legend-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 2px;
+  background: hsl(0 82% 58%);
+}
+
+.cli-account-legend-scale {
+  flex: 1 1 auto;
+  min-width: 2.6rem;
+  height: 0.3rem;
+  border-radius: 2px;
+  background: linear-gradient(90deg, hsl(16 78% 52%), hsl(45 74% 52%), hsl(80 70% 52%), hsl(142 64% 52%));
+}
+
+/* Pane menu: one list, opened by one click on the trigger. The picker narrows it further to the pane's width. */
+.terminal-gemini-account-popover.cli-account-menu {
+  container: cli-account-menu / inline-size;
+  width: 18.5rem;
+  max-width: calc(100vw - 1rem);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--cli-account-border);
+  border-radius: 7px;
+  background: var(--cli-account-surface);
+  color: var(--cli-account-text);
+  box-shadow: var(--cli-account-shadow);
+  white-space: normal;
+  font-size: 0.72rem;
+  animation: cli-account-menu-in 0.12s ease-out;
+}
+
+@keyframes cli-account-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-gemini-account-popover.cli-account-menu { animation: none; }
+  .cli-account-meter-fill { transition: none; }
+}
+
+.cli-account-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--cli-account-track);
+}
+
+.cli-account-menu-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 6px;
+  background: var(--cli-account-hover);
+}
+
+.cli-account-menu-title {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.cli-account-menu-title strong {
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.cli-account-menu-title small {
+  color: var(--cli-account-muted);
+  font-size: 0.64rem;
+}
+
+.cli-account-menu-forecast {
+  display: grid;
+  justify-items: end;
+  gap: 0.1rem;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cli-account-menu-forecast strong {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.cli-account-menu-forecast small {
+  color: var(--cli-account-muted);
+  font-size: 0.6rem;
+}
+
+.cli-account-menu-list {
+  display: grid;
+  grid-auto-rows: max-content;
+  gap: 0.12rem;
+  max-height: min(23rem, 62vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 0.3rem;
+}
+
+.cli-account-menu-item {
+  --cli-account-color: hsl(195 10% 50%);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  min-height: 2.9rem;
+  margin: 0;
+  padding: 0.42rem 0.55rem 0.42rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.cli-account-menu-item:hover {
+  background: var(--cli-account-hover);
+}
+
+.cli-account-menu-item:focus-visible {
+  outline: 2px solid var(--cli-account-accent);
+  outline-offset: -2px;
+}
+
+.cli-account-menu-item.is-active {
+  border-color: color-mix(in srgb, var(--cli-account-accent) 45%, transparent);
+  background: var(--cli-account-active);
+}
+
+.cli-account-menu-item-main {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+/* Badges move under a long name instead of cutting it. */
+.cli-account-menu-item-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.4rem;
+  min-width: 0;
+}
+
+/* A name longer than the row wraps once before it is cut. */
+.cli-account-menu-item-name strong {
+  display: -webkit-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 0.76rem;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.cli-account-active-pill {
+  flex: 0 0 auto;
+  padding: 0.08rem 0.36rem;
+  border-radius: 4px;
+  background: var(--cli-account-accent);
+  color: #06201b;
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Plan reported by the provider: Pro, Free, Team · Max 5x, ... */
+.cli-account-plan-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.06rem 0.32rem;
+  border: 1px solid color-mix(in srgb, var(--cli-account-accent) 45%, transparent);
+  border-radius: 4px;
+  color: var(--cli-account-accent);
+  font-size: 0.56rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Wraps to a second line before it is cut. */
+.cli-account-menu-item-detail {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  color: var(--cli-account-muted);
+  font-size: 0.63rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* "Back in 2h 10m" splits into two even lines, leaving the name its width. */
+.cli-account-menu-item-status {
+  justify-self: end;
+  max-width: 4.2rem;
+  text-wrap: balance;
+  color: var(--cli-account-color);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  line-height: 1.15;
+}
+
+.cli-account-menu-item[data-tone="pending"] .cli-account-menu-item-status,
+.cli-account-menu-item[data-tone="neutral"] .cli-account-menu-item-status,
+.cli-account-menu-item[data-tone="off"] .cli-account-menu-item-status {
+  font-weight: 600;
+}
+
+/* Codex: the ChatGPT accounts Space Gateway picks from, shown for their quota only. */
+.cli-account-pool {
+  display: grid;
+  gap: 0.12rem;
+  margin-top: 0.2rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--cli-account-track);
+}
+
+.cli-account-pool-title {
+  padding: 0.1rem 0.5rem 0.15rem;
+  color: var(--cli-account-muted);
+  font-size: 0.58rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cli-account-menu-item.is-pooled {
+  min-height: 2.6rem;
+  cursor: default;
+}
+
+.cli-account-menu-item.is-pooled:hover {
+  background: transparent;
+}
+
+/* Narrow panes and small screens: tighter rows keep the name, plan and quota readable. */
+@container cli-account-menu (max-width: 16rem) {
+  .cli-account-menu-head {
+    padding: 0.5rem 0.55rem 0.45rem;
+  }
+
+  .cli-account-menu-list {
+    padding: 0.25rem;
+  }
+
+  .cli-account-menu-item {
+    gap: 0.45rem;
+    padding: 0.38rem 0.4rem;
+  }
+
+  .cli-account-avatar {
+    width: 1.7rem;
+    height: 1.7rem;
+  }
+
+  .cli-account-menu-foot {
+    padding: 0.4rem 0.55rem 0.5rem;
+  }
+}
+
+/* The narrowest panes: the status goes under the quota bar so the name keeps the row's width. */
+@container cli-account-menu (max-width: 14.5rem) {
+  .cli-account-menu-item {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 0.15rem;
+  }
+
+  .cli-account-menu-item > .cli-account-avatar {
+    grid-row: span 2;
+  }
+
+  .cli-account-menu-item-status {
+    grid-column: 2;
+    justify-self: start;
+    max-width: none;
+    text-align: left;
+  }
+}
+
+.cli-account-menu-foot {
+  display: flex;
+  padding: 0.45rem 0.75rem 0.55rem;
+  border-top: 1px solid var(--cli-account-track);
+}
+
+.cli-account-menu-foot .cli-account-legend {
+  width: 100%;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.cli-account-active-pill, .cli-account-avatar-check) {
+  color: #ffffff;
+}
+
+/* CLI accounts settings: provider tiles, account rows, linked accounts. */
+.cli-account-profiles.cli-accounts-panel {
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+
+.cli-accounts-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.4rem, 1fr));
+  gap: 0.35rem;
+}
+
+.cli-accounts-provider-tile {
+  min-width: 0;
+  display: grid;
+  gap: 0.22rem;
+  justify-items: start;
+  margin: 0;
+  padding: 0.42rem 0.48rem 0.45rem;
+  border: 1px solid var(--cli-account-track);
+  border-radius: 7px;
+  background: var(--cli-account-hover);
+  color: var(--cli-account-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cli-accounts-provider-tile:hover {
+  border-color: color-mix(in srgb, var(--cli-account-accent) 40%, transparent);
+}
+
+.cli-accounts-provider-tile:focus-visible {
+  outline: 2px solid var(--cli-account-accent);
+  outline-offset: 1px;
+}
+
+.cli-accounts-provider-tile[aria-selected="true"] {
+  border-color: var(--cli-account-accent);
+  background: var(--cli-account-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cli-account-accent) 35%, transparent);
+}
+
+.cli-accounts-provider-tile-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.cli-accounts-provider-tile-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.cli-accounts-provider-tile small {
+  color: var(--cli-account-muted);
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cli-accounts-runtime-icon {
+  flex: 0 0 auto;
+  width: 0.95rem;
+  height: 0.95rem;
+  object-fit: contain;
+}
+
+/* One segment per account in its availability colour. */
+.cli-accounts-provider-strip {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+  height: 0.22rem;
+}
+
+.cli-accounts-provider-strip > span {
+  --cli-account-color: hsl(195 10% 50%);
+  flex: 1 1 0;
+  border-radius: 1px;
+  background: var(--cli-account-color);
+}
+
+.cli-accounts-provider-strip > span[data-tone="pending"] {
+  background: var(--cli-account-track);
+}
+
+.cli-accounts-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-inline: 0.1rem;
+}
+
+.cli-accounts-list-head > span {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.cli-accounts-list-head strong {
+  color: var(--cli-account-text);
+  font-size: 0.74rem;
+}
+
+.cli-accounts-list-head small {
+  color: var(--cli-account-muted);
+  font-size: 0.62rem;
+}
+
+.cli-accounts-list-head svg {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+/* Rows keep their full height; the list scrolls instead of squeezing them. */
+.cli-account-profiles-list.cli-accounts-list {
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 0.3rem;
+  max-height: 22rem;
+}
+
+.cli-account-profile-row.cli-accounts-row {
+  --cli-account-color: hsl(195 10% 50%);
+  position: relative;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.5rem;
+  padding: 0.45rem 0.45rem 0.45rem 0.55rem;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.cli-account-profile-row.cli-accounts-row::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 3px;
+  background: var(--cli-account-color);
+}
+
+.cli-accounts-row .cli-account-avatar {
+  margin-top: 0.05rem;
+}
+
+.cli-accounts-row-main {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.cli-accounts-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.1rem 0.35rem;
+  min-width: 0;
+}
+
+.cli-accounts-row-title strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--cli-account-text);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-accounts-default-chip {
+  flex: 0 0 auto;
+  padding: 0.04rem 0.3rem;
+  border: 1px solid var(--cli-account-track);
+  border-radius: 4px;
+  color: var(--cli-account-muted);
+  font-size: 0.54rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.cli-accounts-row-status {
+  margin-inline-start: auto;
+  flex: 0 0 auto;
+  color: var(--cli-account-color);
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cli-accounts-row-email {
+  overflow: hidden;
+  color: var(--cli-account-muted);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-accounts-row-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  min-height: 1.4rem;
+}
+
+.cli-accounts-row-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.cli-accounts-linked {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--cli-account-accent);
+}
+
+.cli-accounts-linked > svg {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.cli-accounts-linked-chip {
+  box-sizing: border-box;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.2rem;
+  height: 1.2rem;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
+  border: 1px solid var(--cli-account-track);
+  border-radius: 5px;
+  background: var(--cli-account-hover);
+  cursor: pointer;
+}
+
+.cli-accounts-linked-chip:hover,
+.cli-accounts-linked-chip:focus-visible {
+  border-color: var(--cli-account-accent);
+  outline: none;
+}
+
+.cli-accounts-linked-chip .cli-accounts-runtime-icon {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.cli-accounts-duplicate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: hsl(38 92% 60%);
+  font-size: 0.6rem;
+  font-weight: 650;
+}
+
+.cli-accounts-duplicate svg {
+  width: 0.68rem;
+  height: 0.68rem;
+}
+
+.cli-accounts-row .cli-account-profile-actions {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  gap: 0.18rem;
+}
+
+.cli-accounts-row .cli-account-profile-actions button:not(.is-danger):not(:hover):not(:focus-visible) {
+  opacity: 0.7;
+}
+
+.cli-accounts-suggestions {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.45rem;
+  border: 1px dashed color-mix(in srgb, var(--cli-account-accent) 45%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--cli-account-accent) 6%, transparent);
+}
+
+.cli-accounts-suggestions-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  color: var(--cli-account-accent);
+}
+
+.cli-accounts-suggestions-title > svg {
+  flex: 0 0 auto;
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-top: 0.1rem;
+}
+
+.cli-accounts-suggestions-title > span {
+  display: grid;
+  gap: 0.05rem;
+}
+
+.cli-accounts-suggestions-title strong {
+  color: var(--cli-account-text);
+  font-size: 0.68rem;
+}
+
+.cli-accounts-suggestions-title small {
+  color: var(--cli-account-muted);
+  font-size: 0.6rem;
+}
+
+.cli-accounts-suggestion-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.cli-accounts-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.22rem 0.45rem 0.22rem 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--cli-account-accent) 40%, transparent);
+  border-radius: 6px;
+  background: var(--cli-account-surface);
+  color: var(--cli-account-text);
+  font: 650 0.64rem/1.2 Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.cli-accounts-suggestion:hover:not(:disabled),
+.cli-accounts-suggestion:focus-visible {
+  border-color: var(--cli-account-accent);
+  background: var(--cli-account-active);
+  outline: none;
+}
+
+.cli-accounts-suggestion:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.cli-accounts-suggestion > svg {
+  width: 0.7rem;
+  height: 0.7rem;
+  color: var(--cli-account-accent);
+}
+
+.cli-accounts-suggestion > span:not(.cli-accounts-suggestion-sources) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-accounts-suggestion-sources {
+  display: inline-flex;
+  gap: 0.12rem;
+}
+
+.cli-accounts-suggestion-sources .cli-accounts-runtime-icon {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.cli-accounts-foot {
+  display: grid;
+  gap: 0.3rem;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .cli-accounts-duplicate {
+  color: #b45309;
+}
+
+body:not([data-color-mode="light"]) img[data-cli-account-brand="copilot"] {
+  filter: brightness(0) invert(1);
+}
+
+/* Auto (session-level balancing): the first menu entry, marked in the accent colour rather than an account's. */
+.cli-account-auto-mark {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 1.95rem;
+  height: 1.95rem;
+  border-radius: 6px;
+  border: 2px dashed var(--cli-account-accent);
+  color: var(--cli-account-accent);
+  font: 700 0.7rem/1 Inter, system-ui, sans-serif;
+}
+
+.cli-account-auto-item {
+  margin-bottom: 0.3rem;
+  border-color: var(--cli-account-border);
+}

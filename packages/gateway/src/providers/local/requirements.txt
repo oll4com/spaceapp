@@ -1,0 +1,13 @@
+# Space Gateway's local embedding worker (space-local-embeddings.py), installed with --require-hashes --no-deps
+# --only-binary :all: by scripts/space-local-embeddings-setup.mjs: inference needs only these three (onnxruntime's
+# other requirements serve its model tools). Linux x86_64 wheels for CPython 3.12-3.14.
+numpy==2.4.2 \
+    --hash=sha256:9e35d3e0144137d9fdae62912e869136164534d64a169f86438bc9561b6ad49f \
+    --hash=sha256:d0d9b7c93578baafcbc5f0b83eaf17b79d345c6f36917ba0c67f45226911d499 \
+    --hash=sha256:bba37bc29d4d85761deed3954a1bc62be7cf462b9510b51d367b769a8c8df325
+onnxruntime==1.24.2 \
+    --hash=sha256:09aa6f8d766b4afc3cfba68dd10be39586b49f9462fbd1386c5d5644239461ca \
+    --hash=sha256:e92b46cc6d8be4286436a05382a881c88d85a2ae1ea9cfe5e6fab89f2c3e89cc \
+    --hash=sha256:2658b3ce6cb33bdeddfcd74c6da509510310717611220cf2106e6c401febabe5
+tokenizers==0.22.2 \
+    --hash=sha256:369cc9fc8cc10cb24143873a0d95438bb8ee257bb80c71989e3ee290e8d72c67

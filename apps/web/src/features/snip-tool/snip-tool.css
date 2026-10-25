@@ -1,0 +1,355 @@
+/* Snip Tool — compact floating capsule, selection layer and editor.
+   Colors follow the active room theme; the accent is SpaceApp's active-tool red so the
+   floating capsule reads as the same object as the highlighted Snip rail button. */
+.snip-ui {
+  --snip-accent: var(--active-icon-border, #ff4d5e);
+  --snip-accent-hover: color-mix(in srgb, var(--snip-accent) 82%, #ffffff);
+  --snip-accent-deep: color-mix(in srgb, var(--snip-accent) 78%, #000000);
+  --snip-accent-tint: var(--active-icon-background, rgba(92, 15, 28, 0.42));
+  --snip-bg: var(--room-bg, #101112);
+  --snip-surface: var(--room-surface, #151718);
+  --snip-raise: color-mix(in srgb, var(--room-text, #ebe7dc) 6%, var(--room-surface, #151718));
+  --snip-raise-hover: color-mix(in srgb, var(--room-text, #ebe7dc) 12%, var(--room-surface, #151718));
+  --snip-border: var(--room-border, #2f3335);
+  --snip-text: var(--room-text, #ebe7dc);
+  --snip-muted: var(--room-muted, #a7a59e);
+  --snip-focus: var(--room-accent, #6db7aa);
+  --snip-ok: #62c993;
+  --snip-warn: #f5b84a;
+  --snip-danger: #ff8b93;
+  --snip-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--snip-text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+.snip-ui *, .snip-ui *::before, .snip-ui *::after { box-sizing: border-box; }
+.snip-ui :focus-visible { outline: 2px solid var(--snip-focus); outline-offset: 2px; }
+.snip-ui button { font: inherit; }
+.snip-ui button:disabled { cursor: default; }
+.snip-spin { animation: snip-spin 0.8s linear infinite; }
+@keyframes snip-spin { to { transform: rotate(360deg); } }
+
+/* ---------- shared controls ---------- */
+.snip-ui .snip-icon-btn {
+  display: inline-grid; place-items: center; flex: 0 0 auto;
+  width: 30px; height: 30px; min-height: 30px; padding: 0;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--snip-muted);
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.snip-ui .snip-icon-btn svg { width: 16px; height: 16px; }
+.snip-ui .snip-countdown { font-size: 14px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.snip-ui .snip-icon-btn:hover:not(:disabled) { background: var(--snip-raise-hover); border-color: var(--snip-border); color: var(--snip-text); }
+.snip-ui .snip-icon-btn:is(.is-active, [aria-pressed="true"]) {
+  border-color: var(--snip-accent); background: var(--snip-accent-tint); color: #ffffff;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--snip-accent) 22%, transparent);
+}
+.snip-ui .snip-icon-btn:is(.is-active, [aria-pressed="true"]):hover:not(:disabled) { border-color: var(--snip-accent-hover); background: color-mix(in srgb, var(--snip-accent) 30%, transparent); color: #ffffff; }
+.snip-ui .snip-icon-btn.is-locked,
+.snip-ui .snip-icon-btn.is-locked:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--snip-warn) 70%, transparent);
+  background: color-mix(in srgb, var(--snip-warn) 15%, transparent); color: var(--snip-warn); box-shadow: none;
+}
+.snip-ui .snip-close-btn:hover:not(:disabled) { color: var(--snip-danger); }
+
+.snip-ui .snip-text-btn {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 32px; min-height: 32px; padding: 0 10px;
+  border: 1px solid var(--snip-border); border-radius: 8px;
+  background: var(--snip-raise); color: var(--snip-text); white-space: nowrap;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.snip-ui .snip-text-btn svg { width: 15px; height: 15px; color: var(--snip-muted); }
+.snip-ui .snip-text-btn:hover:not(:disabled) { background: var(--snip-raise-hover); border-color: color-mix(in srgb, var(--snip-text) 24%, var(--snip-border)); }
+
+.snip-ui .snip-primary {
+  display: inline-flex; align-items: center; gap: 7px; flex: 0 1 auto; min-width: 0; max-width: 280px;
+  height: 32px; min-height: 32px; padding: 0 14px;
+  border: 1px solid var(--snip-accent); border-radius: 8px;
+  background: var(--snip-accent); color: #ffffff; font-weight: 600;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--snip-accent) 35%, transparent);
+}
+.snip-ui .snip-primary svg { width: 15px; height: 15px; flex-shrink: 0; }
+.snip-ui .snip-primary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snip-ui .snip-primary:hover:not(:disabled) { background: var(--snip-accent-hover); border-color: var(--snip-accent-hover); }
+.snip-ui .snip-primary:disabled { box-shadow: none; }
+
+.snip-ui .snip-select {
+  height: 32px; min-height: 32px; max-width: 190px; padding: 0 8px;
+  border: 1px solid var(--snip-border); border-radius: 8px;
+  background: var(--snip-raise); color: var(--snip-text); font: inherit;
+}
+
+/* ---------- floating capsule ---------- */
+.snip-capsule {
+  position: fixed; z-index: 1000005;
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px;
+  border: 1.5px solid var(--snip-accent); border-radius: 12px;
+  background: color-mix(in srgb, var(--snip-surface) 94%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--snip-accent) 15%, transparent),
+    0 0 22px color-mix(in srgb, var(--snip-accent) 32%, transparent),
+    0 14px 34px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  user-select: none; touch-action: none; cursor: grab;
+}
+.snip-capsule:active { cursor: grabbing; }
+.snip-capsule.is-inline {
+  position: relative; width: max-content; max-width: 100%; flex-wrap: wrap; cursor: default;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--snip-accent) 12%, transparent);
+}
+.snip-capsule-ring {
+  position: absolute; inset: -2px; border-radius: inherit; pointer-events: none;
+  border: 2px solid var(--snip-accent); opacity: 0;
+  animation: snip-ring 1.1s cubic-bezier(0.2, 0.7, 0.3, 1) 2;
+}
+@keyframes snip-ring {
+  0% { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.06, 1.45); }
+}
+.snip-capsule-grip {
+  display: inline-grid; place-items: center; width: 16px; height: 30px; margin-right: 1px;
+  border-radius: 6px; color: var(--snip-accent); cursor: grab;
+}
+.snip-capsule-grip:hover { background: var(--snip-raise-hover); }
+.snip-capsule-grip svg { width: 15px; height: 15px; }
+
+.snip-split {
+  display: inline-flex; align-items: stretch; height: 30px; margin-right: 3px;
+  border-radius: 8px; overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 2px 10px color-mix(in srgb, var(--snip-accent) 30%, transparent);
+}
+.snip-capsule .snip-capsule-snip {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 230px;
+  height: 30px; min-height: 30px; padding: 0 10px 0 9px;
+  border: 0; border-radius: 0; background: var(--snip-accent); color: #ffffff;
+  font-weight: 650; cursor: pointer;
+}
+.snip-capsule .snip-capsule-snip:hover:not(:disabled) { background: var(--snip-accent-hover); }
+.snip-capsule .snip-capsule-snip:disabled { opacity: 1; cursor: progress; }
+.snip-capsule-snip svg { width: 15px; height: 15px; flex-shrink: 0; }
+.snip-capsule-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.snip-capsule-target {
+  min-width: 0; max-width: 130px; padding-left: 7px;
+  border-left: 1px solid rgba(255, 255, 255, 0.38);
+  font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.snip-capsule .snip-capsule-menu-btn {
+  display: inline-grid; place-items: center; width: 22px; height: 30px; min-height: 30px; padding: 0;
+  border: 0; border-left: 1px solid rgba(0, 0, 0, 0.28); border-radius: 0;
+  background: var(--snip-accent-deep); color: #ffffff; cursor: pointer;
+}
+.snip-capsule .snip-capsule-menu-btn:hover:not(:disabled),
+.snip-capsule .snip-capsule-menu-btn[aria-expanded="true"] { background: var(--snip-accent); }
+.snip-capsule .snip-capsule-menu-btn:disabled { opacity: 1; }
+.snip-capsule-menu-btn svg { width: 14px; height: 14px; }
+.snip-capsule.is-busy .snip-icon-btn { opacity: 0.5; }
+
+/* Destination menu */
+.snip-menu {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 2;
+  min-width: 230px; max-width: min(300px, calc(100vw - 16px)); max-height: min(360px, 60vh); overflow-y: auto;
+  padding: 5px; border: 1px solid var(--snip-border); border-radius: 10px;
+  background: var(--snip-surface); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.62);
+  cursor: default; animation: snip-pop 0.12s ease-out;
+}
+.is-near-bottom .snip-menu { top: auto; bottom: calc(100% + 8px); }
+.snip-menu-label { padding: 6px 8px 5px; color: var(--snip-muted); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+.snip-ui .snip-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 32px; padding: 0 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--snip-text); text-align: left; cursor: pointer;
+}
+.snip-ui .snip-menu-item:is(:hover, :focus-visible) { background: var(--snip-raise-hover); outline: none; }
+.snip-ui .snip-menu-item[aria-checked="true"] { color: #ffffff; }
+.snip-menu-check { display: inline-grid; place-items: center; width: 16px; flex-shrink: 0; color: var(--snip-accent); }
+.snip-menu-check svg { width: 14px; height: 14px; }
+.snip-menu-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snip-menu-tag { flex-shrink: 0; padding: 2px 6px; border: 1px solid var(--snip-border); border-radius: 999px; color: var(--snip-muted); font-size: 10.5px; }
+.snip-menu-sep { height: 1px; margin: 5px 4px; background: var(--snip-border); }
+
+/* Result toast, attached under the capsule so feedback appears where the eye already is */
+.snip-toast {
+  position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 1;
+  display: flex; align-items: center; gap: 8px; min-height: 36px;
+  padding: 6px 6px 6px 10px; border: 1px solid var(--snip-ok); border-radius: 10px;
+  background: var(--snip-surface); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px; cursor: default; animation: snip-pop 0.16s ease-out;
+}
+.is-near-bottom .snip-toast { top: auto; bottom: calc(100% + 8px); }
+.snip-toast > svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--snip-ok); }
+.snip-toast.is-error { border-color: var(--snip-danger); }
+.snip-toast.is-error > svg { color: var(--snip-danger); }
+.snip-toast-text { flex: 1; min-width: 0; line-height: 1.35; overflow-wrap: anywhere; }
+.snip-ui .snip-toast-action {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  height: 26px; min-height: 26px; padding: 0 9px;
+  border: 1px solid var(--snip-accent); border-radius: 7px;
+  background: var(--snip-accent-tint); color: #ffffff; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.snip-ui .snip-toast-action:hover { background: var(--snip-accent); border-color: var(--snip-accent); }
+.snip-toast-action svg { width: 13px; height: 13px; }
+@keyframes snip-pop { from { opacity: 0; transform: translateY(-4px); } }
+
+/* Docked on the right rail: a 48x52 card in the desktop widgets' rail column */
+.snip-capsule.is-dock-preview { outline: 2px dashed var(--snip-accent); outline-offset: 3px; }
+.snip-rail-card {
+  position: fixed; right: 2px; z-index: 240; box-sizing: border-box;
+  width: 48px; height: 52px; padding: 3px;
+  border: 1.5px solid var(--snip-accent); border-radius: 12px;
+  background: color-mix(in srgb, var(--snip-surface) 94%, transparent);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  user-select: none; touch-action: none; cursor: grab;
+  transition: top 0.22s cubic-bezier(0.2, 0, 0, 1);
+}
+.snip-rail-card.is-dragging { z-index: 9999; cursor: grabbing; transition: none; }
+.snip-rail-card.is-undocking { opacity: 0.85; }
+.snip-ui .snip-rail-snip {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  width: 100%; height: 100%; padding: 0; border: 0; border-radius: 9px;
+  background: transparent; color: var(--snip-text); cursor: inherit;
+}
+.snip-ui .snip-rail-snip:hover:not(:disabled) { background: var(--snip-accent-tint); }
+.snip-rail-snip svg { width: 16px; height: 16px; color: var(--snip-accent); }
+.snip-rail-verb { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.snip-rail-target { max-width: 40px; overflow: hidden; color: var(--snip-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.snip-rail-card .snip-toast { top: 0; right: calc(100% + 8px); left: auto; width: 280px; }
+
+.snip-inline-hint { margin: 10px 0 0; color: var(--room-muted, #a7a59e); font-size: 12.5px; line-height: 1.5; }
+
+/* ---------- selection layer ---------- */
+.snip-layer {
+  position: fixed; inset: 0; z-index: 1000005; overflow: hidden;
+  background: rgba(0, 0, 0, 0.22); cursor: crosshair; touch-action: none; user-select: none;
+}
+.snip-layer.is-dragging { background: transparent; }
+.snip-guide { position: absolute; left: 0; top: 0; pointer-events: none; background: color-mix(in srgb, var(--snip-accent) 55%, transparent); will-change: transform; }
+.snip-guide-x { width: 100%; height: 1px; transform: translateY(-10px); }
+.snip-guide-y { width: 1px; height: 100%; transform: translateX(-10px); }
+@media (hover: none) { .snip-guide { display: none; } }
+.snip-selection-box { position: absolute; border: 1.5px solid var(--snip-accent); box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45); pointer-events: none; }
+.snip-selection-dimensions {
+  position: absolute; left: -1.5px; top: calc(100% + 6px); padding: 3px 7px; border-radius: 6px;
+  background: var(--snip-accent); color: #ffffff; font: 600 11px/1.2 var(--snip-mono); white-space: nowrap;
+}
+/* The page capture leaves this layer out by itself. It must not pre-hide: the screen-share fallback
+   waits for the frame that hiding the layer produces. */
+.snip-layer.is-capturing { cursor: progress; }
+.snip-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* ---------- editor ---------- */
+.snip-editor {
+  position: fixed; inset: 0; z-index: 1000006;
+  display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: color-mix(in srgb, var(--snip-bg) 96%, transparent);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  overscroll-behavior: contain;
+}
+body:has(.desktop-window-titlebar) .snip-editor { padding-top: max(36px, env(safe-area-inset-top)); }
+.snip-editor-bar, .snip-editor-foot {
+  display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0;
+  padding: 8px 12px; background: var(--snip-surface);
+}
+.snip-editor-bar { gap: 6px; border-bottom: 1px solid var(--snip-border); }
+.snip-editor-foot { gap: 8px 14px; border-top: 1px solid var(--snip-border); }
+.snip-editor-group { display: inline-flex; align-items: center; gap: 2px; }
+.snip-editor-group[role="toolbar"] { padding: 2px; border: 1px solid var(--snip-border); border-radius: 10px; background: var(--snip-bg); }
+.snip-editor-group[role="toolbar"] .snip-icon-btn { width: 32px; height: 32px; min-height: 32px; }
+.snip-editor-group[role="toolbar"] .snip-icon-btn svg { width: 17px; height: 17px; }
+.snip-divider { width: 1px; height: 22px; margin: 0 4px; background: var(--snip-border); }
+.snip-editor-spacer { flex: 1; }
+.snip-ui .snip-swatch {
+  width: 22px; height: 22px; min-height: 22px; margin: 0 2px; padding: 0;
+  border: 2px solid transparent; border-radius: 50%;
+  background: var(--snip-swatch); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35); cursor: pointer;
+}
+.snip-ui .snip-swatch:hover:not(:disabled) { border-color: transparent; transform: scale(1.1); }
+.snip-ui .snip-swatch[aria-checked="true"] { border-color: var(--snip-surface); box-shadow: 0 0 0 2px var(--snip-text); }
+.snip-ui .snip-size {
+  width: 28px; height: 28px; min-height: 28px; padding: 0;
+  border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: var(--snip-muted); font-size: 12px; font-weight: 650; cursor: pointer;
+}
+.snip-ui .snip-size:hover:not(:disabled) { border-color: var(--snip-border); color: var(--snip-text); }
+.snip-ui .snip-size[aria-checked="true"] { border-color: var(--snip-border); background: var(--snip-raise-hover); color: var(--snip-text); }
+
+.snip-editor-canvas { flex: 1; min-height: 0; display: grid; place-items: center; padding: 16px; overflow: hidden; }
+.snip-image-stage {
+  position: relative; max-width: 100%; overflow: hidden; border-radius: 2px;
+  background: repeating-conic-gradient(#1b1d1f 0 25%, #232628 0 50%) 0 0 / 16px 16px;
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--snip-border);
+  touch-action: none; user-select: none; cursor: crosshair; outline: none;
+}
+.snip-image-stage:focus-visible { outline: 1px solid color-mix(in srgb, var(--snip-focus) 70%, transparent); outline-offset: 4px; }
+.snip-image-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.snip-draft-layer { pointer-events: none; }
+
+.snip-crop-box { position: absolute; border: 1.5px solid #ffffff; outline: 1px solid rgba(0, 0, 0, 0.45); box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.64); pointer-events: none; }
+.snip-crop-box.is-full { box-shadow: none; border-color: transparent; outline: none; }
+.snip-crop-box.is-active { pointer-events: auto; }
+.snip-crop-inner { position: absolute; inset: 0; }
+.snip-crop-inner[data-move] { cursor: move; }
+.snip-handle { position: absolute; z-index: 1; width: 12px; height: 12px; border: 1.5px solid var(--snip-accent); border-radius: 3px; background: #ffffff; }
+.snip-handle-nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.snip-handle-n { top: -6px; left: calc(50% - 6px); cursor: ns-resize; }
+.snip-handle-ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.snip-handle-e { top: calc(50% - 6px); right: -6px; cursor: ew-resize; }
+.snip-handle-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.snip-handle-s { bottom: -6px; left: calc(50% - 6px); cursor: ns-resize; }
+.snip-handle-sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.snip-handle-w { top: calc(50% - 6px); left: -6px; cursor: ew-resize; }
+.snip-crop-box.is-full .snip-handle-nw, .snip-crop-box.is-full .snip-handle-ne, .snip-crop-box.is-full .snip-handle-sw, .snip-crop-box.is-full .snip-handle-se { border-radius: 0; }
+.snip-crop-box:not(.is-active) :is(.snip-handle, .snip-crop-inner) { display: none; }
+.snip-crop-badge {
+  position: absolute; top: 6px; left: 6px; padding: 2px 6px; border-radius: 5px;
+  background: rgba(0, 0, 0, 0.68); color: #ffffff; font: 600 11px/1.3 var(--snip-mono); pointer-events: none;
+}
+.snip-crop-box:not(.is-active) .snip-crop-badge, .snip-crop-box.is-full .snip-crop-badge { display: none; }
+
+.snip-inline-text-popup { position: absolute; z-index: 3; transform: translate(-3.5px, -3.5px); }
+.snip-ui .snip-inline-text-input {
+  min-width: 180px; min-height: 0; height: auto; padding: 2px 6px;
+  border: 1.5px dashed var(--snip-accent); border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5); font-weight: 700; line-height: 1.15; outline: none;
+  text-shadow: 0 0 2px #000000;
+}
+
+.snip-crop-fields { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.snip-crop-fields label { display: inline-flex; align-items: center; gap: 4px; color: var(--snip-muted); font-size: 11px; font-weight: 600; }
+.snip-ui .snip-crop-fields input {
+  width: 64px; height: 30px; min-height: 30px; padding: 0 6px;
+  border: 1px solid var(--snip-border); border-radius: 7px;
+  background: var(--snip-bg); color: var(--snip-text); font: 12px var(--snip-mono);
+}
+.snip-status { flex: 1 1 160px; min-width: 0; margin: 0; color: var(--snip-muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snip-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+.snip-alert { flex-basis: 100%; margin: 0; color: var(--snip-danger); font-size: 12.5px; }
+
+@media (max-width: 760px) {
+  .snip-editor-bar { gap: 4px; padding: 6px 8px; }
+  .snip-divider { display: none; }
+  .snip-editor-canvas { padding: 8px; }
+  .snip-editor-foot { gap: 8px; padding: 8px; }
+  .snip-status { order: -1; flex-basis: 100%; }
+  /* Handles cover cropping on phones; keep the footer to two rows. */
+  .snip-crop-fields label { display: none; }
+  .snip-actions { flex: 1 1 auto; justify-content: flex-start; }
+  .snip-ui .snip-select { max-width: 116px; }
+  .snip-actions .snip-primary { margin-left: auto; }
+  /* Icon-only on phones; the label stays available to assistive technology. */
+  .snip-actions .snip-text-btn > span, .snip-crop-fields .snip-text-btn > span {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap;
+  }
+  .snip-actions .snip-text-btn, .snip-crop-fields .snip-text-btn { width: 32px; padding: 0; justify-content: center; }
+  .snip-capsule-target { max-width: 90px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .snip-capsule-ring, .snip-menu, .snip-toast { animation: none; }
+  .snip-capsule-ring { display: none; }
+  .snip-spin { animation-duration: 2s; }
+}

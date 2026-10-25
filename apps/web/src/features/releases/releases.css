@@ -1,0 +1,177 @@
+/* Settings → Releases: the two versions as rows, the last promotion, what waits, one action.
+   Colours sit on divs: the Modern theme makes dock paragraphs and spans inherit theirs. */
+.releases-card {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  font-size: 0.78rem;
+}
+
+.releases-muted {
+  color: var(--room-muted, #a2a7ad);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.releases-muted a {
+  color: var(--room-accent, #58a6ff);
+  white-space: nowrap;
+}
+
+.releases-error {
+  color: var(--room-danger, #f0abb4);
+  font-size: 0.75rem;
+}
+
+.releases-versions {
+  display: grid;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 10px;
+}
+
+.releases-version {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 0.6rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.releases-version + .releases-version {
+  border-top: 1px solid var(--room-border, #343638);
+}
+
+.releases-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--room-muted, #a2a7ad);
+}
+
+.releases-dot.tone-ok {
+  background: #3fb68b;
+}
+
+.releases-dot.tone-warn {
+  background: #d9a441;
+}
+
+.releases-version-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.releases-version-name {
+  color: var(--room-text, #f4efe5);
+  font-size: 0.8rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.releases-version > code {
+  color: var(--room-muted, #a2a7ad);
+  font-size: 0.7rem;
+}
+
+.releases-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.releases-message {
+  font-size: 0.75rem;
+}
+
+.releases-pending-block {
+  display: grid;
+  gap: 6px;
+}
+
+.releases-pending-block > h4 {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.releases-pending {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 1.1rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.releases-hotfixes {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.releases-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.releases-actions > .releases-muted {
+  flex: 1 1 12rem;
+}
+
+.releases-actions button,
+.releases-hotfix button {
+  min-height: 2rem;
+  padding: 0 12px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--room-text, #f4efe5);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.releases-actions button:disabled,
+.releases-hotfix button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* .space-shell outranks the theme's dock button surface rule (0,4,0). */
+.releases-actions .releases-primary,
+.space-shell .releases-card .releases-actions > button.releases-primary {
+  border-color: var(--room-accent, #58a6ff);
+  background: color-mix(in srgb, var(--room-accent, #58a6ff) 16%, transparent);
+  color: var(--room-text, #f4efe5);
+  font-weight: 650;
+}
+
+.releases-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #d9a441;
+  border-radius: 8px;
+  line-height: 1.45;
+}
+
+.releases-hotfix {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 8px;
+}

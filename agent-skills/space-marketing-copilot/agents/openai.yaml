@@ -1,0 +1,4 @@
+interface:
+  display_name: "Marketing Copilot"
+  short_description: "Promote SpaceApp from a Space Marketing Copilot pane: draft grounded posts, get them reviewed, publish on the operator's own accounts through the pane browser."
+  default_prompt: "Use $space-marketing-copilot: call space_marketing_next until it returns done, ground every claim in space_marketing_facts, ask for reviews under Assist and on capped channels, publish only after space_marketing_publish_begin succeeds, and report the published URL with space_marketing_publish_done."

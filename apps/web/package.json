@@ -1,0 +1,47 @@
+{
+  "name": "@space/web",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 4911",
+    "serve": "node server.mjs",
+    "start": "node server.mjs",
+    "build": "tsc -p tsconfig.json && vite build && node scripts/compress-dist-assets.mjs && node scripts/fix-dist-permissions.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-sdk/gateway": "4.0.87",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@formkit/auto-animate": "^0.10.0",
+    "@noble/hashes": "^2.4.0",
+    "@novnc/novnc": "^1.7.0",
+    "@space/contracts": "0.2.5",
+    "@space/icons": "0.2.5",
+    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.14.13",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@uiw/react-codemirror": "^4.25.12",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "cube-motion": "^0.1.0",
+    "graphology": "0.26.0",
+    "motion": "^13.4.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "sigma": "3.0.3"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "jsdom": "^27.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  },
+  "license": "MIT"
+}

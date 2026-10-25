@@ -1,0 +1,4 @@
+interface:
+  display_name: "Space Progress"
+  short_description: "Report this pane's progress (started, step done, blocked, needs a decision, done) to Nous."
+  default_prompt: "Use $space-progress: report started at the beginning of the task, progress after each plan step or ticket, blocked or needs-decision with the options and your recommendation, and done or failed with the full report file."

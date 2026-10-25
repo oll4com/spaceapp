@@ -1,0 +1,329 @@
+import { describe, expect, it, vi } from "vitest";
+import { InMemorySpaceStore } from "@space/runtime";
+import { createApp } from "../src/app.js";
+import {
+  cookieName,
+  createCsrfToken,
+  csrfHeaderName,
+  hashPassword,
+  signSession
+} from "../src/auth.js";
+import { getApiConfig } from "../src/config.js";
+import { createOwnerSetupBootstrap } from "../src/owner-setup.js";
+import type { SetupConnectionsService } from "../src/setup-connections.js";
+
+// Each app lifecycle starts and closes the whole API. On loaded hosts
+// (2026-10-11) createApp took up to 15 s and app.close() 11-38 s, so the
+// default 5 s limit says nothing about correctness.
+const APP_LIFECYCLE_TIMEOUT_MS = 60_000;
+
+describe("public single-owner setup API", () => {
+  it("small public profile is ready without contacting a disabled worker, and enabled profiles still require it", async () => {
+    for (const enabled of [false, true]) {
+      let checks = 0;
+      const app = await createApp({
+        store: new InMemorySpaceStore(),
+        config: getApiConfig({ SPACE_PUBLIC_DISTRIBUTION: "true", SPACEAPP_WORKFLOWS_ENABLED: String(enabled),
+          SPACE_BROWSER_SESSIONS_ENABLED: "false", SPACE_CLI_ENABLED: "false" }),
+        workerReadinessChecker: async () => {
+          checks++;
+          return { id: "space-worker", status: "ERROR", statusReason: "Owned unavailable worker fixture",
+            address: "unavailable:7233", namespace: "default", taskQueue: "space-agent-turns", reachable: false,
+            workflowPollerCount: 0, activityPollerCount: 0, pollerCount: 0, workflowBacklogCount: null,
+            activityBacklogCount: null, pollerIdentities: [], lastPollerAccessAt: null, checkedAt: new Date().toISOString() };
+        }
+      });
+      try {
+        const response = await app.inject({ method: "GET", url: "/readyz" });
+        expect(response.json().ok).toBe(!enabled);
+        expect(response.json().dependencies.worker).toBe(enabled ? "ERROR" : "disabled");
+        expect(checks).toBe(enabled ? 1 : 0);
+      } finally { await app.close(); }
+    }
+    // Public profile controls cannot turn off the live/private readiness requirement.
+    expect(getApiConfig({ SPACEAPP_WORKFLOWS_ENABLED: "false" }).workflowsEnabled).toBe(true);
+  }, 2 * APP_LIFECYCLE_TIMEOUT_MS);
+  it("claims an expiring token once, creates a session, and enables later owner login", async () => {
+    const token = "setup-token-value-with-at-least-thirty-two-characters";
+    const legacyPassword = "legacy operator password";
+    const sessionSecret = "test-session-secret-with-enough-length";
+    const store = new InMemorySpaceStore();
+    let connectionState: "NEEDS_SETUP" | "CONNECTED" = "NEEDS_SETUP";
+    let verifyAllCalls = 0;
+    const setupConnections: SetupConnectionsService = {
+      overview: async () => [{
+        id: "cli:codex",
+        label: "Codex CLI",
+        providerName: "Codex",
+        category: "AI coding CLI",
+        state: connectionState,
+        functionalState: connectionState === "CONNECTED" ? "FUNCTIONAL" : "NEEDS_SETUP",
+        liveVerificationState: connectionState === "CONNECTED" ? "VERIFIED" : "NOT_CHECKED",
+        reasonCode: connectionState === "CONNECTED" ? null : "CREDENTIAL_REQUIRED",
+        verifiedAt: connectionState === "CONNECTED" ? "2026-07-29T10:00:00.000Z" : null,
+        staleAt: connectionState === "CONNECTED" ? "2026-08-28T10:00:00.000Z" : null,
+        actions: connectionState === "CONNECTED" ? ["VERIFY"] : ["OPEN_LOGIN_PANE", "VERIFY"]
+      }],
+      verify: async (connectionId) => {
+        expect(connectionId).toBe("cli:codex");
+        connectionState = "CONNECTED";
+        return (await setupConnections.overview())[0]!;
+      },
+      verifyAll: async () => {
+        verifyAllCalls += 1;
+        connectionState = "CONNECTED";
+        return setupConnections.overview();
+      },
+      recordVerifiedEvidence: async () => {
+        connectionState = "CONNECTED";
+        return (await setupConnections.overview())[0]!;
+      }
+    };
+    const app = await createApp({
+      store,
+      setupConnections,
+      auth: {
+        sessionSecret,
+        operatorEmail: "legacy@example.com",
+        operatorPasswordHash: await hashPassword(legacyPassword),
+        devLogin: false,
+        secureCookies: false
+      },
+      setup: createOwnerSetupBootstrap(token, "2099-07-23T12:15:00.000Z"),
+      config: getApiConfig({
+        SPACE_BROWSER_EVIDENCE_ENABLED: "false",
+        SPACE_BROWSER_SESSIONS_ENABLED: "false"
+      })
+    });
+
+    const initial = await app.inject({ method: "GET", url: "/api/setup/status" });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toEqual({
+      setupRequired: true,
+      expiresAt: "2099-07-23T12:15:00.000Z"
+    });
+    const initialAuth = await app.inject({ method: "GET", url: "/api/auth/me" });
+    expect(initialAuth.json()).toMatchObject({
+      isAuthenticated: false,
+      isSetupRequired: true
+    });
+
+    const operatorToken = signSession(
+      { id: "user:read-only-operator", email: "operator@example.com", role: "OPERATOR" },
+      sessionSecret
+    );
+    const operatorCookie = `${cookieName}=${operatorToken}`;
+    const operatorCsrfToken = createCsrfToken(operatorToken, sessionSecret)!;
+    const operatorOverview = await app.inject({
+      method: "GET",
+      url: "/api/setup/overview",
+      headers: { cookie: operatorCookie }
+    });
+    expect(operatorOverview.statusCode).toBe(403);
+    for (const url of [
+      "/api/setup/starter-room",
+      "/api/setup/connections/cli:codex/verify",
+      "/api/setup/connections/verify-all",
+      "/api/setup/finish"
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url,
+        headers: {
+          cookie: operatorCookie,
+          [csrfHeaderName]: operatorCsrfToken
+        }
+      });
+      expect(response.statusCode).toBe(403);
+    }
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/setup/claim",
+      payload: {
+        token: "wrong-token-value-with-at-least-thirty-two-characters",
+        email: "owner@example.com",
+        password: "correct horse battery staple"
+      }
+    });
+    expect(rejected.statusCode).toBe(409);
+    expect(store.getOwnerCredentials()).toBeNull();
+
+    const claimed = await app.inject({
+      method: "POST",
+      url: "/api/setup/claim",
+      payload: {
+        token,
+        email: "owner@example.com",
+        password: "correct horse battery staple"
+      }
+    });
+    expect(claimed.statusCode).toBe(200);
+    expect(claimed.cookies.find((entry) => entry.name === "space_session")?.name).toBe("space_session");
+    expect(claimed.json()).toMatchObject({
+      user: { id: "user:owner", email: "owner@example.com", role: "ADMIN" },
+      isAuthenticated: true,
+      isSetupRequired: false,
+      onboardingVersion: 1,
+      isOnboardingComplete: false
+    });
+    const starterRoomId = claimed.json().starterRoomId as string;
+    expect(starterRoomId).toMatch(/^room:/);
+    expect(store.listRooms()).toEqual([
+      expect.objectContaining({
+        id: starterRoomId,
+        name: "Getting Started"
+      })
+    ]);
+    // The starter room ships with the OpenCode CLI pane ready so the first
+    // visit lands on the free-model agent immediately.
+    expect(store.listPanes(starterRoomId)).toEqual([
+      expect.objectContaining({
+        roomId: starterRoomId,
+        mode: "TERMINAL",
+        terminalRuntimeId: "cli:opencode",
+        title: expect.stringMatching(/^OpenCode CLI/)
+      })
+    ]);
+
+    const sessionCookie = `${claimed.cookies.find((entry) => entry.name === "space_session")!.name}=${claimed.cookies.find((entry) => entry.name === "space_session")!.value}`;
+    const csrf = await app.inject({
+      method: "GET",
+      url: "/api/auth/csrf",
+      headers: { cookie: sessionCookie }
+    });
+    expect(csrf.statusCode).toBe(200);
+    const csrfPayload = csrf.json() as { csrfToken: string; headerName: string };
+
+    const overview = await app.inject({
+      method: "GET",
+      url: "/api/setup/overview",
+      headers: { cookie: sessionCookie }
+    });
+    expect(overview.statusCode).toBe(200);
+    expect(overview.json()).toEqual({
+      onboardingVersion: 1,
+      isComplete: false,
+      completedAt: null,
+      starterRoomId,
+      summary: {
+        total: 1,
+        functional: 0,
+        liveVerified: 0,
+        needsSetup: 1
+      },
+      connections: [
+        expect.objectContaining({
+          id: "cli:codex",
+          state: "NEEDS_SETUP",
+          reasonCode: "CREDENTIAL_REQUIRED"
+        })
+      ]
+    });
+
+    const verified = await app.inject({
+      method: "POST",
+      url: "/api/setup/connections/cli:codex/verify",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json()).toMatchObject({
+      id: "cli:codex",
+      state: "CONNECTED",
+      reasonCode: null
+    });
+
+    const verifiedAll = await app.inject({
+      method: "POST",
+      url: "/api/setup/connections/verify-all",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(verifiedAll.statusCode).toBe(200);
+    expect(verifiedAll.json()).toMatchObject({
+      connections: [expect.objectContaining({ id: "cli:codex", state: "CONNECTED" })]
+    });
+    expect(verifyAllCalls).toBe(1);
+
+    const ensured = await app.inject({
+      method: "POST",
+      url: "/api/setup/starter-room",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(ensured.statusCode).toBe(200);
+    expect(ensured.json()).toMatchObject({
+      room: { id: starterRoomId, name: "Getting Started" },
+      onboarding: { starterRoomId }
+    });
+    expect(store.listRooms()).toHaveLength(1);
+
+    const finished = await app.inject({
+      method: "POST",
+      url: "/api/setup/finish",
+      headers: {
+        cookie: sessionCookie,
+        [csrfPayload.headerName]: csrfPayload.csrfToken
+      }
+    });
+    expect(finished.statusCode).toBe(200);
+    expect(finished.json()).toMatchObject({
+      onboardingVersion: 1,
+      isComplete: true,
+      starterRoomId,
+      connections: [expect.objectContaining({ id: "cli:codex", state: "CONNECTED" })]
+    });
+
+    const status = await app.inject({ method: "GET", url: "/api/setup/status" });
+    expect(status.json()).toEqual({ setupRequired: false, expiresAt: null });
+    const claimedAuth = await app.inject({ method: "GET", url: "/api/auth/me", remoteAddress: "203.0.113.10" });
+    expect(claimedAuth.json()).toMatchObject({
+      isAuthenticated: false,
+      isSetupRequired: false
+    });
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: {
+        email: "owner@example.com",
+        password: "correct horse battery staple"
+      }
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.cookies.find((entry) => entry.name === "space_session")?.name).toBe("space_session");
+
+    const legacyLogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: {
+        email: "legacy@example.com",
+        password: legacyPassword
+      }
+    });
+    expect(legacyLogin.statusCode).toBe(401);
+
+    // Review F16: once claimed, the route refuses before hashing the password or calling the claim.
+    const claimSpy = vi.spyOn(store, "claimOwnerSetup");
+    const secondClaim = await app.inject({
+      method: "POST",
+      url: "/api/setup/claim",
+      payload: {
+        token,
+        email: "other@example.com",
+        password: "another correct horse battery"
+      }
+    });
+    expect(secondClaim.statusCode).toBe(409);
+    expect(claimSpy).not.toHaveBeenCalled();
+
+    await app.close();
+  }, APP_LIFECYCLE_TIMEOUT_MS);
+});

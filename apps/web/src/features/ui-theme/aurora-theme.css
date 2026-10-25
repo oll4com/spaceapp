@@ -1,0 +1,148 @@
+/* Aurora: polar night glass, aurora-lit chrome and a glowing focus pane. Shares the Modern layout. */
+:root[data-interface-theme="aurora"] {
+  --room-accent: #5eead4;
+  --aurora-gradient: linear-gradient(90deg, #5eead4 0%, #38bdf8 32%, #a78bfa 66%, #f472b6 100%);
+  scrollbar-color: #343c6e transparent;
+}
+
+:root[data-interface-theme="aurora"] [data-ui-theme="modern"] {
+  --modern-bg: #04050e;
+  --modern-surface: #0a0d1f;
+  --modern-surface-raised: #10142b;
+  --modern-surface-soft: #151a36;
+  --modern-border: #1f2547;
+  --modern-border-strong: #343c6e;
+  --modern-text: #eef2ff;
+  --modern-muted: #a3acd6;
+  --modern-faint: #8089bd;
+  --modern-accent: #5eead4;
+  --modern-accent-strong: #99f6e4;
+  --modern-accent-soft: rgba(94, 234, 212, 0.13);
+  --modern-on-accent: #04131a;
+  --modern-terminal: #05061a;
+  --modern-terminal-text: #e9edff;
+  --modern-terminal-muted: #98a1cf;
+  --modern-danger: #fb7185;
+  --modern-danger-soft: rgba(251, 113, 133, 0.14);
+  --modern-warning: #fcd34d;
+  --modern-warning-soft: rgba(252, 211, 77, 0.13);
+  --modern-success: #6ee7b7;
+  --modern-success-soft: rgba(110, 231, 183, 0.13);
+  --modern-shadow: 0 18px 54px rgba(0, 0, 0, 0.62);
+  --modern-card-shadow: 0 10px 34px rgba(0, 0, 0, 0.42);
+  --room-accent: var(--modern-accent);
+  color-scheme: dark;
+}
+
+:root[data-interface-theme="aurora"] ::selection {
+  background: rgba(167, 139, 250, 0.38);
+}
+
+/* Static sky behind the chrome; the animated curtains live in the Aurora background. */
+:root[data-interface-theme="aurora"] .space-shell[data-ui-theme="modern"],
+.modern-theme-page.aurora-theme-page {
+  background-color: #04050e;
+  background-image:
+    radial-gradient(ellipse 55% 38% at 12% -6%, rgba(45, 212, 191, 0.26), transparent 70%),
+    radial-gradient(ellipse 48% 34% at 52% -12%, rgba(56, 189, 248, 0.16), transparent 70%),
+    radial-gradient(ellipse 55% 42% at 90% -8%, rgba(139, 92, 246, 0.3), transparent 70%),
+    radial-gradient(ellipse 70% 45% at 70% 112%, rgba(236, 72, 153, 0.12), transparent 70%),
+    var(--aurora-stars);
+  background-size: auto, auto, auto, auto, 360px 360px;
+  background-attachment: fixed;
+}
+
+:root[data-interface-theme="aurora"] .space-shell .board {
+  background: transparent;
+}
+
+/* Glass chrome with an aurora hairline along its lower edge. */
+:root[data-interface-theme="aurora"] .space-shell :is(.topbar, .board-toolbar) {
+  border-bottom-color: transparent;
+  background:
+    var(--aurora-gradient) left bottom / 100% 1px no-repeat,
+    linear-gradient(180deg, rgba(16, 20, 48, 0.78), rgba(8, 10, 28, 0.6));
+}
+
+:root[data-interface-theme="aurora"] .space-shell .side-surface {
+  border-color: rgba(129, 140, 248, 0.16);
+  background: rgba(8, 11, 30, 0.8);
+}
+
+:root[data-interface-theme="aurora"] .space-shell .topbar .brand h1 a {
+  background: var(--aurora-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.01em;
+}
+
+:root[data-interface-theme="aurora"] .space-shell .topbar-meta .topbar-meta-version {
+  border-color: rgba(167, 139, 250, 0.55);
+  box-shadow: 0 0 12px rgba(167, 139, 250, 0.22);
+}
+
+:root[data-interface-theme="aurora"] .space-shell .desktop-navigation > button:is(:hover, [aria-expanded="true"], [aria-pressed="true"]) {
+  border-color: rgba(94, 234, 212, 0.42);
+  background: rgba(94, 234, 212, 0.08);
+  box-shadow: 0 0 16px rgba(94, 234, 212, 0.16);
+}
+
+/* Panes: deep glass cards that let the sky glow through; the target pane wears the aurora glow.
+   No backdrop-filter, so the drifting sky never re-blurs pane content. */
+:root[data-interface-theme="aurora"] .space-shell .pane-card {
+  border-color: rgba(129, 140, 248, 0.2);
+  border-radius: 14px;
+  background: rgba(10, 13, 31, 0.84);
+}
+
+:root[data-interface-theme="aurora"] .space-shell .pane-card > header {
+  border-bottom-color: rgba(129, 140, 248, 0.16);
+  background: linear-gradient(180deg, #131838, #0d1029);
+}
+
+:root[data-interface-theme="aurora"] .space-shell .pane-card.is-target {
+  border-color: rgba(94, 234, 212, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(94, 234, 212, 0.18),
+    0 0 26px rgba(94, 234, 212, 0.16),
+    0 0 60px rgba(139, 92, 246, 0.14);
+}
+
+:root[data-interface-theme="aurora"] .space-shell .pane-card.is-target > header {
+  background:
+    var(--aurora-gradient) left top / 100% 2px no-repeat,
+    linear-gradient(180deg, #16204a, #0f1330);
+}
+
+:root[data-interface-theme="aurora"] .space-shell .pane-card.is-completion-pending {
+  border-color: var(--modern-danger);
+}
+
+:root[data-interface-theme="aurora"] .space-shell :is(button.primary, .primary-action, .codex-send):not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(120deg, #5eead4, #818cf8 55%, #c084fc);
+  color: var(--modern-on-accent);
+}
+
+:root[data-interface-theme="aurora"] .space-shell :is(button.primary, .primary-action, .codex-send):hover:not(:disabled) {
+  box-shadow: 0 0 18px rgba(129, 140, 248, 0.45);
+  filter: brightness(1.08);
+}
+
+:root[data-interface-theme="aurora"] .space-shell :is(button, a, input, select, textarea):focus-visible {
+  outline-color: #5eead4;
+}
+
+:root[data-interface-theme="aurora"] .help-page :is(.help-section, .help-navigation, .help-entry) {
+  border-color: rgba(129, 140, 248, 0.2);
+  border-radius: 14px;
+  background: rgba(10, 13, 31, 0.86);
+}
+
+:root[data-interface-theme="aurora"] .help-page .help-header {
+  border-bottom-color: transparent;
+  background:
+    var(--aurora-gradient) left bottom / 100% 1px no-repeat,
+    rgba(10, 13, 31, 0.86);
+}

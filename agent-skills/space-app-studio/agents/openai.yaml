@@ -1,0 +1,4 @@
+interface:
+  display_name: "App Studio"
+  short_description: "Build mobile apps for Android and iOS with Expo inside a Space App Studio pane, take briefs from the operator and Nous, and preview every screen on the most-used phone sizes."
+  default_prompt: "Use $space-app-studio: call space_appstudio_next until it returns done, build each brief in the pane's Expo project, preview the screens with space_appstudio_preview, look at the PNGs, and close each brief with space_appstudio_done."

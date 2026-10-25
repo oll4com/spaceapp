@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terms of Service · SpaceApp</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    :root { color-scheme: light dark; --text: #1d2330; --muted: #5b6475; --line: #d9dee8; --bg: #f7f8fb; --card: #ffffff; --link: #2453c7; }
+    @media (prefers-color-scheme: dark) { :root { --text: #e7eaf1; --muted: #a3abbb; --line: #2c3342; --bg: #10131a; --card: #171b24; --link: #8fb0ff; } }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 48px 20px 64px; }
+    article { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 32px clamp(20px, 5vw, 40px); }
+    h1 { margin: 0 0 4px; font-size: 1.9rem; line-height: 1.25; }
+    h2 { margin: 28px 0 8px; font-size: 1.15rem; }
+    .meta { color: var(--muted); margin: 0 0 20px; }
+    ul { padding-left: 1.2rem; } a { color: var(--link); }
+    footer { margin-top: 20px; color: var(--muted); font-size: .9rem; text-align: center; }
+  </style>
+</head>
+<body>
+<main>
+  <article>
+    <h1>Terms of Service</h1>
+    <p class="meta">SpaceApp at <span data-instance-host>this instance</span> · Last updated October 12, 2026</p>
+
+    <p>SpaceApp at <code data-instance-host>this server</code> is a private, self-hosted workspace operated by its owner. Access is by invitation only: you can use it only with an account the owner created for you.</p>
+
+    <h2>Using SpaceApp</h2>
+    <ul>
+      <li>Use SpaceApp only for lawful purposes and in line with the terms of the services you connect to it, such as Google.</li>
+      <li>You are responsible for what you ask assistants to do and for the content you create, send or share with them.</li>
+      <li>Assistants can make mistakes. Review their results before relying on them.</li>
+    </ul>
+
+    <h2>Connected accounts</h2>
+    <ul>
+      <li>You choose which accounts and permissions to connect, and you can disconnect them at any time.</li>
+      <li>Assistants send email and create calendar events when you ask them to. Each one waits for your approval first unless you turn that off in Settings → Dots.</li>
+      <li>How Google data is handled is described in the <a href="/privacy.html">Privacy Policy</a>.</li>
+    </ul>
+
+    <h2>Availability</h2>
+    <p>SpaceApp is provided as is, without warranties. The owner may change, suspend or end access to this instance at any time.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about these terms: <span data-contact>the owner of this SpaceApp instance</span>.</p>
+  </article>
+  <footer><a href="/privacy.html">Privacy Policy</a></footer>
+</main>
+  <script src="/homepage-config.js"></script>
+  <script>
+    // The instance's own host and contact, so every installation describes itself.
+    document.querySelectorAll("[data-instance-host]").forEach(function (node) { node.textContent = location.hostname; });
+    var email = window.__SPACE_PUBLIC_CONFIG__ && window.__SPACE_PUBLIC_CONFIG__.contactEmail;
+    if (email) document.querySelectorAll("[data-contact]").forEach(function (node) {
+      var link = document.createElement("a"); link.href = "mailto:" + email; link.textContent = email; node.replaceChildren(link);
+    });
+  </script>
+</body>
+</html>

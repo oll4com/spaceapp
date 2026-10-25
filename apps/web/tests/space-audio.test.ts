@@ -1,0 +1,48 @@
+import { afterEach, beforeEach, expect, it } from 'vitest';
+import { bindSpaceMediaVolume, getSpaceVolume, setSpaceVolume, SPACE_VOLUME_STORAGE_KEY, subscribeSpaceVolume } from '../src/space-audio.js';
+import { installSpaceRuntime } from '../src/runtime/SpaceRuntime.js';
+import { liveRuntime } from '../src/live/live-runtime.js';
+let release: (() => void) | undefined;
+beforeEach(() => { installSpaceRuntime(liveRuntime); localStorage.clear(); });
+afterEach(() => { release?.(); document.body.replaceChildren(); });
+it('preserves the existing volume preference and validates writes', () => {
+  localStorage.setItem(SPACE_VOLUME_STORAGE_KEY, '0.62');
+  expect(getSpaceVolume()).toBe(0.62);
+  setSpaceVolume(2);
+  expect(getSpaceVolume()).toBe(1);
+  setSpaceVolume(NaN);
+  expect(getSpaceVolume()).toBe(1);
+  setSpaceVolume(0);
+  expect(getSpaceVolume()).toBe(0);
+});
+it('controls existing and newly inserted media without changing mute or playback', async () => {
+  document.body.innerHTML = '<video muted></video><audio></audio>';
+  const video = document.querySelector('video')!;
+  video.muted = true;
+  release = bindSpaceMediaVolume();
+  setSpaceVolume(0.62);
+  expect(video.volume).toBe(0.62);
+  expect(video.muted).toBe(true);
+  expect(video.paused).toBe(true);
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = '<audio></audio>';
+  document.body.append(wrapper);
+  await Promise.resolve();
+  const audio = wrapper.querySelector('audio')!;
+  expect(audio.volume).toBe(0.62);
+  setSpaceVolume(0);
+  expect(audio.volume).toBe(0);
+  release();
+  setSpaceVolume(1);
+  expect(audio.volume).toBe(0);
+});
+it('syncs other-tab changes and removes subscribers on cleanup', () => {
+  let observed = -1;
+  release = subscribeSpaceVolume(volume => { observed = volume; });
+  localStorage.setItem(SPACE_VOLUME_STORAGE_KEY, '0.2');
+  window.dispatchEvent(new StorageEvent('storage', { key: SPACE_VOLUME_STORAGE_KEY }));
+  expect(observed).toBe(0.2);
+  release();
+  setSpaceVolume(0.8);
+  expect(observed).toBe(0.2);
+});

@@ -1,0 +1,42 @@
+.cli-providers-settings-card {
+  gap: 0;
+}
+
+.cli-providers-settings-card .settings-flat-heading strong {
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-providers-settings-card .settings-flat-heading small {
+  overflow: hidden;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-providers-settings-card .settings-flat-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.cli-providers-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0 0.55rem;
+  border-bottom: 1px solid var(--room-border, #303437);
+  margin-bottom: 0.25rem;
+}
+
+.cli-providers-toolbar .dock-kit-button {
+  flex: 1 1 0;
+}
+
+.cli-providers-settings-card > .dock-kit-notice {
+  margin: 0.25rem 0;
+}

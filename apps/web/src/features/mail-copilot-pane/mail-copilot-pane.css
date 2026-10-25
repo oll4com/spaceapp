@@ -1,0 +1,273 @@
+/* Mail Copilot: the mailbox surface inside the copilot kit's pane (bar, rail and controls come from copilot-pane.css). */
+.mc-main { overflow: auto; }
+.mc-accounts { display: grid; gap: 12px; align-content: start; padding: 16px; }
+.mc-accounts-head { display: flex; gap: 10px; align-items: flex-start; }
+.mc-accounts-head svg { width: 20px; height: 20px; flex: 0 0 auto; color: var(--jc-accent); }
+.mc-accounts-head strong { display: block; font-size: 14px; }
+.mc-accounts-head small { color: var(--jc-muted); }
+.mc-account-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.mc-account { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--jc-border); border-radius: 10px; background: var(--jc-raised); }
+.mc-account[data-in-pane="false"] { opacity: 0.7; }
+.mc-account-email { font-weight: 650; word-break: break-all; }
+.mc-account .mc-consent { margin-left: auto; }
+/* Setup → Accounts: a notifications card (the pane-wide switch), then one row per account with its Show switch and notification bell. */
+.mc-notify-card { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--jc-border); border-radius: 12px;
+  background: var(--jc-raised); }
+.mc-notify-card[data-on="true"] { border-color: color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border)); background: color-mix(in srgb, var(--jc-accent) 8%, var(--jc-raised)); }
+.mc-notify-card-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: color-mix(in srgb, var(--jc-text) 8%, transparent); color: var(--jc-muted); }
+.mc-notify-card[data-on="true"] .mc-notify-card-icon { background: color-mix(in srgb, var(--jc-accent) 20%, transparent); color: var(--jc-accent); }
+.mc-notify-card-icon svg { width: 18px; height: 18px; }
+.mc-notify-card .space-toggle { font-size: 13px; }
+.mc-notify-card .space-toggle small { display: block; margin-top: 2px; color: var(--jc-muted); font-size: 12px; font-weight: 400; }
+.mc-setup-accounts { display: grid; margin: 0; padding: 0; list-style: none; border: 1px solid var(--jc-border); border-radius: 12px; overflow: hidden; }
+.mc-setup-account { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto 34px; align-items: center; gap: 4px 12px; padding: 10px 12px; }
+.mc-setup-account + .mc-setup-account { border-top: 1px solid var(--jc-border); }
+.mc-setup-account[data-shown="false"] :is(.mc-avatar, .mc-setup-account-copy) { opacity: 0.5; }
+.mc-setup-account-copy { display: grid; gap: 1px; min-width: 0; }
+.mc-setup-account-copy strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.mc-setup-account-copy small { color: var(--jc-muted); font-size: 12px; }
+.mc-setup-account-copy small:not([data-access="full"]) { color: var(--jc-warn); }
+.mc-setup-account .space-toggle { color: var(--jc-muted); font-size: 12px; }
+/* (0,3,0) beats the room theme's ".space-shell[data-room-theme] button" (0,2,1). */
+.mc-pane .jc-setup .mc-notify-button { display: grid; place-items: center; width: 34px; height: 34px; min-height: 0; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--jc-muted); cursor: pointer; transition: background-color 120ms ease-out, color 120ms ease-out; }
+.mc-pane .jc-setup .mc-notify-button[aria-pressed="true"] { background: color-mix(in srgb, var(--jc-accent) 18%, transparent); color: var(--jc-accent); }
+.mc-pane .jc-setup .mc-notify-button:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-text) 8%, transparent); color: var(--jc-text); }
+.mc-pane .jc-setup .mc-notify-button[aria-pressed="true"]:hover:not(:disabled) { background: color-mix(in srgb, var(--jc-accent) 28%, transparent); color: var(--jc-accent); }
+.mc-pane .jc-setup .mc-notify-button:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 1px; }
+.mc-pane .jc-setup .mc-notify-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.mc-notify-button svg { width: 17px; height: 17px; }
+.mc-setup-account-consent { grid-column: 2 / -1; }
+.mc-setup-account-consent .jc-button { justify-self: start; }
+.mc-pane .jc-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* ---- mailbox ------------------------------------------------------------ */
+/* Button rules carry .mc-pane .mc-client: the room theme's ".space-shell[data-room-theme] button" (0,2,1) paints every
+   button with the room surface, which hid the Compose color and the row selection behind it.
+   Gmail-like: one search header, label chips, airy rows with sender avatars, a floating Compose button and
+   swipe-to-archive on phones. Colors come from the copilot kit (--jc-*) so the pane follows the room theme. */
+.mc-pane { --mc-row-hover: color-mix(in srgb, var(--jc-text) 5%, transparent); --mc-selected: color-mix(in srgb, var(--jc-accent) 14%, transparent); --mc-star: #f2c14e; }
+.mc-client { position: relative; display: grid; grid-template-columns: var(--mc-list-width, minmax(300px, 2fr)) 1px minmax(0, 3fr); min-height: 0; height: 100%; }
+.mc-client[data-stacked="true"] { grid-template-columns: minmax(0, 1fr); }
+.mc-list-column, .mc-thread-column { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* The line between the list and the conversation is a splitter: a wide invisible grip over a 1px rule. */
+.mc-splitter { position: relative; z-index: 4; background: var(--jc-border); cursor: col-resize; touch-action: none; outline: none; }
+.mc-splitter::before { content: ""; position: absolute; inset: 0 -6px; }
+.mc-splitter::after { content: ""; position: absolute; top: 50%; left: -2px; width: 5px; height: 36px; border-radius: 3px; transform: translateY(-50%);
+  background: var(--jc-muted); opacity: 0; transition: opacity 120ms ease-out; }
+.mc-splitter:hover, .mc-splitter:focus-visible, .mc-splitter[data-dragging="true"] { background: color-mix(in srgb, var(--jc-accent) 70%, transparent); }
+.mc-splitter:hover::after, .mc-splitter:focus-visible::after, .mc-splitter[data-dragging="true"]::after { opacity: 0.9; background: var(--jc-accent); }
+.mc-client[data-resizing="true"] { cursor: col-resize; user-select: none; }
+.mc-client[data-resizing="true"] iframe { pointer-events: none; }
+.mc-pane ::selection { background: color-mix(in srgb, var(--jc-accent) 35%, transparent); }
+
+/* Header: search pill holding refresh and the account switch. Fixed rows never shrink under the list. */
+.mc-topbar { flex: none; padding: 8px 10px 4px; }
+.mc-search { display: flex; align-items: center; gap: 8px; min-width: 0; height: 44px; padding: 0 6px 0 14px; border-radius: 22px;
+  background: color-mix(in srgb, var(--jc-text) 7%, var(--jc-bg)); }
+.mc-search:focus-within { box-shadow: 0 0 0 2px color-mix(in srgb, var(--jc-accent) 45%, transparent); }
+.mc-search > svg { width: 17px; height: 17px; color: var(--jc-muted); flex: none; }
+.mc-search input { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; background: transparent; color: var(--jc-text); font: inherit; font-size: 14px; outline: none; caret-color: var(--jc-accent); }
+.mc-search input::placeholder { color: var(--jc-muted); }
+.mc-search input::-webkit-search-cancel-button { filter: invert(0.7); }
+.mc-pane .mc-client .mc-search-button { flex: none; display: grid; place-items: center; width: 34px; height: 34px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--jc-muted); cursor: pointer; }
+.mc-pane .mc-client .mc-search-button:hover:not(:disabled) { background: var(--mc-row-hover); color: var(--jc-text); }
+.mc-search-button svg { width: 17px; height: 17px; }
+.mc-spin { animation: mc-spin 0.9s linear infinite; }
+@keyframes mc-spin { to { transform: rotate(360deg); } }
+.mc-account-switch { position: relative; flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; cursor: pointer; }
+.mc-account-switch:focus-within { box-shadow: 0 0 0 2px var(--jc-accent); }
+/* The native picker is the control (phone sheets, keyboard); it sits invisibly over the avatar. */
+.mc-move { position: relative; }
+.mc-move:focus-within { box-shadow: 0 0 0 2px var(--jc-accent); }
+.mc-move select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+.mc-account-switch select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+
+/* Label chips: one scrolling row that fades at the edge, then the user-label picker pinned beside it. */
+.mc-label-bar { flex: none; display: flex; align-items: center; min-width: 0; }
+.mc-labels { flex: 1 1 auto; min-width: 0; display: flex; gap: 6px; padding: 6px 10px 8px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain;
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.mc-labels::-webkit-scrollbar { display: none; }
+.mc-pane .mc-client .mc-label { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; min-height: 0; padding: 0 12px; border: 1px solid var(--jc-border);
+  border-radius: 16px; background: transparent; color: var(--jc-text); font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.mc-pane .mc-client .mc-label:hover { background: var(--mc-row-hover); }
+.mc-pane .mc-client .mc-label.selected { border-color: transparent; background: color-mix(in srgb, var(--jc-accent) 22%, transparent); color: var(--jc-text); font-weight: 600; }
+.mc-label svg { width: 15px; height: 15px; color: var(--jc-muted); }
+.mc-label.selected svg { color: var(--jc-accent); }
+.mc-pane .mc-client .mc-label-picker { position: relative; margin: 0 10px 2px 0; max-width: 45%; overflow: hidden; }
+.mc-label-picker:focus-within { box-shadow: 0 0 0 2px var(--jc-accent); }
+.mc-label-picker select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+.mc-label-count { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--jc-accent); color: var(--jc-bg); font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.mc-banner { flex: none; margin: 0 10px 6px; }
+
+/* Thread rows. */
+.mc-threads { flex: 1 1 auto; min-height: 0; overflow: auto; padding-bottom: 84px; overscroll-behavior: contain; }
+.mc-thread { position: relative; overflow: hidden; touch-action: pan-y; }
+.mc-thread-body { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); background: var(--jc-bg); transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1); }
+.mc-thread.swiping .mc-thread-body { transition: none; }
+.mc-thread:hover .mc-thread-body { background: color-mix(in srgb, var(--jc-text) 4%, var(--jc-bg)); }
+.mc-thread.selected .mc-thread-body { background: color-mix(in srgb, var(--jc-accent) 14%, var(--jc-bg)); }
+.mc-thread[aria-busy="true"] .mc-thread-body { opacity: 0.55; }
+.mc-pane .mc-client .mc-thread-main { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; width: 100%; min-height: 0; padding: 10px 14px 10px 12px;
+  border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mc-pane .mc-client .mc-thread-main:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: -2px; }
+.mc-avatar { position: relative; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; flex: none;
+  background: hsl(var(--avatar-hue, 205) 45% 36%); color: hsl(var(--avatar-hue, 205) 90% 92%); font-size: 16px; font-weight: 600; line-height: 1; user-select: none; }
+.mc-avatar.sm { width: 30px; height: 30px; font-size: 13px; }
+.mc-avatar-all { background: color-mix(in srgb, var(--jc-accent) 24%, var(--jc-bg)); color: var(--jc-accent); }
+.mc-avatar-all svg { width: 16px; height: 16px; }
+.mc-avatar-account { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px var(--jc-bg); }
+/* Selection: the avatar is the toggle (a transparent button over it) and turns into a check. */
+.mc-avatar.checked { background: var(--jc-accent); color: var(--jc-bg); }
+.mc-avatar.checked svg { width: 20px; height: 20px; }
+.mc-pane .mc-client .mc-select { position: absolute; left: 12px; top: 10px; width: 40px; height: 40px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.mc-pane .mc-client .mc-select:hover, .mc-pane .mc-client .mc-select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--jc-accent); }
+.space-shell .mc-pane .mc-client .mc-select[aria-pressed="true"] { border-color: transparent; background: transparent; }
+.mc-thread.checked .mc-thread-body { background: color-mix(in srgb, var(--jc-accent) 10%, var(--jc-bg)); }
+.mc-bulkbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 44px; padding: 2px 6px; border-radius: 22px; background: color-mix(in srgb, var(--jc-accent) 16%, var(--jc-bg)); }
+.mc-bulkbar strong { font-size: 14px; white-space: nowrap; }
+.mc-pane .mc-client .mc-bulkbar .jc-icon-button { width: 36px; height: 36px; min-height: 0; padding: 0; justify-content: center; border: 0; border-radius: 50%; background: transparent; }
+.mc-pane .mc-client .mc-bulkbar .jc-icon-button svg { width: 18px; height: 18px; }
+.mc-thread-copy { display: grid; gap: 1px; min-width: 0; }
+.mc-thread-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.mc-thread-from { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; color: color-mix(in srgb, var(--jc-text) 82%, var(--jc-muted)); }
+.mc-thread-from small { color: var(--jc-muted); font-weight: 400; font-size: 12px; }
+.mc-thread-line time { flex: none; color: var(--jc-muted); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mc-thread-subject { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: color-mix(in srgb, var(--jc-text) 82%, var(--jc-muted)); }
+.mc-thread-clip { width: 12px; height: 12px; margin-left: 4px; vertical-align: -1px; color: var(--jc-muted); }
+.mc-thread-snippet { padding-right: 30px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--jc-muted); font-size: 12.5px; }
+.mc-thread.unread .mc-thread-from, .mc-thread.unread .mc-thread-subject { color: var(--jc-text); font-weight: 700; }
+.mc-thread.unread .mc-thread-line time { color: var(--jc-accent); font-weight: 700; }
+.mc-pane .mc-client .mc-star { position: absolute; right: 6px; bottom: 6px; display: grid; place-items: center; width: 32px; height: 32px; min-height: 0; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--jc-muted); cursor: pointer; }
+.mc-pane .mc-client .mc-star:hover:not(:disabled) { background: var(--mc-row-hover); color: var(--jc-text); }
+.mc-star svg { width: 17px; height: 17px; }
+.mc-pane .mc-client .mc-star.on, .mc-pane .mc-client .mc-star-button.on { color: var(--mc-star); }
+.mc-star.on svg, .mc-star-button.on svg { fill: currentColor; }
+/* The shell paints pressed icon buttons as active toolbar icons; a star is a state, not a toolbar control. */
+.space-shell .mc-pane :is(.mc-star, .mc-star-button)[aria-pressed="true"],
+.space-shell .mc-pane :is(.mc-star, .mc-star-button)[aria-pressed="true"]:hover:not(:disabled) { border-color: transparent; background: transparent; box-shadow: none; color: var(--mc-star); }
+/* Wide panes: archive, trash and read state appear over the time on hover, like Gmail on the web. */
+.mc-thread-actions { position: absolute; top: 6px; right: 8px; display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px;
+  background: color-mix(in srgb, var(--jc-text) 4%, var(--jc-bg)); opacity: 0; pointer-events: none; transition: opacity 120ms ease-out; }
+.mc-thread:hover .mc-thread-actions, .mc-thread:focus-within .mc-thread-actions { opacity: 1; pointer-events: auto; }
+.mc-client[data-stacked="true"] .mc-thread-actions { display: none; }
+.mc-pane .mc-client .mc-thread-actions .jc-icon-button { width: 30px; height: 30px; min-height: 0; padding: 0; justify-content: center; border: 0; border-radius: 8px; background: transparent; }
+/* Swipe reveal behind the row. */
+.mc-swipe-reveal { position: absolute; inset: 0; display: flex; align-items: center; gap: 8px; padding: 0 22px; font-size: 13px; font-weight: 600; color: #fff; }
+.mc-swipe-reveal[data-side="end"] { justify-content: flex-end; }
+.mc-swipe-reveal.archive { background: color-mix(in srgb, var(--jc-ok) 45%, #12261c); }
+.mc-swipe-reveal.trash { background: color-mix(in srgb, var(--jc-bad) 45%, #2a1414); }
+.mc-swipe-reveal.armed.archive { background: color-mix(in srgb, var(--jc-ok) 80%, #12261c); color: #0d1a12; }
+.mc-swipe-reveal.armed.trash { background: color-mix(in srgb, var(--jc-bad) 80%, #2a1414); color: #2a0d0d; }
+.mc-swipe-reveal svg { width: 20px; height: 20px; }
+.mc-load-more { margin: 12px auto; display: flex; }
+.mc-empty { margin: 40px 16px; }
+.mc-empty svg { width: 28px; height: 28px; color: var(--jc-muted); }
+/* Loading skeleton: avatar plus two lines, a calm pulse. */
+.mc-skeleton { display: grid; gap: 4px; padding: 8px 12px; }
+.mc-skeleton-row { display: grid; grid-template-columns: 40px 1fr; grid-template-rows: 12px 10px; column-gap: 12px; row-gap: 8px; padding: 10px 0; }
+.mc-skeleton-row::before { content: ""; grid-row: 1 / 3; width: 40px; height: 40px; border-radius: 50%; background: color-mix(in srgb, var(--jc-text) 9%, transparent); }
+.mc-skeleton-row > span { border-radius: 6px; background: color-mix(in srgb, var(--jc-text) 9%, transparent); }
+.mc-skeleton-row > span:first-child { width: 55%; margin-top: 6px; }
+.mc-skeleton-row > span:last-child { width: 85%; }
+.mc-skeleton { animation: mc-pulse 1.4s ease-in-out infinite; }
+@keyframes mc-pulse { 50% { opacity: 0.45; } }
+
+/* Floating Compose. */
+.mc-pane .mc-client .mc-fab { position: absolute; right: 14px; bottom: 14px; z-index: 3; display: inline-flex; align-items: center; gap: 10px; height: 52px; min-height: 0; padding: 0 20px 0 16px;
+  border: 0; border-radius: 16px; background: var(--jc-accent); color: #0b1412; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.38), 0 1px 3px rgb(0 0 0 / 0.3); transition: transform 160ms ease-out, box-shadow 160ms ease-out; }
+.mc-pane .mc-client .mc-fab:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 24px rgb(0 0 0 / 0.42), 0 2px 4px rgb(0 0 0 / 0.3); }
+.mc-pane .mc-client .mc-fab:disabled { opacity: 0.45; cursor: not-allowed; }
+.mc-fab svg { width: 19px; height: 19px; }
+/* A narrow mailbox keeps the pencil only: the wide Compose button covered the senders and subjects under it. */
+.mc-pane .mc-client[data-stacked="true"] .mc-fab { justify-content: center; width: 52px; padding: 0; gap: 0; }
+.mc-client[data-stacked="true"] .mc-fab > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Undo snackbar. */
+.mc-snackbar { position: absolute; left: 12px; bottom: 80px; z-index: 4; display: flex; align-items: center; gap: 16px; max-width: calc(100% - 24px); padding: 0 8px 0 16px; min-height: 44px;
+  border-radius: 10px; background: color-mix(in srgb, var(--jc-text) 88%, var(--jc-bg)); color: var(--jc-bg); font-size: 13.5px; box-shadow: 0 6px 18px rgb(0 0 0 / 0.35);
+  animation: mc-rise 200ms cubic-bezier(0.22, 1, 0.36, 1); }
+.mc-pane .mc-client .mc-snackbar button { min-height: 0; height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: color-mix(in srgb, var(--jc-accent) 70%, #0b3d36); font: inherit; font-weight: 700; cursor: pointer; }
+@keyframes mc-rise { from { transform: translateY(12px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .mc-skeleton, .mc-spin, .mc-snackbar { animation: none; } .mc-thread-body, .mc-fab { transition: none; } }
+
+/* Conversation. */
+.mc-thread-column { overflow: auto; }
+.mc-thread-bar { position: sticky; top: 0; z-index: 2; flex: none; display: flex; align-items: center; gap: 4px; min-height: 48px; padding: 4px 8px;
+  background: color-mix(in srgb, var(--jc-bg) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--jc-border); }
+.mc-thread-bar-spacer { flex: 1 1 auto; }
+.mc-thread-bar-actions { display: inline-flex; gap: 2px; }
+.mc-pane .mc-client .mc-thread-bar .jc-icon-button { width: 38px; height: 38px; min-height: 0; padding: 0; justify-content: center; border: 0; border-radius: 50%; background: transparent; }
+.mc-pane .mc-client .mc-thread-bar .jc-icon-button svg { width: 19px; height: 19px; }
+.mc-thread-head { display: grid; gap: 6px; padding: 14px 16px 6px; }
+.mc-thread-head h2 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; overflow-wrap: anywhere; }
+.mc-thread-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--jc-muted); font-size: 12px; }
+.mc-account-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px; border-radius: 10px; background: color-mix(in srgb, var(--jc-text) 7%, transparent); }
+.mc-account-tag > span { width: 8px; height: 8px; border-radius: 50%; }
+.mc-messages { display: flex; flex-direction: column; gap: 10px; padding: 8px 12px 24px; }
+.mc-message { border-radius: 14px; background: color-mix(in srgb, var(--jc-text) 5%, var(--jc-bg)); overflow: hidden; }
+.mc-message.unread .mc-message-from strong { font-weight: 700; }
+.mc-message-head { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto 16px; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; }
+.mc-message-head > svg { width: 15px; height: 15px; color: var(--jc-muted); }
+.mc-message-head time { color: var(--jc-muted); font-size: 11.5px; white-space: nowrap; }
+.mc-message-from { display: grid; min-width: 0; }
+.mc-message-from strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-message-from small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.mc-message-snippet { margin: 0; padding: 0 12px 10px 52px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-message-html { display: block; width: 100%; min-height: 220px; height: 60vh; border: 0; background: #fff; }
+.mc-message-text { margin: 0; padding: 4px 16px 14px; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 14px; line-height: 1.55; }
+.mc-message-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; padding: 8px 12px; font-size: 12px; }
+.mc-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 10px 12px 0; list-style: none; }
+.mc-attachments a { text-decoration: none; border-radius: 10px; }
+.mc-message-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px 12px; }
+.mc-pane .mc-client .mc-message-actions .jc-button { height: 36px; padding: 0 14px; border-radius: 18px; }
+
+/* Composer: a full-height sheet with a top bar, Gmail-style field rows and a borderless body. */
+.mc-composer { display: flex; flex-direction: column; min-height: 100%; }
+.mc-composer-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px; min-height: 52px; padding: 6px 8px 6px 6px; border-bottom: 1px solid var(--jc-border);
+  background: color-mix(in srgb, var(--jc-bg) 94%, transparent); backdrop-filter: blur(8px); }
+.mc-composer-head strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.mc-pane .mc-client .mc-composer-head > .jc-icon-button { width: 38px; height: 38px; min-height: 0; justify-content: center; border: 0; border-radius: 50%; background: transparent; }
+.mc-pane .mc-client .mc-composer-head .mc-send { height: 38px; padding: 0 16px; border-radius: 19px; }
+.mc-composer-hint, .mc-composer > .jc-message { margin: 8px 14px 0; }
+.mc-composer-fields { display: grid; }
+.mc-composer-row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 14px; border-bottom: 1px solid var(--jc-border); }
+.mc-composer-row > label { flex: none; width: 48px; color: var(--jc-muted); font-size: 13px; }
+/* Field rows read as one sheet: the theme's boxed inputs give way to bare text on the row. */
+.mc-pane .mc-client .mc-composer-row :is(input, select) { flex: 1 1 auto; min-width: 0; height: 44px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--jc-text); font: inherit; font-size: 14px; outline: none; }
+.mc-composer-row select option { color: initial; }
+.mc-pane .mc-client .mc-cc-toggle { flex: none; min-height: 0; height: 30px; padding: 0 10px; border: 0; border-radius: 15px; background: transparent; color: var(--jc-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+.mc-pane .mc-client .mc-cc-toggle:hover { background: var(--mc-row-hover); color: var(--jc-text); }
+.mc-pane .mc-client .mc-composer-body { flex: 1 1 auto; border-radius: 0; box-shadow: none; min-height: 240px; padding: 14px; border: 0; background: transparent; color: var(--jc-text); font: inherit; font-size: 14px; line-height: 1.55; resize: none; outline: none; caret-color: var(--jc-accent); }
+.mc-no-accounts { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; background: var(--jc-bg); }
+.mc-no-accounts .jc-button { justify-self: center; }
+
+/* Phones: one command-bar row (agent, Start, accounts, pause) so the mailbox gets the screen. */
+.mc-pane[data-layout="stacked"] .jc-bar { grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-rows: auto; padding: 6px 8px; }
+.mc-pane[data-layout="stacked"] .jc-agent { grid-area: 1 / 1; }
+.mc-pane[data-layout="stacked"] .jc-run-controls { grid-area: 1 / 2; }
+.mc-pane[data-layout="stacked"] .jc-run-pill { grid-area: 1 / 3; }
+.mc-pane[data-layout="stacked"] .jc-bar-toggles { grid-area: 1 / 4; }
+.mc-pane[data-layout="stacked"] .jc-counters { display: none; }
+.mc-pane[data-layout="stacked"] .jc-run-controls .jc-button { width: 36px; height: 36px; min-height: 0; padding: 0; justify-content: center; border-radius: 50%; }
+.mc-pane[data-layout="stacked"] .jc-run-controls .jc-button > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mc-review-subject { margin: 0; }
+.mc-review-text { box-sizing: border-box; width: 100%; min-height: 140px; resize: vertical; font: inherit; }
+/* Activity: the view switch on the left, the mail check on the right, its result under them. */
+.mc-activity-toolbar { justify-content: space-between; }
+.mc-activity-status { flex-basis: 100%; text-align: right; font-size: 12px; }
+.jc-rules-hint { display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--jc-accent) 9%, transparent);
+  color: color-mix(in srgb, var(--jc-text) 78%, var(--jc-muted)); font-size: 12.5px; line-height: 1.5; }
+.jc-rules-hint svg { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--jc-accent); }
+.jc-rule-name { font-weight: 600; }
+.jc-rule-evidence { margin: 4px 0 0; padding-left: 16px; font-size: 12px; }
+.mc-habits { display: grid; gap: 8px; }
+.mc-habits h3 { margin: 6px 0 0; color: var(--jc-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.mc-habits-account { display: grid; gap: 6px; }
+.mc-fix-sheet { position: absolute; left: 50%; bottom: 16px; z-index: 5; transform: translateX(-50%); width: min(440px, calc(100% - 24px)); display: grid; gap: 8px; padding: 12px;
+  border: 1px solid var(--jc-border); border-radius: 12px; background: var(--jc-raised); box-shadow: 0 12px 32px rgb(0 0 0 / 0.35); }
+.mc-fix-sheet strong { display: flex; align-items: center; gap: 8px; }
+.mc-fix-sheet textarea { width: 100%; resize: vertical; }
+.mc-fix-request .mc-fix-line { margin: 4px 0 0; overflow-wrap: anywhere; }

@@ -1,0 +1,42 @@
+import { readdir, stat, unlink } from "node:fs/promises";
+import path from "node:path";
+import type { Plugin } from "vite";
+
+// Open tabs can request lazy chunks from an earlier build for a while after a
+// deploy; stale-build loads already prompt a reload. With dozens of deploys a
+// day a 7-day window kept ~200 builds (1.5 GB) in dist/assets, so the default
+// is 48 hours (SPACE_WEB_ASSET_RETENTION_HOURS overrides it).
+export function retainOpenTabAssets(): Plugin {
+  const retentionHours = Number(process.env.SPACE_WEB_ASSET_RETENTION_HOURS ?? "") || 48;
+  let outputDirectory = "";
+  const currentAssets = new Set<string>();
+  return {
+    name: "retain-open-tab-assets",
+    apply: "build",
+    configResolved(config) { outputDirectory = path.resolve(config.root, config.build.outDir); },
+    generateBundle(_options, bundle) {
+      currentAssets.clear();
+      for (const name of Object.keys(bundle)) currentAssets.add(name);
+    },
+    async closeBundle() {
+      const assetsDirectory = path.join(outputDirectory, "assets");
+      const cutoff = Date.now() - retentionHours * 60 * 60 * 1000;
+      const entries = await readdir(assetsDirectory, { withFileTypes: true }).catch(error => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const name = `assets/${entry.name}`;
+        if (currentAssets.has(name.replace(/\.(br|gz)$/, ""))) continue;
+        const file = path.join(assetsDirectory, entry.name);
+        const source = file.replace(/\.(br|gz)$/, "");
+        const sourceStats = await stat(source).catch(error => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (!sourceStats || sourceStats.mtimeMs < cutoff) await unlink(file);
+      }
+    }
+  };
+}

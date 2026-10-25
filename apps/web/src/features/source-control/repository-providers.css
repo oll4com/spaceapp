@@ -1,0 +1,32 @@
+/* Repository provider cards (Plugins) and shared provider badges/forms. */
+.repository-providers-section { display: grid; gap: .75rem; margin: 0 0 1.25rem; min-width: 0; }
+.repository-providers-heading h3 { margin: 0; font-size: .95rem; }
+.repository-providers-heading p { margin: .25rem 0 0; color: var(--room-muted, #9aa0a6); font-size: .8rem; }
+.repository-providers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: .65rem; }
+.repository-provider-card { display: grid; gap: .6rem; align-content: start; border: 1px solid var(--room-border, #333); border-radius: 10px; padding: .75rem; background: var(--room-surface, rgba(255,255,255,.03)); min-width: 0; }
+.repository-provider-card header { display: flex; align-items: center; gap: .55rem; min-width: 0; }
+.repository-provider-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--room-bg, #1b1b1b); flex-shrink: 0; }
+.repository-provider-title { display: grid; flex: 1; min-width: 0; }
+.repository-provider-title small { color: var(--room-muted, #9aa0a6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repository-provider-status { flex-shrink: 0; font-size: .68rem; font-weight: 600; border-radius: 999px; padding: .1rem .5rem; border: 1px solid transparent; white-space: nowrap; }
+.repository-provider-status.is-connected { color: #34d399; border-color: rgb(52 211 153 / .35); background: rgb(52 211 153 / .1); }
+.repository-provider-status.is-setup { color: #fbbf24; border-color: rgb(251 191 36 / .35); background: rgb(251 191 36 / .1); }
+.repository-provider-status.is-error { color: #f87171; border-color: rgb(248 113 113 / .4); background: rgb(248 113 113 / .1); }
+.repository-provider-status.is-disabled { color: var(--room-muted, #9aa0a6); border-color: var(--room-border, #444); }
+.repository-provider-actions, .repository-provider-form-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+.repository-provider-card button, .repository-provider-form button { display: inline-flex; align-items: center; gap: .3rem; color: inherit; border: 1px solid var(--room-border, #454545); border-radius: 6px; background: var(--room-bg, #1f1f1f); padding: .35rem .6rem; cursor: pointer; font: inherit; font-size: .78rem; min-height: 30px; }
+.repository-provider-card button:disabled, .repository-provider-form button:disabled { opacity: .45; cursor: default; }
+.repository-provider-card button.is-primary, .repository-provider-form button.is-primary { background: var(--room-accent, #87b9ff); border-color: var(--room-accent, #87b9ff); color: var(--room-bg, #111); font-weight: 600; }
+.repository-provider-card button.is-danger { color: var(--room-danger, #ff9a9a); }
+.repository-provider-form { display: grid; gap: .55rem; min-width: 0; }
+.repository-provider-form label { display: grid; gap: .25rem; font-size: .78rem; }
+.repository-provider-form input { width: 100%; box-sizing: border-box; border: 1px solid var(--room-border, #454545); border-radius: 6px; background: var(--room-bg, #191919); color: inherit; padding: .45rem .55rem; font: inherit; }
+.repository-provider-form small, .repository-provider-muted { color: var(--room-muted, #9aa0a6); }
+.repository-provider-error { color: var(--room-danger, #ffaaaa); margin: 0; overflow-wrap: anywhere; font-size: .78rem; }
+.repository-provider-ok { color: #34d399; margin: 0; font-size: .78rem; overflow-wrap: anywhere; }
+.repository-provider-monogram { display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; font-weight: 700; letter-spacing: -.02em; color: #fff; line-height: 1; }
+.repository-provider-monogram.is-gitea { background: #609926; }
+.repository-provider-monogram.is-forgejo { background: #d4520f; }
+.repository-provider-monogram.is-bitbucket { background: #2684ff; }
+.repository-provider-monogram.is-azure-devops { background: #0078d4; }
+.repository-provider-card :focus-visible, .repository-provider-form :focus-visible { outline: 2px solid var(--room-accent, #87b9ff); outline-offset: 2px; }

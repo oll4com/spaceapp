@@ -1,0 +1,283 @@
+/* =============================================================================
+   SpaceApp Pane Working Time Badge
+   Sleek, native status badge displaying active execution time for agent panes.
+   Matches SpaceApp design language and adapts dynamically to all themes,
+   room accents, light/dark color modes, and pane category colors.
+   ============================================================================= */
+
+.pane-working-time-badge {
+  /* Dynamic Theme Accents */
+  --timer-accent: var(--room-accent, var(--agent-accent, var(--modern-accent, #58a6ff)));
+  --timer-bg: color-mix(in srgb, var(--timer-accent) 12%, rgba(16, 24, 23, 0.55));
+  --timer-border: color-mix(in srgb, var(--timer-accent) 30%, rgba(255, 255, 255, 0.08));
+  --timer-color: color-mix(in srgb, var(--timer-accent) 85%, #ffffff);
+  --timer-glow: color-mix(in srgb, var(--timer-accent) 22%, transparent);
+  --timer-pulse: #3fb950;
+
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  padding: 0 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  user-select: none;
+  box-sizing: border-box;
+  flex-shrink: 1;
+  min-width: 0;
+  cursor: pointer;
+  background: var(--timer-bg);
+  border: 1px solid var(--timer-border);
+  color: var(--timer-color);
+  margin-left: auto;
+  transition: all 0.15s ease;
+}
+
+.pane-working-time-badge:hover {
+  background: color-mix(in srgb, var(--timer-accent) 20%, rgba(16, 24, 23, 0.72));
+  border-color: color-mix(in srgb, var(--timer-accent) 50%, rgba(255, 255, 255, 0.16));
+  color: #ffffff;
+  box-shadow: 0 0 8px var(--timer-glow);
+  transform: translateY(-0.5px);
+}
+
+.pane-working-time-badge:active {
+  transform: translateY(0);
+}
+
+/* Screen-reader accessible hidden text */
+.pane-working-time-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Mini Clock Icon */
+.pane-working-time-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.88;
+  flex-shrink: 0;
+  color: var(--timer-accent);
+}
+
+.pane-working-time-icon svg {
+  display: block;
+}
+
+/* Working Time Digits */
+.pane-working-time-digits {
+  font-family: ui-monospace, SFMono-Regular, "SF Pro Rounded", "SF Pro Text", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  line-height: 1;
+}
+
+/* Active Working State */
+.pane-working-time-badge.is-active {
+  background: color-mix(in srgb, var(--timer-accent) 18%, rgba(16, 24, 23, 0.65));
+  border-color: color-mix(in srgb, var(--timer-accent) 45%, rgba(255, 255, 255, 0.15));
+  color: var(--timer-color);
+  box-shadow: 0 0 8px var(--timer-glow), inset 0 0 0 1px color-mix(in srgb, var(--timer-accent) 15%, transparent);
+}
+
+/* Idle State (Waiting for command) */
+.pane-working-time-badge.is-idle {
+  background: color-mix(in srgb, var(--timer-accent) 8%, rgba(16, 24, 23, 0.35));
+  border-color: color-mix(in srgb, var(--timer-accent) 20%, rgba(255, 255, 255, 0.05));
+  color: color-mix(in srgb, var(--timer-accent) 65%, #94a3b8);
+  opacity: 0.85;
+}
+
+.pane-working-time-badge.is-idle:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--timer-accent) 15%, rgba(16, 24, 23, 0.6));
+  border-color: color-mix(in srgb, var(--timer-accent) 38%, rgba(255, 255, 255, 0.12));
+  color: var(--timer-color);
+}
+
+/* Active Pulse Dot */
+.pane-working-time-pulse {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--timer-pulse, #3fb950);
+  box-shadow: 0 0 5px var(--timer-pulse, #3fb950);
+  margin-left: 1px;
+  flex-shrink: 0;
+  animation: pane-working-pulse-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes pane-working-pulse-glow {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+}
+
+/* =============================================================================
+   SpaceApp Category Colors
+   ============================================================================= */
+
+.pane-working-time-badge[data-category-color="blue"] {
+  --timer-accent: #58a6ff;
+  --timer-color: #79b8ff;
+  --timer-pulse: #58a6ff;
+}
+
+.pane-working-time-badge[data-category-color="green"] {
+  --timer-accent: #3fb950;
+  --timer-color: #56d364;
+  --timer-pulse: #3fb950;
+}
+
+.pane-working-time-badge[data-category-color="purple"] {
+  --timer-accent: #bc8cff;
+  --timer-color: #d2a8ff;
+  --timer-pulse: #bc8cff;
+}
+
+.pane-working-time-badge[data-category-color="yellow"] {
+  --timer-accent: #e3b341;
+  --timer-color: #f0c862;
+  --timer-pulse: #e3b341;
+}
+
+.pane-working-time-badge[data-category-color="orange"] {
+  --timer-accent: #ffa657;
+  --timer-color: #ffb97d;
+  --timer-pulse: #ffa657;
+}
+
+.pane-working-time-badge[data-category-color="red"] {
+  --timer-accent: #ff7b72;
+  --timer-color: #ffa198;
+  --timer-pulse: #ff7b72;
+}
+
+.pane-working-time-badge[data-category-color="pink"] {
+  --timer-accent: #f778ba;
+  --timer-color: #f99ccf;
+  --timer-pulse: #f778ba;
+}
+
+.pane-working-time-badge[data-category-color="cyan"] {
+  --timer-accent: #56d4dd;
+  --timer-color: #7ee0e8;
+  --timer-pulse: #56d4dd;
+}
+
+/* =============================================================================
+   Theme & Color Mode Adaptations
+   ============================================================================= */
+
+/* Modern Theme Overrides */
+.space-shell[data-ui-theme="modern"] .pane-working-time-badge {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Light Mode Overrides */
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge {
+  --timer-bg: color-mix(in srgb, var(--timer-accent) 10%, #f6f8fa);
+  --timer-border: color-mix(in srgb, var(--timer-accent) 30%, rgba(0, 0, 0, 0.12));
+  --timer-color: color-mix(in srgb, var(--timer-accent) 80%, #1f2328);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge:hover {
+  background: color-mix(in srgb, var(--timer-accent) 16%, #ffffff);
+  border-color: color-mix(in srgb, var(--timer-accent) 45%, rgba(0, 0, 0, 0.2));
+  color: var(--timer-accent);
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge.is-idle {
+  background: color-mix(in srgb, var(--timer-accent) 6%, #f6f8fa);
+  border-color: color-mix(in srgb, var(--timer-accent) 20%, rgba(0, 0, 0, 0.08));
+  color: color-mix(in srgb, var(--timer-accent) 70%, #57606a);
+  opacity: 0.9;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="blue"] {
+  --timer-accent: #0969da;
+  --timer-color: #0969da;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="green"] {
+  --timer-accent: #1a7f37;
+  --timer-color: #1a7f37;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="purple"] {
+  --timer-accent: #8250df;
+  --timer-color: #8250df;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="yellow"] {
+  --timer-accent: #9a6700;
+  --timer-color: #9a6700;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="orange"] {
+  --timer-accent: #bc4c00;
+  --timer-color: #bc4c00;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="red"] {
+  --timer-accent: #cf222e;
+  --timer-color: #cf222e;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="pink"] {
+  --timer-accent: #bf3989;
+  --timer-color: #bf3989;
+}
+
+:is([data-color-mode="light"], html[data-color-mode="light"]) .pane-working-time-badge[data-category-color="cyan"] {
+  --timer-accent: #057a8a;
+  --timer-color: #057a8a;
+}
+
+/* =============================================================================
+   Responsive Container Queries
+   ============================================================================= */
+
+@container pane-card (max-width: 220px) {
+  .pane-working-time-badge {
+    padding: 0 5px;
+    gap: 3px;
+  }
+  .pane-working-time-badge .pane-working-time-digits {
+    display: none;
+  }
+  .pane-working-time-badge .pane-working-time-icon {
+    display: inline-flex;
+  }
+}
+
+@container pane-card (max-width: 170px) {
+  .pane-working-time-badge {
+    display: none;
+  }
+}

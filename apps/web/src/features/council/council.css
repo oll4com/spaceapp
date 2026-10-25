@@ -1,0 +1,140 @@
+/* Council dock on the shared dock kit: colors come from the --dock-* tokens, so every theme follows. */
+
+.dock-panel.council-dock {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dock-gap, 0.6rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.council-dock > * { flex: 0 0 auto; }
+
+/* A lone grid column must be allowed below its content's width, or one long unbroken line widens the whole dock. */
+.council-ask, .council-select, .council-history ul, .council-run, .council-section, .council-field, .council-working,
+.council-top, .council-sources, .council-events { grid-template-columns: minmax(0, 1fr); }
+
+.council-setting { width: 100%; justify-content: space-between; font-size: var(--dock-font-sm); }
+.council-setting small { color: var(--dock-muted); font-size: 0.7rem; line-height: 1.35; }
+
+.council-muted { color: var(--dock-muted); font-size: 0.72rem; line-height: 1.4; }
+
+.council-dock textarea,
+.council-dock select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font: inherit;
+  /* 16px keeps mobile browsers from zooming into the field. */
+  font-size: max(16px, var(--dock-font, 0.8rem));
+  line-height: 1.45;
+}
+
+.council-dock textarea { resize: vertical; field-sizing: content; min-height: 3.5rem; max-height: 14rem; }
+.council-dock textarea:focus-visible,
+.council-dock select:focus-visible { border-color: var(--dock-accent); outline: none; }
+
+.council-ask { display: grid; gap: 0.5rem; }
+.council-ask-row { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
+.council-ask-row .council-select { flex: 1 1 12rem; }
+.council-select { display: grid; gap: 0.2rem; min-width: 0; }
+.council-select > span,
+.council-field > span { color: var(--dock-muted); font-size: 0.7rem; font-weight: 650; }
+
+.council-history h3,
+.council-plan h4,
+.council-details h5 { margin: 0.25rem 0; color: var(--dock-text); font-size: 0.78rem; }
+.council-history ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.35rem; }
+.council-history li { display: flex; align-items: center; gap: 0.35rem; }
+.council-history-item {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+.council-history-item > span { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+
+.council-status { flex: 0 0 auto; padding: 0.05rem 0.4rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.62rem; font-weight: 650; }
+.council-status.is-completed { background: var(--dock-accent-soft); color: var(--dock-accent); }
+.council-status.is-failed { color: var(--dock-danger, #e5484d); }
+
+.council-run { display: grid; gap: 0.6rem; min-width: 0; }
+.council-question { margin: 0; color: var(--dock-text); font-size: 0.86rem; line-height: 1.4; overflow-wrap: anywhere; }
+
+.council-steps { display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+.council-steps li { padding: 0.15rem 0.45rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted); font-size: 0.64rem; }
+.council-steps li.is-done { border-color: color-mix(in srgb, var(--dock-accent) 40%, var(--dock-border)); color: var(--dock-text); }
+.council-steps li.is-current { border-color: var(--dock-accent); background: var(--dock-accent-soft); color: var(--dock-accent); font-weight: 650; }
+
+.council-section { display: grid; gap: 0.5rem; padding: 0.65rem 0.75rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); color: var(--dock-text); min-width: 0; }
+.council-section > summary { cursor: pointer; color: var(--dock-text); font-size: 0.76rem; font-weight: 650; }
+.council-section p { margin: 0; font-size: 0.8rem; line-height: 1.45; overflow-wrap: anywhere; }
+.council-field { display: grid; gap: 0.3rem; min-width: 0; }
+
+.council-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.council-chip {
+  min-height: 36px;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  background: var(--dock-soft);
+  color: var(--dock-text);
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.council-chip.is-on { border-color: var(--dock-accent); background: var(--dock-accent-soft); color: var(--dock-accent); font-weight: 650; }
+.council-chip:disabled { cursor: default; opacity: 0.75; }
+
+.council-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.6rem; margin: 0; font-size: 0.74rem; }
+.council-facts dt { color: var(--dock-muted); }
+.council-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+.council-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
+.council-working { display: grid; gap: 0.5rem; justify-items: start; }
+
+.council-members { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
+.council-members li { padding: 0.2rem 0.55rem; border: 1px solid var(--dock-border); border-radius: 999px; font-size: 0.7rem; color: var(--dock-text); }
+.council-members li small { color: var(--dock-muted); }
+.council-members li.is-done { border-color: color-mix(in srgb, var(--dock-accent) 50%, var(--dock-border)); }
+.council-members li.is-failed { border-style: dashed; color: var(--dock-muted); }
+
+.council-top { display: grid; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
+.council-top li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 0.55rem; padding: 0.5rem 0.6rem; border: 1px solid color-mix(in srgb, var(--dock-accent) 40%, var(--dock-border)); border-radius: var(--dock-radius); background: var(--dock-accent-soft); }
+.council-top strong { font-size: 0.8rem; overflow-wrap: anywhere; }
+.council-top small { grid-column: 2; color: var(--dock-muted); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+.council-rank { grid-row: span 2; display: grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--dock-accent); color: var(--dock-raised); font-weight: 700; font-size: 0.78rem; }
+
+.council-answer { font-size: 0.8rem; line-height: 1.5; overflow-wrap: anywhere; }
+.council-answer-item { padding: 0.35rem 0; border-top: 1px solid var(--dock-border); font-size: 0.78rem; }
+.council-answer-item > summary { cursor: pointer; font-weight: 600; }
+.council-answer-item small { color: var(--dock-muted); font-weight: 400; }
+.council-sources { margin: 0; padding-left: 1rem; font-size: 0.74rem; display: grid; gap: 0.25rem; overflow-wrap: anywhere; }
+.council-sources a { color: var(--dock-accent); }
+
+.council-table-wrap { overflow-x: auto; }
+.council-table { width: 100%; border-collapse: collapse; font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+.council-table th,
+.council-table td { padding: 0.25rem 0.35rem; border-bottom: 1px solid var(--dock-border); text-align: center; }
+.council-table th[scope="row"] { text-align: left; font-weight: 500; min-width: 8rem; }
+
+.council-events { margin: 0; padding-left: 1rem; display: grid; gap: 0.2rem; font-size: 0.72rem; color: var(--dock-muted); overflow-wrap: anywhere; }
+.council-events time { font-variant-numeric: tabular-nums; }

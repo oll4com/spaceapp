@@ -1,0 +1,597 @@
+/* Agent Files on the dock kit. Folder chips, one search row with a Filters
+   panel, and file cards in a grid or a list. Colours come from the kit tokens. */
+
+/* Drop target */
+.agent-files-dock.is-dragover {
+  outline: 2px dashed var(--dock-accent);
+  outline-offset: -4px;
+  background: var(--dock-accent-soft);
+}
+
+.agent-files-dock .dock-kit-state.is-dragover {
+  border-color: var(--dock-accent);
+  color: var(--dock-accent);
+}
+
+/* Folders */
+.agent-files-folders {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.agent-files-folder-tabs {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  overflow-x: auto;
+  padding-bottom: 0.15rem;
+  scrollbar-width: thin;
+}
+
+.agent-files-folder-tabs.is-sub .agent-files-folder-chip {
+  min-height: 1.55rem;
+  padding: 0 0.6rem;
+  font-size: 0.72rem;
+}
+
+.agent-files-folder-chip-group {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.agent-files-folder-chip {
+  flex: 0 0 auto;
+}
+
+.agent-files-folder-chip svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: 0 0 auto;
+}
+
+.agent-files-folder-chip[aria-selected="true"],
+.agent-files-folder-chip[aria-selected="true"]:hover:not(:disabled) {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+  color: var(--dock-accent);
+}
+
+.agent-files-folder-remove.dock-kit-icon-button {
+  width: 1.5rem;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  border-radius: 999px;
+}
+
+.agent-files-folder-remove.dock-kit-icon-button svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.agent-files-new-folder {
+  flex: 0 0 auto;
+}
+
+/* Breadcrumbs for nested folders */
+.agent-files-path {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+}
+
+.agent-files-path-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.agent-files-path .dock-kit-button {
+  min-height: 1.7rem;
+  padding: 0 0.45rem;
+}
+
+.agent-files-path-crumb.is-current {
+  color: var(--dock-text);
+}
+
+.agent-files-path-up.dock-kit-icon-button {
+  width: 1.7rem;
+  height: 1.7rem;
+  min-height: 1.7rem;
+  margin-right: 0.2rem;
+}
+
+/* Search, filters and previews */
+.agent-files-search-row {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.agent-files-search-row > .dock-kit-search {
+  flex: 1 1 7rem;
+}
+
+.agent-files-filter-toggle {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+/* Reuses the kit count badge, so the Modern theme does not reset its colour. */
+.agent-files-filter-count.dock-kit-chip-count {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  min-width: 1rem;
+  height: 1rem;
+  box-sizing: border-box;
+  padding: 0 0.25rem;
+  background: var(--dock-accent);
+  color: var(--dock-on-accent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1rem;
+  pointer-events: none;
+}
+
+.agent-files-previews {
+  flex: 0 0 auto;
+  gap: 0.4rem;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+}
+
+/* The switch already announces its state; the compact row drops the visible state word. */
+.agent-files-previews .space-toggle-state {
+  display: none;
+}
+
+.agent-files-filter-panel {
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  align-items: end;
+}
+
+.agent-files-filter-field {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.agent-files-date-range {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.agent-files-date-range > .agent-files-filter-field {
+  flex: 1 1 8rem;
+}
+
+.agent-files-filter-panel > .dock-kit-editor-footer {
+  grid-column: 1 / -1;
+}
+
+/* File list */
+.agent-files-items.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  align-items: stretch;
+}
+
+.dock-kit-shell.is-fullscreen .agent-files-items.is-grid {
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  gap: 0.85rem;
+}
+
+.agent-files-folder-shortcuts {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.agent-files-folder-shortcut-name {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-files-item[draggable="true"] {
+  cursor: grab;
+}
+
+.agent-files-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.agent-files-item.is-list {
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.agent-files-item.is-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.55rem;
+  content-visibility: auto;
+  contain-intrinsic-size: 175px;
+}
+
+.agent-files-item-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-soft);
+  color: var(--dock-text);
+  cursor: zoom-in;
+}
+
+.agent-files-item.is-list .agent-files-item-thumb {
+  width: 3.25rem;
+  height: 3.25rem;
+}
+
+.agent-files-item.is-grid .agent-files-item-thumb {
+  width: 100%;
+  height: 95px;
+}
+
+.agent-files-item-thumb:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.agent-files-item-thumb:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.agent-files-item-thumb-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.agent-files-item.is-grid .agent-files-item-thumb-img {
+  object-fit: contain;
+}
+
+.agent-files-item-kind {
+  width: 1.45rem;
+  height: 1.45rem;
+  color: var(--dock-accent);
+}
+
+.agent-files-item.is-grid .agent-files-item-kind {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+.agent-files-item-thumb-chip {
+  position: absolute;
+  right: 0.2rem;
+  bottom: 0.2rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--dock-accent);
+}
+
+.agent-files-item-thumb-chip svg {
+  width: 0.62rem;
+  height: 0.62rem;
+  color: var(--dock-on-accent);
+}
+
+.agent-files-item.is-grid .agent-files-item-thumb-chip {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.agent-files-item.is-grid:hover .agent-files-item-thumb-chip,
+.agent-files-item.is-grid .agent-files-item-thumb:focus-visible .agent-files-item-thumb-chip {
+  opacity: 1;
+}
+
+.agent-files-item-body {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 0.15rem;
+}
+
+.agent-files-item.is-grid .agent-files-item-body {
+  flex: 1 1 auto;
+}
+
+.agent-files-item-body .dock-kit-meta-text {
+  flex-basis: 100%;
+}
+
+.agent-files-item.is-list .agent-files-item-actions {
+  flex-wrap: nowrap;
+}
+
+.agent-files-item.is-grid .agent-files-item-actions {
+  margin-top: auto;
+}
+
+.agent-files-more {
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+
+.agent-files-sentinel {
+  grid-column: 1 / -1;
+  height: 1px;
+}
+
+/* Dialogs (shared attachment modal): preview, move to folder and new folder */
+.agent-files-modal {
+  z-index: 110;
+}
+
+.agent-files-modal-body {
+  max-width: none;
+  max-height: none;
+  box-sizing: border-box;
+  display: grid;
+  place-items: stretch;
+  gap: 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 12px;
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  padding: 0.8rem;
+}
+
+.agent-files-modal-body.is-preview {
+  width: min(76rem, calc(100vw - 2rem));
+  height: min(50rem, calc(100vh - 2rem));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.agent-files-modal-body.is-form {
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: 80vh;
+  align-content: start;
+  overflow-y: auto;
+}
+
+.agent-files-modal-head {
+  min-width: 0;
+  min-height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.agent-files-modal-heading {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.agent-files-modal-heading > .dock-kit-meta-text {
+  font-size: var(--dock-font-sm);
+}
+
+.agent-files-modal-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Previews always sit on a dark stage; text inside inherits this light colour
+   (the Modern theme resets pre/strong/small to inherit). */
+.agent-files-modal-preview {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: #0d0f10;
+  color: #e7eee9;
+}
+
+.agent-files-modal-preview > img,
+.agent-files-modal-preview > video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.agent-files-modal-preview > audio {
+  width: min(34rem, calc(100% - 2rem));
+}
+
+.agent-files-modal-preview > iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.agent-files-text-preview {
+  width: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  overflow: auto;
+  padding: 1rem;
+  color: #e7eee9;
+  font: 0.78rem/1.5 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-files-preview-note {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  gap: 0.55rem;
+  padding: 1.5rem;
+  color: #c9cdd1;
+  text-align: center;
+}
+
+.agent-files-preview-note > svg {
+  width: 2.5rem;
+  height: 2.5rem;
+  color: var(--dock-accent);
+}
+
+.agent-files-preview-note.is-error {
+  color: var(--dock-danger);
+}
+
+.agent-files-folder-options {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.agent-files-folder-group {
+  padding: 0.35rem 0.2rem 0.1rem;
+}
+
+.agent-files-folder-option {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-files-folder-option:hover {
+  border-color: var(--dock-border-strong);
+}
+
+.agent-files-folder-option.is-selected {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+  box-shadow: inset 3px 0 0 var(--dock-accent);
+}
+
+.agent-files-folder-option .dock-kit-badge {
+  margin-left: auto;
+}
+
+.agent-files-folder-option-path + .dock-kit-badge {
+  margin-left: 0;
+}
+
+.agent-files-folder-option:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.agent-files-folder-option svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  color: var(--dock-accent);
+}
+
+.agent-files-folder-option-path {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: 0.65rem;
+  opacity: 0.8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-files-inline-create,
+.agent-files-new-folder-form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.agent-files-inline-create-row {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.agent-files-inline-create-row > .dock-kit-select {
+  width: auto;
+  max-width: 10rem;
+  flex: 0 1 auto;
+}
+
+.agent-files-inline-create-row > .dock-kit-field {
+  flex: 1 1 9rem;
+}
+
+@media (max-width: 520px) {
+  .agent-files-folders {
+    flex-wrap: wrap;
+  }
+
+  .agent-files-item.is-list {
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+  }
+
+  .agent-files-item.is-list .agent-files-item-thumb {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .agent-files-item.is-list .agent-files-item-actions {
+    grid-column: 1 / -1;
+  }
+
+  .agent-files-modal-body.is-preview,
+  .agent-files-modal-body.is-form {
+    width: calc(100vw - 0.8rem);
+    padding: 0.55rem;
+  }
+
+  .agent-files-modal-body.is-preview {
+    height: calc(100vh - 0.8rem);
+  }
+}

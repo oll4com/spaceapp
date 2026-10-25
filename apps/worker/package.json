@@ -1,0 +1,33 @@
+{
+  "name": "@space/worker",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "main": "dist/worker.js",
+  "types": "dist/worker.d.ts",
+  "scripts": {
+    "dev": "npm run build && node dist/worker.js",
+    "start": "node dist/worker.js",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@space/codex-app-server": "0.2.5",
+    "@space/contracts": "0.2.5",
+    "@space/db": "0.2.5",
+    "@space/memory-graph": "0.2.5",
+    "@space/opencode-control": "0.2.5",
+    "@space/streaming": "0.2.5",
+    "@temporalio/activity": "1.24.0",
+    "@temporalio/client": "1.24.0",
+    "@temporalio/worker": "1.24.0",
+    "@temporalio/workflow": "1.24.0",
+    "undici": "8.10.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  },
+  "license": "MIT"
+}

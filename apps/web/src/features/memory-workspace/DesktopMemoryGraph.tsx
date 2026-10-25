@@ -1,0 +1,551 @@
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, RotateCcw } from "../ui-theme/app-icons.js";
+import { MultiDirectedGraph } from "graphology";
+import Sigma from "sigma";
+import type { NodeHoverDrawingFunction, NodeLabelDrawingFunction } from "sigma/rendering";
+import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
+import type { MemoryAtlasPosition } from "./memory-atlas.js";
+import {
+  isMemoryCoreLabel,
+  isMemoryIndexLabel,
+  memoryGraphEdgeStyle,
+  memoryGraphNodeStyle,
+  memoryGraphTaxonomySummary,
+  orderMemoryGraphNodes,
+  resolveMemoryGraphPosition,
+  shouldForceMemoryGraphLabel
+} from "./memory-graph-visuals.js";
+
+const INITIAL_REVEAL_COUNT = 140;
+const REVEAL_BATCH_SIZE = 180;
+const REVEAL_DELAY_MS = 120;
+const MEMORY_GRAPH_LABEL_COLOR = "#c8dfec";
+const MEMORY_GRAPH_HIGHLIGHT_BACKGROUND = "#f4e6c1";
+const MEMORY_GRAPH_HIGHLIGHT_TEXT = "#222627";
+const MEMORY_GRAPH_SELECTED_COLOR = "#ffffff";
+const MEMORY_GRAPH_HOVER_COLOR = "#b0eaff";
+let memoryGraphRendererSerial = 0;
+
+export type MemoryGraphDisplayMode = "SEMANTIC" | "FOCUSED";
+
+// Sigma's six-digit colors avoid ambiguous alpha parsing across render backends.
+const subduedAtlasColor = (color: string) => {
+  const value = Number.parseInt(color.slice(1), 16);
+  return "#" + [value >> 16, (value >> 8) & 255, value & 255].map((channel, index) =>
+    Math.round(channel * 0.2 + [7, 12, 19][index]! * 0.8).toString(16).padStart(2, "0")
+  ).join("");
+};
+
+const drawMemoryGraphLabel: NodeLabelDrawingFunction = (context, data, settings) => {
+  if (!data.label) return;
+
+  context.save();
+  context.fillStyle = MEMORY_GRAPH_LABEL_COLOR;
+  context.font = `${settings.labelWeight} ${settings.labelSize}px ${settings.labelFont}`;
+  context.fillText(data.label, data.x + data.size + 3, data.y + settings.labelSize / 3);
+  context.restore();
+};
+
+const drawMemoryGraphHover: NodeHoverDrawingFunction = (context, data, settings) => {
+  const padding = 3;
+  const labelSize = settings.labelSize;
+  const radius = Math.max(data.size, labelSize / 2) + padding;
+
+  context.save();
+  context.font = `${settings.labelWeight} ${labelSize}px ${settings.labelFont}`;
+  context.fillStyle = MEMORY_GRAPH_HIGHLIGHT_BACKGROUND;
+  context.shadowOffsetX = 0;
+  context.shadowOffsetY = 0;
+  context.shadowBlur = 8;
+  context.shadowColor = "#000";
+
+  context.beginPath();
+  if (typeof data.label === "string") {
+    const boxHeight = Math.round(labelSize + padding * 2);
+    const boxWidth = Math.round(context.measureText(data.label).width + 7);
+    const angle = Math.asin(Math.min(1, boxHeight / 2 / radius));
+    const xDelta = Math.sqrt(Math.abs(radius ** 2 - (boxHeight / 2) ** 2));
+    context.moveTo(data.x + xDelta, data.y + boxHeight / 2);
+    context.lineTo(data.x + radius + boxWidth, data.y + boxHeight / 2);
+    context.lineTo(data.x + radius + boxWidth, data.y - boxHeight / 2);
+    context.lineTo(data.x + xDelta, data.y - boxHeight / 2);
+    context.arc(data.x, data.y, radius, angle, -angle);
+  } else {
+    context.arc(data.x, data.y, radius, 0, Math.PI * 2);
+  }
+  context.closePath();
+  context.fill();
+
+  context.shadowBlur = 0;
+  if (data.selected === true) {
+    context.lineWidth = 2;
+    context.strokeStyle = MEMORY_GRAPH_SELECTED_COLOR;
+    context.stroke();
+  }
+
+  if (data.label) {
+    context.fillStyle = MEMORY_GRAPH_HIGHLIGHT_TEXT;
+    context.fillText(data.label, data.x + data.size + 3, data.y + labelSize / 3);
+  }
+  context.restore();
+};
+
+const legend = [
+  { label: "Memory", kind: "memory" },
+  { label: "Explicit tag", kind: "explicit-tag" },
+  { label: "Derived topic", kind: "derived-topic" },
+  { label: "Source", kind: "source" },
+  { label: "Room", kind: "room" }
+];
+
+export default function DesktopMemoryGraph({
+  nodes,
+  edges,
+  displayMode,
+  relationMode,
+  selectedNodeId,
+  onSelectNode,
+  loading,
+  error,
+  totalNodes,
+  totalEdges,
+  truncated,
+  atlasPositions,
+  showTitles = true
+}: {
+  nodes: MemoryGraphNode[];
+  edges: MemoryGraphEdge[];
+  displayMode: MemoryGraphDisplayMode;
+  relationMode: "CLUSTERED" | "RELATIONS";
+  selectedNodeId: string | null;
+  onSelectNode: (nodeId: string) => void;
+  loading: boolean;
+  error: string | null;
+  totalNodes: number;
+  totalEdges: number;
+  truncated: boolean;
+  atlasPositions?: Map<string, MemoryAtlasPosition>;
+  showTitles?: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const rendererRef = useRef<Sigma | null>(null);
+  const selectedNodeRef = useRef<string | null>(selectedNodeId);
+  const hoveredNodeRef = useRef<string | null>(null);
+  const onSelectNodeRef = useRef(onSelectNode);
+  const displayModeRef = useRef<MemoryGraphDisplayMode>(displayMode);
+  const labelsVisibleRef = useRef(true);
+  const neighborsRef = useRef(new Map<string, Set<string>>());
+  const graphGenerationRef = useRef(0);
+  const lastCameraFocusRef = useRef<string | null>(null);
+  const rendererFailedRef = useRef(false);
+  const [revealedCount, setRevealedCount] = useState(0);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [rendererReady, setRendererReady] = useState(false);
+  const [rendererRevision, setRendererRevision] = useState(0);
+  const labelsVisible = showTitles;
+
+  selectedNodeRef.current = selectedNodeId;
+  onSelectNodeRef.current = onSelectNode;
+  displayModeRef.current = displayMode;
+  labelsVisibleRef.current = labelsVisible;
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const graph = new MultiDirectedGraph({ allowSelfLoops: false });
+    let renderer: Sigma | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    const contextCanvases: HTMLCanvasElement[] = [];
+    rendererFailedRef.current = false;
+    setRenderError(null);
+    setRendererReady(false);
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      if (rendererFailedRef.current) return;
+      rendererFailedRef.current = true;
+      graphGenerationRef.current += 1;
+      const failedRenderer = renderer;
+      if (rendererRef.current === failedRenderer) rendererRef.current = null;
+      renderer = null;
+      failedRenderer?.kill();
+      setRendererReady(false);
+      setRenderError("The memory map graphics context was lost. Retry to restore the map.");
+    };
+
+    try {
+      renderer = new Sigma(graph, container, {
+        allowInvalidContainer: true,
+        labelColor: { color: MEMORY_GRAPH_LABEL_COLOR },
+        labelDensity: 0.035,
+        labelGridCellSize: 90,
+        labelRenderedSizeThreshold: 5.5,
+        hideEdgesOnMove: true,
+        hideLabelsOnMove: false,
+        minCameraRatio: 0.06,
+        maxCameraRatio: 8,
+        stagePadding: 55,
+        zIndex: true,
+        defaultDrawNodeLabel: drawMemoryGraphLabel,
+        defaultDrawNodeHover: drawMemoryGraphHover,
+        nodeReducer: (nodeId, attributes) => {
+          if (!labelsVisibleRef.current) attributes = { ...attributes, label: null, forceLabel: false };
+          const neighbors = neighborsRef.current;
+          const hoveredNodeId = hoveredNodeRef.current && neighbors.has(hoveredNodeRef.current)
+            ? hoveredNodeRef.current
+            : null;
+          const selectedNodeId = selectedNodeRef.current && neighbors.has(selectedNodeRef.current)
+            ? selectedNodeRef.current
+            : null;
+          const traceNodeId = hoveredNodeId ?? selectedNodeId;
+          if (!traceNodeId) {
+            if (attributes.atlasGroupId) return { ...attributes, forceLabel: attributes.importantHub === true, label: attributes.label };
+            if (displayModeRef.current === "SEMANTIC") {
+              return labelsVisibleRef.current
+                ? attributes
+                : { ...attributes, forceLabel: false, label: null };
+            }
+            return attributes.importantHub === true
+              ? attributes
+              : { ...attributes, forceLabel: false, label: null };
+          }
+          if (nodeId === selectedNodeId) {
+            return {
+              ...attributes,
+              color: MEMORY_GRAPH_SELECTED_COLOR,
+              forceLabel: true,
+              highlighted: true,
+              hovered: nodeId === hoveredNodeId,
+              selected: true,
+              size: Number(attributes.size ?? 5) * 1.65,
+              zIndex: 4
+            };
+          }
+          if (nodeId === hoveredNodeId) {
+            return {
+              ...attributes,
+              color: MEMORY_GRAPH_HOVER_COLOR,
+              forceLabel: true,
+              highlighted: true,
+              hovered: true,
+              size: Number(attributes.size ?? 5) * 1.55,
+              zIndex: 3
+            };
+          }
+          if (neighbors.get(traceNodeId)?.has(nodeId)) {
+            const keepLabel = displayModeRef.current === "SEMANTIC"
+              ? labelsVisibleRef.current
+              : attributes.importantHub === true;
+            return {
+              ...attributes,
+              forceLabel: keepLabel,
+              label: keepLabel ? attributes.label : null,
+              size: Number(attributes.size ?? 5) * 1.12,
+              zIndex: 2
+            };
+          }
+          return {
+            ...attributes,
+            color: "#182530",
+            forceLabel: false,
+            label: null,
+            size: Number(attributes.size ?? 5) * 0.72,
+            zIndex: 0
+          };
+        },
+        edgeReducer: (_edgeId, attributes) => {
+          const neighbors = neighborsRef.current;
+          const hoveredNodeId = hoveredNodeRef.current && neighbors.has(hoveredNodeRef.current)
+            ? hoveredNodeRef.current
+            : null;
+          const selectedNodeId = selectedNodeRef.current && neighbors.has(selectedNodeRef.current)
+            ? selectedNodeRef.current
+            : null;
+          const traceNodeId = hoveredNodeId ?? selectedNodeId;
+          // Keep the overview readable. All real incident links reappear when a node is explored.
+          if (!traceNodeId) return attributes;
+          const incident = attributes.sourceId === traceNodeId || attributes.targetId === traceNodeId;
+          return incident
+            ? { ...attributes, hidden: false, color: "#8edbed", size: Number(attributes.size ?? 1) * 1.75, zIndex: 2 }
+            : { ...attributes, hidden: true, zIndex: 0 };
+        }
+      });
+      memoryGraphRendererSerial += 1;
+      container.dataset.sigmaRendererInstance = String(memoryGraphRendererSerial);
+      rendererRef.current = renderer;
+      renderer.on("clickNode", ({ node }) => onSelectNodeRef.current(node));
+      renderer.on("enterNode", ({ node }) => {
+        hoveredNodeRef.current = node;
+        container.style.cursor = "pointer";
+        renderer?.refresh();
+      });
+      renderer.on("leaveNode", () => {
+        hoveredNodeRef.current = null;
+        container.style.cursor = "default";
+        renderer?.refresh();
+      });
+      for (const canvas of Object.values(renderer.getCanvases())) {
+        canvas.addEventListener("webglcontextlost", handleContextLost);
+        contextCanvases.push(canvas);
+      }
+      resizeObserver = typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => renderer?.resize());
+      resizeObserver?.observe(container);
+      setRendererReady(true);
+    } catch (caught) {
+      setRenderError(caught instanceof Error ? caught.message : "The graph renderer could not start.");
+      renderer?.kill();
+      renderer = null;
+      rendererRef.current = null;
+      rendererFailedRef.current = true;
+      setRendererReady(false);
+    }
+
+    return () => {
+      graphGenerationRef.current += 1;
+      resizeObserver?.disconnect();
+      for (const canvas of contextCanvases) canvas.removeEventListener("webglcontextlost", handleContextLost);
+      renderer?.kill();
+      if (rendererRef.current === renderer) rendererRef.current = null;
+      hoveredNodeRef.current = null;
+      container.style.cursor = "default";
+    };
+  }, [rendererRevision]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const generation = graphGenerationRef.current + 1;
+    graphGenerationRef.current = generation;
+    setRevealedCount(0);
+    if (!renderer || rendererFailedRef.current) return;
+
+    const graph = new MultiDirectedGraph({ allowSelfLoops: false });
+    const orderedNodes = orderMemoryGraphNodes(nodes, edges);
+    const topicOrigins = new Map<string, "EXPLICIT_TAG" | "DERIVED_TFIDF">();
+    for (const edge of edges) {
+      if (edge.type !== "TAGGED_WITH" || (edge.origin !== "EXPLICIT_TAG" && edge.origin !== "DERIVED_TFIDF")) continue;
+      if (edge.origin === "EXPLICIT_TAG" || !topicOrigins.has(edge.target)) topicOrigins.set(edge.target, edge.origin);
+    }
+    const neighbors = new Map(nodes.map((node) => [node.id, new Set<string>()]));
+    const degrees = new Map(nodes.map((node) => [node.id, 0]));
+    for (const edge of edges) {
+      neighbors.get(edge.source)?.add(edge.target);
+      neighbors.get(edge.target)?.add(edge.source);
+      if (degrees.has(edge.source)) degrees.set(edge.source, degrees.get(edge.source)! + 1);
+      if (degrees.has(edge.target)) degrees.set(edge.target, degrees.get(edge.target)! + 1);
+    }
+    neighborsRef.current = neighbors;
+
+    let revealTimer: number | null = null;
+    const isCurrent = () => (
+      graphGenerationRef.current === generation &&
+      rendererRef.current === renderer &&
+      !rendererFailedRef.current
+    );
+
+    const addAvailableEdges = () => {
+      for (const edge of edges) {
+        if (
+          edge.source === edge.target ||
+          graph.hasEdge(edge.id) ||
+          !graph.hasNode(edge.source) ||
+          !graph.hasNode(edge.target)
+        ) continue;
+        const style = memoryGraphEdgeStyle(edge);
+        const sourceGroup = atlasPositions?.get(edge.source);
+        const targetGroup = atlasPositions?.get(edge.target);
+        graph.addEdgeWithKey(edge.id, edge.source, edge.target, {
+          color: atlasPositions ? (sourceGroup?.hub && targetGroup?.hub ? "#7595ad" : sourceGroup?.groupId === targetGroup?.groupId ? subduedAtlasColor(sourceGroup?.color ?? "#7395ad") : "#1b2c3d") : style.color,
+          size: atlasPositions ? (sourceGroup?.hub && targetGroup?.hub ? 1.3 : 0.35) : style.size,
+          crossGroup: Boolean(sourceGroup && targetGroup && sourceGroup.groupId !== targetGroup.groupId),
+          sourceId: edge.source,
+          targetId: edge.target,
+          relationType: edge.type
+        });
+      }
+    };
+
+    const revealThrough = (end: number) => {
+      if (!isCurrent()) return;
+      const start = graph.order;
+      for (let index = start; index < end; index += 1) {
+        const node = orderedNodes[index]!;
+        const atlas = atlasPositions?.get(node.id);
+        const position = atlas ?? resolveMemoryGraphPosition(node, index, relationMode);
+        const topicOrigin = topicOrigins.get(node.id) ?? null;
+        const style = memoryGraphNodeStyle(node, topicOrigin);
+        const importantHub = atlas ? (isMemoryCoreLabel(node.label) || isMemoryIndexLabel(node.label)) : shouldForceMemoryGraphLabel(
+          node,
+          topicOrigin,
+          degrees.get(node.id) ?? 0,
+          index
+        );
+        graph.addNode(node.id, {
+          label: `${node.label.length > 48 ? `${node.label.slice(0, 45)}…` : node.label}${atlas?.monthLabel ? ` · ${atlas.monthLabel}` : ""}`,
+          x: position.x,
+          y: position.y,
+          size: atlas ? (isMemoryCoreLabel(node.label) ? 14 : node.type === "SOURCE" ? (importantHub ? 8 : 4.8) : atlas.hub ? 5 : node.type === "MEMORY" ? 2.7 : 1.8) : style.size,
+          color: atlas?.color ?? style.color,
+          forceLabel: importantHub,
+          importantHub,
+          nodeType: node.type,
+          topicOrigin,
+          atlasGroupId: atlas?.groupId
+        });
+      }
+      addAvailableEdges();
+      setRevealedCount(end);
+    };
+
+    const scheduleNextBatch = (currentEnd: number) => {
+      if (!isCurrent() || currentEnd >= orderedNodes.length) return;
+      revealTimer = window.setTimeout(() => {
+        if (!isCurrent()) return;
+        const nextEnd = Math.min(orderedNodes.length, currentEnd + REVEAL_BATCH_SIZE);
+        revealThrough(nextEnd);
+        renderer.refresh();
+        scheduleNextBatch(nextEnd);
+      }, REVEAL_DELAY_MS);
+    };
+
+    try {
+      if (atlasPositions?.size) {
+        const points = [...atlasPositions.values()];
+        renderer.setCustomBBox?.({
+          x: [Math.min(...points.map(point => point.x)) - 8, Math.max(...points.map(point => point.x)) + 8],
+          y: [Math.min(...points.map(point => point.y)) - 8, Math.max(...points.map(point => point.y)) + 18]
+        });
+      } else renderer.setCustomBBox?.(null);
+      const initialEnd = Math.min(INITIAL_REVEAL_COUNT, orderedNodes.length);
+      revealThrough(initialEnd);
+      renderer.setGraph(graph);
+      renderer.refresh();
+      scheduleNextBatch(initialEnd);
+    } catch (caught) {
+      setRenderError(caught instanceof Error ? caught.message : "The graph renderer could not start.");
+      rendererFailedRef.current = true;
+      setRendererReady(false);
+    }
+
+    return () => {
+      if (graphGenerationRef.current === generation) graphGenerationRef.current += 1;
+      if (revealTimer !== null) window.clearTimeout(revealTimer);
+    };
+  }, [edges, nodes, relationMode, rendererRevision, atlasPositions]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || rendererFailedRef.current) return;
+    renderer.refresh();
+    if (!selectedNodeId) {
+      if (lastCameraFocusRef.current) void renderer.getCamera().animatedReset({ duration: 360 });
+      lastCameraFocusRef.current = null;
+      return;
+    }
+    if (!renderer.getGraph().hasNode(selectedNodeId)) return;
+    const focusKey = `${graphGenerationRef.current}:${selectedNodeId}`;
+    if (lastCameraFocusRef.current === focusKey) return;
+    const displayData = renderer.getNodeDisplayData(selectedNodeId);
+    if (displayData) {
+      lastCameraFocusRef.current = focusKey;
+      void renderer.getCamera().animate({ x: displayData.x, y: displayData.y, ratio: 0.24 }, { duration: 360 });
+    }
+  }, [nodes, rendererRevision, revealedCount, selectedNodeId]);
+
+  useEffect(() => {
+    rendererRef.current?.setSetting("renderLabels", labelsVisible);
+    rendererRef.current?.refresh();
+  }, [displayMode, labelsVisible]);
+
+  const visibleEdges = revealedCount >= nodes.length
+    ? edges.length
+    : edges.filter((edge) => {
+      const graph = rendererRef.current?.getGraph();
+      return graph?.hasNode(edge.source) && graph.hasNode(edge.target);
+    }).length;
+  const effectiveError = error ?? renderError;
+  const taxonomy = memoryGraphTaxonomySummary(nodes, edges);
+
+  return (
+    <section className="memory-graph-panel" aria-label="Interactive memory map">
+      <header className="memory-graph-toolbar">
+        <div>
+          <span>Knowledge atlas</span>
+          <strong>{nodes.length.toLocaleString()} nodes · {edges.length.toLocaleString()} relationships</strong>
+          <small className="memory-graph-taxonomy-summary">
+            {taxonomy.explicitTags.toLocaleString()} explicit tags · {taxonomy.derivedTopics.toLocaleString()} derived topics · {taxonomy.semanticLinks.toLocaleString()} semantic links
+          </small>
+        </div>
+        <button
+          type="button"
+          className="memory-graph-reset"
+          aria-label="Reset memory map view"
+          title="Reset memory map view"
+          disabled={!rendererReady}
+          onClick={() => { void rendererRef.current?.getCamera().animatedReset({ duration: 360 }); }}
+        >
+          <RotateCcw aria-hidden="true" />
+        </button>
+      </header>
+
+      <div className="memory-graph-legend" aria-label="Memory map legend">
+        {legend.map((item) => <span key={item.label}><i data-node-kind={item.kind} />{item.label}</span>)}
+        <span><i data-edge-kind="tag" />Taxonomy link</span>
+        <span><i data-edge-kind="semantic" />Semantic link</span>
+      </div>
+
+      <div
+        className="memory-graph-canvas"
+        ref={containerRef}
+        role="application"
+        tabIndex={0}
+        onKeyDown={event => {
+          if (!nodes.length || !["ArrowRight", "ArrowLeft", "Enter"].includes(event.key)) return;
+          event.preventDefault();
+          const index = nodes.findIndex(node => node.id === selectedNodeId);
+          const firstMemory = Math.max(0, nodes.findIndex(node => node.type === "MEMORY"));
+          const next = index < 0 ? (event.key === "ArrowLeft" ? nodes.length - 1 : firstMemory) : event.key === "ArrowLeft" ? (index - 1 + nodes.length) % nodes.length : (index + 1) % nodes.length;
+          onSelectNode(nodes[event.key === "Enter" && index >= 0 ? index : next]!.id);
+        }}
+        aria-label={`Canonical memory graph with ${nodes.length} visible nodes and ${edges.length} visible relationships. Use arrow keys to explore and Enter to open.`}
+        aria-busy={loading || (!effectiveError && revealedCount < nodes.length)}
+        data-graph-mode={displayMode}
+        data-relation-mode={relationMode}
+      >
+        {renderError ? (
+          <div className="memory-graph-render-fallback" aria-hidden="true">
+            <AlertTriangle />
+            <strong>Map rendering paused</strong>
+            <span>Use Retry below to restore the graphics layer.</span>
+          </div>
+        ) : !loading && !effectiveError && nodes.length === 0 ? <p>No memories found. Try another search.</p> : null}
+      </div>
+
+      <footer className="memory-graph-status" aria-live="polite">
+        {loading ? <p role="status">Loading memory map…</p> : effectiveError ? (
+          <div className="memory-graph-error-state">
+            <p role="alert">{effectiveError}</p>
+            {renderError ? (
+              <button
+                type="button"
+                aria-label="Retry memory map"
+                onClick={() => setRendererRevision((revision) => revision + 1)}
+              >
+                <RotateCcw aria-hidden="true" />
+                Retry
+              </button>
+            ) : null}
+          </div>
+        ) : truncated ? (
+          <p>Exploring {nodes.length.toLocaleString()} of {totalNodes.toLocaleString()} archive nodes · Hover to reveal connections · Search to discover more</p>
+        ) : nodes.length > 0 && revealedCount < nodes.length ? (
+          <p role="status">Revealing map… {revealedCount.toLocaleString()} of {nodes.length.toLocaleString()} nodes</p>
+        ) : nodes.length > 0 ? (
+          <p>Drag to explore · Scroll to zoom · Click a point to open its memory</p>
+        ) : <p>Search to explore your knowledge.</p>}
+      </footer>
+    </section>
+  );
+}

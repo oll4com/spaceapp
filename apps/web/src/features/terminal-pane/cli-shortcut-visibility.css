@@ -1,0 +1,78 @@
+.cli-shortcut-visibility {
+  min-width: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.cli-shortcut-visibility-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.15rem 0.6rem;
+}
+
+.cli-shortcut-visibility-item {
+  min-width: 0;
+  padding: 0.2rem 0;
+}
+
+.cli-shortcut-visibility-item .space-toggle {
+  gap: 0.4rem;
+}
+
+/* A compact switch: the shortcut name is the label, the ENABLED/DISABLED text is redundant here. */
+.cli-shortcut-visibility-item .space-toggle-state {
+  display: none;
+}
+
+.cli-shortcut-visibility-name {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--room-text, #f4efe5);
+  font-size: 0.74rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.cli-shortcut-visibility-name svg {
+  flex: 0 0 auto;
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--room-muted, #a7a59e);
+}
+
+.cli-shortcut-visibility-name span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-shortcut-visibility-item.is-hidden .cli-shortcut-visibility-name {
+  opacity: 0.55;
+}
+
+.cli-shortcut-visibility-reset {
+  justify-self: start;
+  min-height: 1.6rem;
+  padding: 0 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--room-border, #303437) 80%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--room-surface, #141617) 70%, transparent);
+  color: var(--room-text, #f4efe5);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.cli-shortcut-visibility-reset:hover:not(:disabled),
+.cli-shortcut-visibility-reset:focus-visible {
+  border-color: var(--room-accent, #6db7aa);
+  background: color-mix(in srgb, var(--room-accent, #6db7aa) 15%, transparent);
+}
+
+.cli-shortcut-visibility-reset:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

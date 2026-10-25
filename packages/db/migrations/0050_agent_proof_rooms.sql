@@ -1,0 +1,9 @@
+ALTER TABLE rooms
+  ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'WORKSPACE';
+
+ALTER TABLE rooms
+  DROP CONSTRAINT IF EXISTS rooms_kind_check;
+
+ALTER TABLE rooms
+  ADD CONSTRAINT rooms_kind_check
+  CHECK (kind IN ('WORKSPACE', 'AGENT_PROOF'));

@@ -1,0 +1,415 @@
+{
+ "source": "headroom/transforms/mixed_content.py (Headroom 0.37)",
+ "fixtures": [
+  {
+   "name": "prose_json_prose",
+   "input": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.\nResult follows:\n[\n  {\n    \"id\": 0,\n    \"name\": \"row 0\"\n  },\n  {\n    \"id\": 1,\n    \"name\": \"row 1\"\n  },\n  {\n    \"id\": 2,\n    \"name\": \"row 2\"\n  },\n  {\n    \"id\": 3,\n    \"name\": \"row 3\"\n  }\n]\nDone with it.",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": true,
+    "has_embedded_json_with_text": true,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.\nResult follows:",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 1,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "[\n  {\n    \"id\": 0,\n    \"name\": \"row 0\"\n  },\n  {\n    \"id\": 1,\n    \"name\": \"row 1\"\n  },\n  {\n    \"id\": 2,\n    \"name\": \"row 2\"\n  },\n  {\n    \"id\": 3,\n    \"name\": \"row 3\"\n  }\n]",
+     "type": "json_array",
+     "language": null,
+     "startLine": 2,
+     "endLine": 19,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "Done with it.",
+     "type": "text",
+     "language": null,
+     "startLine": 20,
+     "endLine": 20,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "fence_and_prose",
+   "input": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.\n```python\ndef f(x):\n    return x * 2\n```\nMore Text follows here.\n```\nplain fence\n```",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": true,
+    "has_json_blocks": false,
+    "has_embedded_json_with_text": false,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "def f(x):\n    return x * 2",
+     "type": "source_code",
+     "language": "python",
+     "startLine": 1,
+     "endLine": 4,
+     "isCodeFence": true,
+     "atomic": false
+    },
+    {
+     "content": "More Text follows here.",
+     "type": "text",
+     "language": null,
+     "startLine": 5,
+     "endLine": 5,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "plain fence",
+     "type": "source_code",
+     "language": "unknown",
+     "startLine": 6,
+     "endLine": 8,
+     "isCodeFence": true,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "grep_and_prose",
+   "input": "Searching The Repository now\nsrc/a.ts:10:const a = 1;\nsrc/a.ts:12:const b = 2;\nsrc/b.ts:3:import x\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": false,
+    "has_embedded_json_with_text": false,
+    "has_prose": true,
+    "has_search_results": true
+   },
+   "sections": [
+    {
+     "content": "Searching The Repository now",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "src/a.ts:10:const a = 1;\nsrc/a.ts:12:const b = 2;\nsrc/b.ts:3:import x",
+     "type": "search",
+     "language": null,
+     "startLine": 1,
+     "endLine": 3,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 4,
+     "endLine": 4,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "invalid_bracket_banner",
+   "input": "[harness: the tool output follows, read it carefully you.]\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.\n{\"ok\": true}\ntrailing words",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": true,
+    "has_embedded_json_with_text": true,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "[harness: the tool output follows, read it carefully you.]",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": true
+    },
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 1,
+     "endLine": 1,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "{\"ok\": true}",
+     "type": "json_array",
+     "language": null,
+     "startLine": 2,
+     "endLine": 2,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "trailing words",
+     "type": "text",
+     "language": null,
+     "startLine": 3,
+     "endLine": 3,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "unbalanced",
+   "input": "{ not closed\n[ also open\nPlain Text line here\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": true,
+    "has_embedded_json_with_text": false,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "{ not closed\n[ also open\nPlain Text line here\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 3,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "jsonl",
+   "input": "{\"n\": 0}\n{\"n\": 1}\n{\"n\": 2}\nFinished The Run Today",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": true,
+    "has_embedded_json_with_text": true,
+    "has_prose": false,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "{\"n\": 0}",
+     "type": "json_array",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "{\"n\": 1}",
+     "type": "json_array",
+     "language": null,
+     "startLine": 1,
+     "endLine": 1,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "{\"n\": 2}",
+     "type": "json_array",
+     "language": null,
+     "startLine": 2,
+     "endLine": 2,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "Finished The Run Today",
+     "type": "text",
+     "language": null,
+     "startLine": 3,
+     "endLine": 3,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "strings_with_brackets",
+   "input": "Output Below Here Now\n{\"text\": \"a ] b } c \\\" d\", \"list\": [1, 2]}\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": true,
+    "has_embedded_json_with_text": true,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "Output Below Here Now",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "{\"text\": \"a ] b } c \\\" d\", \"list\": [1, 2]}",
+     "type": "json_array",
+     "language": null,
+     "startLine": 1,
+     "endLine": 1,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 2,
+     "endLine": 2,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "pure_prose",
+   "input": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+   "mixed": false,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": false,
+    "has_embedded_json_with_text": false,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "unicode",
+   "input": "Ελληνικό κείμενο εδώ\nsrc/α.ts:7:const α = 1;\n```ts\nconst β = 2;\n```\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": true,
+    "has_json_blocks": false,
+    "has_embedded_json_with_text": false,
+    "has_prose": true,
+    "has_search_results": true
+   },
+   "sections": [
+    {
+     "content": "Ελληνικό κείμενο εδώ",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 0,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "src/α.ts:7:const α = 1;",
+     "type": "search",
+     "language": null,
+     "startLine": 1,
+     "endLine": 1,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "const β = 2;",
+     "type": "source_code",
+     "language": "ts",
+     "startLine": 2,
+     "endLine": 4,
+     "isCodeFence": true,
+     "atomic": false
+    },
+    {
+     "content": "The gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 5,
+     "endLine": 5,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  },
+  {
+   "name": "blank_lines",
+   "input": "Intro Line Here Now\n\n\n[1, 2, 3]\n\n\nOutro Line Here Now\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+   "mixed": true,
+   "indicators": {
+    "has_code_fences": false,
+    "has_json_blocks": true,
+    "has_embedded_json_with_text": true,
+    "has_prose": true,
+    "has_search_results": false
+   },
+   "sections": [
+    {
+     "content": "Intro Line Here Now\n\n",
+     "type": "text",
+     "language": null,
+     "startLine": 0,
+     "endLine": 2,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "[1, 2, 3]",
+     "type": "json_array",
+     "language": null,
+     "startLine": 3,
+     "endLine": 3,
+     "isCodeFence": false,
+     "atomic": false
+    },
+    {
+     "content": "\n\nOutro Line Here Now\nThe gateway sends every request upstream. The pool picks an account first. Then the proxy streams the reply. Each Request gets a log row. Every Account has limits here. Most Requests are small anyway. Some Outputs are large ones.",
+     "type": "text",
+     "language": null,
+     "startLine": 4,
+     "endLine": 7,
+     "isCodeFence": false,
+     "atomic": false
+    }
+   ]
+  }
+ ]
+}

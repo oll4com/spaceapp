@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "generatedAt": "2026-09-28T14:00:00Z",
+  "launcher": {
+    "name": "run-spaceapp",
+    "minNodeVersion": ">=20.11",
+    "recommendedNode": "22.x",
+    "ltsLines": ["20.x", "22.x"]
+  },
+  "runtime": {
+    "profiles": [
+      {
+        "id": "light",
+        "description": "Minimal memory footprint, essential services only (spaceapp-core, spaceapp-cli, postgres, temporal)",
+        "minMemoryMb": 4096,
+        "recommendedMemoryMb": 8192
+      },
+      {
+        "id": "standard",
+        "description": "Full desktop & browser workspace capability (+ automated browser host, companions)",
+        "minMemoryMb": 8192,
+        "recommendedMemoryMb": 16384
+      }
+    ],
+    "companionsToggle": true,
+    "telemetryToggle": true
+  },
+  "platforms": {
+    "windows": {
+      "supported": true,
+      "variants": [
+        {
+          "id": "win11-x64",
+          "os": "Windows 11",
+          "arch": "x64",
+          "shells": ["cmd", "powershell5", "powershell7"],
+          "terminals": ["conhost", "windowsterminal"],
+          "docker": {
+            "type": "Docker Desktop",
+            "minVersion": "4.30.0",
+            "backend": "WSL2"
+          },
+          "executionPolicyBypass": "npx.cmd / spaceapp.cmd (no machine policy change)"
+        },
+        {
+          "id": "win11-arm64",
+          "os": "Windows 11",
+          "arch": "arm64",
+          "docker": {
+            "type": "Docker Desktop",
+            "minVersion": "4.30.0",
+            "backend": "WSL2 ARM64"
+          }
+        }
+      ]
+    },
+    "macos": {
+      "supported": true,
+      "variants": [
+        {
+          "id": "macos-intel",
+          "os": "macOS 13+ (Ventura / Sonoma / Sequoia)",
+          "arch": "x64",
+          "shells": ["zsh", "bash"],
+          "docker": {
+            "type": "Docker Desktop",
+            "minVersion": "4.30.0"
+          }
+        },
+        {
+          "id": "macos-apple-silicon",
+          "os": "macOS 13+ (Ventura / Sonoma / Sequoia)",
+          "arch": "arm64",
+          "shells": ["zsh", "bash"],
+          "docker": {
+            "type": "Docker Desktop",
+            "minVersion": "4.30.0"
+          }
+        }
+      ]
+    },
+    "linux": {
+      "supported": true,
+      "variants": [
+        {
+          "id": "ubuntu-debian-x64",
+          "families": ["Ubuntu 22.04 LTS", "Ubuntu 24.04 LTS", "Debian 12 Bookworm"],
+          "arch": "x64",
+          "packageManagers": ["apt"],
+          "docker": {
+            "type": "Docker Engine / Compose v2",
+            "installMethod": "official-docker-apt-repo"
+          }
+        },
+        {
+          "id": "ubuntu-debian-arm64",
+          "families": ["Ubuntu 22.04 LTS", "Ubuntu 24.04 LTS", "Debian 12 Bookworm"],
+          "arch": "arm64",
+          "packageManagers": ["apt"],
+          "docker": {
+            "type": "Docker Engine / Compose v2",
+            "installMethod": "official-docker-apt-repo"
+          }
+        },
+        {
+          "id": "fedora-rhel-x64",
+          "families": ["Fedora 39+", "RHEL 9", "CentOS Stream 9"],
+          "arch": "x64",
+          "packageManagers": ["dnf5", "dnf"],
+          "docker": {
+            "type": "Docker Engine / Compose v2",
+            "installMethod": "official-docker-dnf-repo"
+          }
+        },
+        {
+          "id": "arch-cachyos-x64",
+          "families": ["Arch Linux", "CachyOS"],
+          "arch": "x64",
+          "packageManagers": ["pacman"],
+          "docker": {
+            "type": "Docker Engine / Compose v2",
+            "installMethod": "pacman-official-repo"
+          }
+        }
+      ]
+    }
+  },
+  "fixtures": [
+    {
+      "id": "clean_os",
+      "description": "Base OS without Node.js or Docker"
+    },
+    {
+      "id": "node_only",
+      "description": "Node.js LTS installed, Docker missing or inactive"
+    },
+    {
+      "id": "prereqs_ready",
+      "description": "Node.js and Docker active and ready"
+    },
+    {
+      "id": "existing_install",
+      "description": "Previous SpaceApp install with database, test user, workspace markers"
+    }
+  ]
+}

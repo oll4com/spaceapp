@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design"
+  short_description: "Make graphics in a Space Design pane: social formats at exact sizes, Nano Banana and gpt-image through Space Gateway, templates, brand kits and motion, delivered back to the agent or pane that asked."
+  default_prompt: "Use $space-design: call space_design_next until it returns done, make every format the request names, look at each output, and close each request with space_design_deliver, space_design_ask or space_design_fail."

@@ -1,0 +1,65 @@
+/* CLI runtime rows use the shared SpaceToggle switch in a compact form:
+   the VPN switch keeps its short "VPN" label, the Active switch shows only the track. */
+.settings-flat-card.cli-runtime-settings-card .cli-runtime-settings-actions {
+  display: grid;
+  grid-template-columns: 1.45rem 4.6rem 2.55rem;
+  align-items: center;
+  justify-items: center;
+  gap: 0.5rem;
+}
+
+.settings-flat-card.cli-runtime-settings-card .cli-runtime-settings-columns-actions {
+  display: grid;
+  grid-template-columns: 1.45rem 4.6rem 2.55rem;
+  justify-items: center;
+  gap: 0.5rem;
+  padding-right: 0;
+}
+
+.cli-runtime-switch.space-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.cli-runtime-switch .space-toggle-state {
+  display: none;
+}
+
+.cli-runtime-vpn-switch .space-toggle-label {
+  display: inline-flex;
+  min-width: 1.35rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.6rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+
+.cli-runtime-vpn-switch .space-toggle-label svg {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.cli-runtime-enabled-switch .space-toggle-copy {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Notices follow the "Suppress notifications" preference like the old runtime notices did. */
+:root[data-suppress-notifications="true"] .cli-runtime-notice,
+[data-suppress-notifications="true"] .cli-runtime-notice {
+  display: none !important;
+}
+
+.cli-runtime-settings-card > .dock-kit-state,
+.cli-vpn-settings-card > .dock-kit-state {
+  min-height: 6rem;
+}

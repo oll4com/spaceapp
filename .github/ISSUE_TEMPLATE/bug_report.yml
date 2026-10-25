@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible SpaceApp problem without private data
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, setup tokens, personal memory, private workspace content, or customer data. Report security vulnerabilities through the private advisory link instead.
+  - type: input
+    id: version
+    attributes:
+      label: SpaceApp version
+      description: Run `spaceapp --version`.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - macOS
+        - Windows 11 with WSL2
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Installation profile
+      options:
+        - light
+        - standard
+        - unknown
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include Docker/Compose versions and bounded, redacted output only.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, tokens, cookies, personal memory, private paths, and customer data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

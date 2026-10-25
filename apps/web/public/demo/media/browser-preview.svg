@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+  <defs>
+    <radialGradient id="glow" cx="60%" cy="35%" r="65%"><stop stop-color="#183039"/><stop offset=".55" stop-color="#0d171c"/><stop offset="1" stop-color="#080e12"/></radialGradient>
+    <linearGradient id="line" x2="1" y2="1"><stop stop-color="#86e0d2"/><stop offset="1" stop-color="#67a2e7"/></linearGradient>
+  </defs>
+  <rect width="1440" height="900" fill="url(#glow)"/>
+  <circle cx="1020" cy="395" r="270" fill="none" stroke="#47747d" stroke-opacity=".3" stroke-width="1"/>
+  <circle cx="1020" cy="395" r="195" fill="none" stroke="#8cd7d1" stroke-opacity=".35" stroke-width="2"/>
+  <circle cx="1020" cy="395" r="125" fill="#102e38" stroke="url(#line)" stroke-width="3"/>
+  <circle cx="1020" cy="395" r="70" fill="#62b6be" fill-opacity=".08"/>
+  <path d="M965 397c35-74 89-74 110 0-26 75-88 75-110 0Z" fill="none" stroke="#a3f2db" stroke-width="4"/>
+  <path d="M989 397c18-34 42-34 62 0-20 35-44 35-62 0Z" fill="#9cebdc" fill-opacity=".4"/>
+  <rect x="56" y="46" width="1328" height="66" rx="16" fill="#17252b" stroke="#31505a"/>
+  <circle cx="96" cy="79" r="11" fill="#7edbd1"/>
+  <text x="120" y="87" fill="#ecfbf9" font-family="Arial,sans-serif" font-size="27" font-weight="700">Space</text>
+  <text x="817" y="85" fill="#a8bec5" font-family="Arial,sans-serif" font-size="17">Product</text>
+  <text x="934" y="85" fill="#a8bec5" font-family="Arial,sans-serif" font-size="17">How it works</text>
+  <text x="1090" y="85" fill="#a8bec5" font-family="Arial,sans-serif" font-size="17">Docs</text>
+  <rect x="1203" y="62" width="152" height="36" rx="9" fill="#92e6d8"/>
+  <text x="1235" y="86" fill="#09242b" font-family="Arial,sans-serif" font-size="16" font-weight="700">Explore demo</text>
+  <text x="74" y="276" fill="#91e7d8" font-family="Arial,sans-serif" font-size="16" font-weight="700" letter-spacing="4">YOUR AI WORKSPACE</text>
+  <text x="70" y="364" fill="#f0f9f8" font-family="Arial,sans-serif" font-size="66" font-weight="700">Make room for</text>
+  <text x="70" y="442" fill="#f0f9f8" font-family="Arial,sans-serif" font-size="66" font-weight="700">every idea.</text>
+  <text x="74" y="507" fill="#bad0d4" font-family="Arial,sans-serif" font-size="23">Agents, panes, context and tools together</text>
+  <text x="74" y="542" fill="#bad0d4" font-family="Arial,sans-serif" font-size="23">in one focused workspace.</text>
+  <rect x="74" y="596" width="218" height="58" rx="12" fill="#91e4d6"/>
+  <text x="113" y="633" fill="#0a2529" font-family="Arial,sans-serif" font-size="20" font-weight="700">Explore Space</text>
+  <rect x="311" y="596" width="186" height="58" rx="12" fill="none" stroke="#6d9199"/>
+  <text x="353" y="633" fill="#d9eae9" font-family="Arial,sans-serif" font-size="20">Learn more</text>
+  <path d="M0 785h1440" stroke="#2d4952"/>
+  <text x="75" y="837" fill="#91aeb5" font-family="Arial,sans-serif" font-size="16">LOCAL BROWSER PREVIEW · SPACE DEMO</text>
+</svg>

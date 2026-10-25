@@ -1,0 +1,625 @@
+import type { AgentRuntimeAuthMode, AgentRuntimeAuthState, CliAdapterLimitation } from "@space/contracts";
+
+export type CliRuntimeKey =
+  | "codex"
+  | "claude"
+  | "gemini"
+  | "opencode"
+  | "autohand"
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "deepseek"
+  | "cursor"
+  | "copilot"
+  | "hermes"
+  | "omp"
+  | "qoder"
+  | "muse"
+  | "droid";
+
+export interface CliRuntimeDescriptor {
+  key: CliRuntimeKey;
+  id: `cli:${CliRuntimeKey}`;
+  providerId: string;
+  providerName: string;
+  agentName: string;
+  commandName: string;
+  commandEnv: string;
+  credentialSmokeEnv: string;
+  authMode: AgentRuntimeAuthMode;
+  missingAuthState: Exclude<AgentRuntimeAuthState, "READY">;
+  missingAuthReason: string;
+  loginAction: "login" | null;
+  credentialObservationAction: "credential-observation" | null;
+  credentialSmokeMarker: `SPACE_${string}_OK` | null;
+  loginBootstrapEnv: string | null;
+  loginBootstrapRuntimeEnv: string | null;
+  stateRoot: string;
+  tempDir: string;
+  environment: Readonly<Record<string, string>>;
+  nativeResumeArgs: readonly string[] | null;
+  /**
+   * Declares `REFERENCE` recovery: a RESUME launch passes the recorded native task reference
+   * (buildCliSpawnArgs) and both launch gates admit it. A launcher that can pass one while its
+   * exactness is unproven keeps this false and declares REFERENCE_PENDING_LIVE_PROOF instead.
+   */
+  declaresNativeReference: boolean;
+  /** What the adapter cannot provide for this runtime; apps/api/tests/cli-adapter-contract.test.ts derives the expected set. */
+  adapterLimitations: readonly CliAdapterLimitation[];
+  /** Environment variable that carries a non-main account profile to the wrapper (kept by its sudoers). */
+  accountProfileEnv: `SPACE_${string}_ACCOUNT_PROFILE` | null;
+  /** The wrapper starts the TUI on SPACE_CLI_MODEL_ID/SPACE_CLI_REASONING_EFFORT (a pane's own model pick). */
+  paneModelLaunchEnv: boolean;
+  /** Configured fallback; does not establish provider support or live discovery. Set to the
+   * model the CLI starts on without a pane pick (its own catalog/config default, checked
+   * 2026-10-11), or null where its account/provider decides; never passed to it as a pick
+   * unless `launchesDefaultModel` is set. */
+  defaultModelId: string | null;
+  /** Space owns this default: the wrapper gets it like any pane pick, so the CLI's own config
+   * default never decides which model a pane runs (Oh My Pi, operator decision 2026-10-18). */
+  launchesDefaultModel?: true;
+  credentialVerifiedReason: string;
+  loginBootstrapReason: string | null;
+}
+
+const proxmoxHome = "/var/lib/spaceapp-user";
+const codexHome = `${proxmoxHome}/.codex`;
+
+const completionUnobserved: CliAdapterLimitation = {
+  operation: "completion",
+  code: "COMPLETION_UNOBSERVED",
+  detail: "Space sees PTY output and process exit only; a turn's success is not observed, so completion fails closed."
+};
+const providerSelectionOnly: CliAdapterLimitation = {
+  operation: "nativeResume",
+  code: "PROVIDER_SELECTION_ONLY",
+  detail: "Recovery reaches the provider's own continue or latest-session selection, which need not be the same native task."
+};
+const loginNotInTerminal: CliAdapterLimitation = {
+  operation: "login",
+  code: "LOGIN_NOT_IN_TERMINAL",
+  detail: "Authentication happens inside the CLI or through managed credentials; a terminal login is refused before a session is allocated."
+};
+const hostLossRestartsFresh: CliAdapterLimitation = {
+  operation: "reconnect",
+  code: "HOST_LOSS_RESTARTS_FRESH",
+  detail: "A live host process reconnects; after a pane-host loss the session restarts fresh instead of resuming."
+};
+const referencePendingLiveProof = (form: string): CliAdapterLimitation => ({
+  operation: "nativeResume",
+  code: "REFERENCE_PENDING_LIVE_PROOF",
+  detail: `RESUME passes the recorded reference (${form}); REFERENCE stays undeclared until a live resume proof exists.`
+});
+const interactivePicker = (form: string): CliAdapterLimitation => ({
+  operation: "nativeResume",
+  code: "PROVIDER_SELECTION_INTERACTIVE_PICKER",
+  detail: `Without a recorded reference, ${form} opens the provider's interactive session picker.`
+});
+
+export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
+  {
+    key: "opencode",
+    id: "cli:opencode",
+    providerId: "opencode",
+    providerName: "OpenCode",
+    agentName: "OpenCode CLI",
+    commandName: "opencode-vscode-parity",
+    commandEnv: "SPACE_CLI_OPENCODE_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_OPENCODE_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "OpenCode managed credentials have not been verified by the operator.",
+    loginAction: null,
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_OPENCODE_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-opencode`,
+    tempDir: `${codexHome}/space-opencode/tmp`,
+    environment: {
+      XDG_CONFIG_HOME: `${proxmoxHome}/.config`,
+      XDG_DATA_HOME: `${codexHome}/space-opencode/data`,
+      XDG_CACHE_HOME: `${codexHome}/space-opencode/cache`,
+      XDG_STATE_HOME: `${codexHome}/space-opencode/state`
+    },
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: true,
+    adapterLimitations: [loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: false,
+    defaultModelId: null,
+    credentialVerifiedReason: "OpenCode is available without credentials. A working free model is checked on first launch.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "codex",
+    id: "cli:codex",
+    providerId: "codex",
+    providerName: "Codex",
+    agentName: "Codex CLI",
+    commandName: "codex-vscode-parity",
+    commandEnv: "SPACE_CLI_CODEX_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_CODEX_CREDENTIAL_SMOKE",
+    authMode: "DEVICE_CODE",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Codex CLI sign-in is required. Open its device-code login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_CODEX_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: codexHome,
+    tempDir: `${codexHome}/tmp`,
+    environment: { CODEX_HOME: codexHome },
+    nativeResumeArgs: null,
+    declaresNativeReference: true,
+    adapterLimitations: [{
+      operation: "start",
+      code: "START_REQUIRES_RESOLVED_MODEL",
+      detail: "A fresh Codex start needs a resolved model and reasoning effort; the launcher refuses a bare start."
+    }],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: false,
+    defaultModelId: "gpt-5.6-sol",
+    credentialVerifiedReason: "Codex CLI direct VS Code/Codex parity wrapper, /etc cwd, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "claude",
+    id: "cli:claude",
+    providerId: "anthropic",
+    providerName: "Claude Code",
+    agentName: "Claude Code CLI",
+    commandName: "claude-vscode-parity",
+    commandEnv: "SPACE_CLI_CLAUDE_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_CLAUDE_CREDENTIAL_SMOKE",
+    authMode: "BROWSER_OAUTH",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Claude Code login is required. Open its login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_CLAUDE_OK",
+    loginBootstrapEnv: "SPACE_CLI_CLAUDE_LOGIN_BOOTSTRAP",
+    loginBootstrapRuntimeEnv: "SPACE_CLAUDE_LOGIN_BOOTSTRAP",
+    stateRoot: `${codexHome}/space-claude`,
+    tempDir: `${codexHome}/space-claude/tmp`,
+    environment: { CLAUDE_CONFIG_DIR: `${codexHome}/space-claude` },
+    nativeResumeArgs: ["--resume"],
+    declaresNativeReference: true,
+    adapterLimitations: [interactivePicker("a bare `--resume`"), completionUnobserved],
+    accountProfileEnv: "SPACE_CLAUDE_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: false,
+    defaultModelId: "sonnet",
+    credentialVerifiedReason: "Claude Code direct Anthropic operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: "Claude Code CLI is enabled only for first-run OAuth login; credential smoke is still pending."
+  },
+  {
+    key: "gemini",
+    id: "cli:gemini",
+    providerId: "google",
+    providerName: "Google Gemini",
+    agentName: "Gemini CLI",
+    commandName: "gemini-vscode-parity",
+    commandEnv: "SPACE_CLI_GEMINI_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_GEMINI_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "The official Google Antigravity CLI executable is unavailable.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-gemini`,
+    tempDir: `${codexHome}/space-gemini/tmp`,
+    environment: {},
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, {
+      operation: "nativeResume",
+      code: "REFERENCE_STEERED_BY_WRAPPER",
+      detail: "RESUME passes `--continue`; the recorded conversation id travels in SPACE_GEMINI_CONVERSATION_ID and the wrapper steers the continue to it. Unverified live."
+    }, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: "SPACE_GEMINI_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: false,
+    defaultModelId: "gemini-3.8-flash",
+    credentialVerifiedReason: "The official Google Antigravity CLI is installed; authentication is handled natively inside the CLI.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "autohand",
+    id: "cli:autohand",
+    providerId: "openrouter",
+    providerName: "OpenRouter",
+    agentName: "Autohand Code CLI",
+    commandName: "autohand-vscode-parity",
+    commandEnv: "SPACE_CLI_AUTOHAND_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_AUTOHAND_CREDENTIAL_SMOKE",
+    authMode: "API_KEY",
+    missingAuthState: "SETUP_REQUIRED",
+    missingAuthReason: "Autohand account and OpenRouter API key setup are required. Open its protected setup terminal in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_AUTOHAND_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-autohand`,
+    tempDir: `${codexHome}/space-autohand/tmp`,
+    environment: { AUTOHAND_HOME: `${codexHome}/space-autohand` },
+    nativeResumeArgs: null,
+    declaresNativeReference: false,
+    adapterLimitations: [{
+      operation: "nativeResume",
+      code: "NATIVE_RESUME_UNSUPPORTED",
+      detail: "Space has no Autohand resume form; recovery starts a fresh session with bounded Space context."
+    }, hostLossRestartsFresh, completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: false,
+    defaultModelId: "openrouter/auto",
+    credentialVerifiedReason: "Autohand Code CLI patched distribution, isolated account and OpenRouter credentials, /etc parity, approved MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "qwen",
+    id: "cli:qwen",
+    providerId: "alibaba",
+    providerName: "Alibaba Coding Plan International",
+    agentName: "Qwen Code CLI",
+    commandName: "qwen-vscode-parity",
+    commandEnv: "SPACE_CLI_QWEN_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_QWEN_CREDENTIAL_SMOKE",
+    authMode: "API_KEY",
+    missingAuthState: "SETUP_REQUIRED",
+    missingAuthReason: "Qwen Code provider setup is required. Open its terminal and use the official /auth menu.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_QWEN_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-qwen`,
+    tempDir: `${codexHome}/space-qwen/tmp`,
+    environment: {
+      QWEN_HOME: `${codexHome}/space-qwen`,
+      QWEN_RUNTIME_DIR: `${codexHome}/space-qwen/runtime`
+    },
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, referencePendingLiveProof("`--resume <uuid>`"), completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
+    credentialVerifiedReason: "Qwen Code CLI direct operator parity wrapper, selected provider credentials, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "kimi",
+    id: "cli:kimi",
+    providerId: "kimi-code",
+    providerName: "Kimi Code Subscription",
+    agentName: "Kimi Code CLI",
+    commandName: "kimi-vscode-parity",
+    commandEnv: "SPACE_CLI_KIMI_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_KIMI_CREDENTIAL_SMOKE",
+    authMode: "BROWSER_OAUTH",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Kimi Code OAuth login is required. Open its login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_KIMI_OK",
+    loginBootstrapEnv: "SPACE_CLI_KIMI_LOGIN_BOOTSTRAP",
+    loginBootstrapRuntimeEnv: "SPACE_KIMI_LOGIN_BOOTSTRAP",
+    stateRoot: `${codexHome}/space-kimi`,
+    tempDir: `${codexHome}/space-kimi/tmp`,
+    environment: { KIMI_CODE_HOME: `${codexHome}/space-kimi` },
+    nativeResumeArgs: ["--session"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, interactivePicker("`--session`"), completionUnobserved],
+    accountProfileEnv: "SPACE_KIMI_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: true,
+    defaultModelId: "kimi-code/k3",
+    credentialVerifiedReason: "Kimi Code subscription direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: "Kimi Code CLI is enabled only for first-run Kimi Code OAuth login; subscription credential smoke is still pending."
+  },
+  {
+    key: "grok",
+    id: "cli:grok",
+    providerId: "xai",
+    providerName: "Grok Build",
+    agentName: "Grok Build CLI",
+    commandName: "grok-vscode-parity",
+    commandEnv: "SPACE_CLI_GROK_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_GROK_CREDENTIAL_SMOKE",
+    authMode: "DEVICE_CODE",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Grok Build sign-in is required. Open its device-code login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_GROK_OK",
+    loginBootstrapEnv: "SPACE_CLI_GROK_LOGIN_BOOTSTRAP",
+    loginBootstrapRuntimeEnv: "SPACE_GROK_LOGIN_BOOTSTRAP",
+    stateRoot: `${codexHome}/space-grok`,
+    tempDir: `${codexHome}/space-grok/tmp`,
+    environment: { GROK_HOME: `${codexHome}/space-grok` },
+    nativeResumeArgs: ["--resume"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "grok-4.7",
+    credentialVerifiedReason: "Grok Build account direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: "Grok Build CLI is enabled only for first-run xAI device-code login; account credential smoke is still pending."
+  },
+  {
+    key: "deepseek",
+    id: "cli:deepseek",
+    providerId: "deepseek",
+    providerName: "DeepSeek",
+    agentName: "DeepSeek CLI",
+    commandName: "deepseek-vscode-parity",
+    commandEnv: "SPACE_CLI_DEEPSEEK_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_DEEPSEEK_CREDENTIAL_SMOKE",
+    authMode: "API_KEY",
+    missingAuthState: "SETUP_REQUIRED",
+    missingAuthReason: "DeepSeek API key setup is required. Open its protected setup terminal in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_DEEPSEEK_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-deepseek`,
+    tempDir: `${codexHome}/space-deepseek/tmp`,
+    environment: { DEEPSEEK_HOME: `${codexHome}/space-deepseek` },
+    nativeResumeArgs: null,
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "deepseek-flash/deepseek-flash",
+    credentialVerifiedReason: "DeepSeek CLI 0.1.1 text-chat wrapper, live provider model catalog, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "cursor",
+    id: "cli:cursor",
+    providerId: "cursor",
+    providerName: "Cursor",
+    agentName: "Cursor CLI",
+    commandName: "cursor-vscode-parity",
+    commandEnv: "SPACE_CLI_CURSOR_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_CURSOR_CREDENTIAL_SMOKE",
+    authMode: "BROWSER_OAUTH",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "Cursor CLI OAuth login is required. Open its browser login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_CURSOR_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-cursor`,
+    tempDir: `${codexHome}/space-cursor/tmp`,
+    environment: {
+      CURSOR_CONFIG_DIR: `${codexHome}/space-cursor`,
+      AGENT_CLI_CREDENTIAL_STORE: "file"
+    },
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    accountProfileEnv: "SPACE_CURSOR_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: false,
+    defaultModelId: "auto",
+    credentialVerifiedReason: "Cursor CLI direct operator parity wrapper, browser OAuth, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "copilot",
+    id: "cli:copilot",
+    providerId: "github",
+    providerName: "GitHub",
+    agentName: "GitHub Copilot CLI",
+    commandName: "copilot-vscode-parity",
+    commandEnv: "SPACE_CLI_COPILOT_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_COPILOT_CREDENTIAL_SMOKE",
+    authMode: "DEVICE_CODE",
+    missingAuthState: "LOGIN_REQUIRED",
+    missingAuthReason: "GitHub Copilot CLI login is required. Open its device-code login in Space to continue.",
+    loginAction: "login",
+    credentialObservationAction: "credential-observation",
+    credentialSmokeMarker: "SPACE_COPILOT_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-copilot`,
+    tempDir: `${codexHome}/space-copilot/tmp`,
+    environment: { COPILOT_HOME: `${codexHome}/space-copilot` },
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    accountProfileEnv: "SPACE_COPILOT_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
+    credentialVerifiedReason: "GitHub Copilot CLI direct operator parity wrapper, GitHub device login, /etc cwd, MCP access, and credential smoke are verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "hermes",
+    id: "cli:hermes",
+    providerId: "hermes",
+    providerName: "Hermes Agent",
+    agentName: "Hermes Agent CLI",
+    commandName: "hermes-vscode-parity",
+    commandEnv: "SPACE_CLI_HERMES_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_HERMES_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Hermes Agent CLI is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: "SPACE_HERMES_OK",
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: "/var/lib/spaceapp-user/.hermes",
+    tempDir: "/var/lib/spaceapp-user/.codex/space-hermes/tmp",
+    environment: { HERMES_HOME: "/var/lib/spaceapp-user/.hermes" },
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "space-gateway-claude:claude-opus-5-5",
+    credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "omp",
+    id: "cli:omp",
+    providerId: "oh-my-pi",
+    providerName: "Oh My Pi",
+    agentName: "Oh My Pi CLI",
+    commandName: "omp-vscode-parity",
+    commandEnv: "SPACE_CLI_OMP_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_OMP_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Oh My Pi CLI is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-omp`,
+    tempDir: `${codexHome}/space-omp/tmp`,
+    environment: {},
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "space-gateway/gpt-6-sol",
+    launchesDefaultModel: true,
+    credentialVerifiedReason: "Oh My Pi CLI is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "qoder",
+    id: "cli:qoder",
+    providerId: "qoder",
+    providerName: "Qoder",
+    agentName: "Qoder CLI",
+    commandName: "qoder-vscode-parity",
+    commandEnv: "SPACE_CLI_QODER_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_QODER_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Qoder CLI is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-qoder`,
+    tempDir: `${codexHome}/space-qoder/tmp`,
+    environment: {},
+    // The Qoder sudoers admits `--continue`/`-c` only; a bare `--resume` was refused by `sudo -n`.
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, referencePendingLiveProof("`-r <uuid>`, fresh `--session-id <uuid>`"), completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
+    credentialVerifiedReason: "Qoder CLI is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "muse",
+    id: "cli:muse",
+    providerId: "muse",
+    providerName: "Meta",
+    agentName: "Muse Code CLI",
+    commandName: "muse-vscode-parity",
+    commandEnv: "SPACE_CLI_MUSE_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_MUSE_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Muse Code is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-muse`,
+    tempDir: `${codexHome}/space-muse/tmp`,
+    environment: {},
+    nativeResumeArgs: ["resume", "--last"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
+    credentialVerifiedReason: "Muse Code is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  },
+  {
+    key: "droid",
+    id: "cli:droid",
+    providerId: "droid",
+    providerName: "Factory",
+    agentName: "Droid CLI",
+    commandName: "droid-vscode-parity",
+    commandEnv: "SPACE_CLI_DROID_COMMAND",
+    credentialSmokeEnv: "SPACE_CLI_DROID_CREDENTIAL_SMOKE",
+    authMode: "NONE",
+    missingAuthState: "UNAVAILABLE",
+    missingAuthReason: "Droid is unavailable on this host.",
+    loginAction: null,
+    credentialObservationAction: null,
+    credentialSmokeMarker: null,
+    loginBootstrapEnv: null,
+    loginBootstrapRuntimeEnv: null,
+    stateRoot: `${codexHome}/space-droid`,
+    tempDir: `${codexHome}/space-droid/tmp`,
+    environment: {},
+    nativeResumeArgs: ["--resume", "--last"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
+    credentialVerifiedReason: "Droid is installed and launched through the isolated Space wrapper.",
+    loginBootstrapReason: null
+  }
+];
+
+/**
+ * Runtimes whose panes can run under a linked (non-main) account profile; each descriptor names the
+ * variable that carries it (accountProfileEnv). The literal tuple keeps per-provider profile readers exhaustive.
+ */
+export const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor", "cli:kimi"] as const satisfies
+  readonly `cli:${CliRuntimeKey}`[];
+
+const descriptorById = new Map(cliRuntimeDescriptors.map((descriptor) => [descriptor.id, descriptor]));
+
+export function findCliRuntimeDescriptor(runtimeId: string | null | undefined): CliRuntimeDescriptor | null {
+  if (!runtimeId) return null;
+  return descriptorById.get(runtimeId as `cli:${CliRuntimeKey}`) ?? null;
+}
+
+export function configuredCliRuntimeCommands(env: NodeJS.ProcessEnv): Record<CliRuntimeKey, string> {
+  return Object.fromEntries(
+    cliRuntimeDescriptors.map((descriptor) => [descriptor.key, env[descriptor.commandEnv] || descriptor.commandName])
+  ) as Record<CliRuntimeKey, string>;
+}
+
+export function configuredCliCredentialSmoke(env: NodeJS.ProcessEnv): Record<CliRuntimeKey, boolean> {
+  return Object.fromEntries(
+    cliRuntimeDescriptors.map((descriptor) => [descriptor.key, env[descriptor.credentialSmokeEnv] === "true"])
+  ) as Record<CliRuntimeKey, boolean>;
+}
+
+export function configuredCliLoginBootstrap(env: NodeJS.ProcessEnv): Record<CliRuntimeKey, boolean> {
+  return Object.fromEntries(
+    cliRuntimeDescriptors.map((descriptor) => [
+      descriptor.key,
+      descriptor.loginBootstrapEnv ? env[descriptor.loginBootstrapEnv] === "true" : false
+    ])
+  ) as Record<CliRuntimeKey, boolean>;
+}

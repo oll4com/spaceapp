@@ -1,0 +1,6 @@
+interface:
+  display_name: "Space Active-Agent Stress"
+  short_description: "Run fixed active-agent room stress proofs"
+  default_prompt: "Use $space-active-agent-stress to run the fixed active-agent warm-room benchmark safely."
+policy:
+  allow_implicit_invocation: false

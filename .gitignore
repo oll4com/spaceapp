@@ -1,0 +1,54 @@
+# Generated outputs and local tool reports. These are safe to regenerate; do
+# not commit them, and clean them only with an allowlist.
+node_modules/
+dist/
+dist-mock/
+dist-types/
+server-dist/
+coverage/
+playwright-report/
+test-results/
+scratch/
+.npm/
+apps/desktop/release/*-unpacked/
+apps/desktop/release/*.7z
+apps/desktop/release/*.zip
+apps/desktop/release/*.exe
+apps/desktop/release/*.AppImage
+apps/desktop/release/*.deb
+apps/desktop/release/*.tar.*
+apps/desktop/release/*.tgz
+apps/desktop/release/@space/
+apps/desktop/release/*.yml
+apps/desktop/release/*.yaml
+apps/mobile/release/*.apk
+apps/mobile/release/*.idsig
+apps/web/public/downloads/*.apk
+apps/web/dist/downloads/*.apk
+# Python bytecode from vendored agent-skill scripts run on the live host.
+agent-skills/**/__pycache__/
+
+# Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
+secrets/
+backups/
+bin/
+!packages/run-spaceapp/bin/
+!packages/run-spaceapp/bin/spaceapp.mjs
+var/
+projects/
+/lost+found/
+
+# Local credentials and machine-specific environment.
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.log
+.DS_Store
+.cache/
+.autohand/
+.config/
+.local/
+
+run-spaceapp-*.tgz

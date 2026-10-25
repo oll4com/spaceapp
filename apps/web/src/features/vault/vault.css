@@ -1,0 +1,66 @@
+/* Vault dock on the shared dock kit: colors come from the --dock-* tokens, so every theme follows. */
+
+.dock-panel.vault-dock {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dock-gap, 0.6rem);
+  overflow: auto;
+}
+
+.vault-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius, 10px);
+  background: var(--dock-surface);
+}
+.vault-card h3 { margin: 0; font-size: 1rem; color: var(--dock-text); }
+.vault-card p { margin: 0; color: var(--dock-muted); font-size: var(--dock-font-sm); }
+.vault-card > summary { cursor: pointer; font-weight: 600; color: var(--dock-text); }
+
+
+/* Not the toggles: SpaceToggle is a <label> too, and a column turns it into a centered stack. */
+.vault-form label:not(.space-toggle) { display: flex; flex-direction: column; gap: 0.2rem; font-size: var(--dock-font-sm); color: var(--dock-muted); }
+.vault-form input, .vault-form textarea, .vault-form select {
+  font: inherit;
+  color: var(--dock-text);
+  background: var(--dock-input-bg, transparent);
+  border: 1px solid var(--dock-border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+.vault-form input[type="number"] { width: 6rem; }
+.vault-form-actions, .vault-items-bar, .vault-row-actions, .vault-row-review { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.vault-items-bar, .vault-row-actions { flex-wrap: nowrap; }
+.vault-items-bar > :first-child { flex: 1 1 0; min-width: 0; }
+.vault-password-row { display: flex; gap: 0.4rem; align-items: flex-end; }
+.vault-password-row label { flex: 1 1 auto; }
+.vault-generator { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1rem; }
+
+.vault-hint { margin: 0; font-size: var(--dock-font-sm); color: var(--dock-muted); }
+.vault-hint.is-error { color: var(--dock-danger); }
+.vault-recovery { display: block; padding: 0.5rem; word-break: break-all; user-select: all; border-radius: 6px; background: var(--dock-surface-strong, var(--dock-surface)); }
+.vault-risk { margin: 0.25rem 0 0; font-size: var(--dock-font-xs, 0.75rem); color: var(--dock-muted); }
+
+.vault-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.vault-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-start; padding: 0.5rem 0.6rem; border: 1px solid var(--dock-border); border-radius: 8px; }
+.vault-row[data-status="PENDING"] { border-color: var(--dock-warning); }
+.vault-row-main { flex: 1 1 0; display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.vault-row-actions { flex: none; }
+.vault-row-review { flex-basis: 100%; }
+.vault-meta { font-size: var(--dock-font-xs, 0.75rem); color: var(--dock-muted); }
+.vault-origins { font-size: var(--dock-font-sm); color: var(--dock-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-tags { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.vault-tag { font-size: var(--dock-font-xs, 0.75rem); padding: 0 0.4rem; border-radius: 999px; border: 1px solid var(--dock-border); color: var(--dock-muted); }
+.vault-tag.is-pending, .vault-tag.is-changed { border-color: var(--dock-warning); color: var(--dock-warning); }
+.vault-audit-row { flex-direction: column; gap: 0.1rem; padding: 0.4rem 0.6rem; font-size: var(--dock-font-sm); color: var(--dock-text); }
+.vault-audit-time { font-size: var(--dock-font-xs, 0.75rem); color: var(--dock-muted); white-space: nowrap; }
+.vault-settings { display: flex; flex-direction: column; gap: 0.6rem; }
+.vault-more { display: flex; flex-direction: column; gap: 0.5rem; }
+.vault-more > summary { cursor: pointer; font-size: var(--dock-font-sm); color: var(--dock-muted); }
+.vault-more[open] { gap: 0.5rem; }
+.vault-more[open] > :not(summary) { margin-top: 0.4rem; }

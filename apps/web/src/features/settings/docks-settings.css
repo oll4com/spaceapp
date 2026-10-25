@@ -1,0 +1,169 @@
+.docks-settings-card {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.docks-toggle-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.dock-toggle-icon {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  opacity: 0.85;
+}
+
+.dock-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.dock-status-badge.is-warning {
+  background: rgba(234, 179, 8, 0.16);
+  color: #facc15;
+  border: 1px solid rgba(234, 179, 8, 0.32);
+}
+
+.dock-status-badge.is-success {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.32);
+}
+
+.dock-status-badge.is-muted {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.docks-plugin-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  margin: 0.15rem 0 0.45rem 1.75rem;
+  border-radius: 6px;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.28);
+  color: #fef08a;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.docks-plugin-notice svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: #facc15;
+}
+
+.docks-plugin-link {
+  margin-left: 0.35rem;
+  background: transparent;
+  border: 0;
+  color: var(--room-accent, #58a6ff);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: inherit;
+  padding: 0;
+}
+
+.docks-plugin-link:hover {
+  color: #79c0ff;
+}
+
+.docks-settings-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--room-muted, #9ba3af);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.docks-settings-reset-btn:hover {
+  background: var(--room-surface-soft, #202425);
+  color: var(--room-text, #f4efe5);
+  border-color: var(--room-border-strong, #4a4d50);
+}
+
+.docks-settings-reset-btn svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.docks-summary-note {
+  font-size: 0.72rem;
+  color: var(--room-muted, #8b949e);
+  margin: 0.5rem 0 0.2rem;
+  padding-left: 0.2rem;
+}
+
+/* The row separator moves to the container so it spans the drag handle too. */
+.dock-item-row-container {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.35rem;
+  border-top: 1px solid var(--room-border, #303437);
+}
+
+.settings-flat-card .dock-item-row-container > .dock-visibility-row {
+  border-top: 0;
+}
+
+.dock-item-row-container > .docks-plugin-notice {
+  grid-column: 2;
+}
+
+.dock-order-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--room-muted, #9ba3af);
+  cursor: grab;
+  touch-action: none;
+}
+
+.dock-order-handle:hover,
+.dock-order-handle:focus-visible {
+  background: var(--room-surface-soft, #202425);
+  color: var(--room-text, #f4efe5);
+}
+
+.dock-order-handle svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.dock-item-row-container.is-dragging {
+  opacity: 0.5;
+}
+
+.dock-item-row-container.is-drag-over {
+  outline: 2px dashed var(--room-accent, #79b8ff);
+  outline-offset: -2px;
+  border-radius: 6px;
+}

@@ -1,0 +1,531 @@
+/* Prompt Variables Manager Modal Styling */
+
+.prompt-variables-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: pv-fade-in 0.15s ease-out;
+}
+
+@keyframes pv-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.prompt-variables-modal-dialog {
+  width: 100%;
+  max-width: 680px;
+  max-height: 85vh;
+  background: var(--room-surface-raised, #181a1d);
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--room-text, #f4efe5);
+  animation: pv-scale-up 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes pv-scale-up {
+  from { transform: scale(0.96) translateY(8px); opacity: 0; }
+  to { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+.prompt-variables-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--room-border, rgba(255, 255, 255, 0.08));
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.02));
+}
+
+.prompt-variables-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.prompt-variables-modal-title svg {
+  width: 18px;
+  height: 18px;
+  color: var(--room-accent, #6db7aa);
+}
+
+.prompt-variables-modal-title h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--room-text, #f4efe5);
+}
+
+.prompt-variables-modal-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--room-muted, #a7a59e);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.prompt-variables-modal-close-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--room-text, #f4efe5);
+}
+
+.prompt-variables-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.prompt-variables-modal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.prompt-variables-search-box {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+}
+
+.prompt-variables-search-box svg {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--room-muted, #a7a59e);
+  pointer-events: none;
+}
+
+.prompt-variables-search-box input {
+  width: 100%;
+  padding: 7px 30px 7px 32px;
+  border-radius: 6px;
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.12));
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.04));
+  color: var(--room-text, #f4efe5);
+  font-size: 0.82rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.prompt-variables-search-box input:focus {
+  border-color: var(--room-accent, #6db7aa);
+}
+
+.prompt-variables-search-clear {
+  position: absolute;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--room-muted, #a7a59e);
+  cursor: pointer;
+}
+
+.prompt-variables-search-clear svg {
+  position: static;
+  width: 12px;
+  height: 12px;
+}
+
+.prompt-variables-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-variables-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+}
+
+.prompt-variables-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Inside a dock (Settings) the label is a grid and the theme paints every button with its surface;
+   these selectors keep the toolbar's buttons in one line and the primary button accented. */
+.prompt-variables-toolbar-actions > label.prompt-variables-btn {
+  display: inline-flex;
+}
+
+/* One height for the search box and every toolbar action, label or button. */
+.prompt-variables-modal-toolbar .prompt-variables-btn,
+.prompt-variables-modal-toolbar .prompt-variables-search-box input {
+  box-sizing: border-box;
+  min-height: 2.15rem;
+}
+
+.prompt-variables-btn.primary,
+.space-shell .prompt-variables-modal-dialog button.prompt-variables-btn.primary {
+  background: var(--room-accent, #6db7aa);
+  border: 1px solid var(--room-accent, #6db7aa);
+  color: #0c1a17;
+}
+
+.prompt-variables-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.prompt-variables-btn.secondary {
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.12));
+  color: var(--room-text, #f4efe5);
+}
+
+.prompt-variables-btn.secondary:hover:not(:disabled) {
+  background: var(--room-surface-hover, rgba(255, 255, 255, 0.09));
+  border-color: var(--room-border-hover, rgba(255, 255, 255, 0.2));
+}
+
+.prompt-variables-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Editor Form */
+.prompt-variables-editor-form {
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.1));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.prompt-variables-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.prompt-variables-editor-header h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--room-accent, #6db7aa);
+}
+
+.prompt-variables-form-cancel {
+  border: none;
+  background: transparent;
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.prompt-variables-form-cancel:hover {
+  color: var(--room-text, #f4efe5);
+}
+
+.prompt-variables-form-error {
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  font-size: 0.76rem;
+}
+
+.prompt-variables-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.prompt-variables-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.prompt-variables-form-field label {
+  font-size: 0.76rem;
+  font-weight: 550;
+  color: var(--room-muted, #a7a59e);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.prompt-variables-form-field label small {
+  font-size: 0.7rem;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+.prompt-variables-input-with-prefix {
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.12));
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.04));
+  overflow: hidden;
+}
+
+.prompt-variables-prefix {
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-right: 1px solid var(--room-border, rgba(255, 255, 255, 0.1));
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--room-accent, #6db7aa);
+}
+
+.prompt-variables-input-with-prefix input {
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--room-text, #f4efe5);
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.prompt-variables-form-field input,
+.prompt-variables-form-field textarea {
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.12));
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.04));
+  color: var(--room-text, #f4efe5);
+  font-size: 0.82rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.prompt-variables-form-field textarea {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.4;
+}
+
+.prompt-variables-form-field input:focus,
+.prompt-variables-form-field textarea:focus {
+  border-color: var(--room-accent, #6db7aa);
+}
+
+.prompt-variables-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Variables Cards List */
+.prompt-variables-cards-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-variable-card {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.prompt-variable-card:hover {
+  border-color: var(--room-border-hover, rgba(255, 255, 255, 0.15));
+  background: var(--room-surface-hover, rgba(255, 255, 255, 0.05));
+}
+
+.prompt-variable-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prompt-variable-card-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.prompt-variable-card-name {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: var(--room-accent, #6db7aa);
+}
+
+.prompt-variable-card-label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--room-text, #f4efe5);
+}
+
+.prompt-variable-card-category {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--room-muted, #a7a59e);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.prompt-variable-card-value {
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--room-muted, #d1cfc7);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px 10px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.prompt-variable-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.prompt-variable-card-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid var(--room-border, rgba(255, 255, 255, 0.1));
+  background: transparent;
+  color: var(--room-muted, #a7a59e);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.prompt-variable-card-action-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.prompt-variable-card-action-btn:hover {
+  color: var(--room-text, #f4efe5);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.prompt-variable-card-action-btn.insert {
+  width: auto;
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--room-accent, #6db7aa);
+  border-color: rgba(109, 183, 170, 0.3);
+  background: var(--room-accent-soft, rgba(109, 183, 170, 0.1));
+}
+
+.prompt-variable-card-action-btn.insert:hover {
+  background: rgba(109, 183, 170, 0.2);
+}
+
+.prompt-variable-card-action-btn.danger:hover {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.prompt-variables-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--room-muted, #a7a59e);
+}
+
+.prompt-variables-empty-state > svg {
+  width: 32px;
+  height: 32px;
+  opacity: 0.4;
+}
+
+.prompt-variables-empty-state p {
+  margin: 0;
+  font-size: 0.85rem;
+  max-width: 380px;
+  line-height: 1.45;
+}
+
+/* Light mode overrides */
+[data-color-mode="light"] .prompt-variables-modal-dialog {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #1a1a1a;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
+}
+
+[data-color-mode="light"] .prompt-variables-modal-header {
+  background: rgba(0, 0, 0, 0.02);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-color-mode="light"] .prompt-variables-modal-title h2 {
+  color: #1a1a1a;
+}
+
+[data-color-mode="light"] .prompt-variables-search-box input {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #1a1a1a;
+}
+
+[data-color-mode="light"] .prompt-variable-card {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-color-mode="light"] .prompt-variable-card-value {
+  background: rgba(0, 0, 0, 0.04);
+  color: #333;
+}

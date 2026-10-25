@@ -1,0 +1,467 @@
+{
+ "source": "headroom/transforms/lossless_compaction.py (Headroom 0.37)",
+ "fixtures": [
+  {
+   "name": "grep_file_heading",
+   "kind": "log",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts:3:  const value = compute(3);\n... (repeated 3 times)\nsrc/app/b.ts:3:  const value = compute(3);\n... (repeated 2 times)\nsrc/app/c.ts:3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_file_heading",
+   "kind": "search",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts\n3:  const value = compute(3);\n3:  const value = compute(3);\n3:  const value = compute(3);\nsrc/app/b.ts\n3:  const value = compute(3);\n3:  const value = compute(3);\nsrc/app/c.ts\n3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_file_heading",
+   "kind": "paths",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_file_heading",
+   "kind": "diff",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_file_heading",
+   "kind": "text",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts:3:  const value = compute(3);\n... (repeated 3 times)\nsrc/app/b.ts:3:  const value = compute(3);\n... (repeated 2 times)\nsrc/app/c.ts:3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_file_heading",
+   "kind": "config",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts:3:  const value = compute(3);\n... (repeated 3 times)\nsrc/app/b.ts:3:  const value = compute(3);\n... (repeated 2 times)\nsrc/app/c.ts:3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_file_heading",
+   "kind": "fold_repeated_blocks",
+   "input": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n",
+   "output": "src/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/a.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/b.ts:3:  const value = compute(3);\nsrc/app/c.ts:3:  const value = compute(3);\n"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "log",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "search",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/\nengine.ts:0:import x from 'y';\npool.ts:1:import x from 'y';\nworker.ts:2:import x from 'y';\nrecorder.ts:3:import x from 'y';\nstats.ts:4:import x from 'y';\nengine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "paths",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "diff",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "text",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "config",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "grep_dir_heading",
+   "kind": "fold_repeated_blocks",
+   "input": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';",
+   "output": "packages/gateway/src/compression/engine.ts:0:import x from 'y';\npackages/gateway/src/compression/pool.ts:1:import x from 'y';\npackages/gateway/src/compression/worker.ts:2:import x from 'y';\npackages/gateway/src/compression/recorder.ts:3:import x from 'y';\npackages/gateway/src/compression/stats.ts:4:import x from 'y';\npackages/gateway/src/compression/engine.ts:5:import x from 'y';"
+  },
+  {
+   "name": "paths",
+   "kind": "log",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md"
+  },
+  {
+   "name": "paths",
+   "kind": "search",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md"
+  },
+  {
+   "name": "paths",
+   "kind": "paths",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/\none.ts\ntwo.ts\nthree.ts\n./src/b/\nfour.ts\nfive.ts\n\nREADME.md"
+  },
+  {
+   "name": "paths",
+   "kind": "diff",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md"
+  },
+  {
+   "name": "paths",
+   "kind": "text",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md"
+  },
+  {
+   "name": "paths",
+   "kind": "config",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md"
+  },
+  {
+   "name": "paths",
+   "kind": "fold_repeated_blocks",
+   "input": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md",
+   "output": "./src/a/one.ts\n./src/a/two.ts\n./src/a/three.ts\n./src/b/four.ts\n./src/b/five.ts\n\nREADME.md"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "log",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "INFO starting\nWARN retry\n... (repeated 5 times)\nINFO done\n... (repeated 2 times)\n"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "search",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "paths",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "diff",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "text",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "\u001b[32mINFO\u001b[0m starting\nWARN retry\n... (repeated 5 times)\nINFO done\n... (repeated 2 times)\n"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "config",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "\u001b[32mINFO\u001b[0m starting\nWARN retry\n... (repeated 5 times)\nINFO done\n... (repeated 2 times)\n"
+  },
+  {
+   "name": "log_ansi_runs",
+   "kind": "fold_repeated_blocks",
+   "input": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n",
+   "output": "\u001b[32mINFO\u001b[0m starting\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nWARN retry\nINFO done\nINFO done\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "log",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "search",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "paths",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "diff",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "text",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "config",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "text_runs",
+   "kind": "fold_repeated_blocks",
+   "input": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n",
+   "output": "line one\n\n\n\n\nline two\nsame\nsame\nsame\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "log",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "search",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "paths",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "diff",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "text",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "config",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n... (repeats 5 lines from 6 lines back)\n"
+  },
+  {
+   "name": "config_blocks",
+   "kind": "fold_repeated_blocks",
+   "input": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n",
+   "output": "- name: api\n  image: space:1\n  ports:\n    - 80\n    - 443\n  env: prod\n- name: web\n... (repeats 5 lines from 6 lines back)\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "log",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "search",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "paths",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "diff",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "text",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "config",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "diff_index",
+   "kind": "fold_repeated_blocks",
+   "input": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+   "output": "diff --git a/x b/x\nindex 1234abc..5678def 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "log",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "search",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/\nα.md:1:κείμενο α ✓\nα.md:2:κείμενο α ✓\nβ.md:3:κείμενο β ✓\nβ.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "paths",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "diff",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "text",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "config",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "unicode_grep",
+   "kind": "fold_repeated_blocks",
+   "input": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓",
+   "output": "docs/ελληνικά/α.md:1:κείμενο α ✓\ndocs/ελληνικά/α.md:2:κείμενο α ✓\ndocs/ελληνικά/β.md:3:κείμενο β ✓\ndocs/ελληνικά/β.md:4:κείμενο β ✓"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "log",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "search",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log\n1:line\r\n2:line\r\n3:line\r\n4:line\r"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "paths",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "diff",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "text",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "config",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r"
+  },
+  {
+   "name": "crlf_grep",
+   "kind": "fold_repeated_blocks",
+   "input": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r",
+   "output": "build/out.log:1:line\r\nbuild/out.log:2:line\r\nbuild/out.log:3:line\r\nbuild/out.log:4:line\r"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "log",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "search",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "paths",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "diff",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "text",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "config",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "marker_collision",
+   "kind": "fold_repeated_blocks",
+   "input": "x\n... (repeated 3 times)\ny\ny\n",
+   "output": "x\n... (repeated 3 times)\ny\ny\n"
+  },
+  {
+   "name": "empty",
+   "kind": "log",
+   "input": "",
+   "output": ""
+  },
+  {
+   "name": "empty",
+   "kind": "search",
+   "input": "",
+   "output": ""
+  },
+  {
+   "name": "empty",
+   "kind": "paths",
+   "input": "",
+   "output": ""
+  },
+  {
+   "name": "empty",
+   "kind": "diff",
+   "input": "",
+   "output": ""
+  },
+  {
+   "name": "empty",
+   "kind": "text",
+   "input": "",
+   "output": ""
+  },
+  {
+   "name": "empty",
+   "kind": "config",
+   "input": "",
+   "output": ""
+  },
+  {
+   "name": "empty",
+   "kind": "fold_repeated_blocks",
+   "input": "",
+   "output": ""
+  }
+ ]
+}

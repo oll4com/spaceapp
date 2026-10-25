@@ -1,0 +1,1020 @@
+/* Rooms dock: search and "New room", one scrolling room list, and the "Add panes" bar
+   pinned below it. Opening "Add panes" turns the whole dock into the pane picker.
+   Colors come from the dock kit tokens, so every theme and light/dark mode applies. */
+.side-surface-room-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dock-gap);
+  box-sizing: border-box;
+  padding: 0.75rem 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+  color: var(--dock-text);
+  font-size: var(--dock-font);
+}
+
+.side-surface-room-panel .rooms-controls {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.side-surface-room-panel .rooms-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.side-surface-room-panel .rooms-search {
+  flex: 1 1 0;
+}
+
+.side-surface-room-panel .rooms-new {
+  flex: 0 0 auto;
+}
+
+.side-surface-room-panel .rooms-admin-account-filter {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.side-surface-room-panel .rooms-filter-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+}
+
+.side-surface-room-panel .rooms-filter-summary button {
+  min-height: 0;
+  padding: 0.15rem 0.3rem;
+  border: 0;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-accent);
+  font-size: inherit;
+  font-weight: 600;
+}
+
+/* Room list */
+.side-surface-room-panel .room-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 -0.25rem;
+  padding: 0 0.25rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.side-surface-room-panel .room-list.is-room-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.side-surface-room-panel .rooms-empty {
+  margin: 1.5rem 0;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  text-align: center;
+}
+
+.side-surface-room-panel .room-item {
+  position: relative;
+  flex: 0 0 auto;
+  border-radius: var(--dock-radius);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.side-surface-room-panel .room-item:hover {
+  background: var(--dock-soft);
+}
+
+.side-surface-room-panel .room-item.selected {
+  background: var(--dock-accent-soft);
+}
+
+.side-surface-room-panel .room-item.is-expanded {
+  background: var(--dock-raised);
+  box-shadow: inset 0 0 0 1px var(--dock-border);
+}
+
+/* Warm presentation state (protected Warm baseline); kept as a hook, no visual. */
+.room-item[data-warm-presentation="active"] {
+  --room-cache-state-color: #64d9c1;
+}
+
+.room-item[data-warm-presentation="warm"] {
+  --room-cache-state-color: #62c993;
+}
+
+.room-item[data-warm-presentation="warming"] {
+  --room-cache-state-color: #d6aa4f;
+}
+
+.room-item[data-warm-presentation="cold"] {
+  --room-cache-state-color: #4d5962;
+}
+
+.side-surface-room-panel .room-item.is-dragging {
+  opacity: 0.5;
+}
+
+.side-surface-room-panel .room-item.is-drop-target {
+  box-shadow: inset 0 2px 0 var(--dock-accent);
+}
+
+.side-surface-room-panel .room-item.is-clicked {
+  animation: room-card-press-pop 200ms ease-out;
+}
+
+@keyframes room-card-press-pop {
+  0% { transform: scale(0.985); }
+  60% { transform: scale(1.004); }
+  100% { transform: none; }
+}
+
+.side-surface-room-panel .room-item-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding-right: 0.3rem;
+}
+
+/* The active room: an accent bar on the leading edge. */
+.side-surface-room-panel .room-item.selected > .room-item-row::before {
+  content: "";
+  position: absolute;
+  top: 0.55rem;
+  bottom: 0.55rem;
+  left: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--dock-accent);
+}
+
+.side-surface-room-panel .room-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 3rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.4rem 0.4rem 0.75rem;
+  border: 0;
+  border-radius: var(--dock-radius);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-select:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: -2px;
+}
+
+.side-surface-room-panel .room-status-dot {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  box-sizing: border-box;
+  border: 1.5px solid var(--dock-border-strong);
+  border-radius: 50%;
+}
+
+.side-surface-room-panel .room-item.selected .room-status-dot {
+  border-color: transparent;
+  background: var(--dock-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dock-accent) 25%, transparent);
+}
+
+.side-surface-room-panel .room-item.has-attention .room-status-dot {
+  border-color: transparent;
+  background: var(--dock-warning);
+}
+
+.side-surface-room-panel .room-select-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.side-surface-room-panel .room-name {
+  overflow: hidden;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-surface-room-panel .room-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.side-surface-room-panel .room-meta > * + *::before {
+  content: "·";
+  margin: 0 0.35rem;
+  color: var(--dock-border-strong);
+}
+
+.side-surface-room-panel .room-folder {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-surface-room-panel .room-attention {
+  flex: 0 0 auto;
+  color: var(--dock-warning);
+  font-weight: 600;
+}
+
+.side-surface-room-panel .room-cli-runtime-icons {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.side-surface-room-panel .room-cli-runtime-icon {
+  width: 1rem;
+  height: 1rem;
+  box-sizing: border-box;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.side-surface-room-panel .room-cli-runtime-more {
+  margin-left: 0.1rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.side-surface-room-panel .room-owner-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-surface-room-panel .room-owner-badge.is-mine {
+  color: var(--dock-accent);
+}
+
+.side-surface-room-panel .room-cli-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.side-surface-room-panel .room-cli-badge svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  opacity: 0.75;
+}
+
+.side-surface-room-panel .room-dock-expand-btn {
+  flex: 0 0 auto;
+  width: var(--dock-control);
+  height: var(--dock-control);
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-muted);
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-dock-expand-btn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.side-surface-room-panel .room-dock-expand-btn:hover,
+.side-surface-room-panel .room-dock-expand-btn[aria-expanded="true"] {
+  border-color: var(--dock-border);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+}
+
+.side-surface-room-panel .room-dock-expand-btn:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+/* Test rooms (Agent Proof, CLI Recovery) */
+.side-surface-room-panel .room-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--dock-border);
+}
+
+.side-surface-room-panel .room-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-surface-room-panel .room-group-items[hidden] {
+  display: none;
+}
+
+.side-surface-room-panel .room-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.side-surface-room-panel .room-group-delete {
+  color: var(--dock-danger);
+}
+
+.side-surface-room-panel .room-group-delete:hover:not(:disabled) {
+  background: var(--dock-danger-soft);
+  color: var(--dock-danger);
+}
+
+.side-surface-room-panel .room-group-toggle {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 0.5rem;
+  border: 0;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-group-toggle:hover {
+  background: var(--dock-soft);
+  color: var(--dock-text);
+}
+
+.side-surface-room-panel .room-group-toggle:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: -2px;
+}
+
+.side-surface-room-panel .room-group-toggle svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  transition: transform 150ms ease;
+}
+
+.side-surface-room-panel .room-group-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.side-surface-room-panel .room-group-count {
+  min-width: 1.4rem;
+  margin-left: auto;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--dock-soft);
+  font-size: 0.7rem;
+  line-height: 1.3rem;
+  text-align: center;
+}
+
+.side-surface-room-panel .spaceapp-download-banner {
+  flex: 0 0 auto;
+  display: block;
+  margin-top: auto;
+  padding-top: 0.75rem;
+  color: var(--dock-muted);
+  text-decoration: none;
+}
+
+.side-surface-room-panel .spaceapp-download-card {
+  display: grid;
+  justify-items: center;
+  gap: 0.1rem;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-soft);
+  font-size: var(--dock-font-sm);
+  text-align: center;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.side-surface-room-panel .spaceapp-download-banner:hover .spaceapp-download-card {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+}
+
+.side-surface-room-panel .spaceapp-download-banner:focus-visible {
+  outline: none;
+}
+
+.side-surface-room-panel .spaceapp-download-banner:focus-visible .spaceapp-download-card {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 2px;
+}
+
+.side-surface-room-panel .spaceapp-download-card svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-bottom: 0.25rem;
+  color: var(--dock-accent);
+}
+
+.side-surface-room-panel .spaceapp-download-title {
+  color: var(--dock-text);
+  font-size: var(--dock-font);
+  font-weight: 600;
+}
+
+.side-surface-room-panel .spaceapp-download-card strong {
+  color: var(--dock-accent);
+  font-weight: 700;
+}
+
+/* Room settings (the ⋯ button) */
+.side-surface-room-panel .room-dock-expansion {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.25rem 0.75rem 0.75rem;
+}
+
+.side-surface-room-panel .room-dock-field-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.side-surface-room-panel .room-dock-field-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: auto;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+}
+
+.side-surface-room-panel .room-dock-field-title svg,
+.side-surface-room-panel .room-dock-worktree-label svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.side-surface-room-panel .room-dock-field-header .dock-kit-button {
+  min-height: 1.75rem;
+  padding: 0 0.5rem;
+}
+
+.side-surface-room-panel .room-dock-input-row {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.side-surface-room-panel .room-dock-input-row .dock-kit-field {
+  flex: 1 1 auto;
+  padding-block: 0.35rem;
+  font-size: var(--dock-font-sm);
+}
+
+.side-surface-room-panel .room-dock-project-source {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-surface-room-panel .room-dock-presets-row,
+.side-surface-room-panel .room-dock-new-preset-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.side-surface-room-panel .room-dock-new-preset-box .dock-kit-field {
+  flex: 1 1 8rem;
+  width: auto;
+  padding-block: 0.35rem;
+  font-size: var(--dock-font-sm);
+}
+
+.side-surface-room-panel .room-dock-preset-chip {
+  min-height: 1.65rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dock-muted);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-dock-preset-chip svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.side-surface-room-panel .room-dock-preset-chip:hover {
+  border-color: var(--dock-border-strong);
+  color: var(--dock-text);
+}
+
+.side-surface-room-panel .room-dock-preset-chip.active {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+  color: var(--dock-accent);
+}
+
+.side-surface-room-panel .room-dock-worktree-toggle {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+}
+
+.side-surface-room-panel .room-dock-worktree-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.side-surface-room-panel .room-dock-actions-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.side-surface-room-panel .room-dock-expansion .room-delete {
+  justify-self: start;
+  color: var(--dock-danger);
+}
+
+.side-surface-room-panel .room-dock-expansion .room-delete:hover:not(:disabled) {
+  background: var(--dock-danger-soft);
+  color: var(--dock-danger);
+}
+
+/* Add panes: a bar below the list; open, it replaces the list and the controls. */
+.side-surface-room-panel .room-pane-composer-slot {
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-surface-room-panel:has(.room-pane-composer[data-collapsed="false"]) > :is(.rooms-controls, .room-list) {
+  display: none;
+}
+
+.side-surface-room-panel:has(.room-pane-composer[data-collapsed="false"]) > .room-pane-composer-slot {
+  flex: 1 1 auto;
+}
+
+.side-surface-room-panel .room-pane-composer {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.side-surface-room-panel .room-pane-composer-toggle {
+  width: 100%;
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-pane-composer-toggle:hover {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+}
+
+.side-surface-room-panel .room-pane-composer-toggle:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.side-surface-room-panel .room-pane-composer-toggle > svg {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  color: var(--dock-accent);
+}
+
+.side-surface-room-panel .room-pane-composer-toggle > .room-pane-composer-chevron {
+  color: var(--dock-muted);
+}
+
+.side-surface-room-panel .room-pane-composer-toggle strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-surface-room-panel .room-pane-composer-free {
+  flex: 0 0 auto;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.side-surface-room-panel .room-pane-composer[data-collapsed="false"] .room-pane-composer-toggle {
+  padding-left: 0.35rem;
+  border-color: transparent;
+  background: transparent;
+}
+
+.side-surface-room-panel .room-pane-composer[data-collapsed="false"] .room-pane-composer-toggle > svg {
+  color: var(--dock-text);
+}
+
+.side-surface-room-panel .room-pane-composer[data-collapsed="false"] .room-pane-composer-toggle:hover {
+  background: var(--dock-soft);
+}
+
+.side-surface-room-panel .room-pane-composer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.side-surface-room-panel .room-pane-mix {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.side-surface-room-panel .room-pane-mix-row {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.3rem 0.25rem 0.55rem;
+  border-radius: var(--dock-radius-sm);
+}
+
+.side-surface-room-panel .room-pane-mix-row:hover {
+  background: var(--dock-soft);
+}
+
+.side-surface-room-panel .room-pane-mix-row.is-selected {
+  background: var(--dock-accent-soft);
+}
+
+.side-surface-room-panel .room-pane-mix-row.is-unavailable {
+  opacity: 0.55;
+}
+
+.side-surface-room-panel .room-pane-runtime-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.6rem;
+}
+
+.side-surface-room-panel .room-pane-runtime-label > :is(img, svg) {
+  width: 1.25rem;
+  height: 1.25rem;
+  box-sizing: border-box;
+  border-radius: 5px;
+  object-fit: contain;
+}
+
+.side-surface-room-panel .room-pane-runtime-label:has(> small) > :is(img, svg) {
+  grid-row: span 2;
+}
+
+.side-surface-room-panel .room-pane-runtime-label > span {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-surface-room-panel .room-pane-runtime-label > small {
+  grid-column: 2;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-surface-room-panel .room-pane-controls,
+.side-surface-room-panel .room-pane-counter {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.side-surface-room-panel .room-pane-controls {
+  gap: 0.4rem;
+}
+
+.side-surface-room-panel .room-pane-counter {
+  gap: 0.1rem;
+}
+
+.side-surface-room-panel :is(.room-pane-quick-action, .room-pane-counter button) {
+  width: 1.75rem;
+  height: 1.75rem;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-muted);
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-pane-controls > .room-pane-quick-action {
+  border-color: transparent;
+}
+
+.side-surface-room-panel :is(.room-pane-quick-action, .room-pane-counter button):hover:not(:disabled) {
+  border-color: var(--dock-border-strong);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+}
+
+.side-surface-room-panel :is(.room-pane-quick-action, .room-pane-counter button):disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.side-surface-room-panel :is(.room-pane-quick-action, .room-pane-counter button) svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.side-surface-room-panel .room-pane-counter output {
+  min-width: 1.6rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: center;
+}
+
+.side-surface-room-panel .room-pane-mix-row.is-selected output {
+  color: var(--dock-accent);
+}
+
+.side-surface-room-panel .room-pane-runtime-empty {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border: 1px dashed var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  color: var(--dock-muted);
+  font-size: 0.74rem;
+}
+
+.side-surface-room-panel .room-pane-composer-footer {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--dock-border);
+}
+
+.side-surface-room-panel :is(.room-pane-runtime-state, .room-pane-capacity-warning) {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--dock-muted);
+  font-size: 0.74rem;
+}
+
+.side-surface-room-panel .room-pane-capacity-warning {
+  color: var(--dock-warning);
+}
+
+.side-surface-room-panel :is(.room-pane-runtime-error, .room-pane-apply-message) {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-success-soft);
+  font-size: 0.74rem;
+}
+
+.side-surface-room-panel :is(.room-pane-runtime-error, .room-pane-apply-message.is-error) {
+  background: var(--dock-danger-soft);
+}
+
+.side-surface-room-panel :is(.room-pane-runtime-error, .room-pane-apply-message) > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.side-surface-room-panel :is(.room-pane-runtime-error, .room-pane-apply-message) button {
+  min-height: 1.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.35rem;
+  border: 0;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: inherit;
+}
+
+.side-surface-room-panel :is(.room-pane-runtime-error, .room-pane-apply-message) svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.side-surface-room-panel .room-pane-composer-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.side-surface-room-panel :is(.room-pane-clear-all, .room-pane-apply) {
+  min-height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0 0.8rem;
+  border-radius: var(--dock-radius-sm);
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.side-surface-room-panel .room-pane-clear-all {
+  flex: 0 0 auto;
+  border: 1px solid var(--dock-border);
+  background: transparent;
+  color: var(--dock-muted);
+}
+
+.side-surface-room-panel .room-pane-clear-all:hover:not(:disabled) {
+  border-color: var(--dock-border-strong);
+  color: var(--dock-text);
+}
+
+.side-surface-room-panel .room-pane-apply {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid transparent;
+  background: var(--dock-accent);
+  color: var(--dock-on-accent);
+  font-weight: 700;
+}
+
+.side-surface-room-panel .room-pane-apply:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--dock-accent);
+  filter: brightness(1.08);
+}
+
+.side-surface-room-panel .room-pane-apply svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.side-surface-room-panel :is(.room-pane-clear-all, .room-pane-apply):disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.side-surface-room-panel .room-pane-apply:disabled {
+  border-color: var(--dock-border);
+  background: var(--dock-soft);
+  color: var(--dock-muted);
+  opacity: 1;
+}
+
+.side-surface-room-panel :is(.room-pane-clear-all, .room-pane-apply):focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+/* Touch screens: 44px targets. */
+@media (pointer: coarse) {
+  .side-surface-room-panel .room-select,
+  .side-surface-room-panel .room-pane-mix-row {
+    min-height: 3.25rem;
+  }
+
+  .side-surface-room-panel .room-dock-expand-btn,
+  .side-surface-room-panel :is(.room-pane-quick-action, .room-pane-counter button) {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .side-surface-room-panel :is(.room-pane-composer-toggle, .room-pane-clear-all, .room-pane-apply, .room-group-toggle) {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-surface-room-panel :is(.room-item, .room-group-toggle svg) {
+    transition: none;
+  }
+
+  /* A near-zero run still ends the animation, which clears the pressed state. */
+  .side-surface-room-panel .room-item.is-clicked {
+    animation-duration: 1ms;
+  }
+}
+
+/* Room sharing (multi-user): add a team member by email, change or remove a share. */
+.room-dock-sharing {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.room-dock-sharing-form,
+.room-dock-sharing-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.room-dock-sharing-form input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.room-dock-sharing-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.room-dock-sharing-list li span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.room-dock-sharing-error {
+  margin: 0;
+  color: var(--danger, #ff7b72);
+  font-size: 0.75rem;
+}

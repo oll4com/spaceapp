@@ -1,0 +1,35 @@
+/* App Studio pane: the app on phone frames inside the copilot kit's pane (bar, rail and controls come from copilot-pane.css). */
+.as-main { overflow: auto; }
+.as-preview { display: grid; gap: 12px; align-content: start; padding: 14px; }
+.as-preview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.as-route { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--jc-muted); }
+.as-route select { max-width: 220px; }
+.as-captured { font-size: 12px; margin-left: auto; }
+.as-devices { display: flex; flex-wrap: wrap; gap: 18px 16px; align-items: flex-start; }
+.as-empty { margin: auto; max-width: 420px; }
+
+/* One phone: the capture keeps the device's own proportions; the bezel and its cutout are drawn, never part of the image. */
+.as-device { display: grid; gap: 6px; justify-items: center; margin: 0; }
+.as-bezel { padding: 7px; border-radius: 30px; background: #111; box-shadow: 0 0 0 1px color-mix(in srgb, var(--jc-text) 18%, transparent), 0 8px 22px rgba(0, 0, 0, 0.28); }
+.as-device[data-platform="android"] .as-bezel { border-radius: 24px; padding: 6px; }
+.as-screen { position: relative; width: var(--as-screen-width); aspect-ratio: var(--as-aspect); overflow: hidden; border-radius: 24px; background: #000; }
+.as-device[data-platform="android"] .as-screen { border-radius: 18px; }
+.as-screen img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
+.as-cutout { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); background: #000; pointer-events: none; }
+.as-device[data-cutout="island"] .as-cutout { width: 30%; height: 3.4%; border-radius: 999px; }
+.as-device[data-cutout="notch"] .as-cutout { top: 0; width: 42%; height: 3.6%; border-radius: 0 0 12px 12px; }
+.as-device[data-cutout="punch_hole"] .as-cutout { top: 8px; width: 3.4%; aspect-ratio: 1; border-radius: 50%; }
+.as-device figcaption { display: grid; justify-items: center; font-size: 11px; line-height: 1.3; }
+.as-device figcaption span { color: var(--jc-muted); }
+
+.as-activity { display: grid; gap: 10px; align-content: start; padding: 12px; overflow: auto; }
+.as-brief textarea { resize: vertical; }
+.as-question { border-color: color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border)); }
+.as-question p, .as-feed-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.as-feed { display: grid; gap: 8px; }
+.as-feed-item { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--jc-border); }
+.as-feed-item .jc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.as-feed-item .jc-row-meta { margin-left: auto; font-size: 11px; color: var(--jc-muted); }
+.status-pending, .status-taken, .status-open { color: var(--jc-accent); }
+
+@media (prefers-reduced-motion: reduce) { .as-bezel { box-shadow: 0 0 0 1px color-mix(in srgb, var(--jc-text) 18%, transparent); } }

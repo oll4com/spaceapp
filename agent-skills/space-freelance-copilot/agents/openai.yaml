@@ -1,0 +1,4 @@
+interface:
+  display_name: "Freelance Copilot"
+  short_description: "Find clients for oll4.com from a Space Freelance Copilot pane: register on the platforms, qualify leads, send proposals and answer clients through the pane browser, and hand ready clients to the operator."
+  default_prompt: "Use $space-freelance-copilot: call space_freelance_next until it returns done, recall PROFILE, CASE_STUDY and PRICING memories before writing, send only after space_freelance_send_begin succeeds, report the sent URL with space_freelance_send_done, and call space_freelance_client_ready when a client wants to go ahead."

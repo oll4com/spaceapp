@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mail Copilot"
+  short_description: "Handle the operator's Gmail inside a Space Mail Copilot pane: triage, draft, reply within the pane's autonomy, learn how the operator writes."
+  default_prompt: "Use $space-mail-copilot: call space_mail_next until it returns done, recall memory before drafting, ask with space_mail_review_request under Assist, learn from every operator action, and close each item with space_mail_report."

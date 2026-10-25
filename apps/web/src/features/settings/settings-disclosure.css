@@ -1,0 +1,173 @@
+/* The dock sets the base text size: controls that inherit their font (most buttons, selects and
+   inputs inside the cards) match the settings text instead of the browser's 16px. No container
+   query here: containment would trap the cards' fixed dialogs (Prompt variables, Plugins) inside
+   the dock. */
+.agent-settings-dock {
+  font-size: .8125rem;
+}
+
+/* Search and the fullscreen button stay on top while the sections scroll. */
+.settings-dock-toolbar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: .5rem;
+  min-width: 0;
+  /* The dock's own surface (Modern), so content scrolling under the toolbar is hidden seamlessly. */
+  background: var(--modern-surface, var(--room-surface, #141617));
+}
+.settings-dock-toolbar > .settings-search { flex: 1 1 auto; }
+.settings-dock-toolbar > .dock-fullscreen-toggle { flex: none; }
+/* The phone drawer already fills the screen. */
+.side-surface-drawer .agent-settings-dock .dock-fullscreen-toggle { display: none; }
+.settings-dock-body { display: grid; gap: .75rem; min-width: 0; }
+.settings-search {
+  display: flex; align-items: center; gap: .5rem;
+  min-width: 0;
+  min-height: 2.4rem; padding: 0 .7rem;
+  border: 1px solid var(--room-border, #343638); border-radius: 10px;
+  background: var(--room-surface, #141617);
+  color: var(--room-muted, #a2a7ad);
+}
+.settings-search:focus-within { border-color: var(--room-accent, #79b8ff); }
+.settings-search > svg { flex: none; width: 1rem; height: 1rem; }
+.agent-settings-dock .settings-search > input[type="search"] {
+  flex: 1; min-width: 0; min-height: 2.2rem; padding: 0;
+  border: 0; background: transparent; color: var(--room-text, #f4efe5);
+  font-size: .82rem; outline: none;
+}
+.settings-search-empty { display: none; padding: 1rem .5rem; text-align: center; color: var(--room-muted, #a2a7ad); font-size: .8rem; }
+.agent-settings-dock[data-searching="true"]:not(:has(.settings-disclosure:not([hidden]), .settings-searchable:not([hidden]))) .settings-search-empty { display: block; }
+
+.settings-group { display: grid; gap: .5rem; min-width: 0; }
+.settings-group + .settings-group { margin-top: .4rem; }
+.settings-group:not(:has(> .settings-disclosure:not([hidden]), > .settings-searchable:not([hidden]))) { display: none; }
+/* Colour on the header: the Modern theme makes headings and small text inherit it. */
+.settings-group-header { display: grid; gap: .1rem; padding: .3rem .25rem 0; color: var(--room-muted, #a2a7ad); }
+.settings-group-header h3 { margin: 0; font-size: .68rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.settings-group-header small { font-size: .72rem; line-height: 1.4; }
+.agent-settings-dock[data-searching="true"] .settings-group-header small { display: none; }
+.settings-searchable { min-width: 0; }
+.settings-searchable[hidden] { display: none; }
+
+.settings-disclosure {
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 12px;
+  background: var(--room-surface, #141617);
+  overflow: clip;
+}
+.settings-disclosure h3 { margin: 0; }
+.settings-disclosure[hidden] { display: none; }
+.settings-disclosure h3 > button {
+  width: 100%; display: grid; grid-template-columns: 1.2rem minmax(0, 1fr) 1rem;
+  align-items: center; gap: .7rem; padding: .85rem;
+  border: 0; border-radius: 0; background: transparent; color: var(--room-text, #f4efe5); text-align: left;
+}
+.settings-disclosure h3 > button:hover { background: var(--room-surface-soft, #202425); }
+.settings-disclosure h3 > button:focus-visible { outline: 2px solid var(--room-accent, #79b8ff); outline-offset: -3px; }
+.settings-disclosure h3 svg { width: 1.1rem; height: 1.1rem; }
+.settings-disclosure h3 span { display: grid; gap: .2rem; }
+.settings-disclosure h3 strong { font-size: .85rem; font-weight: 600; }
+.settings-disclosure h3 small { font-size: .75rem; line-height: 1.45; color: var(--room-muted, #a2a7ad); font-weight: 400; }
+.settings-disclosure[data-open="true"] > h3 > button > svg:last-child { transform: rotate(90deg); }
+.settings-disclosure-content { padding: 0 .8rem .8rem; overflow-x: hidden; max-width: 100%; box-sizing: border-box; }
+
+/* The open section is framed: accent border, tinted header and a divider, so its options read as one
+   block. The selectors outrank the theme rules that colour every section's border and header. */
+.space-shell .agent-settings-dock .settings-disclosure[data-open="true"] {
+  border-color: color-mix(in srgb, var(--room-accent, #79b8ff) 70%, var(--room-border, #343638));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--room-accent, #79b8ff) 35%, transparent), 0 10px 28px rgba(0, 0, 0, .28);
+}
+.space-shell .agent-settings-dock .settings-disclosure[data-open="true"] > h3 > button {
+  border-bottom: 1px solid color-mix(in srgb, var(--room-accent, #79b8ff) 40%, var(--room-border, #343638));
+  background: color-mix(in srgb, var(--room-accent, #79b8ff) 13%, transparent);
+  /* Not the app-wide red ring of expanded icon buttons. */
+  box-shadow: none;
+}
+.space-shell .agent-settings-dock .settings-disclosure[data-open="true"] > h3 > button > svg:first-child {
+  color: var(--room-accent, #79b8ff);
+}
+.agent-settings-dock .settings-disclosure[data-open="true"] > .settings-disclosure-content { padding-top: .75rem; }
+
+/* Fullscreen: the dock covers the window below the desktop title bar; the groups list sits beside one wide column of sections.
+   .space-shell .dock-panel outranks the Modern dock padding rule. */
+.space-shell .dock-panel.agent-settings-dock.is-fullscreen {
+  position: fixed; inset: max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) 0 0 0; z-index: 90;
+  width: auto; height: auto; max-height: none;
+  overflow-y: auto;
+  padding: 0 max(1.25rem, calc((100% - 64rem) / 2)) 2.5rem;
+  grid-template-columns: 12.5rem minmax(0, 1fr);
+  align-content: start; align-items: start;
+  column-gap: 2rem; row-gap: 1rem;
+  background: var(--modern-surface, var(--room-surface, #141617));
+}
+.agent-settings-dock.is-fullscreen > .settings-dock-toolbar {
+  grid-column: 1 / -1;
+  gap: .9rem;
+  padding: 1rem 0 .9rem;
+  border-bottom: 1px solid var(--room-border, #343638);
+}
+.settings-dock-fullscreen-title { flex: 1 1 auto; margin: 0; font-size: 1.1rem; font-weight: 650; }
+.agent-settings-dock.is-fullscreen > .settings-dock-toolbar > .settings-search { flex: 0 1 26rem; }
+.agent-settings-dock.is-fullscreen > .settings-dock-body { grid-column: 2; }
+.agent-settings-dock.is-fullscreen .settings-group { scroll-margin-top: 5.5rem; }
+.settings-dock-nav { position: sticky; top: 5.5rem; display: grid; gap: .2rem; }
+.space-shell .agent-settings-dock .settings-dock-nav > button[type="button"] {
+  min-height: 2.2rem; padding: 0 .7rem;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--room-text, #f4efe5);
+  font-size: .82rem; font-weight: 550; text-align: left;
+}
+.space-shell .agent-settings-dock .settings-dock-nav > button[type="button"]:hover,
+.space-shell .agent-settings-dock .settings-dock-nav > button[type="button"]:focus-visible {
+  border-color: var(--room-border, #343638);
+  background: color-mix(in srgb, var(--room-accent, #79b8ff) 10%, transparent);
+}
+@media (max-width: 760px) {
+  .space-shell .dock-panel.agent-settings-dock.is-fullscreen { grid-template-columns: minmax(0, 1fr); padding-inline: .75rem; }
+  .agent-settings-dock.is-fullscreen > .settings-dock-body { grid-column: 1; }
+  .settings-dock-nav { display: none; }
+}
+.settings-disclosure-content[hidden] { display: none; }
+.settings-help {
+  display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: .5rem; align-items: start;
+  margin: .1rem 0 .45rem; padding: .55rem .65rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--room-accent, #79b8ff) 10%, transparent);
+  color: var(--room-text, #f4efe5);
+  font-size: .76rem; line-height: 1.45;
+}
+.settings-help > svg { width: 1rem; height: 1rem; margin-top: .05rem; color: var(--room-accent, #79b8ff); }
+.settings-scope { color: var(--room-muted, #a2a7ad); font-size: .7rem; margin: 0 0 .6rem; }
+.settings-scope strong { font-weight: 650; }
+.settings-disclosure-content > .settings-flat-card { border: 0; background: transparent; padding: 0; }
+.settings-section-label { margin: .8rem .2rem .25rem; font-size: .75rem; color: var(--room-muted, #a2a7ad); }
+
+.settings-setup-shortcut {
+  display: grid; grid-template-columns: 1.2rem minmax(0, 1fr) auto; align-items: center; gap: .7rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--room-border, #343638); border-radius: 12px;
+}
+.settings-setup-shortcut > svg { width: 1.1rem; height: 1.1rem; }
+.settings-setup-shortcut > span { display: grid; gap: .2rem; min-width: 0; }
+.settings-setup-shortcut strong { font-size: .85rem; font-weight: 600; }
+.settings-setup-shortcut small { font-size: .75rem; line-height: 1.45; opacity: .78; }
+.settings-setup-shortcut > button { min-height: 2rem; padding: 0 .85rem; border-radius: 8px; font-size: .78rem; font-weight: 600; }
+
+/* The dock is a narrow column except in fullscreen: a row's label sits above its control. */
+.agent-settings-dock:not(.is-fullscreen) .settings-flat-row:not(.settings-flat-toggle-row, .space-toggle) {
+  grid-template-columns: minmax(0, 1fr);
+  gap: .35rem;
+}
+
+/* Long shortcut names wrap in the narrow dock instead of being cut off. */
+.agent-settings-dock .cli-shortcut-visibility-name span { white-space: normal; overflow-wrap: anywhere; }
+
+/* A card's own heading repeats its section's icon and title: inside a section keep only the
+   heading's status line and actions (reset, menu, status pill). */
+.agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-top: 0;
+}
+.agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child > svg:first-child,
+.agent-settings-dock .settings-disclosure-content > .settings-flat-card > .settings-flat-heading:first-child > span > strong {
+  display: none;
+}

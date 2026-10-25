@@ -1,0 +1,467 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable, Writable } from "node:stream";
+import test from "node:test";
+import { run } from "../src/cli.mjs";
+
+const launcherManifest = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8")
+);
+const CURRENT_VERSION = launcherManifest.version;
+const RUNTIME_VERSION = launcherManifest.spaceappRuntimeVersion;
+
+function capture() {
+  let value = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      value += chunk.toString();
+      callback();
+    }
+  });
+  return { stream, value: () => value };
+}
+
+function ttyStdin(...answers) {
+  let index = 0;
+  return {
+    isTTY: true,
+    setRawMode() {},
+    resume() {},
+    pause() {},
+    setEncoding() {},
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          if (index >= answers.length) {
+            return { done: true };
+          }
+          const answer = answers[index];
+          index += 1;
+          return { done: false, value: `${answer}\n` };
+        },
+        async return() {
+          return { done: true };
+        }
+      };
+    }
+  };
+}
+
+async function installation({ platform = "linux", execute = async () => 0 } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-command-contract-"));
+  const stdout = capture();
+  const stderr = capture();
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform,
+    stdin: ttyStdin("y"),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    inspectResources: async () => ({ cpuCount: 4, totalMemoryBytes: 8 * 1024 ** 3, freeDiskBytes: 15 * 1024 ** 3 }),
+    prepareDockerPath: async () => null,
+    request: async () => ({ ok: true, json: async () => ({ ok: true }) }),
+    sleep: async () => {},
+    execute
+  };
+  await run(["init"], options);
+  return { root, stdout, stderr, options };
+}
+
+test("the package exposes stable global and universal npx command names", async () => {
+  const packageManifest = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8")
+  );
+
+  assert.deepEqual(packageManifest.bin, {
+    spaceapp: "bin/spaceapp.mjs",
+    "run-spaceapp": "bin/spaceapp.mjs"
+  });
+});
+
+test("init and the default update target the pinned runtime image version", async () => {
+  const calls = [];
+  const { root, options } = await installation({
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      calls.push(spec);
+      return 0;
+    }
+  });
+
+  let config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.equal(config.version, RUNTIME_VERSION);
+  assert.match(
+    await readFile(join(root, "runtime.env"), "utf8"),
+    new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
+  );
+
+  const readinessRequests = [];
+  assert.equal(await run(["update"], {
+    ...options,
+    stdin: ttyStdin("2", "y"),
+    request: async (url) => {
+      readinessRequests.push(url);
+      assert.equal(url, "http://127.0.0.1:4911/readyz");
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    sleep: async () => {}
+  }), 0);
+  assert.deepEqual(readinessRequests, ["http://127.0.0.1:4911/readyz"]);
+  config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.equal(config.version, RUNTIME_VERSION);
+  assert.equal(config.previousVersion, null);
+  assert.match(
+    await readFile(join(root, "runtime.env"), "utf8"),
+    new RegExp(`^SPACEAPP_IMAGE_TAG=${RUNTIME_VERSION}$`, "m")
+  );
+  assert.deepEqual(calls.filter(spec => !spec.timeoutMs).map((spec) => spec.args.at(-1)), [
+    "--version", "version", "info",
+    "pull",
+    "--force-recreate",
+    "spaceapp-browser"
+  ]);
+});
+
+test("help and version aliases expose the complete stable command surface", async () => {
+  for (const args of [[], ["help"], ["--help"], ["-h"]]) {
+    const stdout = capture();
+    assert.equal(await run(args, {
+      env: {},
+      platform: "linux",
+      stdout: stdout.stream,
+      stderr: capture().stream,
+      prepareDockerPath: async () => null
+    }), 0);
+    for (const command of [
+      "init",
+      "install",
+      "reinstall",
+      "repair",
+      "up | down | status | logs",
+      "open",
+      "doctor",
+      "support-bundle",
+      "update [version] | rollback",
+      "backup | restore",
+      "factory-reset",
+      "workspace add",
+      "workspace remove",
+      "workspace list",
+      "credentials set",
+      "credentials remove",
+      "credentials list",
+      "provider install <provider>",
+      "owner reset-password",
+      "owner rotate-setup-token",
+      "uninstall [--purge-data]"
+    ]) {
+      assert.match(stdout.value(), new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+    assert.match(stdout.value(), /Usage: npx --yes run-spaceapp@latest <command>/);
+    assert.match(stdout.value(), /\[--access isolated\|host-root\]/);
+    assert.match(stdout.value(), /\[--with-companions\]/);
+    assert.match(stdout.value(), /spaceapp <command>\s+Optional global launcher/);
+  }
+
+  for (const alias of ["--version", "-v"]) {
+    const stdout = capture();
+    assert.equal(await run([alias], {
+      env: {},
+      platform: "linux",
+      stdout: stdout.stream,
+      stderr: capture().stream,
+      prepareDockerPath: async () => null
+    }), 0);
+    assert.match(stdout.value(), /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\n$/);
+  }
+});
+
+test("backup resumes the paused writers even when the backup fails", async () => {
+  const calls = [];
+  const { options } = await installation({
+    execute: async (spec) => {
+      calls.push(spec.args);
+      return spec.args.includes("scripts/portable-backup.mjs") ? 23 : 0;
+    }
+  });
+  assert.equal(await run(["backup"], options), 23);
+  assert.deepEqual(calls.map((args) => args.find((arg) => ["pause", "run", "unpause"].includes(arg))), ["pause", "run", "unpause"]);
+});
+
+test("up, down, status, logs, backup, and open delegate to their fixed native contracts", async () => {
+  const calls = [];
+  const { root, options } = await installation({
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      calls.push(spec);
+      return 0;
+    }
+  });
+
+  for (const command of ["up", "down", "status", "logs", "backup"]) {
+    assert.equal(await run([command], options), 0);
+  }
+  assert.deepEqual(calls.slice(0, 4).map((spec) => spec.args.slice(-3)), [
+    ["up", "-d", "--remove-orphans"],
+    ["--profile", "workflows", "down"],
+    ["--profile", "workflows", "ps"],
+    ["logs", "--tail", "200"]
+  ]);
+  // backup: writers paused, a one-off container dumps, writers resumed.
+  assert.deepEqual(calls.slice(4).map((spec) => spec.args.slice(-5)), [
+    ["pause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
+    ["SPACE_DATABASE_URL_FILE=/run/secrets/database-url", "--entrypoint", "node", "spaceapp-core", "scripts/portable-backup.mjs"],
+    ["unpause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"]
+  ]);
+
+  for (const [platform, expectedSpec] of [
+    ["linux", {
+      command: "xdg-open",
+      args: ["http://127.0.0.1:4911"],
+      background: true
+    }],
+    ["darwin", {
+      command: "open",
+      args: ["http://127.0.0.1:4911"]
+    }],
+    ["win32", {
+      command: "powershell.exe",
+      operation: "open-spaceapp-browser",
+      env: { SPACEAPP_OPEN_URL: "http://127.0.0.1:4911" }
+    }]
+  ]) {
+    const opened = [];
+    const fixture = await installation({
+      platform,
+      execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+        opened.push(spec);
+        return 0;
+      }
+    });
+    assert.equal(await run(["open"], fixture.options), 0);
+    assert.deepEqual(opened, [expectedSpec]);
+  }
+});
+
+test("open succeeds with an exact manual URL when the native opener is unavailable", async () => {
+  const fixture = await installation({
+    platform: "linux",
+    execute: async (spec) => spec.command === "xdg-open" ? 127 : 0
+  });
+
+  assert.equal(await run(["open"], fixture.options), 0);
+  assert.match(
+    fixture.stderr.value(),
+    /Could not open SpaceApp automatically\. Open http:\/\/127\.0\.0\.1:4911 manually\./
+  );
+});
+
+test("workspace and credential list contracts persist only the requested local state", async () => {
+  const { root, options } = await installation();
+  const workspace = await mkdtemp(join(tmpdir(), "spaceapp-command-workspace-"));
+  const output = capture();
+
+  assert.equal(await run(["workspace", "add", workspace, "--read-only"], {
+    ...options,
+    stdout: output.stream
+  }), 0);
+  const added = JSON.parse(await readFile(join(root, "config.json"), "utf8")).workspaces;
+  assert.equal(added.length, 1);
+  assert.equal(added[0].hostPath, workspace);
+  assert.equal(added[0].readOnly, true);
+
+  assert.equal(await run(["workspace", "list"], {
+    ...options,
+    stdout: output.stream
+  }), 0);
+  assert.match(output.value(), new RegExp(added[0].id));
+
+  assert.equal(await run(["workspace", "remove", workspace], options), 0);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "config.json"), "utf8")).workspaces, []);
+
+  const credentials = capture();
+  assert.equal(await run(["credentials", "list"], {
+    ...options,
+    stdout: credentials.stream
+  }), 0);
+  for (const provider of ["codex", "gemini", "opencode", "qwen", "kimi", "grok", "claude", "deepseek", "autohand", "cursor", "copilot"]) {
+    assert.match(credentials.value(), new RegExp(`"${provider}"`));
+  }
+});
+
+test("update and rollback persist version state only after both Docker operations succeed", async () => {
+  const calls = [];
+  const { root, stdout, options } = await installation({
+    execute: async (spec, io) => {
+      calls.push(spec);
+      if(spec.args?.includes("pg_dump")) io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n");
+      return 0;
+    }
+  });
+
+  assert.equal(await run(["update", "0.1.6"], { ...options, stdin: ttyStdin("DOWNGRADE", "y") }), 0);
+  assert.deepEqual(
+    (({ version, previousVersion }) => ({ version, previousVersion }))(
+      JSON.parse(await readFile(join(root, "config.json"), "utf8"))
+    ),
+    { version: "0.1.6", previousVersion: RUNTIME_VERSION }
+  );
+  assert.equal(await run(["rollback"], { ...options, stdin: ttyStdin("y") }), 0);
+  assert.deepEqual(
+    (({ version, previousVersion }) => ({ version, previousVersion }))(
+      JSON.parse(await readFile(join(root, "config.json"), "utf8"))
+    ),
+    { version: RUNTIME_VERSION, previousVersion: "0.1.6" }
+  );
+  assert.deepEqual(calls.filter(spec => !spec.timeoutMs).map((spec) => spec.args.at(-1)), [
+    "--version", "version", "info",
+    "pull",
+    "postgres",
+    "spaceapp-browser",
+    "spaceapp",
+    "--remove-orphans",
+    "pull",
+    "--remove-orphans"
+  ]);
+  assert.match(stdout.value(), /Updated to SpaceApp 0\.1\.6/);
+  assert.match(stdout.value(), new RegExp(`Rolled back to SpaceApp ${RUNTIME_VERSION}`));
+});
+
+test("doctor is read-only for installation configuration and generated runtime files", async () => {
+  const { root, options } = await installation();
+  const paths = [
+    "config.json",
+    "runtime.env",
+    "compose.yml",
+    "compose.workspaces.yml",
+    "compose.host-access.yml"
+  ];
+  const before = new Map(await Promise.all(paths.map(async (path) => {
+    const target = join(root, path);
+    return [path, {
+      content: await readFile(target, "utf8"),
+      inode: (await stat(target)).ino
+    }];
+  })));
+
+  assert.equal(await run(["doctor"], {
+    ...options,
+    inspectResources: async () => ({
+      cpuCount: 4,
+      totalMemoryBytes: 8_325_902_336,
+      freeDiskBytes: 15 * 1024 ** 3
+    })
+  }), 0);
+
+  for (const path of paths) {
+    const target = join(root, path);
+    assert.equal(await readFile(target, "utf8"), before.get(path).content);
+    assert.equal((await stat(target)).ino, before.get(path).inode);
+  }
+});
+
+test("invalid and cancelled command paths fail closed with actionable usage", async () => {
+  const { options } = await installation();
+  const invalid = [
+    [["unknown"], /Unknown command/],
+    [["up", "extra"], /Usage: npx --yes run-spaceapp@latest up/],
+    [["workspace"], /workspace <add\|remove\|list>/],
+    [["workspace", "add"], /workspace add/],
+    [["credentials"], /credentials <set\|remove\|list>/],
+    [["credentials", "set", "gemini", "argv-secret"], /read from stdin/],
+    [["provider", "install", "unknown"], /provider/i],
+    [["owner", "unknown"], /owner <reset-password\|rotate-setup-token>/],
+    [["update", "0.1.6", "extra"], /Usage: npx --yes run-spaceapp@latest update/],
+    [["uninstall", "--unknown"], /Usage: npx --yes run-spaceapp@latest uninstall/]
+  ];
+  for (const [args, pattern] of invalid) {
+    await assert.rejects(() => run(args, options), pattern);
+  }
+
+  const rollbackFixture = await installation();
+  await assert.rejects(
+    () => run(["rollback"], rollbackFixture.options),
+    /No previous SpaceApp version/
+  );
+  await assert.rejects(
+    () => run(["restore"], {
+      ...options,
+      stdin: Readable.from(["CANCEL\n"])
+    }),
+    /Restore cancelled/
+  );
+  await assert.rejects(
+    () => run(["uninstall", "--purge-data"], {
+      ...options,
+      stdin: Readable.from(["CANCEL\n"])
+    }),
+    /Purge cancelled/
+  );
+});
+
+test("support-bundle command generates a diagnostic bundle", async () => {
+  const { root, options, stdout } = await installation();
+  const exitCode = await run(["support-bundle"], options);
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /SpaceApp support bundle generated:/);
+});
+
+test("repair command verifies and reports runtime health", async () => {
+  const { root, options, stdout } = await installation();
+  const exitCode = await run(["repair", "--dry-run"], options);
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /Config repairs planned/);
+});
+
+test("factory-reset command cancels when confirmation differs from FACTORY-RESET", async () => {
+  const { root, options, stdout } = await installation();
+  const exitCode = await run(["factory-reset"], {
+    ...options,
+    stdin: ttyStdin("CANCEL")
+  });
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /Factory reset cancelled/);
+});
+
+test("factory-reset command reinitializes installation on valid confirmation", async () => {
+  const calls = [];
+  const { root, options, stdout } = await installation({
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      calls.push(spec);
+      return 0;
+    }
+  });
+  const exitCode = await run(["factory-reset"], {
+    ...options,
+    stdin: ttyStdin("FACTORY-RESET")
+  });
+  assert.equal(exitCode, 0);
+  assert.match(stdout.value(), /SpaceApp factory reset complete/);
+  assert.ok(calls.some((spec) => spec.args?.includes("down") || spec.args?.includes("-v")));
+});
+
+test("factory-reset asks a separate confirmation when the safety backup fails, and stops when the purge fails", async () => {
+  const backupFails = async (spec) => spec.args?.includes("scripts/portable-backup.mjs") ? 1 : 0;
+  const plain = await installation({ execute: backupFails });
+  assert.equal(await run(["factory-reset"], { ...plain.options, stdin: ttyStdin("FACTORY-RESET") }), 0);
+  assert.match(plain.stdout.value(), /safety backup FAILED/);
+  assert.match(plain.stdout.value(), /Factory reset cancelled/);
+
+  const explicit = await installation({ execute: backupFails });
+  assert.equal(await run(["factory-reset"], { ...explicit.options, stdin: ttyStdin("FACTORY-RESET-WITHOUT-BACKUP") }), 0);
+  assert.match(explicit.stdout.value(), /SpaceApp factory reset complete/);
+
+  const purgeFails = await installation({
+    execute: async (spec, io) => {
+      if (spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      return spec.args?.includes("down") ? 3 : 0;
+    }
+  });
+  assert.equal(await run(["factory-reset"], { ...purgeFails.options, stdin: ttyStdin("FACTORY-RESET") }), 3);
+  assert.doesNotMatch(purgeFails.stdout.value(), /factory reset complete/);
+  await stat(join(purgeFails.root, "config.json"));
+});

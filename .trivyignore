@@ -1,0 +1,5 @@
+# GHSA-2mjx-qc3c-rqvc is rustls 0.23.36 compiled into @temporalio/core-bridge 1.24.0,
+# the latest Temporal SDK release. SpaceApp reaches Temporal only over the private
+# compose network without TLS (temporal:7233), so the TLS 1.3 handshake flaw has no
+# reachable path. Remove once a Temporal SDK release ships rustls >= 0.23.45.
+GHSA-2mjx-qc3c-rqvc exp:2026-11-10

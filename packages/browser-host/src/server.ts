@@ -1,0 +1,295 @@
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, stat, unlink } from "node:fs/promises";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { dirname } from "node:path";
+import { BrowserHostError } from "./errors.js";
+import { BrowserHostFrameDecoder, encodeBrowserHostFrame } from "./framing.js";
+import type { BrowserHostAudioChunk, BrowserHostAudioStreamHandle, BrowserHostBinaryFrame, BrowserHostMethod, BrowserHostRequestHandler, BrowserHostStreamHandle } from "./types.js";
+
+type BrowserHostAnyStreamHandle = BrowserHostStreamHandle | BrowserHostAudioStreamHandle;
+
+interface BrowserHostRequest {
+  kind: "request";
+  requestId: string;
+  method: BrowserHostMethod;
+  params: Record<string, unknown>;
+}
+
+export interface BrowserHostServer {
+  socketPath: string;
+  close(): Promise<void>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseRequest(value: unknown): BrowserHostRequest {
+  if (!isRecord(value) || value.kind !== "request" || typeof value.requestId !== "string" || typeof value.method !== "string") {
+    throw new BrowserHostError("BROWSER_HOST_BAD_REQUEST", "Browser host IPC request envelope is invalid.");
+  }
+  const methods: BrowserHostMethod[] = [
+    "health", "startOrRestore", "getActive", "navigate", "setViewport", "setStreamMode", "action", "captureFrame", "stopPane",
+    "stopRoom", "listPages", "createPage", "activatePage", "closePage", "acquireControl", "heartbeatControl", "releaseControl",
+    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "vaultTarget", "vaultFill", "checkGoogleAccount", "adoptPaneGoogleProfile", "startFrameStream",
+    "stopFrameStream", "startAudioStream", "stopAudioStream"
+  ];
+  if (!methods.includes(value.method as BrowserHostMethod)) {
+    throw new BrowserHostError("BROWSER_HOST_BAD_REQUEST", `Unsupported Browser host IPC method ${value.method}.`);
+  }
+  return {
+    kind: "request",
+    requestId: value.requestId,
+    method: value.method as BrowserHostMethod,
+    params: isRecord(value.params) ? value.params : {}
+  };
+}
+
+function send(socket: Socket, value: unknown): void {
+  if (!socket.destroyed) socket.write(encodeBrowserHostFrame(value));
+}
+
+// The server processes requests serially per connection. A single hung
+// handler call (e.g. a CDP request against a crashed Chrome) would otherwise
+// block every later request on the same socket for its full client timeout.
+// Race each handler call against a bound so the queue can move on and the
+// caller receives a timeout instead of hanging until the client aborts.
+async function withRequestTimeout(run: () => Promise<unknown>, method: string, params: Record<string, unknown>, configuredMs?: number): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  const isLongRunningAction = method === "action" && isRecord(params.input) && params.input.type === "record";
+  const timeoutMs = isLongRunningAction ? 60 * 60_000 : (configuredMs ?? 30_000);
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new BrowserHostError("BROWSER_HOST_TIMEOUT", `Browser host ${method} request timed out after ${timeoutMs}ms.`, { method, timeoutMs }));
+        }, timeoutMs);
+        timer.unref();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function serializedError(error: unknown) {
+  if (error instanceof BrowserHostError) return { code: error.code, message: error.message, details: error.details };
+  if (error instanceof Error) {
+    const candidate = error as Error & { errorCode?: unknown; details?: unknown };
+    const code = typeof candidate.errorCode === "string"
+      ? candidate.errorCode
+      : error.name === "SpaceNotFoundError"
+        ? "BROWSER_HOST_NOT_FOUND"
+        : error.name === "SpaceConflictError"
+          ? "BROWSER_HOST_CONFLICT"
+          : "BROWSER_HOST_INTERNAL_ERROR";
+    return { code, message: error.message, details: candidate.details };
+  }
+  return { code: "BROWSER_HOST_INTERNAL_ERROR", message: "Browser host request failed." };
+}
+
+async function removeStaleSocket(socketPath: string): Promise<void> {
+  try {
+    const current = await stat(socketPath);
+    if (!current.isSocket()) throw new Error(`Refusing to replace non-socket Browser host path ${socketPath}.`);
+    await new Promise<void>((resolve, reject) => {
+      const socket = createConnection(socketPath);
+      socket.once("connect", () => {
+        socket.destroy();
+        reject(new BrowserHostError("BROWSER_HOST_ALREADY_RUNNING", `A Browser host is already listening on ${socketPath}.`));
+      });
+      socket.once("error", (error: NodeJS.ErrnoException) => {
+        socket.destroy();
+        if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolve();
+        else reject(error);
+      });
+    });
+    await unlink(socketPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export async function createBrowserHostServer(options: {
+  socketPath: string;
+  socketMode?: number;
+  handler: BrowserHostRequestHandler;
+  requestTimeoutMs?: number;
+}): Promise<BrowserHostServer> {
+  await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
+  await removeStaleSocket(options.socketPath);
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    handleConnection(socket, options.handler, options.requestTimeoutMs);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => { server.off("listening", onListening); reject(error); };
+    const onListening = () => { server.off("error", onError); resolve(); };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(options.socketPath);
+  });
+  await chmod(options.socketPath, options.socketMode ?? 0o600);
+  return {
+    socketPath: options.socketPath,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await closeServer(server);
+      await unlink(options.socketPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+  };
+}
+
+function handleConnection(socket: Socket, handler: BrowserHostRequestHandler, requestTimeoutMs?: number): void {
+  const decoder = new BrowserHostFrameDecoder();
+  const streams = new Map<string, BrowserHostAnyStreamHandle>();
+  let barrier: Promise<void> = Promise.resolve();
+  const queues = new Map<string, Promise<void>>();
+  socket.on("data", (chunk) => {
+    let messages: unknown[];
+    try {
+      messages = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    } catch (error) {
+      send(socket, { kind: "response", requestId: "protocol", ok: false, error: serializedError(error) });
+      socket.destroy();
+      return;
+    }
+    for (const message of messages) {
+      const request = isRecord(message) ? message : {};
+      const params = isRecord(request.params) ? request.params : {};
+      const input = isRecord(params.input) ? params.input : {};
+      const pane = isRecord(params.pane) ? params.pane : isRecord(input.pane) ? input.pane : {};
+      const paneId = typeof pane.id === "string" ? pane.id : typeof params.paneId === "string" ? params.paneId : null;
+      const identity = isRecord(params.identity) ? params.identity : {};
+      const scope = paneId ? `pane:${paneId}`
+        : typeof params.sessionId === "string" ? `session:${params.sessionId}`
+          : request.method === "checkGoogleAccount" && typeof identity.accountId === "string" ? `google-account:${identity.accountId}` : null;
+      // Preserve ordering within a pane while unrelated browsers start in
+      // parallel. Unscoped mutations remain barriers; health never waits on
+      // a slow page load. handleRequest still validates every message.
+      const health = request.method === "health";
+      const predecessors = health ? [] : scope ? [barrier, queues.get(scope)] : [barrier, ...queues.values()];
+      const job = Promise.all(predecessors).then(() => handleRequest(socket, handler, streams, message, requestTimeoutMs)).catch(() => undefined);
+      if (health) continue;
+      if (scope) {
+        queues.set(scope, job);
+        void job.then(() => { if (queues.get(scope) === job) queues.delete(scope); });
+      } else barrier = job;
+    }
+  });
+  socket.once("close", () => {
+    for (const stream of streams.values()) void stream.stop();
+    streams.clear();
+  });
+  socket.once("error", () => undefined);
+}
+
+async function handleRequest(
+  socket: Socket,
+  handler: BrowserHostRequestHandler,
+  streams: Map<string, BrowserHostAnyStreamHandle>,
+  raw: unknown,
+  requestTimeoutMs?: number
+): Promise<void> {
+  let request: BrowserHostRequest;
+  try {
+    request = parseRequest(raw);
+  } catch (error) {
+    send(socket, { kind: "response", requestId: isRecord(raw) && typeof raw.requestId === "string" ? raw.requestId : "unknown", ok: false, error: serializedError(error) });
+    return;
+  }
+  try {
+    let result: unknown;
+    if (request.method === "health") {
+      result = await handler.health();
+    } else if (request.method === "startFrameStream") {
+      let streamId: string | null = null;
+      const earlyFrames: BrowserHostBinaryFrame[] = [];
+      const stream = await handler.startFrameStream(request.params, (frame: BrowserHostBinaryFrame) => {
+        if (!streamId) {
+          if (earlyFrames.length < 4) earlyFrames.push(frame);
+          return;
+        }
+        send(socket, {
+          kind: "event",
+          subscriptionId: streamId,
+          event: { ...frame, dataBase64: frame.data.toString("base64"), data: undefined }
+        });
+      });
+      streamId = stream.id;
+      streams.set(stream.id, stream);
+      result = { id: stream.id, profile: stream.profile };
+      for (const frame of earlyFrames) {
+        send(socket, {
+          kind: "event",
+          subscriptionId: stream.id,
+          event: { ...frame, dataBase64: frame.data.toString("base64"), data: undefined }
+        });
+      }
+    } else if (request.method === "stopFrameStream") {
+      const id = String(request.params.subscriptionId ?? "");
+      const stream = streams.get(id);
+      if (stream) await stream.stop();
+      streams.delete(id);
+      result = { stopped: Boolean(stream) };
+    } else if (request.method === "startAudioStream") {
+      let streamId: string | null = null;
+      const earlyChunks: BrowserHostAudioChunk[] = [];
+      const stream = await handler.startAudioStream(request.params, (chunk: BrowserHostAudioChunk) => {
+        if (!streamId) {
+          if (earlyChunks.length < 4) earlyChunks.push(chunk);
+          return;
+        }
+        send(socket, {
+          kind: "event",
+          subscriptionId: streamId,
+          event: { ...chunk, dataBase64: chunk.data.toString("base64"), data: undefined }
+        });
+      });
+      streamId = stream.id;
+      streams.set(stream.id, stream);
+      result = { id: stream.id, sampleRate: stream.sampleRate, channels: stream.channels, format: stream.format };
+      for (const chunk of earlyChunks) {
+        send(socket, {
+          kind: "event",
+          subscriptionId: stream.id,
+          event: { ...chunk, dataBase64: chunk.data.toString("base64"), data: undefined }
+        });
+      }
+    } else if (request.method === "stopAudioStream") {
+      const id = String(request.params.subscriptionId ?? "");
+      const stream = streams.get(id);
+      if (stream) await stream.stop();
+      streams.delete(id);
+      result = { stopped: Boolean(stream) };
+    } else {
+      const method = request.method as Exclude<BrowserHostMethod, "health" | "startFrameStream" | "stopFrameStream" | "startAudioStream" | "stopAudioStream">;
+      result = await withRequestTimeout(() => handler.request(method, request.params), method, request.params, requestTimeoutMs);
+    }
+    send(socket, { kind: "response", requestId: request.requestId, ok: true, result });
+  } catch (error) {
+    send(socket, { kind: "response", requestId: request.requestId, ok: false, error: serializedError(error) });
+  }
+}
+
+export function readBrowserHostBuildCommit(): string | null {
+  const configured = process.env.SPACE_BROWSER_HOST_BUILD_COMMIT?.trim();
+  if (configured) return configured;
+  try {
+    return execFileSync("git", ["-c", `safe.directory=${process.cwd()}`, "rev-parse", "HEAD"], {
+      cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+}

@@ -1,0 +1,51 @@
+.feature-showcase {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  color: #dce5e8;
+  background: #080d10;
+  font-family: Inter, system-ui, sans-serif;
+}
+.feature-live {
+  height: 100%;
+  padding: 20px;
+  box-sizing: border-box;
+}
+.feature-live .live-pane-root {
+  height: 100%;
+  min-height: 0;
+}
+.feature-live .live-pane-main {
+  min-width: 0;
+}
+.feature-live .live-main-body {
+  padding: 12px;
+}
+.feature-memory .memory-3d-surface {
+  inset: 55px 10px 50px;
+}
+.feature-memory-title {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.feature-memory-title span {
+  font-size: 12px;
+  color: #95a4ad;
+}
+.feature-memory-detail {
+  position: absolute;
+  bottom: 15px;
+  left: 22px;
+  color: #ecf51a;
+  font-size: 13px;
+}
+.feature-memory .memory-3d-hint {
+  display: none;
+}

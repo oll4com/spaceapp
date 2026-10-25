@@ -1,0 +1,2 @@
+/* The Job Copilot pane styles moved to the shared copilot kit (Mail Copilot uses the same bar, rail, launch dialog and controls). */
+@import "../copilot-kit/copilot-pane.css";

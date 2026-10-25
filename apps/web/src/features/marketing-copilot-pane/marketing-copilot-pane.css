@@ -1,0 +1,106 @@
+/* Marketing Copilot: the channel list of Setup inside the copilot kit's pane (bar, rail, browser and controls come from copilot-pane.css). */
+.mk-pane .jc-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mk-channels { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.mk-channel { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--jc-border); border-radius: 10px; background: var(--jc-raised); }
+.mk-channel[data-enabled="false"] { opacity: 0.7; }
+.mk-channel-limits { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr)); gap: 8px; }
+
+/* ---- posts ---------------------------------------------------------------- */
+.mk-posts { display: grid; gap: 12px; align-content: start; padding: 12px; overflow: auto; }
+.mk-brief { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.mk-brief textarea, .mk-post-edit textarea, .mk-post-edit input, .mk-campaign-form input {
+  width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--jc-border); border-radius: 8px; background: var(--jc-surface, transparent); color: inherit; font: inherit; resize: vertical;
+}
+/* The brief grows with its text (and its long placeholder on a narrow pane, which two rows cut mid-line). */
+.mk-brief textarea { field-sizing: content; min-height: 3.2em; max-height: 10em; }
+.mk-campaigns summary { cursor: pointer; color: var(--jc-muted); }
+.mk-campaign-list { display: grid; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.mk-campaign { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.mk-campaign svg { width: 14px; height: 14px; vertical-align: -2px; color: var(--jc-accent); }
+.mk-campaign-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.mk-group { display: grid; gap: 8px; }
+.mk-group h4 { margin: 4px 0 0; font-size: 12px; }
+.mk-post-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.mk-post { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--jc-border); border-radius: 10px; background: var(--jc-raised); }
+.mk-post[data-status="in_review"] { border-color: color-mix(in srgb, var(--jc-warn) 55%, transparent); }
+.mk-post[data-status="failed"] { border-color: color-mix(in srgb, var(--jc-bad) 55%, transparent); }
+/* A title or client line with a long URL-like word wraps inside the card instead of widening the panel. */
+.mk-post-head, .mk-post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; overflow-wrap: anywhere; }
+/* A lead or post title that links to its page reads as the title (the browser's default violet underline did not). */
+.mk-post-head a { color: var(--jc-text); text-decoration: none; }
+.mk-post-head a:is(:hover, :focus-visible) { color: var(--jc-accent); text-decoration: underline; }
+.mk-post-edit { display: grid; gap: 6px; }
+.mk-post-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow: auto; }
+.mk-assets { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.mk-assets li { display: grid; gap: 4px; max-width: 160px; font-size: 12px; overflow-wrap: anywhere; }
+.mk-assets img, .mk-assets video { width: 160px; max-height: 200px; object-fit: contain; border-radius: 6px; background: #000; }
+.mk-over { color: var(--jc-bad); }
+.mk-evidence { margin: 0; padding-left: 18px; color: var(--jc-muted); font-size: 12px; }
+.mk-channel-login { justify-self: start; }
+.mk-metrics { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mk-metrics th, .mk-metrics td { padding: 6px 8px; border-bottom: 1px solid var(--jc-border); text-align: right; }
+.mk-metrics th[scope="row"], .mk-metrics thead th:first-child { text-align: left; font-weight: 500; }
+/* Analytics stat tiles: value, signed weekly delta, 12-day sparkline (de-emphasis line, accent current-day dot). */
+.mk-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.mk-tile { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--jc-border); border-radius: 10px; background: var(--jc-raised); }
+.mk-tile-label { color: var(--jc-muted); font-size: 11px; }
+.mk-tile-value { font-size: 22px; font-weight: 600; color: var(--jc-text); }
+.mk-tile-delta { font-size: 11px; color: var(--jc-muted); }
+.mk-tile-delta.up { color: var(--jc-ok); }
+.mk-tile-delta.down { color: var(--jc-bad); }
+.mk-spark { width: 100%; height: 32px; margin-top: 4px; overflow: visible; }
+.mk-spark-line { fill: none; stroke: var(--jc-muted); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.mk-spark-area { fill: var(--jc-muted); opacity: 0.1; }
+.mk-spark-dot { fill: var(--jc-accent); stroke: var(--jc-raised); stroke-width: 2; }
+.mk-spark-hit { fill: transparent; }
+.mk-table-view summary { cursor: pointer; color: var(--jc-muted); font-size: 12px; }
+.mk-metrics td { font-variant-numeric: tabular-nums; }
+
+/* ---- bookmarks: one card per site, the whole card opens it; the account chip uses the browser tabs' avatar hue ---- */
+.mk-bookmarks { display: flex; flex-direction: column; gap: 10px; padding: 12px; container-type: inline-size; }
+.mk-bookmarks-head { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.mk-bookmarks-head .jc-muted { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
+.mk-bookmarks-head .jc-button { flex: 0 0 auto; white-space: nowrap; }
+.mk-bookmark-form { grid-template-columns: repeat(2, minmax(0, 1fr)); background: var(--jc-card); }
+.mk-bookmark-form .mk-span { grid-column: 1 / -1; }
+/* The rail's field wells for inputs and the select alike: the global `label input:not(...)` rule outranks the rail's own field selector. */
+.jc-rail .mk-bookmark-form .jc-field :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+  width: 100%; min-height: 38px; box-sizing: border-box; padding: 9px 12px; border: 1px solid transparent; border-radius: 12px; background: var(--jc-tint); color: var(--jc-text);
+}
+.jc-rail .mk-bookmark-form .jc-field :is(input:not([type="checkbox"]):not([type="radio"]), select):focus-visible {
+  border-color: color-mix(in srgb, var(--jc-accent) 65%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--jc-accent) 18%, transparent); outline: none;
+}
+.mk-bookmark-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mk-bookmark { display: flex; align-items: center; gap: 4px; border-radius: 12px; background: var(--jc-card); transition: background-color 120ms ease; }
+.mk-bookmark:hover, .mk-bookmark:focus-within { background: color-mix(in srgb, var(--jc-text) 8%, var(--jc-bg)); }
+.mk-bookmark[data-busy="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--jc-accent) 60%, transparent); }
+.mk-bookmark-open {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 10px 4px 10px 10px;
+  border: 0; border-radius: 12px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.mk-bookmark-open:focus-visible { outline: 2px solid color-mix(in srgb, var(--jc-accent) 70%, transparent); outline-offset: -2px; }
+.mk-bookmark-open:disabled { cursor: default; }
+.mk-bookmark[data-busy="true"] .mk-bookmark-open { cursor: progress; }
+.mk-bookmark-site {
+  flex: 0 0 auto; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px;
+  background: var(--jc-tint-strong); color: var(--jc-text); font-size: 14px; font-weight: 700; text-transform: uppercase;
+}
+.mk-bookmark-copy { min-width: 0; display: grid; gap: 3px; }
+.mk-bookmark-title {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+  color: var(--jc-text); font-size: 13px; font-weight: 600; line-height: 1.3;
+}
+.mk-bookmark-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; color: var(--jc-muted); font-size: 11.5px; line-height: 1.3; }
+.mk-bookmark-host { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-bookmark-account { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; color: var(--jc-text); }
+.mk-bookmark-account > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-bookmark-account .account-menu-avatar { flex: 0 0 auto; width: 16px; height: 16px; font-size: 9.5px; }
+.mk-bookmark-account .account-menu-avatar svg { width: 10px; height: 10px; }
+.jc-pane .mk-bookmark .mk-bookmark-delete { flex: 0 0 auto; margin-right: 8px; border-color: transparent; background: transparent; color: var(--jc-muted); }
+.jc-pane .mk-bookmark .mk-bookmark-delete:hover:not(:disabled) { color: var(--jc-bad); background: color-mix(in srgb, var(--jc-bad) 12%, transparent); }
+/* A narrow rail: one form column, the count without the hint. */
+@container (max-width: 420px) {
+  .mk-bookmark-form { grid-template-columns: minmax(0, 1fr); }
+  .mk-bookmarks-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .mk-bookmark { transition: none; } }

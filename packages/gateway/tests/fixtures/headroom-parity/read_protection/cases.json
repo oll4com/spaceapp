@@ -1,0 +1,213 @@
+{
+ "source": "headroom/transforms/content_router.py (Headroom 0.37)",
+ "commands": [
+  {
+   "command": "cat src/main.ts",
+   "read": true
+  },
+  {
+   "command": "cd /repo && cat src/main.ts",
+   "read": true
+  },
+  {
+   "command": "cd /repo; sed -n '1,200p' src/a.ts",
+   "read": true
+  },
+  {
+   "command": "sed -i 's/a/b/' x",
+   "read": false
+  },
+  {
+   "command": "sed -n 5p f",
+   "read": true
+  },
+  {
+   "command": "head -n 50 README.md",
+   "read": true
+  },
+  {
+   "command": "tail -f log.txt",
+   "read": true
+  },
+  {
+   "command": "nl -ba file.py",
+   "read": true
+  },
+  {
+   "command": "bat x.rs",
+   "read": true
+  },
+  {
+   "command": "less x",
+   "read": true
+  },
+  {
+   "command": "more x",
+   "read": true
+  },
+  {
+   "command": "rg -n foo src",
+   "read": false
+  },
+  {
+   "command": "grep -rn foo .",
+   "read": false
+  },
+  {
+   "command": "ls -la",
+   "read": false
+  },
+  {
+   "command": "cat > out.txt <<EOF",
+   "read": false
+  },
+  {
+   "command": "cat a | tee b",
+   "read": false
+  },
+  {
+   "command": "cat a >> b",
+   "read": false
+  },
+  {
+   "command": "sudo cat /etc/hosts",
+   "read": true
+  },
+  {
+   "command": "timeout 30 cat big.log",
+   "read": true
+  },
+  {
+   "command": "FOO=1 cat x",
+   "read": true
+  },
+  {
+   "command": "/usr/bin/cat x",
+   "read": true
+  },
+  {
+   "command": "bash -lc \"cat src/a.ts\"",
+   "read": true
+  },
+  {
+   "command": "bash -lc 'sed -n 1,80p apps/web/src/App.tsx'",
+   "read": true
+  },
+  {
+   "command": "bash -lc \"rg foo\"",
+   "read": false
+  },
+  {
+   "command": "sh -c 'head x'",
+   "read": true
+  },
+  {
+   "command": "cat package-lock.json",
+   "read": false
+  },
+  {
+   "command": "cat Cargo.lock",
+   "read": false
+  },
+  {
+   "command": "cat go.sum",
+   "read": false
+  },
+  {
+   "command": "npm test",
+   "read": false
+  },
+  {
+   "command": "git diff",
+   "read": false
+  },
+  {
+   "command": "",
+   "read": false
+  },
+  {
+   "command": "   ",
+   "read": false
+  },
+  {
+   "command": "env A=1 B=2 tail x",
+   "read": true
+  },
+  {
+   "command": "nice -n 5 cat x",
+   "read": true
+  },
+  {
+   "command": "rtk cat x",
+   "read": true
+  },
+  {
+   "command": "xargs cat",
+   "read": true
+  },
+  {
+   "command": "CAT x",
+   "read": true
+  },
+  {
+   "command": "cd a && cd b && nl x",
+   "read": true
+  },
+  {
+   "command": "zsh -lc cat",
+   "read": true
+  },
+  {
+   "command": "python3 -c 'print(1)'",
+   "read": false
+  },
+  {
+   "command": "awk '{print}' x",
+   "read": false
+  }
+ ],
+ "toolArgs": [
+  {
+   "args": {
+    "command": "cat x"
+   },
+   "command": "cat x"
+  },
+  {
+   "args": {
+    "cmd": "sed -n 1,20p y"
+   },
+   "command": "sed -n 1,20p y"
+  },
+  {
+   "args": {
+    "command": [
+     "bash",
+     "-lc",
+     "head z"
+    ]
+   },
+   "command": "bash -lc head z"
+  },
+  {
+   "args": "{\"cmd\": \"cat q\"}",
+   "command": "cat q"
+  },
+  {
+   "args": "not json",
+   "command": ""
+  },
+  {
+   "args": {
+    "other": 1
+   },
+   "command": ""
+  },
+  {
+   "args": [
+    "cat"
+   ],
+   "command": ""
+  }
+ ]
+}

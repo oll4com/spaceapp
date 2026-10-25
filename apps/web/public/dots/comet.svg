@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320" fill="none" role="img" aria-labelledby="comet-title">
+  <title id="comet-title">Comet, original Space Dots comet</title>
+  <defs>
+    <linearGradient id="comet-tail" x1="208" y1="91" x2="162" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF0CF"/><stop offset=".3" stop-color="#FAD5A4"/><stop offset=".61" stop-color="#EDA16D"/><stop offset="1" stop-color="#CC7159"/>
+    </linearGradient>
+    <linearGradient id="comet-ribbon" x1="253" y1="78" x2="137" y2="181" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF5DB"/><stop offset=".48" stop-color="#FFDEAC"/><stop offset="1" stop-color="#F1B48B"/></linearGradient>
+    <linearGradient id="comet-stream" x1="259" y1="124" x2="178" y2="201" gradientUnits="userSpaceOnUse"><stop stop-color="#FFEBC1"/><stop offset="1" stop-color="#E6A076"/></linearGradient>
+    <radialGradient id="comet-head" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(106 145) rotate(47) scale(115 109)">
+      <stop stop-color="#FFE3C8"/><stop offset=".3" stop-color="#FBCBAD"/><stop offset=".62" stop-color="#EEA38B"/><stop offset=".86" stop-color="#D88376"/><stop offset="1" stop-color="#B76563"/>
+    </radialGradient>
+    <radialGradient id="comet-cheek" cx=".45" cy=".35" r=".7"><stop stop-color="#C76464" stop-opacity=".42"/><stop offset="1" stop-color="#C76464" stop-opacity="0"/></radialGradient>
+    <linearGradient id="comet-rim" x1="85" y1="136" x2="150" y2="201" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF3D9" stop-opacity=".85"/><stop offset="1" stop-color="#FFF3D9" stop-opacity="0"/></linearGradient>
+    <path id="comet-tail-shape" d="M123 145C162 130 185 89 267 63C260 82 237 104 225 127C245 111 266 103 276 104C264 137 234 156 218 179C243 166 262 158 275 160C253 198 213 217 175 224L136 207Z"/>
+    <clipPath id="comet-tail-clip"><use href="#comet-tail-shape"/></clipPath>
+    <filter id="comet-grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".78" numOctaves="3" seed="29" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".12"/></feComponentTransfer>
+      <feComposite in2="SourceGraphic" operator="in" result="texture"/>
+      <feBlend in="SourceGraphic" in2="texture" mode="soft-light"/>
+    </filter>
+    <filter id="comet-shadow" x="-30%" y="-180%" width="160%" height="460%"><feGaussianBlur stdDeviation="3.5"/></filter>
+    <filter id="comet-soft" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <ellipse cx="151" cy="264" rx="65" ry="5" fill="#5B3C3E" opacity=".12" filter="url(#comet-shadow)"/>
+  <g filter="url(#comet-grain)">
+    <use href="#comet-tail-shape" fill="url(#comet-tail)"/>
+    <g clip-path="url(#comet-tail-clip)">
+      <path d="M144 177C170 155 184 114 259 70C224 96 213 127 195 151C180 173 176 192 154 203Z" fill="url(#comet-ribbon)"/>
+      <path d="M168 205C198 180 222 135 272 107C257 133 223 158 210 181C199 197 181 211 168 215Z" fill="url(#comet-stream)"/>
+      <path d="M166 217C207 207 237 179 271 163C245 191 218 213 177 225Z" fill="#FFE2AF" opacity=".55"/>
+      <path d="M163 197C181 178 181 150 210 117" stroke="#B86656" stroke-width="8" stroke-linecap="round" opacity=".12" filter="url(#comet-soft)"/>
+      <path d="M199 196C210 185 221 166 237 153" stroke="#C57558" stroke-width="7" stroke-linecap="round" opacity=".18" filter="url(#comet-soft)"/>
+      <path d="M141 150C176 133 193 98 256 69" stroke="#FFF6DF" stroke-width="3" stroke-linecap="round" opacity=".62"/>
+    </g>
+    <!-- The head overlaps the streams, like a softly sculpted moving pebble. -->
+    <path d="M124 126C87 121 63 143 60 177C56 211 77 239 109 247C140 255 175 243 190 216C206 187 188 150 161 135C148 128 138 126 124 126Z" fill="url(#comet-head)"/>
+    <path d="M173 157C191 182 187 211 169 228C155 239 139 244 124 243" stroke="#AE6663" stroke-width="10" stroke-linecap="round" opacity=".17" filter="url(#comet-soft)"/>
+    <path d="M71 181C70 160 89 140 112 137" stroke="url(#comet-rim)" stroke-width="4" stroke-linecap="round"/>
+    <path d="M77 210C80 217 85 222 92 225" stroke="#FFDCC0" stroke-width="2.5" stroke-linecap="round" opacity=".43"/>
+    <path d="M112 135C125 132 139 137 146 140" stroke="#FFF1D5" stroke-width="2" stroke-linecap="round" opacity=".4"/>
+    <ellipse cx="88" cy="194" rx="14" ry="10" transform="rotate(-12 88 194)" fill="url(#comet-cheek)"/>
+    <ellipse cx="161" cy="183" rx="13" ry="9" transform="rotate(-12 161 183)" fill="url(#comet-cheek)"/>
+    <path d="M159 147C162 149 165 153 166 156" stroke="#F6C0A0" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+  </g>
+  <g transform="rotate(-10 123 185)">
+    <ellipse cx="103" cy="174" rx="6.3" ry="8.4" fill="#29374A"/>
+    <ellipse cx="147" cy="172" rx="6.3" ry="8.4" fill="#29374A"/>
+    <ellipse cx="101.3" cy="171.5" rx="1.6" ry="2" fill="#FFF0DA" opacity=".62"/>
+    <ellipse cx="145.3" cy="169.5" rx="1.6" ry="2" fill="#FFF0DA" opacity=".62"/>
+    <path d="M115 193C120 201 131 202 137 191C130 193 122 194 115 193Z" fill="#684347"/>
+    <path d="M122 200C125 197 130 197 132 199" fill="#DB9690"/>
+  </g>
+</svg>

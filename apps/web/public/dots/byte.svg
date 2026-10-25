@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320" fill="none" role="img" aria-labelledby="byte-title">
+  <title id="byte-title">Byte, original Space Dots robot</title>
+  <defs>
+    <radialGradient id="byte-shell" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(124 101) rotate(57) scale(152 127)">
+      <stop stop-color="#E0F3EB"/><stop offset=".3" stop-color="#BFE4DE"/><stop offset=".62" stop-color="#93C8CB"/><stop offset=".86" stop-color="#6EA3B2"/><stop offset="1" stop-color="#527C94"/>
+    </radialGradient>
+    <linearGradient id="byte-joints" x1="100" y1="175" x2="208" y2="264" gradientUnits="userSpaceOnUse"><stop stop-color="#91BFC5"/><stop offset=".58" stop-color="#668C9F"/><stop offset="1" stop-color="#3E617A"/></linearGradient>
+    <radialGradient id="byte-window" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(129 108) rotate(40) scale(96 65)"><stop stop-color="#304E60"/><stop offset=".6" stop-color="#183247"/><stop offset="1" stop-color="#10283B"/></radialGradient>
+    <linearGradient id="byte-eye" x1="135" y1="119" x2="142" y2="140" gradientUnits="userSpaceOnUse"><stop stop-color="#EFF7DD"/><stop offset="1" stop-color="#B1E2DA"/></linearGradient>
+    <radialGradient id="byte-antenna" cx=".3" cy=".25" r=".8"><stop stop-color="#FFF0BE"/><stop offset=".65" stop-color="#E5C68B"/><stop offset="1" stop-color="#B59565"/></radialGradient>
+    <linearGradient id="byte-glass-rim" x1="111" y1="103" x2="201" y2="157" gradientUnits="userSpaceOnUse"><stop stop-color="#ECF5E8" stop-opacity=".7"/><stop offset="1" stop-color="#ECF5E8" stop-opacity="0"/></linearGradient>
+    <filter id="byte-grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".78" numOctaves="3" seed="23" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".11"/></feComponentTransfer>
+      <feComposite in2="SourceGraphic" operator="in" result="texture"/>
+      <feBlend in="SourceGraphic" in2="texture" mode="soft-light"/>
+    </filter>
+    <filter id="byte-shadow" x="-30%" y="-180%" width="160%" height="460%"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="byte-soft" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="3"/></filter>
+  </defs>
+  <ellipse cx="160" cy="266" rx="63" ry="5" fill="#263D50" opacity=".15" filter="url(#byte-shadow)"/>
+  <path d="M158 81L159 63" stroke="#6C919F" stroke-width="7" stroke-linecap="round"/>
+  <path d="M157 77L158 64" stroke="#C7E5DE" stroke-width="2" stroke-linecap="round"/>
+  <g filter="url(#byte-grain)">
+    <circle cx="159" cy="57" r="9" fill="url(#byte-antenna)"/>
+    <path d="M154 54C154 52 157 51 159 51" stroke="#FFF6D9" stroke-width="2" stroke-linecap="round"/>
+    <path d="M134 228L131 249L148 249L151 229Z" fill="url(#byte-joints)"/>
+    <path d="M173 229L173 249L191 250L188 227Z" fill="url(#byte-joints)"/>
+    <path d="M132 237L147 239M174 237L190 239" stroke="#D1E7DF" stroke-width="2" stroke-linecap="round" opacity=".65"/>
+    <path d="M129 245C120 248 117 253 118 257C119 262 132 263 146 261C154 260 159 257 157 251C156 247 151 244 143 244Z" fill="url(#byte-shell)"/>
+    <path d="M177 244C172 247 169 255 173 259C178 263 199 263 204 260C210 256 205 251 197 247C191 244 183 242 177 244Z" fill="url(#byte-shell)"/>
+    <path d="M122 258C131 260 145 259 152 257M177 258C185 260 199 260 203 258" stroke="#3E617A" stroke-width="3" stroke-linecap="round" opacity=".54"/>
+    <circle cx="112" cy="188" r="12" fill="url(#byte-joints)"/>
+    <circle cx="209" cy="188" r="12" fill="url(#byte-joints)"/>
+    <path d="M105 184C102 182 98 184 96 188L85 205C82 210 85 215 90 215C94 216 97 212 100 208L111 194C113 190 111 186 105 184Z" fill="url(#byte-shell)"/>
+    <path d="M92 195L102 201" stroke="#5F8C9C" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M96 193L103 197" stroke="#D9EDE4" stroke-width="2" stroke-linecap="round" opacity=".68"/>
+    <path d="M216 184C221 182 225 184 227 190L237 208C239 213 236 216 232 216C228 216 224 212 222 208L212 195C209 191 212 187 216 184Z" fill="url(#byte-shell)"/>
+    <path d="M224 196L233 193" stroke="#5F8C9C" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M222 192L230 190" stroke="#D9EDE4" stroke-width="2" stroke-linecap="round" opacity=".6"/>
+    <path d="M85 205C77 205 71 212 73 220C75 228 87 232 94 226C98 222 98 217 94 215L88 216C90 211 89 207 85 205Z" fill="url(#byte-joints)"/>
+    <path d="M78 213C76 218 81 223 86 222" stroke="#BDDED9" stroke-width="3" stroke-linecap="round"/>
+    <path d="M235 206C243 208 249 216 246 223C243 230 234 233 228 227C224 223 224 218 228 216L234 218C231 212 231 207 235 206Z" fill="url(#byte-joints)"/>
+    <path d="M240 216C242 220 237 225 232 223" stroke="#BDDED9" stroke-width="3" stroke-linecap="round"/>
+    <path d="M137 170C124 171 115 179 116 193L119 216C120 231 130 238 147 239L176 239C193 238 204 230 205 214L206 193C206 179 196 171 184 170Z" fill="url(#byte-shell)"/>
+    <path d="M132 180C126 185 125 197 128 208" stroke="#EBF8EC" stroke-width="3.5" stroke-linecap="round" opacity=".65"/>
+    <path d="M195 183C200 199 199 220 187 229" stroke="#426B88" stroke-width="9" stroke-linecap="round" opacity=".15" filter="url(#byte-soft)"/>
+    <path d="M128 227C145 234 178 234 195 225" stroke="#638B9E" stroke-width="2" stroke-linecap="round" opacity=".6"/>
+    <path d="M144 191C144 187 149 185 155 185H171C178 185 182 188 182 193V209C182 214 178 217 171 217H154C148 217 144 214 144 209Z" fill="#5E8B9D" opacity=".64"/>
+    <path d="M148 192C154 189 171 189 178 192" stroke="#B8DCD7" stroke-width="2" stroke-linecap="round" opacity=".65"/>
+    <circle cx="156" cy="201" r="4.5" fill="#E9CD94"/>
+    <path d="M167 200H173M167 206H171" stroke="#D3E9DF" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M146 170L146 177C149 183 174 183 179 177L179 170Z" fill="url(#byte-joints)"/>
+    <path d="M151 176H173" stroke="#C8E1DA" stroke-width="2" stroke-linecap="round" opacity=".8"/>
+    <ellipse cx="95" cy="128" rx="10" ry="15" fill="url(#byte-joints)"/>
+    <ellipse cx="224" cy="130" rx="10" ry="15" fill="url(#byte-joints)"/>
+    <path d="M91 123V133M228 125V135" stroke="#BEDDD6" stroke-width="3" stroke-linecap="round"/>
+    <path d="M134 80C108 80 95 92 94 117L94 139C94 162 107 176 134 178L185 178C213 177 226 164 226 140L225 117C224 94 211 81 186 80Z" fill="url(#byte-shell)"/>
+    <path d="M215 106C225 124 222 151 213 159" stroke="#416E89" stroke-width="8" stroke-linecap="round" opacity=".15" filter="url(#byte-soft)"/>
+    <path d="M106 109C108 96 120 89 136 89" stroke="#F0F8EB" stroke-width="3.5" stroke-linecap="round" opacity=".75"/>
+    <path d="M131 101C114 101 104 109 104 126V137C105 153 116 160 132 161L186 161C202 160 214 152 214 136V124C213 108 203 101 186 101Z" fill="#719FAC"/>
+    <path d="M131 104C115 104 108 111 108 126V135C108 150 117 157 133 158L185 158C200 157 210 150 210 135V125C210 111 200 104 186 104Z" fill="url(#byte-window)"/>
+    <path d="M114 120C115 111 124 109 134 109H163" stroke="url(#byte-glass-rim)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M128 169C143 172 178 173 193 169" stroke="#C4E1DA" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+  </g>
+  <rect x="129" y="119" width="13" height="19" rx="6.5" fill="url(#byte-eye)"/>
+  <path d="M177 131C177 122 180 119 184 119C188 119 192 124 192 131C192 134 190 136 188 136H181C178 136 177 134 177 131Z" fill="url(#byte-eye)"/>
+  <path d="M151 145C156 149 162 149 167 144" stroke="#AFD7D2" stroke-width="3" stroke-linecap="round"/>
+</svg>

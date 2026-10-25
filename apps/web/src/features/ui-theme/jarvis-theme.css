@@ -1,0 +1,152 @@
+/* Jarvis: arc-reactor blue HUD, glowing hairlines and HUD corner brackets on the focus pane. Shares the Modern layout. */
+:root[data-interface-theme="jarvis"] {
+  --room-accent: #38c8ff;
+  --jarvis-beam: linear-gradient(90deg, transparent, #38c8ff 50%, transparent);
+  scrollbar-color: #1d4a6e transparent;
+}
+
+:root[data-interface-theme="jarvis"] [data-ui-theme="modern"] {
+  --modern-bg: #02060d;
+  --modern-surface: #061220;
+  --modern-surface-raised: #0a1a2c;
+  --modern-surface-soft: #0f2238;
+  --modern-border: #12304a;
+  --modern-border-strong: #1d4a6e;
+  --modern-text: #e3f6ff;
+  --modern-muted: #9cc4de;
+  --modern-faint: #7fa9c6;
+  --modern-accent: #38c8ff;
+  --modern-accent-strong: #8fdcff;
+  --modern-accent-soft: rgba(56, 200, 255, 0.13);
+  --modern-on-accent: #00182a;
+  --modern-terminal: #030b16;
+  --modern-terminal-text: #dff4ff;
+  --modern-terminal-muted: #8fb3cc;
+  --modern-danger: #ff6b81;
+  --modern-danger-soft: rgba(255, 107, 129, 0.14);
+  --modern-warning: #ffc857;
+  --modern-warning-soft: rgba(255, 200, 87, 0.13);
+  --modern-success: #4ee6a8;
+  --modern-success-soft: rgba(78, 230, 168, 0.13);
+  --modern-shadow: 0 18px 54px rgba(0, 0, 0, 0.62);
+  --modern-card-shadow: 0 10px 34px rgba(0, 0, 0, 0.42);
+  --room-accent: var(--modern-accent);
+  color-scheme: dark;
+}
+
+:root[data-interface-theme="jarvis"] ::selection {
+  background: rgba(56, 200, 255, 0.34);
+}
+
+/* Static reactor glow behind the chrome; the HUD itself lives in the Jarvis background. */
+:root[data-interface-theme="jarvis"] .space-shell[data-ui-theme="modern"],
+.modern-theme-page.jarvis-theme-page {
+  background-color: #02060d;
+  background-image:
+    radial-gradient(ellipse 60% 50% at 50% 50%, rgba(31, 162, 255, 0.16), transparent 70%),
+    radial-gradient(ellipse 45% 30% at 50% -8%, rgba(56, 200, 255, 0.14), transparent 70%),
+    linear-gradient(180deg, #020a16, #02060d 60%);
+  background-attachment: fixed;
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .board {
+  background: transparent;
+}
+
+/* HUD chrome: dark glass with a bright beam along its lower edge. */
+:root[data-interface-theme="jarvis"] .space-shell :is(.topbar, .board-toolbar) {
+  border-bottom-color: transparent;
+  background:
+    var(--jarvis-beam) center bottom / 100% 1px no-repeat,
+    linear-gradient(180deg, rgba(8, 28, 48, 0.82), rgba(3, 12, 24, 0.66));
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .side-surface {
+  border-color: rgba(56, 200, 255, 0.2);
+  background: rgba(3, 12, 24, 0.84);
+  box-shadow: inset 0 0 24px rgba(56, 200, 255, 0.05);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .topbar .brand h1 a {
+  background: linear-gradient(180deg, #e3f8ff, #38c8ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  filter: drop-shadow(0 0 6px rgba(56, 200, 255, 0.55));
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .topbar-meta .topbar-meta-version {
+  border-color: rgba(56, 200, 255, 0.55);
+  box-shadow: 0 0 12px rgba(56, 200, 255, 0.25);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .desktop-navigation > button:is(:hover, [aria-expanded="true"], [aria-pressed="true"]) {
+  border-color: rgba(56, 200, 255, 0.5);
+  background: rgba(56, 200, 255, 0.08);
+  box-shadow: 0 0 16px rgba(56, 200, 255, 0.2);
+}
+
+/* Panes: angular HUD cards that let the reactor glow through; the target pane gets corner brackets and the glow.
+   No backdrop-filter, so the turning rings never re-blur pane content. */
+:root[data-interface-theme="jarvis"] .space-shell .pane-card {
+  border-color: rgba(56, 200, 255, 0.22);
+  border-radius: 6px;
+  background: rgba(3, 12, 24, 0.86);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .pane-card > header {
+  border-bottom-color: rgba(56, 200, 255, 0.16);
+  background: linear-gradient(180deg, #0b2036, #06142a);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .pane-card.is-target {
+  border-color: rgba(56, 200, 255, 0.75);
+  box-shadow:
+    0 0 0 1px rgba(56, 200, 255, 0.18),
+    0 0 26px rgba(56, 200, 255, 0.2),
+    0 0 60px rgba(31, 162, 255, 0.12);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .pane-card.is-target > header {
+  background:
+    linear-gradient(#8fdcff, #8fdcff) left top / 16px 2px no-repeat,
+    linear-gradient(#8fdcff, #8fdcff) left top / 2px 10px no-repeat,
+    linear-gradient(#8fdcff, #8fdcff) right top / 16px 2px no-repeat,
+    linear-gradient(#8fdcff, #8fdcff) right top / 2px 10px no-repeat,
+    var(--jarvis-beam) center top / 100% 1px no-repeat,
+    linear-gradient(180deg, #0e2a46, #08182e);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell .pane-card.is-completion-pending {
+  border-color: var(--modern-danger);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell :is(button.primary, .primary-action, .codex-send):not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(120deg, #8fdcff, #38c8ff 55%, #1fa2ff);
+  color: var(--modern-on-accent);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell :is(button.primary, .primary-action, .codex-send):hover:not(:disabled) {
+  box-shadow: 0 0 18px rgba(56, 200, 255, 0.5);
+  filter: brightness(1.08);
+}
+
+:root[data-interface-theme="jarvis"] .space-shell :is(button, a, input, select, textarea):focus-visible {
+  outline-color: #38c8ff;
+}
+
+:root[data-interface-theme="jarvis"] .help-page :is(.help-section, .help-navigation, .help-entry) {
+  border-color: rgba(56, 200, 255, 0.22);
+  border-radius: 6px;
+  background: rgba(3, 12, 24, 0.88);
+}
+
+:root[data-interface-theme="jarvis"] .help-page .help-header {
+  border-bottom-color: transparent;
+  background:
+    var(--jarvis-beam) center bottom / 100% 1px no-repeat,
+    rgba(3, 12, 24, 0.88);
+}

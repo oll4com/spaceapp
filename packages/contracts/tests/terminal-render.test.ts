@@ -1,0 +1,9 @@
+import {describe,it,expect} from 'vitest';
+import {terminalRenderObservationSchema,terminalRenderBatchSchema,controlExecuteSchema,controlInspectSchema,appDiagnosticsTechnicalEventSchema} from '../src/index.js';
+const sample={schemaVersion:1,roomId:'room:sample1',paneId:'pane:sample1',surfaceGeneration:'surface:sample1',sessionId:null,runtimeId:null,observedAt:1000,renderer:'UNKNOWN',visibility:'UNMOUNTED',verdict:'INCONCLUSIVE',reasons:['UNMOUNTED'],geometry:null,transportSequence:null,parserSequence:null,renderSequence:null,sampleDurationMs:0};
+describe('terminal render strict contracts',()=>{
+ it('rejects operator text, content hashes and arbitrary reason strings',()=>{for(const patch of [{text:'secret'},{hash:'secret'},{reasons:['private content']},{sampleDurationMs:Infinity}])expect(terminalRenderObservationSchema.safeParse({...sample,...patch}).success).toBe(false);});
+ it('bounds client batches and nested geometry',()=>{expect(terminalRenderBatchSchema.safeParse(Array.from({length:65},()=>sample)).success).toBe(false);expect(terminalRenderObservationSchema.parse(sample)).toEqual(sample);});
+ it('allows numeric performance records through the existing batching schema',()=>{expect(appDiagnosticsTechnicalEventSchema.safeParse({sequence:1,occurredAt:new Date().toISOString(),category:'PERFORMANCE',metric:'TERMINAL_RENDER',terminalRender:sample}).success).toBe(true);});
+ it('catalogs the inspect section and rejects mutation mixing',()=>{expect(controlInspectSchema.parse({section:'TERMINAL_RENDER',roomId:sample.roomId}).section).toBe('TERMINAL_RENDER');const action={kind:'pane',operation:'visual_audit',target:{paneIds:[sample.paneId]}};expect(controlExecuteSchema.safeParse({roomId:sample.roomId,requestId:'request:test',actions:[action]}).success).toBe(true);expect(controlExecuteSchema.safeParse({roomId:sample.roomId,requestId:'request:test',actions:[action,{kind:'pane',operation:'close',target:action.target}]}).success).toBe(false);});
+});

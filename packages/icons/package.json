@@ -1,0 +1,20 @@
+{
+  "name": "@space/icons",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/app-icons.tsx"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "lucide-react": "^0.562.0"
+  },
+  "peerDependencies": {
+    "react": "^19.3.0"
+  },
+  "license": "MIT"
+}

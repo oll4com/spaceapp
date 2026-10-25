@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" role="img" aria-labelledby="title description">
+  <title id="title">Space workspace map</title>
+  <desc id="description">A local fixture connecting one room to Chat, CLI, Browser, and Media panes.</desc>
+  <rect width="800" height="450" rx="24" fill="#090c0c"/>
+  <g stroke="#70c5b5" stroke-width="4" opacity=".65">
+    <path d="M400 128 180 286M400 128 326 286M400 128 474 286M400 128 620 286"/>
+  </g>
+  <g fill="#131a18" stroke="#40504c" stroke-width="3">
+    <rect x="292" y="62" width="216" height="96" rx="16"/>
+    <rect x="92" y="286" width="176" height="92" rx="14"/>
+    <rect x="286" y="286" width="176" height="92" rx="14"/>
+    <rect x="480" y="286" width="176" height="92" rx="14"/>
+    <rect x="674" y="286" width="84" height="92" rx="14"/>
+  </g>
+  <g fill="#edf0ed" font-family="Arial, sans-serif" text-anchor="middle">
+    <text x="400" y="120" font-size="30" font-weight="700">Launch Room</text>
+    <text x="180" y="340" font-size="24">Chat</text>
+    <text x="374" y="340" font-size="24">CLI</text>
+    <text x="568" y="340" font-size="24">Browser</text>
+    <text x="716" y="340" font-size="19">Media</text>
+  </g>
+</svg>

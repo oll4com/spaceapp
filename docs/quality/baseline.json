@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-03T03:34:48.846390+00:00",
+  "sourceSha": "54a7689218bbecb69e597a0c15332e55e905efd8",
+  "publicCheckoutSha": "4171367ab87e3818df61ada753cd4099282b0bd8",
+  "publicExportSourceSha": "b73eb79ac75982f04d1514e58ca4d760e802cf7c",
+  "launcherVersion": "1.1.0",
+  "runtimeImageDigest": null,
+  "runtimeImageDigestLimitation": "Not measured; no new release candidate produced.",
+  "publicCiRunUrl": null,
+  "orchestrationLines": {
+    "apps/api/src/app.ts": 19487,
+    "apps/web/src/App.tsx": 18192
+  },
+  "trackedTestFiles": {
+    "apps/api": 185,
+    "apps/web": 218,
+    "apps/worker": 18,
+    "packages/db": 26,
+    "packages/cli-host": 3,
+    "packages/browser-host": 1,
+    "packages/runtime": 23,
+    "packages/memory-graph": 4
+  },
+  "testCountIsCoverage": false,
+  "migrations": {
+    "count": 127,
+    "uniqueFullIds": 127,
+    "repeatedHistoricalPrefixes": {
+      "0034": 2,
+      "0088": 2,
+      "0089": 2
+    }
+  },
+  "sourceLimits": [
+    "Claude pending",
+    "Kimi full attachment unavailable",
+    "Public checkout identity read locally; remote HEAD not queried"
+  ]
+}

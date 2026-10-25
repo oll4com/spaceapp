@@ -1,0 +1,400 @@
+/* Accounts & quotas: availability states shared by every provider card. */
+.account-quota-card,
+.account-availability-filter button,
+.account-availability-counts > span,
+.account-availability-pill {
+  --availability-color: #9aa3a7;
+  --availability-bg: rgba(148, 163, 184, 0.1);
+  --availability-border: #3a4245;
+}
+
+:is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span).is-available {
+  --availability-color: #4ade80;
+  --availability-bg: rgba(34, 197, 94, 0.14);
+  --availability-border: #1f6b45;
+}
+
+:is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span).is-soon {
+  --availability-color: #f2be55;
+  --availability-bg: rgba(234, 179, 8, 0.14);
+  --availability-border: #6b4d1b;
+}
+
+:is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span).is-exhausted {
+  --availability-color: #ff7582;
+  --availability-bg: rgba(239, 68, 68, 0.14);
+  --availability-border: #75282f;
+}
+
+/* Standalone list, used outside Resources (AI Quota & Usage widget). */
+.account-quota-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-quota-list .account-quota-card {
+  display: grid;
+  min-width: 0;
+  border: 1px solid #262c2e;
+  border-radius: 8px;
+  background: #131617;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-quota-list .account-quota-card {
+  border-color: #d2dce4;
+  background: #ffffff;
+}
+
+.account-availability-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.account-availability-filter {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0.45rem 0 0.55rem;
+}
+
+.account-availability-filter button {
+  display: grid;
+  justify-items: center;
+  gap: 0.1rem;
+  min-width: 0;
+  padding: 0.35rem 0.2rem;
+  border: 1px solid #2c3436;
+  border-radius: 7px;
+  background: #151a1b;
+  color: #a2a8ab;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.account-availability-filter button b {
+  font-size: 1rem;
+  line-height: 1.1;
+  color: #f1ece2;
+}
+
+.account-availability-filter button:not(.is-all) b {
+  color: var(--availability-color);
+}
+
+.account-availability-filter button span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  max-width: 100%;
+  font-size: 0.64rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-availability-filter button span .account-availability-dot {
+  color: var(--availability-color);
+}
+
+.account-availability-filter button:hover {
+  border-color: #4a5457;
+  background: #1c2223;
+}
+
+.account-availability-filter button.is-active {
+  border-color: #53cbb5;
+  box-shadow: 0 0 0 1px #53cbb5;
+  background: rgba(83, 203, 181, 0.12);
+  color: #d9eee9;
+}
+
+.account-availability-counts {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-right: auto;
+}
+
+.account-availability-counts > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--availability-color);
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-card {
+  gap: 0.38rem;
+  padding: 0.5rem 0.55rem;
+  border-left: 3px solid var(--availability-color);
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-card.is-exhausted {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.08), rgba(19, 22, 23, 0) 60%), #131617;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-card.is-soon {
+  background: linear-gradient(90deg, rgba(234, 179, 8, 0.07), rgba(19, 22, 23, 0) 60%), #131617;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-card:is(.is-offline, .is-unknown) {
+  opacity: 0.78;
+}
+
+.account-quota-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-title {
+  min-width: 0;
+  font-size: 0.78rem;
+  color: #f1ece2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-availability-pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 0.14rem 0.5rem;
+  border: 1px solid var(--availability-border);
+  border-radius: 999px;
+  background: var(--availability-bg);
+  color: var(--availability-color);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.account-quota-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  min-width: 0;
+  margin-top: -0.18rem;
+}
+
+.account-quota-meta small {
+  min-width: 0;
+  font-size: 0.64rem;
+  color: #838e8b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Wraps on a phone-width dock; the figures stay in the card's own text colour. */
+.account-quota-note {
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.account-quota-meta button {
+  flex: none;
+  border: 1px solid #3e5551;
+  border-radius: 5px;
+  background: #17211f;
+  color: #d9eee9;
+  padding: 0.16rem 0.4rem;
+  font: inherit;
+  font-size: 0.64rem;
+}
+
+.account-quota-meta button:hover:not(:disabled),
+.account-quota-meta button:focus-visible {
+  border-color: #6db7aa;
+  outline: none;
+}
+
+.account-quota-meta button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.account-quota-row {
+  display: grid;
+  gap: 0.2rem;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-row-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #7f8a88;
+}
+
+.account-quota-cells {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.account-quota-cells > .account-quota-cell:only-child {
+  grid-column: 1 / -1;
+}
+
+.account-quota-cell {
+  --cell-color: #5d6669;
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.account-quota-cell.is-healthy { --cell-color: #4ade80; }
+.account-quota-cell.is-warning { --cell-color: #f2be55; }
+.account-quota-cell.is-critical { --cell-color: #ff7582; }
+
+.account-quota-cell-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-cell-head span {
+  min-width: 0;
+  font-size: 0.64rem;
+  color: #8d9896;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .account-quota-cell-head strong {
+  flex: none;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--cell-color);
+}
+
+.account-quota-bar {
+  display: block;
+  height: 5px;
+  border-radius: 3px;
+  background: #232a2c;
+  overflow: hidden;
+}
+
+.account-quota-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cell-color);
+  transition: width 0.3s ease;
+}
+
+.account-quota-cell small {
+  font-size: 0.62rem;
+  color: #838e8b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-quota-cell.is-critical small {
+  color: #ff9da7;
+  font-weight: 600;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span) {
+  --availability-color: #5f707e;
+  --availability-bg: #eef2f5;
+  --availability-border: #c9d4dc;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span).is-available {
+  --availability-color: #15803d;
+  --availability-bg: #e8f7ee;
+  --availability-border: #9fd9b5;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span).is-soon {
+  --availability-color: #a16207;
+  --availability-bg: #fdf4dc;
+  --availability-border: #ecd08a;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.account-quota-card, .account-availability-pill, .account-availability-filter button, .account-availability-counts > span).is-exhausted {
+  --availability-color: #b91c1c;
+  --availability-bg: #fdeaea;
+  --availability-border: #f1b3b3;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-availability-filter button {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #4b5b68;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-availability-filter button.is-all b,
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .account-quota-title {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-availability-filter button.is-active {
+  border-color: #087f74;
+  box-shadow: 0 0 0 1px #087f74;
+  background: #eef7f5;
+  color: #087f74;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .account-quota-card:is(.is-exhausted, .is-soon) {
+  background: #ffffff;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-quota-bar {
+  background: #e4ebf0;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-quota-cell.is-healthy { --cell-color: #15803d; }
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-quota-cell.is-warning { --cell-color: #a16207; }
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-quota-cell.is-critical { --cell-color: #b91c1c; }
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.account-quota-meta small, .account-quota-cell small, .account-quota-cell-head span, .account-quota-row-label) {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .account-quota-meta button {
+  border-color: #d2dce4;
+  background: #f7f9fb;
+  color: #17232d;
+}
+
+/* The shared light theme colours every list span and strong; keep the availability colours. */
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .account-quota-card {
+  border-left-color: var(--availability-color);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .account-availability-pill {
+  color: var(--availability-color);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .account-quota-cell-head strong {
+  color: var(--cell-color);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .account-quota-cell.is-critical small {
+  color: #b91c1c;
+}
+

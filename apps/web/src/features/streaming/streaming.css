@@ -1,0 +1,1201 @@
+/* Streaming dock on the shared dock kit. Dock colors come from the --dock-*
+   tokens so Classic, Modern, light and dark follow the active theme. The
+   overlay and its metric tiles further down keep their broadcast look. */
+
+.streaming-dock {
+  container: streaming-dock / inline-size;
+  color: var(--dock-text);
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.streaming-dock h3,
+.streaming-dock h4 {
+  margin: 0;
+}
+
+/* Tabs: two even rows of three in a narrow dock, one row when it is wide; every label stays whole. */
+.streaming-dock-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+@container streaming-dock (min-width: 34rem) {
+  .streaming-dock-tabs {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+/* Overview strip: bot, moderation and memory at a glance; each opens its tab. */
+.streaming-status-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.streaming-status-chip {
+  display: grid;
+  justify-items: start;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.streaming-status-chip:hover {
+  border-color: var(--dock-border-strong);
+  background: var(--dock-soft);
+}
+
+.streaming-status-chip:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.streaming-status-chip-label {
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+}
+
+/* Bot setup checklist */
+.streaming-setup-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.streaming-setup-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2rem 0.5rem;
+  align-items: start;
+}
+
+.streaming-setup-item > svg {
+  width: var(--dock-icon);
+  height: var(--dock-icon);
+  margin-top: 0.1rem;
+}
+
+.streaming-setup-item.is-ok > svg {
+  color: var(--dock-success);
+}
+
+.streaming-setup-item.is-missing > svg {
+  color: var(--dock-warning);
+}
+
+.streaming-setup-item > div {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.streaming-setup-item strong {
+  font-size: var(--dock-font);
+}
+
+.streaming-setup-item > .dock-kit-button {
+  grid-column: 2;
+  justify-self: start;
+}
+
+.streaming-moderation-message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.streaming-dock-tab {
+  min-width: 0;
+  min-height: 1.9rem;
+  box-sizing: border-box;
+  padding: 0 0.5rem;
+  border: 1px solid var(--dock-border);
+  border-radius: 999px;
+  background: var(--dock-raised);
+  color: var(--dock-muted);
+  font: inherit;
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.streaming-dock-tab:hover {
+  border-color: var(--dock-border-strong);
+  background: var(--dock-soft);
+  color: var(--dock-text);
+}
+
+.streaming-dock-tab[aria-selected="true"],
+.streaming-dock-tab[aria-selected="true"]:hover {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+  color: var(--dock-accent);
+}
+
+.streaming-dock-tab:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.streaming-tab-panel {
+  min-width: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+/* Save status and messages stay in view while a long tab scrolls. */
+.streaming-status-stack {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.streaming-status-stack:empty {
+  display: none;
+}
+
+.streaming-status-stack .dock-kit-notice {
+  box-shadow: 0 6px 16px rgb(0 0 0 / 0.18);
+}
+
+.streaming-save-status .dock-kit-notice-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.6rem;
+}
+
+.streaming-save-status .streaming-save-now {
+  min-height: 1.7rem;
+  padding: 0 0.6rem;
+}
+
+.streaming-hint {
+  margin: 0;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  line-height: 1.42;
+}
+
+small.streaming-hint {
+  font-size: 0.7rem;
+}
+
+/* Sections and cards */
+.streaming-session-card,
+.streaming-section {
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.75rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+}
+
+.streaming-section {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.streaming-session-card {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.streaming-session-card > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.streaming-section-heading {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+}
+
+.streaming-section-heading > :first-child {
+  margin-right: auto;
+}
+
+.streaming-tile-count {
+  color: var(--dock-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.streaming-tile-count.at-limit {
+  color: var(--dock-warning);
+  font-weight: 650;
+}
+
+.streaming-session-toggle,
+.streaming-custom-text .space-toggle,
+.streaming-preview-toggle {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface);
+}
+
+/* Providers */
+.streaming-provider-list {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.streaming-provider-card {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  container: streaming-provider / inline-size;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-surface);
+  transition: border-color 120ms ease;
+}
+
+.streaming-provider-card.is-collapsed:hover,
+.streaming-provider-card.is-expanded {
+  border-color: var(--dock-border-strong);
+}
+
+.streaming-provider-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.1rem 0;
+  border-radius: var(--dock-radius-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.streaming-provider-header:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 2px;
+}
+
+.streaming-provider-meta {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.streaming-provider-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.streaming-provider-meta h4 {
+  color: var(--dock-text);
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.streaming-readiness-detail {
+  color: var(--dock-muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.streaming-provider-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.streaming-provider-header-actions .dock-kit-button {
+  min-height: 1.75rem;
+  padding: 0 0.55rem;
+  font-size: 0.7rem;
+}
+
+.streaming-copy-link-btn.is-copied,
+.streaming-copy-link-btn.is-copied:hover:not(:disabled) {
+  color: var(--dock-success);
+}
+
+.streaming-provider-chevron {
+  width: 1.65rem;
+  height: 1.65rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  border-radius: var(--dock-radius-sm);
+  color: var(--dock-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.streaming-provider-chevron:hover {
+  background: var(--dock-soft);
+  color: var(--dock-text);
+}
+
+.streaming-provider-chevron:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
+.streaming-provider-chevron svg {
+  width: var(--dock-icon);
+  height: var(--dock-icon);
+}
+
+.streaming-provider-body {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--dock-border);
+}
+
+@container streaming-provider (max-width: 18rem) {
+  .streaming-provider-header {
+    flex-wrap: wrap;
+  }
+
+  .streaming-provider-header-actions {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 0.25rem;
+  }
+}
+
+.streaming-provider-mark {
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-raised);
+  color: var(--dock-muted);
+}
+
+.streaming-provider-mark svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+/* Provider brand colors identify each service. */
+.streaming-provider-card[data-provider="YOUTUBE"] .streaming-provider-mark {
+  color: #ff4e5b;
+}
+
+.streaming-provider-card[data-provider="TWITCH"] .streaming-provider-mark {
+  color: #a970ff;
+}
+
+.streaming-provider-card[data-provider="TIKTOK"] .streaming-provider-mark {
+  color: #25c2b8;
+}
+
+.streaming-provider-card[data-provider="X"] .streaming-provider-mark {
+  color: var(--dock-text);
+}
+
+.streaming-provider-card[data-provider="DISCORD"] .streaming-provider-mark {
+  color: #7289ff;
+}
+
+.streaming-safe-error {
+  margin: 0;
+  color: var(--dock-danger);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+/* Accounts */
+.streaming-account-list,
+.streaming-layout-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.streaming-account-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.streaming-account-card {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  gap: 0.45rem;
+  box-sizing: border-box;
+  padding: 0.6rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-raised);
+}
+
+.streaming-account-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.streaming-account-heading > div:first-child {
+  min-width: 0;
+  flex: 1 1 7rem;
+}
+
+.streaming-account-heading strong,
+.streaming-account-heading span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-account-heading strong {
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+}
+
+.streaming-account-heading > div:first-child > span {
+  margin-top: 0.12rem;
+  color: var(--dock-muted);
+  font-size: 0.68rem;
+}
+
+.streaming-inline-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.3rem;
+}
+
+.streaming-inline-actions .dock-kit-button,
+.streaming-authorizations .dock-kit-button {
+  min-height: 1.75rem;
+  padding: 0 0.55rem;
+  font-size: 0.68rem;
+}
+
+.streaming-dock .streaming-danger-button:not(:disabled) {
+  color: var(--dock-danger);
+}
+
+.streaming-dock .streaming-danger-button:hover:not(:disabled) {
+  border-color: var(--dock-danger);
+  background: var(--dock-danger-soft);
+}
+
+.streaming-capability-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.streaming-capability-chip {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  box-sizing: border-box;
+  padding: 0.28rem 0.5rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface);
+  color: var(--dock-muted);
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
+.streaming-capability-chip.is-ready {
+  border-color: color-mix(in srgb, var(--dock-success) 40%, transparent);
+  background: var(--dock-success-soft);
+  color: var(--dock-success);
+}
+
+.streaming-capability-chip.is-unavailable {
+  opacity: 0.75;
+}
+
+.streaming-capability-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.streaming-capability-chip.is-ready .streaming-capability-dot {
+  opacity: 1;
+}
+
+.streaming-capability-label {
+  overflow: hidden;
+  color: var(--dock-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-capability-status {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 0.2rem;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* Metric switches */
+.streaming-metric-options {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.25rem;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.streaming-metric-header {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.4rem;
+  box-sizing: border-box;
+  margin-bottom: 0.25rem;
+}
+
+.streaming-metric-title {
+  min-width: 0;
+  flex: 1 1 7.5rem;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-dock .streaming-select-all-button {
+  min-height: 1.6rem;
+  flex-shrink: 0;
+  padding: 0 0.5rem;
+  font-size: 0.68rem;
+}
+
+.streaming-metric-options .space-toggle {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0.35rem 0.42rem;
+  border-radius: var(--dock-radius-sm);
+}
+
+.streaming-metric-options .space-toggle:hover {
+  background: var(--dock-soft);
+}
+
+.streaming-metric-options .space-toggle-label {
+  font-size: 0.72rem;
+}
+
+@container streaming-provider (max-width: 19rem) {
+  .streaming-metric-options .space-toggle-state {
+    display: none;
+  }
+}
+
+.streaming-authorizations {
+  display: grid;
+  gap: 0.4rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--dock-border);
+}
+
+.streaming-authorizations > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.6rem;
+  color: var(--dock-muted);
+  font-size: 0.7rem;
+}
+
+.streaming-authorizations .streaming-safe-error {
+  flex: 1 0 100%;
+}
+
+/* Overlay layout */
+.streaming-layout-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.streaming-layout-list > li {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  box-sizing: border-box;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface);
+  cursor: grab;
+}
+
+.streaming-layout-list > li:active {
+  cursor: grabbing;
+}
+
+.streaming-layout-list > li > svg {
+  width: 0.9rem;
+  flex: 0 0 auto;
+  color: var(--dock-muted);
+}
+
+.streaming-layout-list > li > div:nth-child(2) {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.streaming-layout-list > li strong,
+.streaming-layout-list > li > div:nth-child(2) > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-layout-list > li strong {
+  color: var(--dock-text);
+  font-size: 0.74rem;
+}
+
+.streaming-layout-list > li > div:nth-child(2) > span {
+  color: var(--dock-muted);
+  font-size: 0.66rem;
+}
+
+.streaming-layout-row-controls {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+
+.streaming-period-select {
+  flex: 0 0 auto;
+}
+
+.streaming-period-select > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.streaming-period-select select {
+  width: auto;
+  max-width: 6rem;
+  min-height: 1.75rem;
+  font-size: 0.68rem;
+}
+
+.streaming-order-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.2rem;
+}
+
+.streaming-order-actions .dock-kit-icon-button {
+  width: 1.75rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
+}
+
+.streaming-custom-text {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.streaming-custom-text textarea {
+  min-height: 3.8rem;
+}
+
+.streaming-custom-text .dock-kit-counter {
+  justify-self: end;
+  margin-right: 0;
+}
+
+.streaming-draft-preview {
+  padding: 0.55rem;
+  border: 1px dashed var(--dock-border-strong);
+  border-radius: var(--dock-radius);
+  background: var(--dock-surface);
+}
+
+.streaming-dock .streaming-save-button {
+  width: 100%;
+}
+
+/* Bot, memory, moderation and activity tabs */
+.streaming-bot-tab {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.streaming-bot-overview-grid,
+.streaming-bot-platform-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.55rem;
+}
+
+.streaming-bot-overview-card,
+.streaming-bot-platform-card {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.3rem;
+  box-sizing: border-box;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface);
+}
+
+.streaming-bot-card-label {
+  color: var(--dock-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.streaming-bot-overview-card strong {
+  overflow-wrap: anywhere;
+  color: var(--dock-text);
+  font-size: 0.98rem;
+}
+
+.streaming-bot-overview-card small {
+  color: var(--dock-muted);
+  font-size: 0.7rem;
+}
+
+.streaming-bot-controls {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.streaming-bot-field-row {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.streaming-bot-field {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--dock-muted);
+  font-size: 0.74rem;
+}
+
+.streaming-bot-pair-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.streaming-bot-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.streaming-bot-test-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.streaming-bot-test-row select {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.streaming-bot-test-row input {
+  flex: 1;
+}
+
+.streaming-bot-test-reply {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  font-size: var(--dock-font);
+  white-space: pre-wrap;
+}
+
+.streaming-memory-controls {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.streaming-memory-search {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.streaming-memory-search .dock-kit-search {
+  min-width: 0;
+  flex: 1;
+}
+
+.streaming-bot-memory-results,
+.streaming-bot-activity {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.streaming-bot-memory-results p,
+.streaming-bot-activity p {
+  margin: 0;
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.streaming-bot-activity .streaming-bot-activity-reply {
+  color: var(--dock-muted);
+}
+
+.streaming-bot-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  background: var(--dock-surface);
+}
+
+.streaming-bot-actions .streaming-save-button {
+  flex: 1;
+}
+
+/* The dock width decides, not the window: a narrow dock on a wide screen stacks the fact fields too. */
+@container streaming-dock (max-width: 26rem) {
+  .streaming-bot-pair {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .streaming-bot-pair > input:nth-child(2) {
+    grid-column: 1;
+  }
+}
+
+/* Overlay (shown over the workspace and captured by OBS) and its metric tiles. */
+.streaming-overlay {
+  position: fixed;
+  left: max(1rem, env(safe-area-inset-left));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 90;
+  width: min(420px, calc(100vw - 2rem));
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  pointer-events: none;
+  color: #fff;
+  filter: drop-shadow(0 0.65rem 1.25rem rgba(0, 0, 0, 0.46));
+}
+
+.streaming-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.streaming-metric-tile {
+  min-width: 0;
+  min-height: 5.4rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0.55rem;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.62rem;
+  background: linear-gradient(145deg, rgba(17, 21, 20, 0.96), rgba(31, 38, 36, 0.93));
+  backdrop-filter: blur(10px);
+}
+
+.streaming-overlay-modern .streaming-metric-tile {
+  border-color: rgba(113, 233, 208, 0.24);
+  border-radius: 0.88rem;
+  background: linear-gradient(150deg, rgba(14, 28, 25, 0.94), rgba(20, 41, 36, 0.91));
+}
+
+.streaming-metric-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  margin-bottom: auto;
+}
+
+.streaming-provider-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 1.15rem;
+  display: grid;
+  place-items: center;
+  border-radius: 0.32rem;
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.streaming-provider-icon svg {
+  width: 0.78rem;
+  height: 0.78rem;
+}
+
+.streaming-metric-tile[data-provider="YOUTUBE"] .streaming-provider-icon {
+  color: #ff6d76;
+}
+
+.streaming-metric-tile[data-provider="TWITCH"] .streaming-provider-icon {
+  color: #c19cff;
+}
+
+.streaming-metric-tile[data-provider="TIKTOK"] .streaming-provider-icon {
+  color: #7ff5ea;
+}
+
+.streaming-metric-tile[data-provider="X"] .streaming-provider-icon {
+  color: #e7e9ea;
+}
+
+.streaming-metric-tile[data-provider="DISCORD"] .streaming-provider-icon {
+  color: #9aa6ff;
+}
+
+.streaming-metric-tile[data-provider="SPACE"] .streaming-provider-icon {
+  color: #75dcc5;
+}
+
+.streaming-metric-tile .streaming-metric-badge,
+.streaming-overlay .streaming-metric-badge,
+.streaming-draft-preview .streaming-metric-badge {
+  display: none;
+}
+
+.streaming-metric-tile > strong {
+  margin-top: 0.32rem;
+  overflow: hidden;
+  font-size: 1.12rem;
+  line-height: 1.08;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-metric-label {
+  margin-top: 0.16rem;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.62rem;
+  line-height: 1.18;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-metric-state {
+  position: absolute;
+  top: 0.34rem;
+  right: 0.34rem;
+  padding: 0.12rem 0.28rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.52);
+  color: #ffcc78;
+  font-size: 0.5rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.streaming-metric-tile[data-state="OFFLINE"] .streaming-metric-state,
+.streaming-metric-tile[data-state="UNAVAILABLE"] .streaming-metric-state {
+  color: #c2cbc8;
+}
+
+.streaming-metric-tile[data-state="ERROR"] .streaming-metric-state {
+  color: #ff9da5;
+}
+
+.streaming-overlay-custom-text {
+  margin: 0;
+  padding: 0.58rem 0.7rem;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.62rem;
+  background: rgba(15, 18, 17, 0.93);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.streaming-preview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.streaming-preview-grid .streaming-metric-tile {
+  min-height: 4.8rem;
+}
+
+.spin {
+  animation: streaming-spin 0.9s linear infinite;
+}
+
+@keyframes streaming-spin {
+  to { transform: rotate(360deg); }
+}
+
+.streaming-overlay-bot-ticker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.streaming-overlay-bot-ticker p {
+  margin: 0;
+  line-height: 1.35;
+}
+
+.streaming-overlay-bot-ticker strong {
+  margin-right: 0.25rem;
+}
+
+@media (max-width: 700px) {
+  .streaming-overlay {
+    left: max(0.65rem, env(safe-area-inset-left));
+    bottom: max(0.65rem, env(safe-area-inset-bottom));
+    width: min(360px, calc(100vw - 1.3rem));
+  }
+
+  .streaming-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-metric-tile {
+  border: 1px solid #d2dce4;
+  border-radius: 0.62rem;
+  background: rgba(255, 255, 255, 0.95);
+  color: #17232d;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-provider-icon {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-metric-badge {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-metric-tile > strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-metric-label {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-metric-state {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.streaming-overlay, .streaming-draft-preview) .streaming-overlay-custom-text {
+  border: 1px solid #d2dce4;
+  background: rgba(255, 255, 255, 0.95);
+  color: #17232d;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}

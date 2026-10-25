@@ -1,0 +1,143 @@
+/* Links dock on the shared dock kit. The root keeps .links-panel for browser
+   proofs; these rules undo the old panel padding/scrolling so the kit column
+   (.dock-kit-dock) owns spacing and only the list scrolls. */
+section.links-panel {
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  align-content: stretch;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.links-editor .links-field {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.links-editor .links-field-label {
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  font-weight: 600;
+}
+
+.links-editor .links-field-hint {
+  color: var(--dock-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.links-editor .space-toggle {
+  min-width: 0;
+}
+
+/* One compact row per link: open area on the left, actions on the right. */
+.links-item.dock-kit-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.5rem 0.45rem 0.6rem;
+}
+
+.links-item-open {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dock-radius-sm);
+  background: transparent;
+  color: var(--dock-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.links-item-open:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 2px;
+}
+
+.links-item-open:hover .dock-kit-card-title {
+  color: var(--dock-accent);
+}
+
+.links-item-text {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.links-item .link-favicon {
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-soft);
+  color: var(--dock-accent);
+}
+
+.links-item .link-favicon :is(svg, img) {
+  width: 1rem;
+  height: 1rem;
+  object-fit: contain;
+}
+
+.links-item .dock-kit-meta {
+  flex-wrap: nowrap;
+}
+
+.links-item .dock-kit-card-actions {
+  flex-wrap: nowrap;
+}
+
+/* Starred links read as starred, not as a generic pressed button. */
+.dock-kit-icon-button.links-star[aria-pressed="true"],
+.dock-kit-icon-button.links-star[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dock-warning) 45%, transparent);
+  background: var(--dock-warning-soft);
+  color: var(--dock-warning);
+}
+
+.dock-kit-icon-button.links-star[aria-pressed="true"] svg {
+  fill: currentColor;
+}
+
+.links-load-more {
+  width: 100%;
+}
+
+/* Quick Links popover: same notice, empty state and buttons as the docks. */
+.quick-links-popover .quick-links-empty {
+  min-height: 0;
+  padding: 1rem;
+}
+
+.quick-links-popover > .dock-kit-button {
+  width: 100%;
+}
+
+/* The Modern theme recolors plain text and buttons inside the dock root; keep
+   the kit colors for the few dock-specific elements. */
+.space-shell[data-ui-theme] .links-panel :is(span.links-field-label, small.links-field-hint) {
+  color: var(--dock-muted);
+}
+
+.space-shell[data-ui-theme] .links-panel button.links-item-open {
+  background: transparent;
+  color: var(--dock-text);
+}
+
+/* A shared Workspace rule sets .links-panel to height: auto; the kit list
+   needs the page height to scroll instead of collapsing. */
+.workspace-detail-content section.links-panel.side-surface-panel {
+  height: 100%;
+  overflow: hidden;
+}
