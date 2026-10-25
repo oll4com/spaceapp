@@ -16,7 +16,8 @@ import { assertRemovableWorktreePath, parseForceFlag } from "./worktree-removal-
  * spawns several git processes, so one result per path is shared for this
  * long. Mutations through these routes clear the cache immediately.
  */
-export const WORKTREE_ITEM_CACHE_TTL_MS = 20_000;
+// Badges poll every 7.5 s; each load runs 3 git (stable 2026-10-24: ~3,100 git an hour at 20 s). Remove reads `fresh=1`.
+export const WORKTREE_ITEM_CACHE_TTL_MS = 60_000;
 const worktreeItemCacheMaxEntries = 256;
 
 export interface WorktreeRoutesOptions {
@@ -120,9 +121,9 @@ export function registerWorktreeRoutes(app: FastifyInstance, options: WorktreeRo
     "/api/worktrees/item",
     rateLimitOptions,
     handler(async (request) => {
-      const query = z.object({ path: z.string().min(1) }).parse(request.query);
+      const query = z.object({ path: z.string().min(1), fresh: z.literal("1").optional() }).parse(request.query);
       const worktree = itemCacheTtlMs > 0
-        ? await itemCache.get(query.path, () => loadWorktreeItem(query.path))
+        ? await itemCache.get(query.path, () => loadWorktreeItem(query.path), { force: query.fresh === "1" })
         : await loadWorktreeItem(query.path);
       return { data: worktree };
     })

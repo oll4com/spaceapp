@@ -237,7 +237,6 @@
 .mc-composer-row > label { flex: none; width: 48px; color: var(--jc-muted); font-size: 13px; }
 /* Field rows read as one sheet: the theme's boxed inputs give way to bare text on the row. */
 .mc-pane .mc-client .mc-composer-row :is(input, select) { flex: 1 1 auto; min-width: 0; height: 44px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--jc-text); font: inherit; font-size: 14px; outline: none; }
-.mc-composer-row select option { color: initial; }
 .mc-pane .mc-client .mc-cc-toggle { flex: none; min-height: 0; height: 30px; padding: 0 10px; border: 0; border-radius: 15px; background: transparent; color: var(--jc-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
 .mc-pane .mc-client .mc-cc-toggle:hover { background: var(--mc-row-hover); color: var(--jc-text); }
 .mc-pane .mc-client .mc-composer-body { flex: 1 1 auto; border-radius: 0; box-shadow: none; min-height: 240px; padding: 14px; border: 0; background: transparent; color: var(--jc-text); font: inherit; font-size: 14px; line-height: 1.55; resize: none; outline: none; caret-color: var(--jc-accent); }

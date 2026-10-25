@@ -119,6 +119,20 @@ describe("useAppNotices", () => {
     expect(result.current.watchdogAlerts).toEqual([{ id: "c", message: "Pane stuck", timestamp: "t5" }]);
   });
 
+  it("leaves no notice timer behind when the app unmounts (1.1.7 public CI: the toast's timer fired after the test window was torn down)", () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const { result, unmount } = renderHook(() => useAppNotices());
+    act(() => {
+      result.current.showLiveDebug("Live failed", "error");
+      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, { detail: { message: "Copied" } }));
+      result.current.setAccountNotice("Linked");
+    });
+    expect(vi.getTimerCount()).toBe(3);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("shows clipboard notices for five seconds and the Live debug toast for 4.5 seconds", () => {
     vi.useFakeTimers();
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);

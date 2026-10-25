@@ -19,6 +19,7 @@ import type { GoogleBrowserStatusSummary } from "./google-browser-session-check.
 import { sendApiError } from "./http-errors.js";
 import { createDesktopAuthHandoffStore, decodeDesktopAuthHandoffCookie, desktopAuthHandoffRedirect, encodeDesktopAuthHandoffCookie, parseDesktopAuthHandoffBinding } from "./desktop-auth-handoffs.js";
 import { recordAudit } from "./request-audit.js";
+import { APP_SIGNIN_COOKIE, decodeAppSignInCookie, encodeAppSignInCookie, parseAppSignInBinding, type AppSignIn } from "./app-signin.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 
 /**
@@ -36,6 +37,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
   connectorStateTools: ConnectorOAuthStateTools;
   connectorServiceRef: { current: ConnectorService | null };
   persistRevocation: (pending: Promise<void>) => Promise<void>;
+  /** Space's own mobile apps (app-signin.ts): absent, an app start link is refused. */
+  appSignIn?: AppSignIn;
 }) {
   const { config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef,
@@ -145,6 +148,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       ...(currentToken ? [defaultSessionRevocationStore.revokeToken(currentToken)] : []),
       ...(body.revokeAll && request.user ? [defaultSessionRevocationStore.revokeUser(request.user.id)] : [])
     );
+    await options.appSignIn?.loggedOut(currentToken);
     if (request.user) {
       await recordAudit(store, request, {
         action: "auth.logout",
@@ -333,6 +337,11 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     if (query?.desktopHandoff !== undefined && !desktopBinding) {
       return sendApiError(reply, 400, "DESKTOP_HANDOFF_UNBOUND", "This desktop sign-in link is not bound to a SpaceApp desktop app. Update the desktop app and start the sign-in from it again.");
     }
+    // A mobile app names itself, its S256 challenge and its state; its redirect URI comes from the contracts map, never the link.
+    const appBinding = query?.app === undefined ? null : parseAppSignInBinding({ app: query.app, challenge: query.challenge, state: query.state });
+    if (query?.app !== undefined && (!appBinding || !options.appSignIn)) {
+      return sendApiError(reply, 400, "APP_HANDOFF_UNBOUND", "This app sign-in link names an unknown app or lacks its S256 challenge and state. Start the sign-in from the app again.");
+    }
     const pkce = generatePkcePair();
     const rawState = Buffer.from(JSON.stringify({
       nonce: randomBytes(16).toString("hex"), expiresAt: Date.now() + 600_000,
@@ -381,6 +390,11 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       });
     } else {
       reply.clearCookie("space_oauth_desktop_handoff", { path: "/" });
+    }
+    if (appBinding) {
+      reply.setCookie(APP_SIGNIN_COOKIE, encodeAppSignInCookie(appBinding), { httpOnly: true, secure: auth.secureCookies, sameSite: "lax", path: "/", maxAge: 600 });
+    } else {
+      reply.clearCookie(APP_SIGNIN_COOKIE, { path: "/" });
     }
 
     if (query?.mobile === "true" || query?.handoff === "true") {
@@ -433,7 +447,8 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const pkceCookie = request.cookies["space_oauth_pkce"];
     const linkCookie = request.cookies["space_oauth_link_user"];
     const desktopHandoff = decodeDesktopAuthHandoffCookie(request.cookies["space_oauth_desktop_handoff"]);
-    for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile"]) reply.clearCookie(name, { path: "/" });
+    const appHandoff = decodeAppSignInCookie(request.cookies[APP_SIGNIN_COOKIE]);
+    for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile", APP_SIGNIN_COOKIE]) reply.clearCookie(name, { path: "/" });
     const verifiedState = verifyOAuthState(state, auth.sessionSecret);
     let transaction: { userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number } | null = null;
     try {
@@ -527,6 +542,12 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
           codeChallenge: desktopHandoff.codeChallenge
         });
         return reply.redirect(desktopAuthHandoffRedirect(desktopHandoff, handoffCode));
+      }
+
+      if (appHandoff && options.appSignIn) {
+        // Owner only while multi-user is off (Nous decision 2026-10-23).
+        if (!config.multiUserEnabled && user.role !== "ADMIN") return fail("App sign-in is only for the operator's own account.");
+        return reply.redirect(await options.appSignIn.issue(appHandoff, user, request));
       }
 
       if (request.cookies["space_oauth_mobile"] === "true") {

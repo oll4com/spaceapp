@@ -187,8 +187,8 @@ export function registerMarketingCopilotRoutes(app: FastifyInstance, service: Ma
   });
   app.post("/api/panes/:id/marketing-copilot/bookmarks/:bookmarkId/open", routeOptions, async (request) => {
     const params = parseQuery(z.object({ id: paneParamsSchema.shape.id, bookmarkId: marketingBookmarkIdSchema }).strict(), request.params);
-    // The Freelance Copilot shows the same bookmarks; its tabs always open in the pane's own account (openTab refuses others).
-    const pane = await paneOf(request, ["MARKETING_COPILOT", "FREELANCE_COPILOT"]);
+    // One bookmark list for every browser pane with a Google account (operator request 2026-10-21).
+    const pane = await paneOf(request, ["BROWSER", "JOB_APPLY", "MARKETING_COPILOT", "FREELANCE_COPILOT"]);
     const opened = await service.openBookmark(await deps.authenticatedOwner(request), pane, params.bookmarkId, request.requestIdForSpace, operatorBrowserActor(request));
     await deps.audit(request, "marketing_copilot.bookmark.open", params.bookmarkId, { paneId: pane.id, profileId: opened.bookmark.profileId });
     return opened;

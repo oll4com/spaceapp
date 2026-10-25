@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import type { BrowserControlLease, Pane } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { FastifyRequest } from "fastify";
@@ -11,13 +13,15 @@ import { fenceCompletedHandoff } from "./vault/fence-hooks.js";
  * when he presses nothing), whether he took control himself or through a handoff; the API's sweeper and the lease
  * heartbeat both release it. Same value as the web client's BROWSER_CONTROL_IDLE_RELEASE_MS.
  */
-export const BROWSER_CONTROL_IDLE_RELEASE_MS = 2 * 60_000;
+export const BROWSER_CONTROL_IDLE_RELEASE_MS = 60_000;
 /** A CLI agent of the room may take the browser back (space_browser_reclaim_control) after this much operator inactivity. */
-export const BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS = 2 * 60_000;
+export const BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS = 60_000;
 /** How often the API checks the operator leases it watches. */
 export const BROWSER_CONTROL_IDLE_SWEEP_MS = 15_000;
-/** A pane browser's corner label names the CLI pane that last drove it this recently (or while its CDP connection stays open). */
+/** A pane browser's corner label names the CLI pane driving it this recently (or while its CDP connection stays open); later it says "Last". */
 export const BROWSER_AGENT_LABEL_MS = 10 * 60_000;
+/** The saved drivers file is rewritten at most this often unless a browser gets a new driver (the label shows minutes). */
+const BROWSER_AGENT_SAVE_MS = 60_000;
 
 /** A bare hover (pointer moved with no button) is not an interaction: it must not keep an operator lease. */
 export function countsAsOperatorInput(input: { type?: unknown; eventType?: unknown; button?: unknown }): boolean {
@@ -26,25 +30,46 @@ export function countsAsOperatorInput(input: { type?: unknown; eventType?: unkno
 
 export type BrowserControlActivity = ReturnType<typeof createBrowserControlActivity>;
 
-/** Last operator input per control lease, kept in the API process (input arrives here: the stream socket and HTTP input). */
-export function createBrowserControlActivity(now: () => number = () => Date.now()) {
+/**
+ * Last operator input per control lease, kept in the API process (input arrives here: the stream socket and HTTP input).
+ * The CLI pane that last drove each pane browser is also saved to `agentsFile` (operator request 2026-10-22: the label survives
+ * API restarts); null keeps it in memory (tests).
+ */
+export function createBrowserControlActivity(now: () => number = () => Date.now(), agentsFile: string | null = null) {
   // After an API restart the map is empty: every lease gets a fresh window instead of being released at once.
   const startedAt = now();
   const lastInput = new Map<string, number>();
   // Operator leases the idle sweeper checks (leaseId -> paneId); acquire and heartbeat add them.
   const watchedLeases = new Map<string, string>();
-  // shortcut: the CLI pane that last drove each pane browser lives in memory, so an API restart hides the label until its next call.
   const agents = new Map<string, { paneId: string; at: number }>();
+  if (agentsFile) {
+    try {
+      for (const [browser, noted] of Object.entries(JSON.parse(readFileSync(agentsFile, "utf8")) as Record<string, { paneId: string; at: number }>)) {
+        if (typeof noted?.paneId === "string" && Number.isFinite(noted.at)) agents.set(browser, noted);
+      }
+    } catch { /* no saved drivers yet */ }
+  }
+  let savedAt = 0;
+  let saving = Promise.resolve();
+  // shortcut: a driver noted in the last minute before the API stops is lost when the browser had the same driver; fine for a label.
+  const save = () => {
+    savedAt = now();
+    const text = `${JSON.stringify(Object.fromEntries(agents))}\n`;
+    saving = saving.then(() => writeFile(`${agentsFile}.${process.pid}.tmp`, text, { mode: 0o640 }))
+      .then(() => rename(`${agentsFile}.${process.pid}.tmp`, agentsFile!)).catch(() => undefined);
+  };
   return {
     noteAgent(browserPaneId: string, agentPaneId: string): void {
+      const changed = agents.get(browserPaneId)?.paneId !== agentPaneId;
       agents.delete(browserPaneId);
       agents.set(browserPaneId, { paneId: agentPaneId, at: now() });
       if (agents.size > 1000) agents.delete(agents.keys().next().value!);
+      if (agentsFile && (changed || now() - savedAt >= BROWSER_AGENT_SAVE_MS)) save();
     },
-    /** The CLI pane driving a pane browser: the last one within BROWSER_AGENT_LABEL_MS, or any time while it stays attached. */
-    agentFor(browserPaneId: string, attached = false): string | null {
+    /** The CLI pane that last drove a pane browser; active within BROWSER_AGENT_LABEL_MS, or any time while it stays attached. */
+    agentFor(browserPaneId: string, attached = false): { paneId: string; at: number; active: boolean } | null {
       const noted = agents.get(browserPaneId);
-      return noted && (attached || now() - noted.at <= BROWSER_AGENT_LABEL_MS) ? noted.paneId : null;
+      return noted ? { ...noted, active: attached || now() - noted.at <= BROWSER_AGENT_LABEL_MS } : null;
     },
     noteInput(leaseId: string): void {
       lastInput.delete(leaseId);
@@ -68,6 +93,17 @@ export function createBrowserControlActivity(now: () => number = () => Date.now(
       watchedLeases.delete(leaseId);
     }
   };
+}
+
+/** The frame label's and the census's driver of a pane browser, with its pane and room names; null once that pane is closed or gone. */
+export async function browserAgentOf(store: Pick<SpaceStore, "getPane" | "getRoom">, activity: Pick<BrowserControlActivity, "agentFor">,
+  browserPaneId: string, attached: boolean) {
+  const noted = activity.agentFor(browserPaneId, attached);
+  let pane: Pane | null = null;
+  try { pane = noted ? await store.getPane(noted.paneId) : null; } catch { /* the agent's pane is gone */ }
+  if (!noted || !pane || pane.isClosed) return null;
+  return { paneId: pane.id, title: pane.title, paneName: pane.paneName ?? null, roomId: pane.roomId, roomName: (await store.getRoom(pane.roomId)).name,
+    drivenAt: new Date(noted.at).toISOString(), active: noted.active };
 }
 
 type LeaseStore = Pick<SpaceStore, "getActiveBrowserHandoffRequest" | "getBrowserControlLease" | "updateBrowserControlLease" | "updateBrowserHandoffRequest">;

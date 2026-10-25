@@ -200,7 +200,7 @@ export class InMemoryFreelanceCopilotRepository implements FreelanceCopilotRepos
   async takeNextWorkItem(owner: string, paneId: string, staleMs: number) {
     const at = this.now();
     const stale = new Date(Date.parse(at) - staleMs).toISOString();
-    const index = this.events.findIndex((row) => row.ownerUserId === owner && WORK_ITEM_TYPES.includes(row.type) && (row.status === "PENDING" || (row.status === "TAKEN" && String(row.payload.takenAt ?? "") < stale)));
+    const index = this.events.findIndex((row) => row.ownerUserId === owner && WORK_ITEM_TYPES.includes(row.type) && (row.type !== "BRIEF" || !row.paneId || row.paneId === paneId) && (row.status === "PENDING" || (row.status === "TAKEN" && String(row.payload.takenAt ?? "") < stale)));
     if (index < 0) return null;
     const taken = { ...this.events[index]!, status: "TAKEN" as const, payload: { ...this.events[index]!.payload, takenAt: at, takenByPaneId: paneId } };
     this.events[index] = taken;
@@ -439,7 +439,7 @@ export class PostgresFreelanceCopilotRepository implements FreelanceCopilotRepos
   async takeNextWorkItem(owner: string, paneId: string, staleMs: number) {
     const row = (await this.pool.query<Record<string, unknown>>(`UPDATE freelance_copilot_events SET status='TAKEN',
         payload = payload || jsonb_build_object('takenAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), 'takenByPaneId', $2::text)
-      WHERE id = (SELECT id FROM freelance_copilot_events WHERE owner_user_id=$1 AND type IN ('BRIEF','MAIL')
+      WHERE id = (SELECT id FROM freelance_copilot_events WHERE owner_user_id=$1 AND type IN ('BRIEF','MAIL') AND (type<>'BRIEF' OR pane_id IS NULL OR pane_id=$2::text)
         AND (status='PENDING' OR (status='TAKEN' AND (payload->>'takenAt')::timestamptz < now() - ($3::int * interval '1 millisecond')))
         ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING ${select(eventTable)}`, [owner, paneId, staleMs])).rows[0];
     return row ? eventTable.row(row) : null;

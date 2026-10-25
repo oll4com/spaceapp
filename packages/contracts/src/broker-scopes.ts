@@ -65,6 +65,7 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "release-train": ["POST /api/release-trains"],
   "room-agent-events": ["GET /api/rooms/:room/room-agent/events"],
   "nous-pane-board": ["GET /api/nous/pane-board"],
+  "nous-turn-costs": ["GET /api/nous/turn-costs"],
   "vault-broker-reinstall": ["POST /api/nous/decisions/vault-broker-reinstall"],
   "proof-room-create": ["POST /api/proof-rooms"],
   "proof-room-agent": ["GET /api/rooms", "GET /api/rooms/:room/room-agent"],
@@ -114,20 +115,21 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "vault-broker-audit": ["GET /api/space-vault/broker-audit"],
   "notifications-list": ["GET /api/notifications"],
   "browser-handoff": ["GET /api/panes/:pane/browser/handoff"],
-  "browser-census": ["GET /api/admin/browser-census"]
+  "browser-census": ["GET /api/admin/browser-census"],
+  "video-tools-status": ["GET /api/video/tools"]
 };
 
 /**
  * Operator-only routes a UI_PROOF session never reaches (prefix match, any method unless one is named): the Vault,
  * user accounts, configuration bundles with credentials, releases (promote, hotfix approval), release trains, gateway
- * keys and settings, Google sign-in configuration, and signing out every session.
+ * keys and settings, Google sign-in configuration, signing out every session, and First Setup's Live provider keys.
  */
 export const uiProofDeniedRoutes: readonly string[] = [
   // The app reads the user list on start (an ADMIN's Settings), so only user changes are refused.
   "* /api/space-vault", "POST /api/admin/users", "PATCH /api/admin/users", "DELETE /api/admin/users",
   "* /api/configuration/export", "POST /api/configuration/import", "POST /api/admin/releases", "* /api/release-trains",
   "POST /api/admin/gateway/keys", "PATCH /api/admin/gateway/keys", "DELETE /api/admin/gateway/keys", "PATCH /api/admin/gateway/settings",
-  "PUT /api/admin/gateway", "POST /api/auth/google/configure", "POST /api/auth/logout-all"
+  "PUT /api/admin/gateway", "POST /api/auth/google/configure", "POST /api/auth/logout-all", "POST /api/setup/voice/credentials"
 ];
 
 const alwaysAllowed = new Set(["GET /api/auth/csrf"]);

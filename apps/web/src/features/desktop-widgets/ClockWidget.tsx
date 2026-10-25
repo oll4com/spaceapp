@@ -1,3 +1,4 @@
+import { formatWorkspaceClock } from "@space/contracts";
 import { useEffect, useState } from "react";
 import { Clock3 } from "../ui-theme/app-icons.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
@@ -46,21 +47,7 @@ export function ClockWidget({
     });
   };
 
-  const hoursRaw = time.getHours();
-  const minutesRaw = time.getMinutes();
-  const secondsRaw = time.getSeconds();
-
-  let displayHours = hoursRaw;
-  let ampm = "";
-
-  if (!config.is24Hour) {
-    ampm = hoursRaw >= 12 ? "PM" : "AM";
-    displayHours = hoursRaw % 12 || 12;
-  }
-
-  const hoursStr = String(displayHours).padStart(2, "0");
-  const minutesStr = String(minutesRaw).padStart(2, "0");
-  const secondsStr = String(secondsRaw).padStart(2, "0");
+  const { hours: hoursStr, minutes: minutesStr, seconds: secondsStr, ampm } = formatWorkspaceClock(time, config.is24Hour);
 
   const weekdayStr = time.toLocaleDateString(undefined, { weekday: "short" });
   const dateStr = `${weekdayStr}, ${formatAppDate(time)}`;

@@ -160,7 +160,7 @@ describe("MinimizedPaneBar", () => {
     expect(bar?.classList.contains("is-preview-mode")).toBe(false);
     expect(screen.queryByText("All panes minimized")).toBeNull();
     expect(restoreRefs.current.size).toBe(2);
-    fireEvent.click(screen.getByRole("button", { name: "Restore pane Iris · Plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore pane Iris · Plan · Chat" }));
     expect(restorePane).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
     fireEvent.click(screen.getByRole("button", { name: "Minimize all visible panes" }));
     expect(minimizeAllPanes).toHaveBeenCalledTimes(1);

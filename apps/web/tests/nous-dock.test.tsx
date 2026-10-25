@@ -1,21 +1,22 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NousAttachment, NousDecision, NousMessage, NousState } from "@space/contracts";
-import { nousPaneBoardSettingsSchema } from "@space/contracts";
+import { nousLowSpendSettingsSchema, nousModelsSettingsSchema, nousPaneBoardSettingsSchema, nousStandingOrdersSettingsSchema } from "@space/contracts";
 import { formatUserTime } from "../src/features/date-time-settings/date-time-settings.js";
 import { NousDock } from "../src/features/nous/NousDock.js";
 import { NousSettingsCard } from "../src/features/nous/NousSettingsCard.js";
-import { OPEN_VIBE_MUSIC_EVENT } from "../src/features/room-toolbar/useToolbarPopovers.js";
 import { NOUS_FOCUS_EVENT, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
 const at = "2026-10-17T08:00:00.000Z";
 const paneBoard = nousPaneBoardSettingsSchema.parse({});
+const standingOrders = nousStandingOrdersSettingsSchema.parse({});
+const models = nousModelsSettingsSchema.parse({});
 const state = (patch: Partial<NousState> = {}): NousState => ({
-  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [], paneBoard }, model: "claude-opus-5-5", effort: "xhigh", running: null,
+  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false }, model: "claude-fable-5-1", effort: "max", running: null,
   turnsThisHour: 2, lastError: null, openDecisions: 1, inbox: 0, ...patch
 });
 const away = { id: "nous_away:a1", startedAt: "2026-10-17T16:29:00.000Z", until: null, reason: "Going to sleep", mandate: "Keep the plans moving", grant: [] as Array<"PROMOTE" | "TEST_PANES"> };
@@ -46,10 +47,12 @@ const attachment = (id: string, kind: NousAttachment["kind"], filename: string, 
 });
 
 function serve(overrides: {
-  state?: NousState; messages?: NousMessage[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
-  upload?: (file: File) => Response; live?: unknown; panes?: unknown; board?: unknown; plans?: unknown[]; quotas?: Record<string, unknown>;
+  state?: NousState; messages?: NousMessage[]; waiting?: string[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
+  upload?: (file: File) => Response; live?: unknown; panes?: unknown; board?: unknown; plans?: unknown[]; decisionFiles?: unknown[]; persistSettings?: boolean;
+  needs?: () => unknown[];
 } = {}) {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  let savedSettings = structuredClone((overrides.state ?? state()).settings);
   let uploads = 0;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -66,7 +69,7 @@ function serve(overrides: {
     }
     if (url.startsWith("/api/nous/attachments/") && method === "DELETE") return Response.json({ removed: true });
     if (url === "/api/nous/messages" && method === "GET") return Response.json({
-      messages: overrides.messages ?? [message("OPERATOR", "Τι τρέχει;", "a1b2c3d4"), message("ANSWER", "Όλα κινούνται.", "a1b2c3d5")], attachments: overrides.files ?? {}
+      messages: overrides.messages ?? [message("OPERATOR", "Τι τρέχει;", "a1b2c3d4"), message("ANSWER", "Όλα κινούνται.", "a1b2c3d5")], waiting: overrides.waiting ?? [], attachments: overrides.files ?? {}
     });
     if (url === "/api/nous/messages" && method === "POST") return Response.json({ message: message("OPERATOR", body.content, "a1b2c3d6") }, { status: 202 });
     if (url === "/api/nous/decisions") return Response.json({ decisions: overrides.decisions ?? [decision] });
@@ -80,15 +83,16 @@ function serve(overrides: {
     });
     if (url === "/api/nous/overview") return Response.json({ overview: { plans: overrides.plans ?? [{ id: "clipboard:plan01", title: "Nous", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: "3. Dock (PENDING)" }], needsHands: [], trains: "No release trains.", planMap: "Nous blocks the release plan.",
       ...(overrides.live ? { live: overrides.live } : {}), ...(overrides.panes ? { panes: overrides.panes } : {}) } });
-    if (overrides.quotas?.[url]) return Response.json(overrides.quotas[url]);
-    if (url === "/api/codex/environment") return Response.json({ error: { code: "NOT_FOUND", message: "No environment in this test." } }, { status: 404 });
-    if (url === "/api/system-health") return Response.json({ sampledAt: at, metrics: [
-      { id: "cpu", label: "CPU", group: "cpu", unit: "PERCENT", value: 37, detail: "", sampledAt: at },
-      { id: "memory", label: "Memory", group: "memory", unit: "PERCENT", value: 61, detail: "", sampledAt: at }
-    ], services: [], requests: { windowSeconds: 300, requestCount: 0, errorCount: 0, errorRatePercent: null, p95Ms: null, sampledAt: at }, uptimeSeconds: 1, coreCount: 20 });
+    if (url.startsWith("/api/nous/decisions/") && url.endsWith("/files")) return Response.json({ files: overrides.decisionFiles ?? [] });
     if (url.endsWith("/feedback")) return Response.json({ decision: { ...decision, status: "APPROVED", answeredAt: at, couldHaveDecided: body.couldHaveDecided } });
     if (url.endsWith("/answer")) return Response.json({ decision: { ...decision, status: "APPROVED", outcome: "Approved the run-spaceapp release train at its candidate commit." } });
-    if (url === "/api/nous/settings") return Response.json({ settings: { enabled: body.enabled, maxTurnsPerHour: 20 } });
+    if (url === "/api/nous/settings") {
+      savedSettings = { ...savedSettings, ...body };
+      return Response.json({ settings: overrides.persistSettings ? savedSettings : { enabled: body.enabled, maxTurnsPerHour: 20 } });
+    }
+    if (url.startsWith("/api/notifications?status=NEEDS_YOU")) return Response.json({ notifications: overrides.needs?.() ?? [] });
+    if (url === "/api/notifications/pending") return Response.json({ total: 0, bySource: {}, byRoom: {}, byPane: {}, latest: [] });
+    if (url.startsWith("/api/notifications?")) return Response.json({ notifications: [] });
     if (url === "/api/nous/away") return Response.json({ away: body.away ? { ...away, grant: body.grant ?? [] } : null });
     return Response.json({});
   }));
@@ -104,15 +108,81 @@ describe("Nous dock", () => {
     expect(screen.getByText("Nous is available to administrators and operators")).toBeTruthy();
   });
 
+  it("shows the answer as Nous writes it and reads it every 1.5 s while the draft lasts (operator request 2026-10-24)", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls = serve({ state: state({ status: "THINKING", running: { turnId: "nous_turn:draft0001", startedAt: at, reason: "OPERATOR", draft: "Μισή απάντηση" } }) });
+      render(<NousDock canRun />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText("Μισή απάντηση")).toBeTruthy();
+      expect(screen.getByText("Nous is writing…")).toBeTruthy();
+      const reads = () => calls.filter((call) => call.url === "/api/nous").length;
+      const before = reads();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_600); });
+      expect(reads()).toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the mind of SpaceApp with its fixed model and talks to it", async () => {
     const calls = serve();
     render(<NousDock canRun />);
     expect(await screen.findByText("Όλα κινούνται.")).toBeTruthy();
-    expect(screen.getByText("Claude Opus 5.5 · xhigh")).toBeTruthy();
+    expect(screen.getByText("Claude Fable 5.1 · max")).toBeTruthy();
     expect(screen.getByRole("img", { name: "Nous, the mind of SpaceApp" })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Message Nous"), { target: { value: "Φέρε όλα τα πλάνα στο 100%" } });
     fireEvent.keyDown(screen.getByLabelText("Message Nous"), { key: "Enter" });
     await waitFor(() => expect(calls.some((call) => call.url === "/api/nous/messages" && call.method === "POST" && (call.body as { content: string }).content === "Φέρε όλα τα πλάνα στο 100%")).toBe(true));
+  });
+
+  it("keeps only the dialogue open: steps and helpers fold, an answer quotes what it answers, a waiting message says it is queued", async () => {
+    const tool = (content: string, id: string, meta: Record<string, unknown>) => ({ ...message("TOOL", content, id), meta });
+    const asked = message("OPERATOR", "Έλεγξε τα panes", "a1b2c3d4");
+    const later = { ...message("OPERATOR", "Και το release;", "a1b2c3d7"), createdAt: "2026-10-17T08:05:00.000Z" };
+    serve({ messages: [asked, tool("Starting 2 helper(s)", "t0000001", { name: "space_subagents" }),
+      tool("Andy: Read Andy's screen", "t0000002", { subagentId: "nous_helper:a" }), { ...tool("Bob: Could not find Cody", "t0000003", { subagentId: "nous_helper:b" }), status: "FAILED" as const },
+      { ...tool("Held back: sends to third parties", "t0000004", { name: "space_send_to_pane" }), status: "REFUSED" as const },
+      { ...message("ANSWER", "Όλα κινούνται.", "a1b2c3d5"), meta: { reason: "OPERATOR", startedAt: at, replyTo: [asked.id] } }, later],
+    waiting: [later.id], state: state({ status: "THINKING", running: { turnId: "nous_turn:inbox", startedAt: at, reason: "INBOX" } }) });
+    const scrolled: Element[] = [];
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value(this: Element) { scrolled.push(this); } });
+    try {
+      render(<NousDock canRun />);
+      const steps = (await screen.findByText("4 steps")).closest("details")!;
+      expect(steps.open).toBe(false);
+      expect(within(steps.querySelector("summary")!).getByText("2 helpers")).toBeTruthy();
+      expect(within(steps.querySelector("summary")!).getByText("1 step failed")).toBeTruthy();
+      // A gate that held a step for the operator is not a failure (stable 2026-10-22).
+      expect(within(steps.querySelector("summary")!).getByText("1 step held back")).toBeTruthy();
+      expect(within(steps).getByText("Andy: Read Andy's screen").className).toContain("is-helper");
+      const askedRow = screen.getByText("Έλεγξε τα panes", { selector: "p" }).closest(".nous-message")!;
+      const laterRow = screen.getByText("Και το release;").closest(".nous-message")!;
+      expect(within(laterRow as HTMLElement).getByText("Queued: Nous answers it next")).toBeTruthy();
+      expect(askedRow.querySelector(".nous-queue")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Έλεγξε τα panes" }));
+      expect(scrolled.at(-1)).toBe(askedRow);
+
+      // Up walks back from the newest of the operator's messages; back at the end it starts over.
+      const up = screen.getByRole("button", { name: "Go to my last message (press again for the one before)" });
+      fireEvent.click(up);
+      expect(scrolled.at(-1)).toBe(laterRow);
+      fireEvent.click(up);
+      fireEvent.click(up);
+      expect(scrolled.at(-1)).toBe(askedRow);
+      expect(askedRow.hasAttribute("data-jumped")).toBe(true);
+      const list = document.querySelector<HTMLElement>(".nous-messages")!;
+      Object.defineProperty(list, "scrollTop", { configurable: true, writable: true, value: 400 });
+      fireEvent.scroll(list);
+      expect(askedRow.hasAttribute("data-jumped")).toBe(false);
+      fireEvent.click(up);
+      expect(scrolled.at(-1)).toBe(laterRow);
+      list.scrollTop = 0;
+      fireEvent.click(screen.getByRole("button", { name: "Go to the latest message" }));
+      expect(list.scrollTop).toBe(list.scrollHeight);
+    } finally {
+      delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
 
   it("asks its open decisions in the conversation too", async () => {
@@ -132,7 +202,50 @@ describe("Nous dock", () => {
     render(<NousDock canRun />);
     fireEvent.click(within(await screen.findByRole("article", { name: named.title })).getByRole("button", { name: "Take me there" }));
     window.removeEventListener("space:nous-focus", onFocus);
-    expect(seen).toEqual([{ roomId: "room:work000001", paneId: "pane:emma0000001", ownerUserId: null, immediate: true }]);
+    expect(seen).toEqual([{ roomId: "room:work000001", paneId: "pane:emma0000001", immediate: true }]);
+  });
+
+  it("lists the needs-you requests the operator did not go to; Go now takes them there, Dismiss and the server's resolve remove one (operator request 2026-10-24)", async () => {
+    const request = { id: "notification:needs000001", ownerUserId: "user:operator", roomId: "room:work000001", paneId: "pane:emma0000001", source: "AGENT", kind: "NEEDS_YOU",
+      severity: "ATTENTION", title: "Emma needs you", body: "Pick the colour", link: { roomId: "room:work000001", paneId: "pane:emma0000001" }, dedupeKey: "agent:needs-you:pane:emma0000001",
+      status: "READ", payload: {}, createdAt: at, updatedAt: at, readAt: at, resolvedAt: null };
+    let waiting: unknown[] = [request];
+    const calls = serve({ needs: () => waiting });
+    const seen: NousFocusDetail[] = [];
+    const onFocus = (event: Event) => seen.push((event as CustomEvent<NousFocusDetail>).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    try {
+      render(<NousDock canRun />);
+      const views = await screen.findByRole("group", { name: "Nous views" });
+      await waitFor(() => expect(within(views).getByRole("button", { name: /^Needs you\s*1$/ })).toBeTruthy());
+      fireEvent.click(within(views).getByRole("button", { name: /^Needs you\s*1$/ }));
+      const card = await screen.findByRole("article", { name: "Emma needs you" });
+      expect(within(card).getByText("Pick the colour")).toBeTruthy();
+      expect(within(card).getByText("Agent")).toBeTruthy();
+      fireEvent.click(within(card).getByRole("button", { name: "Go now" }));
+      expect(seen).toEqual([expect.objectContaining({ roomId: "room:work000001", paneId: "pane:emma0000001", immediate: true })]);
+      waiting = [];
+      fireEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+      await waitFor(() => expect(calls.some((call) => call.url === "/api/notifications/notification%3Aneeds000001/ack" && call.method === "POST")).toBe(true));
+      // The store's refresh after the acknowledgement re-reads the list: the request is gone.
+      expect(await screen.findByText("Nothing waits for you")).toBeTruthy();
+    } finally {
+      window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    }
+  });
+
+  it("shows only the unanswered decisions first and all of them on request (operator request 2026-10-21)", async () => {
+    const answered: NousDecision = { ...decision, id: "nous_decision:done00000002", title: "Rename the proof room?", status: "APPROVED", answeredAt: at, outcome: "Renamed." };
+    serve({ decisions: [answered, decision] });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Decisions/ }));
+    const filter = screen.getByRole("group", { name: "Show decisions" });
+    expect(within(filter).getByRole("button", { name: /^Unanswered\s*1$/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("article", { name: decision.title })).toBeTruthy();
+    expect(screen.queryByRole("article", { name: answered.title })).toBeNull();
+    fireEvent.click(within(filter).getByRole("button", { name: /^All\s*2$/ }));
+    expect(screen.getByRole("article", { name: answered.title })).toBeTruthy();
+    expect(screen.getByRole("article", { name: decision.title })).toBeTruthy();
   });
 
   it("brings a critical decision with its recommendation and the action Space runs on approval", async () => {
@@ -147,6 +260,16 @@ describe("Nous dock", () => {
     await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ answer: "APPROVE" }));
   });
 
+  it("approves with the note typed on the card, so a written yes runs the action (stable 2026-10-22)", async () => {
+    const calls = serve();
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: /Decisions/ }));
+    const card = screen.getByRole("article", { name: decision.title });
+    fireEvent.change(within(card).getByRole("textbox", { name: "Your answer" }), { target: { value: "  yes, send nothing else  " } });
+    fireEvent.click(within(card).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ answer: "APPROVE", text: "yes, send nothing else" }));
+  });
+
   it("always approves a kind of decision with one click, never a release, and Settings asks again (operator request 2026-10-18)", async () => {
     const media: NousDecision = { ...decision, id: "nous_decision:media0000001", category: "EXTERNAL", title: "Put Dana's image in the Media dock?",
       action: { type: "SPACE_CONTROL", roomId: "room:cleo0001", actions: [{ kind: "resource", operation: "media.publish", id: "artifact:abc123" }] } };
@@ -159,19 +282,19 @@ describe("Nous dock", () => {
     cleanup();
 
     const rule = { key: "SPACE_CONTROL:resource media.publish", label: "run in Space Control: resource media.publish", at };
-    const served = { state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [rule], paneBoard } }) };
+    const served = { state: state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [rule], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false } }) };
     const settingsCalls = serve(served);
     render(<NousSettingsCard />);
     const askAgain = await screen.findByRole("button", { name: `Ask me again: ${rule.label}` });
     // A kind approved in the dock after the card loaded is not removed with the one asked again (Record Retention Invariant).
     const newer = { key: "SPACE_CONTROL:resource media.unpublish", label: "run in Space Control: resource media.unpublish", at };
-    served.state = state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [rule, newer], paneBoard } });
+    served.state = state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [rule, newer], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false } });
     fireEvent.click(askAgain);
     await waitFor(() => expect(settingsCalls.find((call) => call.url === "/api/nous/settings")?.body).toEqual({ alwaysApprove: [newer] }));
   });
 
   it("turns working on the operator's behalf on with its power switch and shows the plans", async () => {
-    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [], paneBoard } }) });
+    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false } }) });
     render(<NousDock canRun />);
     const power = await screen.findByRole("switch", { name: "Nous works on my behalf" });
     await waitFor(() => expect((power as HTMLInputElement).disabled).toBe(false));
@@ -186,12 +309,104 @@ describe("Nous dock", () => {
   });
 
   it("shows the same switches in Settings and saves each one alone", async () => {
-    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [], paneBoard } }) });
+    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, lowTokenAutomatic: true, lowSpend: nousLowSpendSettingsSchema.parse({}), mayPromote: false, mayApproveWarm: false, maySecurityHotfix: false, shell: false, alwaysApprove: [], paneBoard, standingOrders, models, fallbackModel: "none", telegramInbound: false } }) });
     render(<NousSettingsCard />);
     const warm = await screen.findByRole("switch", { name: "Nous may approve Warm changes" });
     await waitFor(() => expect((screen.getByRole("switch", { name: "Nous works on my behalf" }) as HTMLInputElement).checked).toBe(true));
     fireEvent.click(warm);
     await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ mayApproveWarm: true }));
+    fireEvent.click(screen.getByRole("switch", { name: "Nous may use a shell" }));
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ shell: true }));
+    // Telegram two-way (2026-10-24): off by default, its own switch here (every Nous switch lives in Settings).
+    const telegram = screen.getByRole("switch", { name: "Nous takes messages from the paired Telegram chat" });
+    expect((telegram as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(telegram);
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ telegramInbound: true }));
+  });
+
+  it("saves low-spend control, cheaper-model switch and effort without changing normal models", async () => {
+    const calls = serve({ state: state(), persistSettings: true });
+    render(<NousSettingsCard />);
+    const control = await screen.findByRole("combobox", { name: "Nous low-spend mode" });
+    await waitFor(() => expect((control as HTMLSelectElement).disabled).toBe(false));
+    expect((control as HTMLSelectElement).value).toBe("AUTO");
+    const saved = () => calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body;
+    fireEvent.change(control, { target: { value: "ON" } });
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { mode: "ON" } }));
+    fireEvent.change(control, { target: { value: "OFF" } });
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { mode: "OFF" } }));
+    fireEvent.change(control, { target: { value: "AUTO" } });
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { mode: "AUTO" } }));
+    const cap = screen.getByRole("spinbutton", { name: "Inbox turns per hour while conserving" });
+    fireEvent.change(cap, { target: { value: "4" } }); fireEvent.blur(cap);
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { maxTurnsPerHour: 4, minMaxAccountsWithRoom: 2, roomRemainingPercent: 10, lowBudgetRemainingPercent: 40, criticalBudgetRemainingPercent: 20 } }));
+    const effort = screen.getByRole("combobox", { name: "Nous low-spend effort for helper turns" });
+    fireEvent.change(effort, { target: { value: "low" } });
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { models: { helper: { model: "claude-sonnet-5-5", effort: "low" } } } }));
+    for (const kind of ["inbox", "standing", "helper"]) {
+      expect((screen.getByRole("combobox", { name: `Nous critical model for ${kind} turns` }) as HTMLSelectElement).value).toBe("claude-haiku-5-5");
+      expect((screen.getByRole("combobox", { name: `Nous critical effort for ${kind} turns` }) as HTMLSelectElement).value).toBe("medium");
+    }
+    fireEvent.change(screen.getByRole("combobox", { name: "Nous critical model for inbox turns" }), { target: { value: "claude-sonnet-5-5" } });
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { criticalModels: { inbox: { model: "claude-sonnet-5-5", effort: "medium" } } } }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Nous critical effort for inbox turns" }), { target: { value: "low" } });
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { criticalModels: { inbox: { model: "claude-sonnet-5-5", effort: "low" } } } }));
+    const cheaper = screen.getByRole("switch", { name: "Cheaper model in low-spend mode" });
+    expect((cheaper as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(cheaper);
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { cheaperModel: false } }));
+    await waitFor(() => expect((effort as HTMLSelectElement).disabled).toBe(true));
+    fireEvent.click(cheaper);
+    await waitFor(() => expect(saved()).toMatchObject({ lowSpend: { cheaperModel: true } }));
+    expect(saved()).not.toHaveProperty("models");
+    expect(saved()).not.toHaveProperty("fallbackModel");
+  });
+
+  it("saves the standing orders and the model per turn kind whole (operator orders 2026-10-21)", async () => {
+    const calls = serve({ state: state() });
+    render(<NousSettingsCard />);
+    const close = await screen.findByRole("switch", { name: "Nous closes finished panes after their memory save" });
+    await waitFor(() => expect((close as HTMLInputElement).disabled).toBe(false));
+    expect((close as HTMLInputElement).checked).toBe(true);
+    const saved = () => calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body;
+    fireEvent.click(close);
+    await waitFor(() => expect(saved()).toEqual({ standingOrders: { ...standingOrders, closeFinishedPanes: false } }));
+    const own = screen.getByRole("switch", { name: "Nous closes your own panes after their memory save" });
+    expect((own as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(own);
+    await waitFor(() => expect(saved()).toEqual({ standingOrders: { ...standingOrders, closeOperatorPanes: false } }));
+    const stalled = screen.getByRole("spinbutton", { name: "Stalled after (hours)" });
+    fireEvent.change(stalled, { target: { value: "6" } });
+    fireEvent.blur(stalled);
+    await waitFor(() => expect(saved()).toEqual({ standingOrders: { ...standingOrders, stalledAfterHours: 6 } }));
+    // The daily self-review (2026-10-24): on by default at 03:00; its switch and hour save the standing orders whole.
+    const review = screen.getByRole("switch", { name: "Nous reviews its own day" });
+    expect((review as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(review);
+    await waitFor(() => expect(saved()).toEqual({ standingOrders: { ...standingOrders, dailyReview: false } }));
+    const hour = screen.getByRole("spinbutton", { name: "Self-review at (hour)" });
+    expect((hour as HTMLInputElement).value).toBe("3");
+    fireEvent.change(hour, { target: { value: "23" } });
+    fireEvent.blur(hour);
+    await waitFor(() => expect(saved()).toEqual({ standingOrders: { ...standingOrders, dailyReviewHour: 23 } }));
+    // Fable 5.1 by default: max for the operator's and decision turns, high for the rest (operator decision 2026-10-24); a change saves that kind's pair whole.
+    const standingModel = screen.getByRole("combobox", { name: "Nous model for standing turns" }) as HTMLSelectElement;
+    expect(standingModel.value).toBe("claude-fable-5-1");
+    expect((screen.getByRole("combobox", { name: "Nous effort for operator turns" }) as HTMLSelectElement).value).toBe("max");
+    expect((screen.getByRole("combobox", { name: "Nous effort for inbox turns" }) as HTMLSelectElement).value).toBe("high");
+    fireEvent.change(standingModel, { target: { value: "claude-sonnet-5-5" } });
+    await waitFor(() => expect(saved()).toEqual({ models: { ...models, standing: { model: "claude-sonnet-5-5", effort: "high" } } }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Nous effort for inbox turns" }), { target: { value: "medium" } });
+    await waitFor(() => expect(saved()).toEqual({ models: { ...models, inbox: { model: "claude-fable-5-1", effort: "medium" } } }));
+    // The fallback model is off by default (operator decision 2026-10-21) and the inbox turns an hour are a field here (2026-10-24).
+    const fallback = screen.getByRole("combobox", { name: "Nous fallback model" }) as HTMLSelectElement;
+    expect(fallback.value).toBe("none");
+    fireEvent.change(fallback, { target: { value: "claude-opus-5-5" } });
+    await waitFor(() => expect(saved()).toEqual({ fallbackModel: "claude-opus-5-5" }));
+    const turns = screen.getByRole("spinbutton", { name: "Inbox turns per hour" });
+    fireEvent.change(turns, { target: { value: "500" } });
+    fireEvent.blur(turns);
+    await waitFor(() => expect(saved()).toEqual({ maxTurnsPerHour: 120 }));
   });
 
   it("saves the pane board's settings whole: model, interval within range, language and closed panes (plan clipboard:Y9cgKVHFaHrr)", async () => {
@@ -330,49 +545,50 @@ describe("Nous dock", () => {
     expect(await screen.findByText("Fullscreen view")).toBeTruthy();
   });
 
-  it("shows Resources → Accounts & quotas in the Tokens tab: the same panel, routes and counts (plan clipboard:7PiQv4Cnq0C2)", async () => {
-    const group = (displayName: string, fiveHourRemainingPercent: number, weeklyRemainingPercent: number) =>
-      ({ displayName, fiveHourRemainingPercent, weeklyRemainingPercent, fiveHourResetAt: null, weeklyResetAt: null });
-    const list = (data: unknown[], source: string) => ({ data, pagination: { page: 1, pageSize: 100, totalItems: data.length, totalPages: 1 }, source, isStale: false, error: null, checkedAt: at });
-    const calls = serve({ quotas: {
-      "/api/admin/antigravity-usage-accounts": list([
-        { id: "account:ag1", email: "ag1@example.test", label: "ag1", tier: "Google AI Pro", status: "CONNECTED", gemini: group("Gemini Models", 90, 80), claude: group("Claude and GPT models", 70, 60), sampledAt: at }
-      ], "space-gemini-profiles"),
-      "/api/admin/codex-usage-accounts": list([
-        { id: "account:cx1", label: "cx1@example.test", fiveHourRemainingPercent: 0, weeklyRemainingPercent: 0, weeklyResetAt: null, sampledAt: at }
-      ], "codex-usage-host"),
-      "/api/admin/claude-usage-accounts": list([
-        { id: "api", label: "api", email: null, plan: null, status: "API_KEY", fiveHourRemainingPercent: null, fiveHourResetAt: null, weeklyRemainingPercent: null,
-          weeklyResetAt: null, weeklyScope: null, sampledAt: null, apiKeyVerified: true, gatewayFallback: "ON", apiKeyUsage: { requests: 2542, costUsd: 215.08, lastUsedAt: at } }
-      ], "space-claude-profiles"),
-      "/api/admin/api-provider-accounts": list([], "mock"),
-      "/api/admin/codex-reset-credits": { data: [], error: null, checkedAt: at },
-      // Anthropic's bill on the API key's card (operator request 2026-10-20): today is Space Gateway's estimate until Anthropic posts it.
-      "/api/admin/gateway/anthropic-billing?days=31": { status: { configured: true, keyHint: "…pgAA", savedAt: at, lastSyncAt: at, lastError: null, upstream: [] },
-        days: [[0, false, 0, 1.6864], [1, true, 128.61, 130.65], [2, true, 80.91, 81.12]].map(([ago, reported, organizationUsd, gatewayEstimateUsd]) => ({
-          day: new Date(Date.now() - Number(ago) * 86_400_000).toISOString().slice(0, 10), reported, organizationUsd, workspaceUsd: organizationUsd, gatewayEstimateUsd,
-          gatewayBilledUsd: gatewayEstimateUsd, models: [] })) }
-    } });
+  it("has six views, no Tokens view (operator request 2026-10-21; Needs you 2026-10-24)", async () => {
+    const calls = serve();
     render(<NousDock canRun />);
-    fireEvent.click(await screen.findByRole("button", { name: "Tokens" }));
-    const providers = await screen.findByRole("tablist", { name: "Account providers" });
-    expect(within(providers).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["All", "Antigravity", "Codex", "Claude", "API"]);
-    expect(await screen.findByRole("button", { name: "All (3)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Available (1)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Exhausted (1)" })).toBeTruthy();
-    const antigravity = screen.getAllByText("Antigravity (Google)").find((el) => el.tagName === "STRONG")!.closest(".toolbar-metric-provider-section") as HTMLElement;
-    expect(within(antigravity).getByText("ag1", { selector: ".account-quota-title" })).toBeTruthy();
-    for (const route of ["/api/admin/antigravity-usage-accounts", "/api/admin/codex-usage-accounts", "/api/admin/claude-usage-accounts"]) {
-      expect(calls.some((call) => call.url === route)).toBe(true);
-    }
-    const apiCard = (await screen.findByText(/^Anthropic bill: today \$1\.69 \(estimate\) · 7 days \$211\.21 · /)).closest("li") as HTMLElement;
-    expect(within(apiCard).getByText(/Used 2542 times through Space Gateway \(\$215\.08\)/)).toBeTruthy();
-    expect(within(apiCard).getByText(/^Synced \d\d:\d\d /)).toBeTruthy();
-    // The token counts stay on Resources → AI usage → Token usage.
-    expect(calls.some((call) => call.url.startsWith("/api/admin/system-analytics/models"))).toBe(false);
+    const views = await screen.findByRole("group", { name: "Nous views" });
+    expect(within(views).getAllByRole("button").map((button) => button.firstChild?.textContent)).toEqual(["Conversation", "Needs you", "Decisions", "Overview", "Panes", "Plans"]);
+    expect(calls.some((call) => call.url.startsWith("/api/admin/") || call.url === "/api/codex/environment")).toBe(false);
   });
-  it("full screen: its controls at the far right, live stats instead of release trains, a launcher for music and widgets (plan clipboard:wr9yNPJwkDrp)", async () => {
-    serve({ live: { rooms: 3, agents: { running: 2, waiting: 1, idle: 4, total: 7 } } });
+
+  it("shows everything a decision sends before Approve: the whole body, the whole action and every file (operator request 2026-10-21)", async () => {
+    const long = `Send these 50 emails to the buyers. ${"Every word of it. ".repeat(20)}End of the instruction.`;
+    const sends: NousDecision = { ...decision, id: "nous_decision:send00000001", category: "EXTERNAL", title: "Start the buyer outreach: 50 emails?",
+      body: `Bob wrote the emails.\n\n${"Line of context.\n\n".repeat(10)}Last line of the body.`,
+      refs: { files: ["reports/olla/step8-outreach-emails.md", "secrets/key.txt"] }, action: { type: "PANE_TEXT", roomId: "room:bob00001", paneId: "pane:bob00001", mode: "PROMPT", text: long } };
+    const calls = serve({ decisions: [sends], decisionFiles: [
+      { ref: "reports/olla/step8-outreach-emails.md", text: "Subject: example.invalid is for sale\n\nDear buyer, ...", total: 47, truncated: false },
+      { ref: "secrets/key.txt", text: null, total: null, truncated: false, error: "That path looks like a secret: it is never read." }] });
+    render(<NousDock canRun />);
+    const card = await screen.findByRole("article", { name: sends.title });
+    expect(within(card).queryByText(/End of the instruction\./)).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Show everything" }));
+    const everything = screen.getByRole("dialog", { name: `Everything about: ${sends.title}` });
+    expect(within(everything).getByText(/Last line of the body\./)).toBeTruthy();
+    expect(within(everything).getByText(/End of the instruction\./)).toBeTruthy();
+    expect(await within(everything).findByText(/Dear buyer, \.\.\./)).toBeTruthy();
+    expect(within(everything).getByText("That path looks like a secret: it is never read.")).toBeTruthy();
+    expect(calls.some((call) => call.url === "/api/nous/decisions/nous_decision%3Asend00000001/files")).toBe(true);
+    fireEvent.click(within(everything).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ answer: "APPROVE" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("says so when a decision names no files, without asking for any", async () => {
+    const calls = serve();
+    render(<NousDock canRun />);
+    fireEvent.click(within(await screen.findByRole("article", { name: decision.title })).getByRole("button", { name: "Show everything" }));
+    const everything = screen.getByRole("dialog", { name: `Everything about: ${decision.title}` });
+    expect(within(everything).getByText(/Nous named no files with the texts this sends\./)).toBeTruthy();
+    expect(calls.some((call) => call.url.endsWith("/files"))).toBe(false);
+    fireEvent.keyDown(everything, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("full screen: its controls at the far right, live counts without system tiles, no launcher (plan clipboard:wr9yNPJwkDrp; the rail stays in sight since 2026-10-21)", async () => {
+    const calls = serve({ live: { rooms: 3, agents: { running: 2, waiting: 1, idle: 4, total: 7 } } });
     render(<NousDock canRun />);
     fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
     const tools = document.querySelector(".nous-workspace-tools")!;
@@ -388,29 +604,11 @@ describe("Nous dock", () => {
     expect([count("Running"), count("Idle"), count("Waiting"), count("On a plan")]).toEqual(["2", "4", "1", "1"]);
     expect(within(stats).getByText("Andy · Nous")).toBeTruthy();
     expect(within(stats).getByText("Active 0")).toBeTruthy();
-    await waitFor(() => expect(within(stats).getByRole("listitem", { name: "CPU: 37%" })).toBeTruthy());
-    expect(within(stats).getByRole("listitem", { name: "Memory: 61%" })).toBeTruthy();
-    expect(within(stats).getByRole("listitem", { name: "Agents running of all: 2/7" })).toBeTruthy();
+    // The system tiles and sparklines left (operator request 2026-10-21): the right rail shows those figures.
+    expect(within(stats).queryByRole("list", { name: "System" })).toBeNull();
+    expect(calls.some((call) => call.url === "/api/system-health")).toBe(false);
 
-    const launcher = screen.getByRole("toolbar", { name: "Open over Nous" });
-    const music = vi.fn();
-    window.addEventListener(OPEN_VIBE_MUSIC_EVENT, music);
-    fireEvent.click(within(launcher).getByRole("button", { name: "Music" }));
-    window.removeEventListener(OPEN_VIBE_MUSIC_EVENT, music);
-    expect(music).toHaveBeenCalledTimes(1);
-    const changed = vi.fn();
-    window.addEventListener("space:desktop-widgets:changed", changed);
-    fireEvent.click(within(launcher).getByRole("button", { name: "Widgets" }));
-    fireEvent.click(within(screen.getByRole("menu", { name: "Widgets" })).getByRole("menuitemcheckbox", { name: /Clock/ }));
-    window.removeEventListener("space:desktop-widgets:changed", changed);
-    expect(changed).toHaveBeenCalled();
-
-    // YouTube: asks the shell to float the room's YouTube pane, or open one floating (use-youtube-float-request).
-    const youTube = vi.fn();
-    window.addEventListener("space:open-youtube-float", youTube);
-    fireEvent.click(within(launcher).getByRole("button", { name: "YouTube" }));
-    window.removeEventListener("space:open-youtube-float", youTube);
-    expect(youTube).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("toolbar", { name: "Open over Nous" })).toBeNull();
   });
 
   it("shows Nous's last check, verdict and next check on each pane of the board; Go to pane takes the operator there (plan clipboard:MAongwnxq9Ro)", async () => {
@@ -426,7 +624,6 @@ describe("Nous dock", () => {
     const andy = await screen.findByRole("listitem", { name: "Andy in Bruno" });
     const bob = screen.getByRole("listitem", { name: "Bob in Bruno" });
     await waitFor(() => expect(within(andy).getByText(`Nous checked ${formatUserTime(at)} · Your test pane: The operator's login test`)).toBeTruthy());
-    expect(within(andy).getByText("Keep open")).toBeTruthy();
     expect(within(bob).getByText("Nous never checked it")).toBeTruthy();
     expect(within(bob).getByText("Due now")).toBeTruthy();
     const focused: NousFocusDetail[] = [];
@@ -434,7 +631,7 @@ describe("Nous dock", () => {
     window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
     fireEvent.click(within(andy).getByRole("button", { name: "Go to pane" }));
     window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
-    expect(focused).toEqual([{ roomId: "room:bruno0001", paneId: "pane:andy0001", ownerUserId: null, immediate: true }]);
+    expect(focused).toEqual([{ roomId: "room:bruno0001", paneId: "pane:andy0001", immediate: true }]);
   });
 
   it("maximizes into a command center: Nous on the left, tool steps folded in the conversation, a board of what waits", async () => {

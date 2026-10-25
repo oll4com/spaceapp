@@ -72,7 +72,11 @@ existing release workflow. It never changes source or versions after testing.
 The workflow repeats the evidence gate before source/container publication.
 Keep the existing environment review, signing/provenance and vulnerability gates.
 Only a fully accepted published `next` package may be promoted to `latest` using
-the maintainer's npm session. Do not bypass npm 2FA or protected environment review.
+the maintainer's npm session. Before that, install the published `next` package on
+each lab platform (it pulls the shipped image bytes and verifies their provenance)
+and run `node scripts/shipped-image-evidence.mjs --lock <its templates/images.lock.json>
+linux=<install>/image-attestations.json windows=... macos=...`; promote only when it
+passes. Do not bypass npm 2FA or protected environment review.
 
 Publish the final redacted report to the user's Agent Files dock and retain exact
 artifact IDs. Mark the existing task PLAN complete only after all required work

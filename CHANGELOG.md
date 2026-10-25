@@ -10,6 +10,68 @@ Semantic Versioning.
   and background runs carry causal span links. Workflow export is suppressed
   during replay; span attributes remain restricted to identifiers and outcomes.
 
+## [1.1.8] - 2026-10-25
+
+Source: sanitized Space app @ 8d5bf21b32 (4948 files). Verifies SpaceApp's image attestations before an
+installation first uses a version, restores backups more safely, and ships the remaining fixes from the 1.1.7
+reviews; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Backup and restore
+
+- A restore that fails without changing anything, or that puts every database and file back, starts SpaceApp again with its
+  data from before the restore and names the pre-restore backup (1.1.7 left it stopped). A restore that cannot be fully
+  undone keeps SpaceApp stopped and says how to go on.
+- A backup with workflow history is refused before any change on an installation without Temporal (profile small), with
+  the command to install a profile that has it.
+- A backup made by an older SpaceApp restores into a newer installation: each database is restored into an emptied
+  schema, so tables the newer version added that reference the backup's tables no longer stop the restore.
+
+- `backup` on an installation without CLI settings no longer prints tar's "Cowardly refusing to create an empty
+  archive" before its own note.
+- `backup` gives up after two minutes of waiting for a database lock instead of keeping the paused installation frozen;
+  the writers resume and the backup reports the failure.
+
+### Databases
+
+- The core image carries Python with its sqlite3 module, so the Databases tool's SQLite connections work in public
+  installations.
+
+### Integrity
+
+- Every runtime version an installation ran from a published package keeps its image digests (`image-digests.json`), so
+  `rollback` pulls the previous version's images by digest too; a version installed before digest pinning is pulled by
+  version tag, and the rollback plan says which.
+
+### OpenCode
+
+- The onboarding guide names the model record's exact path
+  (`/var/lib/spaceapp/memory/installation-model.json`), so the assistant no longer searches `/var/lib/spaceapp` and stops
+  at OpenCode's "Access external directory" prompt.
+
+- The free model the first run saved is checked once a day; when OpenCode Zen retires it, the next free model that
+  passes the tool-call check replaces it. A model the owner chose is never replaced.
+
+### Supply chain
+
+- zod 4.6.7 (GHSA-mrhx-c7xc-m3w5, high: validating an oversized constrained collection could exhaust memory). The
+  advisory was published after the 1.1.7 release gates; 1.1.7 and 1.1.6 ship zod 4.4.3.
+- The CLIs installed on first use (Codex, Gemini, Qwen, Kimi, Grok, Autohand, Copilot, DeepSeek, Claude Code) install with
+  `npm ci` from a lockfile per provider in the CLI image, so every dependency is pinned with its integrity hash, not only
+  the CLI's own version. `provider install claude` uses the same lockfile.
+- Before an installation first uses a SpaceApp version, the launcher checks its images' attestations: every platform image
+  in each pinned index must have an SBOM and a provenance statement about that exact image from the public release
+  workflow on `main`, read by digest. It records the release run and commit in `image-attestations.json` and stops before
+  pulling when a check fails. The release workflow runs the same check, and a full release's images must come from its
+  own commit. `scripts/shipped-image-evidence.mjs` confirms that the lab's installs of the published `next` package ran
+  exactly its locked images before `latest` (reviews EXT-C-F5, IR117-C-F7). The registry reads use `HTTPS_PROXY` /
+  `NO_PROXY`, or else the Docker client's proxy in `~/.docker/config.json`; an unreachable registry stops with those
+  settings named. `SPACEAPP_IMAGE_VERIFY=off` skips the check on air-gapped or locked-down hosts, with a warning on
+  every run.
+
+### Licence
+
+- The LICENSE files use ASCII quotes, so they match the standard MIT text byte for byte.
+
 ## [1.1.7] - 2026-10-21
 
 Source: sanitized Space app @ 3e4572bc97 (4729 files: SpaceApp 77d00f6895 with

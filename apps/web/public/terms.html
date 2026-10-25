@@ -49,13 +49,6 @@
   <footer><a href="/privacy.html">Privacy Policy</a></footer>
 </main>
   <script src="/homepage-config.js"></script>
-  <script>
-    // The instance's own host and contact, so every installation describes itself.
-    document.querySelectorAll("[data-instance-host]").forEach(function (node) { node.textContent = location.hostname; });
-    var email = window.__SPACE_PUBLIC_CONFIG__ && window.__SPACE_PUBLIC_CONFIG__.contactEmail;
-    if (email) document.querySelectorAll("[data-contact]").forEach(function (node) {
-      var link = document.createElement("a"); link.href = "mailto:" + email; link.textContent = email; node.replaceChildren(link);
-    });
-  </script>
+  <script src="/legal-instance.js"></script>
 </body>
 </html>

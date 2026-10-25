@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Pane, Room, RoomAgentEvent } from "@space/contracts";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { NewPaneReport, PaneReport, PaneReportStatus, PaneReportsRepository } from "@space/db";
+import type { NotificationService } from "./notifications/service.js";
 
 /**
  * Pane reports to Nous (operator request 2026-10-17, plan clipboard:ot6-jLKOWDNC): every CLI pane's progress, so Nous has the
@@ -14,7 +15,9 @@ export const PANE_REPORT_SUMMARY_MAX = 300;
 export const PANE_REPORT_BODY_MAX = 8_000;
 /** Agent reports per pane and hour; AUTO reports do not count. */
 export const PANE_REPORTS_PER_HOUR = 30;
-export const PANE_PROGRESS_STATUSES = ["started", "progress", "blocked", "needs-decision", "waiting", "done", "failed"] as const;
+export const PANE_PROGRESS_STATUSES = ["started", "progress", "blocked", "needs-decision", "needs-you", "waiting", "done", "failed"] as const;
+/** The one open needs-you notification of a pane (source AGENT), resolved by the pane's next report or its close. */
+export const agentNeedsYouKey = (paneId: string) => `agent:needs-you:${paneId}`;
 
 /** An agent's report (POST /api/cli/progress), the pane's own words. */
 export const paneProgressSchema = z.object({
@@ -46,6 +49,8 @@ export interface PaneReportsDeps {
   screen(pane: Pane): Promise<string | null>;
   /** Every stored report (AUTO and AGENT), for Nous's pane watch and inbox. */
   onReport?(owner: string, report: PaneReport): void;
+  /** A `needs-you` report is the operator's notification (Needs you, operator request 2026-10-24); the next report resolves it. */
+  notifications?: Pick<NotificationService, "raise" | "resolve">;
   /** The transcript is written as the answer streams; the monitor can see the idle prompt a moment before its last line lands. */
   settleMs?: number;
   now?: () => number;
@@ -176,6 +181,15 @@ export function createPaneReports(deps: PaneReportsDeps) {
         status: input.status.toUpperCase().replace("-", "_") as PaneReportStatus, summary: cleanText(input.summary.replace(/\s+/g, " "), PANE_REPORT_SUMMARY_MAX),
         planId: input.plan ?? null, step: input.step ?? null, percent: input.percent ?? null, ticket: input.ticket ?? null,
         next: text(input.next, 300), needs: text(input.needs, 500), body: text(input.report, PANE_REPORT_BODY_MAX) });
+      // Needs you: only the operator can act or answer here. One notification per pane; a new ask alerts again; any later report ends it.
+      if (report.status === "NEEDS_YOU") {
+        await deps.notifications?.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
+          title: clip(`${pane.paneName ?? pane.title} needs you`, 200), body: [report.summary, report.needs ? `Needs: ${report.needs}` : null].filter(Boolean).join("\n"),
+          link: { roomId: room.id, paneId: pane.id }, dedupeKey: agentNeedsYouKey(pane.id), payload: { alertAt: report.at }, telegram: null }, { realert: true })
+          .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be raised."));
+      } else {
+        await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id)).catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be resolved."));
+      }
       return report;
     },
     /** Space's own word on a pane, e.g. its automatic move to Space Gateway at a usage limit (claude-limit-move.ts). */

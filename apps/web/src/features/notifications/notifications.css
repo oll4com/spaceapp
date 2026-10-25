@@ -13,24 +13,41 @@
 .notification-toast-close { padding: 8px; border: 0; background: transparent; color: var(--room-muted, #9aa3a0); cursor: pointer; }
 .notification-toast-close svg { width: 14px; height: 14px; }
 
-.notification-center { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-.notification-center-filters { display: grid; gap: 6px; padding: 6px 10px; }
-.notification-list { flex: 1 1 auto; min-height: 0; overflow: auto; margin: 0; padding: 0; list-style: none; }
-.notification-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--room-border, rgba(255, 255, 255, 0.1)); }
-.notification-item.status-open { background: color-mix(in srgb, var(--room-accent, #6db7aa) 7%, transparent); }
-.notification-item.severity-urgent .notification-item-source { color: #f08a8a; }
-.notification-item-main { display: grid; gap: 2px; width: 100%; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.notification-item-source, .notification-toast-source { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--room-accent, #6db7aa); }
+.notification-list { margin: 0; padding: 0; list-style: none; gap: 0.45rem; }
+/* On touch screens the sources stay one swipeable row instead of wrapping into several. */
+@media (pointer: coarse) {
+  .notification-source-chips { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .notification-source-chips > .dock-kit-chip { flex: 0 0 auto; }
+}
+.notification-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.4rem; padding: 0.6rem 0.5rem 0.6rem 0.65rem;
+  border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); color: var(--dock-text); transition: border-color 120ms ease; }
+.notification-item:hover { border-color: var(--dock-border-strong); }
+.notification-item.status-open { border-left: 3px solid var(--dock-accent); }
+.notification-item.severity-urgent { border-left: 3px solid var(--dock-danger); }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) as a raised box. */
+.notification-center .notification-item-main.notification-item-main { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.6rem; width: 100%; padding: 0;
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.notification-item-icon { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 9px; background: var(--dock-soft); color: var(--dock-muted); }
+.notification-item-icon svg { width: 1rem; height: 1rem; }
+.notification-item.status-open .notification-item-icon { background: var(--dock-accent-soft); color: var(--dock-accent); }
+.notification-item.severity-urgent .notification-item-icon { background: var(--dock-danger-soft); color: var(--dock-danger); }
+.notification-item-copy { display: grid; gap: 0.2rem; min-width: 0; }
+.notification-item-title { font-size: var(--dock-font); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .notification-item.status-open .notification-item-title { font-weight: 700; }
-.notification-item-title { font-size: 13px; }
-.notification-item-body { color: var(--room-muted, #9aa3a0); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-.notification-item-time { color: var(--room-muted, #9aa3a0); font-size: 11px; }
+.notification-item-body { color: var(--dock-muted); font-size: var(--dock-font-sm); line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.notification-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 0.4rem; color: var(--dock-muted); font-size: 0.7rem; }
+.notification-item-meta > * + *::before { content: "·"; margin-right: 0.4rem; }
+.notification-item-source { font-weight: 650; }
+.notification-item.status-open .notification-item-source { color: var(--dock-accent); }
+.notification-item.severity-urgent .notification-item-source { color: var(--dock-danger); }
+.notification-item .dock-kit-icon-button { width: 1.85rem; height: 1.85rem; min-height: 1.85rem; }
+.notification-toast-source { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--room-accent, #6db7aa); }
 .notification-source-settings summary { cursor: pointer; font-weight: 600; }
 .notification-quiet-hours { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
 .notification-quiet-hours label { display: inline-flex; gap: 0.4rem; align-items: center; }
 .notification-source-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 4px 0; }
 /* Nous's card for a pane holds the pane's other notifications (plan clipboard:8FfXWclYUfOH). */
-.notification-pane-more { grid-column: 1 / -1; justify-self: start; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--room-accent, #6db7aa); font: inherit; font-size: 11px; cursor: pointer; }
-.notification-pane-more:hover, .notification-pane-more:focus-visible { background: color-mix(in srgb, var(--room-accent, #6db7aa) 12%, transparent); }
+.notification-center .notification-pane-more.notification-pane-more { grid-column: 1 / -1; justify-self: start; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--room-accent, #6db7aa); font: inherit; font-size: 11px; cursor: pointer; }
+.notification-center .notification-pane-more.notification-pane-more:hover, .notification-center .notification-pane-more.notification-pane-more:focus-visible { background: color-mix(in srgb, var(--room-accent, #6db7aa) 12%, transparent); }
 .notification-pane-children { grid-column: 1 / -1; margin: 0; padding: 0 0 0 12px; list-style: none; border-left: 2px solid color-mix(in srgb, var(--room-accent, #6db7aa) 35%, transparent); }
-.notification-pane-children .notification-item { border-bottom: 0; }
+.notification-pane-children .notification-item { padding: 0.45rem 0 0.2rem; border: 0; border-radius: 0; background: transparent; }

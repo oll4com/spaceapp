@@ -43,7 +43,7 @@ function context(overrides: Partial<RoomToolbarActionsContext> = {}): RoomToolba
     create: {
       isCodexEnabled: true, cliPaneCreationPending: false, toggleChatLauncher: vi.fn(), toggleCliLauncher: vi.fn(), addRootAdminPane: vi.fn(async () => undefined),
       addPane: vi.fn(), addFilesPane: vi.fn(async () => undefined), addDatabasesPane: vi.fn(async () => undefined), addDemosPane: vi.fn(async () => undefined),
-      addT3CodePane: vi.fn(async () => undefined), addJobApplyPane: vi.fn(async () => undefined), addMailCopilotPane: vi.fn(async () => undefined), addMarketingCopilotPane: vi.fn(async () => undefined), addFreelanceCopilotPane: vi.fn(async () => undefined), addDesignPane: vi.fn(async () => undefined), addAppStudioPane: vi.fn(async () => undefined), addLivePane: vi.fn(async () => null)
+      addT3CodePane: vi.fn(async () => undefined), addJobApplyPane: vi.fn(async () => undefined), addMailCopilotPane: vi.fn(async () => undefined), addMarketingCopilotPane: vi.fn(async () => undefined), addFreelanceCopilotPane: vi.fn(async () => undefined), addDesignPane: vi.fn(async () => undefined), addAppStudioPane: vi.fn(async () => undefined), addVideoPane: vi.fn(async () => undefined), addSecurityCopilotPane: vi.fn(async () => undefined), addLivePane: vi.fn(async () => null)
     },
     tools: {
       desktopWidgets: { isWidgetEnabled: () => false, toggleWidget: vi.fn() } as never, openStickyNote: vi.fn(), isBrowserFullscreen: false,
@@ -76,6 +76,9 @@ describe("buildRoomToolbarActions", () => {
     expect(ids).not.toContain("widget-countdown-timer");
     expect(ids).not.toContain("add-root-admin-cli");
     expect(ids.at(-1)).toBe("more-actions");
+    // Every copilot-style pane has its Create entry, the Video pane after App Studio's and the Security Copilot after Video's.
+    expect(ids.indexOf("add-video")).toBe(ids.indexOf("add-app-studio") + 1);
+    expect(ids.indexOf("add-security")).toBe(ids.indexOf("add-video") + 1);
     for (const consolidated of ["system-resources", "system-analytics", "token-usage", "system-services", "setup-connections"]) {
       expect(ids).not.toContain(consolidated);
     }

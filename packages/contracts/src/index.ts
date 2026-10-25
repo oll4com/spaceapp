@@ -49,10 +49,12 @@ export * from "./marketing-copilot.js";
 export * from "./freelance-copilot.js";
 export * from "./design.js";
 export * from "./app-studio.js";
+export * from "./security-copilot.js";
+export * from "./app-signin.js";
+export * from "./video.js";
 export * from "./notifications.js";
 export * from "./council.js";
 export * from "./nous.js";
-export * from "./nous-focus.js";
 export * from "./nous-pane-board.js";
 export * from "./version.js";
 export * from "./observability.js";
@@ -74,3 +76,10 @@ export * from "./vault.js";
 export * from "./vault-crypto.js";
 export * from "./vault-password.js";
 export * from "./vault-fill.js";
+export * from "./vault-handoff.js";
+
+export * from "./setup-catalog.js";
+
+export * from "./setup-state.js";
+export * from "./workspace-widget-functions.js";
+export * from "./setup-client-runtime.js";

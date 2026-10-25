@@ -1,5 +1,5 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { MAX_ROOMS, type AuthMe, type Pane, type Room } from "@space/contracts";
+import { isTestRoom, type AuthMe, type Pane, type Room } from "@space/contracts";
 import { api } from "../../api.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import type { SpaceRuntime } from "../../runtime/SpaceRuntime.js";
@@ -129,8 +129,6 @@ const adminRoomFilterOptions: { id: AdminRoomFilterMode; label: string }[] = [
 ];
 const MAX_ROOM_CLI_ICONS = 3;
 
-/** Agent Proof and CLI Recovery rooms are listed apart from the operator's own rooms. */
-const isTestRoom = (room: Room) => room.kind === "AGENT_PROOF" || room.kind === "CLI_RECOVERY";
 
 /** The Rooms dock: room list with filters, per-room project settings and the pane composer. */
 export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, catalog, access, actions, composer }: RoomsDockPanelProps) {
@@ -559,9 +557,9 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
             icon={Plus}
             className="rooms-new"
             onClick={() => void createRoom()}
-            disabled={roomCreationPending || rooms.length >= MAX_ROOMS}
+            disabled={roomCreationPending}
             busy={roomCreationPending}
-            title={rooms.length >= MAX_ROOMS ? `Maximum room limit (${MAX_ROOMS}) reached` : "Create empty room"}
+            title="Create empty room"
           >
             New room
           </DockButton>

@@ -98,6 +98,18 @@ describe("worktree item status cache", () => {
     await app.close();
   });
 
+  it("reads a fresh status for fresh=1 (the badge's Remove) and keeps it for the polls", async () => {
+    const service = fakeService(async () => worktree());
+    const app = await routes(service);
+    await app.inject({ method: "GET", url: itemUrl });
+    service.getWorktree.mockResolvedValueOnce(worktree({ isDirty: true, status: "DIRTY" }));
+    const fresh = await app.inject({ method: "GET", url: `${itemUrl}&fresh=1` });
+    expect(fresh.json().data.isDirty).toBe(true);
+    expect((await app.inject({ method: "GET", url: itemUrl })).json().data.isDirty).toBe(true);
+    expect(service.getWorktree).toHaveBeenCalledTimes(2);
+    await app.close();
+  });
+
   it("caches neither 404 misses nor failures", async () => {
     const service = fakeService(async () => null);
     const app = await routes(service);

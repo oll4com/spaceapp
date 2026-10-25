@@ -35,7 +35,8 @@ const apiMock = vi.hoisted(() => ({
   createMarketingBookmark: vi.fn(),
   deleteMarketingBookmark: vi.fn(),
   openMarketingBookmark: vi.fn(),
-  requestDesignFromPane: vi.fn()
+  requestDesignFromPane: vi.fn(),
+  requestVideoFromPane: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
@@ -224,6 +225,29 @@ describe("post media", () => {
     expect(within(media).getByRole("img", { name: "1:1 shot" }).getAttribute("src")).toBe("/api/artifacts/artifact%3Ashot1/file");
     expect(within(media).getByText("file")).toBeTruthy();
     expect(within(media).getByText("Logo")).toBeTruthy();
+    fireEvent.click(within(media).getByRole("img", { name: "1:1 shot" }));
+    const preview = screen.getByRole("dialog", { name: "Preview 1:1 shot" });
+    expect(within(preview).getByRole("img", { name: "1:1 shot" }).getAttribute("src")).toBe("/api/artifacts/artifact%3Ashot1/file");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Preview 1:1 shot" })).toBeNull();
+  });
+});
+
+describe("Make video", () => {
+  it("asks the Video pane for the channel's video format with the post as the callback, only on channels that take video", async () => {
+    const base = { ownerUserId: "user:operator", paneId: pane.id, campaignId: null, kind: "POST", target: null, title: null, assets: [], scheduledAt: null, reviewNote: null, ruleId: null,
+      publishedUrl: null, publishedAt: null, evidence: {}, metrics: {}, createdAt: "2026-10-21T08:00:00.000Z", updatedAt: "2026-10-21T08:00:00.000Z" };
+    const x = { ...base, id: "mktpost:xpost01", channel: "X", body: "SpaceApp cuts videos now.", status: "DRAFT" } as MarketingPost;
+    const reddit = { ...base, id: "mktpost:reddit1", channel: "REDDIT", body: "A text post", status: "DRAFT" } as MarketingPost;
+    apiMock.marketingPosts.mockResolvedValue({ posts: [x, reddit] });
+    apiMock.requestVideoFromPane.mockResolvedValue({ request: { id: "vreq:abc123" }, videoPaneId: "pane:video0001" });
+    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    const buttons = await screen.findAllByRole("button", { name: /Make video/ });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]!);
+    await waitFor(() => expect(apiMock.requestVideoFromPane).toHaveBeenCalledWith(pane.id, expect.objectContaining({
+      formatIds: ["x"], callback: { kind: "MARKETING_POST", postId: x.id }, brief: expect.stringContaining("SpaceApp cuts videos now.") })));
+    expect(await screen.findByText(/Sent to the Video pane/)).toBeTruthy();
   });
 });
 

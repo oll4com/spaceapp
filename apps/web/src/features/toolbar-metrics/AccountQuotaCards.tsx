@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { ApiProviderAccount } from "@space/contracts";
 import type { DateTimeSettings } from "../date-time-settings/date-time-settings.js";
 import { QUOTA_WARNING_THRESHOLD_PERCENT } from "../system-health/health-model.js";
 import {
@@ -93,6 +94,8 @@ function cellTone(remaining: number | null | undefined, threshold: number): "cri
   return remaining <= QUOTA_WARNING_THRESHOLD_PERCENT ? "warning" : "healthy";
 }
 
+const ACCOUNT_LOW_CREDIT_PERCENT = 10;
+
 const toneTitle = { critical: "Exhausted", warning: "Near exhaustion", healthy: "Healthy" } as const;
 
 function QuotaCell({ label, remaining, resetAt, threshold, clock, settings }: {
@@ -178,6 +181,48 @@ export function AccountQuotaCard({ entry, clock, settings }: {
         </div>
       )) : entry.hint ? <span className="toolbar-metric-dim">{entry.hint}</span> : null}
       {entry.notes?.map((note) => <span key={note} className="account-quota-note">{note}</span>)}
+    </li>
+  );
+}
+
+const apiProviderStates: Record<ApiProviderAccount["status"], { state: AccountAvailability; pill: string }> = {
+  CONNECTED: { state: "available", pill: "Connected" },
+  EXHAUSTED: { state: "exhausted", pill: "Exhausted" },
+  ERROR: { state: "exhausted", pill: "Error" },
+  UNCONFIGURED: { state: "offline", pill: "Not set up" },
+};
+
+export function countApiProviders(accounts: ApiProviderAccount[]): AvailabilityCounts {
+  return countAvailability(accounts.map((account) => ({ availability: { state: apiProviderStates[account.status].state, backAt: null } })));
+}
+
+const usd = (value: string | null | undefined) => (value && /^-?\$/.test(value) ? value : null);
+
+/** API providers in the Accounts & quotas card look: the balance up front, a meter when the provider reports its credit share. */
+export function ApiProviderCard({ account }: { account: ApiProviderAccount }) {
+  const { state, pill } = apiProviderStates[account.status];
+  // Providers without a balance (the Claude API) report this month's spend as usage.
+  const balance = usd(account.balance);
+  const headline = balance ?? usd(account.usage);
+  const limit = usd(account.limit);
+  const remaining = limit && usd(account.usage) ? account.remainingPercent : null;
+  const facts = account.detail?.split(" · ").filter(Boolean) ?? [];
+  return (
+    <li className={`toolbar-metric-account-card account-quota-card api-provider-card is-${state}`} data-availability={state} data-provider={account.providerId}>
+      <div className="account-quota-head">
+        <strong className="account-quota-title">{account.label}</strong>
+        <span className={`account-availability-pill is-${state}`}>{pill}</span>
+      </div>
+      {headline ? (
+        <div className="api-provider-value">
+          <strong>{headline}</strong>
+          <small>{balance ? "Balance" : "Spent this month"}</small>
+        </div>
+      ) : null}
+      {remaining != null ? (
+        <QuotaCell label={`Left of ${limit}`} remaining={remaining} resetAt={null} threshold={ACCOUNT_LOW_CREDIT_PERCENT} clock={0} />
+      ) : null}
+      {facts.length ? <div className="api-provider-facts">{facts.map((fact) => <span key={fact}>{fact}</span>)}</div> : null}
     </li>
   );
 }

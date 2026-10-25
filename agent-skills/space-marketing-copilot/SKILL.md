@@ -107,8 +107,9 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
    `browser_snapshot`, fill the composer from the post (title, body, target), attach assets with
    `browser_file_upload`, submit once.
 3. Not logged in, a two-step code, a CAPTCHA or any anti-bot check: `space_browser_request_handoff {kind, reason}`
-   with a one-line reason that names the site, the page and what to click, `space_marketing_note {message, postId, needsUser: true}`
-   so the pane shows it at once, then poll `space_browser_handoff_status` until the operator gives the browser back. Never solve or bypass a CAPTCHA, never type or store a password, a code or
+   with a one-line reason that names the site, the page and what to click (the request is already the operator's notice: Space
+   brings them to the pane for it; do not also post a `needsUser` note for the same handoff), then poll `space_browser_handoff_status`
+   until the operator gives the browser back. Never solve or bypass a CAPTCHA, never type or store a password, a code or
    a cookie. A challenge page (Cloudflare "Verify you are human" or "Just a moment...", a Turnstile, hCaptcha or reCAPTCHA box, Fiverr "Press & Hold", a Vercel or other security check) is handed off at first sight: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
 4. Open the published post, take `space_browser_screenshot`, and report
    `space_marketing_publish_done {postId, url, screenshotPath}` with the post's own https URL on the channel's

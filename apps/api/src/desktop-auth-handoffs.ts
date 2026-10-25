@@ -15,6 +15,8 @@ export interface DesktopAuthHandoffEntry {
   codeHash: string;
   codeChallenge: string;
   createdAt: number;
+  /** A mobile app's handoff (app-signin.ts): the app the code was issued to; a redeem must name the same one. */
+  app?: string;
 }
 
 export interface DesktopAuthHandoffBinding {
@@ -71,9 +73,9 @@ const sha256 = (value: string) => createHash("sha256").update(value).digest();
 const sameBytes = (a: Buffer, b: Buffer) => a.length === b.length && timingSafeEqual(a, b);
 
 export interface DesktopAuthHandoffStore {
-  store(handoffId: string, entry: { token: string; user: DesktopAuthHandoffEntry["user"]; code: string; codeChallenge: string }): void;
-  /** Returns the session once for the right code and verifier; any attempt removes the handoff. */
-  redeem(handoffId: string, code: unknown, codeVerifier: unknown): DesktopAuthHandoffEntry | null;
+  store(handoffId: string, entry: { token: string; user: DesktopAuthHandoffEntry["user"]; code: string; codeChallenge: string; app?: string }): void;
+  /** Returns the session once for the right code, verifier (and app); any attempt removes the handoff. */
+  redeem(handoffId: string, code: unknown, codeVerifier: unknown, app?: string): DesktopAuthHandoffEntry | null;
   readonly size: number;
 }
 
@@ -115,10 +117,11 @@ export function createDesktopAuthHandoffStore(options: {
         user: entry.user,
         codeHash: sha256(entry.code).toString("hex"),
         codeChallenge: entry.codeChallenge,
-        createdAt: now()
+        createdAt: now(),
+        ...(entry.app ? { app: entry.app } : {})
       });
     },
-    redeem(handoffId, code, codeVerifier) {
+    redeem(handoffId, code, codeVerifier, app) {
       sweep();
       if (!isValidDesktopAuthHandoffId(handoffId)) return null;
       const entry = entries.get(handoffId);
@@ -129,7 +132,7 @@ export function createDesktopAuthHandoffStore(options: {
       if (typeof code !== "string" || typeof codeVerifier !== "string" || code.length > 256 || codeVerifier.length > 256) return null;
       const codeMatches = sameBytes(sha256(code), Buffer.from(entry.codeHash, "hex"));
       const verifierMatches = sameBytes(Buffer.from(sha256(codeVerifier).toString("base64url")), Buffer.from(entry.codeChallenge));
-      return codeMatches && verifierMatches ? entry : null;
+      return codeMatches && verifierMatches && entry.app === app ? entry : null;
     },
     get size() {
       return entries.size;

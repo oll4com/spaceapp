@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { NotificationListQuery, NotificationRaiseInput, NotificationSource, NotificationStatus, NotificationsPending, PushDeviceRegistration, SpaceNotification } from "@space/contracts";
+import { NEEDS_YOU_KINDS, needsYou, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationsPending, type PushDeviceRegistration, type SpaceNotification } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 // One record per thing the operator should see; the API's notification service decides channels. Postgres on
@@ -44,8 +44,13 @@ function build(input: NotificationRaiseInput & { id?: string }, at: string): Spa
   };
 }
 
-/** `roomOf`: the room a notification counts for in byRoom (its pane's current room; null when that pane is closed). */
-function pendingOf(items: SpaceNotification[], roomOf: (item: SpaceNotification) => string | null = (item) => item.roomId): NotificationsPending {
+/**
+ * `roomOf`: the room a notification counts for in byRoom: its pane's current room (null when that pane is closed); without a pane,
+ * only the room its link opens (a Nous decision names a room but opens the Nous dock, so an empty room showed "Needs attention"),
+ * and none when its link names a pane that is gone.
+ */
+function pendingOf(items: SpaceNotification[], roomOf: (item: SpaceNotification) => string | null = (item) => item.paneId ? item.roomId
+  : !item.link.paneId && item.link.roomId === item.roomId ? item.roomId : null): NotificationsPending {
   const open = items.filter((item) => item.status === "OPEN").sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const count = (key: (item: SpaceNotification) => string | null, items = open) => {
     const out: Record<string, number> = {};
@@ -76,7 +81,10 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
   }
   async get(owner: string, id: string) { const item = this.items.get(id); return item && item.ownerUserId === owner ? { ...item } : null; }
   async list(owner: string, query: NotificationListQuery) {
-    return [...this.items.values()].filter((item) => item.ownerUserId === owner && (query.status === "ALL" || item.status === "OPEN") && (!query.source || item.source === query.source)
+    // shortcut: the in-memory store has no panes, so NEEDS_YOU keeps a closed pane's requests here (Postgres leaves them out).
+    const matches = (item: SpaceNotification) => query.status === "ALL" || (query.status === "OPEN" ? item.status === "OPEN"
+      : (item.status === "OPEN" || item.status === "READ") && needsYou(item));
+    return [...this.items.values()].filter((item) => item.ownerUserId === owner && matches(item) && (!query.source || item.source === query.source)
       && (!query.before || item.createdAt < query.before)).sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, query.limit).map((item) => ({ ...item }));
   }
   async pending(owner: string) { return pendingOf([...this.items.values()].filter((item) => item.ownerUserId === owner)); }
@@ -152,16 +160,21 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
     return result.rows[0] ? fromRow(result.rows[0]) : null;
   }
   async list(owner: string, query: NotificationListQuery) {
+    // NEEDS_YOU is `needsYou` in SQL (the same kinds pattern) on panes still open: a closed pane's request needs nobody there.
     const result = await this.pool.query<Row>(`SELECT ${columns} FROM space_notifications WHERE owner_user_id = $1 AND ($2::text IS NULL OR status = $2)
-      AND ($3::text IS NULL OR source = $3) AND ($4::timestamptz IS NULL OR created_at < $4) ORDER BY created_at DESC, id DESC LIMIT $5`,
-      [owner, query.status === "OPEN" ? "OPEN" : null, query.source ?? null, query.before ?? null, query.limit]);
+      AND ($3::text IS NULL OR source = $3) AND ($4::timestamptz IS NULL OR created_at < $4)
+      AND ($6::text IS NULL OR (status IN ('OPEN', 'READ') AND severity <> 'INFO' AND room_id IS NOT NULL AND kind ~ $6
+        AND EXISTS (SELECT 1 FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed)))
+      ORDER BY created_at DESC, id DESC LIMIT $5`,
+      [owner, query.status === "OPEN" ? "OPEN" : null, query.source ?? null, query.before ?? null, query.limit, query.status === "NEEDS_YOU" ? NEEDS_YOU_KINDS.source : null]);
     return result.rows.map(fromRow);
   }
   async pending(owner: string) {
-    // A pane moved to another room takes its notifications along; a closed pane's ones mark no room.
-    const result = await this.pool.query<Row & { currentRoomId: string | null }>(`SELECT ${columns}, CASE WHEN pane_id IS NULL THEN room_id
-      ELSE (SELECT p.room_id FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed) END AS "currentRoomId"
-      FROM space_notifications WHERE owner_user_id = $1 AND status = 'OPEN' ORDER BY created_at DESC, id DESC LIMIT 500`, [owner]);
+    // A pane moved to another room takes its notifications along; a closed pane's ones mark no room. Rows that need the user come
+    // first: hundreds of open INFO mail notices pushed them past the limit, so rooms lost their "Needs attention".
+    const result = await this.pool.query<Row & { currentRoomId: string | null }>(`SELECT ${columns}, CASE WHEN pane_id IS NULL
+      THEN CASE WHEN link->>'paneId' IS NULL AND link->>'roomId' = room_id THEN room_id END ELSE (SELECT p.room_id FROM panes p WHERE p.id = space_notifications.pane_id AND NOT p.is_closed) END AS "currentRoomId"
+      FROM space_notifications WHERE owner_user_id = $1 AND status = 'OPEN' ORDER BY severity = 'INFO', created_at DESC, id DESC LIMIT 500`, [owner]);
     const rooms = new Map(result.rows.map((row) => [row.id, row.currentRoomId]));
     return pendingOf(result.rows.map(({ currentRoomId: _room, ...row }) => fromRow(row)), (item) => rooms.get(item.id) ?? null);
   }

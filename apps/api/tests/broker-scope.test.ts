@@ -39,9 +39,12 @@ describe("broker-scoped agent sessions (hardening step 4)", () => {
     const headers = brokerSession("UI_PROOF");
     expect((await api.inject({ method: "GET", url: "/api/rooms", headers })).statusCode).toBe(200);
     expect((await api.inject({ method: "GET", url: "/api/admin/users", headers })).json()?.error?.code).not.toBe("BROKER_SCOPE_DENIED");
-    for (const [method, url] of [["POST", "/api/admin/releases/promote"], ["POST", "/api/admin/users/invites"], ["POST", "/api/configuration/export"]] as const) {
+    // First Setup's Live provider keys are the operator's secrets, like the Vault (refused before the route runs).
+    for (const [method, url] of [["POST", "/api/admin/releases/promote"], ["POST", "/api/admin/users/invites"], ["POST", "/api/configuration/export"],
+      ["POST", "/api/setup/voice/credentials"]] as const) {
       const denied = await api.inject({ method, url, headers, payload: method === "GET" ? undefined : {} });
       expect(denied.statusCode, `${method} ${url}`).toBe(403);
+      expect(denied.json().error.code, `${method} ${url}`).toBe("BROKER_SCOPE_DENIED");
     }
   });
 

@@ -1,4 +1,13 @@
 export const MAX_ROOMS = 6;
+/** Highest room limit Settings offers: one per room name. */
+export const MAX_ROOM_LIMIT = 16;
+
+/** Agent Proof and CLI Recovery rooms are test rooms: listed apart and never counted against the room limit. */
+export const isTestRoom = (room: { kind?: string | null }) => room.kind === "AGENT_PROOF" || room.kind === "CLI_RECOVERY";
+
+/** True when the owner's own (non-test) rooms already fill their room limit (Settings → Workspace → Rooms). */
+export const roomLimitReached = (rooms: readonly { kind?: string | null }[], limit: number) =>
+  rooms.filter((room) => !isTestRoom(room)).length >= limit;
 
 export const ROOM_NAMES = [
   "Alex",

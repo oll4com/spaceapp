@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "ce10c87b36ba946807a37897ab04c1eb6362d3331f1aeb84c2fd2eaf7e7f3cde",
-  "sourceCommit": "baad0bcf13427f2d3df8beb7fc5f7227443e1b6c",
-  "launcherVersion": "1.1.7",
-  "runtimeVersion": "1.1.7",
-  "createdAt": "2026-10-23T17:10:30.563Z",
+  "candidateDigest": "3188d5e4910836890608d5d947995403a00bda0cae7d11ace147ed97d5282762",
+  "sourceCommit": "4efe71fd08b959376ca0cb271cce1e2ee83ae5a0",
+  "launcherVersion": "1.1.8",
+  "runtimeVersion": "1.1.8",
+  "createdAt": "2026-10-25T07:25:03.702Z",
   "checks": [
     {
       "platform": "linux",
@@ -13,9 +13,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "ownerUi": true,
       "artifact": "linux-fresh-install.json",
-      "artifactSha256": "f0aa277fee0fb5eaf912233e1084203b322856e981f117697d1181bf06a11628"
+      "artifactSha256": "0d9b17f83033f9083936fa6bb79b32ea199f442c06f7c7e1b7a19ddb2de7c47b",
+      "ownerUi": true
     },
     {
       "platform": "linux",
@@ -24,11 +24,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-linux-upgrade.json",
-      "artifactSha256": "4f8642acd13e2ebe5dfae94a58e5955056cb4b0ba26d33da1cabaa6637d110e6",
-      "dataPreserved": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "linux-upgrade.json",
+      "artifactSha256": "3d482e7f07974519d6764e119f908e9f6635e9c5f9b72813513b2bfed02b9523",
+      "dataPreserved": true
     },
     {
       "platform": "linux",
@@ -37,11 +35,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-linux-repair.json",
-      "artifactSha256": "0b0efa67073b276ef21214e8498340299ba5c2bc28ca7c6e4ca6b4e2f5303e75",
-      "dataPreserved": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "linux-repair.json",
+      "artifactSha256": "de4cafa79af3aab6641de1a6a800968fc230296af1de133ea944a2846cb98d69",
+      "dataPreserved": true
     },
     {
       "platform": "linux",
@@ -50,12 +46,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-linux-docker-stopped.json",
-      "artifactSha256": "559c0b68eaf7d7d28ea52d304764ee5294bb4895be5f04ecc214c24abe5ac6a2",
+      "artifact": "linux-docker-stopped.json",
+      "artifactSha256": "ced4d88255a6bbbcac0049bb10f6a8e2815ecc7d76371578872ef32fde74cbac",
       "dataPreserved": true,
-      "dockerInitiallyStopped": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "dockerInitiallyStopped": true
     },
     {
       "platform": "linux",
@@ -65,61 +59,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_e9dcadf62ffeFYKphLh5TWO1MI",
+      "nativeTaskId": "ses_e8f849e0affevj1aJ1A0am5JMk",
       "responseObserved": true,
       "freeModel": true,
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "artifact": "rc5-linux-first-agent.json",
-      "artifactSha256": "52120c9596351cbca248e98b73b7a350a19e8b80025afadf94215ec838f5469c",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); the rc6 Linux first agent turn could not run: OpenCode Zen's free tier answered provider.quota 'Free usage limit reached' for every free model from the lab egress 162.55.99.104 (13:46-14:00Z), and the hourly retries could not start before the 18:40Z cutoff because the lab's 16:30-20:30Z backup window blocks VM starts (Nous: A, then B)",
-      "rc6FailureEvidence": [
-        {
-          "file": "rc6-failure-linux-first-agent-events.json",
-          "sha256": "529edf28535073d78d55c5add2c8d5d9534ccebfcf508ec581b47c37e74c5c06"
-        },
-        {
-          "file": "rc6-failure-linux-starter-workspace.json",
-          "sha256": "3ae08913ad065d79de6b6ec009b0e346a0c161062d0c1b345978bc35a8ab70fb"
-        },
-        {
-          "file": "rc6-failure-linux-zen-record.json",
-          "sha256": "39386f39c984bb5b56283b6479ceffafe9834ceac55d6b622c0c6fd4a8826db6"
-        },
-        {
-          "file": "rc6-failure-linux-first-first-agent-events-linux.json",
-          "sha256": "529edf28535073d78d55c5add2c8d5d9534ccebfcf508ec581b47c37e74c5c06"
-        },
-        {
-          "file": "rc6-failure-linux-first-linux-agent-sequence.log",
-          "sha256": "73eeaa9b463585cd6af2f7136190815a4c6f0559093d9699b8896bb9b3f911c4"
-        },
-        {
-          "file": "rc6-failure-linux-first-linux-first-agent-diag.json",
-          "sha256": "f10ed97538f6ea62cd29cc02278783f312f759ee10eafd5e50e3f6894ec3d8ed"
-        },
-        {
-          "file": "rc6-failure-linux-first-linux-first-agent-run.log",
-          "sha256": "d1ce92fd0fcfa4f49b79b7c85019acce7e45760f83f7479efdb331cdbd92174f"
-        },
-        {
-          "file": "rc6-failure-linux-first-linux-starter-workspace-1.1.7.json",
-          "sha256": "3ae08913ad065d79de6b6ec009b0e346a0c161062d0c1b345978bc35a8ab70fb"
-        },
-        {
-          "file": "rc6-failure-linux-first-linux-starter-workspace-run.log",
-          "sha256": "c1db5eca4a0a78e48550f8817a2920da98b210024595cc186af50675b19bfcff"
-        },
-        {
-          "file": "rc6-failure-linux-first-linux-zen-record-1.1.7.json",
-          "sha256": "39386f39c984bb5b56283b6479ceffafe9834ceac55d6b622c0c6fd4a8826db6"
-        },
-        {
-          "file": "rc6-failure-linux-first-session-vm218-1340.status",
-          "sha256": "78e852c4f641b6c771580b7524fb2b002ba00b55f6e8edb7f5496ef3b8b623dc"
-        }
-      ]
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "c021529f3874c458bb098a0b3edf53577d920f38507d479b6155583ea787b93f"
     },
     {
       "platform": "linux",
@@ -134,15 +80,8 @@
         "large"
       ],
       "dataPreserved": true,
-      "rc5Profiles": [
-        "small",
-        "medium",
-        "large"
-      ],
-      "artifact": "rc5-linux-profiles.json",
-      "artifactSha256": "82d5dbcaccc9ae17d7052ba4e8b81cfe2b5441922599b774c802c51f0c111497",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "linux-profiles.json",
+      "artifactSha256": "218fc7302491f1cf5e18b6f1d8e717a78cf502b2a5618669360a2c710dd39a9a"
     },
     {
       "platform": "windows",
@@ -151,9 +90,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "ownerUi": true,
       "artifact": "windows-fresh-install.json",
-      "artifactSha256": "1066cfb84a2883fca7b8e4bad9c0ee1badf3c7840dcc591966cba6f7d05a3af1",
+      "artifactSha256": "2b81b5b9aaa87bb51e3603c3a095730dc95095dff5b10dcd57d6ae87218a5014",
+      "ownerUi": true,
       "interactiveDesktop": true
     },
     {
@@ -163,12 +102,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-windows-upgrade.json",
-      "artifactSha256": "d77fed83f615f6e9833fe5b79b295fec48386579e3f3048fa46a7b4a6d09bdc9",
+      "artifact": "windows-upgrade.json",
+      "artifactSha256": "b2ac0087b056732029b826449fb38109e152424082b6d6444a51babeb8cd4b20",
       "dataPreserved": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "interactiveDesktop": true
     },
     {
       "platform": "windows",
@@ -177,12 +114,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-windows-repair.json",
-      "artifactSha256": "eb09d8e6b55254e762320b2a8d815f2525bfbe28705c54049d2ecd864e23fe25",
+      "artifact": "windows-repair.json",
+      "artifactSha256": "c1a3aeaa8ce2b3cf216768036c750893bfa7e649e99442b4ca1192addad197e7",
       "dataPreserved": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "interactiveDesktop": true
     },
     {
       "platform": "windows",
@@ -191,13 +126,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-windows-docker-stopped.json",
-      "artifactSha256": "c196e37bc7d58ecbc9fe52ce41b547e27f6280f36214a7c58dbc5d9bc61e692f",
+      "artifact": "windows-docker-stopped.json",
+      "artifactSha256": "afd8ee2d2c0dcc9f371aa8fa9ab7815a2609d0bd6cb7d3282e65fd2c4728efa3",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "interactiveDesktop": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "interactiveDesktop": true
     },
     {
       "platform": "windows",
@@ -207,52 +140,15 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_ea21c2a4bffeMN68g8tyOrFuGc",
+      "nativeTaskId": "ses_e8ecd36a6ffet7wjK40uTcTpBa",
       "responseObserved": true,
       "freeModel": true,
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "cleanupVerified": true,
-      "artifact": "rc3-windows-first-agent.json",
-      "artifactSha256": "a4c944ac97495a1c6f3591e8245d491a3fc308bc69521b4023d03df9b721ae05",
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "171a079c7c5cc1400fc1ce1b078004fbd110e02fb1750fbdc19e4c9f8a8f1b6a",
       "interactiveDesktop": true,
-      "carriedFrom": "rc3 060d85a",
-      "carriedReason": "rc4/rc5 change only hono, sanitize-html, vite, vitest; OpenCode 2.0.32, wrapper and prompts identical to rc3; rc5 Windows runs failed on Zen transport errors and a free-model stop; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)",
-      "rc5FailureEvidence": [
-        {
-          "file": "rc5-failure-first-agent-events-windows.json",
-          "sha256": "9dfc395c2b747d6f1d96ec85cfaf8c517868e688bb08fdc1000def0cef35bd17"
-        },
-        {
-          "file": "rc5-failure-windows-agent-sequence-retry3.log",
-          "sha256": "aa5ea19b8ff6a6584bbac4bc315e092ce79ac8b6ff24add11eb42d242bc13802"
-        },
-        {
-          "file": "rc5-failure-windows-agent-sequence.log",
-          "sha256": "ed5e396cd150206afab3056d3a2d8490f7e0b7d65280f181a985d5e51f1e9636"
-        },
-        {
-          "file": "rc5-failure-windows-permission-prompt-1.1.7.png",
-          "sha256": "655ddb19b36f7e4c37094848bd82d00cc0b7b53b24cd699d894c3d2cc8f452ea"
-        },
-        {
-          "file": "rc5-failure-windows-session-vm219-rc5.status",
-          "sha256": "897cbb13703f6a55d68024d225a9aacf890c1b87b1a2dbf248e471b63d2d1eca"
-        },
-        {
-          "file": "rc5-failure-windows-starter-workspace-1.1.7.json",
-          "sha256": "e5c58f37711e06d35fa54374eec99c62d513fe3c2258b08bef38c698adc1d138"
-        },
-        {
-          "file": "rc5-failure-windows-zen-diag-1.1.7.json",
-          "sha256": "4a7aea9c1258d868f59f30ca249834e3fd1270858143b76a65f6b892083cd7df"
-        },
-        {
-          "file": "rc5-failure-windows-zen-diag-vm207-1.1.7.json",
-          "sha256": "da12f6b8d23f4e3260dcc1f38bf22e4a00e122802b94287d1da3de2d1277d879"
-        }
-      ],
-      "carriedVia": "rc5 c067c535c2"
+      "diagnosticRerun": "Nous decision on report 7793 (fallback B): the first-agent step rerun alone on the same c1 fixture with the proof read logged and retried"
     },
     {
       "platform": "windows",
@@ -268,19 +164,8 @@
       ],
       "dataPreserved": true,
       "interactiveDesktop": true,
-      "rc5Profiles": [],
-      "carriedFrom": "rc3 060d85a",
-      "carriedProfiles": [
-        "small",
-        "medium",
-        "large"
-      ],
-      "carriedReason": "rc5 = rc3 + dependency patches only (hono 4.13.11, sanitize-html 2.18.1, vite 7.3.7, vitest 4.1.12); launcher tgz byte-identical (b3dec1aa); images differ only in hono, sanitize-html, postcss and their dependencies; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)",
-      "carriedArtifact": "rc3-windows-profiles.json",
-      "carriedArtifactSha256": "276589629975e0482c07250dd48544b34c4bd582322424afa479ae0ae96ee5ff",
-      "artifact": "rc5-windows-profiles.json",
-      "artifactSha256": "a922801877c961fa4df3d2cc3f56aff6211cb5e052b007a151b305fe8c35856e",
-      "carriedVia": "rc5 c067c535c2"
+      "artifact": "windows-profiles.json",
+      "artifactSha256": "a8bfa7737386e958ee569d68323fb123669f81c98aa38662d4af004b42fb24fb"
     },
     {
       "platform": "macos",
@@ -289,9 +174,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "ownerUi": true,
       "artifact": "macos-fresh-install.json",
-      "artifactSha256": "3ce7f22954d57f49219bc7e7f031e25c81b68fa49c1737d139847f72657c8b29"
+      "artifactSha256": "381b8fea7fbcd0c5a302ed42df09e2f655809e5dfef07757211662913119ee74",
+      "ownerUi": true
     },
     {
       "platform": "macos",
@@ -300,11 +185,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-macos-upgrade.json",
-      "artifactSha256": "44e991d518211f054a49f4a972c36693791187982b20dc4b85feb44b41a20528",
-      "dataPreserved": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "macos-upgrade.json",
+      "artifactSha256": "a3c8be3661ea302c0f3681fae9c4c269a4fa25818480dd2b9e6914847bd645f6",
+      "dataPreserved": true
     },
     {
       "platform": "macos",
@@ -313,11 +196,9 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-macos-repair.json",
-      "artifactSha256": "5d5122a67dddd4d92e3a7047586d65c33958acdf89252f9d42f428d6dc963cca",
-      "dataPreserved": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "macos-repair.json",
+      "artifactSha256": "df9a0ce66e31930ce95a366dc39380b7cd674c897ed06969c8b1e1be815b8fbc",
+      "dataPreserved": true
     },
     {
       "platform": "macos",
@@ -326,12 +207,10 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "rc5-macos-docker-stopped.json",
-      "artifactSha256": "6c5d18c461d8e0bea4df09d3cc4dfc4f4474c88ad3e3e2260a79bd5221a778b8",
+      "artifact": "macos-docker-stopped.json",
+      "artifactSha256": "e79e10400831324070401a451794f3020586ced63c30f94704d6581fda1a3b09",
       "dataPreserved": true,
-      "dockerInitiallyStopped": true,
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "dockerInitiallyStopped": true
     },
     {
       "platform": "macos",
@@ -341,15 +220,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_e9dbdb318ffek0fHu3K8bXpx2P",
+      "nativeTaskId": "ses_e8f6c4973ffeuv9Hgdb9sRNtOc",
       "responseObserved": true,
       "freeModel": true,
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "artifact": "rc5-macos-first-agent.json",
-      "artifactSha256": "b7324da18d28bc190ee6cc866094cf1b0006430efa0a0fae48893b8b862e2178",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "ceb40772d63d646cff27bb5d462d25aacff8910dd91cfa0c0d229b76a797b795"
     },
     {
       "platform": "macos",
@@ -364,19 +241,8 @@
         "large"
       ],
       "dataPreserved": true,
-      "rc5Profiles": [],
-      "carriedFrom": "rc3 060d85a",
-      "carriedProfiles": [
-        "small",
-        "medium",
-        "large"
-      ],
-      "carriedReason": "rc5 = rc3 + dependency patches only (hono 4.13.11, sanitize-html 2.18.1, vite 7.3.7, vitest 4.1.12); launcher tgz byte-identical (b3dec1aa); images differ only in hono, sanitize-html, postcss and their dependencies; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)",
-      "carriedArtifact": "rc3-macos-profiles.json",
-      "carriedArtifactSha256": "2125b4e5ee76e6c2fd145749bd85d468f2d52f596f67da6e8a5ee73bc3b6abae",
-      "artifact": "rc5-macos-profiles.json",
-      "artifactSha256": "b9225b7483c79055c4fef9a808512ebfff6e00ad7a1e224735b7bb3d65642147",
-      "carriedVia": "rc5 c067c535c2"
+      "artifact": "macos-profiles.json",
+      "artifactSha256": "4e99905c03c1754a2359c8ce9f137099bfabe142b31ea80fbf719df403ecbf08"
     }
   ],
   "supplementary": [
@@ -384,277 +250,78 @@
       "platform": "linux",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
-      "artifact": "rc5-linux-first-agent.json",
-      "artifactSha256": "52120c9596351cbca248e98b73b7a350a19e8b80025afadf94215ec838f5469c",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "linux-first-agent.json",
+      "artifactSha256": "c021529f3874c458bb098a0b3edf53577d920f38507d479b6155583ea787b93f"
     },
     {
       "platform": "linux",
       "scenario": "starter-getting-started",
       "pass": true,
-      "artifact": "rc5-linux-starter-getting-started.json",
-      "artifactSha256": "2f5bb6c59f73f7f635815d05439dbc31cc9c9cd685d6879feb2c803510aeab07",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "linux-starter-getting-started.json",
+      "artifactSha256": "cfd5076ff6e3e0ad312a123469a50b090a95565f6e771d53957c15c790874ed8"
     },
     {
       "platform": "linux",
       "scenario": "zen-record",
       "pass": true,
-      "artifact": "rc5-linux-zen-record.json",
-      "artifactSha256": "abf70103d0a161d2088463f20b4c480df163d19188cac5532e643f134132417d",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "linux-zen-record.json",
+      "artifactSha256": "737cca4f9c54a2344775d65e2463e461bc474463519b0664c5f7d276308ac182"
+    },
+    {
+      "platform": "windows",
+      "scenario": "first-agent-no-permission-prompt",
+      "pass": true,
+      "artifact": "windows-first-agent.json",
+      "artifactSha256": "171a079c7c5cc1400fc1ce1b078004fbd110e02fb1750fbdc19e4c9f8a8f1b6a"
     },
     {
       "platform": "windows",
       "scenario": "starter-getting-started",
       "pass": true,
-      "artifact": "rc3-windows-starter-workspace.json",
-      "artifactSha256": "79ed22709ae5f7c2712bfbc17482159962431c72b6421d48a6b3c101bbb5a9b3",
-      "carriedFrom": "rc3 060d85a",
-      "carriedReason": "rc4/rc5 change only hono, sanitize-html, vite, vitest; OpenCode 2.0.32, wrapper and prompts identical to rc3; rc5 Windows runs failed on Zen transport errors and a free-model stop; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)",
-      "rc5FailureEvidence": [
-        {
-          "file": "rc5-failure-first-agent-events-windows.json",
-          "sha256": "9dfc395c2b747d6f1d96ec85cfaf8c517868e688bb08fdc1000def0cef35bd17"
-        },
-        {
-          "file": "rc5-failure-windows-agent-sequence-retry3.log",
-          "sha256": "aa5ea19b8ff6a6584bbac4bc315e092ce79ac8b6ff24add11eb42d242bc13802"
-        },
-        {
-          "file": "rc5-failure-windows-agent-sequence.log",
-          "sha256": "ed5e396cd150206afab3056d3a2d8490f7e0b7d65280f181a985d5e51f1e9636"
-        },
-        {
-          "file": "rc5-failure-windows-permission-prompt-1.1.7.png",
-          "sha256": "655ddb19b36f7e4c37094848bd82d00cc0b7b53b24cd699d894c3d2cc8f452ea"
-        },
-        {
-          "file": "rc5-failure-windows-session-vm219-rc5.status",
-          "sha256": "897cbb13703f6a55d68024d225a9aacf890c1b87b1a2dbf248e471b63d2d1eca"
-        },
-        {
-          "file": "rc5-failure-windows-starter-workspace-1.1.7.json",
-          "sha256": "e5c58f37711e06d35fa54374eec99c62d513fe3c2258b08bef38c698adc1d138"
-        },
-        {
-          "file": "rc5-failure-windows-zen-diag-1.1.7.json",
-          "sha256": "4a7aea9c1258d868f59f30ca249834e3fd1270858143b76a65f6b892083cd7df"
-        },
-        {
-          "file": "rc5-failure-windows-zen-diag-vm207-1.1.7.json",
-          "sha256": "da12f6b8d23f4e3260dcc1f38bf22e4a00e122802b94287d1da3de2d1277d879"
-        }
-      ],
-      "carriedVia": "rc5 c067c535c2"
-    },
-    {
-      "platform": "windows",
-      "scenario": "zen-record",
-      "pass": true,
-      "artifact": "rc5-windows-zen-record.json",
-      "artifactSha256": "f51d6062b356b356bc15bd1da1d4a2b4efba5d5a9605c193e6eda792d7e00137",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "windows-starter-getting-started.json",
+      "artifactSha256": "e2e95e2c168f67e5cbe6be5d5ee0a8686ab122837424265568ef8f42f3ec64d0"
     },
     {
       "platform": "macos",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
-      "artifact": "rc5-macos-first-agent.json",
-      "artifactSha256": "b7324da18d28bc190ee6cc866094cf1b0006430efa0a0fae48893b8b862e2178",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "macos-first-agent.json",
+      "artifactSha256": "ceb40772d63d646cff27bb5d462d25aacff8910dd91cfa0c0d229b76a797b795"
     },
     {
       "platform": "macos",
       "scenario": "starter-getting-started",
       "pass": true,
-      "artifact": "rc5-macos-starter-getting-started.json",
-      "artifactSha256": "5241eaccf0aaf000312932223779abe916babdb5a34747bde4ad1d19f4b1a0ea",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "macos-starter-getting-started.json",
+      "artifactSha256": "5e69f78777b4ad1798fc1fb1aaad0e45ee82c2c01888f18f9b83782a28ee6993"
     },
     {
       "platform": "macos",
       "scenario": "zen-record",
       "pass": true,
-      "artifact": "rc5-macos-zen-record.json",
-      "artifactSha256": "622d697311dc246459b93e6e55ff9869e53920943563610a159c6d047ba7da5d",
-      "carriedFrom": "rc5 c067c535c2",
-      "carriedReason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
+      "artifact": "macos-zen-record.json",
+      "artifactSha256": "c4c5c9a657cf75475fd5afcec3a3d6c4eaed7ac228fcccff754880bac17fe706"
     }
   ],
-  "carriedProofs": [
-    {
-      "platform": "linux",
-      "scenario": "upgrade",
-      "artifact": "rc5-linux-upgrade.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "repair",
-      "artifact": "rc5-linux-repair.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "docker-stopped",
-      "artifact": "rc5-linux-docker-stopped.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "linux",
-      "scenario": "first-agent",
-      "artifact": "rc5-linux-first-agent.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); the rc6 Linux first agent turn could not run: OpenCode Zen's free tier answered provider.quota 'Free usage limit reached' for every free model from the lab egress 162.55.99.104 (13:46-14:00Z), and the hourly retries could not start before the 18:40Z cutoff because the lab's 16:30-20:30Z backup window blocks VM starts (Nous: A, then B)",
-      "rc6FailureEvidence": [
-        "rc6-failure-linux-first-agent-events.json",
-        "rc6-failure-linux-starter-workspace.json",
-        "rc6-failure-linux-zen-record.json",
-        "rc6-failure-linux-first-first-agent-events-linux.json",
-        "rc6-failure-linux-first-linux-agent-sequence.log",
-        "rc6-failure-linux-first-linux-first-agent-diag.json",
-        "rc6-failure-linux-first-linux-first-agent-run.log",
-        "rc6-failure-linux-first-linux-starter-workspace-1.1.7.json",
-        "rc6-failure-linux-first-linux-starter-workspace-run.log",
-        "rc6-failure-linux-first-linux-zen-record-1.1.7.json",
-        "rc6-failure-linux-first-session-vm218-1340.status"
-      ]
-    },
-    {
-      "platform": "linux",
-      "scenario": "profiles",
-      "artifact": "rc5-linux-profiles.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "upgrade",
-      "artifact": "rc5-windows-upgrade.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "repair",
-      "artifact": "rc5-windows-repair.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "docker-stopped",
-      "artifact": "rc5-windows-docker-stopped.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent",
-      "artifact": "rc3-windows-first-agent.json",
-      "from": "rc3 060d85a",
-      "via": "rc5 c067c535c2",
-      "reason": "rc4/rc5 change only hono, sanitize-html, vite, vitest; OpenCode 2.0.32, wrapper and prompts identical to rc3; rc5 Windows runs failed on Zen transport errors and a free-model stop; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "windows",
-      "scenario": "profiles",
-      "artifact": "rc5-windows-profiles.json",
-      "from": "rc3 060d85a",
-      "via": "rc5 c067c535c2",
-      "reason": "rc5 = rc3 + dependency patches only (hono 4.13.11, sanitize-html 2.18.1, vite 7.3.7, vitest 4.1.12); launcher tgz byte-identical (b3dec1aa); images differ only in hono, sanitize-html, postcss and their dependencies; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "upgrade",
-      "artifact": "rc5-macos-upgrade.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "repair",
-      "artifact": "rc5-macos-repair.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "docker-stopped",
-      "artifact": "rc5-macos-docker-stopped.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "first-agent",
-      "artifact": "rc5-macos-first-agent.json",
-      "from": "rc5 c067c535c2",
-      "via": null,
-      "reason": "rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    },
-    {
-      "platform": "macos",
-      "scenario": "profiles",
-      "artifact": "rc5-macos-profiles.json",
-      "from": "rc3 060d85a",
-      "via": "rc5 c067c535c2",
-      "reason": "rc5 = rc3 + dependency patches only (hono 4.13.11, sanitize-html 2.18.1, vite 7.3.7, vitest 4.1.12); launcher tgz byte-identical (b3dec1aa); images differ only in hono, sanitize-html, postcss and their dependencies; then into rc6: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)"
-    }
-  ],
+  "carriedProofs": [],
   "limitations": [
-    "Candidate: public build baad0bc (rc6), a sanitized export of SpaceApp release/1.1.7-rc6 3e4572bc97 (rc5 c067c535c2 plus ip-address 10.7.4) with the overlay fix that pins npm's bundled ip-address to 10.7.4 in the images. The rc5 release run 39937429712 stopped at its own security gates (ip-address 10.7.1 CVE-2026-111997 in the source tree and all six images) before publishing anything.",
-    "Tested artifacts: launcher run-spaceapp-1.1.7.tgz sha256 b3dec1aa3630d6a2273e8300ab7cf5347d2e45d05daf5f5db8e48955614fd9fb (byte-identical to rc3's and rc5's); images by ID from the archive images-1.1.7.tar.gz sha256 7b19cf7f327b84c886f965fe9910ce758e37c78485fdada4471f05b0ebb3947a: core sha256:e65954f0cd645b82a9493f3ca43d5aae1f0cb76faceec23827e5c0ab15ad0549, cli sha256:b2d2f6eaee1c679b438ac4c76957e1a67008a205e17793d1f587b2992ec06849, browser sha256:791f2d7766c9eaef6565fc6777c60b5ff97e17447db80b54650107c5cc8e2736. The release workflow rebuilds the images from this source (IR117-C-F7).",
-    "Executed on rc6: linux fresh-install; windows fresh-install; macos fresh-install (planned but carried from rc5 with the rc6 failure attached: linux/first-agent). Every other proof is carried from rc5's acceptance (carriedFrom \"rc5 c067c535c2\", reason: rc6 changes only ip-address 10.7.1->10.7.4 (app lockfile and npm's bundled copy in the images); launcher tgz byte-identical (b3dec1aa)); proofs rc5 had carried from rc3 keep carriedFrom \"rc3 060d85a\" with carriedVia \"rc5 c067c535c2\". The release check does not show carriedFrom; carriedProofs and README.md list every one.",
+    "Candidate: public tree 4efe71f (c1), a sanitized export of SpaceApp dev 8d5bf21b32 on the 1.1.8 branch, with the CHANGELOG 1.1.8 heading and npm's bundled undici pinned to 6.29.1 in the images.",
+    "Tested artifacts: launcher run-spaceapp-1.1.8.tgz sha256 305bc209c6ade97565af3a9375f53a855f8edbdf380cc3f8d00ea698229701ac; images by ID from the archive images-1.1.8.tar.gz sha256 b827f7b854a344f4ce2facb91cf130f6a15175525003d510fe852bfca10a40e5: core sha256:8b80822c77c49e9cd459e9944952ec0fe35fc6005effa76d2ad6c1594a6f1ee5, cli sha256:7fca52c7952c531812a22e9ae6ba23a6c4970de7fd076927b612a0ea7001f8e1, browser sha256:99561dc3aa7a8dbd9b2bd1253d5d9a58f59fa6c4d7b65554be4efd6faf155fdb. The release workflow rebuilds the images from this source (IR117-C-F7); after npm next, the lab installs of the published package must pass scripts/shipped-image-evidence.mjs before latest.",
+    "Every release check was executed on c1; nothing is carried from an earlier candidate.",
+    "Windows first agent (Nous decision on report 7793, fallback B): the evidence is the first-agent step rerun alone on the same c1 fixture at 03:53 UTC with the harness proof read logged and retried (opencode/big-pickle answered with webfetch/read/write tool calls). The scheduled Windows session had failed twice for lab reasons: Docker Desktop's VM clock 1 h behind after the daylight-saving change (UX-004 is the product weakness this exposed, planned for 1.1.9), then one failed harness proof read; a clean rerun stopped at the Zen gate because OpenCode Zen's free tier answered \"Free usage limit reached\" from the lab egress after the day's runs (Windows zen-record false, supplementary).",
     "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
-    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
-    "Windows desktop commands ran as interactive scheduled tasks in an owned RDP session; this is not keystroke coverage of every wizard prompt.",
-    "No known exceptions: every first-agent check ran on OpenCode 2 with an OpenCode Zen free model from the lab's own address and completed with real tool calls and no permission prompt. The Zen exception code in scripts/release-evidence.mjs is unused.",
-    "Known issue, accepted for 1.1.7 (Nous 2026-10-21 on report 4713, fixed in 1.1.8): after a failed restore every database and file is put back, but SpaceApp is left stopped and the launcher prints no hint; `spaceapp up` brings it back with its own data (restore-left-stopped, VM218 rc3 supplementary).",
-    "rc3's supplementary proofs (doctor fault/fix, telemetry Yes/No, update badge, upgrade from 1.1.5, the VM219 launcher tests, Claude Code install and backup/restore with Temporal, licences in the images, OpenCode after a CLI restart, restore rollback) ran on rc3 060d85a and are recorded in the rc3 acceptance; they are not repeated on rc5 and not counted here.",
-    "The public suite's SQLite worker tests need Python 3.12 or newer; the spaceapp-core image has no python3, so the SQLite Databases worker cannot run in public installations (1.1.7).",
-    "Open limitations recorded in docs/quality/KNOWN_LIMITATIONS.md: cross-version restore after a release that adds referencing tables (IR117-C-F6) and evidence bound to the source rather than the shipped image bytes (IR117-C-F7).",
-    "npm next publication, environment approval and latest promotion have not yet completed."
+    "Fresh installer timings use preloaded local candidate images; they exclude network image downloads."
   ],
   "testedArtifacts": {
-    "launcherTgzSha256": "b3dec1aa3630d6a2273e8300ab7cf5347d2e45d05daf5f5db8e48955614fd9fb",
-    "imagesArchiveSha256": "7b19cf7f327b84c886f965fe9910ce758e37c78485fdada4471f05b0ebb3947a",
+    "launcherTgzSha256": "305bc209c6ade97565af3a9375f53a855f8edbdf380cc3f8d00ea698229701ac",
+    "imagesArchiveSha256": "b827f7b854a344f4ce2facb91cf130f6a15175525003d510fe852bfca10a40e5",
     "images": {
-      "core": "sha256:e65954f0cd645b82a9493f3ca43d5aae1f0cb76faceec23827e5c0ab15ad0549",
-      "cli": "sha256:b2d2f6eaee1c679b438ac4c76957e1a67008a205e17793d1f587b2992ec06849",
-      "browser": "sha256:791f2d7766c9eaef6565fc6777c60b5ff97e17447db80b54650107c5cc8e2736"
+      "core": "sha256:8b80822c77c49e9cd459e9944952ec0fe35fc6005effa76d2ad6c1594a6f1ee5",
+      "cli": "sha256:7fca52c7952c531812a22e9ae6ba23a6c4970de7fd076927b612a0ea7001f8e1",
+      "browser": "sha256:99561dc3aa7a8dbd9b2bd1253d5d9a58f59fa6c4d7b65554be4efd6faf155fdb"
     },
-    "spaceSourceCommit": "3e4572bc975623d3450a8dfebeba5dbc8b7406f6"
+    "spaceSourceCommit": "8d5bf21b3228e5ea89557ab56b6a3bee352fc5a5"
   },
-  "knownIssues": [
-    {
-      "id": "restore-left-stopped",
-      "summary": "After a failed restore every database and file is put back, but SpaceApp is left stopped and the launcher prints no spaceapp up hint; spaceapp up brings it back with its own data.",
-      "decision": "Accepted for 1.1.7 (Nous 2026-10-21, report 4713); fixed in 1.1.8 (task:EsQBDb-PoqXx)",
-      "platform": "linux",
-      "evidence": "linux-supplementary3-restore-rollback.json"
-    }
-  ],
+  "knownIssues": [],
   "knownExceptions": []
 }

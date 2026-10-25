@@ -1,7 +1,8 @@
-import { isValidElement, memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { isValidElement, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Copy } from "../ui-theme/app-icons.js";
+import { AgentFiles, Check, Copy } from "../ui-theme/app-icons.js";
+import { AgentFileMentionContext } from "../terminal-pane/AgentFileLinks.js";
 import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
 
 export function ChatCopyButton({ text, label }: { text: string; label: string }) {
@@ -48,10 +49,22 @@ function ChatCodeBlock({ children }: { children?: ReactNode }) {
   return <div className="chat-code-block"><div className="chat-code-toolbar"><span>Code</span><ChatCopyButton text={text} label="Copy code" /></div><pre tabIndex={0} aria-label="Code block">{children}</pre></div>;
 }
 
-const components: Components = {
-  a: ({ href, children }) => href
+function ChatLink({ href, children }: { href?: string; children?: ReactNode }) {
+  const agentFiles = useContext(AgentFileMentionContext);
+  const artifact = href ? agentFiles?.artifact(href) : undefined;
+  if (agentFiles && artifact) {
+    return <a href={href} className="chat-agent-file-link" title="Open the Agent Files preview" onClick={(event) => {
+      event.preventDefault();
+      agentFiles.open(artifact);
+    }}>{children}<AgentFiles aria-hidden="true" /></a>;
+  }
+  return href
     ? <a href={href} target={href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">{children}</a>
-    : <span>{children}</span>,
+    : <span>{children}</span>;
+}
+
+const components: Components = {
+  a: ChatLink,
   img: ({ src, alt }) => typeof src === "string" && src
     ? <a href={src} target="_blank" rel="noopener noreferrer">{alt || "Open image"}</a>
     : <span>{alt || "Image"}</span>,
@@ -60,5 +73,6 @@ const components: Components = {
 };
 
 export const ChatMarkdown = memo(function ChatMarkdown({ content }: { content: string }) {
-  return <div className="chat-markdown"><Markdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={safeChatUrl} components={components}>{content}</Markdown></div>;
+  const agentFiles = useContext(AgentFileMentionContext);
+  return <div className="chat-markdown"><Markdown remarkPlugins={agentFiles ? [remarkGfm, agentFiles.remark] : [remarkGfm]} skipHtml urlTransform={safeChatUrl} components={components}>{content}</Markdown></div>;
 });

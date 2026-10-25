@@ -133,7 +133,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     if (event.kind === "STUCK") return continueStuck(event);
     if (!AUTOPILOT_KINDS.has(event.kind)) {
       const need = event.kind === "SIGN_IN" ? "Sign in to this CLI." : event.kind === "USAGE_LIMIT" ? "Switch the model or account, or wait for the limit to reset."
-        : event.kind === "ERROR" ? "Look at the pane and restart it if needed." : "Look at the pane.";
+        : event.kind === "ERROR" ? "Look at the pane and restart it if needed." : event.kind === "QUESTION" ? "Answer its question in the pane." : "Look at the pane.";
       return settle(event, "ESCALATED", `Needs you: ${need}`);
     }
     if (!event.paneId) return settle(event, "ESCALATED", "Needs you: the pane is gone.");

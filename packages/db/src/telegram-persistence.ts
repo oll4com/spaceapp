@@ -239,6 +239,11 @@ export class PostgresTelegramPersistence implements TelegramPersistence, Telegra
     });
   }
 
+  async updateIntegrationOffset(pollingOffset: number, now: string): Promise<void> {
+    await this.pool.query("UPDATE telegram_integrations SET polling_offset = GREATEST(polling_offset, $1), updated_at = $2 WHERE id = 'global'",
+      [Math.max(0, Math.trunc(pollingOffset)), now]);
+  }
+
   async updatePairingOffset(pairingId: string, pollingOffset: number, now: string): Promise<void> {
     await this.pool.query(
       `

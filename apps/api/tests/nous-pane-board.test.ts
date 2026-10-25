@@ -5,7 +5,7 @@ import type { NousPaneBoardSettings, Pane, Room, SpaceNotification } from "@spac
 import { nousPaneBoardSettingsSchema } from "@space/contracts";
 import { InMemoryNousPaneSummariesRepository, type PaneReport } from "@space/db";
 import { describe, expect, it, vi } from "vitest";
-import { createPaneBoard, fallbackSummary, panePrompt, parseSummaryAnswer, summaryPrompt, type PaneBoardSnapshot } from "../src/nous/pane-board.js";
+import { boardPanes, createPaneBoard, fallbackSummary, panePrompt, parseSummaryAnswer, summaryPrompt, type PaneBoardSnapshot } from "../src/nous/pane-board.js";
 
 const owner = "user:operator";
 const room = (id: string, name: string, order: number, kind = "WORKSPACE") => ({ id, name, kind, order, ownerUserId: owner, archivedAt: null }) as unknown as Room;
@@ -176,6 +176,13 @@ describe("Nous pane board pieces", () => {
     expect(fallbackSummary({ ...base, state: "working", report: snapshot.reports[0]!, check: null }, 0)).toEqual(expect.objectContaining({ line: "Step 3 done.", waitsOn: "NONE" }));
     expect(panePrompt({ pane: andy, state: "waiting", report: snapshot.reports[0]! })).toEqual({ question: "Waiting for input", options: [] });
     expect(panePrompt({ pane: andy, state: "working", report: snapshot.reports[1]! })).toBeNull();
+  });
+
+  it("keeps INFO notices (new mail, a learned rule) off the board: only what waits for the operator (operator request 2026-10-21)", () => {
+    const { snapshot, andy } = world();
+    const notice = (id: string, severity: string) => ({ id, paneId: andy.id, source: "MAIL_COPILOT", severity, title: id, status: "OPEN" }) as unknown as SpaceNotification;
+    snapshot.notifications = [notice("notification:mail", "INFO"), notice("notification:review", "ATTENTION")];
+    expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.notifications.map((item) => item.id)).toEqual(["notification:review"]);
   });
 
   it("keeps the prompt within the worker's limit", () => {

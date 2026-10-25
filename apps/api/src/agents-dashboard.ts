@@ -1,5 +1,6 @@
 import type { Pane, PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
+import { isCliPane } from "./pane-guards.js";
 
 export type DashboardStatus = "working" | "waiting" | "done" | "idle";
 
@@ -46,7 +47,7 @@ export async function readDashboardActivity(panes: Pane[], store: SpaceStore,
     while (cursor < panes.length) {
       const pane = panes[cursor++]!;
       if (pane.isClosed) continue;
-      if (pane.mode === "TERMINAL" && pane.terminalRuntimeId !== "cli:root") {
+      if (isCliPane(pane) && pane.terminalRuntimeId !== "cli:root") {
         const session = await store.getActivePaneCliSession(pane.id);
         if (!session || session.status === "EXITED") {
           set(pane.id, { status: "idle", reason: "Not running", source: "session" });

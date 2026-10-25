@@ -3,7 +3,7 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 // Pane reports (migration 0226, plan clipboard:ot6-jLKOWDNC): each CLI pane's progress reports, newest first per pane.
 // The service caps and redacts the text before it is stored.
 
-export const PANE_REPORT_STATUSES = ["STARTED", "PROGRESS", "BLOCKED", "NEEDS_DECISION", "WAITING", "DONE", "FAILED", "TURN_END", "TODO", "HEARTBEAT", "QUESTION"] as const;
+export const PANE_REPORT_STATUSES = ["STARTED", "PROGRESS", "BLOCKED", "NEEDS_DECISION", "NEEDS_YOU", "WAITING", "DONE", "FAILED", "TURN_END", "TODO", "HEARTBEAT", "QUESTION"] as const;
 export type PaneReportStatus = typeof PANE_REPORT_STATUSES[number];
 export type PaneReportSource = "AGENT" | "AUTO";
 export interface NewPaneReport {

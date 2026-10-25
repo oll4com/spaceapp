@@ -50,14 +50,15 @@ proposal and follow-up playbook, demo-first proposals), `references/scams.md` (w
    "upwork.com"}` or `space_freelance_mail_find_link {urlContains: "upwork.com"}`. Identity checks (ID photo,
    selfie, video call), phone numbers, payout and tax forms, CAPTCHAs and interviews are the operator's: set the
    account `NEEDS_OPERATOR` with what is needed in `notes` and hand the browser over
-   (`space_browser_request_handoff`). Never invent identity data, never create a second account on a platform.
+   (`space_browser_request_handoff`; the request is already the operator's notice, which brings them to the pane: no
+   `needsUser` note for the same handoff). Never invent identity data, never create a second account on a platform.
    A challenge page (Cloudflare "Verify you are human" or "Just a moment...", a Turnstile, hCaptcha or reCAPTCHA box, Fiverr "Press & Hold", a Vercel or other security check) is handed off at first sight: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
 
 ## Bookmarks and Google accounts (operator rule 2026-10-18)
 
-Each platform's sign-in lives in the Freelance profile of one Google account. Open a platform page only through its
-bookmark (`space_freelance_bookmark_open`): a bookmark of another account reopens the pane browser in that account's
-Freelance profile with the page. Never reach a platform with `space_browser_navigate` or a typed address, which opens
+Each platform's sign-in lives in the browser of one Google account (the one every Space browser pane shares for it; yours
+starts it with your platform routes). Open a platform page only through its bookmark (`space_freelance_bookmark_open`): a
+bookmark of another account reopens the pane browser in that account with the page. Never reach a platform with `space_browser_navigate` or a typed address, which opens
 it in whatever account the pane has now. Save every platform bookmark with its account (`space_freelance_bookmark_save`
 with `profileId` and `accountLabel` from `space_browser_accounts`). When you do not know the account, check which
 address the platform's mail goes to (work@example.invalid aliases, Gmail) and ask the operator once; never guess.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { resolveDesignFormat, type DesignAsset, type DesignAssetMadeBy } from "@space/contracts";
+import { resolveDesignFormat, type DesignAsset, type DesignAssetMadeBy, type VideoAsset } from "@space/contracts";
 import { api, type ArtifactMetadataPayload } from "../../api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { X } from "../ui-theme/app-icons.js";
@@ -12,7 +12,8 @@ import "./file-info.css";
 interface FileInfoDialogProps {
   artifactId: string;
   filename: string;
-  asset?: DesignAsset | null;
+  /** The Design or Video asset record: what Space knows beyond the file. */
+  asset?: DesignAsset | VideoAsset | null;
   onClose(): void;
 }
 
@@ -50,14 +51,15 @@ export function FileInfoDialog({ artifactId, filename, asset, onClose }: FileInf
   }, [onClose]);
 
   const design = data?.design ?? null;
+  const designAsset = asset && "engine" in asset ? asset : null;
   const embedded = data?.embedded ?? {};
   const description = text(asset?.description) ?? text(design?.description) ?? text(embedded.Description);
   const madeBy = asset?.madeBy ?? madeByOf(design?.madeBy);
   const width = data?.image?.width ?? asset?.width ?? null;
   const height = data?.image?.height ?? asset?.height ?? null;
   const format = resolveDesignFormat(asset?.formatId ?? text(design?.formatId) ?? "");
-  const engine = asset?.engine ?? text(design?.engine);
-  const model = asset?.model ?? text(design?.model);
+  const engine = designAsset?.engine ?? text(design?.engine);
+  const model = designAsset?.model ?? text(design?.model);
   const label = text(asset?.label) ?? text(design?.label) ?? text(embedded.Title);
   const metadata = data?.artifact?.metadata ?? {};
   const source = [text(metadata.source), text(metadata.folder), text(metadata.runtimeId)].filter(Boolean).join(" · ");
@@ -70,7 +72,7 @@ export function FileInfoDialog({ artifactId, filename, asset, onClose }: FileInf
     ...(width && height ? [["Size", `${width} × ${height} px${format ? ` · ${format.label}${format.width === width && format.height === height ? " (matches the format)" : ` (the format is ${format.width} × ${format.height})`}` : ""}`] as [string, string]] : []),
     ...(engine ? [["Engine", `${engine}${model ? ` · ${model}` : ""}`] as [string, string]] : []),
     ...(label ? [["Label", label] as [string, string]] : []),
-    ...(text(asset?.prompt) ? [["Prompt", asset!.prompt!] as [string, string]] : []),
+    ...(text(designAsset?.prompt) ? [["Prompt", designAsset!.prompt!] as [string, string]] : []),
     ...(asset?.parentAssetId ?? text(design?.parentAssetId) ? [["Version of", (asset?.parentAssetId ?? text(design?.parentAssetId))!] as [string, string]] : []),
     ...(data ? [
       ["File", `${data.artifact.filename} · ${data.artifact.mimeType} · ${bytesText(data.artifact.byteSize)}`] as [string, string],

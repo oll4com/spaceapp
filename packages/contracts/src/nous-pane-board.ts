@@ -64,6 +64,8 @@ export const nousPaneBoardPaneSchema = z.object({
   /** working | waiting | done | idle | closed */
   state: z.string(),
   plan: z.object({ id: z.string(), title: z.string(), progress: z.number().int().min(0).max(100), nextStep: z.string().nullable() }).strict().nullable(),
+  /** A finished pane a scheduled task is bound to stays open (operator decision 2026-10-21): the task that keeps it. */
+  keptOpenForTask: z.object({ id: z.string(), title: z.string() }).strict().nullable().optional(),
   summary: nousPaneSummarySchema,
   /** The pane's newest report (its own words). */
   report: z.object({ at: z.string(), status: z.string(), summary: z.string() }).strict().nullable(),

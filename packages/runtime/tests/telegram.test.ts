@@ -72,6 +72,39 @@ describe("Telegram Bot API client", () => {
     }
   });
 
+  it("long-polls with callback queries, sends inline keyboards, answers a pressed button and keeps the connected chat's offset (Nous two-way, 2026-10-24)", async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: String(init?.body ?? "") });
+      if (String(url).endsWith("/getUpdates")) return jsonResponse({ ok: true, result: [
+        { update_id: 5, message: { text: "ναι", chat: { id: 123, type: "private" }, reply_to_message: { text: "Nous: Send it?\n\nDecision nous_decision:abc123def456" } } },
+        { update_id: 6, callback_query: { id: "q6", data: "nd:abc123def456:a", message: { chat: { id: 123, type: "private" } } } }
+      ] });
+      if (String(url).endsWith("/answerCallbackQuery")) return jsonResponse({ ok: true, result: true });
+      return jsonResponse({ ok: true, result: { message_id: 9 } });
+    });
+    const client = new TelegramBotApiClient(token, { fetchImpl });
+    const updates = await client.getUpdates(3, { allowed: ["message", "callback_query"], timeoutSeconds: 20 });
+    expect(updates).toEqual([
+      { updateId: 5, message: { text: "ναι", replyToText: "Nous: Send it?\n\nDecision nous_decision:abc123def456", chat: { id: "123", type: "private" } } },
+      { updateId: 6, callbackQuery: { id: "q6", data: "nd:abc123def456:a", chatId: "123" }, message: undefined }
+    ]);
+    const polled = new URLSearchParams(calls[0]!.body);
+    expect([polled.get("offset"), polled.get("timeout"), polled.get("allowed_updates")]).toEqual(["3", "20", JSON.stringify(["message", "callback_query"])]);
+    // The pairing's plain poll is unchanged.
+    await client.getUpdates(3);
+    expect(new URLSearchParams(calls[1]!.body).get("allowed_updates")).toBe(JSON.stringify(["message"]));
+    await client.sendMessage("123", "card", { replyMarkup: { inline_keyboard: [[{ text: "Approve", callback_data: "nd:abc123def456:a" }]] } });
+    expect(new URLSearchParams(calls[2]!.body).get("reply_markup")).toBe(JSON.stringify({ inline_keyboard: [[{ text: "Approve", callback_data: "nd:abc123def456:a" }]] }));
+    await client.answerCallbackQuery("q6", "Approved");
+    expect(calls[3]!.url).toBe(`https://api.telegram.org/bot${token}/answerCallbackQuery`);
+    expect(new URLSearchParams(calls[3]!.body).get("callback_query_id")).toBe("q6");
+    const persistence = new InMemoryTelegramPersistence("2026-10-24T00:00:00.000Z");
+    await persistence.updateIntegrationOffset(12, "2026-10-24T01:00:00.000Z");
+    await persistence.updateIntegrationOffset(9, "2026-10-24T02:00:00.000Z");
+    expect(await persistence.getIntegration()).toMatchObject({ pollingOffset: 12, updatedAt: "2026-10-24T02:00:00.000Z" });
+  });
+
   it("validates the Bot API message limit by Unicode characters instead of UTF-16 code units", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, result: { message_id: 1 } }));
     const client = new TelegramBotApiClient(token, { fetchImpl });

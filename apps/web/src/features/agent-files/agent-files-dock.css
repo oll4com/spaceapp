@@ -1,6 +1,12 @@
 /* Agent Files on the dock kit. Folder chips, one search row with a Filters
    panel, and file cards in a grid or a list. Colours come from the kit tokens. */
 
+/* The dock's own width picks the compact layout: a narrow dock often sits on a wide screen. */
+.agent-files-controls,
+.agent-files-items {
+  container: agent-files / inline-size;
+}
+
 /* Drop target */
 .agent-files-dock.is-dragover {
   outline: 2px dashed var(--dock-accent);
@@ -28,8 +34,11 @@
   align-items: center;
   gap: 0.3rem;
   overflow-x: auto;
-  padding-bottom: 0.15rem;
-  scrollbar-width: thin;
+  /* Room for the focus ring; the end padding lets the last chip clear the fade that hints at more folders. */
+  margin: -0.2rem 0 -0.2rem -0.2rem;
+  padding: 0.2rem 1.25rem 0.2rem 0.2rem;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.25rem), transparent);
 }
 
 .agent-files-folder-tabs.is-sub .agent-files-folder-chip {
@@ -76,6 +85,17 @@
 
 .agent-files-new-folder {
   flex: 0 0 auto;
+}
+
+@container agent-files (max-width: 32rem) {
+  .agent-files-new-folder.dock-kit-button {
+    width: var(--dock-control);
+    padding: 0;
+  }
+
+  .agent-files-new-folder-label {
+    display: none;
+  }
 }
 
 /* Breadcrumbs for nested folders */
@@ -308,13 +328,13 @@
   color: var(--dock-on-accent);
 }
 
-.agent-files-item.is-grid .agent-files-item-thumb-chip {
+.agent-files-item .agent-files-item-thumb-chip {
   opacity: 0;
   transition: opacity 120ms ease;
 }
 
-.agent-files-item.is-grid:hover .agent-files-item-thumb-chip,
-.agent-files-item.is-grid .agent-files-item-thumb:focus-visible .agent-files-item-thumb-chip {
+.agent-files-item:hover .agent-files-item-thumb-chip,
+.agent-files-item .agent-files-item-thumb:focus-visible .agent-files-item-thumb-chip {
   opacity: 1;
 }
 
@@ -329,6 +349,15 @@
   flex: 1 1 auto;
 }
 
+/* Long file names get two lines before the ellipsis. */
+.agent-files-item .dock-kit-card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .agent-files-item-body .dock-kit-meta-text {
   flex-basis: 100%;
 }
@@ -337,8 +366,17 @@
   flex-wrap: nowrap;
 }
 
+/* Four actions stay on one row in a narrow grid card. */
 .agent-files-item.is-grid .agent-files-item-actions {
   margin-top: auto;
+  flex-wrap: nowrap;
+  gap: 0.2rem;
+}
+
+.agent-files-item.is-grid .agent-files-item-actions .dock-kit-icon-button {
+  width: auto;
+  min-width: 1.5rem;
+  flex: 0 1 1.85rem;
 }
 
 .agent-files-more {
@@ -567,24 +605,32 @@
   flex: 1 1 9rem;
 }
 
-@media (max-width: 520px) {
-  .agent-files-folders {
-    flex-wrap: wrap;
-  }
-
+/* A narrow list gives the name the full width and puts the actions under it. */
+@container agent-files (max-width: 32rem) {
   .agent-files-item.is-list {
     grid-template-columns: 2.75rem minmax(0, 1fr);
+    grid-template-areas: "thumb body" "thumb actions";
+    row-gap: 0.45rem;
   }
 
   .agent-files-item.is-list .agent-files-item-thumb {
+    grid-area: thumb;
+    align-self: start;
     width: 2.75rem;
     height: 2.75rem;
   }
 
-  .agent-files-item.is-list .agent-files-item-actions {
-    grid-column: 1 / -1;
+  .agent-files-item.is-list .agent-files-item-body {
+    grid-area: body;
   }
 
+  .agent-files-item.is-list .agent-files-item-actions {
+    grid-area: actions;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 520px) {
   .agent-files-modal-body.is-preview,
   .agent-files-modal-body.is-form {
     width: calc(100vw - 0.8rem);

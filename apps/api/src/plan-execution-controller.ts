@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { managedPlanStageResultSchema, type ManagedPlanExecution, type ManagedPlanStageResult } from "@space/contracts";
+import { managedPlanStageResultSchema, sameStageCriterion, type ManagedPlanExecution, type ManagedPlanStageResult } from "@space/contracts";
 import { PlanExecutionConflictError, type ManagedPlanExecutionPatch, type PlanExecutionRepository, type PlanExecutionEvent } from "@space/runtime";
 import { CodexManagedTurnDeliveryError, CodexSettingsRejectedError } from "@space/codex-app-server";
 import type { CodexAppServerSocketControlService, CodexNativeThread, CodexManagedTurnObservation } from "@space/codex-app-server";
 import { recordRecoveryEvent } from "./api-metrics.js";
+/** The native surface the controller drives. Codex's app-server service is used as is; Claude panes
+ * implement it over their PTY and transcript (plan-execution-claude-driver.ts). */
+export type ManagedTurnDriver = Pick<CodexAppServerSocketControlService, "readThread" | "readThreadSettings" | "listModels" | "updateThreadSettings" | "startManagedTurn" | "interruptTurn">;
 export const planStageOutputSchema = {
     type: "object", additionalProperties: false, required: ["outcome", "summary", "evidence"],
     properties: {
@@ -16,7 +19,7 @@ export const planStageOutputSchema = {
 export interface PlanExecutionControllerOptions {
     repository: PlanExecutionRepository;
     /** Rechecks persisted ADMIN, pane/session/thread/cwd identity and runtime enablement. */
-    resolve(execution: ManagedPlanExecution): Promise<CodexAppServerSocketControlService>;
+    resolve(execution: ManagedPlanExecution): Promise<ManagedTurnDriver>;
     publish(execution: PlanExecutionEvent): Promise<void>;
     intervalMs?: number;
     leaseMs?: number;
@@ -140,7 +143,7 @@ export class PlanExecutionController {
                 throw Error("Native execution inspection is unavailable.");
             return control;
         };
-        const read = async (control: CodexAppServerSocketControlService): Promise<CodexNativeThread> => {
+        const read = async (control: ManagedTurnDriver): Promise<CodexNativeThread> => {
             const thread = await control.readThread!(execution!.threadId);
             await fence();
             if (thread.id !== execution!.threadId || thread.cwd !== execution!.cwd ||
@@ -290,7 +293,7 @@ export class PlanExecutionController {
                     }
                     catch { /* One bounded correction below. */ }
                 }
-                const sufficient = result && (result.outcome !== "COMPLETED" || stage.completionCriteria.every(criterion => result!.evidence.some(e => e.criterion === criterion && e.result.trim().length > 0)));
+                const sufficient = result && (result.outcome !== "COMPLETED" || stage.completionCriteria.every(criterion => result!.evidence.some(e => sameStageCriterion(e.criterion, criterion) && e.result.trim().length > 0)));
                 const attempts = execution.attempts.map(a => a.id === attempt.id ? {
                     ...observed, status: "COMPLETED" as const, completedAt: new Date().toISOString(), result
                 } : a);

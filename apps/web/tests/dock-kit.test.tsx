@@ -124,6 +124,6 @@ describe("dock kit", () => {
   it("keeps the Modern blanket dock rules away from kit controls without raising their specificity", () => {
     const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../src/features/ui-theme/modern-theme.css"), "utf8");
     expect(css).toContain(':where(button, input, select, textarea):where(:not([class*="dock-kit-"]))');
-    expect(css).toContain(':where([role="alert"]:not([class*="dock-kit-"]))');
+    expect(css).toContain(':where([role="alert"]:not([class*="dock-kit-"], .nous-focus-banner))');
   });
 });

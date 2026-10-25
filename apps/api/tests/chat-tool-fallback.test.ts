@@ -16,6 +16,12 @@ describe("Chat tool fallback without a classifier", () => {
     const result = await service.evaluateToolSurface("What is 2 + 2?", ["browser:navigate", "mcp:playwright:screenshot", "memory:search"]);
     expect(result).toMatchObject({ available: false, needsBrowser: false, filteredTools: ["memory:search"], degraded: true });
   });
+  it("counts a public install's /opt/spaceapp as production when the classifier is off (review F18: the export cannot rewrite the escaped /opt/spaceapp)", async () => {
+    const service = createDecisionsService({ enabled: false });
+    expect((await service.evaluateDestructive("rm -r", "/opt/spaceapp/var/data")).touchesProduction).toBe(true);
+    expect((await service.evaluateDestructive("rm -r", "/opt/spaceapp/var/data")).touchesProduction).toBe(true);
+    expect((await service.evaluateDestructive("ls", "/tmp/scratch")).touchesProduction).toBe(false);
+  });
   it("does not add unselected browser tools", async () => {
     const service = createDecisionsService({ enabled: false });
     expect((await service.evaluateToolSurface("Κάνε έρευνα", ["memory:search"])).filteredTools).toEqual(["memory:search"]);

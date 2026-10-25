@@ -23,11 +23,20 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   MAIL_COPILOT: "Mail Copilot",
   MARKETING_COPILOT: "Marketing Copilot",
   FREELANCE_COPILOT: "Freelance Copilot",
-  APP_STUDIO: "App Studio"
+  APP_STUDIO: "App Studio",
+  SECURITY_COPILOT: "Security Copilot",
+  VIDEO: "Video"
 };
 
 export function paneModeLabel(mode: Pane["mode"]): string {
   return paneModeLabels[mode];
+}
+
+/** The pane type, including the specific CLI when this is a terminal. */
+export function paneTypeLabel(pane: Pick<Pane, "mode" | "terminalRuntimeId">): string {
+  return pane.mode === "TERMINAL"
+    ? cliRuntimeLabel(pane.terminalRuntimeId ?? "cli:codex") ?? paneModeLabel(pane.mode)
+    : paneModeLabel(pane.mode);
 }
 
 /** Title of a new pane: the mode label and its position in the room. */

@@ -75,7 +75,8 @@ function applyMaskMarkers(): void {
 }
 
 function removeMaskMarkers(): void {
-  document.querySelectorAll(`[${MASK_ATTRIBUTE}]`).forEach((element) => {
+  // Only this component's own markers: React does not put a removed manual marker back, so the next toggle would show it.
+  document.querySelectorAll(`[${MASK_ATTRIBUTE}="text"]`).forEach((element) => {
     element.removeAttribute(MASK_ATTRIBUTE);
   });
 }

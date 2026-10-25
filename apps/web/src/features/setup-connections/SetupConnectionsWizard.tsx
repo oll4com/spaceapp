@@ -8,6 +8,8 @@ import {
   type SetupConnectionChecksClient
 } from "./useSetupConnectionsWizard.js";
 import "./setup-connections.css";
+import { api } from "../../live-api.js";
+import { FirstSetupWizard, type FirstSetupClient } from "./FirstSetupWizard.js";
 
 interface SetupConnectionsWizardProps {
   embedded?: boolean;
@@ -25,6 +27,7 @@ interface SetupConnectionsWizardProps {
   pollTimeoutMs?: number;
   replayIntervalMs?: number;
   triggerRef?: RefObject<HTMLButtonElement | null>;
+  reconfigurationClient?: FirstSetupClient;
 }
 
 /** First prompts for the free OpenCode model: short, safe, and useful in an empty folder. */
@@ -84,11 +87,13 @@ export function SetupConnectionsWizard({
   pollIntervalMs = 2_000,
   pollTimeoutMs = 10 * 60 * 1_000,
   replayIntervalMs = 2_000,
-  triggerRef
+  triggerRef,
+  reconfigurationClient = api
 }: SetupConnectionsWizardProps) {
   const [step, setStep] = useState(0);
   const [showAllTools, setShowAllTools] = useState(false);
   const [connectionsVisited, setConnectionsVisited] = useState(false);
+  const [configuringTools, setConfiguringTools] = useState(false);
   useEffect(() => { if (step === 2) setConnectionsVisited(true); }, [step]);
   const steps = ["Welcome", "Tools", "Connections", "Ready"];
   useEffect(() => {
@@ -108,6 +113,8 @@ export function SetupConnectionsWizard({
   });
 
   if (!open) return null;
+  if (configuringTools) return <FirstSetupWizard client={reconfigurationClient} onOpenAgentLogin={openLogin}
+    onOpenChange={nextOpen => { setConfiguringTools(nextOpen); onOpenChange(nextOpen); }} />;
   const summary = wizard.overview?.summary ?? {
     total: 0,
     functional: 0,
@@ -153,6 +160,11 @@ export function SetupConnectionsWizard({
             <X aria-hidden="true" />
           </button>
         </header>
+
+        {wizard.overview?.isComplete ? <div className="setup-connections-toolbar">
+          <p>Review your current workspace tools and apply a verified setup.</p>
+          <button type="button" onClick={() => setConfiguringTools(true)}>Configure workspace tools</button>
+        </div> : null}
 
         {guided ? <nav className="setup-guide-steps" aria-label="Setup steps">
           {steps.map((label, index) => <button key={label} type="button" aria-current={step === index ? "step" : undefined}

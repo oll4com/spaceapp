@@ -138,6 +138,36 @@ describe("App Studio routes", () => {
     } finally { await app.close(); }
   });
 
+  it("stores the agent's APK as a pinned room EXPORT for download, releases the one it replaces, and refuses what is not one", async () => {
+    const { app, store, room, url, headers, cli, pane, tokenFor } = await fixture();
+    try {
+      const apk = (marker: string) => Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.from(marker.repeat(64))]);
+      const fields = { packageName: "com.oll4.nous", versionName: "1.0.0", versionCode: "1", buildMs: "412000" };
+      const upload = (form: Record<string, string>, bytes: Buffer, token = tokenFor(pane.id)) => app.inject({ method: "POST", url: `${cli}/apk`,
+        headers: { ...token, "content-type": `multipart/form-data; boundary=${boundary}` }, payload: multipart(form, [["apk", bytes]]) });
+      const first = await upload(fields, apk("a"));
+      expect(first.statusCode).toBe(200);
+      const { artifactId, downloadPath } = first.json() as { artifactId: string; downloadPath: string };
+      expect(downloadPath).toBe(`/api/artifacts/${encodeURIComponent(artifactId)}/file`);
+      expect(store.getArtifact(artifactId)).toMatchObject({ kind: "EXPORT", roomId: room.id, paneId: pane.id, mimeType: "application/vnd.android.package-archive", pinnedAt: expect.any(String),
+        metadata: expect.objectContaining({ source: "APP_STUDIO", packageName: "com.oll4.nous", versionName: "1.0.0", signedWith: "android-debug-keystore" }) });
+      // The operator downloads it with their session, as an attachment.
+      const file = await app.inject({ method: "GET", url: downloadPath, headers });
+      expect(file.statusCode).toBe(200);
+      expect(file.headers["content-disposition"]).toMatch(/^attachment; filename="com\.oll4\.nous-1\.0\.0\.apk"/);
+      const events = (await app.inject({ method: "GET", url: `${url}/state`, headers })).json().events as Array<{ type: string; payload: Record<string, unknown> }>;
+      expect(events.find((event) => event.payload.apkArtifactId === artifactId)).toMatchObject({ type: "NOTE", payload: { packageName: "com.oll4.nous", downloadPath } });
+      const second = await upload({ ...fields, versionName: "1.0.1", versionCode: "2" }, apk("b"));
+      expect(second.statusCode).toBe(200);
+      expect(store.getArtifact(artifactId)).toMatchObject({ pinnedAt: null, expiresAt: expect.any(String) });
+      expect(store.getArtifact(second.json().artifactId)).toMatchObject({ pinnedAt: expect.any(String) });
+      expect((await upload(fields, Buffer.from("<html></html>"))).statusCode).toBe(409);
+      expect((await upload({ ...fields, packageName: "../../x" }, apk("c"))).statusCode).toBe(409);
+      const shell = store.createPane({ roomId: room.id, title: "Claude CLI", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+      expect((await upload(fields, apk("d"), tokenFor(shell.id))).statusCode).toBe(409);
+    } finally { await app.close(); }
+  });
+
   it("lets the run be paused and started again, the way Nous controls it", async () => {
     const { app, headers, url, cli, pane, kickoffs, tokenFor } = await fixture();
     try {
@@ -187,6 +217,37 @@ describe("App Studio service", () => {
     // The agent works on a brief: a new one waits for its loop.
     expect((await studio.addBrief("user:operator", pane, "Three", "OPERATOR")).kickoffSent).toBe(false);
     expect(kickoffs).toEqual([pane.id]);
+  });
+
+  it("sends a PENDING brief's kickoff again once a minute, only to a ready pane whose run is not paused or stopped", async () => {
+    let clock = Date.parse("2026-10-24T00:00:00.000Z");
+    let ready = false;
+    const root = await tempRoot();
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Apps", initialPaneCount: 0 }, "trace:apps", "user:operator");
+    const pane = store.createPane({ roomId: room.id, title: "App Studio", mode: "APP_STUDIO", terminalRuntimeId: "cli:claude" });
+    const kickoffs: string[] = [];
+    const studio = createAppStudioService({ repository: new InMemoryAppStudioRepository(() => new Date(clock).toISOString()), store, artifactRoot: root, now: () => clock,
+      kickoff: { ready: async () => ready, send: async (target: Pane) => { kickoffs.push(target.id); } } });
+    expect(await studio.dispatchPending()).toBe(0);
+    // The CLI was not at its prompt when the brief came: no kickoff then, none while it stays busy.
+    expect((await studio.addBrief("user:operator", pane, "Google sign-in", "NOUS")).kickoffSent).toBe(false);
+    expect(await studio.dispatchPending()).toBe(0);
+    ready = true;
+    expect(await studio.dispatchPending()).toBe(1);
+    expect(await studio.dispatchPending()).toBe(0);
+    clock += 61_000;
+    await studio.setRun("user:operator", pane, "stop");
+    clock += 61_000;
+    expect(await studio.dispatchPending()).toBe(0);
+    await studio.setRun("user:operator", pane, "start");
+    clock += 61_000;
+    expect(await studio.dispatchPending()).toBe(1);
+    await studio.takeNext("user:operator", pane);
+    clock += 61_000;
+    // A TAKEN brief, and no PENDING one left: nothing to send.
+    expect(await studio.dispatchPending()).toBe(0);
+    expect(kickoffs).toEqual([pane.id, pane.id, pane.id]);
   });
 
   it("raises and resolves its notifications by the pane's switches", async () => {

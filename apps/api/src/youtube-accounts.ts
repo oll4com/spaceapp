@@ -17,8 +17,8 @@ export function youtubeAccountProfileKey(userId: string, profileId: string | nul
 }
 
 /**
- * The one Chrome profile every Freelance Copilot pane of the user opens for an account (operator decision 2026-10-17): its
- * sign-in stays across Freelance panes, and it is never the profile other panes open for the account (Freelance has its own routes).
+ * The Chrome profile Freelance Copilot panes opened for an account from 2026-10-17 until 2026-10-21, when they moved to the
+ * account's one shared profile (operator request); kept so the browser census still names a browser that runs on one.
  */
 export function freelanceProfileKey(userId: string, profileId: string): string {
   return createHash('sha256').update(JSON.stringify(['freelance', userId, profileId])).digest('hex');

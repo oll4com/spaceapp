@@ -1,3 +1,4 @@
+import { advanceWorkspaceCountdown } from "@space/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, RotateCcw, Timer } from "../ui-theme/app-icons.js";
 import { playChime } from "./audio-chime.js";
@@ -57,23 +58,13 @@ export function CountdownTimerWidget({
 
     timerRef.current = setInterval(() => {
       setConfig((prev) => {
-        if (prev.remainingSeconds <= 1) {
+        const tick = advanceWorkspaceCountdown(prev);
+        const next = { ...prev, ...tick };
+        if (tick.isCompleted) {
           playChime("timer-done");
-          const next = {
-            ...prev,
-            remainingSeconds: 0,
-            isRunning: false,
-            isCompleted: true
-          };
           saveWidgetConfig("countdown-timer", next);
           return next;
         }
-
-        const next = {
-          ...prev,
-          remainingSeconds: prev.remainingSeconds - 1,
-          isCompleted: false
-        };
         // Local-only: completion above and user actions sync the config.
         saveWidgetConfig("countdown-timer", next, { syncToServer: false });
         return next;

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   NOUS_PANE_BOARD_DETAIL_MAX, NOUS_PANE_BOARD_LINE_MAX, nousPaneSummaryModelAnswerSchema,
   type ClipboardItem, type NousDecision, type NousPaneBoard, type NousPaneBoardPane, type NousPaneBoardSettings, type NousPaneSummary, type NousPaneWaitsOn,
-  type Pane, type Room, type SpaceNotification
+  type Pane, type Room, type SpaceNotification, type TaskItem
 } from "@space/contracts";
 import type { NewNousPaneSummaryRow, NousPaneCheck, NousPaneSummariesRepository, NousPaneSummaryRow, PaneReport } from "@space/db";
 import { redactMemoryText } from "@space/runtime";
@@ -30,6 +30,8 @@ export interface PaneBoardSnapshot {
   copilotItems: NousCopilotItem[];
   plans: ClipboardItem[];
   checks: NousPaneCheck[];
+  /** The owner's open and running tasks: a scheduled one bound to a finished pane keeps it open (operator decision 2026-10-21). */
+  tasks?: TaskItem[];
 }
 
 export type PaneSummaryRunner = (input: { model: string; prompt: string }, signal: AbortSignal) => Promise<string>;
@@ -57,7 +59,7 @@ const RUN_TIMEOUT_MS = 180_000;
 const PROMPT_MAX_CHARS = 11_500;
 const HIDDEN_ROOMS = new Set<Room["kind"]>(["AGENT_PROOF", "CLI_RECOVERY"]);
 const COPILOT_MODES: Record<string, string> = {
-  MAIL: "MAIL_COPILOT", MARKETING: "MARKETING_COPILOT", FREELANCE: "FREELANCE_COPILOT", JOB: "JOB_APPLY", DESIGN: "DESIGN", APP_STUDIO: "APP_STUDIO"
+  MAIL: "MAIL_COPILOT", MARKETING: "MARKETING_COPILOT", FREELANCE: "FREELANCE_COPILOT", JOB: "JOB_APPLY", DESIGN: "DESIGN", APP_STUDIO: "APP_STUDIO", VIDEO: "VIDEO", SECURITY: "SECURITY_COPILOT"
 };
 
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -88,7 +90,8 @@ export function boardPanes(snapshot: PaneBoardSnapshot, options: { showClosed: b
     report: reports.get(pane.id) ?? null,
     plan: snapshot.plans.find((plan) => plan.paneId === pane.id) ?? null,
     check: checks.get(pane.id) ?? null,
-    notifications: snapshot.notifications.filter((item) => item.paneId === pane.id && live(item)),
+    // Only what waits for the operator: INFO notices (new mail, a learned rule) stay off the board (operator request 2026-10-21).
+    notifications: snapshot.notifications.filter((item) => item.paneId === pane.id && live(item) && item.severity !== "INFO"),
     decisions: snapshot.decisions.filter((decision) => decision.status === "OPEN" && decision.refs.paneId === pane.id),
     copilotItems: snapshot.copilotItems.filter((item) => copilotPane(item) === pane.id)
   }));
@@ -123,6 +126,13 @@ export function panePrompt(input: Pick<BoardPaneInput, "pane" | "state" | "repor
 }
 
 const PROMOTE = /\bpromote\b|release train|live:verify|space-queue/i;
+
+/** The scheduled task bound to a finished pane, as the board shows it (the scheduler reopens the pane when it runs). */
+function keptOpenBy(input: Pick<BoardPaneInput, "pane" | "state">, tasks: TaskItem[]): NousPaneBoardPane["keptOpenForTask"] {
+  if (input.state !== "done" && input.state !== "idle") return null;
+  const task = tasks.find((entry) => entry.paneId === input.pane.id && entry.schedule);
+  return task ? { id: task.id, title: clip(task.title, 120) } : null;
+}
 const STATE_LINES: Record<string, string> = { working: "Working", waiting: "Waiting for input", done: "Finished its turn", idle: "Idle", closed: "Closed" };
 
 /** Space's own line: the newest report's first sentence, and what the pane waits on from its state, cards and decisions. */
@@ -133,8 +143,8 @@ export function fallbackSummary(input: BoardPaneInput, now: number): NousPaneSum
   const operatorItems = input.notifications.some((item) => item.severity !== "INFO") || input.decisions.length > 0
     || input.copilotItems.length > 0 || input.check?.verdict === "WAITING_OPERATOR";
   let waitsOn: NousPaneWaitsOn = "NONE";
-  if (operatorItems) waitsOn = "OPERATOR";
-  else if (input.check?.verdict === "WAITING_DATE") waitsOn = "DATE";
+  if (operatorItems || input.report?.status === "NEEDS_YOU") waitsOn = "OPERATOR";
+  else if (input.check?.verdict === "WAITING_DATE" || input.check?.verdict === "KEEP_OPEN") waitsOn = "DATE";
   else if (input.state !== "working" && PROMOTE.test(`${input.report?.summary ?? ""} ${input.report?.needs ?? ""}`)) waitsOn = "PROMOTE";
   else if (input.state === "waiting" || input.report?.status === "BLOCKED" || input.report?.status === "NEEDS_DECISION") waitsOn = "NOUS";
   return { line, waitsOn, needsOperator: waitsOn === "OPERATOR", until: waitsOn === "DATE" ? input.check?.nextCheckAt ?? null : null,
@@ -338,6 +348,7 @@ export function createPaneBoard(deps: PaneBoardDeps) {
         paneId: input.pane.id, roomId: input.room.id, name: paneLabel(input.pane), mode: input.pane.mode, runtimeId: input.pane.terminalRuntimeId ?? null,
         model: input.model, state: input.state,
         plan: input.plan ? { id: input.plan.id, title: clip(input.plan.title ?? input.plan.text.replace(/\s+/g, " "), 120), progress: input.plan.progressPercentage, nextStep: nextPlanStep(input.plan) } : null,
+        keptOpenForTask: keptOpenBy(input, snapshot.tasks ?? []),
         summary,
         report: input.report ? { at: input.report.at, status: input.report.status, summary: input.report.summary } : null,
         prompt: panePrompt(input),
@@ -360,5 +371,5 @@ export function renderPaneBoard(board: NousPaneBoard): string {
   if (!rooms.length) return "No open panes.";
   return [board.paused ? `Summaries paused (${board.paused.toLowerCase().replace(/_/g, " ")}): lines are Space's own where panes changed.` : null,
     ...rooms.map((room) => [`## ${room.name}`, ...room.panes.map((pane) => `- ${pane.name} · ${pane.state}${pane.plan ? ` · plan ${pane.plan.progress}%` : ""} · waits on ${pane.summary.waitsOn.toLowerCase().replace("_", " ")}`
-      + `${pane.summary.until ? ` until ${pane.summary.until}` : ""}: ${pane.summary.line}`)].join("\n"))].filter(Boolean).join("\n\n");
+      + `${pane.summary.until ? ` until ${pane.summary.until}` : ""}${pane.keptOpenForTask ? ` · task "${pane.keptOpenForTask.title}"` : ""}: ${pane.summary.line}`)].join("\n"))].filter(Boolean).join("\n\n");
 }

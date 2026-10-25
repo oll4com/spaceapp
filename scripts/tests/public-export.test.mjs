@@ -498,3 +498,21 @@ test("public-repository files are tracked files the previous export did not ship
   assert.ok(owned.has("scripts/public-export.mjs"));
   for (const file of manifest.files) assert.equal(owned.has(file.path), false, file.path);
 });
+
+test("public code names no lab host (1.1.7 review snapshot: lab VM names in public-owned comments)", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const root = resolve(import.meta.dirname, "..", "..");
+  const offenders = [];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (["node_modules", "dist", ".git"].includes(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:[cm]?[jt]sx?|sh|ya?ml|json)$/.test(entry.name) && /\bVM ?2\d\d\b/.test(await readFile(path, "utf8"))) {
+        offenders.push(path.slice(root.length + 1));
+      }
+    }
+  };
+  for (const dir of ["deploy", "scripts", "packages", "apps", ".github"]) if (existsSync(join(root, dir))) await walk(join(root, dir));
+  assert.deepEqual(offenders, []);
+});

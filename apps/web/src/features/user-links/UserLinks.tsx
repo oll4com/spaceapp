@@ -514,7 +514,7 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
               <button className="links-item-open" type="button" onClick={() => onOpen(link)} aria-label={`Open ${link.title}`} title={link.url}>
                 <span className="link-favicon"><LinkFavicon link={link} /></span>
                 <span className="links-item-text">
-                  <span className="dock-kit-card-title">{link.title}</span>
+                  <span className="dock-kit-card-title" data-sensitive-masked="manual">{link.title}</span>
                   <span className="dock-kit-meta">
                     <span className="dock-kit-meta-text">{hostnameOf(link.url)}</span>
                     {link.category === "MUSIC_LIBRARY" ? <span className="dock-kit-badge is-accent">Music</span> : null}

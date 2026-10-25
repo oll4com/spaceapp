@@ -40,9 +40,9 @@ describe("Claude API key card", () => {
         source: "space-claude-profiles", isStale: false, error: null, checkedAt: new Date(clock).toISOString() } }
     });
     expect(pick({ apiKeyVerified: true, gatewayFallback: "ON" })).toMatchObject({ tone: "off", label: "Paid · ready",
-      description: "Paid per token · never chosen automatically · Space Gateway fallback on" });
+      description: "Paid per token · never chosen by Auto · Space Gateway fallback on" });
     expect(pick({ apiKeyVerified: false })).toMatchObject({ tone: "off", label: "Key rejected" });
-    expect(pick({})).toMatchObject({ tone: "off", label: "Paid · not used", description: "Paid per token · never chosen automatically" });
+    expect(pick({})).toMatchObject({ tone: "off", label: "Paid · not used", description: "Paid per token · never chosen by Auto" });
   });
 });
 

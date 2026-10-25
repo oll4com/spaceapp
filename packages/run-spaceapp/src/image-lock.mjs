@@ -41,15 +41,33 @@ export function readImageLock(path) {
 
 export const PACKAGE_IMAGE_LOCK = readImageLock(new URL("../templates/images.lock.json", import.meta.url));
 
-/** The digest pinned for this runtime version, or null (no lock, or a lock for another version). */
-export function pinnedImageDigest(target, runtimeVersion, lock = PACKAGE_IMAGE_LOCK) {
-  return lock?.runtimeVersion === runtimeVersion ? lock.images[target] : null;
+/**
+ * The digests an installation recorded for each runtime version it ran with a lock (image-digests.json next to
+ * runtime.env), so a rollback to that version pulls the same images by digest (1.1.7 review, Codex #7). Only well-formed
+ * entries count; anything else is ignored.
+ */
+export function parseRecordedDigests(text) {
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { return {}; }
+  const recorded = {};
+  for (const [version, images] of Object.entries(parsed && typeof parsed === "object" ? parsed : {})) {
+    if (VERSION_PATTERN.test(version) && IMAGE_TARGETS.every((target) => DIGEST_PATTERN.test(images?.[target] ?? ""))) {
+      recorded[version] = Object.fromEntries(IMAGE_TARGETS.map((target) => [target, images[target]]));
+    }
+  }
+  return recorded;
+}
+
+/** The digest pinned for this runtime version: the package lock's for its own version, else the recorded one, else null. */
+export function pinnedImageDigest(target, runtimeVersion, lock = PACKAGE_IMAGE_LOCK, recorded = {}) {
+  if (lock?.runtimeVersion === runtimeVersion) return lock.images[target];
+  return recorded[runtimeVersion]?.[target] ?? null;
 }
 
 /** runtime.env lines read by compose.yml: `@sha256:…` appended to the version tag, or empty. */
-export function imageDigestEnv(runtimeVersion, lock = PACKAGE_IMAGE_LOCK) {
+export function imageDigestEnv(runtimeVersion, lock = PACKAGE_IMAGE_LOCK, recorded = {}) {
   return IMAGE_TARGETS.map((target) => {
-    const digest = pinnedImageDigest(target, runtimeVersion, lock);
+    const digest = pinnedImageDigest(target, runtimeVersion, lock, recorded);
     return `SPACEAPP_${target.toUpperCase()}_IMAGE_DIGEST=${digest ? `@${digest}` : ""}`;
   });
 }

@@ -19,7 +19,7 @@ from the previews you capture. Other panes never call these tools.
 
 | Server | Tools |
 |---|---|
-| `space_appstudio` | loop `space_appstudio_next`, `space_appstudio_done`; operator `space_appstudio_ask`, `space_appstudio_answer_wait`; activity `space_appstudio_note`; preview `space_appstudio_devices`, `space_appstudio_preview` |
+| `space_appstudio` | loop `space_appstudio_next`, `space_appstudio_done`; operator `space_appstudio_ask`, `space_appstudio_answer_wait`; activity `space_appstudio_note`; preview `space_appstudio_devices`, `space_appstudio_preview`; APK `space_appstudio_build_apk`, `space_appstudio_build_status` |
 
 Sessions without these MCP tools call them on demand:
 `echo '{"serverId":"space_appstudio","toolName":"space_appstudio_next","arguments":{}}' | space-capability call`
@@ -57,8 +57,41 @@ Expo setup, the web export and the preview checklist: `references/expo.md`.
 - The devices: Android 360x800 (Galaxy A), 384x832 (Galaxy S Ultra), 393x873 (Xiaomi/Redmi), 360x780 (Galaxy S24/S25),
   412x915 (Pixel); iPhone 390x844 (12-14), 393x852 (15/16), 402x874 (17 / 16 Pro), 430x932 (Plus / Pro Max),
   440x956 (17 Pro Max). Check the narrowest (360) and the tallest (440x956) before a brief is done.
+- States and long screens (2026-10-23): `route` may carry a query string (`/?state=locked`, `/?state=offline`) for state-only
+  screens your demo build reads, and a concrete value for a dynamic segment (`/pane/demo-1` is served from `pane/[id].html`).
+  `screens: 2-5` also captures what lies below the first screen (the page's main scroller, one height each); they show in
+  the pane as `<route>#2`, `#3`, ... A demo build is just another export folder: pass `dir` = its folder (e.g.
+  `<project>/dist-demo`, built with `EXPO_PUBLIC_DEMO=1`); give its states their own query so they do not replace the real
+  build's capture of the same route.
+- Recorded API (2026-10-23): an app that talks to an API previews against recorded answers, never a real server. Keep them in
+  `<project>/preview-api/<METHOD>/<path>.json` for `/api/<path>` (e.g. `preview-api/GET/nous/messages.json` answers
+  `GET /api/nous/messages`), each `{"status": 200, "headers": {...}, "body": <JSON or text>}`; an event stream is
+  `preview-api/GET/<path>.sse`, replayed as written (`event: ...` / `data: ...` lines). Pass `api` = the absolute path of
+  `preview-api` and build the preview export with the API base set to its own origin (an empty base, so the app calls
+  `/api/...`). The preview's own 127.0.0.1 server answers those paths; anything not recorded is a 404 `NOT_RECORDED`, the
+  query string is ignored, `set-cookie` is dropped, nothing is forwarded and no session exists. Write the recordings from the
+  API's types with sample data (never the operator's real data, never a token), including error answers (401, 503) the app must handle.
+- A CLI started before these options existed calls the same preview from its shell:
+  `node /opt/spaceapp/scripts/space-app-studio-mcp.mjs preview '{"dir":"<export folder>","route":"/?state=locked","screens":3,"api":"<project>/preview-api"}'`.
 - The preview is the web rendering of your app: native-only modules (camera, notifications, sensors) show their web
-  fallback. Say so in the summary when a screen depends on one.
+  fallback. Say so in the summary when a screen depends on one; for those, build an APK (below).
+
+## APK for the operator's phone
+
+- When the operator wants to try the app on Android (native modules, notifications, biometrics, the share target:
+  anything the web preview cannot show): `space_appstudio_build_apk` with `dir` = the app folder (it needs
+  `expo.android.package` in `app.json` and `node_modules`), then `space_appstudio_build_status` with the `jobId` until it
+  answers `DONE` (5-15 minutes; at most 50 s per call).
+- A CLI started before these tools existed does not see them: run the same build from the shell instead,
+  `node /opt/spaceapp/scripts/space-app-studio-build.mjs start <app dir>`, then
+  `node /opt/spaceapp/scripts/space-app-studio-build.mjs status <jobId> --wait 50` until `DONE`.
+- What it builds: `expo prebuild --platform android`, then Gradle's release variant signed with the project's debug
+  keystore (never a release key, never a store upload), the JS bundle inside (it runs without a Metro server), arm64
+  only, with the pinned toolchain (Expo SDK 58). One build at a time; refused while the server is OVERLOADED (try again
+  later). The log is in `<pane folder>/builds/<jobId>.log`; `FAILED` answers carry its last lines.
+- `DONE` gives the package, version, size and the `downloadPath`; the pane's room Media keeps the newest APK (the one
+  before expires a day later) and the operator gets a notification. Bump `expo.version` (and `android.versionCode`) when
+  the operator installs builds over each other. Name the version in the brief's summary.
 
 ## Asking and other Space tools
 

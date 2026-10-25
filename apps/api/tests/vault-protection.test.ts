@@ -5,7 +5,7 @@ import { issueCliBrowserBridgeToken, cliBrowserBridgeTokenHeader } from "../src/
 import { getApiConfig } from "../src/config.js";
 import { createVaultAgent } from "../src/vault/agent.js";
 import { VaultBrokerRefusedError } from "../src/vault/broker-client.js";
-import { createVaultProtection, registerVaultFences, vaultFillPageGone, type VaultOpenPage, type VaultProtectionStore } from "../src/vault/protection.js";
+import { assertVaultBrowserActionAllowed, createVaultProtection, registerVaultFences, vaultFillPageGone, type VaultOpenPage, type VaultProtectionStore } from "../src/vault/protection.js";
 import { fenceCompletedHandoff, vaultFencedTargets } from "../src/vault/fence-hooks.js";
 import { registerVault, registerVaultAgentBridge, type VaultModule } from "../src/vault/wiring.js";
 import { SENTINEL, enrollment, fakeRepository, itemRecord } from "./support/vault-fakes.js";
@@ -91,6 +91,18 @@ describe("Vault protected browser", () => {
     await app.close();
   });
 
+  it("fences in-process callers the same way: the Dot gateway and the internal agent route read nothing from a filled browser (1.1.7 review)", async () => {
+    const live = { current: page() };
+    const { protection } = memoryProtection(() => live.current);
+    await protection.protect("user:alice", PROTECTED, { targetId: "target-1", origin: LOGIN, document: "doc-1" });
+    for (const type of ["navigate", "click", "type", "scroll", "set_viewport", "press"]) await expect(assertVaultBrowserActionAllowed(protection, PROTECTED, type), type).resolves.toBeUndefined();
+    for (const type of ["extract_text", "screenshot", "record", "diagnostics"]) await expect(assertVaultBrowserActionAllowed(protection, PROTECTED, type), type).rejects.toThrow(/holds a Vault fill/);
+    await expect(assertVaultBrowserActionAllowed(protection, OTHER, "record")).resolves.toBeUndefined();
+    // Once the filled page is gone, reads are allowed again.
+    live.current = page({ document: "doc-2" });
+    await expect(assertVaultBrowserActionAllowed(protection, PROTECTED, "record")).resolves.toBeUndefined();
+  });
+
   it("lets the pane that holds the fence finish the page: keys and masked screenshots, nothing else (2026-10-19)", async () => {
     const { app } = await fencedApp(null);
     const own = { [cliBrowserBridgeTokenHeader]: agentToken(PROTECTED), "content-type": "application/json" };
@@ -108,6 +120,21 @@ describe("Vault protected browser", () => {
     for (const type of ["screenshot", "extract_text", "record", "diagnostics"]) expect((await action(own, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     expect((await app.inject({ method: "POST", url: "/api/cli/browser/commands", headers: own, payload: { targetPaneId: PROTECTED, command: { type: "START_CAPTURE", kind: "SCREENSHOT" } } })).statusCode).toBe(409);
     expect((await app.inject({ url: "/api/cli/browser/cdp/status", headers: own })).statusCode).toBe(409);
+    await app.close();
+  });
+
+  it("lets an agent hand a filled page to the operator (a CAPTCHA before Submit) and keeps the fence through it (2026-10-22)", async () => {
+    const { app, rows } = await fencedApp(null);
+    const headers = { [cliBrowserBridgeTokenHeader]: agentToken(OTHER), "content-type": "application/json" };
+    const command = (type: string, extra: Record<string, unknown> = {}) => app.inject({ method: "POST", url: "/api/cli/browser/commands", headers,
+      payload: { targetPaneId: PROTECTED, command: { type, ...extra } } });
+    expect((await command("REQUEST_HANDOFF", { kind: "CAPTCHA", reason: "Human check before Sign up" })).statusCode).toBe(200);
+    for (const type of ["HANDOFF_STATUS", "CANCEL_HANDOFF", "RECLAIM_CONTROL"]) expect((await command(type)).statusCode, type).toBe(200);
+    // Everything that reads the page stays refused, and the fence is still there.
+    for (const type of ["LIST_PAGES", "START_CAPTURE", "DEVTOOLS"]) expect((await command(type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    expect((await app.inject({ method: "POST", url: "/api/cli/browser/actions", headers,
+      payload: { actions: [{ targetPaneId: PROTECTED, action: { type: "extract_text" } }] } })).statusCode).toBe(409);
+    expect(rows.get(PROTECTED)).toEqual({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN, document: "doc-1" } });
     await app.close();
   });
 
@@ -194,6 +221,11 @@ describe("Vault protected browser", () => {
     expect(await vault.protection.ownerOf(PROTECTED)).toBe("user:alice");
     expect(await vaultFencedTargets(store, PROTECTED)).toEqual(["handoff-tab"]);
     expect(await vaultFencedTargets(store, OTHER)).toEqual([]);
+    // A handoff on a page a fill already fenced (a CAPTCHA before Submit) keeps that fence when it completes.
+    await vault.protection.protect("user:alice", OTHER, { targetId: "handoff-tab", origin: "https://signup.example", document: "doc-h" });
+    await fenceCompletedHandoff(store, OTHER);
+    expect(await vaultFencedTargets(store, OTHER)).toEqual(["handoff-tab"]);
+    await vault.protection.unprotect("user:alice", OTHER);
     // No web page in view: nothing to fence, and the handoff still completes.
     live.current = page({ eligible: false, reason: "NO_WEB_ORIGIN", targetId: null, frameId: null, origin: null, document: null });
     await fenceCompletedHandoff(store, OTHER);
@@ -220,7 +252,13 @@ describe("Vault protected browser", () => {
 
 describe("Vault fill path for agents and Nous", () => {
   async function bridgeApp(options: { access?: boolean; origin?: string; approvalMode?: "ASSIST" | "FULL"; agentUse?: boolean; grants?: string[][];
-    hostStatus?: "FILLED" | "BLOCKED"; signup?: (request: { certificate: unknown }) => { status: "FILLED" | "BLOCKED"; reason: string | null }; delegation?: false; autoGrantRefusal?: string } = {}) {
+    hostStatus?: "FILLED" | "BLOCKED"; signup?: (request: { certificate: unknown }) => { status: "FILLED" | "BLOCKED"; reason: string | null }; delegation?: false; autoGrantRefusal?: string;
+    /** What the Browser Host reports with the status (hosts since 2026-10-22): a value entered the page; the document the fill ran in. */
+    hostTyped?: boolean; hostDocument?: string;
+    /** The CDP proxy's document marks: whether an agent session scripted the document (absent: the host reloads every time). */
+    documentDirty?: (paneId: string, targetId: string, document: string | null) => boolean;
+    /** Whether the host says it takes freshDocument (default: when the marks are given); an older host never gets the field. */
+    hostAcceptsFresh?: boolean } = {}) {
     const repository = fakeRepository() as ReturnType<typeof fakeRepository> & Record<string, any>;
     const { body } = await enrollment((await generateVaultTransportKey()).publicKey, "user:alice");
     const { sealedServerShare: _sealed, ...rest } = body;
@@ -249,15 +287,16 @@ describe("Vault fill path for agents and Nous", () => {
       if (request.mode === "SIGNUP" && !vaultHostSignupRequestSchema.omit({ certificate: true }).safeParse(signup).success) {
         return { status: "BLOCKED" as const, reason: "BAD_REQUEST", sealedGenerated: null };
       }
-      if (request.mode === "SIGNUP" && options.signup) { const answer = options.signup(request as { certificate: unknown }); return { ...answer, sealedGenerated: answer.status === "FILLED" ? sealed : null }; }
+      const reported = { ...(options.hostTyped !== undefined ? { typed: options.hostTyped } : {}), ...(options.hostDocument ? { document: options.hostDocument } : {}) };
+      if (request.mode === "SIGNUP" && options.signup) { const answer = options.signup(request as { certificate: unknown }); return { ...answer, sealedGenerated: answer.status === "FILLED" ? sealed : null, ...reported }; }
       const status = options.hostStatus ?? "FILLED";
-      return { status, reason: status === "FILLED" ? null : "FIELD_NOT_FOUND", sealedGenerated: status === "FILLED" && (request.mode === "GENERATE" || request.mode === "SIGNUP") ? sealed : null };
+      return { status, reason: status === "FILLED" ? null : "FIELD_NOT_FOUND", sealedGenerated: status === "FILLED" && (request.mode === "GENERATE" || request.mode === "SIGNUP") ? sealed : null, ...reported };
     });
-    const vaultTarget = vi.fn(async () => page({ origin: options.origin ?? LOGIN }));
+    const vaultTarget = vi.fn(async () => page({ origin: options.origin ?? LOGIN, ...((options.hostAcceptsFresh ?? Boolean(options.documentDirty)) ? { freshDocument: true } : {}) }));
     const panes = [{ id: "pane:cliterminal1", roomId: "room:vaultroom1", mode: "TERMINAL", isClosed: false }, { id: PROTECTED, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false },
       { id: OTHER, roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }, { id: "pane:bobsbrowser", roomId: "room:vaultroom1", mode: "BROWSER", isClosed: false }] as Pane[];
     const agent = createVaultAgent({ repository, broker: { issueUse, signupAutoGrant } as never, protection, browser: { vaultTarget, vaultFill }, listPanes: async () => panes,
-      paneOwner: async (paneId) => paneId === "pane:bobsbrowser" ? "user:bob" : "user:alice" });
+      paneOwner: async (paneId) => paneId === "pane:bobsbrowser" ? "user:bob" : "user:alice", documentDirty: options.documentDirty });
     const vault = { repository, protection, broker: { issueUse }, agent } as unknown as VaultModule;
     const app = Fastify();
     registerVaultAgentBridge(app, vault, { store: { getRoom: () => ({ ownerUserId: "user:alice" }) }, requireBridge: async () => ({ claims: { roomId: "room:vaultroom1", paneId: "pane:cliterminal1" } }) });
@@ -303,6 +342,48 @@ describe("Vault fill path for agents and Nous", () => {
     await failed.app.close();
   });
 
+  it("keeps the fence when the host typed before it failed, and follows the document the host reloaded into (Vault review 2026-10-22)", async () => {
+    // A failed fill whose scrub may not have reached the value: the browser stays fenced; the agent's answer stays the fixed shape.
+    const typed = await bridgeApp({ hostStatus: "BLOCKED", hostTyped: true });
+    expect((await typed.fill()).json()).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "FIELD_NOT_FOUND" });
+    expect(typed.rows.get(PROTECTED)).toMatchObject({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN } });
+    await typed.app.close();
+    // The host reloads the page before typing: the fence moves to that document instead of lifting on the next release check.
+    const reloaded = await bridgeApp({ hostDocument: "doc-2" });
+    expect((await reloaded.fill()).json().status).toBe("FILLED");
+    expect(reloaded.rows.get(PROTECTED)).toEqual({ owner: "user:alice", fill: { targetId: "target-1", origin: LOGIN, document: "doc-2" } });
+    await reloaded.app.close();
+    // NEW_ACCOUNT through the sign-up path reports the same way.
+    const signup = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "BLOCKED", reason: "FOCUS_LOST" }), hostTyped: true });
+    expect((await signup.generate("NEW_ACCOUNT")).json().status).toBe("BLOCKED");
+    expect(signup.rows.get(PROTECTED)).toBeDefined();
+    await signup.app.close();
+  });
+
+  it("tells the host whether the document needs a reload from the CDP proxy's marks, and passes the host's reason to the agent (Vault review 2026-10-22)", async () => {
+    // No marks known (no proxy): the request carries no freshDocument, so the host reloads (its safe default).
+    const unknown = await bridgeApp();
+    await unknown.fill();
+    expect(unknown.vaultFill.mock.calls[0]![1]).not.toHaveProperty("freshDocument");
+    await unknown.app.close();
+    // A host from before the field (its target does not say it takes it) never gets it: its strict schema would refuse the fill.
+    const older = await bridgeApp({ documentDirty: () => false, hostAcceptsFresh: false });
+    await older.fill();
+    expect(older.vaultFill.mock.calls[0]![1]).not.toHaveProperty("freshDocument");
+    await older.app.close();
+    // The proxy knows the document: clean means no reload, dirty means a fresh document first; sign-ups say it the same way.
+    const asked: Array<[string, string, string | null]> = [];
+    const clean = await bridgeApp({ documentDirty: (...args) => { asked.push(args); return false; } });
+    await clean.fill();
+    expect(asked).toEqual([[PROTECTED, "target-1", "doc-1"]]);
+    expect(clean.vaultFill.mock.calls[0]![1]).toMatchObject({ mode: "FILL", freshDocument: false });
+    await clean.app.close();
+    const dirty = await bridgeApp({ grants: [[LOGIN]], signup: () => ({ status: "BLOCKED", reason: "FIELD_NOT_FOUND_AFTER_RELOAD" }), documentDirty: () => true });
+    expect((await dirty.generate("NEW_ACCOUNT")).json()).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "FIELD_NOT_FOUND_AFTER_RELOAD" });
+    expect(dirty.vaultFill.mock.calls[0]![1]).toMatchObject({ mode: "SIGNUP", freshDocument: true });
+    await dirty.app.close();
+  });
+
   it("NEW_ACCOUNT runs under the site's signed grant, else one the broker mints from the delegation, through the Browser Host, into the inbox", async () => {
     const none = await bridgeApp({ grants: [["https://other.example"]], delegation: false });
     expect((await none.generate("NEW_ACCOUNT")).json().status).toBe("BLOCKED");
@@ -345,7 +426,7 @@ describe("Vault fill path for agents and Nous", () => {
   it("saves a login an agent created sealed to the operator's inbox, and lists, reports and audits handles only", async () => {
     const { app, post, repository, inbox, handle, vaultId } = await bridgeApp();
     const saved = await post("save", { site: "https://shop.example/register?step=2", username: "synthetic@example.com", password: SENTINEL, label: "Synthetic shop" });
-    expect(saved.json()).toEqual({ status: "SAVED", auditId: expect.stringMatching(/^vault_audit:/) });
+    expect(saved.json()).toEqual({ status: "SAVED", auditId: expect.stringMatching(/^vault_audit:/), reason: null });
     const [pending] = await repository.listPending("user:alice");
     expect(pending).toMatchObject({ kind: "NEW_ACCOUNT", label: "Synthetic shop", origin: "https://shop.example", paneId: "pane:cliterminal1" });
     expect((await repository.listAudit("user:alice", { limit: 1 }))[0]!.event).toMatchObject({ action: "ITEM_SAVE", result: "SAVED", itemId: pending!.handle });
@@ -373,7 +454,7 @@ describe("Vault fill path for agents and Nous", () => {
     const ctx = { owner: "user:alice", turnId: "t", callId: "c", traceId: "trace" };
     const filled = await tools.execute("space_vault_fill", { room: "Work", pane: "Login browser", handle, fields: ["PASSWORD"], submit: true }, ctx);
     expect(filled).toMatchObject({ ok: true });
-    expect(JSON.parse(filled.result)).toEqual({ status: "FILLED", auditId: expect.any(String) });
+    expect(JSON.parse(filled.result)).toEqual({ status: "FILLED", auditId: expect.any(String), reason: null });
     expect(vaultFill).toHaveBeenCalledWith(expect.objectContaining({ id: PROTECTED }), expect.objectContaining({ mode: "FILL" }), "trace");
     expect(rows.has(PROTECTED)).toBe(true);
     expect(JSON.parse((await tools.execute("space_vault_list", {}, ctx)).result).items).toEqual([expect.objectContaining({ handle })]);

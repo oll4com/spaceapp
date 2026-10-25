@@ -56,6 +56,10 @@ export function useAppNotices(): AppNotices {
       liveDebugTimerRef.current = null;
     }, 4500);
   }, []);
+  // The toast's timer must not outlive the app: it set state on a torn-down tree (1.1.7 public CI, smoke test).
+  useEffect(() => () => {
+    if (liveDebugTimerRef.current !== null) window.clearTimeout(liveDebugTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const handleDebug = (event: Event) => {

@@ -1,10 +1,12 @@
-import { useState } from "react";
-import { MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_DEFAULT_FORMAT, MARKETING_CHANNEL_LABELS, marketingWordingIssues, type MarketingCampaign, type MarketingPost, type MarketingPostStatus } from "@space/contracts";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { MARKETING_CAMPAIGN_TEMPLATES, MARKETING_CHANNEL_DEFAULT_FORMAT, MARKETING_CHANNEL_DEFAULT_VIDEO_FORMAT, MARKETING_CHANNEL_LABELS, marketingWordingIssues, type MarketingCampaign, type MarketingPost, type MarketingPostStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { Check, ExternalLink, Rocket, RotateCcw, Send, Undo2, X } from "../ui-theme/app-icons.js";
 import { modeIcons } from "../pane-card/pane-mode-icons.js";
 
 const DesignIcon = modeIcons.DESIGN;
+const VideoIcon = modeIcons.VIDEO;
 
 /** The order the groups show in: what waits for the operator first. */
 const GROUPS: Array<{ status: MarketingPostStatus; label: string }> = [
@@ -23,6 +25,25 @@ function when(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
 }
 
+/** A post image at full size, like the Agent Files preview; the backdrop, Escape or Close shuts it. */
+function ImagePreview({ src, label, onClose }: { src: string; label: string; onClose(): void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  // Portalled: a pane card's own stacking would trap a fixed overlay.
+  return createPortal(
+    <div className="attachment-modal mk-asset-preview" onClick={onClose}>
+      <div className="attachment-modal-body" role="dialog" aria-modal="true" aria-label={`Preview ${label}`} onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="mk-asset-preview-close" aria-label="Close preview" autoFocus onClick={onClose}><X aria-hidden="true" /></button>
+        <img src={src} alt={label} />
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: string; onChanged(): void }) {
   const decidable = post.status === "IN_REVIEW" || post.status === "DRAFT";
   const [title, setTitle] = useState(post.title ?? "");
@@ -31,6 +52,7 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ src: string; label: string } | null>(null);
   const edited = body !== post.body || (title || null) !== post.title;
   const limit = CHARACTER_LIMIT[post.channel];
   const issues = marketingWordingIssues(`${title}\n${body}`);
@@ -55,6 +77,13 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
     const brief = `A ${MARKETING_CHANNEL_LABELS[post.channel]} graphic for this post.${post.title ? `\nTitle: ${post.title}` : ""}\nPost: ${post.body}`.slice(0, 4000);
     const created = await api.requestDesignFromPane(paneId, { brief, formatIds: [graphicFormat!], callback: { kind: "MARKETING_POST", postId: post.id } });
     setGraphicNote(created.designPaneId ? "Sent to the Design pane; the graphic is attached here when it is delivered." : "Queued: open a Design pane to make the graphic.");
+  });
+  // "Make video": the owner's Video pane cuts the channel's video (its editor picks the sources from the room's Media) and the delivery attaches it to this post.
+  const videoFormat = graphicFormat ? MARKETING_CHANNEL_DEFAULT_VIDEO_FORMAT[post.channel] : null;
+  const makeVideo = () => void run(async () => {
+    const brief = `A ${MARKETING_CHANNEL_LABELS[post.channel]} video for this post.${post.title ? `\nTitle: ${post.title}` : ""}\nPost: ${post.body}`.slice(0, 4000);
+    const created = await api.requestVideoFromPane(paneId, { brief, formatIds: [videoFormat!], callback: { kind: "MARKETING_POST", postId: post.id } });
+    setGraphicNote(created.videoPaneId ? "Sent to the Video pane; the video is attached here when it is delivered." : "Queued: open a Video pane to make the video.");
   });
   return (
     <li className="mk-post" data-status={post.status.toLowerCase()}>
@@ -103,19 +132,28 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
       {post.assets.length ? (
         // What the copilot will upload with the post: captures play here; pane files show their kind.
         <ul className="mk-assets" aria-label="Post media">
-          {post.assets.map((asset, index) => (
-            <li key={index}>
-              {asset.artifactId && asset.kind === "VIDEO" ? <video src={api.artifactFileUrl(asset.artifactId)} controls playsInline preload="metadata" aria-label={asset.label} />
-                : asset.artifactId && asset.kind === "IMAGE" ? <img src={api.artifactFileUrl(asset.artifactId)} alt={asset.label} loading="lazy" />
-                : <span className="jc-tag">{asset.kind.toLowerCase()}</span>}
-              <span className="jc-muted">{asset.label}</span>
-            </li>
-          ))}
+          {post.assets.map((asset, index) => {
+            const src = asset.artifactId ? api.artifactFileUrl(asset.artifactId) : null;
+            return (
+              <li key={index}>
+                {src && asset.kind === "VIDEO" ? <video src={src} controls playsInline preload="metadata" aria-label={asset.label} />
+                  : src && asset.kind === "IMAGE" ? (
+                    <button type="button" className="mk-asset-open" title="Open preview" onClick={() => setPreview({ src, label: asset.label })}>
+                      <img src={src} alt={asset.label} loading="lazy" />
+                    </button>
+                  )
+                  : <span className="jc-tag">{asset.kind.toLowerCase()}</span>}
+                <span className="jc-muted">{asset.label}</span>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
+      {preview ? <ImagePreview src={preview.src} label={preview.label} onClose={() => setPreview(null)} /> : null}
       {graphicFormat ? (
         <div className="jc-actions">
           <button type="button" className="jc-button ghost" disabled={busy} onClick={makeGraphic} title="Ask the Design pane for this channel's graphic"><DesignIcon aria-hidden="true" /> Make graphic</button>
+          {videoFormat ? <button type="button" className="jc-button ghost" disabled={busy} onClick={makeVideo} title="Ask the Video pane for this channel's video"><VideoIcon aria-hidden="true" /> Make video</button> : null}
           {graphicNote ? <span className="jc-muted" role="status">{graphicNote}</span> : null}
         </div>
       ) : null}

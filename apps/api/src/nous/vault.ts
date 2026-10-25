@@ -19,8 +19,9 @@ export const nousVaultListArgsSchema = z.object({}).strict();
 export const nousVaultSaveArgsSchema = vaultAgentSaveRequestSchema;
 
 export const NOUS_VAULT_FILL_DESCRIPTION = "Fill a Vault item into a browser pane's open page by handle (open the site's login page first). "
-  + "Space types the values itself; you never see or send a value, username, URL or selector. The answer is {status, auditId}: FILLED or SUBMITTED, "
-  + "BLOCKED (agent access is off, the item is not delegated, or no login form), ORIGIN_MISMATCH (the page is not the item's site).";
+  + "Space types the values itself; you never see or send a value, username, URL or selector. The answer is {status, auditId, reason}: FILLED or SUBMITTED, "
+  + "BLOCKED (agent access is off, the item is not delegated, or no login form), ORIGIN_MISMATCH (the page is not the item's site). "
+  + "reason FIELD_NOT_FOUND_AFTER_RELOAD: the page was reloaded first (a session had run code in it) and the field was gone; redo the steps that showed it with navigate, click, type and press only, then fill again.";
 export const NOUS_VAULT_LIST_DESCRIPTION = "The Vault items the operator lets agents and you use: handles, labels, exact sites and fields, never a value. BLOCKED while agent access is off.";
 export const NOUS_VAULT_SAVE_DESCRIPTION = "Save a login you created (site, username or email, the password you chose, a label) into the operator's Vault. "
   + "It is sealed at once and fillable as soon as space_vault_list shows it, without the operator's unlock. Never save a login you did not create.";

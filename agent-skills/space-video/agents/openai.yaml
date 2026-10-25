@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video"
+  short_description: "Make finished videos in a Space Video pane: automatic clipping with a selectable technique, transitions, captions, narration and music, every social format at its exact size, delivered back to the agent or pane that asked."
+  default_prompt: "Use $space-video: call space_video_next until it returns done, look at each source's contact sheet, transcribe and analyze, assemble every format the request names, look at each output, and close each request with space_video_deliver, space_video_ask or space_video_fail."

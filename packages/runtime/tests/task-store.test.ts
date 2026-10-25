@@ -159,6 +159,10 @@ describe("task store", () => {
       total: 1,
       items: [{ title: "Fallback policy" }]
     });
+    expect(store.listTaskItems("user:one", { source: "AGENT", page: 1, pageSize: 25 })).toMatchObject({
+      total: 1,
+      items: [{ title: "Verify FALLBACK now" }]
+    });
     expect(store.listTaskItems("user:one", { page: 2, pageSize: 2 })).toMatchObject({
       total: 3,
       items: [{ objective: "Write the fallback policy" }]

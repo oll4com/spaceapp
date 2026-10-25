@@ -10,6 +10,7 @@ import {
   vaultKeyFromSeed, vaultPublicKeyOf, vaultRandomBytes, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, generateVaultPassword,
   vaultSignupGrantCertificateSchema, vaultSignupGrantOperatorMessage, vaultSignupGrantRequestSchema, VAULT_SIGNUP_GRANT_LIMITS,
   vaultSignupSite, vaultUnlockChallengeMessage, vaultUseCapabilitySchema, verifyVaultCertificate, verifyVaultMessage, wipeVaultBytes, VAULT_FIELD_ROLES,
+  VAULT_BROKER_API_MAX_BYTES, VAULT_DELEGATION_TECHNICAL_MAX_ITEMS,
   VaultCryptoError, canonicalVaultOrigin, type VaultUseClaims
 } from "@space/contracts";
 
@@ -72,7 +73,7 @@ const schemas = {
   }).strict(),
   delegate: z.object({
     ownerUserId: owner, vaultId, generation: z.number().int().min(1), unlockEpoch: z.number().int().min(1), envelopeDigest: z.string().length(43), expiresAt: z.string().datetime(),
-    items: z.array(z.object({ handle: z.string(), origins: z.array(z.string()).min(1), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1), approvalMode: z.string(), submit: z.boolean() }).strict()).min(1).max(200),
+    items: z.array(z.object({ handle: z.string(), origins: z.array(z.string()).min(1), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1), approvalMode: z.string(), submit: z.boolean() }).strict()).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
     sealedFillKey: vaultTransportEnvelopeSchema, operatorSignature: z.string().length(86), unlockPublicKey: key, serverShareEnvelope: vaultSymmetricEnvelopeSchema,
     /** The inbox's private key sealed to the transport key, so logins agents save join this delegation without an unlock. */
     sealedInboxKey: vaultTransportEnvelopeSchema.optional()
@@ -227,7 +228,7 @@ export async function createVaultBroker(options: { ark: Uint8Array; stateDir: st
       if (existing ? Boolean(entry.sealedUsername) || !entry.sealedPassword : canonicalVaultOrigin(entry.origin)?.origin !== entry.origin || !entry.sealedPassword && !entry.sealedUsername) {
         throw new VaultBrokerRefusal("BAD_ENTRY");
       }
-      if (!existing && delegation.items.length >= 200) throw new VaultBrokerRefusal("DELEGATION_FULL");
+      if (!existing && delegation.items.length >= VAULT_DELEGATION_TECHNICAL_MAX_ITEMS) throw new VaultBrokerRefusal("DELEGATION_FULL");
       const generationKey = await deriveDelegationKey(ark, input, delegation.generation);
       const keys: Uint8Array[] = [generationKey];
       try {
@@ -409,12 +410,16 @@ export type VaultBrokerChannel = "api" | "host";
 export { VAULT_BROKER_HOST_SOCKET_PATH as VAULT_BROKER_HOST_SOCKET };
 export const VAULT_HOST_GROUP = "space-vault-host";
 
-/** HTTP over the broker's socket (systemd hands it over); bodies are JSON and at most 64 KiB. */
+/**
+ * HTTP over the broker's socket (systemd hands it over); bodies are JSON. The API's carry whole delegation certificates, so they
+ * may reach the technical bound VAULT_BROKER_API_MAX_BYTES; the Browser Host's stay at 64 KiB.
+ */
 export function createVaultBrokerHttpServer(core: VaultBrokerCore, channel: VaultBrokerChannel = "api"): Server {
+  const maxBytes = channel === "api" ? VAULT_BROKER_API_MAX_BYTES : 65_536;
   return createServer((request, response) => {
     let size = 0;
     const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 65_536) request.destroy(); else chunks.push(chunk); });
+    request.on("data", (chunk: Buffer) => { size += chunk.length; if (size > maxBytes) request.destroy(); else chunks.push(chunk); });
     request.on("end", () => {
       void (async () => {
         let body: unknown = undefined;

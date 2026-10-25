@@ -275,7 +275,8 @@ export function CliAccountPicker({
             {rows.map((row, rowIndex) => {
               const index = rowIndex + offset;
               const isActive = index === activeIndex;
-              const inUse = Boolean(auto?.active) && rowIndex === activeRow;
+              const inUse = (Boolean(auto?.active) && rowIndex === activeRow)
+                || (selectedProfileId === "space-gateway" && row.availability.gatewayInUse === true);
               return (
                 <button
                   key={row.profile.profileId}

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One OpenCode 2 server per CLI container; every OpenCode pane attaches to it with --server, as Space's own installation does.
 // Two --standalone servers on the one provider store fail: the second exits with "Standalone server exited before reporting
-// readiness" (VM218 2026-10-20, two panes started together in the Getting Started room). The next pane start brings a dead
+// readiness" (Linux lab, 2026-10-20, two panes started together in the Getting Started room). The next pane start brings a dead
 // server back, and changed OpenCode keys or config restart it so new panes see them.
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';

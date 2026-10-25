@@ -145,7 +145,8 @@ function probeApiReadiness(timeoutMs) {
         hostname: apiOrigin.hostname,
         port: apiOrigin.port,
         method: "GET",
-        path: "/readyz",
+        // Strict: 503 until every required dependency is ready; plain /readyz answers 200 with ok:false (1.1.7 review, Codex #10).
+        path: "/readyz?strict=1",
         headers: { host: apiOrigin.host },
         timeout: timeoutMs
       },
@@ -394,11 +395,13 @@ const demoWorkspaceContentSecurityPolicy = [
   "manifest-src 'self'"
 ].join("; ");
 
-// The app shell has no inline script; the YouTube player loads its IFrame API from www.youtube.com.
-const operatorAppScriptPolicy = "script-src 'self' https://www.youtube.com; object-src 'none'; base-uri 'self'; report-uri /csp-report";
+// The app shell has no inline script; the YouTube player loads its IFrame API from www.youtube.com. Enforced since 2026-10-22
+// (security addendum step 7: no report from the operator's pages on stable or dev since zod went jitless on 2026-10-19);
+// violations are still reported to /csp-report.
+const operatorAppContentSecurityPolicy = "frame-ancestors 'self'; script-src 'self' https://www.youtube.com; object-src 'none'; base-uri 'self'; report-uri /csp-report";
 
 let cspReportWindow = { startedAt: 0, count: 0 };
-/** Logs CSP violation reports (directive and blocked source only, capped) so the report-only policy can be reviewed. */
+/** Logs CSP violation reports (directive and blocked source only, capped), so a script the policy blocks shows up in the log. */
 function receiveCspReport(request, response) {
   let size = 0;
   const chunks = [];
@@ -434,12 +437,11 @@ function publicHomepageSecurityHeaders(request, filePath) {
       "x-frame-options": "SAMEORIGIN"
     };
   }
-  // The operator app: no framing by other sites (1.1.5 review F12). Its script policy is report-only until the reports
-  // from every pane are clean (security addendum step 7); HSTS comes from the TLS proxy (deploy/nginx/space-oll4.conf).
+  // The operator app: no framing by other sites (1.1.5 review F12) and only this origin's scripts (security addendum step 7);
+  // HSTS comes from the TLS proxy (deploy/nginx/space-oll4.conf).
   if (pathname !== "/homepage") {
     return {
-      "content-security-policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'self'",
-      "content-security-policy-report-only": operatorAppScriptPolicy,
+      "content-security-policy": operatorAppContentSecurityPolicy,
       "referrer-policy": "strict-origin-when-cross-origin",
       "x-frame-options": "SAMEORIGIN"
     };

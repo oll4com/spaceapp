@@ -1,9 +1,11 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, type AppStudioPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
 import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
 import type { GoogleAccount, VerifiedGoogleIdentity } from "./google-accounts.js";
+import { setupExecutionStateSchema, type SetupExecutionState } from "@space/contracts";
+import { createSetupCompletion, type CompleteSetupExecutionInput } from "./setup-execution.js";
 import { transitionAgentRunLedger, agentRunEvaluationSchema, pickNextAvailablePaneName, normalizePaneName, resolvePaneByName } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
@@ -784,7 +786,7 @@ export interface OwnerSetupStatus {
   expiresAt: string | null;
 }
 
-export const currentSetupOnboardingVersion = 1;
+export const currentSetupOnboardingVersion = 2;
 
 export interface InitializeOwnerSetupInput {
   tokenHash: string;
@@ -909,6 +911,11 @@ export interface SpaceStore {
   getOwnerOnboarding(): MaybePromise<SetupOnboarding>;
   ensureOwnerStarterRoom(traceId?: string): MaybePromise<{ room: Room; onboarding: SetupOnboarding }>;
   completeOwnerOnboarding(completedAt: string): MaybePromise<SetupOnboarding>;
+  getSetupExecutionState(ownerId: string): MaybePromise<SetupExecutionState | null>;
+  compareAndSwapSetupExecutionState(
+    ownerId: string, expectedRevision: number | null, next: SetupExecutionState
+  ): MaybePromise<boolean>;
+  completeSetupExecution(input: CompleteSetupExecutionInput): MaybePromise<SetupOnboarding>;
   listSetupConnectionVerifications(): MaybePromise<SetupConnectionVerification[]>;
   getSetupConnectionVerification(connectionId: string): MaybePromise<SetupConnectionVerification | null>;
   upsertSetupConnectionVerification(
@@ -1073,6 +1080,8 @@ export interface SpaceStore {
   updateFreelanceCopilotMetadata(paneId: string, metadata: FreelanceCopilotPaneMetadata): MaybePromise<Pane>;
   updateDesignMetadata(paneId: string, metadata: DesignPaneMetadata): MaybePromise<Pane>;
   updateAppStudioMetadata(paneId: string, metadata: AppStudioPaneMetadata): MaybePromise<Pane>;
+  updateVideoMetadata(paneId: string, metadata: VideoPaneMetadata): MaybePromise<Pane>;
+  updateSecurityCopilotMetadata(paneId: string, metadata: SecurityCopilotPaneMetadata): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -2575,6 +2584,7 @@ export class InMemorySpaceStore implements SpaceStore {
     onboardingCompletedAt: string | null;
     starterRoomId: string | null;
   } | null = null;
+  private setupExecutionStates = new Map<string, SetupExecutionState>();
   private setupConnectionVerifications = new Map<string, SetupConnectionVerification>();
   private setupConnectionCheckRuns = new Map<string, SetupConnectionCheckRun>();
   private setupConnectionCheckEvents = new Map<string, SetupConnectionCheckEvent>();
@@ -2999,6 +3009,46 @@ export class InMemorySpaceStore implements SpaceStore {
     }
     this.ownerSetup.onboardingVersion = currentSetupOnboardingVersion;
     this.ownerSetup.onboardingCompletedAt = isoDateTimeSchema.parse(completedAt);
+    return this.getOwnerOnboarding();
+  }
+
+  getSetupExecutionState(ownerId: string): SetupExecutionState | null {
+    const saved = this.setupExecutionStates.get(idSchema.parse(ownerId));
+    return saved ? structuredClone(saved) : null;
+  }
+
+  compareAndSwapSetupExecutionState(
+    ownerId: string, expectedRevision: number | null, next: SetupExecutionState
+  ): boolean {
+    const key = idSchema.parse(ownerId);
+    const parsed = setupExecutionStateSchema.parse(next);
+    if (parsed.ownerId !== key || parsed.revision !== (expectedRevision === null ? 0 : expectedRevision + 1)) {
+      throw new SpaceConflictError("Setup state owner or revision is invalid.");
+    }
+    const current = this.setupExecutionStates.get(key);
+    if (expectedRevision === null ? current !== undefined : current?.revision !== expectedRevision) {
+      return false;
+    }
+    this.setupExecutionStates.set(key, structuredClone(parsed));
+    return true;
+  }
+
+  completeSetupExecution(input: CompleteSetupExecutionInput): SetupOnboarding {
+    if (!this.ownerSetup?.ownerUserId || this.ownerSetup.ownerUserId !== input.ownerId || !this.ownerSetup.starterRoomId) {
+      throw new SpaceConflictError("Setup owner or starter room is unavailable.");
+    }
+    if (this.ownerSetup.onboardingCompletedAt && !input.reconfigure) {
+      throw new SpaceConflictError("Setup is already complete.");
+    }
+    const current = this.setupExecutionStates.get(input.ownerId);
+    if (!current) throw new SpaceConflictError("Setup state revision changed before completion.");
+    const completion = createSetupCompletion(current, input, this.ownerSetup.starterRoomId);
+    const next = setupExecutionStateSchema.parse({
+      ...current, revision: current.revision + 1, completion
+    });
+    this.setupExecutionStates.set(input.ownerId, structuredClone(next));
+    this.ownerSetup.onboardingVersion = 2;
+    this.ownerSetup.onboardingCompletedAt ??= input.completedAt;
     return this.getOwnerOnboarding();
   }
 
@@ -3641,6 +3691,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const matching = [...this.taskItems.values()]
       .filter((record) => record.ownerUserId === ownerUserId)
       .filter((record) => !parsed.status || record.item.status === parsed.status)
+      .filter((record) => !parsed.source || record.item.source === parsed.source)
       .filter(
         (record) =>
           !search ||
@@ -5049,6 +5100,24 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(updated);
   }
 
+  updateVideoMetadata(paneId: string, metadata: VideoPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "VIDEO" || current.isClosed) throw new SpaceConflictError("An open Video pane is required.");
+    const parsed = videoPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, videoMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
+  updateSecurityCopilotMetadata(paneId: string, metadata: SecurityCopilotPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "SECURITY_COPILOT" || current.isClosed) throw new SpaceConflictError("An open Security Copilot pane is required.");
+    const parsed = securityCopilotPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, securityCopilotMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -5090,7 +5159,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
-        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO"].includes(input.mode ?? current.mode)
+        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId
             : input.terminalRuntimeId
@@ -6397,8 +6466,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO panes.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO or SECURITY_COPILOT panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);

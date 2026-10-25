@@ -13,7 +13,7 @@ export interface NousOpsDeps {
   tokenUsage?: (range: NousUsageRange) => Promise<SystemAnalyticsModelsResponse>;
   gateway?: () => Promise<GatewayStatus>;
   /** Space Gateway's admin reads (gap audit, plan clipboard:ajcJqa3IW6Eh): never a key secret, never a request body. */
-  gatewayAdmin?: Pick<GatewayAdminService, "listAccounts" | "listApiKeys" | "listRequestLogs" | "report" | "anthropicBilling">;
+  gatewayAdmin?: Pick<GatewayAdminService, "listAccounts" | "listApiKeys" | "listRequestLogs" | "report" | "anthropicBilling"> & Partial<Pick<GatewayAdminService, "getSettings">>;
 }
 
 export const nousUsageRangeSchema = z.enum(["1h", "24h", "7d", "30d"]);

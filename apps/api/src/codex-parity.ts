@@ -1,7 +1,7 @@
 import { execFile, spawn } from "./safe-child-process.js";
 import { createInterface } from "node:readline";
 import { artifactContextClosings, artifactContextOpening } from "./attachment-context.js";
-import { copyFileSync, createReadStream, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1260,6 +1260,8 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
   }
 
   async function historyRows(input: { whereClause: string; limit?: number; offset?: number }): Promise<CodexHistoryItem[]> {
+    // Codex has not run yet, or its home lives in the public CLI container: no history, not an error.
+    if (!existsSync(stateDbPath)) return [];
     const rows = await runSqliteJson<Record<string, unknown>>(
       stateDbPath,
       [
@@ -1287,6 +1289,7 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
   }
 
   async function historyCounts(): Promise<{ totalItems: number; visibleItems: number }> {
+    if (!existsSync(stateDbPath)) return { totalItems: 0, visibleItems: 0 };
     const rows = await runSqliteJson<{ totalItems?: unknown; visibleItems?: unknown }>(
       stateDbPath,
       "select count(*) as totalItems, coalesce(sum(case when archived = 0 then 1 else 0 end), 0) as visibleItems from threads"

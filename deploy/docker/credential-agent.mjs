@@ -20,6 +20,8 @@ const actions = new Map([
 ]);
 const wrapper = /^[a-z][a-z0-9-]{0,40}-vscode-parity$/;
 const maxRequestBytes = 600 * 1024;
+// Each request runs a wrapper for up to 190 s: more than this many at once answer 'busy' instead of piling up processes.
+export const maxConcurrentActions = 4;
 
 export function runAction(request, commandPath) {
   const { command, action, input, ...extra } = request ?? {};
@@ -38,7 +40,8 @@ export function runAction(request, commandPath) {
   });
 }
 
-export async function startCredentialAgent({ socketPath, commandPath, socketMode = 0o660 }) {
+export async function startCredentialAgent({ socketPath, commandPath, socketMode = 0o660, maxConcurrent = maxConcurrentActions }) {
+  let running = 0;
   const stale = await lstat(socketPath).catch(() => null);
   if (stale?.isSocket()) await unlink(socketPath);
   else if (stale) throw new Error(`Refusing to replace non-socket path ${socketPath}.`);
@@ -57,7 +60,13 @@ export async function startCredentialAgent({ socketPath, commandPath, socketMode
     socket.on('end', async () => {
       let request = null;
       try { request = JSON.parse(body); } catch { /* answered as a bad request */ }
-      const answer = await runAction(request, commandPath).catch(() => ({ exitCode: 1, stdout: 'FAILED write-failed\n' }));
+      if (running >= maxConcurrent) {
+        socket.end(`${JSON.stringify({ exitCode: 75, stdout: 'FAILED busy\n' })}\n`);
+        return;
+      }
+      running += 1;
+      const answer = await runAction(request, commandPath).catch(() => ({ exitCode: 1, stdout: 'FAILED write-failed\n' }))
+        .finally(() => { running -= 1; });
       socket.end(`${JSON.stringify(answer)}\n`);
     });
   });

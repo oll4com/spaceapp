@@ -209,7 +209,7 @@ export function RoomAgentTimeline({ conversationId, messages, pending, stream, i
 
   return (
     <div className="room-agent-timeline-wrap">
-      <div className="room-agent-transcript" ref={transcriptRef} onScroll={handleTranscriptScroll} role="log" aria-live="polite" aria-label="Room Agent conversation">
+      <div className="room-agent-transcript" data-sensitive-masked="manual" ref={transcriptRef} onScroll={handleTranscriptScroll} role="log" aria-live="polite" aria-label="Room Agent conversation">
         {!hasContent ? empty : (
           <div className="room-agent-timeline">
             {messages.map((message) => {

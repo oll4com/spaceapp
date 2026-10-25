@@ -24,6 +24,7 @@ import {
 import { SPACE_CLIPBOARD_NOTICE_EVENT, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
 import { TaskHistoryDialog, type TaskHistoryDialogItem } from "../pane-dialogs/PaneDialogs.js";
 import { type PaneDropPosition } from "../pane-drag/pane-drag.js";
+import { paneTypeLabel } from "../pane-float/pane-mode-labels.js";
 import { measureSingleLineTitleWidth, paneHeaderNeedsSecondRow, remToPx, type ShellMode } from "../pane-grid/pane-grid-layout.js";
 import { PaneWorkingTimeBadge } from "../pane-working-time/index.js";
 import { useRailMenuDodge } from "../rail-popover.js";
@@ -35,7 +36,7 @@ import {
   terminalActionDisabledReason,
   type TerminalActionAvailability
 } from "../terminal-pane/terminal-action-availability.js";
-import { ArrowRightLeft, Camera, ChevronLeft, ChevronRight, CircleStop, Clipboard, ClipboardList, Columns2, Copy, Crosshair, Database, Eye, EyeOff, FileInput, FolderPlus, Grid2X2, GripVertical, History, Maximize2, Minimize2, Minus, Monitor, MoreHorizontal, MoveHorizontal, Paperclip, Pencil, PictureInPicture2, Plus, RefreshCw, Save, Send, Shrink, Sparkles, Terminal, Undo2, X, Youtube } from "../ui-theme/app-icons.js";
+import { ArrowRightLeft, Camera, ChevronLeft, ChevronRight, CircleStop, Clipboard, ClipboardList, Columns2, Copy, Crosshair, Database, Eye, EyeOff, FileInput, FolderPlus, Grid2X2, GripVertical, History, Maximize2, Minimize2, Minus, Monitor, MoreHorizontal, MoveHorizontal, Paperclip, Pencil, PictureInPicture2, Plus, RefreshCw, Save, Send, Shrink, Sparkles, Terminal, Undo2, Video, X, Youtube } from "../ui-theme/app-icons.js";
 import { modernPanePrimaryActionCapacity, modernPanePrimaryActionCount } from "../ui-theme/modern-toolbar.js";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { WorktreeBadge } from "../worktrees/WorktreeBadge.js";
@@ -118,6 +119,12 @@ const LazyDesignPane = lazy(() =>
 );
 const LazyAppStudioPane = lazy(() =>
   import("../app-studio-pane/AppStudioPane.js").then((module) => ({ default: module.AppStudioPane }))
+);
+const LazySecurityCopilotPane = lazy(() =>
+  import("../security-copilot-pane/SecurityCopilotPane.js").then((module) => ({ default: module.SecurityCopilotPane }))
+);
+const LazyVideoPane = lazy(() =>
+  import("../video-pane/VideoPane.js").then((module) => ({ default: module.VideoPane }))
 );
 const LazyMarketingCopilotPane = lazy(() =>
   import("../marketing-copilot-pane/MarketingCopilotPane.js").then((module) => ({ default: module.MarketingCopilotPane }))
@@ -266,7 +273,7 @@ export function terminalStopShortcut(runtimeId: string): string {
 }
 
 // Menu items the Live pane handles itself through "space-live-pane-action".
-const LIVE_PANE_ACTION_IDS = new Set(["import", "live-camera", "live-screen", "live-real-view"]);
+const LIVE_PANE_ACTION_IDS = new Set(["import", "live-camera", "live-screen", "live-real-view", "live-record"]);
 
 // The API rejects these pane updates while the pane's runtime (Codex, a CLI or the Harness) is disabled.
 const PANE_UPDATE_ACTION_IDS = new Set(["add", "youtube-add-pane", "grow-width", "reset-width"]);
@@ -863,11 +870,12 @@ export const PaneCard = memo(function PaneCard({
       ? harnessPaneVpnRoutingPresentation(cliRuntimeSettings)
       : null;
   const harnessStatus = pane.mode === "HARNESS" ? cliRuntimeSettings?.harness ?? null : null;
+  const paneIdentityLabel = `${title} · ${paneTypeLabel(pane)}`;
   const paneIdentityBaseTitle = pane.mode === "HARNESS" && showSessionDebugIds
-    ? `${title} / Agent ${agentNumber} / DeepSeek Harness pane session ${pane.id} / service PID ${harnessStatus?.pid ?? "inactive"}`
+    ? `${paneIdentityLabel} / Agent ${agentNumber} / DeepSeek Harness pane session ${pane.id} / service PID ${harnessStatus?.pid ?? "inactive"}`
     : showSessionDebugIds && sessionDebugInfo
-      ? `${title} / Agent ${agentNumber} / ${sessionDebugInfo.title}`
-      : `${title} / Agent ${agentNumber}`;
+      ? `${paneIdentityLabel} / Agent ${agentNumber} / ${sessionDebugInfo.title}`
+      : `${paneIdentityLabel} / Agent ${agentNumber}`;
   const paneIdentityTitle = vpnRoutingPresentation && !maskSensitiveData
     ? `${paneIdentityBaseTitle} / ${vpnRoutingPresentation.label} — ${vpnRoutingPresentation.title}`
     : paneIdentityBaseTitle;
@@ -1410,7 +1418,8 @@ export const PaneCard = memo(function PaneCard({
     ...(pane.mode === "LIVE" ? [
       { id: "live-camera", label: "Camera", title: "Capture from camera", ariaLabel: `Camera ${title}`, icon: Camera, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "camera" } })) },
       { id: "live-screen", label: "Share screen", title: "Share screen", ariaLabel: `Share screen ${title}`, icon: Monitor, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "screen" } })) },
-      { id: "live-real-view", label: "Real View", title: "Share a continuous view", ariaLabel: `Real View ${title}`, icon: Eye, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "real-view" } })) }
+      { id: "live-real-view", label: "Real View", title: "Share a continuous view", ariaLabel: `Real View ${title}`, icon: Eye, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "real-view" } })) },
+      { id: "live-record", label: "Record this session", title: "Start or stop recording this Live session (voices and Real View) into Media", ariaLabel: `Record this session ${title}`, icon: Video, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "record" } })) }
     ] : []),
     ...(pane.mode === "CHAT"
       ? [
@@ -1729,7 +1738,7 @@ export const PaneCard = memo(function PaneCard({
       }
     ];
   }
-  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO") {
+  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT") {
     rawPaneActions = [
       ...(!isTerminalLoginSession ? [{
         id: "add",
@@ -1854,7 +1863,7 @@ export const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
@@ -1862,7 +1871,7 @@ export const PaneCard = memo(function PaneCard({
   const paneToolbarPrimaryActionCount = uiTheme !== "classic" || pane.mode === "YOUTUBE"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO"
+  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT"
     ? []
     : (uiTheme !== "classic" || pane.mode === "YOUTUBE"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
@@ -2540,7 +2549,7 @@ export const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN" || pane.mode === "APP_STUDIO" || pane.mode === "VIDEO" || pane.mode === "SECURITY_COPILOT"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -2748,8 +2757,6 @@ export const PaneCard = memo(function PaneCard({
                   hideFloatingControls={hideCliFloats}
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
-                  fullscreenLayout={isFullscreenLayout}
-                  presizeInFullscreen={presizeInFullscreen}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}
@@ -2794,8 +2801,6 @@ export const PaneCard = memo(function PaneCard({
                   hideFloatingControls={hideCliFloats}
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
-                  fullscreenLayout={isFullscreenLayout}
-                  presizeInFullscreen={presizeInFullscreen}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}
@@ -2840,8 +2845,6 @@ export const PaneCard = memo(function PaneCard({
                   hideFloatingControls={hideCliFloats}
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
-                  fullscreenLayout={isFullscreenLayout}
-                  presizeInFullscreen={presizeInFullscreen}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}
@@ -2874,8 +2877,38 @@ export const PaneCard = memo(function PaneCard({
                   hideFloatingControls={hideCliFloats}
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
-                  fullscreenLayout={isFullscreenLayout}
-                  presizeInFullscreen={presizeInFullscreen}
+                  cliDebugModeEnabled={cliDebugModeEnabled}
+                  observerOnly={terminalObserverOnly}
+                  maxImagePreviews={cliImagePreviewLimit}
+                  onCliDebugModeChange={onCliDebugModeChange}
+                  onSessionMetadataChange={setTerminalSessionMetadata}
+                  onActionAvailabilityChange={handleTerminalActionAvailabilityChange}
+                  onBootstrapped={handleTerminalBootstrapped}
+                  onPrefillReadyChange={handleTerminalPrefillReadyChange}
+                  onRevealReady={handleTerminalRevealReady}
+                  onWorkingStateChange={handleWorkingStateChange}
+                  oskOpen={oskOpen}
+                  mobile={shellMode === "mobile" || isCoarsePointer}
+                />
+              )}
+            />
+          </RecoverableSurface>
+        ) : pane.mode === "SECURITY_COPILOT" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
+            <LazySecurityCopilotPane
+              pane={pane}
+              isVisible={isVisibleInShell}
+              terminal={(
+                <TerminalPane
+                  pane={pane}
+                  terminalFontSize={terminalFontSize}
+                  bootstrapBarrier={terminalBootstrapBarrier}
+                  shouldBootstrap={shouldBootstrapTerminal && !pane.id.startsWith("pane:optimistic-")}
+                  prefillInitialReplay={prefillInitialReplay}
+                  revealGeneration={revealGeneration}
+                  hideFloatingControls={hideCliFloats}
+                  isTarget={isTarget}
+                  isVisible={isTerminalOutputVisible}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}
@@ -2908,8 +2941,38 @@ export const PaneCard = memo(function PaneCard({
                   hideFloatingControls={hideCliFloats}
                   isTarget={isTarget}
                   isVisible={isTerminalOutputVisible}
-                  fullscreenLayout={isFullscreenLayout}
-                  presizeInFullscreen={presizeInFullscreen}
+                  cliDebugModeEnabled={cliDebugModeEnabled}
+                  observerOnly={terminalObserverOnly}
+                  maxImagePreviews={cliImagePreviewLimit}
+                  onCliDebugModeChange={onCliDebugModeChange}
+                  onSessionMetadataChange={setTerminalSessionMetadata}
+                  onActionAvailabilityChange={handleTerminalActionAvailabilityChange}
+                  onBootstrapped={handleTerminalBootstrapped}
+                  onPrefillReadyChange={handleTerminalPrefillReadyChange}
+                  onRevealReady={handleTerminalRevealReady}
+                  onWorkingStateChange={handleWorkingStateChange}
+                  oskOpen={oskOpen}
+                  mobile={shellMode === "mobile" || isCoarsePointer}
+                />
+              )}
+            />
+          </RecoverableSurface>
+        ) : pane.mode === "VIDEO" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
+            <LazyVideoPane
+              pane={pane}
+              isVisible={isVisibleInShell}
+              terminal={(
+                <TerminalPane
+                  pane={pane}
+                  terminalFontSize={terminalFontSize}
+                  bootstrapBarrier={terminalBootstrapBarrier}
+                  shouldBootstrap={shouldBootstrapTerminal && !pane.id.startsWith("pane:optimistic-")}
+                  prefillInitialReplay={prefillInitialReplay}
+                  revealGeneration={revealGeneration}
+                  hideFloatingControls={hideCliFloats}
+                  isTarget={isTarget}
+                  isVisible={isTerminalOutputVisible}
                   cliDebugModeEnabled={cliDebugModeEnabled}
                   observerOnly={terminalObserverOnly}
                   maxImagePreviews={cliImagePreviewLimit}

@@ -1,19 +1,16 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Artifact, BrowserBookmark, BrowserCaptureJob, BrowserCaptureOptions, BrowserFrame, Pane, PaneBrowserSessionResponse } from "@space/contracts";
-import { BROWSER_PANE_ACTION_EVENT, BrowserPane } from "../src/features/browser-pane/BrowserPane.js";
+import type { Artifact, BrowserCaptureJob, BrowserCaptureOptions, BrowserFrame, MarketingBookmark, Pane, PaneBrowserSessionResponse } from "@space/contracts";
+import { BROWSER_PANE_ACTION_EVENT, BrowserPane, queueBrowserHttpInput } from "../src/features/browser-pane/BrowserPane.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const apiMock = vi.hoisted(() => ({
-  addBrowserBookmark: vi.fn(),
   artifactFileUrl: vi.fn((artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/file`),
   artifacts: vi.fn(),
   browserAction: vi.fn(),
-  browserBookmarks: vi.fn(),
-  browserBookmarksExportUrl: vi.fn((paneId: string) => `/api/panes/${encodeURIComponent(paneId)}/browser/bookmarks/export`),
   browserFrame: vi.fn(),
   browserFrameWebSocketUrl: vi.fn(),
   browserStreamWebSocketUrl: vi.fn(),
@@ -27,6 +24,9 @@ const apiMock = vi.hoisted(() => ({
   panes: vi.fn(),
   createBrowserPage: vi.fn(),
   createMarketingBookmark: vi.fn(),
+  deleteMarketingBookmark: vi.fn(),
+  marketingBookmarks: vi.fn(),
+  openMarketingBookmark: vi.fn(),
   closeBrowserPage: vi.fn(),
   activateBrowserPage: vi.fn(),
   acquireBrowserControl: vi.fn(),
@@ -42,9 +42,7 @@ const apiMock = vi.hoisted(() => ({
   browserDiagnostics: vi.fn(),
   browserSession: vi.fn(),
   browserStatus: vi.fn(),
-  importBrowserBookmarks: vi.fn(),
   navigateBrowser: vi.fn(),
-  openBrowserBookmark: vi.fn(),
   setBrowserViewport: vi.fn(),
   updateBrowserSession: vi.fn(),
   startBrowserSession: vi.fn(),
@@ -142,8 +140,8 @@ function sessionResponse(input: Partial<PaneBrowserSessionResponse["session"]> =
   };
 }
 
-function bookmark(id: string, title: string, url = "https://www.google.com/"): BrowserBookmark {
-  return { id, title, url, addedAt: "2026-07-06T00:00:00.000Z" };
+function bookmark(id: string, title: string, url = "https://www.google.com/"): MarketingBookmark {
+  return { id, ownerUserId: "user:operator", title, url, profileId: "google_account:primary", accountLabel: "primary@example.com", createdAt: "2026-07-06T00:00:00.000Z" };
 }
 
 function captureJob(jobId: string, options: BrowserCaptureOptions, status: BrowserCaptureJob["status"]): BrowserCaptureJob {
@@ -273,9 +271,7 @@ describe("BrowserPane", () => {
     for (const mock of Object.values(apiMock)) {
       if (typeof mock === "function" && "mockReset" in mock) mock.mockReset();
     }
-    apiMock.browserBookmarksExportUrl.mockImplementation(
-      (paneId: string) => `/api/panes/${encodeURIComponent(paneId)}/browser/bookmarks/export`
-    );
+    apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [] });
     apiMock.artifactFileUrl.mockImplementation((artifactId: string) => `/api/artifacts/${encodeURIComponent(artifactId)}/file`);
     apiMock.artifacts.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 0 } });
     apiMock.browserFrameWebSocketUrl.mockReturnValue(null);
@@ -606,10 +602,11 @@ describe("BrowserPane", () => {
     expect(heartbeat).toBeTypeOf("function");
     const start = Date.now();
     const now = vi.spyOn(Date, "now");
-    // Six ticks span 90 s, well past the 60 s expiry of the lease that started the heartbeat.
+    // Six ticks span 90 s, well past the 60 s expiry of the lease that started the heartbeat; a key at 45 s keeps the operator inside the 60 s idle release.
     for (let tick = 1; tick <= 6; tick++) {
       const at = start + tick * 15_000;
       now.mockReturnValue(at);
+      if (tick === 3) fireEvent.keyDown(screen.getByRole("img", { name: "Research Browser browser frame" }), { key: "a", code: "KeyA" });
       apiMock.heartbeatBrowserControl.mockResolvedValueOnce({
         lease: { ...lease.lease, heartbeatAt: new Date(at).toISOString(), expiresAt: new Date(at + 60_000).toISOString() }
       });
@@ -620,7 +617,7 @@ describe("BrowserPane", () => {
     expect(screen.getByRole("button", { name: "Release browser control Research Browser" })).toBeTruthy();
   });
 
-  it("gives browser control back two minutes after the last press, a hover does not count", async () => {
+  it("gives browser control back 60 s after the last press, a hover does not count", async () => {
     apiMock.browserSession.mockResolvedValue(sessionResponse());
     const lease = operatorLease();
     apiMock.acquireBrowserControl.mockResolvedValue(lease);
@@ -639,16 +636,16 @@ describe("BrowserPane", () => {
     apiMock.acquireBrowserControl.mockResolvedValue({ lease: { ...lease.lease, expiresAt: new Date(start + 10 * 60_000).toISOString() } });
     fireEvent.keyDown(screen.getByRole("img", { name: "Research Browser browser frame" }), { key: "a", code: "KeyA" });
     await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalled());
-    now.mockReturnValue(start + 5 * 60_000);
+    now.mockReturnValue(start + 4 * 60_000 + 30_000);
     apiMock.heartbeatBrowserControl.mockResolvedValueOnce({ lease: { ...lease.lease, expiresAt: new Date(start + 12 * 60_000).toISOString() } });
     await act(async () => { heartbeat!(); await Promise.resolve(); });
     expect(apiMock.releaseBrowserControl).not.toHaveBeenCalled();
-    // A hover at 5:30 is forwarded but is not use.
-    now.mockReturnValue(start + 5.5 * 60_000);
+    // A hover at 4:45 is forwarded but is not use.
+    now.mockReturnValue(start + 4 * 60_000 + 45_000);
     const frame = screen.getByRole("img", { name: "Research Browser browser frame" });
     fireEvent.mouseMove(frame, { clientX: 20, clientY: 20, buttons: 0 });
-    // Two minutes after that press (operator decision 2026-10-15) the tick gives the browser back instead of renewing it.
-    now.mockReturnValue(start + 6 * 60_000 + 1);
+    // 60 s after that press (operator decision 2026-10-24; two minutes until then) the tick gives the browser back instead of renewing it.
+    now.mockReturnValue(start + 5 * 60_000 + 1);
     apiMock.heartbeatBrowserControl.mockClear();
     await act(async () => { heartbeat!(); await Promise.resolve(); });
     await waitFor(() => expect(apiMock.releaseBrowserControl).toHaveBeenCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator" }));
@@ -750,6 +747,27 @@ describe("BrowserPane", () => {
     vi.useRealTimers();
   });
 
+  it("follows the browser an agent started in place of the closed one on screen (2026-10-22)", async () => {
+    const { before } = tabFixture();
+    let settle!: (value: unknown) => void;
+    apiMock.browserPages.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+    const view = render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    await waitFor(() => expect(apiMock.browserPages).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    try {
+      // An agent's account switch stopped the view's session before its first tab list: the view shows it closed.
+      await act(async () => settle({ sessionId: "browser_session:proof", pages: [], activePageId: null }));
+      expect(screen.getByText("No open tabs. Use + to open a new tab.")).toBeTruthy();
+      const agent = { ...before, sessionId: "browser_session:agent" };
+      apiMock.browserSession.mockResolvedValue(sessionResponse({ sessionId: agent.sessionId, pages: agent.pages, activePageId: agent.activePageId }));
+      apiMock.browserPages.mockResolvedValue(agent);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(screen.getByRole("tab", { name: "First tab" })).toBeTruthy();
+      expect(screen.queryByText("No open tabs. Use + to open a new tab.")).toBeNull();
+      expect(apiMock.startBrowserSession).not.toHaveBeenCalled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
   it("shares concurrent browser status discovery across panes", async () => {
     const nextStatus = {
       enabled: true,
@@ -774,30 +792,10 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(apiMock.startBrowserSession).toHaveBeenCalledTimes(2));
   });
 
-  it("wires bookmarks, import, export and human handoff through mediated browser actions", async () => {
-    const savedBookmark = bookmark("4", "Saved Olla");
-    const importedBookmark = bookmark("6", "Imported Olla", "https://example.com/");
-    apiMock.browserBookmarks.mockResolvedValueOnce({
-      sessionId: "browser_session:proof",
-      paneId: "pane:browser-proof",
-      roomId: "room:browser-proof",
-      bookmarks: []
-    });
-    apiMock.addBrowserBookmark.mockResolvedValue({
-      sessionId: "browser_session:proof",
-      paneId: "pane:browser-proof",
-      roomId: "room:browser-proof",
-      bookmarks: [savedBookmark]
-    });
-    apiMock.importBrowserBookmarks.mockResolvedValue({
-      sessionId: "browser_session:proof",
-      paneId: "pane:browser-proof",
-      roomId: "room:browser-proof",
-      importedCount: 1,
-      skippedCount: 1,
-      bookmarks: [savedBookmark, importedBookmark]
-    });
-    apiMock.openBrowserBookmark.mockResolvedValue(sessionResponse({ currentUrl: "https://example.com/", title: "Example" }));
+  it("wires the shared bookmarks and human handoff through mediated browser actions", async () => {
+    const shared = bookmark("mktbm:olla000001", "(2) Olla", "https://example.com/");
+    apiMock.marketingBookmarks.mockResolvedValue({ bookmarks: [shared] });
+    apiMock.openMarketingBookmark.mockResolvedValue({ bookmark: shared, pages: { sessionId: "browser_session:proof", activePageId: null, pages: [] } });
 
     render(<BrowserPane pane={browserPane()} agentNumber={4} />);
 
@@ -810,29 +808,12 @@ describe("BrowserPane", () => {
       })
     );
 
+    // The Browser pane shows the bookmarks every copilot shows, each with its Google account (operator 2026-10-21).
     await chooseBrowserAction("Browser bookmarks Research Browser");
-    expect(await screen.findByRole("menu", { name: "Saved browser bookmarks Research Browser" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Save current browser page Research Browser" }).getAttribute("type")).toBe("button");
-    expect(screen.getByRole("menuitem", { name: "Import browser bookmarks Research Browser" }).getAttribute("type")).toBe("button");
-    expect((await screen.findByRole("status", { name: "" })).textContent).toBe("No bookmarks");
-
-    fireEvent.click(screen.getByRole("menuitem", { name: "Save current browser page Research Browser" }));
-    expect(await screen.findByText("Saved")).toBeTruthy();
-    expect(await screen.findByRole("menuitem", { name: "Open bookmark Saved Olla" })).toBeTruthy();
-    expect(apiMock.addBrowserBookmark).toHaveBeenCalledWith("pane:browser-proof");
-
-    const importInput = screen.getByLabelText("Browser bookmark import file Research Browser");
-    const file = new File([JSON.stringify({ roots: {} })], "Bookmarks", { type: "application/json" });
-    fireEvent.change(importInput, { target: { files: [file] } });
-    expect(await screen.findByText("Imported 1; skipped 1")).toBeTruthy();
-    expect(await screen.findByRole("menuitem", { name: "Open bookmark Imported Olla" })).toBeTruthy();
-    expect(apiMock.importBrowserBookmarks).toHaveBeenCalledWith("pane:browser-proof", file);
-    expect(screen.getByRole("menuitem", { name: "Export browser bookmarks Research Browser" }).getAttribute("href")).toBe(
-      "/api/panes/pane%3Abrowser-proof/browser/bookmarks/export"
-    );
-
-    fireEvent.click(screen.getByRole("menuitem", { name: "Open bookmark Imported Olla" }));
-    await waitFor(() => expect(apiMock.openBrowserBookmark).toHaveBeenCalledWith("pane:browser-proof", "6"));
+    const menu = await screen.findByRole("dialog", { name: "Saved browser bookmarks Research Browser" });
+    fireEvent.click(await within(menu).findByRole("button", { name: "Open Olla with primary@example.com" }));
+    await waitFor(() => expect(apiMock.openMarketingBookmark).toHaveBeenCalledWith("pane:browser-proof", "mktbm:olla000001"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Saved browser bookmarks Research Browser" })).toBeNull());
 
     const joinButton = screen.getByRole("button", { name: "Join browser session Research Browser" });
     expect(joinButton.getAttribute("type")).toBe("button");
@@ -904,12 +885,6 @@ describe("BrowserPane", () => {
   });
 
   it("exposes real active state for browser toggles but not one-shot actions", async () => {
-    apiMock.browserBookmarks.mockResolvedValue({
-      sessionId: "browser_session:proof",
-      paneId: "pane:browser-proof",
-      roomId: "room:browser-proof",
-      bookmarks: []
-    });
     apiMock.browserDiagnostics.mockResolvedValue({ sessionId: "browser_session:proof", events: [] });
 
     render(<BrowserPane pane={browserPane()} agentNumber={4} />);
@@ -919,9 +894,9 @@ describe("BrowserPane", () => {
     expect(desktopViewport.getAttribute("aria-pressed")).toBe("true");
 
     await chooseBrowserAction("Browser bookmarks Research Browser");
-    expect(screen.getByRole("menu", { name: "Saved browser bookmarks Research Browser" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Saved browser bookmarks Research Browser" })).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Saved browser bookmarks Research Browser" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Saved browser bookmarks Research Browser" })).toBeNull();
 
     await chooseBrowserAction("Record browser session Research Browser");
     expect(screen.getByRole("dialog", { name: "Browser recording controls Research Browser" })).toBeTruthy();
@@ -942,12 +917,6 @@ describe("BrowserPane", () => {
 
   it("supports hide, overflow and persistent drag order for browser toolbar icons", async () => {
     window.localStorage.clear();
-    apiMock.browserBookmarks.mockResolvedValue({
-      sessionId: "browser_session:proof",
-      paneId: "pane:browser-proof",
-      roomId: "room:browser-proof",
-      bookmarks: []
-    });
 
     render(<BrowserPane pane={browserPane()} agentNumber={4} />);
 
@@ -960,7 +929,7 @@ describe("BrowserPane", () => {
 
     const overflowMenu = await openBrowserActions();
     fireEvent.click(within(overflowMenu).getByLabelText("Browser bookmarks Research Browser"));
-    expect(await screen.findByRole("menu", { name: "Saved browser bookmarks Research Browser" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Saved browser bookmarks Research Browser" })).toBeTruthy();
 
     const restoreMenu = await openBrowserActions();
     fireEvent.click(within(restoreMenu).getByRole("menuitem", { name: "Show all icons" }));
@@ -1004,12 +973,28 @@ describe("BrowserPane", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: /^second@example\.com/ }));
   }
 
-  it("names the room and the agent pane driving the browser in the frame's corner (operator 2026-10-20)", async () => {
+  it("names the room and the agent pane driving the browser in the frame's corner; a click goes to that pane (operator 2026-10-20/21)", async () => {
     const { before } = tabFixture();
-    apiMock.browserPages.mockResolvedValue({ ...before, agent: { paneId: "pane:codex", title: "Codex 2", roomId: "room:main", roomName: "Main" } });
+    apiMock.browserPages.mockResolvedValue({ ...before, agent: { paneId: "pane:codex", title: "Fix login", paneName: "Andy", roomId: "room:main", roomName: "Main",
+      drivenAt: new Date().toISOString(), active: true } });
+    const focus = vi.fn();
+    window.addEventListener("space:nous-focus", focus);
     render(<BrowserPane pane={browserPane()} agentNumber={4} />);
-    const label = await screen.findByText("Main · Codex 2");
-    expect(label.getAttribute("title")).toBe("Handled by Codex 2 in room Main");
+    const label = await screen.findByRole("button", { name: "Main · Andy · Fix login" });
+    expect(label.getAttribute("title")).toBe("Handled by Andy in room Main. Click to go to that pane.");
+    fireEvent.click(label);
+    window.removeEventListener("space:nous-focus", focus);
+    expect((focus.mock.calls[0]![0] as CustomEvent).detail).toEqual({ roomId: "room:main", paneId: "pane:codex", immediate: true });
+  });
+
+  it("keeps naming the last agent pane after it stopped driving the browser, with how long ago (operator 2026-10-22)", async () => {
+    const { before } = tabFixture();
+    apiMock.browserPages.mockResolvedValue({ ...before, agent: { paneId: "pane:iris", title: "YC application", paneName: "Iris", roomId: "room:bruno",
+      roomName: "Bruno", drivenAt: new Date(Date.now() - 25 * 60_000).toISOString(), active: false } });
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    const label = await screen.findByRole("button", { name: "Last: Bruno · Iris · YC application · 25 min ago" });
+    expect(label.getAttribute("data-active")).toBe("false");
+    expect(label.getAttribute("title")).toBe("Last handled 25 min ago by Iris in room Bruno. Click to go to that pane.");
   });
 
   it.each(["BROWSER", "MARKETING_COPILOT"] as const)("changes the account of the %s pane's tab in view in place; the other tabs keep the pane's", async (mode) => {
@@ -1047,7 +1032,7 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(apiMock.setBrowserPageAccount).toHaveBeenLastCalledWith("pane:browser-proof", "page:three", null, {}));
   });
 
-  it("saves a Marketing Copilot tab to the copilot's bookmarks with the Google account it is open in", async () => {
+  it.each(["MARKETING_COPILOT", "BROWSER"] as const)("saves a %s tab to the shared bookmarks with the Google account it is open in", async (mode) => {
     const { before } = tabFixture();
     twoAccounts();
     const second = { profileId: "google_account:second", label: "second@example.com" };
@@ -1057,7 +1042,7 @@ describe("BrowserPane", () => {
     apiMock.createMarketingBookmark.mockResolvedValue({ bookmark: {} });
     const changed = vi.fn();
     window.addEventListener("space:marketing-bookmarks-changed", changed);
-    const { unmount } = render(<BrowserPane pane={browserPane({ mode: "MARKETING_COPILOT" })} agentNumber={4} />);
+    render(<BrowserPane pane={browserPane({ mode })} agentNumber={4} />);
     await waitFor(() => expect(apiMock.browserAccounts).toHaveBeenCalled());
     fireEvent.contextMenu(await screen.findByRole("tab", { name: "Second tab · second@example.com" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Save to bookmarks" }));
@@ -1069,11 +1054,6 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(apiMock.createMarketingBookmark).toHaveBeenLastCalledWith({ url: "https://example.com/one", title: "First tab", profileId: "google_account:primary", accountLabel: "primary@example.com" }));
     expect(changed).toHaveBeenCalledTimes(2);
     window.removeEventListener("space:marketing-bookmarks-changed", changed);
-    unmount();
-    // Other browser panes have no copilot bookmarks and keep the native context menu.
-    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
-    fireEvent.contextMenu(await screen.findByRole("tab", { name: "First tab" }));
-    expect(screen.queryByRole("menuitem", { name: "Save to bookmarks" })).toBeNull();
   });
 
   it.each(["BROWSER", "MARKETING_COPILOT"] as const)("with a Browser Host from before per-tab accounts, moves the %s pane's tab to a new Browser pane in the other account", async (mode) => {
@@ -1311,6 +1291,12 @@ describe("BrowserPane", () => {
       "pane:browser-proof",
       expect.objectContaining({ type: "TOUCH", eventType: "touchStart", touchPoints: [expect.objectContaining({ id: 3 })] })
     ));
+    // After 100+ taps Android's pointerId passes the contract's 100: every tap was rejected (2026-10-21).
+    fireEvent.pointerDown(browserImage, { pointerId: 357, pointerType: "touch", clientX: 90, clientY: 60, button: 0, buttons: 1 });
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledWith(
+      "pane:browser-proof",
+      expect.objectContaining({ type: "TOUCH", eventType: "touchStart", touchPoints: [expect.objectContaining({ id: 57 })] })
+    ));
     await chooseBrowserAction("Type text into browser Research Browser");
     fireEvent.change(await screen.findByLabelText("Browser text input Research Browser"), { target: { value: "captcha answer" } });
     fireEvent.click(screen.getByRole("button", { name: "Type into browser Research Browser" }));
@@ -1330,6 +1316,21 @@ describe("BrowserPane", () => {
       "pane:browser-proof",
       expect.objectContaining({ type: "KEY", eventType: "keyUp", key: "Backspace" })
     ));
+    // Without the stream socket, moves go one request at a time, coalesced to the latest point.
+    apiMock.browserInput.mockClear();
+    let finishMove!: () => void;
+    apiMock.browserInput.mockImplementationOnce(() => new Promise((resolve) => { finishMove = () => resolve(sessionResponse()); }));
+    for (const clientX of [10, 20, 30, 40]) {
+      fireEvent.pointerMove(browserImage, { pointerId: 1, pointerType: "mouse", clientX, clientY: 80, buttons: 0 });
+    }
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledTimes(1));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(apiMock.browserInput).toHaveBeenCalledTimes(1);
+    act(() => finishMove());
+    await waitFor(() => expect(apiMock.browserInput).toHaveBeenCalledTimes(2));
+    const [first, last] = apiMock.browserInput.mock.calls.map(([, input]) => input as { eventType: string; x: number });
+    expect([first?.eventType, last?.eventType]).toEqual(["mouseMoved", "mouseMoved"]);
+    expect(last!.x).toBeGreaterThan(first!.x);
     fireEvent.click(screen.getByRole("button", { name: "Release browser control Research Browser" }));
     await waitFor(() => expect(apiMock.releaseBrowserControl).toHaveBeenCalledWith("pane:browser-proof", { leaseId: "lease:operator" }));
   });
@@ -1826,3 +1827,16 @@ describe("BrowserPane", () => {
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+describe("browser HTTP input queue", () => {
+  const move = (x: number) => ({ type: "POINTER" as const, leaseId: "lease:a", eventType: "mouseMoved" as const, x, y: 1 });
+  const wheel = (deltaY: number) => ({ type: "POINTER" as const, leaseId: "lease:a", eventType: "mouseWheel" as const, x: 1, y: 1, deltaY });
+  it("keeps the latest move, adds wheel deltas within the limit and keeps the order of other inputs", () => {
+    const queue: Parameters<typeof queueBrowserHttpInput>[0] = [];
+    for (const input of [move(1), move(2), wheel(100), wheel(50), wheel(9_900), move(3)]) queueBrowserHttpInput(queue, input);
+    queueBrowserHttpInput(queue, { type: "KEY", leaseId: "lease:a", eventType: "keyDown", key: "a" });
+    queueBrowserHttpInput(queue, move(4));
+    expect(queue.map((input) => "eventType" in input ? [input.eventType, "x" in input ? input.x : null, "deltaY" in input ? input.deltaY : undefined] : null))
+      .toEqual([["mouseMoved", 2, undefined], ["mouseWheel", 1, 150], ["mouseWheel", 1, 9_900], ["mouseMoved", 3, undefined], ["keyDown", null, undefined], ["mouseMoved", 4, undefined]]);
+  });
+});

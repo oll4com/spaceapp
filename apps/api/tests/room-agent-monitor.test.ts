@@ -45,7 +45,10 @@ describe("room agent monitor", () => {
     expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "Usage limit" })).toEqual({ kind: "USAGE_LIMIT", severity: "ATTENTION" });
     expect(roomMonitorTransition({ activity: "IDLE", reason: null }, { activity: "WAITING", reason: "Sign-in required" })).toEqual({ kind: "SIGN_IN", severity: "ATTENTION" });
     expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "API error" })).toEqual({ kind: "STUCK", severity: "ATTENTION" });
+    // A CLI's question for the operator is its own kind (operator decision 2026-10-24): it reaches them while Nous works.
+    expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "Question for you" })).toEqual({ kind: "QUESTION", severity: "ATTENTION" });
     expect(roomMonitorEventText("STUCK", "Cody", "API error", { title: null, summary: null }).title).toBe("Cody stopped on an API error");
+    expect(roomMonitorEventText("QUESTION", "Cody", "Question for you", { title: null, summary: null }).title).toBe("Cody has a question for you");
     expect(roomMonitorTransition({ activity: "WAITING", reason: "Permission prompt" }, { activity: "WAITING", reason: "Permission prompt" })).toBeNull();
     expect(roomMonitorTransition({ activity: "IDLE", reason: null }, { activity: "WORKING", reason: null })).toBeNull();
   });

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Copilot"
+  short_description: "Protect every Proxmox host and SpaceApp itself inside a Space Security Copilot pane: inventory the hosts, triage findings matched from KEV, NVD, OSV, distro metadata and news, and fix them through the server's gate."
+  default_prompt: "Use $space-security-copilot: call space_security_next until it returns done, recall the host's memory before any change, put every change through space_security_action_begin and close it with space_security_action_finish."

@@ -5,6 +5,8 @@ import { dispatchBrowserPaneActionEvent, MARKETING_BOOKMARKS_CHANGED_EVENT } fro
 import { avatarHue } from "../browser-pane/GoogleAccountMenuItems.js";
 import { accountMenuEntries, effectiveAccountId, type YouTubeAccounts } from "../browser-pane/youtube-accounts.js";
 import { BookmarkPlus, Plus, Trash2, Users } from "../ui-theme/app-icons.js";
+import "../copilot-kit/copilot-pane.css";
+import "./marketing-copilot-pane.css";
 
 function withScheme(url: string): string {
   const trimmed = url.trim();
@@ -48,8 +50,9 @@ function BookmarkRow({ bookmark, busy, disabled, onOpen, onDelete }: { bookmark:
 /**
  * The Bookmarks rail tab (operator request 2026-10-16): pages the pane browser opens in a new tab with the Google
  * account saved for them; a browser tab's context menu saves one too. The copilot lists and opens the same bookmarks.
+ * `popover`: the browser toolbar's Bookmarks menu, so every browser pane shares the list (operator request 2026-10-21).
  */
-export function BookmarksTab({ paneId, onOpened }: { paneId: string; onOpened(): void }) {
+export function BookmarksTab({ paneId, onOpened, popover = false }: { paneId: string; onOpened(): void; popover?: boolean }) {
   const [bookmarks, setBookmarks] = useState<MarketingBookmark[]>([]);
   const [accounts, setAccounts] = useState<YouTubeAccounts | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,7 +116,7 @@ export function BookmarksTab({ paneId, onOpened }: { paneId: string; onOpened():
   };
 
   return (
-    <div className="mk-bookmarks" role="tabpanel" id="jc-panel-bookmarks" aria-labelledby="jc-tab-bookmarks">
+    <div className="mk-bookmarks" {...popover ? { role: "group", "aria-label": "Bookmarks" } : { role: "tabpanel", id: "jc-panel-bookmarks", "aria-labelledby": "jc-tab-bookmarks" }}>
       <div className="mk-bookmarks-head">
         <span className="jc-muted">
           {bookmarks.length ? <>{bookmarks.length} {bookmarks.length === 1 ? "bookmark" : "bookmarks"}<span className="mk-bookmarks-hint"> · right-click a browser tab to save it</span></> : "Right-click a browser tab to save it here"}

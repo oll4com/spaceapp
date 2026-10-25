@@ -16,6 +16,8 @@ export interface TaskScheduleRunnerDeps {
   store: Pick<SpaceStore, "dueTaskSchedules" | "claimTaskSchedule" | "getPane" | "getRoom">;
   inspect(pane: Pane): Promise<RoomPaneObservation>;
   answer(pane: Pane, input: { expectedSessionId: string; answer: string; submit: boolean; expectedPromptFingerprint: string }): Promise<unknown>;
+  /** Reopens the task's closed CLI pane as its owner (Space Control: a terminal resumes its conversation, a copilot-style pane starts its CLI). */
+  reopen?(pane: Pane, ownerUserId: string): Promise<unknown>;
   now?: () => number;
 }
 
@@ -46,13 +48,20 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
     const pane = task.paneId ? await Promise.resolve().then(() => deps.store.getPane(task.paneId!)).catch(() => null) : null;
     if (!pane) return await advance(`Reminder due at ${dueAt}.`, false) ? "REMINDED" : "LOST";
     if (!isCliPane(pane)) return await advance(`Skipped ${dueAt}: the task's pane is not a CLI.`, false) ? "SKIPPED" : "LOST";
-    // Only the task owner's own panes are typed into, whichever path wrote the task.
+    // Only the task owner's own panes are typed into (or reopened), whichever path wrote the task.
     const room = await Promise.resolve().then(() => deps.store.getRoom(pane.roomId)).catch(() => null);
     if (room?.ownerUserId !== task.ownerUserId) return await advance(`Skipped ${dueAt}: the pane is not in one of your rooms.`, false) ? "SKIPPED" : "LOST";
 
     const graceMs = Math.min(DOT_SCHEDULE_GRACE_MS, recurrence.kind === "INTERVAL" ? recurrence.minutes * 60_000 : DOT_SCHEDULE_GRACE_MS);
     const waitOrSkip = async (reason: string) => now() - Date.parse(dueAt) < graceMs ? "WAITING" as const
       : await advance(`Skipped ${dueAt}: ${reason}.`, false) ? "SKIPPED" as const : "LOST" as const;
+    // Nous closes finished task panes (operator order 2026-10-24): the task reopens its pane and types once the CLI is at its prompt.
+    if (pane.isClosed) {
+      if (!deps.reopen) return await advance(`Skipped ${dueAt}: its pane is closed; rebind the task to an open pane.`, false) ? "SKIPPED" : "LOST";
+      try { await deps.reopen(pane, task.ownerUserId); }
+      catch (error) { return waitOrSkip(`its closed pane could not be reopened (${error instanceof Error ? error.message.slice(0, 200) : "unknown error"})`); }
+      return waitOrSkip("its pane was reopened and its CLI did not reach its prompt");
+    }
     const observed = await deps.inspect(pane).catch(() => null);
     if (observed && (!observed.sessionId || observed.state === "EXITED" || observed.state === "ERROR")) return waitOrSkip("the pane has no running CLI");
     if (!observed || !atEmptyPrompt(observed)) return waitOrSkip("the CLI was busy or had a draft at its prompt");

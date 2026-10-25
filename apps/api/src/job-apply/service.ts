@@ -1084,24 +1084,26 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
       ]);
       return { run, status: run?.status ?? "IDLE", queue, current: current ? toApplication(current) : null, pending };
     },
-    /** Start or resume the pane's run. `kickoff` is true when the agent is not polling space_job_next and needs the prompt. */
-    async startRun(owner: string, paneId: string): Promise<{ run: JobApplyRun; kickoff: boolean; resumed: boolean }> {
+    /**
+     * Start or resume the pane's run. `kickoff` is true when the agent is not polling space_job_next and needs the prompt;
+     * `discover` when a new run has nothing to take (empty queue, or every posting deferred): the agent finds postings first.
+     */
+    async startRun(owner: string, paneId: string): Promise<{ run: JobApplyRun; kickoff: boolean; resumed: boolean; discover: boolean }> {
       const active = await repository.getActiveRun(paneId);
       if (active && active.ownerUserId !== owner) throw new SpaceConflictError("Another owner's run is active in this pane.");
       const polling = (nextJobWaiters.get(paneId) ?? 0) > 0;
-      if (active?.status === "RUNNING") return { run: toRun(active), kickoff: !polling, resumed: false };
+      if (active?.status === "RUNNING") return { run: toRun(active), kickoff: !polling, resumed: false, discover: false };
       if (active?.status === "PAUSED") {
         const resumed = await repository.updateRun(owner, active.id, { status: "RUNNING", pausedAt: null, lastActivityAt: now() });
         await record(owner, { paneId, runId: active.id, type: "RUN_RESUMED", message: "Run resumed", payload: { counters: active.counters } });
-        return { run: toRun(resumed!), kickoff: !polling, resumed: true };
+        return { run: toRun(resumed!), kickoff: !polling, resumed: true, discover: false };
       }
       const queue = await repository.listQueue(owner, paneId);
-      if (queue.length === 0) throw new SpaceConflictError("Queue a posting before starting the copilot.");
-      const { eligible, holds } = jobApplicationQueueHolds(queue.map(toApplication), now());
-      if (eligible.length === 0) throw new SpaceConflictError(`Every queued posting waits for an employer limit; the next one is free on ${[...holds.values()].sort()[0]!.slice(0, 10)}.`);
+      const { eligible } = jobApplicationQueueHolds(queue.map(toApplication), now());
       const run = await repository.createRun({ ownerUserId: owner, paneId, status: "RUNNING" });
-      await record(owner, { paneId, runId: run.id, type: "RUN_STARTED", message: `Run started: ${eligible.length} queued`, payload: { queued: eligible.length } });
-      return { run: toRun(run), kickoff: true, resumed: false };
+      const message = eligible.length ? `Run started: ${eligible.length} queued` : "Run started: nothing queued can be taken now, the copilot finds new postings first";
+      await record(owner, { paneId, runId: run.id, type: "RUN_STARTED", message, payload: { queued: eligible.length } });
+      return { run: toRun(run), kickoff: true, resumed: false, discover: eligible.length === 0 };
     },
     async markKickoff(owner: string, runId: string): Promise<void> {
       await repository.updateRun(owner, runId, { kickoffSentAt: now() });

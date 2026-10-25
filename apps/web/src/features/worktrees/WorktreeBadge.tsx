@@ -154,8 +154,13 @@ export function WorktreeBadge({
   const handleRemove = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!worktreePath) return;
-    const isDirty = Boolean(worktreeData?.isDirty || propIsDirty);
-    if (isDirty && typeof window !== "undefined" && !window.confirm("Worktree has uncommitted changes. Force discard?")) {
+    // The polled status can be a minute old and Remove forces: warn from a fresh read, and also when it fails.
+    const fresh = await fetch(`/api/worktrees/item?path=${encodeURIComponent(worktreePath)}&fresh=1`, { credentials: "same-origin" })
+      .then(async (res) => (res.ok ? ((await res.json()) as { data?: SpaceWorktree }).data ?? null : null))
+      .catch(() => null);
+    const warning = !fresh ? "Could not check the worktree for uncommitted changes. Force discard?"
+      : propIsDirty || fresh.isDirty ? "Worktree has uncommitted changes. Force discard?" : null;
+    if (warning && typeof window !== "undefined" && !window.confirm(warning)) {
       return;
     }
     setLoading(true);

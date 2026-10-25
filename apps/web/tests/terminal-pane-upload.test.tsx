@@ -1350,6 +1350,28 @@ describe("TerminalPane uploads and paste", () => {
     expect(types().indexOf("resize")).toBeLessThan(types().indexOf("control_release"));
   });
 
+  it("sizes a hidden full-screen pane's CLI to the grid recorded while its borrowed lease was pending", async () => {
+    MockWebSocket.protocolVersion = 2;
+    recordFullscreenGeometry(56, 41);
+    render(<TerminalPane pane={cliPane()} terminalFontSize={12} isVisible={false} fullscreenLayout presizeInFullscreen />);
+    await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
+    const socket = MockWebSocket.instances[0]!;
+    const frames = () => socket.sent.map((frame) => JSON.parse(frame) as { type: string; cols?: number; rows?: number; leaseId?: string });
+    const types = () => frames().map((frame) => frame.type);
+    const receive = (message: object) => act(() => {
+      socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(message) }));
+    });
+    await waitFor(() => expect(types()).toContain("control_upgrade"));
+    receive({ type: "control_upgraded" });
+    await waitFor(() => expect(types()).toContain("control_request"));
+    act(() => recordFullscreenGeometry(128, 41));
+    receive({ type: "control_granted", leaseId: "cli_control_lease:latest", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    await waitFor(() => expect(types()).toContain("control_release"));
+    expect(frames().filter((frame) => frame.type === "resize" && frame.leaseId === "cli_control_lease:latest")).toEqual([
+      expect.objectContaining({ cols: 128, rows: 41 })
+    ]);
+  });
+
   it("presizes a hidden full-screen pane once an unfocused page gets focus back", async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false);
     MockWebSocket.protocolVersion = 2;
@@ -3608,7 +3630,7 @@ describe("TerminalPane uploads and paste", () => {
     );
   });
 
-  it("lets Enter after a bare # submit normally and picks a variable only after arrow navigation", async () => {
+  it("lets Enter after a bare # submit normally; after arrow navigation Enter picks and sends, Tab only picks", async () => {
     window.localStorage.setItem("space.promptVariables.v1", JSON.stringify([
       { id: "var:pc", name: "pc_thai", value: "10.0.0.5", createdAt: "2026-10-11T00:00:00.000Z", updatedAt: "2026-10-11T00:00:00.000Z" }
     ]));
@@ -3629,9 +3651,45 @@ describe("TerminalPane uploads and paste", () => {
         expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "ArrowDown" }))).toBe(false);
       });
       act(() => {
-        expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+        expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "Tab" }))).toBe(false);
       });
       await waitFor(() => expect(socket.sent).toContain(JSON.stringify({ type: "input", data: "\u007f#pc_thai " })));
+
+      act(() => terminal.emitData(" and #pc"));
+      await screen.findByRole("listbox", { name: "Prompt variables suggestions" });
+      socket.sent.length = 0;
+      act(() => {
+        expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+      });
+      // One Enter: the prompt is cleared, rewritten with both values after a gap, and submitted.
+      const inputs = () => socket.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === "input").map((frame) => frame.data);
+      expect(inputs()).toEqual(["\u0015\u0015"]);
+      await waitFor(() => expect(inputs()).toEqual(["\u0015\u0015", "\u0015\u001b[200~ping 10.0.0.5  and 10.0.0.5\u001b[201~", "\r"]));
+    } finally {
+      window.localStorage.removeItem("space.promptVariables.v1");
+    }
+  });
+
+  it("expands a variable added after the CLI connected when Enter submits it", async () => {
+    try {
+      render(<TerminalPane pane={cliPane()} terminalFontSize={12} />);
+      await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
+      const terminal = xtermMock.instances[0] as unknown as { emitData: (data: string) => void };
+      const socket = MockWebSocket.instances[0]!;
+      act(() => {
+        window.localStorage.setItem("space.promptVariables.v1", JSON.stringify([
+          { id: "var:chk", name: "chk", value: "what is done", createdAt: "2026-10-22T00:00:00.000Z", updatedAt: "2026-10-22T00:00:00.000Z" }
+        ]));
+        window.dispatchEvent(new CustomEvent("space:prompt-variables-updated"));
+      });
+
+      act(() => terminal.emitData("#chk"));
+      socket.sent.length = 0;
+      act(() => terminal.emitData("\r"));
+      // Claude Code mixes up a Ctrl+U and a paste in one read: the clear goes first, the bracketed value and Enter after a gap.
+      const inputs = () => socket.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === "input").map((frame) => frame.data);
+      expect(inputs()).toEqual(["\u0015\u0015"]);
+      await waitFor(() => expect(inputs()).toEqual(["\u0015\u0015", "\u0015\u001b[200~what is done\u001b[201~", "\r"]));
     } finally {
       window.localStorage.removeItem("space.promptVariables.v1");
     }

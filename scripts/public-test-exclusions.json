@@ -4,7 +4,6 @@
   "apps/api/tests/browser-account-profile-chrome.test.ts": "needs real Chrome and Xvfb (review 2026-10-16: passes in the private tree)",
   "apps/api/tests/browser-account-profiles.test.ts": "needs the maintainers' scratch directory",
   "apps/api/tests/browser-chrome-crash.integration.test.ts": "needs Docker and a TMPDIR the Docker daemon can see (review 2026-10-16)",
-  "apps/api/tests/browser-evidence.test.ts": "the export rewrites private values in the test or the code (review F18)",
   "apps/api/tests/browser-mcp.test.ts": "needs scripts/space-browser-mcp.mjs, which the export does not ship (review 2026-10-16)",
   "apps/api/tests/cli-adapter-runtime-contract.test.ts": "reads a private deploy file or script",
   "apps/api/tests/cli-launcher-contracts.test.ts": "reads a private deploy file or script",
@@ -58,11 +57,8 @@
   "apps/api/tests/vault-broker.test.ts": "needs the root-owned Vault broker units in deploy/, which the public tree does not ship (1.1.6 re-cut 2026-10-18)",
   "apps/api/tests/vault-phase6.test.ts": "starts the Vault MCP server from scripts/, which the public tree does not ship (1.1.6 re-cut 2026-10-18)",
   "apps/web/tests/app-icons.test.tsx": "two Live pane files import lucide-react directly at this commit (fixed upstream after 1.1.5)",
-  "apps/web/tests/browser-address.test.ts": "the export rewrites private values in the test or the code (review F18)",
   "apps/web/tests/dots-proof-probe.test.tsx": "reads a private deploy file or script",
   "apps/web/tests/public-deployment-config.test.ts": "reads a private deploy file or script",
-  "apps/web/tests/source-control-publishing-card.test.tsx": "the export rewrites private values in the test or the code (review F18)",
-  "apps/web/tests/terminal-hidden-echo.test.ts": "the export rewrites private values in the test or the code (review F18)",
   "apps/web/tests/ui-parity-manifest.test.ts": "refers to tests that stay private",
   "apps/worker/tests/memory-maintenance.test.ts": "reads a private deploy file or script",
   "apps/worker/tests/memory-mutation-activity.test.ts": "reads a private deploy file or script",
@@ -89,7 +85,5 @@
   "packages/db/tests/migration-install-upgrade-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/room-agent-monitor-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/room-deletion-postgres.test.ts": "needs a PostgreSQL test database",
-  "packages/db/tests/user-settings-postgres.test.ts": "needs a PostgreSQL test database",
-  "packages/gateway/tests/warmup.test.ts": "the export rewrites private values in the test or the code (review F18)",
-  "packages/runtime/tests/configuration-bundle-store.test.ts": "the export rewrites private values in the test or the code (review F18)"
+  "packages/db/tests/user-settings-postgres.test.ts": "needs a PostgreSQL test database"
 }

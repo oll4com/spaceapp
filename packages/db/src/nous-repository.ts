@@ -44,6 +44,12 @@ const newId = (prefix: string) => `${prefix}:${randomUUID().replace(/-/g, "").sl
 const now = () => new Date().toISOString();
 const iso = (value: Date | string) => value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+/**
+ * Message meta as JSON Postgres accepts: a tool result clipped inside an emoji left half a surrogate pair, which JSON.stringify
+ * writes as "\ud83d" and jsonb refuses (stable 2026-10-22: two space_notifications calls answered 500 after their work was done).
+ */
+const metaJson = (meta: Record<string, unknown>) => JSON.stringify(meta, (_key, value: unknown) => typeof value === "string"
+  ? value.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD") : value);
 
 export class InMemoryNousRepository implements NousRepository {
   private readonly messages: NousMessage[] = [];
@@ -142,7 +148,7 @@ const messageOf = (row: MessageRow) => nousMessageSchema.parse({ ...row, created
 const decisionOf = (row: DecisionRow) => nousDecisionSchema.parse({ ...row, createdAt: iso(row.createdAt), answeredAt: row.answeredAt === null ? null : iso(row.answeredAt) });
 interface TurnFactsRow extends Omit<NousTurnFacts, "startedAt" | "endedAt"> { startedAt: Date | string; endedAt: Date | string }
 const turnFactsColumns = `turn_id AS "turnId", owner_user_id AS "ownerUserId", reason, status, tools, plan_points AS "planPoints", outcomes,
-  started_at AS "startedAt", ended_at AS "endedAt"`;
+  started_at AS "startedAt", ended_at AS "endedAt", model, effort, cost_usd::float8 AS "costUsd", tokens`;
 const rowCount = (result: unknown) => (result as { rowCount?: number | null }).rowCount ?? 0;
 
 export class PostgresNousRepository implements NousRepository {
@@ -152,13 +158,13 @@ export class PostgresNousRepository implements NousRepository {
   async addMessage(input: NewNousMessage) {
     const result = await this.pool.query<MessageRow>(`INSERT INTO nous_messages (id, owner_user_id, turn_id, kind, status, content, meta)
       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING ${messageColumns}`,
-    [newId("nous_msg"), input.ownerUserId, input.turnId, input.kind, input.status, clip(input.content, 20_000), JSON.stringify(input.meta ?? {})]);
+    [newId("nous_msg"), input.ownerUserId, input.turnId, input.kind, input.status, clip(input.content, 20_000), metaJson(input.meta ?? {})]);
     return messageOf(result.rows[0]!);
   }
   async updateMessage(owner: string, id: string, patch: { status?: NousMessageStatus; content?: string; meta?: Record<string, unknown> }) {
     const result = await this.pool.query<MessageRow>(`UPDATE nous_messages SET status = COALESCE($3, status), content = COALESCE($4, content),
       meta = COALESCE($5::jsonb, meta), updated_at = now() WHERE owner_user_id = $1 AND id = $2 RETURNING ${messageColumns}`,
-    [owner, id, patch.status ?? null, patch.content === undefined ? null : clip(patch.content, 20_000), patch.meta === undefined ? null : JSON.stringify(patch.meta)]);
+    [owner, id, patch.status ?? null, patch.content === undefined ? null : clip(patch.content, 20_000), patch.meta === undefined ? null : metaJson(patch.meta)]);
     return result.rows[0] ? messageOf(result.rows[0]) : null;
   }
   async listMessages(owner: string, limit: number) {
@@ -214,9 +220,10 @@ export class PostgresNousRepository implements NousRepository {
   }
   async addTurnFacts(facts: NousTurnFacts) {
     const turn = nousTurnFactsSchema.parse(facts);
-    await this.pool.query(`INSERT INTO nous_turn_facts (turn_id, owner_user_id, reason, status, tools, plan_points, outcomes, started_at, ended_at)
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9) ON CONFLICT (turn_id) DO NOTHING`,
-    [turn.turnId, turn.ownerUserId, turn.reason, turn.status, JSON.stringify(turn.tools), turn.planPoints, JSON.stringify(turn.outcomes), turn.startedAt, turn.endedAt]);
+    await this.pool.query(`INSERT INTO nous_turn_facts (turn_id, owner_user_id, reason, status, tools, plan_points, outcomes, started_at, ended_at, model, effort, cost_usd, tokens)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb) ON CONFLICT (turn_id) DO NOTHING`,
+    [turn.turnId, turn.ownerUserId, turn.reason, turn.status, JSON.stringify(turn.tools), turn.planPoints, JSON.stringify(turn.outcomes), turn.startedAt, turn.endedAt,
+      turn.model, turn.effort, turn.costUsd, turn.tokens === null ? null : JSON.stringify(turn.tokens)]);
   }
   async listTurnFacts(owner: string, since: string) {
     const result = await this.pool.query<TurnFactsRow>(`SELECT ${turnFactsColumns} FROM nous_turn_facts WHERE owner_user_id = $1 AND started_at >= $2

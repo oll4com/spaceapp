@@ -10,7 +10,9 @@ import {
   ingestNotificationStreamPayload, peekNotificationStore, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator
 } from "../src/features/notifications/notification-store.js";
 import { workspaceRoomActivity } from "../src/features/ui-theme/workspace-room-filter.js";
-import { NOUS_FOCUS_EVENT, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
+import { NOUS_FOCUS_EVENT, writeNousFocusEnabled, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
+import { liveRuntime } from "../src/live/live-runtime.js";
+import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
 const apiMock = vi.hoisted(() => ({
   notificationsPending: vi.fn(), notifications: vi.fn(), notification: vi.fn(), markNotificationRead: vi.fn(), ackNotification: vi.fn(), readAllNotifications: vi.fn(), testNotification: vi.fn(),
@@ -69,6 +71,30 @@ describe("Space notifications (web)", () => {
     // Rooms with open notifications count as needing attention.
     expect(workspaceRoomActivity([], {}, 0, 2).attention).toBe(true);
     expect(workspaceRoomActivity([], {}, 0, 0).attention).toBe(false);
+  });
+
+  it("delivers a needs-you request on a pane as the focus banner instead of a toast, with one chime; the device setting off keeps the toast (operator request 2026-10-24)", async () => {
+    installSpaceRuntime(liveRuntime);
+    writeNousFocusEnabled(true);
+    apiMock.notificationsPending.mockResolvedValue(pending([]));
+    apiMock.notifications.mockResolvedValue({ notifications: [] });
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(<NotificationToastHost />);
+    const focused: NousFocusDetail[] = [];
+    const onFocus = (event: Event) => focused.push((event as CustomEvent<NousFocusDetail>).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    const question = notification("q", { source: "JOB_COPILOT", kind: "QUESTION", title: "Which CV?", paneId: "pane:job", dedupeKey: "job-apply:question:1" });
+    act(() => { deliverNotifications([question, notification("mail", { severity: "INFO", title: "Newsletter", paneId: "pane:news" })], null); });
+    expect(focused).toEqual([{ roomId: "room:1", paneId: "pane:job", immediate: false, notification: question }]);
+    expect(screen.queryByText("Which CV?")).toBeNull();
+    expect(await screen.findByText("Newsletter")).toBeTruthy();
+    expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
+    writeNousFocusEnabled(false);
+    act(() => { deliverNotifications([notification("q2", { source: "JOB_COPILOT", kind: "QUESTION", title: "Which cover letter?", paneId: "pane:job2", dedupeKey: "job-apply:question:2" })], null); });
+    window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    expect(focused).toHaveLength(1);
+    expect(await screen.findByText("Which cover letter?")).toBeTruthy();
+    writeNousFocusEnabled(true);
   });
 
   it("delivers a toast and one chime in the foreground, nothing while suppressed, and a click opens the target", async () => {
@@ -188,6 +214,20 @@ describe("Space notifications (web)", () => {
     await waitFor(() => expect(apiMock.readAllNotifications).toHaveBeenCalled());
   });
 
+  it("offers under Unread only the sources with something unread, and keeps the chosen one", async () => {
+    const items = [notification("a"), notification("b", { source: "DESIGN", title: "Logo" }), notification("c", { status: "READ", source: "ROOM_AGENT", title: "Bob is waiting" })];
+    apiMock.notificationsPending.mockResolvedValue(pending(items));
+    apiMock.notifications.mockResolvedValue({ notifications: items });
+    render(<NotificationCenterDock />);
+    const sourceChips = async () => within(await screen.findByRole("group", { name: "Source" })).getAllByRole("button").map((chip) => chip.textContent);
+    expect(await sourceChips()).toEqual(["All", "Mail Copilot1", "Design1"]);
+    fireEvent.click(within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name: "All" }));
+    expect(await sourceChips()).toEqual(["All", "Mail Copilot1", "Design1", "Room Agent0"]);
+    fireEvent.click(within(screen.getByRole("group", { name: "Source" })).getByRole("button", { name: "Room Agent0" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Show" })).getByRole("button", { name: /Unread/ }));
+    expect(await sourceChips()).toEqual(["All", "Mail Copilot1", "Design1", "Room Agent0"]);
+  });
+
   it("groups a pane's notifications under Nous's card, opens that pane through Nous focus and delivers a new list once more (plan clipboard:8FfXWclYUfOH)", async () => {
     const card = (alertAt: string) => notification("nous", { source: "NOUS", kind: "NEEDS_HANDS", title: "Upwork needs you", body: "• Pass the Cloudflare check",
       dedupeKey: "nous:pane:pane:mail", link: { roomId: "room:1", paneId: "pane:mail" }, payload: { alertAt } });
@@ -207,7 +247,7 @@ describe("Space notifications (web)", () => {
     window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
     fireEvent.click(within(list).getByRole("button", { name: "Unread: Nous: Upwork needs you" }));
     window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
-    expect(focused).toEqual([{ roomId: "room:1", paneId: "pane:mail", ownerUserId: null, immediate: true }]);
+    expect(focused).toEqual([{ roomId: "room:1", paneId: "pane:mail", immediate: true, notification: expect.objectContaining({ id: "notification:nous" }) }]);
     expect(navigate).not.toHaveBeenCalled();
     await waitFor(() => expect(apiMock.markNotificationRead).toHaveBeenCalledWith("notification:nous"));
 
