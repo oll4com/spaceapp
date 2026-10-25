@@ -160,5 +160,22 @@ export async function browserProof({ state, origin, cookie, artifacts, paneId })
     };
     const capture = async name => writeFile(join(artifacts, name), Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     return { evaluate, terminalState, key, diagnostic, setupDeferred: true, async screenshot(name) { assertBrowserTerminal(await terminalState(), paneId); await capture(name); }, async failureScreenshot() { await capture('opencode-failure.png'); }, close };
-  } catch (error) { error.browserRuntime = diagnostic('application-browser'); await close(); throw error; }
+  } catch (error) {
+    const captures = await Promise.allSettled([
+      (async () => {
+        const page = await evaluate(`(() => ({ origin: location.origin, pathname: location.pathname, title: document.title, readyState: document.readyState, setupOverlays: document.querySelectorAll('.first-setup-overlay').length, closeButtons: [...document.querySelectorAll('.first-setup-overlay button[aria-label="Save and close setup"]')].map(button => ({ disabled: button.disabled, visible: Boolean(button.getClientRects().length) })), text: (document.body?.innerText || '').replace(/[A-Za-z0-9_-]{24,}/g, '[redacted]').slice(0, 2500) }))()`);
+        await mkdir(artifacts, { recursive: true });
+        await writeFile(join(artifacts, 'application-browser-failure.json'), JSON.stringify(page, null, 2) + '\n', { mode: 0o600 });
+      })(),
+      (async () => {
+        const screenshot = await call('Page.captureScreenshot', { format: 'png' });
+        await mkdir(artifacts, { recursive: true });
+        await writeFile(join(artifacts, 'application-browser-failure.png'), Buffer.from(screenshot.data, 'base64'), { mode: 0o600 });
+      })()
+    ]);
+    error.browserCaptureFailures = captures.filter(result => result.status === 'rejected').map(result => String(result.reason?.message || 'capture failed').slice(0, 300));
+    error.browserRuntime = diagnostic('application-browser');
+    await close();
+    throw error;
+  }
 }
