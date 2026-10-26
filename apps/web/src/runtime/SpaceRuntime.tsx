@@ -82,6 +82,11 @@ const apiDispatchers = new Map<PropertyKey, (...args: unknown[]) => unknown>();
 
 export const api = new Proxy({} as SpaceApiClient, {
   get(_target, property) {
+    // 龙娘 · 2026-10-26: React Refresh inspects exports before the provider installs a runtime.
+    // Symbols and Object metadata describe this proxy, rather than calling an API service.
+    if (typeof property === "symbol" || Object.hasOwn(Object.prototype, property)) {
+      return Reflect.get(_target, property);
+    }
     const client = getSpaceRuntime().api as unknown as Record<PropertyKey, unknown>;
     const value = client[property];
     if (typeof value !== "function") return value;
@@ -122,6 +127,12 @@ export const browserGateway: SpaceSocketGateway = {
   },
   connect: (url) => getSpaceRuntime().browser.connect(url)
 };
+
+// Service facades have runtime-dependent getters; they are not plain records of React components.
+// The non-enumerable tag lets React Refresh inspect the module without evaluating those getters.
+for (const gateway of [eventGateway, terminalGateway, browserGateway]) {
+  Object.defineProperty(gateway, Symbol.toStringTag, { value: "SpaceRuntimeGateway" });
+}
 
 export function SpaceRuntimeProvider({ runtime, children }: { runtime: SpaceRuntime; children: ReactNode }) {
   installSpaceRuntime(runtime);

@@ -52,3 +52,7 @@ projects/
 .local/
 
 run-spaceapp-*.tgz
+
+# Longniang, 2026-10-26: checkout-owned contributor runtime and lifetime lock.
+/.dev-stack/
+/.dev-stack-lock/

@@ -1,5 +1,6 @@
 import { rollbackKeepingError } from "./rollback.js";
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
+import { defaultRoomProjectPath, resolveSpaceInstance } from "@space/contracts";
 import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection } from "@space/runtime";
@@ -4102,6 +4103,9 @@ export class PostgresSpaceStore implements SpaceStore {
   private mcpTools: McpTool[];
   private skills: Skill[];
 
+  // 龙娘 · 2026-10-26: contributor rooms use the configured dev workspace, with stable behavior unchanged.
+  private readonly defaultProjectPath = defaultRoomProjectPath(process.env);
+
   constructor(
     private readonly pool: PgPoolLike,
     options: StaticCatalogOptions = {}
@@ -6619,7 +6623,7 @@ export class PostgresSpaceStore implements SpaceStore {
             updated_at AS "updatedAt",
             owner_user_id AS "ownerUserId"
         `,
-        [roomId, input.name, input.description ?? null, nextOrder, ACTIVE_PANE_CAP, traceId, timestamp, input.kind ?? "WORKSPACE", ownerUserId ?? null, input.projectPath ?? "/opt/spaceapp"]
+        [roomId, input.name, input.description ?? null, nextOrder, ACTIVE_PANE_CAP, traceId, timestamp, input.kind ?? "WORKSPACE", ownerUserId ?? null, input.projectPath ?? this.defaultProjectPath]
       );
       const room = mapRoom(firstOrNotFound(roomResult.rows, `Room ${roomId} was not created.`));
       await this.appendEvent(client, {
@@ -16094,8 +16098,8 @@ export class PostgresSpaceStore implements SpaceStore {
     );
     const result = await client.query<RoomRow>(
       `
-        INSERT INTO rooms (id, name, description, room_order, pane_cap, trace_id, created_at, updated_at, kind, owner_user_id)
-        VALUES ($1, 'Getting Started', 'Workspace for your agent tasks and sessions.', $2, $3, $4, $5, $5, 'WORKSPACE', $6)
+        INSERT INTO rooms (id, name, description, room_order, pane_cap, trace_id, created_at, updated_at, kind, owner_user_id, project_path)
+        VALUES ($1, 'Getting Started', 'Workspace for your agent tasks and sessions.', $2, $3, $4, $5, $5, 'WORKSPACE', $6, $7)
         RETURNING
           id,
           name,
@@ -16118,7 +16122,8 @@ export class PostgresSpaceStore implements SpaceStore {
         ACTIVE_PANE_CAP,
         traceId,
         timestamp,
-        ownerUserId ?? null
+        ownerUserId ?? null,
+        this.defaultProjectPath
       ]
     );
     const room = mapRoom(firstOrNotFound(result.rows, `Room ${roomId} was not created.`));
@@ -16141,7 +16146,7 @@ export class PostgresSpaceStore implements SpaceStore {
         title: "OpenCode CLI",
         mode: "TERMINAL",
         terminalRuntimeId: "cli:opencode",
-        cwd: "/etc"
+        cwd: resolveSpaceInstance(process.env) === "dev" ? this.defaultProjectPath : "/etc"
       },
       0,
       traceId,

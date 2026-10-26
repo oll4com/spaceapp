@@ -22,3 +22,9 @@ import "./verify-export-provenance.test.mjs";
 
 import './opencode-first-run.test.mjs';
 import './opencode-standalone.test.mjs';
+
+// Longniang, 2026-10-26: run contributor lifecycle regressions in the public gate.
+import './dev-stack-state.test.mjs';
+import './dev-stack-processes.test.mjs';
+import './dev-stack-runtime.test.mjs';
+import './dev-stack-supervisor.test.mjs';

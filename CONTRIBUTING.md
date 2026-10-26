@@ -118,3 +118,26 @@ which certifies the [Developer Certificate of Origin 1.1](https://developercerti
 that you wrote the contribution or have the right to submit it under the MIT
 License. `git commit -s` adds the line. There is no separate contributor
 license agreement.
+
+## Run the full app from source
+
+<!-- Longniang, 2026-10-26: isolated contributor stack for issue #65. -->
+After installing the dependencies above, run the complete contributor stack with
+Node 22 and Docker Engine plus Compose v2 or newer. On macOS use Docker Desktop
+or Colima; on Windows 11 run these commands inside WSL2, with the checkout in its
+Linux filesystem and a Docker daemon accessible there.
+
+    npm run dev:stack
+    npm run dev:stack -- rebuild
+    npm run dev:stack -- down
+    npm run dev:stack -- reset
+
+The first command prints a local URL and the generated owner setup token. Create
+your owner account through the normal setup screen. Default loopback ports are
+14911 for the web UI, 14910 for the API, 15432 for PostgreSQL, and 17233 for Temporal.
+API and web sources reload during development; use the rebuild command after
+changing shared packages or worker sources. Down preserves development data; reset
+removes only this checkout's development containers, volumes, and state.
+
+See [the development stack guide](docs/contributing-dev-stack.md) for port overrides,
+OpenCode terminal setup, prerequisites, and troubleshooting.

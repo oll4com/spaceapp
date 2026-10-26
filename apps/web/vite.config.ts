@@ -4,6 +4,9 @@ import { retainOpenTabAssets } from "./vite.asset-retention.js";
 import react from "@vitejs/plugin-react";
 import { demoBundleBoundaryPlugin } from "./vite.demo-boundary.js";
 
+// 龙娘 · 2026-10-26: let the isolated contributor stack proxy its own API (SpaceApp #65).
+const apiOrigin = process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910";
+
 export function manualChunkForModule(moduleId: string): string | undefined {
   const normalizedId = moduleId.replaceAll("\\", "/");
   if (
@@ -34,11 +37,12 @@ export default defineConfig({
     host: process.env.SPACE_WEB_HOST ?? "0.0.0.0",
     port: Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10),
     proxy: {
-      "/api": "http://127.0.0.1:4910",
-      "/plugins": "http://127.0.0.1:4910",
-      "/healthz": "http://127.0.0.1:4910",
-      "/readyz": "http://127.0.0.1:4910",
-      "/version": "http://127.0.0.1:4910"
+      // 龙娘 · 2026-10-26: terminal and plugin sockets need HTTP upgrade forwarding in development.
+      "/api": { target: apiOrigin, ws: true },
+      "/plugins": { target: apiOrigin, ws: true },
+      "/healthz": apiOrigin,
+      "/readyz": apiOrigin,
+      "/version": apiOrigin
     }
   },
   test: {

@@ -1,0 +1,171 @@
+# Dragon, 2026-10-26: real isolated Linux stack acceptance and ownership cleanup.
+name: Contributor development stack
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked source dependencies
+        run: npm ci
+      - name: Offline transport and supervisor regression checks
+        run: |
+          npm run smoke:offline
+          npm run test:contributor
+          node --test scripts/tests/dev-stack*.test.mjs
+      - name: Start stack without a TTY and wait for strict readiness
+        shell: bash
+        run: |
+          node scripts/dev-stack.mjs up > "$RUNNER_TEMP/dev-stack.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/dev-stack-launch.pid"
+          node --input-type=module <<'NODE'
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { readFileSync } from 'node:fs';
+          const supervisorPid = Number(readFileSync(`${process.env.RUNNER_TEMP}/dev-stack-launch.pid`, 'utf8').trim());
+          let ready = false;
+          for (let attempt = 0; attempt < 420; attempt++) {
+            try { process.kill(supervisorPid, 0); } catch { throw new Error('Development supervisor exited before readiness'); }
+            try {
+              const response = await fetch('http://127.0.0.1:14910/readyz?strict=1', { signal: AbortSignal.timeout(4000) });
+              if (response.ok && (await response.json()).ok) { ready = true; break; }
+            } catch {}
+            await delay(2000);
+          }
+          if (!ready) throw new Error('Development stack did not reach strict readiness');
+          NODE
+      - name: Preserve an unrelated Docker resource as a cleanup sentinel
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { loadConfig } from './scripts/dev-stack/state.mjs';
+          import { execFileSync } from 'node:child_process';
+          import { writeFileSync } from 'node:fs';
+          const config = await loadConfig(process.cwd(), process.env);
+          const name = `spaceapp-unrelated-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
+          const id = execFileSync('docker', ['create', '--name', name, '--label', 'spaceapp.acceptance=unrelated', config.images.postgres], { encoding: 'utf8' }).trim();
+          execFileSync('docker', ['volume', 'create', `${name}-volume`], { stdio: 'ignore' });
+          writeFileSync(`${process.env.RUNNER_TEMP}/dev-stack-sentinel.json`, JSON.stringify({ name, id, projectName: config.projectName }));
+          NODE
+      - name: Claim owner, sign in, open Getting Started and receive real OpenCode output
+        run: node scripts/dev-stack/smoke.mjs
+      - name: Save sanitized proof before reset
+        if: always()
+        shell: bash
+        run: |
+          if [ -f .dev-stack/smoke-proof.json ]; then cp .dev-stack/smoke-proof.json "$RUNNER_TEMP/dev-stack-proof.json"; fi
+          if [ -f .dev-stack/processes.json ]; then cp .dev-stack/processes.json "$RUNNER_TEMP/dev-stack-processes.json"; fi
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          const auditPath = `${process.env.RUNNER_TEMP}/dev-stack-processes.json`;
+          const roots = existsSync(auditPath) ? JSON.parse(readFileSync(auditPath, 'utf8')).processes : [];
+          const launcherPath = `${process.env.RUNNER_TEMP}/dev-stack-launch.pid`;
+          if (existsSync(launcherPath)) roots.push({ name: 'supervisor', pid: Number(readFileSync(launcherPath, 'utf8').trim()) });
+          function identity(pid) {
+            try {
+              const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+              // comm can contain spaces and parentheses; numeric fields follow its final ')'.
+              const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+              return { pid: Number(pid), ppid: Number(fields[1]), pgid: Number(fields[2]), sessionId: Number(fields[3]), startTime: fields[19] };
+            } catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return null; throw error; }
+          }
+          const captured = new Map();
+          for (let pass = 0; pass < 3; pass++) {
+            const table = readdirSync('/proc').filter(value => /^\d+$/.test(value)).map(identity).filter(Boolean);
+            const selected = new Set(roots.map(root => root.pid));
+            let changed = true;
+            while (changed) {
+              changed = false;
+              for (const entry of table) if (selected.has(entry.ppid) && !selected.has(entry.pid)) { selected.add(entry.pid); changed = true; }
+            }
+            for (const entry of table) if (selected.has(entry.pid)) captured.set(`${entry.pid}:${entry.startTime}`, entry);
+            if (pass < 2) await delay(100);
+          }
+          // Audit only: no command lines, environments, credentials, or process termination.
+          writeFileSync(`${process.env.RUNNER_TEMP}/dev-stack-process-identities.json`, JSON.stringify({ format: 'spaceapp-linux-process-audit-v1', roots, processes: [...captured.values()] }), { mode: 0o600 });
+          NODE
+      - name: Reset owned resources on success or failure
+        if: always()
+        run: node scripts/dev-stack.mjs reset
+      - name: Verify cleanup and unrelated resource preservation
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { existsSync, readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { loadConfig } from './scripts/dev-stack/state.mjs';
+          const config = await loadConfig(process.cwd(), process.env);
+          assert.equal(existsSync('.dev-stack'), false, 'State directory remains');
+          assert.equal(existsSync('.dev-stack-lock'), false, 'Supervisor lock remains');
+          for (const kind of ['container', 'volume']) {
+            const ids = execFileSync('docker', [kind, 'ls', '-q', '--filter', `label=com.docker.compose.project=${config.projectName}`], { encoding: 'utf8' }).trim();
+            assert.equal(ids, '', `Owned ${kind} remains`);
+          }
+          const sentinelPath = `${process.env.RUNNER_TEMP}/dev-stack-sentinel.json`;
+          if (existsSync(sentinelPath)) {
+            const sentinel = JSON.parse(readFileSync(sentinelPath, 'utf8'));
+            const id = execFileSync('docker', ['inspect', '--format', '{{.Id}}', sentinel.name], { encoding: 'utf8' }).trim();
+            assert.equal(id, sentinel.id, 'Unrelated container was replaced or removed');
+            execFileSync('docker', ['volume', 'inspect', `${sentinel.name}-volume`], { stdio: 'ignore' });
+          }
+          const snapshotPath = `${process.env.RUNNER_TEMP}/dev-stack-process-identities.json`;
+          assert(existsSync(snapshotPath), 'Missing pre-reset process identity snapshot');
+          const { processes } = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+          const stillPresent = ({ pid, startTime }) => {
+            assert(Number.isSafeInteger(pid) && pid > 1 && /^\d+$/.test(startTime), 'Invalid process identity proof');
+            try {
+              const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+              return stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19] === startTime;
+            } catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return false; throw error; }
+          };
+          let remaining = processes.filter(stillPresent);
+          for (let attempt = 0; attempt < 50 && remaining.length; attempt++) { await delay(100); remaining = remaining.filter(stillPresent); }
+          assert.equal(remaining.length, 0, `Owned host process identities remain: ${remaining.map(entry => entry.pid).join(',')}`);
+          const cleanupProof = { cleaned: true, capturedHostProcessCount: processes.length, survivingHostProcessCount: remaining.length, unrelatedPreserved: existsSync(sentinelPath) };
+          const { writeFileSync } = await import('node:fs');
+          writeFileSync(`${process.env.RUNNER_TEMP}/dev-stack-cleanup-proof.json`, JSON.stringify(cleanupProof));
+          console.log(JSON.stringify(cleanupProof));
+          NODE
+      - name: Remove only the CI-owned sentinel
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const path = `${process.env.RUNNER_TEMP}/dev-stack-sentinel.json`;
+          if (existsSync(path)) {
+            const { name, id } = JSON.parse(readFileSync(path, 'utf8'));
+            const actual = execFileSync('docker', ['inspect', '--format', '{{.Id}}', name], { encoding: 'utf8' }).trim();
+            if (actual !== id) throw new Error('Sentinel ownership changed');
+            execFileSync('docker', ['rm', id], { stdio: 'ignore' });
+            execFileSync('docker', ['volume', 'rm', `${name}-volume`], { stdio: 'ignore' });
+          }
+          NODE
+      - name: Publish sanitized acceptance record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-dev-stack-proof
+          path: |
+            ${{ runner.temp }}/dev-stack-proof.json
+            ${{ runner.temp }}/dev-stack-cleanup-proof.json
+          if-no-files-found: ignore

@@ -28,6 +28,14 @@ export function resolveSpaceInstance(env: Env): SpaceInstance {
   throw new Error(`SPACE_INSTANCE must be "stable" or "dev", got "${raw}".`);
 }
 
+// 龙娘 · 2026-10-26: contributor rooms default to their isolated workspace; explicit room paths are preserved.
+export function defaultRoomProjectPath(env: Env): string {
+  const workspace = env.SPACE_CLI_WORKSPACE_ROOT?.trim();
+  return resolveSpaceInstance(env) === "dev" && workspace?.startsWith("/")
+    ? workspace
+    : stableInstanceDefaults.installRoot;
+}
+
 /** Browsers share cookies across ports of one host, so each instance needs its own session cookie. */
 export function sessionCookieNameFor(instance: SpaceInstance): string {
   return instance === "dev" ? devSessionCookieName : stableSessionCookieName;
