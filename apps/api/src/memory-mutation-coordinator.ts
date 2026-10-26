@@ -1,3 +1,4 @@
+import { traceparentForTraceId, workflowCorrelationMemo } from "./trace-context.js";
 import { Client, Connection } from "@temporalio/client";
 import {
   MEMORY_MUTATION_TASK_QUEUE,
@@ -17,6 +18,7 @@ export interface MemoryMutationStartResult {
 }
 
 interface WorkflowStartOptions {
+  memo?: Record<string, string>;
   args: [MemoryMutationWorkflowInput];
   taskQueue: typeof MEMORY_MUTATION_TASK_QUEUE;
   workflowId: string;
@@ -48,6 +50,7 @@ export async function scheduleMemoryMutation(
   try {
     const handle = await startWorkflow(MEMORY_MUTATION_WORKFLOW_TYPE, {
       args: [input],
+      ...(traceparentForTraceId(input.traceId) ? { memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }) } : {}),
       taskQueue: MEMORY_MUTATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",

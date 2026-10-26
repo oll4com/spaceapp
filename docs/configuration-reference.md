@@ -52,3 +52,32 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+
+## Optional OTLP trace export (API and Temporal workers)
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is read directly by the API and each enabled
+Temporal worker, outside `SpaceApiConfig`. It is unset/off by default. Set the
+same HTTP(S) collector **base URL**, for example `http://127.0.0.1:4318`, in the
+API, main worker, memory-maintenance worker and memory-mutation worker process
+environments. The exporter appends `/v1/traces`; do not include that suffix.
+Invalid URLs and URLs containing credentials, query strings or fragments disable
+export. This setting does not enable an otherwise disabled memory worker.
+
+The dependency-free shared `@space/telemetry` exporter sends OTLP/HTTP JSON:
+API SERVER spans followed by connected workflow and activity-attempt spans.
+Child workflows nest; continue-as-new and background continuations carry links.
+Workflow replay does not export spans. Only allowlisted identifiers, types,
+outcomes, stable error codes/categories and timings are recorded. Prompts,
+model responses, file paths, URLs and exception messages are excluded.
+
+Defaults are a 4096-span queue, 256-span batches, 5-second periodic flush and
+3-second timeout per POST. Slow/failing collectors do not await or fail workflow
+or activity work; overflow drops spans and counts the drops. Failed batches are
+counted, not retried. Counters are available from `exporter.stats()`; they are
+not a new metrics endpoint. Shutdown drains pending batches subject to the
+per-request timeout. Active workflow runs export their span when the run ends.
+There is no sampling or telemetry persistence setting.
+
+See [observability](quality/observability.md#traces-w3c-trace-context) for
+coverage, replay tests, limitations and the optional local Jaeger check.

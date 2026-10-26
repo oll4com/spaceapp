@@ -20,7 +20,8 @@
     "@space/contracts": "0.2.5",
     "@space/memory-graph": "0.2.5",
     "nanoid": "^5.1.6",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@space/telemetry": "0.2.5"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

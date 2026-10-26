@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Optional OTLP workflow and activity-attempt spans in all Temporal workers,
+  connected to API request spans with child-workflow nesting and continuation
+  links. Export uses the shared bounded queue, excludes payloads and free-form
+  errors, and is suppressed during workflow replay.
+
 ## [1.1.8] - 2026-10-25
 
 Source: sanitized Space app @ 8d5bf21b32 (4948 files). Verifies SpaceApp's image attestations before an

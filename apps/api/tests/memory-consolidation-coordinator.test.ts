@@ -1,3 +1,4 @@
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_CONSOLIDATION_TASK_QUEUE,
@@ -42,4 +43,14 @@ describe("Memory consolidation coordinator", () => {
 
     expect(result).toEqual({ status: "ALREADY_SCHEDULED", workflowId, runId: null });
   });
+});
+
+it("propagates the actual API span through the workflow memo", async () => {
+  const traceId = "req:consolidation-otel";
+  const context = createRequestTraceContext(undefined);
+  requestTraceContexts.remember(traceId, context);
+  let memo: Record<string, string> | undefined;
+  const start = async (_type: string, options: { workflowId: string; memo?: Record<string, string> }) => { memo = options.memo; return { workflowId: options.workflowId }; };
+  await scheduleMemoryConsolidation({ runId: "audit:trace", traceId }, "workflow:trace", start);
+  expect(memo?.traceparent).toBe(context.traceparent);
 });
