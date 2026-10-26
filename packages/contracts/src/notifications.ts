@@ -5,17 +5,25 @@ import { z } from "zod";
  * delivered through the channels the user turned on (in-app badges and toasts, sound, browser desktop
  * notifications, Telegram) and kept in the Notification Center until read or acknowledged.
  */
-export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "ROOM_AGENT", "COUNCIL", "NOUS", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
+export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "ROOM_AGENT", "COUNCIL", "NOUS", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM", "AGENT"] as const;
 export const notificationSourceSchema = z.enum(NOTIFICATION_SOURCES);
 export type NotificationSource = z.infer<typeof notificationSourceSchema>;
 /**
  * What only the operator's own hands can do: a CAPTCHA or browser handoff, a sign-in, a copilot's NEEDS_USER click. It reaches
  * them at once in the app, on the desktop and on Telegram and never waits for Nous (operator rule 2026-10-17, plan clipboard:xEQOrVRQgeAn).
  */
-export const needsOperatorHands = (source: NotificationSource, kind: string) => source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER/i.test(kind);
+export const needsOperatorHands = (source: NotificationSource, kind: string) => source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_YOU/i.test(kind);
 export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
-  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", APP_STUDIO: "App Studio", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
+  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", APP_STUDIO: "App Studio", VIDEO: "Video", SECURITY_COPILOT: "Security Copilot", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space", AGENT: "Agent"
 };
+/**
+ * Needs you (operator request 2026-10-24): a notification on a pane whose kind needs the operator there (hands, a question, a review or
+ * approval, a CLI prompt waiting for them, a CLI's explicit needs-you, Nous's card). The web brings them to the pane for it instead of
+ * showing a toast, and takes them back when it resolves. Never INFO; failures, "posts due" and finished work stay toasts.
+ */
+export const NEEDS_YOU_KINDS = /^(NEEDS_HANDS|NEEDS_YOU|NEEDS_USER|QUESTION|REVIEW_REQUESTED|RULE_PROPOSED|CAMPAIGN_PROPOSED|CLIENT_READY|HANDOFF_REQUESTED|BROWSER_HANDOFF_REQUESTED|WAITING|SIGN_IN|STUCK|USAGE_LIMIT|OVERLAP|(?:DESIGN|VIDEO)_(?:APPROVAL|QUESTION)|APP_STUDIO_QUESTION|SECURITY_(?:QUESTION|REVIEW))$/;
+export const needsYou = (notification: { source: NotificationSource; kind: string; severity: NotificationSeverity; paneId: string | null; roomId: string | null }) =>
+  Boolean(notification.paneId && notification.roomId) && notification.severity !== "INFO" && NEEDS_YOU_KINDS.test(notification.kind);
 
 export const notificationSeveritySchema = z.enum(["INFO", "ATTENTION", "URGENT"]);
 export type NotificationSeverity = z.infer<typeof notificationSeveritySchema>;
@@ -98,7 +106,8 @@ export const notificationsPendingSchema = z.object({
 export type NotificationsPending = z.infer<typeof notificationsPendingSchema>;
 
 export const notificationListQuerySchema = z.object({
-  status: z.enum(["OPEN", "ALL"]).default("ALL"),
+  /** NEEDS_YOU: the needs-you requests still waiting (open or read, not resolved or acknowledged) on panes that are still open. */
+  status: z.enum(["OPEN", "ALL", "NEEDS_YOU"]).default("ALL"),
   source: notificationSourceSchema.optional(),
   limit: z.number().int().min(1).max(200).default(50),
   before: isoDateTime.optional()

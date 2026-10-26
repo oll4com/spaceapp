@@ -1,0 +1,25 @@
+/* An Agent Files name in CLI output: a tinted chip with an accent underline and the Agent Files badge after it (AgentFileLinks.tsx).
+   The badge sits in the upper half of the next cell, so the comma or period after the name stays readable. */
+.terminal-agent-file-link {
+  box-sizing: border-box;
+  border-radius: 3px;
+  background: rgba(92, 200, 170, 0.14);
+  box-shadow: inset 0 -1px 0 rgba(92, 200, 170, 0.9);
+  overflow: visible;
+  pointer-events: none;
+}
+
+.terminal-agent-file-link > svg {
+  position: absolute;
+  top: -2px;
+  left: calc(100% + 1px);
+  box-sizing: border-box;
+  width: auto;
+  height: 55%;
+  aspect-ratio: 1;
+  padding: 1px;
+  border-radius: 3px;
+  background: #5cc8aa;
+  color: #06261e;
+  box-shadow: 0 0 0 1px rgba(6, 38, 30, 0.55);
+}

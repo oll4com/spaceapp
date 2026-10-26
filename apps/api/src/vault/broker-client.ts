@@ -1,6 +1,6 @@
 import { request } from "node:http";
 import {
-  vaultBase64url, vaultDelegationCertificateSchema, vaultSignupGrantCertificateSchema, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, vaultUseCapabilitySchema,
+  VAULT_BROKER_API_MAX_BYTES, vaultBase64url, vaultDelegationCertificateSchema, vaultSignupGrantCertificateSchema, vaultSymmetricEnvelopeSchema, vaultTransportEnvelopeSchema, vaultUseCapabilitySchema,
   verifyVaultCertificate, type VaultSymmetricEnvelope, type VaultTransportEnvelope
 } from "@space/contracts";
 import type { SealedFillBroker } from "./sealed-fill.js";
@@ -96,7 +96,8 @@ function call<T>(socketPath: string, method: "GET" | "POST", path: string, body:
     const outgoing = request({ socketPath, method, path, timeout: 5_000, headers: payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {} }, (response) => {
       let text = "";
       response.setEncoding("utf8");
-      response.on("data", (chunk) => { if (text.length < 64_000) text += chunk; });
+      // Answers carry whole delegation certificates: read up to the technical bound, a longer one fails to parse.
+      response.on("data", (chunk) => { if (text.length < VAULT_BROKER_API_MAX_BYTES) text += chunk; });
       response.on("end", () => {
         // A refusal (bad signature, consumed challenge) names no broker detail to the caller.
         if (response.statusCode === 400 || response.statusCode === 403) {

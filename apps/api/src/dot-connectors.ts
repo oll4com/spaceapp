@@ -39,7 +39,7 @@ export class ConnectorError extends Error {
 export interface ConnectorCrypto { seal(plain: string, context: string): string; open(sealed: string, context: string): string }
 
 /** The record and purpose a sealed value belongs to: `<purpose>|<owner>|<record parts>`. */
-export const connectorSealContext = (purpose: "connector-refresh" | "connector-access" | "freelance-mailbox" | "job-apply-mailbox", owner: string, ...record: string[]) =>
+export const connectorSealContext = (purpose: "connector-refresh" | "connector-access" | "freelance-mailbox" | "job-apply-mailbox" | "vault-handoff-key", owner: string, ...record: string[]) =>
   [purpose, owner, ...record].join("|");
 
 /** The dedicated connector key file (hardening plan step 9): null when it is missing or shorter than 32 characters. */

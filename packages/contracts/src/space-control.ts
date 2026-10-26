@@ -5,12 +5,12 @@ export const SPACE_CONTROL_VERSION = "space-control-v1";
 const paneCategoryColorSchema = z.enum(["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"]).nullable();
 const id = z.string().trim().min(1).max(200);
 /** Device and social sizes of the Media Studio capture engine (scripts/space-media-capture.mjs) that space_screenshot may use. */
-export const controlScreenshotViewports = ["desktop", "desktop-hd", "laptop", "tablet", "tablet-landscape", "mobile", "android", "square", "portrait", "story"] as const;
+export const controlScreenshotViewports = ["desktop", "desktop-hd", "desktop-4k", "laptop", "tablet", "tablet-landscape", "mobile", "android", "square", "portrait", "story"] as const;
 /** The desktop titlebar's social aspect ratios as engine sizes; 9:16 is the mobile layout (operator decision 2026-10-17). */
 export const controlCaptureAspects = { "16:9": "desktop-hd", "1:1": "square", "4:5": "portrait", "9:16": "story", full: "desktop" } as const;
-// The engine's DOCKS, SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
+// The engine's DOCKS (plus "none": the dock closed), SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
 export const controlCaptureDocks = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "source-control", "agent-files",
-  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen"] as const;
+  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen", "none"] as const;
 export const controlCaptureSettingsSections = ["appearance", "docks", "panes", "widgets", "notifications", "dots", "plugins", "agent-capabilities",
   "default-provider", "voice-input", "releases", "cli-pane-controls", "date-time", "image-previews", "prompt-variables", "room-cache", "git-worktrees",
   "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot"] as const;
@@ -21,6 +21,8 @@ const captureView = { dock: z.enum(controlCaptureDocks).optional(), settings: z.
 const controlCaptureFields = {
   paneId: id.optional(),
   crop: z.enum(["pane", "dock"]).optional(),
+  // Owner only, never Dots: resize the room's CLI PTYs to the grids the capture shows; the fit holds (Nous 2026-10-23).
+  fitTerminals: z.boolean().optional(),
   ...captureView,
   video: z.object({ steps: z.array(z.object({ ...captureView, dwellMs: z.number().int().min(500).max(30_000).default(3000) }).strict()).min(1).max(20) })
     .strict().refine((video) => video.steps.reduce((total, step) => total + step.dwellMs, 0) <= 180_000, "A video lasts at most 180 seconds.").optional()
@@ -588,13 +590,14 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
     parameters: {
       format: { type: "string", required: false, description: "jpeg, png, webp" },
       quality: { type: "number", required: false, description: "Image quality (1-100)" },
-      viewport: { type: "string", required: false, description: "Device or social size: desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android, square, portrait, story" },
+      viewport: { type: "string", required: false, description: "Device or social size: desktop, desktop-hd, desktop-4k (1920x1080 at 2x, 3840x2160, stills only), laptop, tablet, tablet-landscape, mobile, android, square, portrait, story" },
       paneId: { type: "string", required: false, description: "Pane to select (crop: pane cuts the shot to it)" },
       crop: { type: "string", required: false, description: "pane or dock" },
-      dock: { type: "string", required: false, description: "Dock to open, e.g. media, tasks, settings" },
+      dock: { type: "string", required: false, description: "Dock to open, e.g. media, tasks, settings; none: no dock open" },
       settings: { type: "string", required: false, description: "Settings section to open, e.g. appearance" },
       health: { type: "string", required: false, description: "Health section to open, e.g. usage" },
-      video: { type: "object", required: false, description: "{steps:[{dock?,settings?,health?,dwellMs}]}: record an MP4 (at most 20 steps, 180 s)" }
+      video: { type: "object", required: false, description: "{steps:[{dock?,settings?,health?,dwellMs}]}: record an MP4 (at most 20 steps, 180 s)" },
+      fitTerminals: { type: "boolean", required: false, description: "Room owner only, never Dots: first resize the room's CLI terminals to the columns the capture shows (the fit holds until a controlling client resizes)" }
     },
     voiceIntents: ["take a screenshot of the app", "look at the screen", "capture current UI"]
   },

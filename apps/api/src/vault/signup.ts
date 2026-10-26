@@ -19,7 +19,7 @@ export async function runVaultSignup(deps: {
 }, input: {
   owner: string; paneId: string; target: { targetId: string; frameId: string; origin: string }; label: string; username: string | null;
   roles: Array<"NEW_PASSWORD" | "CONFIRM_PASSWORD">; submit: boolean;
-}): Promise<{ status: VaultAgentResult["status"]; reason: string | null; itemId?: string }> {
+}): Promise<{ status: VaultAgentResult["status"]; reason: string | null; itemId?: string; typed?: boolean; document?: string | null }> {
   const { repository } = deps;
   const vault = await repository.getVault(input.owner);
   const inbox = vault && await repository.getInbox(input.owner);
@@ -43,10 +43,12 @@ export async function runVaultSignup(deps: {
       await repository.addPending(input.owner, { id: newVaultHandle("vault_pending"), kind: "NEW_ACCOUNT", handle, label: input.label,
         origin: input.target.origin, paneId: input.paneId, sealedPassword: result.sealedGenerated, createdAt: new Date().toISOString(),
         sealedUsername: input.username ? await sealToVaultPublicKey(vaultBase64url.decode(inbox.publicKey), new TextEncoder().encode(input.username), scope) : null });
-      return { status: result.status, reason: result.reason, itemId: handle };
+      return { status: result.status, reason: result.reason, itemId: handle, typed: result.typed, document: result.document };
     }
-    if (result.status !== "BLOCKED") return { status: result.status, reason: result.reason };
+    if (result.status !== "BLOCKED") return { status: result.status, reason: result.reason, typed: result.typed, document: result.document };
     reason = result.reason ?? "BROKER_REFUSED";
+    // A fill that typed before it failed keeps the browser fenced (the agent route reads `typed`).
+    if (result.typed) return { status: "BLOCKED", reason, typed: true, document: result.document };
     // Another grant for the same site may still have uses left today.
     if (reason !== "DAILY_CAP") break;
   }

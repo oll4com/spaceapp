@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readRoomHostScreen } from "../src/room-host-screen.js";
-import { projectRoomTerminalScreen, roomTerminalMode, roomTerminalState, restoreRoomTerminalGeometry } from "../src/room-terminal-screen.js";
+import { projectRoomTerminalScreen, roomTerminalMode, roomTerminalState, restoreRoomTerminalGeometry, roomComposerEmpty } from "../src/room-terminal-screen.js";
 import { CliTerminalManager } from "../src/cli-terminal.js";
 import { getApiConfig } from "../src/config.js";
 import { dashboardScreenState } from "../src/agents-dashboard.js";
@@ -116,6 +116,46 @@ describe("Room Agent host screen observer", () => {
     expect(observation.text).toContain("Claude Opus 5.5 (API credits) (space-gateway-claude) Model");
     expect(host.input).not.toHaveBeenCalled();
     expect(host.resize).not.toHaveBeenCalled();
+  });
+  it("reads a detached Claude Code from its host, plain and undimmed, not the DB tail frozen at its spinner", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Claude", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Space", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "anthropic", agentId: "claude", status: "RUNNING" });
+    store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: "claude-host", cols: 100, rows: 30 });
+    // Observed 2026-10-21 00:13 UTC: the last browser detached mid-turn and the DB kept this frame for 33 minutes.
+    const spinner = "\x1b[2J\x1b[1;2H✶ Fiddle-faddling… ↓ 805 tokens";
+    store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content: spinner });
+    // Finished: an empty composer holding Claude's faint prompt suggestion (SGR 2).
+    const done = "\x1b[2J\x1b[1;2H✻ Cooked for 3s\x1b[3;1H────────\x1b[4;1H❯ \x1b[2mTry running the tests\x1b[22m\x1b[5;1H────────";
+    const host = {
+      attach: vi.fn(async () => ({ attachmentId: "observer", session: { generationId: "claude-host", nextOutputSequence: 2 }, replay: [{ data: spinner }, { data: done }] })),
+      detach: vi.fn(async () => true), input: vi.fn(), resize: vi.fn(), terminate: vi.fn()
+    };
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), hostClient: host as never, discoverRuntimes: vi.fn() });
+    expect(roomTerminalState(await projectRoomTerminalScreen([spinner]))).toBe("UNKNOWN");
+    expect(roomTerminalState((await manager.observeRoomScreen(session.sessionId)).text)).toBe("IDLE");
+    expect(roomComposerEmpty(await manager.observeRoomScreenUndimmed(session.sessionId))).toBe(true);
+    expect(host.input).not.toHaveBeenCalled();
+    expect(host.resize).not.toHaveBeenCalled();
+    // One live read per pane and view serves the next callers for ~2 s.
+    await manager.observeRoomScreen(session.sessionId);
+    await manager.observeRoomScreenUndimmed(session.sessionId);
+    expect(host.attach).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a detached Claude Code the DB tail when its host does not answer within 1.5 s", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Claude", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Slow host", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "anthropic", agentId: "claude", status: "RUNNING" });
+    store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: "claude-host", cols: 100, rows: 30 });
+    store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content: "\x1b[2J\x1b[1;1H❯ " });
+    const host = { attach: vi.fn(() => new Promise(() => {})), detach: vi.fn(async () => true), input: vi.fn(), resize: vi.fn(), terminate: vi.fn() };
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), hostClient: host as never, discoverRuntimes: vi.fn() });
+    const started = Date.now();
+    expect(roomTerminalState((await manager.observeRoomScreen(session.sessionId)).text)).toBe("IDLE");
+    expect(Date.now() - started).toBeLessThan(3_000);
   });
   it("restores confirmed tall-pane dimensions after API restart and rejects another host generation", async () => {
     const persisted = { generationId: "host-generation", cols: 61, rows: 74 };

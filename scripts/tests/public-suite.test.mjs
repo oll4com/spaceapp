@@ -3,6 +3,7 @@ import "./container-image-size-budget.test.mjs";
 import "./mcp-hono-compatibility.test.mjs";
 import "./portable-backup-restore.test.mjs";
 import "./published-container-verification.test.mjs";
+import "./shipped-image-evidence.test.mjs";
 import "./public-compose-config.test.mjs";
 import "./public-credential-install.test.mjs";
 import "./embed-image-lock.test.mjs";

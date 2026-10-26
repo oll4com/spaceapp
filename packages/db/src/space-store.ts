@@ -1,12 +1,13 @@
 import { rollbackKeepingError } from "./rollback.js";
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, type AppStudioPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection } from "@space/runtime";
 import { managedPlanExecutionSchema } from "@space/contracts";
 import { PostgresPlanExecutionRepository } from "./plan-execution-repository.js";
 import { PostgresGoogleAccountsRepository } from "./google-accounts-repository.js";
 import type { GoogleAccount, VerifiedGoogleIdentity } from "@space/runtime";
+import { setupExecutionStateSchema, type SetupExecutionState } from "@space/contracts";
 import { transitionAgentRunLedger, pickNextAvailablePaneName, normalizePaneName } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import { ownerWorkingTimeZone, resolveTaskScheduleZone, taskScheduleNextRunAt, type TaskScheduleInput } from "@space/contracts";
@@ -370,6 +371,8 @@ import {
   ACTIVE_PANE_CAP,
   PANE_CLI_TRANSCRIPT_CHUNK_CAP,
   SpaceConflictError,
+  createSetupCompletion,
+  type CompleteSetupExecutionInput,
   roomAgentMissionGuardMatches,
   assertBrowserHandoffTransition,
   assertMemorySearchModeEnabled,
@@ -834,6 +837,8 @@ type PaneRow = {
   freelanceCopilotMetadata?: Pane["freelanceCopilotMetadata"];
   designMetadata?: Pane["designMetadata"];
   appStudioMetadata?: Pane["appStudioMetadata"];
+  videoMetadata?: Pane["videoMetadata"];
+  securityCopilotMetadata?: Pane["securityCopilotMetadata"];
   paneName?: string | null;
   mode: Pane["mode"];
   status: Pane["status"];
@@ -1801,6 +1806,8 @@ const paneSelect = `
     freelance_copilot_metadata AS "freelanceCopilotMetadata",
     design_metadata AS "designMetadata",
     app_studio_metadata AS "appStudioMetadata",
+    video_metadata AS "videoMetadata",
+    security_copilot_metadata AS "securityCopilotMetadata",
     mode,
     status,
     provider_id AS "providerId",
@@ -2985,6 +2992,8 @@ function mapPane(row: PaneRow): Pane {
     freelanceCopilotMetadata: row.freelanceCopilotMetadata ?? null,
     designMetadata: row.designMetadata ?? null,
     appStudioMetadata: row.appStudioMetadata ?? null,
+    videoMetadata: row.videoMetadata ?? null,
+    securityCopilotMetadata: row.securityCopilotMetadata ?? null,
     paneName: row.paneName ?? null,
     mode: row.mode,
     status: row.status,
@@ -4437,6 +4446,82 @@ export class PostgresSpaceStore implements SpaceStore {
     };
   }
 
+  async getSetupExecutionState(ownerId: string): Promise<SetupExecutionState | null> {
+    const key = idSchema.parse(ownerId);
+    const result = await this.pool.query<{ payload: unknown }>(
+      `SELECT payload FROM space_first_setup_states WHERE owner_id = $1`, [key]
+    );
+    return result.rows[0] ? setupExecutionStateSchema.parse(result.rows[0].payload) : null;
+  }
+
+  async compareAndSwapSetupExecutionState(
+    ownerId: string, expectedRevision: number | null, next: SetupExecutionState
+  ): Promise<boolean> {
+    const key = idSchema.parse(ownerId);
+    const parsed = setupExecutionStateSchema.parse(next);
+    if (parsed.ownerId !== key || parsed.revision !== (expectedRevision === null ? 0 : expectedRevision + 1)) {
+      throw new SpaceConflictError("Setup state owner or revision is invalid.");
+    }
+    const result = expectedRevision === null
+      ? await this.pool.query(
+          `INSERT INTO space_first_setup_states (owner_id, revision, payload, updated_at)
+           VALUES ($1, $2, $3::jsonb, now())
+           ON CONFLICT DO NOTHING RETURNING owner_id`,
+          [key, parsed.revision, JSON.stringify(parsed)]
+        )
+      : await this.pool.query(
+          `UPDATE space_first_setup_states
+           SET revision = $3, payload = $4::jsonb, updated_at = now()
+           WHERE owner_id = $1 AND revision = $2
+           RETURNING owner_id`,
+          [key, expectedRevision, parsed.revision, JSON.stringify(parsed)]
+        );
+    return result.rows.length === 1;
+  }
+
+  async completeSetupExecution(input: CompleteSetupExecutionInput): Promise<SetupOnboarding> {
+    return this.withTransaction(async (client) => {
+      const stateResult = await client.query<{ revision: number; payload: unknown }>(
+        `SELECT revision, payload FROM space_first_setup_states WHERE owner_id = $1 FOR UPDATE`,
+        [input.ownerId]
+      );
+      const row = stateResult.rows[0];
+      if (!row || row.revision !== input.expectedStateRevision) {
+        throw new SpaceConflictError("Setup state revision changed before completion.");
+      }
+      const ownerResult = await client.query<{
+        ownerUserId: string | null; onboardingCompletedAt: Date | string | null; starterRoomId: string | null
+      }>(
+        `SELECT owner_user_id AS "ownerUserId", onboarding_completed_at AS "onboardingCompletedAt",
+                starter_room_id AS "starterRoomId"
+         FROM space_owner_setup WHERE singleton = true FOR UPDATE`
+      );
+      const owner = ownerResult.rows[0];
+      if (!owner || owner.ownerUserId !== input.ownerId || !owner.starterRoomId) {
+        throw new SpaceConflictError("Setup owner or starter room is unavailable.");
+      }
+      if (owner.onboardingCompletedAt !== null && !input.reconfigure) throw new SpaceConflictError("Setup is already complete.");
+      const current = setupExecutionStateSchema.parse(row.payload);
+      const completion = createSetupCompletion(current, input, owner.starterRoomId);
+      const next = setupExecutionStateSchema.parse({ ...current, revision: current.revision + 1, completion });
+      const stateUpdate = await client.query(
+        `UPDATE space_first_setup_states SET revision = $2, payload = $3::jsonb, updated_at = $4 WHERE owner_id = $1`,
+        [input.ownerId, next.revision, JSON.stringify(next), input.completedAt]
+      );
+      if (stateUpdate.rowCount !== 1) throw new SpaceConflictError("Setup state update failed before completion.");
+      const ownerUpdate = await client.query(
+        `UPDATE space_owner_setup SET onboarding_version = $1, onboarding_completed_at = COALESCE(onboarding_completed_at, $2), updated_at = $2
+         WHERE singleton = true AND owner_user_id = $3`,
+        [currentSetupOnboardingVersion, input.completedAt, input.ownerId]
+      );
+      if (ownerUpdate.rowCount !== 1) throw new SpaceConflictError("Owner onboarding update failed before completion.");
+      return {
+        onboardingVersion: currentSetupOnboardingVersion, isComplete: true,
+        completedAt: owner.onboardingCompletedAt ? new Date(owner.onboardingCompletedAt).toISOString() : input.completedAt, starterRoomId: owner.starterRoomId
+      };
+    });
+  }
+
   async listSetupConnectionVerifications(): Promise<SetupConnectionVerification[]> {
     const result = await this.pool.query<{
       connectionId: string;
@@ -5340,6 +5425,10 @@ export class PostgresSpaceStore implements SpaceStore {
     if (parsed.status) {
       values.push(parsed.status);
       conditions.push(`status = $${values.length}`);
+    }
+    if (parsed.source) {
+      values.push(parsed.source);
+      conditions.push(`source = $${values.length}`);
     }
     if (parsed.q) {
       const escapedSearch = parsed.q.replace(/[\\%_]/g, "\\$&");
@@ -7993,6 +8082,28 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async updateVideoMetadata(paneId: string, metadata: VideoPaneMetadata): Promise<Pane> {
+    const parsed = videoPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "VIDEO" || pane.isClosed) throw new SpaceConflictError("An open Video pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET video_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, videoMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
+  async updateSecurityCopilotMetadata(paneId: string, metadata: SecurityCopilotPaneMetadata): Promise<Pane> {
+    const parsed = securityCopilotPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "SECURITY_COPILOT" || pane.isClosed) throw new SpaceConflictError("An open Security Copilot pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET security_copilot_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, securityCopilotMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
   async updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Promise<Pane> {
     return this.withTransaction(async (client) => {
       const current = await this.getPaneForUpdate(client, paneId);
@@ -8038,7 +8149,7 @@ export class PostgresSpaceStore implements SpaceStore {
         providerId: input.providerId === undefined ? current.providerId : input.providerId,
         modelId: input.modelId === undefined ? current.modelId : input.modelId,
         terminalRuntimeId:
-          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO"].includes(input.mode ?? current.mode)
+          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT"].includes(input.mode ?? current.mode)
             ? input.terminalRuntimeId === undefined
               ? current.terminalRuntimeId
               : input.terminalRuntimeId
@@ -8089,6 +8200,8 @@ export class PostgresSpaceStore implements SpaceStore {
     freelance_copilot_metadata AS "freelanceCopilotMetadata",
     design_metadata AS "designMetadata",
     app_studio_metadata AS "appStudioMetadata",
+    video_metadata AS "videoMetadata",
+    security_copilot_metadata AS "securityCopilotMetadata",
             mode,
             status,
             provider_id AS "providerId",
@@ -10458,8 +10571,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO panes.`);
+      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO or SECURITY_COPILOT panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);

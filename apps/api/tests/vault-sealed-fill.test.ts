@@ -19,7 +19,9 @@ function fakePage(html: string, options: { url?: string } = {}) {
   window.Element.prototype.getBoundingClientRect = () => ({ width: 120, height: 24 }) as DOMRect;
   const submitted = vi.fn();
   window.HTMLFormElement.prototype.requestSubmit = function () { submitted(); };
-  const state = { url: options.url ?? `${ORIGIN}/signin`, frameId: "frame-1", sent: [] as string[], onInsert: null as null | (() => void), focusEmulated: false };
+  const state = { url: options.url ?? `${ORIGIN}/signin`, frameId: "frame-1", loaderId: "loader-1", sent: [] as string[], onInsert: null as null | (() => void), focusEmulated: false,
+    // A reload gives the top frame a new loader (document); `stuck` is a page that never settles after Page.reload.
+    stuck: false, onReload: null as null | (() => void) };
   // Like a pane's Chrome on Xvfb: the window never has focus unless the fill emulates it.
   window.document.hasFocus = () => state.focusEmulated;
   const page: SealedFillPage = {
@@ -27,7 +29,8 @@ function fakePage(html: string, options: { url?: string } = {}) {
     cdp: {
       async send(method: string, params: Record<string, unknown> = {}) {
         state.sent.push(method);
-        if (method === "Page.getFrameTree") return { frameTree: { frame: { id: state.frameId, url: state.url, loaderId: "loader-1" } } } as never;
+        if (method === "Page.getFrameTree") return { frameTree: { frame: { id: state.frameId, url: state.url, loaderId: state.loaderId } } } as never;
+        if (method === "Page.reload") { if (!state.stuck) { state.loaderId = `loader-${state.sent.filter((sent) => sent === "Page.reload").length + 1}`; state.onReload?.(); } return {} as never; }
         if (method === "Page.createIsolatedWorld") return { executionContextId: 7 } as never;
         if (method === "Emulation.setFocusEmulationEnabled") { state.focusEmulated = params.enabled === true; return {} as never; }
         if (method === "Runtime.evaluate") return { result: { value: window.eval(String(params.expression)) } } as never;
@@ -75,7 +78,7 @@ describe("Vault sealed fill (Browser Host)", () => {
     const { page, window, state } = fakePage(LOGIN);
     const { broker, request } = await harness(["USERNAME", "PASSWORD"]);
     const answer = await runSealedFill(page, broker, request("FILL"), now);
-    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null });
+    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-2" });
     expect(value(window, "user")).toBe("synthetic@example.com");
     expect(value(window, "pass")).toBe(SECRET);
     expect(JSON.stringify(answer)).not.toContain(SECRET);
@@ -91,11 +94,11 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect((await runSealedFill(fakePage(LOGIN).page, broker, request("FILL", { sig: "f".repeat(86) }), now)).reason).toBe("CAPABILITY_INVALID");
     expect(await runSealedFill(fakePage(LOGIN, { url: "https://login.example.evil.test/signin" }).page, broker, request("FILL"), now)).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_CHANGED" });
     expect(await runSealedFill(fakePage(LOGIN, { url: "about:blank" }).page, broker, request("FILL"), now)).toMatchObject({ status: "BLOCKED", reason: "NO_WEB_ORIGIN" });
-    expect(await runSealedFill(fakePage("<form><input id=x></form>").page, broker, request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND" });
+    expect(await runSealedFill(fakePage("<form><input id=x></form>").page, broker, request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND_AFTER_RELOAD" });
     expect(await runSealedFill(fakePage(LOGIN).page, broker, { ...request("FILL"), selector: "#pass" }, now)).toMatchObject({ reason: "BAD_REQUEST" });
     expect(opened).not.toHaveBeenCalled();
     // A shared Chrome or a second tab no longer refuses (operator decision 2026-10-18): the API fences the filled browser instead.
-    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1" });
+    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1", freshDocument: true });
   });
 
   it("stops and clears what it typed when the page navigates away in the middle", async () => {
@@ -103,9 +106,64 @@ describe("Vault sealed fill (Browser Host)", () => {
     const { broker, request } = await harness(["USERNAME", "PASSWORD"]);
     state.onInsert = () => { state.url = "https://attacker.test/collect"; };
     const answer = await runSealedFill(page, broker, request("FILL"), now);
-    expect(answer).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_CHANGED" });
+    // A value entered the page before the stop: the API keeps the fence (the scrub is best effort).
+    expect(answer).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_CHANGED", typed: true });
     expect(value(window, "user")).toBe("");
     expect(value(window, "pass")).toBe("");
+  });
+
+  it("reloads the page before it looks for fields, so a script left in the document before the fill never sees the value, and reports the new document (Vault review 2026-10-22)", async () => {
+    const { page, window, state } = fakePage(LOGIN);
+    const { broker, request, opened } = await harness(["USERNAME", "PASSWORD"]);
+    // What an agent could have left in the page world before calling the fill: it dies with the document.
+    const captured: string[] = [];
+    window.document.getElementById("pass")!.addEventListener("input", (event) => captured.push((event.target as HTMLInputElement).value));
+    state.onReload = () => { window.document.body.innerHTML = LOGIN; };
+    const answer = await runSealedFill(page, broker, request("FILL"), now);
+    expect(answer).toMatchObject({ status: "FILLED", typed: true, document: "loader-2" });
+    const order = (method: string) => state.sent.indexOf(method);
+    expect(order("Page.reload")).toBeGreaterThan(-1);
+    expect(order("Page.reload")).toBeLessThan(order("Page.createIsolatedWorld"));
+    expect(order("Page.reload")).toBeLessThan(order("Input.insertText"));
+    expect(value(window, "pass")).toBe(SECRET);
+    expect(captured).toEqual([]);
+    // A page that never settles after the reload stops the fill before any secret is opened.
+    const stuck = fakePage(LOGIN);
+    stuck.state.stuck = true;
+    const again = await harness(["PASSWORD"]);
+    expect(await runSealedFill(stuck.page, again.broker, again.request("FILL"), now, { reloadTimeoutMs: 300 })).toEqual({ status: "BLOCKED", reason: "NO_FRESH_DOCUMENT", sealedGenerated: null, typed: false, document: null });
+    expect(again.opened).not.toHaveBeenCalled();
+    expect(opened).toHaveBeenCalledTimes(1);
+    // A reload that lands on another origin (a redirect) stops too.
+    const moved = fakePage(LOGIN);
+    moved.state.onReload = () => { moved.state.url = "https://login.example.evil.test/signin"; };
+    expect(await runSealedFill(moved.page, again.broker, again.request("FILL"), now)).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_CHANGED", typed: false });
+  });
+
+  it("fills a document the API knows no agent scripted as it is (freshDocument false), and names a field the reload lost (Vault review 2026-10-22)", async () => {
+    // A login that lives in one document (username, Continue, password) keeps its step: no reload, the same document.
+    const kept = fakePage(LOGIN);
+    const { broker, request } = await harness(["PASSWORD"]);
+    const answer = await runSealedFill(kept.page, broker, { ...request("FILL"), freshDocument: false }, now);
+    expect(answer).toEqual({ status: "FILLED", reason: null, sealedGenerated: null, typed: true, document: "loader-1" });
+    expect(kept.state.sent).not.toContain("Page.reload");
+    expect(value(kept.window, "pass")).toBe(SECRET);
+    // Without the field the reason says whether a reload came first: the agent then redoes the steps without scripting the page.
+    expect((await runSealedFill(fakePage("<form><input id=x></form>").page, broker, { ...request("FILL"), freshDocument: false }, now)).reason).toBe("FIELD_NOT_FOUND");
+    expect((await runSealedFill(fakePage("<form><input id=x></form>").page, broker, { ...request("FILL"), freshDocument: true }, now)).reason).toBe("FIELD_NOT_FOUND_AFTER_RELOAD");
+    expect((await runSealedFill(fakePage("<form><input id=x></form>").page, broker, request("FILL"), now)).reason).toBe("FIELD_NOT_FOUND_AFTER_RELOAD");
+  });
+
+  it("says when a value was typed before a failure, so the fence stays (Vault review 2026-10-22)", async () => {
+    const { page, window, state } = fakePage(LOGIN);
+    const { broker, request } = await harness(["USERNAME", "PASSWORD"]);
+    // After the username went in, a page script makes the password field unusable: the fill stops, and says it typed.
+    state.onInsert = () => { (window.document.getElementById("pass") as HTMLInputElement).disabled = true; };
+    const answer = await runSealedFill(page, broker, request("FILL"), now);
+    expect(answer).toMatchObject({ status: "BLOCKED", reason: "FOCUS_LOST", typed: true, document: "loader-2" });
+    expect(value(window, "user")).toBe("");
+    // Nothing typed yet: a missing field stops with typed false.
+    expect(await runSealedFill(fakePage("<form><input id=x></form>").page, broker, request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND_AFTER_RELOAD", typed: false });
   });
 
   it("submits only when the capability allows it", async () => {
@@ -178,11 +236,12 @@ describe("Vault sealed fill (Browser Host)", () => {
     const moved = fakePage(form, { url: "https://evil.example/signup" });
     expect((await runSealedFill(moved.page, broker, request({ certificate }))).status).toBe("ORIGIN_MISMATCH");
     expect((await runSealedFill(fakePage(form).page, broker, request({ certificate, paneId: "pane:other" }))).reason).toBe("PANE_MISMATCH");
-    expect((await runSealedFill(fakePage(LOGIN).page, broker, request({ certificate }))).reason).toBe("FIELD_NOT_FOUND");
+    expect((await runSealedFill(fakePage(LOGIN).page, broker, request({ certificate }))).reason).toBe("FIELD_NOT_FOUND_AFTER_RELOAD");
+    expect((await runSealedFill(fakePage(LOGIN).page, broker, request({ certificate, freshDocument: false }))).reason).toBe("FIELD_NOT_FOUND");
     expect(asked).toHaveLength(1);
     refuse = "DAILY_CAP";
     const capped = fakePage(form);
-    expect(await runSealedFill(capped.page, broker, request({ certificate }))).toEqual({ status: "BLOCKED", reason: "DAILY_CAP", sealedGenerated: null });
+    expect(await runSealedFill(capped.page, broker, request({ certificate }))).toEqual({ status: "BLOCKED", reason: "DAILY_CAP", sealedGenerated: null, typed: false, document: "loader-2" });
     expect(value(capped.window, "n1")).toBe("");
   });
 });

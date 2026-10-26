@@ -17,7 +17,7 @@ import {
 describe("Live Audio Registry and Schemas", () => {
   it("registers all required providers with correct metadata", () => {
     const providers = getAllLiveAudioProviders();
-    expect(providers.map((p) => p.id)).toEqual(["openai", "google", "amazon", "local", "vercel"]);
+    expect(providers.map((p) => p.id)).toEqual(["openai", "google", "amazon", "local", "fish", "vercel"]);
 
     const openai = getLiveAudioProvider("openai");
     expect(openai.displayName).toBe("OpenAI");
@@ -53,6 +53,11 @@ describe("Live Audio Registry and Schemas", () => {
     expect(vercel.supportsWebSocket).toBe(true);
     expect(vercel.defaultModel).toBe("openai/gpt-live-1");
     expect(vercel.defaultVoice).toBe("gleam");
+
+    const fish = getLiveAudioProvider("fish");
+    expect(fish.defaultModel).toBe("drama-3");
+    expect(fish.voices.map((v) => v.id)).toContain(fish.defaultVoice);
+    expect(inferProviderFromModel("drama-3")).toBe("fish");
   });
 
   it("lists verified model IDs for each provider", () => {

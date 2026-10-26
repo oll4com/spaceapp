@@ -108,9 +108,11 @@ describe("install telemetry", () => {
     expect(send.mock.calls[0][0]).toMatchObject({ event: "active", install_id: "abcdefgh-1", screen: "1920x1080", install_date: "2026-10-20" });
     now += 24 * 60 * 60 * 1000;
     reporter.observe();
-    await settle();
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(await readFile(markerFile, "utf8")).period).toBe("2026-10-21");
+    // The marker is written after send resolves; under load that takes longer than one settle (rc2 gates, 2026-10-20).
+    await vi.waitFor(async () => {
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(await readFile(markerFile, "utf8")).period).toBe("2026-10-21");
+    });
 
     const legacy = await marker();
     await mkdir(dirname(legacy), { recursive: true });

@@ -1,7 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { DeployQueueTicket } from "@space/contracts";
+import type { DeployQueueTicket, Pane } from "@space/contracts";
 import type { ReleaseTrain } from "../src/release-trains.js";
-import { paneWorktree, roomWorkOverlaps, type RoomWorkPane } from "../src/room-work.js";
+import { createRoomWork, paneWorktree, roomWorkOverlaps, WORKTREE_MAX_AGE_MS, type RoomWorkPane } from "../src/room-work.js";
 import type { WorktreeRecord } from "../src/worktrees/worktree-service.js";
 
 const at = "2026-10-15T07:00:00.000Z";
@@ -61,5 +65,40 @@ describe("room work overlaps", () => {
     expect(paneWorktree({ id: "pane:jack", cwd: "/opt/spaceapp" }, [ticket("q-2", "DEPLOYED", { branch: "space/wt-jack" })], registry)).toBe("/opt/spaceapp/var/worktrees/space/wt-jack");
     expect(paneWorktree({ id: "pane:max", cwd: "/opt/spaceapp" }, [ticket("q-3", "DEPLOYED", { branch: "dev" })], registry)).toBe("/opt/spaceapp");
     expect(paneWorktree({ id: "pane:new", cwd: null }, [], registry)).toBeNull();
+  });
+});
+
+describe("room work git reads", () => {
+  it("reads a worktree once for every pane in it, again when its index or HEAD moves, else after five minutes", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "room-work-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { stdio: "ignore" });
+    try {
+      git("init", "-q", "-b", "main");
+      writeFileSync(join(repo, "a.txt"), "a\n");
+      git("add", "a.txt");
+      git("commit", "-q", "-m", "a");
+      let time = 1_000_000;
+      const pane = (id: string) => ({ id, isClosed: false, mode: "TERMINAL", cwd: repo, title: id, paneName: id }) as unknown as Pane;
+      const work = createRoomWork({ listPanes: async () => [pane("pane:one"), pane("pane:two")], queueRoots: [], trains: async () => [],
+        registry: async () => [], now: () => time });
+      const files = async () => {
+        time += 61_000;
+        const { panes } = await work.read("room:r");
+        expect(panes[0]!.files).toEqual(panes[1]!.files);
+        return panes[0]!.files;
+      };
+      writeFileSync(join(repo, "u1.txt"), "1\n");
+      expect(await files()).toEqual(["u1.txt"]);
+      // Unstaged edits touch neither HEAD nor the index: the reading is reused, and our own status left the index alone.
+      writeFileSync(join(repo, "u2.txt"), "2\n");
+      expect(await files()).toEqual(["u1.txt"]);
+      git("add", "u2.txt");
+      expect(await files()).toEqual(["u1.txt", "u2.txt"]);
+      writeFileSync(join(repo, "u3.txt"), "3\n");
+      time += WORKTREE_MAX_AGE_MS;
+      expect(await files()).toEqual(["u1.txt", "u2.txt", "u3.txt"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

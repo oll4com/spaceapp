@@ -10,6 +10,7 @@ import { cliLocalComposerSubmissionSchema, createCliLocalComposerService } from 
 import { sendApiError } from "./http-errors.js";
 import { assertCliPaneCompatible, assertNormalCliSession } from "./pane-guards.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
+import { isOperatorPerson, noteOperatorPromoteLine } from "./queue-operator-grants.js";
 
 const receiptParamsSchema = idParamSchema.extend({ submissionId: z.string().uuid() });
 
@@ -50,7 +51,7 @@ export function registerCliLocalComposerRoutes(app: FastifyInstance, deps: {
     const input = parseBody(cliLocalComposerSubmissionSchema, request.body);
     const pane = await ownedPane(request, params.id);
     let generation: string | null | undefined;
-    return service.submit({ ownerUserId: request.user!.id, paneId: pane.id, roomId: pane.roomId }, input, {
+    const receipt = await service.submit({ ownerUserId: request.user!.id, paneId: pane.id, roomId: pane.roomId }, input, {
       traceId: request.requestIdForSpace,
       assertCurrent: async () => {
         const currentPane = await ownedPane(request, pane.id);
@@ -75,6 +76,9 @@ export function registerCliLocalComposerRoutes(app: FastifyInstance, deps: {
         await deps.assertCliHttpMutationControl(request, active);
       }
     });
+    // The operator's own draft asking to promote holds this pane's promote grant, like a line typed in the terminal.
+    if (receipt.status !== "REJECTED" && isOperatorPerson(request.user)) noteOperatorPromoteLine(pane.id, input.text, "local-composer");
+    return receipt;
   });
   return service;
 }

@@ -1021,6 +1021,9 @@ describe("AgentFilesDock", () => {
     expect(source).toContain('import "./agent-files-dock.css";');
     expect(source).not.toContain("window.confirm");
     expect(agentFilesCss).toContain("@media (max-width: 520px)");
+    // File cards follow the dock's width, not the window's: a narrow dock on a wide screen squeezed names to "correc…".
+    expect(agentFilesCss).toContain("container: agent-files / inline-size;");
+    expect(agentFilesCss).toContain("@container agent-files (max-width: 32rem)");
     expect(agentFilesCss).toContain(".agent-files-modal-body");
     expect(agentFilesCss).not.toContain("!important");
   });

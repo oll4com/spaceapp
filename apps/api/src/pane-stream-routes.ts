@@ -1,4 +1,5 @@
 import { countsAsOperatorInput, createBrowserControlActivity } from "./browser-control-activity.js";
+import { dirname, join } from "node:path";
 import type {} from "./request-context.js";
 import type {} from "@fastify/websocket";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
@@ -121,7 +122,8 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
   const { config, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     websocketRouteOptions: defaultWebsocketRateLimitOptions } = options;
   // Operator input per control lease; returned so the browser routes and the CLI bridge share it (idle release, agent reclaim).
-  const controlActivity = createBrowserControlActivity();
+  const controlActivity = createBrowserControlActivity(undefined,
+    process.env.VITEST === "true" ? null : join(dirname(config.browserEvidenceArtifactRoot), "browser-agents.json"));
   app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);

@@ -4,6 +4,7 @@ import { DockButton, DockChips, DockIconButton, DockState, DockToolbar } from ".
 import { Bell, Check, CheckCircle2 } from "../ui-theme/app-icons.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { ackNotification, isNousPaneCard, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
+import { notificationSourceIcons } from "./notification-source-icons.js";
 import "./notifications.css";
 
 type Filter = "unread" | "all";
@@ -18,13 +19,19 @@ function when(iso: string, now = Date.now()): string {
 }
 
 function notificationRow(item: SpaceNotification) {
+  const Icon = notificationSourceIcons[item.source];
   return (
     <>
       <button type="button" className="notification-item-main" onClick={() => openNotification(item)} aria-label={`${item.status === "OPEN" ? "Unread: " : ""}${NOTIFICATION_SOURCE_LABELS[item.source]}: ${item.title}`}>
-        <span className="notification-item-source">{NOTIFICATION_SOURCE_LABELS[item.source]}</span>
-        <strong className="notification-item-title">{item.title}</strong>
-        {item.body ? <span className="notification-item-body">{item.body}</span> : null}
-        <time className="notification-item-time" dateTime={item.createdAt} title={formatUserTime(item.createdAt, { withDate: true })}>{when(item.createdAt)}</time>
+        <span className="notification-item-icon"><Icon aria-hidden="true" /></span>
+        <span className="notification-item-copy">
+          <strong className="notification-item-title" data-sensitive-masked="manual">{item.title}</strong>
+          {item.body ? <span className="notification-item-body" data-sensitive-masked="manual">{item.body}</span> : null}
+          <span className="notification-item-meta">
+            <span className="notification-item-source">{NOTIFICATION_SOURCE_LABELS[item.source]}</span>
+            <time className="notification-item-time" dateTime={item.createdAt} title={formatUserTime(item.createdAt, { withDate: true })}>{when(item.createdAt)}</time>
+          </span>
+        </span>
       </button>
       {item.status === "OPEN" || item.status === "READ" ? (
         <DockIconButton label="Acknowledge" icon={Check} title="Acknowledge" onClick={() => void ackNotification(item.id)} />
@@ -50,21 +57,23 @@ export function NotificationCenterDock() {
     if (!next.delete(paneId)) next.add(paneId);
     return next;
   });
-  const sources = useMemo(() => [{ id: "ALL" as const, label: "All" }, ...NOTIFICATION_SOURCES.filter((entry) => store.items.some((item) => item.source === entry))
-    .map((entry) => ({ id: entry, label: NOTIFICATION_SOURCE_LABELS[entry], count: store.pending.bySource[entry] ?? 0 }))], [store.items, store.pending.bySource]);
+  // Under Unread a source with nothing unread would only lead to an empty list, so it shows only while it is the chosen one.
+  const sources = useMemo(() => [{ id: "ALL" as const, label: "All" }, ...NOTIFICATION_SOURCES
+    .filter((entry) => entry === source || (store.items.some((item) => item.source === entry) && (filter === "all" || (store.pending.bySource[entry] ?? 0) > 0)))
+    .map((entry) => ({ id: entry, label: NOTIFICATION_SOURCE_LABELS[entry], count: store.pending.bySource[entry] ?? 0 }))], [filter, source, store.items, store.pending.bySource]);
 
   return (
-    <section className="notification-center" aria-label="Notification Center">
-      <DockToolbar title="Notifications" summary={store.pending.total ? `${store.pending.total} unread` : "Nothing waiting"}>
+    <section className="notification-center dock-kit-dock" aria-label="Notification Center">
+      <DockToolbar summary={store.pending.total ? `${store.pending.total} unread` : "Nothing waiting"}>
         <DockButton icon={CheckCircle2} disabled={!store.pending.total} onClick={() => void readAllNotifications()}>Mark all read</DockButton>
       </DockToolbar>
-      <div className="notification-center-filters">
+      <div className="dock-kit-controls">
         <DockChips<Filter> label="Show" value={filter} onChange={setFilter} options={[{ id: "unread", label: "Unread", count: store.pending.total }, { id: "all", label: "All" }]} />
-        {sources.length > 2 ? <DockChips<NotificationSource | "ALL"> label="Source" value={source} onChange={setSource} options={sources} /> : null}
+        {sources.length > 2 || source !== "ALL" ? <DockChips<NotificationSource | "ALL"> label="Source" className="notification-source-chips" value={source} onChange={setSource} options={sources} /> : null}
       </div>
       {!store.loaded ? <DockState kind="loading" title="Loading notifications…" /> : null}
       {store.loaded && !items.length ? <DockState kind="empty" icon={Bell} title={filter === "unread" ? "All caught up" : "No notifications yet"} detail={filter === "unread" ? "New mail, questions and alerts show up here." : "What panes and services want you to see lands here."} /> : null}
-      <ul className="notification-list" role="list">
+      <ul className="notification-list dock-kit-list" role="list">
         {rows.map((item) => {
           const others = isNousPaneCard(item) ? under(item) : [];
           const open = others.length > 0 && expanded.has(item.paneId!);

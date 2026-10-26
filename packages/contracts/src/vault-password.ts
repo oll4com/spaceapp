@@ -91,6 +91,34 @@ function parsePasswordRules(rules: string) {
 
 export interface VaultFieldPasswordPolicy { length: number; alphabet: string; required: string[]; maxConsecutive: number | null }
 
+/** Longest HTML pattern the generator tests candidates against; longer ones are ignored. */
+export const VAULT_PATTERN_MAX_LENGTH = 200;
+/**
+ * Whether a page's `pattern` is safe to test candidates against (Vault review 2026-10-22). The page chooses the pattern and,
+ * through minlength, the candidate length, and the test runs in the Browser Host's one process for every pane: a quantified
+ * group that itself holds a quantifier or an alternation (`(a+)+`, `(a|aa)*`) backtracks exponentially and would stall it.
+ * Such patterns, and ones over VAULT_PATTERN_MAX_LENGTH, are ignored; the password then follows the other rules only.
+ */
+export function vaultPatternIsSafe(pattern: string): boolean {
+  if (pattern.length > VAULT_PATTERN_MAX_LENGTH) return false;
+  const quantifier = /^[*+?{]/;
+  const stack: Array<{ risky: boolean }> = [];
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!;
+    if (char === "\\") { index += 1; continue; }
+    if (char === "[") { index = pattern.indexOf("]", index + 1); if (index < 0) return false; continue; }
+    if (char === "(") { stack.push({ risky: false }); continue; }
+    if (char === ")") {
+      const group = stack.pop();
+      if (!group) return false;
+      if (group.risky && quantifier.test(pattern.slice(index + 1))) return false;
+      continue;
+    }
+    if ((char === "|" || quantifier.test(char)) && stack.length) stack[stack.length - 1]!.risky = true;
+  }
+  return stack.length === 0;
+}
+
 /**
  * The policy for one field: the item's (or the default) policy narrowed by the field's maxlength/minlength and
  * passwordrules. Each `required` set must appear; the alphabet is the required sets plus our classes cut to what
@@ -128,7 +156,9 @@ export function generateVaultPassword(field: VaultPasswordFieldConstraints = {},
   const alphabet = [...policy.alphabet];
   let pattern: RegExp | null = null;
   if (field.pattern) {
+    // One that does not parse fails closed; one that parses but could stall the process is ignored (vaultPatternIsSafe).
     try { pattern = new RegExp(`^(?:${field.pattern})$`, "v"); } catch { throw new VaultPasswordPolicyError("UNSATISFIABLE"); }
+    if (!vaultPatternIsSafe(field.pattern)) pattern = null;
   }
   for (let attempt = 0; attempt < 1000; attempt += 1) {
     let candidate = "";

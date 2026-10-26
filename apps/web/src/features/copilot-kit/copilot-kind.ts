@@ -7,8 +7,8 @@ import type { CopilotLaunchSettings, Pane, UserSettings } from "@space/contracts
  * the contracts it loaded at start).
  */
 export interface CopilotKind {
-  id: "job" | "mail" | "marketing" | "freelance" | "design" | "app-studio";
-  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" | "APP_STUDIO";
+  id: "job" | "mail" | "marketing" | "freelance" | "design" | "app-studio" | "video" | "security";
+  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" | "APP_STUDIO" | "VIDEO" | "SECURITY_COPILOT";
   /** "Job Copilot", "Mail Copilot": the Create menu entry, dialog titles and notices. */
   label: string;
   /** The CLI recommended for this copilot (Claude Code: long, tool-heavy loops with native MCP and account profiles). */
@@ -23,11 +23,11 @@ export interface CopilotKind {
   /** Where the default agent is changed, named in notices ("Settings → Job Copilot"). */
   settingsPlace: string;
   /** The user-settings key holding the remembered agent. */
-  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio";
+  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio" | "video" | "securityCopilot";
   /** Prefix of the settings card's form control names ("job-copilot"). */
   controlPrefix: string;
   /** The remembered launch of this kind in the user's settings. */
-  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio">): CopilotLaunchSettings | null;
+  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio" | "video" | "securityCopilot">): CopilotLaunchSettings | null;
 }
 
 export const JOB_COPILOT_KIND: CopilotKind = {
@@ -122,7 +122,39 @@ export const APP_STUDIO_KIND: CopilotKind = {
   remembered: (settings) => settings.appStudio ?? null
 };
 
-export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND, APP_STUDIO_KIND];
+/** The Video pane: a video studio whose editor runs in the pane's CLI (plan clipboard:-HpLbbtWKj53). */
+export const VIDEO_KIND: CopilotKind = {
+  id: "video",
+  mode: "VIDEO",
+  label: "Video",
+  preferredRuntimeId: "cli:claude",
+  recommendedReason: "Recommended: native MCP, skills, image viewing",
+  agentDescription: "The AI coding CLI that cuts, captions, narrates and scores videos for you and for other agents and panes. Claude Code is recommended.",
+  launchHeading: "Choose the editor",
+  launchDescription: "The editor cuts your videos into every social format in this pane: automatic clipping, transitions, captions, narration and music. Claude Code is recommended; any ready CLI works.",
+  settingsPlace: "Settings → Video",
+  settingsKey: "video",
+  controlPrefix: "video",
+  remembered: (settings) => settings.video ?? null
+};
+
+/** The Security Copilot pane: keeps every Proxmox host and SpaceApp patched through the server's gate (plan clipboard:8ce8_URHW9Dk). */
+export const SECURITY_COPILOT_KIND: CopilotKind = {
+  id: "security",
+  mode: "SECURITY_COPILOT",
+  label: "Security Copilot",
+  preferredRuntimeId: "cli:claude",
+  recommendedReason: "Recommended: native MCP, skills, long tool-heavy loops",
+  agentDescription: "The AI coding CLI that inventories your servers, triages new vulnerabilities and applies the fixes. Claude Code is recommended.",
+  launchHeading: "Choose the security engineer",
+  launchDescription: "The security engineer inventories every Proxmox host, triages what the vulnerability feeds find and fixes it through Space's gate: backup first, verify after, reboots and deletes wait for you. Claude Code is recommended; any ready CLI works.",
+  settingsPlace: "Settings → Security Copilot",
+  settingsKey: "securityCopilot",
+  controlPrefix: "security-copilot",
+  remembered: (settings) => settings.securityCopilot ?? null
+};
+
+export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND, APP_STUDIO_KIND, VIDEO_KIND, SECURITY_COPILOT_KIND];
 
 export function copilotKindForMode(mode: Pane["mode"]): CopilotKind | null {
   return COPILOT_KINDS.find((kind) => kind.mode === mode) ?? null;

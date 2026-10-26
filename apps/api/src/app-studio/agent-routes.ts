@@ -4,7 +4,7 @@ import { z } from "zod";
 import { APP_STUDIO_DEVICES, APP_STUDIO_TEXT_MAX, appStudioDevice, appStudioEventIdSchema, type Pane } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { readStagedUpload, withStagedUploads } from "../multipart-upload.js";
-import { APP_STUDIO_MAX_PREVIEW_BYTES, type AppStudioService } from "./service.js";
+import { APP_STUDIO_MAX_APK_BYTES, APP_STUDIO_MAX_PREVIEW_BYTES, type AppStudioService } from "./service.js";
 
 // Agent-facing routes of the App Studio pane, reached with the pane-scoped CLI bridge token: only the CLI session of an App
 // Studio pane (space_appstudio). The preview images come from the agent's own capture inside its CLI.
@@ -24,6 +24,12 @@ export interface AppStudioAgentRouteDependencies {
 
 const idParamsSchema = z.object({ id: appStudioEventIdSchema }).strict();
 const text = z.string().trim().min(1).max(APP_STUDIO_TEXT_MAX);
+const apkFieldsSchema = z.object({
+  packageName: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/).max(200),
+  versionName: z.string().trim().min(1).max(100),
+  versionCode: z.coerce.number().int().min(0).max(2_100_000_000),
+  buildMs: z.coerce.number().int().min(0).max(24 * 3_600_000).nullable().default(null)
+}).strict();
 
 export function registerAppStudioAgentRoutes(app: FastifyInstance, service: AppStudioService, deps: AppStudioAgentRouteDependencies): void {
   const { routeOptions, parseBody, parseQuery } = deps;
@@ -74,5 +80,18 @@ export function registerAppStudioAgentRoutes(app: FastifyInstance, service: AppS
     });
     await deps.audit(request, "app_studio.preview", pane.id, { route, devices: previews.map((preview) => preview.deviceId) });
     return { previews };
+  });
+  // The APK the agent built in its CLI (scripts/space-app-studio-build.mjs): its package and version as fields, then the file.
+  handle("post", "apk", async ({ owner, pane }, request) => {
+    const fields: Record<string, string> = {};
+    const saved = await withStagedUploads(request, deps.uploadRoot, { maxFiles: 1, fileBytes: APP_STUDIO_MAX_APK_BYTES, fields: 4,
+      onField: (name, value) => { if (typeof value === "string") fields[name] = value; } },
+    async ([upload]) => {
+      const info = apkFieldsSchema.safeParse(fields);
+      if (!info.success) throw new SpaceConflictError("An APK upload names its packageName, versionName, versionCode and buildMs.");
+      return service.saveApk(owner, pane, { upload: upload!, ...info.data });
+    });
+    await deps.audit(request, "app_studio.apk", saved.artifactId, { paneId: pane.id, packageName: saved.packageName, versionName: saved.versionName, byteSize: saved.byteSize });
+    return saved;
   });
 }

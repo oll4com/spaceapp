@@ -142,7 +142,7 @@ function BoardPaneRow({ pane, roomName, check, decisions, renderDecision, onSent
   const [result, setResult] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const resultTimer = useRef<number | null>(null);
   useEffect(() => () => { if (resultTimer.current !== null) window.clearTimeout(resultTimer.current); }, []);
-  const goTo = () => requestNousFocus({ roomId: pane.roomId, paneId: pane.paneId, ownerUserId: null, immediate: true });
+  const goTo = () => requestNousFocus({ roomId: pane.roomId, paneId: pane.paneId, immediate: true });
 
   const send = async (text: string, chosen: Target) => {
     if (!text.trim() || busy) return;
@@ -172,26 +172,27 @@ function BoardPaneRow({ pane, roomName, check, decisions, renderDecision, onSent
         <strong className="nous-board-pane-name">{pane.name}</strong>
         <span className={`nous-board-state is-${pane.state}`}>{STATE_LABELS[pane.state] ?? pane.state}</span>
         {pane.model ? <span className="nous-muted nous-board-model">{pane.model}</span> : null}
-        {pane.plan ? <span className="nous-board-pane-plan" title={pane.plan.nextStep ? `Next: ${pane.plan.nextStep}` : pane.plan.title}>{pane.plan.title} · {pane.plan.progress}%</span> : null}
+        {pane.plan ? <span className="nous-board-pane-plan" data-sensitive-masked="manual" title={pane.plan.nextStep ? `Next: ${pane.plan.nextStep}` : pane.plan.title}>{pane.plan.title} · {pane.plan.progress}%</span> : null}
+        {/* A finished pane a scheduled task is bound to stays open (operator decision 2026-10-21). */}
+        {pane.keptOpenForTask ? <span className="nous-pane-badge" title={`Scheduled task: ${pane.keptOpenForTask.title}`}>Task: {pane.keptOpenForTask.title}</span> : null}
         <DockButton className="nous-board-go" onClick={goTo}>Go to pane</DockButton>
       </div>
       <p className="nous-board-line">
         <span className={`nous-waits is-${summary.waitsOn.toLowerCase()}`} title="Waits on">{WAITS_LABELS[summary.waitsOn]}{summary.until ? ` · ${formatUserTime(summary.until)}` : ""}</span>
-        <span className="nous-board-line-text">{summary.line}</span>
+        <span className="nous-board-line-text" data-sensitive-masked="manual">{summary.line}</span>
         <span className="nous-muted nous-board-line-time" title={summary.source === "MODEL" ? `Summary by ${summary.model ?? "the summary model"}` : "Space's own line from the newest report"}>
           {formatUserTime(summary.generatedAt)}{summary.source === "FALLBACK" ? " · Space" : ""}
         </span>
       </p>
-      {summary.detail ? <p className="nous-muted nous-board-detail">{summary.detail}</p> : null}
+      {summary.detail ? <p className="nous-muted nous-board-detail" data-sensitive-masked="manual">{summary.detail}</p> : null}
       {check ? (
         <p className="nous-muted nous-board-check">
           <span>{check.checkedAt ? `Nous checked ${formatUserTime(check.checkedAt)}` : "Nous never checked it"}{check.verdict ? ` · ${VERDICTS[check.verdict] ?? check.verdict}` : ""}{check.note ? `: ${check.note}` : ""}</span>
-          {check.verdict === "OPERATOR_TEST" ? <span className="nous-pane-badge">Keep open</span> : null}
           <span className={check.overdue ? "is-overdue" : undefined}>{check.overdue ? "Due now" : `Next ${formatUserTime(check.nextCheckAt ?? check.dueAt)}`}</span>
         </p>
       ) : null}
       {cards.length || decisions.length || pane.copilotItems.length ? (
-        <ul className="nous-board-items">
+        <ul className="nous-board-items" data-sensitive-masked="manual">
           {cards.map((item) => (
             <li key={item.id}>
               <button type="button" className={`nous-board-item${item.card ? " is-card" : ""}`} onClick={goTo} title={item.body || item.title}>

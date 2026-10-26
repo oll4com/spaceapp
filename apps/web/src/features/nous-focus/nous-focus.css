@@ -1,13 +1,16 @@
-/* Nous's "needs you" banner and the Back pill: fixed above the workspace, on the app's theme tokens. */
+/* Nous's "needs you" banner and the Back pill: fixed above the workspace, on the app's theme tokens. Above every dock, the compact
+   dock drawer (300) and fullscreen Nous (90), level with the toasts: at 95 the drawer hid the banner (2026-10-24). */
 .nous-focus-banner,
 .nous-focus-back {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 95;
+  z-index: 1000;
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  /* left: 50% alone caps the shrink-to-fit width at half the viewport: a phone squeezed the text into a column (2026-10-24) */
+  width: max-content;
   max-width: min(36rem, calc(100vw - 1.5rem));
   padding: 0.45rem 0.55rem 0.45rem 0.75rem;
   border: 1px solid var(--modern-accent, var(--room-accent, #61d2c3));
@@ -17,10 +20,10 @@
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
   font-size: 0.82rem;
 }
-.nous-focus-banner { top: 0.75rem; }
+.nous-focus-banner { top: 0.75rem; flex-wrap: wrap; justify-content: flex-end; border-radius: 1rem; }
 .nous-focus-back { bottom: 1rem; padding: 0.3rem; }
 .nous-focus-banner > svg { flex: 0 0 auto; width: 1.1rem; height: 1.1rem; color: var(--modern-accent, var(--room-accent, #61d2c3)); }
-.nous-focus-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.nous-focus-text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
 .nous-focus-hold { color: var(--modern-muted, var(--room-muted, #a2a7ad)); }
 .nous-focus-banner button,
 .nous-focus-back button {

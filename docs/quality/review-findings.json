@@ -2070,8 +2070,8 @@
       "dependency": null,
       "status": "confirmed",
       "reproduction": null,
-      "evidence": "packages/run-spaceapp/templates/compose.yml; launcher suite 164/164",
-      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7. External review 2026-10-16 #8. 2026-10-17: public overlay 219b4c0 (ships in run-spaceapp 1.1.7, with the codex-sessions-init service pinned too): after the images are published and verified, the release writes their digests into the tested npm package (templates/images.lock.json, the only allowed difference) and the launcher pulls name:version@sha256; the devtest probe accepts pinned images. Proven only by the next real publish.",
+      "evidence": "packages/run-spaceapp/templates/compose.yml; launcher suite 164/164; 1.1.8 branch: packages/run-spaceapp/tests/image-attestations.test.mjs, registry-https.test.mjs, scripts/tests/published-container-verification.test.mjs",
+      "disposition": "Public 813b76b: pgvector, Temporal and codex-lb are pinned by multi-arch index digest (headroom already was); the README and security model now say that SpaceApp images are pulled by exact version tag, which the release workflow publishes once (it fails closed when a tag exists) with SBOM and provenance attestations it verifies. Open: verifying the first-party digest or attestation at install time. Internal review 1.1.5 Codex #9: still open for SpaceApp's own images; planned for 1.1.7. External review 2026-10-16 #8. 2026-10-17: public overlay 219b4c0 (ships in run-spaceapp 1.1.7, with the codex-sessions-init service pinned too): after the images are published and verified, the release writes their digests into the tested npm package (templates/images.lock.json, the only allowed difference) and the launcher pulls name:version@sha256; the devtest probe accepts pinned images. Proven only by the next real publish. 1.1.8 (public overlay branch, task:6sCDD1rdjPyC): before an installation first uses a locked version, the launcher checks its images (packages/run-spaceapp/src/image-attestations.mjs): every platform image in each pinned index needs an SBOM and an SLSA provenance statement about that exact image from oll4com/spaceapp's release.yml on main, all read by digest from the pinned index; it records the run and commit in image-attestations.json and stops before pulling otherwise. The release's verify-published-containers.mjs runs the same check, with this run's commit for a full release. The reads use HTTPS_PROXY / NO_PROXY, or else the Docker client's proxies.default in ~/.docker/config.json; an unreachable registry stops with those settings named, and a failed check stops whatever the proxy settings. Known limitation: SPACEAPP_IMAGE_VERIFY=off skips the check on air-gapped or locked-down hosts; every launcher run then warns, and the version stays recorded as unverified until a run without it verifies it. Checked read-only against the published 1.1.7 images (run 39996418646, f1c4e83), directly and through a CONNECT proxy. Evidence still missing: an install of a published 1.1.8 package.",
       "resolution": "partial"
     },
     {
@@ -2331,7 +2331,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "34c5fcd796 moved the reported values out of the code (trusted proxies, Reasonix home, harness origin, test addresses) and the missing fixture script is exported. Other code still receives path rewrites (/opt/spaceapp -> /opt/spaceapp); the full suite on the exported tree is the remaining gate. The 2026-10-14 test measurement found the remaining rewrite breaks: the CLI upload label (cli-host session registry and web terminal echo match an escaped /opt/spaceapp path the export does not rewrite), the gateway LAN warm-up host, the web sensitive-data mask and three web texts; their tests are excluded with that reason. The cli-host fix ships only with the operator-guarded host restart.",
+      "disposition": "34c5fcd796 moved the reported values out of the code (trusted proxies, Reasonix home, harness origin, test addresses) and the missing fixture script is exported. The full public suite on the exported tree is the gate. In the 1.1.8 public overlay branch every test that was excluded for an export rewrite runs again (a3d980c: browser-evidence, browser-address, source-control-publishing-card, the gateway warm-up and configuration-bundle-store; ecf9150: terminal-hidden-echo after the CLI upload label fix a017bcafa0), and 7f4edd44f1 (2026-10-24) makes event loop profile frames strip the checkout root found from import.meta.url instead of a host path literal the export could not rewrite. Known limitation, moved to 1.1.9 (Nous decision 2026-10-25): the cli-host upload label fix and its test (packages/cli-host/tests/session-registry.test.ts, excluded from the public suite) wait for the operator-guarded pane-host restart (task:7dDeSnRDU_Kf); 1.1.8 ships the web part of that fix only.",
       "resolution": "partial"
     },
     {
@@ -2791,7 +2791,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": "packages/run-spaceapp/tests/prerequisites.test.mjs, scripts/tests/provider-install.test.mjs (public repository)",
-      "disposition": "run-spaceapp 1.1.7: Docker's apt and rpm repository keys are trusted only with Docker's published fingerprints (dnf imports the checked key before installing, so dnf -y never accepts a key itself); the Cursor agent archive is pinned by sha256 per architecture and refused before unpacking otherwise; first-party images are pulled by digest (EXT-C-F5). Open, planned for 1.1.8: per-provider npm lockfiles for the CLIs installed on first use (known issue in the 1.1.7 CHANGELOG).",
+      "disposition": "run-spaceapp 1.1.7: Docker's apt and rpm repository keys are trusted only when the downloaded key file holds Docker's published key and no other primary key (internal review 1.1.7, Codex #3 / Claude F1); on Fedora, RHEL and CentOS the launcher writes Docker's repository file itself with gpgcheck=1 and that checked key as its only gpgkey (Docker's .repo file, whose gpgkey= URLs dnf -y would import, is no longer downloaded; verified in a fedora:42 container against Docker's repository); the Cursor agent archive is pinned by sha256 per architecture and refused before unpacking otherwise; first-party images are pulled by digest (EXT-C-F5). Open, planned for 1.1.8: per-provider npm lockfiles for the CLIs installed on first use (known issue in the 1.1.7 CHANGELOG).",
       "resolution": "partial"
     },
     {
@@ -3287,12 +3287,52 @@
       "dependency": null,
       "severity": "P2",
       "status": "confirmed",
-      "resolution": "open",
+      "resolution": "partial",
       "affected": "scripts/release-evidence.mjs, scripts/embed-image-lock.mjs, scripts/verify-published-containers.mjs (public release workflow)",
       "reproduction": null,
-      "evidence": "release/acceptance.json limitations; reviewer read of the release workflow",
+      "evidence": "release/acceptance.json limitations; reviewer read of the release workflow; 1.1.8 branch: scripts/tests/shipped-image-evidence.test.mjs",
       "observation": "The release gate binds the acceptance evidence to the source digest; the published images are rebuilt by the release workflow and pinned by the digests it resolves afterwards, not the image IDs the lab tested, and attestation checks verify predicate types only",
-      "disposition": "Open (1.1.8, task:6sCDD1rdjPyC). Users run images built from the tested source, not the tested image bytes; recording the tested digests and refusing or re-testing on a mismatch is planned."
+      "disposition": "1.1.8 (public overlay branch, task:6sCDD1rdjPyC): the tested image bytes stay the source candidate's local build, so the evidence is tied to the shipped bytes after publication: the release verifies that a full release's images were built by its own commit from provenance about each platform image (not predicate types only), every install records the run, commit and digests it verified (image-attestations.json), and scripts/shipped-image-evidence.mjs passes only when the lab's installs of the published next package ran exactly its locked images; the runbook requires it before latest. Evidence still missing: that run for a published 1.1.8."
+    },
+    {
+      "id": "IR117-C-F9",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md and codex.md (Codex #5), 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "affected": "apps/api/src/databases/sqlite-adapter.ts (spawns python3 sqlite-worker.py); public Dockerfile core stage (no python3)",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5); Codex",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "release/acceptance.json limitations (1.1.7); Dockerfile: python3-minimal only in the CLI stage",
+      "observation": "The Databases tool's SQLite worker cannot run in public installations: the core image has no Python, and the worker needs Python 3.12 or newer with its sqlite3 module",
+      "severity": "P3",
+      "status": "confirmed",
+      "disposition": "Open (1.1.8, task:Y6m_ffB1kSsQ): add a Python 3.12+ with sqlite3 to the core image within its size budget, or disable SQLite connections on public installations with a clear message.",
+      "resolution": "open"
+    },
+    {
+      "id": "DEP-2026-10-24-ZOD",
+      "reviewerSection": "Dependency advisory after the run-spaceapp 1.1.7 release gates",
+      "observationSource": "GHSA-mrhx-c7xc-m3w5 (npm audit, 2026-10-23); merge-queue test:deploy production audit",
+      "reviewedShas": {
+        "source": "3e4572bc97"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "npm audit (GitHub advisory database)",
+      "dependency": "zod",
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "partial",
+      "affected": "zod in apps/api, packages/contracts, packages/runtime and packages/gateway (request and configuration validation)",
+      "reproduction": null,
+      "evidence": "npm audit --omit=dev: high 1 (zod <4.6.6) before ecc4cb7082, high 0 after",
+      "observation": "zod 4.4.3 is affected by GHSA-mrhx-c7xc-m3w5 (high, CVSS 7.5): validating an oversized constrained collection can exhaust memory",
+      "disposition": "The advisory was published after the run-spaceapp 1.1.7 release gates passed; 1.1.7 ships zod 4.4.3, as 1.1.6 did (Nous decision 2026-10-24: release 1.1.7 as approved). Fixed for 1.1.8: zod 4.6.7 (ecc4cb7082). Evidence still missing: the run-spaceapp 1.1.8 release with it."
     }
   ]
 }

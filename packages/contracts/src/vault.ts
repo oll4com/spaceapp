@@ -13,12 +13,19 @@ export const VAULT_ENVELOPE_PURPOSES = [
 ] as const;
 /** The only results an agent ever receives (design: VaultAgentResult). */
 // APPROVAL_REQUESTED stays for audit records written before per-use approvals were removed (2026-10-18).
-export const VAULT_AGENT_STATUSES = ["FILLED", "SUBMITTED", "BLOCKED", "EXPIRED", "REVOKED", "ORIGIN_MISMATCH", "RATE_LIMITED", "APPROVAL_REQUESTED", "LISTED", "SAVED"] as const;
+// TAKEN and USED: an API key the operator handed to agents (vault-handoff.ts, 2026-10-22).
+export const VAULT_AGENT_STATUSES = ["FILLED", "SUBMITTED", "BLOCKED", "EXPIRED", "REVOKED", "ORIGIN_MISMATCH", "RATE_LIMITED", "APPROVAL_REQUESTED", "LISTED", "SAVED", "TAKEN", "USED"] as const;
 export const VAULT_AUDIT_ACTIONS = [
   "ENROLL", "UNLOCK", "LOCK", "PASSWORD_ROTATE", "RECOVERY_SET", "RECOVERY_USE", "ITEM_SAVE", "ITEM_DELETE",
-  "DELEGATE", "REVOKE", "FILL", "APPROVAL", "EPOCH_BUMP", "AGENT_LIST", "GENERATE", "SIGNUP_GRANT"
+  "DELEGATE", "REVOKE", "FILL", "APPROVAL", "EPOCH_BUMP", "AGENT_LIST", "GENERATE", "SIGNUP_GRANT", "INBOX_SET", "KEY_HANDOFF"
 ] as const;
 export const VAULT_NONCE_PURPOSES = ["UNLOCK_CHALLENGE", "FILL_USE", "REQUEST"] as const;
+/**
+ * Technical bounds, not policy limits (agents get every login, operator rule 2026-10-20): a delegation of this many logins is
+ * about 2 MB of signed claims, far above any real Chrome export, and the broker socket's API bodies and answers stay in memory.
+ */
+export const VAULT_DELEGATION_TECHNICAL_MAX_ITEMS = 10_000;
+export const VAULT_BROKER_API_MAX_BYTES = 8 * 1024 * 1024;
 
 export type VaultFieldRole = (typeof VAULT_FIELD_ROLES)[number];
 export type VaultApprovalMode = (typeof VAULT_APPROVAL_MODES)[number];
@@ -121,7 +128,14 @@ export const vaultItemMetadataSchema = z.object({
   id: vaultItemIdSchema, label: z.string().trim().min(1).max(80), origins: z.array(canonicalOrigin).min(1).max(10),
   fieldRoles: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3), policy: vaultItemPolicySchema,
   /** PENDING: created or changed by an agent's generated password; the operator keeps or discards it. */
-  status: z.enum(["ACTIVE", "PENDING"]).default("ACTIVE")
+  status: z.enum(["ACTIVE", "PENDING"]).default("ACTIVE"),
+  /** The owner's Google account the login belongs to (a Chrome import's source account, migration 0240); null: none. */
+  googleAccountId: z.string().regex(/^google_account:[A-Za-z0-9_-]{1,80}$/).nullable().default(null),
+  /**
+   * HMAC of the first origin and the lower-case username under a key derived from the VRK, made in the unlocked browser: two
+   * items with the same site and username have the same key, so a fill can prefer the pane's Google account. Never sent to agents.
+   */
+  loginKey: b64url(22, 22).nullable().default(null)
 }).strict().superRefine((item, context) => {
   for (const origin of item.origins) {
     if (canonicalVaultOrigin(origin)!.warnings.length > 0 && !item.policy.acceptedOriginRisks.includes(origin)) {
@@ -141,8 +155,21 @@ export const vaultItemRecordSchema = z.object({
 export type VaultItemRecord = z.infer<typeof vaultItemRecordSchema>;
 export type VaultItemRecordInput = z.input<typeof vaultItemRecordSchema>;
 
+/** Saving many items at once (a Chrome import): a technical bound per request (about 2 KB an item), the dock sends batches. */
+export const VAULT_ITEM_BATCH_MAX = 100;
+export const vaultItemBatchRequestSchema = z.object({ items: z.array(vaultItemRecordSchema).min(1).max(VAULT_ITEM_BATCH_MAX) }).strict();
+/** The operator's explicit delete of items (one, or the dead-site list), signed by the unlocked dock (vaultOperatorRequestMessage). */
+export const vaultItemDeleteRequestSchema = z.object({
+  ids: z.array(vaultItemIdSchema).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS), epoch: z.number().int().min(1), operatorSignature: b64url(86, 86)
+}).strict();
+/** Which login sites still exist: the dock sends its items' origins in batches; only the owner's own origins are checked. */
+export const VAULT_SITE_CHECK_BATCH_MAX = 50;
+export const vaultSiteCheckRequestSchema = z.object({ origins: z.array(z.string().max(300)).min(1).max(VAULT_SITE_CHECK_BATCH_MAX) }).strict();
+
 export const vaultRecoverySchema = z.object({ keyVersion, envelope: vaultSymmetricEnvelopeSchema, createdAt: isoDate }).strict();
 export type VaultRecovery = z.infer<typeof vaultRecoverySchema>;
+/** Setting the recovery envelope: the stored shape plus the unlocked dock's signature over it (vaultOperatorRequestMessage). */
+export const vaultRecoverySetRequestSchema = vaultRecoverySchema.extend({ epoch: z.number().int().min(1), operatorSignature: b64url(86, 86) }).strict();
 
 /** A delegation's fill material: item handle -> field role -> envelope under the delegation's fill key. */
 export const vaultFillEnvelopesSchema = z.record(vaultItemIdSchema, z.partialRecord(z.enum(VAULT_FIELD_ROLES), vaultSymmetricEnvelopeSchema));
@@ -164,7 +191,7 @@ export const vaultDelegationClaimsSchema = z.object({
   items: z.array(z.object({
     handle: vaultItemIdSchema, origins: z.array(canonicalOrigin).min(1).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3),
     approvalMode: z.enum(VAULT_APPROVAL_MODES), submit: z.boolean()
-  }).strict()).min(1).max(200),
+  }).strict()).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
   envelopeDigest: b64url(43, 43), issuedAt: isoDate, expiresAt: isoDate
 }).strict();
 export const vaultDelegationCertificateSchema = signed(vaultDelegationClaimsSchema);
@@ -183,11 +210,15 @@ export const vaultUseClaimsSchema = z.object({
 export const vaultUseCapabilitySchema = signed(vaultUseClaimsSchema);
 export type VaultUseClaims = z.infer<typeof vaultUseClaimsSchema>;
 
-/** The only shape an agent-facing Vault answer may take; auditId is null only when the owner has no vault to audit in. */
-export const vaultAgentResultSchema = z.object({ status: z.enum(VAULT_AGENT_STATUSES), auditId: vaultAuditIdSchema.nullable() }).strict();
+const code = z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/);
+/**
+ * The only shape an agent-facing Vault answer may take; auditId is null only when the owner has no vault to audit in. `reason`
+ * (2026-10-22) is the audit's short code, so a fill can be acted on: FIELD_NOT_FOUND_AFTER_RELOAD says the page was reloaded
+ * first and the field was gone; redo the steps with navigate, click, type and press only, then fill again.
+ */
+export const vaultAgentResultSchema = z.object({ status: z.enum(VAULT_AGENT_STATUSES), auditId: vaultAuditIdSchema.nullable(), reason: code.nullable().default(null) }).strict();
 export type VaultAgentResult = z.infer<typeof vaultAgentResultSchema>;
 
-const code = z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/);
 /** Audit payload: ids, enums and short codes only, so no secret or page text can be written into it. */
 export const vaultAuditEventSchema = z.object({
   actor: z.enum(["OPERATOR", "AGENT", "BROKER", "SYSTEM"]), action: z.enum(VAULT_AUDIT_ACTIONS),
@@ -225,6 +256,11 @@ export const vaultAgentGenerateRequestSchema = z.object({
   if (request.purpose === "CHANGE_PASSWORD" && !request.handle) context.addIssue({ code: "custom", message: "CHANGE_PASSWORD needs the item handle.", path: ["handle"] });
   if (request.purpose === "NEW_ACCOUNT" && (request.handle || !request.label)) context.addIssue({ code: "custom", message: "NEW_ACCOUNT needs a label and no handle.", path: ["label"] });
 });
+/** space_vault_list filters: a site (address or host; its subdomains too) and a Google account address. */
+export const vaultAgentListRequestSchema = z.object({
+  site: z.string().trim().min(1).max(2000).optional(),
+  account: z.string().trim().min(1).max(320).optional()
+}).strict();
 export const vaultAgentAuditRequestSchema = z.object({ limit: z.number().int().min(1).max(50).default(20) }).strict();
 export type VaultAgentGenerateRequest = z.infer<typeof vaultAgentGenerateRequestSchema>;
 
@@ -275,7 +311,9 @@ export const vaultPasswordRotateRequestSchema = z.object({
   expectedEpoch: z.number().int().min(1), kdf: vaultKdfParamsSchema, passwordEnvelope: vaultSymmetricEnvelopeSchema,
   unlockPublicKey: b64urlField(40, 120), unlockKeyVersion: keyVersion,
   /** A new master password set with the recovery key (audited as RECOVERY_USE). */
-  recovery: z.boolean().optional()
+  recovery: z.boolean().optional(),
+  /** The current unlock key's signature over this request (vaultOperatorRequestMessage "password"). */
+  operatorSignature: b64urlField(86, 86)
 }).strict();
 export const vaultAuditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50), beforeSeq: z.coerce.number().int().min(1).optional()
@@ -286,7 +324,7 @@ export const vaultDelegateRequestSchema = z.object({
   items: z.array(z.object({
     handle: vaultItemIdSchema, origins: z.array(canonicalOrigin).min(1).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3),
     approvalMode: z.enum(VAULT_APPROVAL_MODES), submit: z.boolean()
-  }).strict()).min(1).max(200),
+  }).strict()).min(1).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
   fillEnvelopes: vaultFillEnvelopesSchema,
   sealedFillKey: vaultTransportEnvelopeSchema,
   /** Signed by the operator with the items: the next generation, the epoch it was unlocked in and the end of the delegation. */
@@ -314,16 +352,32 @@ export function vaultDelegationOperatorMessage(input: {
 
 /** space_vault_list while agent access is on: what an agent may know of a delegated item. */
 export const vaultAgentListItemSchema = z.object({
-  handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3)
+  handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3),
+  /** The Google account's address the login belongs to (a Chrome import's source account); absent: none. */
+  account: z.string().max(320).optional()
 }).strict();
 export const vaultAgentListResultSchema = z.object({
-  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(200),
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(VAULT_DELEGATION_TECHNICAL_MAX_ITEMS),
   /** As in status: logins that are not fillable yet because no unlocked dock has added and handed them over. */
   pendingItems: z.number().int().min(0)
 }).strict();
 
 /** The operator's inbox key: generated passwords arrive sealed to it while the Vault is locked. */
 export const vaultInboxKeyRequestSchema = z.object({ publicKey: b64url(40, 80), privateKeyEnvelope: vaultSymmetricEnvelopeSchema }).strict();
+/** Setting the inbox key: the stored shape plus the unlocked dock's signature over it (vaultOperatorRequestMessage "inbox"). */
+export const vaultInboxKeySetRequestSchema = vaultInboxKeyRequestSchema.extend({ epoch: z.number().int().min(1), operatorSignature: b64url(86, 86) }).strict();
+
+// Operator routes that change keys or delete logins carry the unlocked dock's unlock-key signature (Vault review 2026-10-22):
+// a session cookie alone can no longer swap the inbox key (which every password agents generate is sealed to), replace the
+// password or recovery envelope, or delete logins. The API verifies against the enrolled unlock public key, as the broker
+// does for delegations; the signed body names the current epoch, so a lock, revoke or password change voids older signatures.
+export const VAULT_OPERATOR_SIGNED_KINDS = ["inbox", "password", "recovery", "item-delete"] as const;
+export type VaultOperatorSignedKind = (typeof VAULT_OPERATOR_SIGNED_KINDS)[number];
+/** The bytes the unlock key signs: the kind, owner and vault, and the request body without its signature, as canonical JSON. */
+export function vaultOperatorRequestMessage(kind: VaultOperatorSignedKind, input: { ownerUserId: string; vaultId: string } & Record<string, unknown>): Uint8Array {
+  const { operatorSignature: _signature, ...body } = input;
+  return new TextEncoder().encode(vaultCanonicalJson({ v: 1, kind: `space-vault-${kind}`, ...body }));
+}
 
 /** A login an agent saved or a password it generated in a fill, waiting for the dock to add it to the Vault on its next unlock. */
 export const vaultPendingSecretSchema = z.object({

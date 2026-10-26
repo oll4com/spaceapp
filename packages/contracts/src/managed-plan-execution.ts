@@ -54,6 +54,10 @@ export const managedPlanStageResultSchema = z
 export type ManagedPlanStageResult = z.infer<
   typeof managedPlanStageResultSchema
 >;
+const stageCriterionKey = (text: string) => text.trim().replace(/\s+/g, " ").replace(/\.$/, "");
+/** Models echo a criterion with other spacing or without its final period (Haiku, stable 2026-10-21); the words and case must match. */
+export const sameStageCriterion = (evidence: string, criterion: string) =>
+  stageCriterionKey(criterion) !== "" && stageCriterionKey(evidence) === stageCriterionKey(criterion);
 export const managedPlanExecutionStatusSchema = z.enum([
   "RUNNING",
   "SWITCHING_MODEL",

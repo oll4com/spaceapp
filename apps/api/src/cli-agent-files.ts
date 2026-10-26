@@ -110,6 +110,10 @@ export interface PersistAgentFileInput {
   declaredMimeType: string;
   buffer?: Buffer;
   sourcePath?: string;
+  /** Where `sourcePath` must lie (default the artifact root): the Video work root for a YouTube download. */
+  sourceRoot?: string;
+  /** Default agentFileMaxBytes; a YouTube download allows its own cap. */
+  maxBytes?: number;
   traceId: string;
   docxNormalizer?: AgentFileDocxNormalizer;
   source?: "AGENT_OUTPUT" | "AGENT_OUTPUT_BACKFILL" | "USER_UPLOAD";
@@ -418,12 +422,12 @@ export function agentFileStoragePath(input: {
 
 export async function persistAgentFile(input: PersistAgentFileInput) {
   if ((input.buffer === undefined) === (input.sourcePath === undefined)) throw new Error("Exactly one Agent File source is required.");
-  const sourceHandle = input.sourcePath ? await openWorkspacePath(input.artifactRoot, input.sourcePath) : undefined;
+  const sourceHandle = input.sourcePath ? await openWorkspacePath(input.sourceRoot ?? input.artifactRoot, input.sourcePath) : undefined;
   let storageHandle: Awaited<ReturnType<typeof openWorkspacePath>> | undefined;
   try {
     const originalFilename = safeOriginalFilename(input.originalFilename);
     const sourceSize = input.buffer?.byteLength ?? (await sourceHandle!.stat()).size;
-    if (sourceSize <= 0 || sourceSize > agentFileMaxBytes) throw new Error("Invalid Agent File source size.");
+    if (sourceSize <= 0 || sourceSize > (input.maxBytes ?? agentFileMaxBytes)) throw new Error("Invalid Agent File source size.");
     const sample = input.buffer ?? Buffer.alloc(Math.min(sourceSize, 8192));
     if (sourceHandle) await sourceHandle.read(sample, 0, sample.length, 0);
     const sourceMimeType = resolveAgentFileMimeType(originalFilename, input.declaredMimeType, sample);

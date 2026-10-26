@@ -15,6 +15,7 @@ import {
   useRailVisibility,
 } from '../src/features/ui-theme/use-rail-visibility.js';
 import { normalizeActionOrder } from '../src/icon-toolbar.js';
+import { railPopoverPosition } from '../src/features/rail-popover.js';
 
 vi.mock('../src/runtime/SpaceRuntime.js', () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
 
@@ -329,3 +330,22 @@ it('positions rail visibility menu relative to rail anchor instead of offset cur
   }
 });
 
+
+it('keeps rail popovers below the desktop title bar', () => {
+  const rail = document.createElement('div');
+  rail.className = 'room-toolbar-floating-controls';
+  rail.getBoundingClientRect = () => ({ left: 900, right: 950, top: 40, bottom: 700, width: 50, height: 660, x: 900, y: 40, toJSON: () => ({}) });
+  const titlebar = document.createElement('div');
+  titlebar.className = 'desktop-window-titlebar';
+  titlebar.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 32, width: 1000, height: 32, x: 0, y: 0, toJSON: () => ({}) });
+  document.body.append(rail);
+  try {
+    expect(railPopoverPosition(rail, 280)?.maxHeight).toBe(700 - 8);
+    document.body.append(titlebar);
+    // The menu's top edge (bottom - maxHeight) starts 8px under the 32px title bar.
+    expect(railPopoverPosition(rail, 280)?.maxHeight).toBe(700 - 32 - 8);
+  } finally {
+    rail.remove();
+    titlebar.remove();
+  }
+});

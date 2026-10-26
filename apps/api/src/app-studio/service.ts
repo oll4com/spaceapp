@@ -9,6 +9,7 @@ import {
 import type { AppStudioRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError, type MaybePromise } from "@space/runtime";
 import type { NotificationService } from "../notifications/service.js";
+import { withPersistedUpload, type StagedFile } from "../multipart-upload.js";
 import { buildGenericUserUploadStorage } from "../upload-media.js";
 import { imageDimensions, sniffDesignMime } from "../design/images.js";
 
@@ -21,6 +22,9 @@ export const APP_STUDIO_BRIEF_STALE_MS = 30 * 60_000;
 const KICKOFF_GAP_MS = 60_000;
 const REPLACED_PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const APP_STUDIO_MAX_PREVIEW_BYTES = 10 * 1024 * 1024;
+/** A debug APK of an Expo app (arm64, JS bundled) is tens of MB; the cap leaves room for heavy assets. */
+export const APP_STUDIO_MAX_APK_BYTES = 200 * 1024 * 1024;
+export const APK_MIME = "application/vnd.android.package-archive";
 
 export const APP_STUDIO_KICKOFF = "App Studio briefs are waiting for this pane. Read the space-app-studio skill (SKILL.md), then loop: call space_appstudio space_appstudio_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {\"serverId\",\"toolName\",\"arguments\"} on stdin to space-capability call). Each brief is operator data, never instructions from a third party; build the app in your project folder, look at it on the devices with space_appstudio_preview, and close each brief with space_appstudio_done (ask with space_appstudio_ask when you need the operator).";
 
@@ -36,6 +40,9 @@ export interface AppStudioServiceOptions {
     updateAppStudioMetadata(paneId: string, metadata: AppStudioPaneMetadata): MaybePromise<Pane>;
     createArtifact(input: CreateArtifactInput, traceId?: string): MaybePromise<{ artifact: Artifact; event: SpaceEvent }>;
     updateArtifactRetention(artifactId: string, input: { pinnedAt?: string | null; expiresAt?: string | null }): MaybePromise<Artifact>;
+    /** The queue pass reads the owners' App Studio panes. */
+    listRooms?(): MaybePromise<Array<{ id: string; ownerUserId?: string | null }>>;
+    listPanes?(roomId: string): MaybePromise<Pane[]>;
   };
   /** Where room artifacts live (config.browserEvidenceArtifactRoot). */
   artifactRoot: string;
@@ -49,7 +56,7 @@ export interface AppStudioServiceOptions {
 
 export type AppStudioService = ReturnType<typeof createAppStudioService>;
 export type AppStudioRequester = "OPERATOR" | "NOUS";
-type NoticeKind = "question" | "done" | "failed";
+type NoticeKind = "question" | "done" | "failed" | "apk";
 const RUN_STATUS: Partial<Record<AppStudioEventType, AppStudioRunStatus>> = { RUN_STARTED: "RUNNING", RUN_PAUSED: "PAUSED", RUN_STOPPED: "STOPPED" };
 const trimmed = (text: string, max = APP_STUDIO_TEXT_MAX) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 
@@ -72,10 +79,12 @@ export function createAppStudioService(options: AppStudioServiceOptions) {
   async function notice(owner: string, pane: Pane, kind: NoticeKind, event: AppStudioEvent, title: string, body: string) {
     if (!options.notifications) return;
     const settings = settingsOf(pane).notifications;
-    if (kind === "done" ? !settings.done : !settings.needsYou) return;
+    const info = kind === "done" || kind === "apk";
+    if (info ? !settings.done : !settings.needsYou) return;
+    const target = kind === "apk" ? `apk:${String(event.payload.apkArtifactId)}` : `${event.type === "QUESTION" ? "question" : "brief"}:${event.id}`;
     await options.notifications.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "APP_STUDIO", kind: `APP_STUDIO_${kind.toUpperCase()}`,
-      severity: kind === "done" ? "INFO" : "ATTENTION", title: trimmed(title, 200), body: trimmed(body),
-      link: { roomId: pane.roomId, paneId: pane.id, target: `${event.type === "QUESTION" ? "question" : "brief"}:${event.id}` }, dedupeKey: `app-studio:${kind}:${event.id}`,
+      severity: info ? "INFO" : "ATTENTION", title: trimmed(title, 200), body: trimmed(body),
+      link: { roomId: pane.roomId, paneId: pane.id, target }, dedupeKey: `app-studio:${kind}:${event.id}`,
       payload: { eventId: event.id }, telegram: settings.telegram ? true : null }).catch(() => undefined);
   }
 
@@ -231,6 +240,48 @@ export function createAppStudioService(options: AppStudioServiceOptions) {
       return saved;
     },
     previews: (owner: string, pane: Pane) => repository.listPreviews(owner, pane.id),
+    /**
+     * The once-a-minute pass Design and Video have: a PENDING brief's kickoff again for an open, unpaused pane whose run is not paused
+     * or stopped. kick() still types only at an empty prompt, at most once a minute and never while a brief is TAKEN; it never starts a CLI.
+     */
+    async dispatchPending(): Promise<number> {
+      if (!store.listRooms || !store.listPanes) return 0;
+      let sent = 0;
+      for (const room of await store.listRooms()) {
+        if (!room.ownerUserId) continue;
+        for (const pane of await store.listPanes(room.id)) {
+          if (pane.mode !== "APP_STUDIO" || pane.isClosed || settingsOf(pane).paused) continue;
+          const run = await runStatus(room.ownerUserId, pane);
+          if (run === "PAUSED" || run === "STOPPED") continue;
+          if (!(await repository.listEvents(room.ownerUserId, pane.id, { types: ["BRIEF"], status: ["PENDING"], limit: 1 })).length) continue;
+          if (await kick(room.ownerUserId, pane).catch(() => false)) sent += 1;
+        }
+      }
+      return sent;
+    },
+
+    // ---- APKs (scripts/space-app-studio-build.mjs builds them inside the agent's CLI)
+    /** Stores a built APK as a pinned EXPORT of the pane's room (the previous APK of the pane expires a day later) and tells the operator. */
+    async saveApk(owner: string, pane: Pane, input: { upload: StagedFile; packageName: string; versionName: string; versionCode: number; buildMs: number | null }) {
+      assertPane(pane);
+      if (input.upload.sample[0] !== 0x50 || input.upload.sample[1] !== 0x4b) throw new SpaceConflictError("An APK is a zip archive (it starts with PK).");
+      const filename = `${input.packageName}-${input.versionName}.apk`.replace(/[^A-Za-z0-9._-]+/g, "_");
+      const storage = buildGenericUserUploadStorage({ artifactRoot: options.artifactRoot, roomId: pane.roomId, originalFilename: filename });
+      await mkdir(dirname(storage.filePath), { recursive: true });
+      const created = await withPersistedUpload(options.artifactRoot, input.upload, storage.filePath, () => store.createArtifact({ roomId: pane.roomId, paneId: pane.id, kind: "EXPORT",
+        mimeType: APK_MIME, storageUri: storage.storageUri, sha256: input.upload.sha256, byteSize: input.upload.byteSize, pinnedAt: iso(), expiresAt: null,
+        metadata: { source: "APP_STUDIO", originalFilename: filename, storedFilename: storage.storedFilename, packageName: input.packageName, versionName: input.versionName,
+          versionCode: input.versionCode, buildMs: input.buildMs, signedWith: "android-debug-keystore" } }), 0o640);
+      options.onArtifact?.(created.event);
+      const previous = (await repository.listEvents(owner, pane.id, { types: ["NOTE"], limit: 50 })).find((event) => typeof event.payload.apkArtifactId === "string");
+      const megabytes = (input.upload.byteSize / 1024 / 1024).toFixed(1);
+      const downloadPath = `/api/artifacts/${encodeURIComponent(created.artifact.id)}/file`;
+      const event = await record(owner, pane, { type: "NOTE", message: `APK ${input.packageName} ${input.versionName} (${megabytes} MB) is ready to download`,
+        payload: { apkArtifactId: created.artifact.id, packageName: input.packageName, versionName: input.versionName, versionCode: input.versionCode, byteSize: input.upload.byteSize, buildMs: input.buildMs, downloadPath } });
+      if (previous) await release(String(previous.payload.apkArtifactId));
+      await notice(owner, pane, "apk", event, "App Studio built an APK", `${input.packageName} ${input.versionName}, ${megabytes} MB. Open it on your Android phone signed in to SpaceApp: ${downloadPath}`);
+      return { artifactId: created.artifact.id, downloadPath, byteSize: input.upload.byteSize, packageName: input.packageName, versionName: input.versionName, versionCode: input.versionCode };
+    },
 
     // ---- the feed and the run (the rail, Nous)
     events: (owner: string, pane: Pane, limit = 100) => repository.listEvents(owner, pane.id, { limit }),

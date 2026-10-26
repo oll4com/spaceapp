@@ -45,5 +45,5 @@ describe('canonical memory save',()=>{
   const titles=(await bridge.list({...query,q:'merge queue'})).map(e=>e.title);
   expect(titles).toContain('New queue rule');
   expect(titles).not.toContain('Old queue rule');
- });
+ },15_000); // list() parses each source in a fresh worker thread (about a second per source)
 });

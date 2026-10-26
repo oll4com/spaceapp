@@ -68,6 +68,42 @@ it("finds the composer on the saved screen of a CLI that was idle before this at
   await expect(waitFor(terminal, managed, true)).resolves.toBeUndefined();
 });
 
+// Stable 2026-10-22/23 (Hugo, Leo, Paul): a scheduled task typed into a Claude pane whose process was gone made Space start it
+// again with --resume; the old process's footer, in the saved output and screen, let the paste reach the booting CLI.
+it("holds a prompt for a CLI started again after host loss until its own output shows the composer", async () => {
+  for (const startupOutput of [idle["cli:claude"], ""]) {
+    const { terminal, managed } = manager("cli:claude", "", 3000);
+    Object.assign(managed, { startupOutput, restartedAfterHostLoss: true });
+    vi.spyOn(terminal, "observeRoomScreen").mockResolvedValue({ text: idle["cli:claude"], revision: 1 });
+    let ready = false;
+    const pending = waitFor(terminal, managed, true).then(() => { ready = true; });
+    // Longer than the 750 ms quiet window an old footer would have opened.
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    expect(ready).toBe(false);
+    managed.controlOutput += idle["cli:claude"];
+    await pending;
+    expect(ready).toBe(true);
+  }
+});
+
+// Stable 2026-10-21: the usage-limit move restarted Emma's Claude on Space Gateway and typed "continue" as an answer (no composer
+// wait). Claude draws its footer once, so after that turn neither the 16 kB output buffer nor the DB tail held it: every Space
+// Control prompt failed with "has not opened its input yet" while she sat idle at an empty prompt.
+it("lets a prompt into a CLI whose composer showed earlier in this attachment, after a long turn pushed it out of the buffers", async () => {
+  const { terminal, managed } = manager("cli:claude", "", 2000);
+  Object.assign(managed, { controlOutputRevision: 0 });
+  const internals = terminal as unknown as Record<string, unknown> & { emitHostOutput(managed: unknown, event: unknown, data: string): void };
+  internals.broadcast = () => undefined;
+  internals.bufferHostOutput = () => undefined;
+  const output = (data: string) => internals.emitHostOutput(managed, { type: "output", stream: "stdout" }, data);
+  output(idle["cli:claude"]);
+  for (let i = 0; i < 400; i++) output(`\u001b[4A\u001b[2K✻ Fiddle-faddling… (${i}s · ↓ 2.2k tokens)\u001b[4B`);
+  output("\u001b[6A\u001b[2K● Done.\u001b[3B\u001b[2K❯ ");
+  vi.spyOn(terminal, "observeRoomScreen").mockResolvedValue({ text: "● Done.\n\n❯ \n", revision: 2 });
+  expect(cliComposerReady("cli:claude", managed.controlOutput)).toBe(false);
+  await expect(waitFor(terminal, managed, true)).resolves.toBeUndefined();
+});
+
 it("refuses a prompt when the composer never opens, but an answer or key does not wait for it", async () => {
   const { terminal, managed } = manager("cli:grok", "Do you trust the contents of this directory?", 60);
   await expect(waitFor(terminal, managed, true)).rejects.toThrow("no input was sent");

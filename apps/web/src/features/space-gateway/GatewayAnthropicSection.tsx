@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { GatewayAnthropicAdminStatus } from "@space/contracts";
+import type { GatewayAnthropicAdminStatus, GatewaySettings } from "@space/contracts";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 
@@ -19,8 +19,12 @@ const syncErrors: Record<string, string> = {
  * Gateway and never shown again; the gateway reads the organization's real cost every 5 minutes and the daily cost caps
  * of keys on the Claude API-key account count it.
  */
-export function AnthropicBillingSection({ client }: { client: SpaceGatewayClient }) {
+export function AnthropicBillingSection({ settings, client, onSaved }: {
+  settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void;
+}) {
   const [status, setStatus] = useState<GatewayAnthropicAdminStatus | null>(null);
+  const [budget, setBudget] = useState(settings.anthropicMonthlyBudgetUsd === null ? "" : String(settings.anthropicMonthlyBudgetUsd));
+  const [credits, setCredits] = useState(settings.anthropicCreditsUsd === null ? "" : String(settings.anthropicCreditsUsd));
   const [adminKey, setAdminKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -41,6 +45,25 @@ export function AnthropicBillingSection({ client }: { client: SpaceGatewayClient
       setMessage({ tone: "ok", text: success });
     } catch (reason) {
       setMessage({ tone: "error", text: errorText(reason, "Anthropic billing could not be changed.") });
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Saved settings remount the settings tab, which reads the amounts back.
+  const saveAmounts = async () => {
+    const amount = (text: string) => (text.trim() ? Number(text) : null);
+    const value = amount(budget);
+    const creditsValue = amount(credits);
+    if ([value, creditsValue].some((usd) => usd !== null && !(usd > 0 && usd <= 10_000_000))) {
+      setMessage({ tone: "error", text: "The budget and the credits must be dollar amounts above 0." });
+      return;
+    }
+    setBusy(true);
+    try {
+      onSaved(await client.updateSettings({ anthropicMonthlyBudgetUsd: value, anthropicCreditsUsd: creditsValue }));
+      setMessage({ tone: "ok", text: "Budget and credits saved." });
+    } catch (reason) {
+      setMessage({ tone: "error", text: errorText(reason, "Could not save the budget and credits.") });
     } finally {
       setBusy(false);
     }
@@ -71,9 +94,16 @@ export function AnthropicBillingSection({ client }: { client: SpaceGatewayClient
         <input type="password" autoComplete="off" spellCheck={false} value={adminKey} placeholder="sk-ant-admin01-…"
           onChange={(event) => setAdminKey(event.target.value)} />
       </label>
+      <label className="space-gateway-field">Monthly API budget (USD)
+        <input type="number" min={0} step="any" inputMode="decimal" value={budget} placeholder="Not set" onChange={(event) => setBudget(event.target.value)} />
+        <span>The Claude API-key account shows this month's Anthropic bill as a share of it. Empty: no budget.</span></label>
+      <label className="space-gateway-field">Anthropic credits (USD)
+        <input type="number" min={0} step="any" inputMode="decimal" value={credits} placeholder="Not set" onChange={(event) => setCredits(event.target.value)} />
+        <span>All credit grants in Claude Console → Billing added up. Resources → API shows what is left: these credits minus Anthropic's recorded bill. Empty: not shown.</span></label>
       {message ? <p className={message.tone === "ok" ? "space-gateway-success" : "space-gateway-alert"} role={message.tone === "ok" ? "status" : "alert"}>{message.text}</p> : null}
       <div className="space-gateway-toolbar">
         <button type="submit" className="space-gateway-button primary" disabled={busy || !adminKey.trim()}>Save and check</button>
+        <button type="button" className="space-gateway-button" disabled={busy} onClick={() => void saveAmounts()}>Save budget and credits</button>
         {status?.configured ? (
           <>
             <button type="button" className="space-gateway-button" disabled={busy}

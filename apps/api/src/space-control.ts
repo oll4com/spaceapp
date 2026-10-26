@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { controlExecuteSchema, controlLayoutSchema, controlOperationSchema, controlScheduleSchema, controlWatchSchema, controlToolSchemas, controlToolDescriptions, controlResourceOperations, controlInspectSections, SPACE_CONTROL_VERSION, cliToggleRuntimeIds,
   controlActionCatalog, controlInspectSectionCatalog, controlSecurityPolicy, controlUnavailableResources, controlVoicePreferencePatchSchema,
-  resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName,
+  resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached,
   type ControlAction, type ControlExecute, type ControlInspect, type ControlLayout, type ControlOperation, type ControlResult, type ControlTarget,
   type ControlSchedule, type ControlWatch, type Pane, type Event } from "@space/contracts";
 import type { ControlRecord, ControlRepository } from "@space/db";
@@ -72,6 +72,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   publishEvent?: (event: Event) => void;
   send(pane:Pane,text:string,traceId:string):Promise<unknown>;
   closePane?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
+  /** pane start on a rail-tab CLI pane (copilots, Design, App Studio, Video): opens its session as its terminal does and starts the CLI. */
+  startRailCli?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
   resolveActor?(id:string):Promise<ControlActor>;
   checkQuota?(pane:Pane):Promise<{allowed:boolean;reason:string;resetAt?:string}>;
   requireClientAcknowledgement?:boolean;
@@ -261,7 +263,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
          isUnused: false
        };
      }
-    const cli=pane.mode==="TERMINAL"?await lastCli(pane):null;
+    // Copilot, Design, App Studio and Video panes run their CLI in a rail tab: the same session row as a terminal pane.
+    const cli=isCliPane(pane)?await lastCli(pane):null;
     const chat=pane.mode==="CHAT"?await store.getActiveSpaceAgentSession(pane.id):null;
     const extraState = options.inspectPaneState
       ? await Promise.race([
@@ -735,8 +738,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    if(spec.operation==="rename"){const result=await store.updateRoom(roomId,{name:required(spec.name,"Room name is required.")},traceId);await options.publish(roomId);return done(result);}
    if(spec.operation==="create"){
      const existingRooms = await store.listRooms(actor.id ?? null);
-     if (existingRooms.length >= MAX_ROOMS) {
-       throw new SpaceConflictError(`Maximum room limit of ${MAX_ROOMS} rooms reached.`);
+     const roomLimit = actor.id ? (await store.getUserSettings(actor.id)).roomLimit : MAX_ROOMS;
+     if (roomLimitReached(existingRooms, roomLimit)) {
+       throw new SpaceConflictError(`Maximum room limit of ${roomLimit} rooms reached. Test rooms do not count; change the limit in Settings → Workspace → Rooms.`);
      }
      const roomName = spec.name?.trim() || pickNextAvailableRoomName(existingRooms.map((r) => r.name));
      return done(await store.createRoom({name: roomName, initialPaneCount: 0}, traceId, actor.id ?? null));
@@ -882,7 +886,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      }else if(spec.kind==="pane"&&["reopen","restart","resume","start"].includes(spec.operation)){
       const priorSession=pane.mode==="TERMINAL"?await lastCli(pane):null;
       if(pane.isClosed)pane=await store.updatePane(pane.id,{isClosed:false,status:"IDLE"},traceId);
-      if(!["TERMINAL","CHAT"].includes(pane.mode))evidence=pane;
+      // Only an explicit start starts a rail-tab CLI; opening such a pane never does (operator decision 2026-10-23).
+      if(!["TERMINAL","CHAT"].includes(pane.mode))evidence=spec.operation==="start"&&isCliPane(pane)&&options.startRailCli?await options.startRailCli(actor,pane,traceId):pane;
       else if(pane.mode==="CHAT"&&["reopen","start"].includes(spec.operation))evidence=await controller.start(pane,traceId);
        else if(spec.operation==="start"){
         const observed=await controller.inspect(pane);
@@ -907,11 +912,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       if(!observed.sessionId)observed=await controller.inspect(pane,{fresh:true});
       if(spec.kind==="pane"&&(spec.operation==="stop"||spec.operation==="cancel")){
        await rememberStop(pane);evidence=await controller.interrupt(pane,traceId);
-       let after=await controller.inspect(pane);
+       let after=await controller.inspect(pane,{fresh:true});
        if(after.state==="RUNNING"){
         for(let i=0;i<10;i++){
          await new Promise(r=>setTimeout(r,350));
-         after=await controller.inspect(pane);
+         // Fresh: the 15 s cached read never changed inside this loop (stable 2026-10-22: Nous's stops answered "not yet confirmed").
+         after=await controller.inspect(pane,{fresh:true});
          if(after.state!=="RUNNING")break;
         }
        }
@@ -1311,6 +1317,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   async function watches(actor:ControlActor,roomId:string,op:string,params:{id?:string;paneId?:string;targetTaskRef?:string;timeoutMs?:number;maxRetries?:number;verificationPrompt?:string;remediationPrompt?:string}){
    await activeRoom(roomId);
    if(op==="list")return (await repository.list("watch",actor.id,roomId)).map(r=>r.value);
+   // Stable 2026-10-21/22: a prompt scheduled after a turn answers a control_schedule id, which Nous then read as a watch ("Watch not found").
+   if((op==="status"||op==="get")&&params.id?.startsWith("control_schedule:")){
+    const schedule=required(await repository.get("schedule",actor.id,params.id),"Schedule not found.");
+    if(schedule.roomId!==roomId)throw new SpaceConflictError("Schedule belongs to another room.");
+    return controlScheduleSchema.parse(schedule.value);
+   }
    if(op==="status"||op==="get"){
     const record=required(await repository.get("watch",actor.id,required(params.id,"Watch ID is required.")),"Watch not found.");
     if(record.roomId!==roomId)throw new SpaceConflictError("Watch belongs to another room.");
@@ -1609,7 +1621,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   async function screenshot(actor:ControlActor,roomId:string,params:z.infer<typeof controlToolSchemas.space_screenshot>|{format?:"jpeg"|"png"|"webp";viewport?:(typeof controlScreenshotViewports)[number]}){
    const p=params as Partial<z.infer<typeof controlToolSchemas.space_screenshot>>;
    const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:p.format??"jpeg",quality:p.quality??80,maxWidth:p.maxWidth,maxHeight:p.maxHeight,
-    viewport:p.viewport??(p.aspect?controlCaptureAspects[p.aspect]:undefined),paneId:p.paneId,crop:p.crop,dock:p.dock,settings:p.settings,health:p.health,video:p.video};
+    viewport:p.viewport??(p.aspect?controlCaptureAspects[p.aspect]:undefined),paneId:p.paneId,crop:p.crop,dock:p.dock,settings:p.settings,health:p.health,video:p.video,fitTerminals:p.fitTerminals};
    // A still waits for its image; a video answers RUNNING at once and the caller polls space_operations get.
    // shortcut: an API restart during a recording runs it again from the start and leaves the old directory; add a started marker if that matters.
    const op=await execute(actor,{roomId,requestId:makeSpaceId("control_shot"),actions:[spec]},!p.video);

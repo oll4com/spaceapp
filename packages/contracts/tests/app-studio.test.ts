@@ -29,7 +29,9 @@ describe("App Studio contracts", () => {
 
   it("accepts only app routes and well-formed feed rows", () => {
     expect(appStudioRouteSchema.parse("/settings/profile")).toBe("/settings/profile");
-    for (const bad of ["settings", "/../etc", "https://example.com/", "/a b"]) expect(appStudioRouteSchema.safeParse(bad).success, bad).toBe(false);
+    // A state in the query and the screens below the first one (Felix/Jack gap 2, 2026-10-23).
+    for (const good of ["/?state=locked", "/pane/demo-1?tab=log&x=1", "/settings#2", "/?state=offline#5"]) expect(appStudioRouteSchema.parse(good)).toBe(good);
+    for (const bad of ["settings", "/../etc", "https://example.com/", "/a b", "/x#1", "/x#6", "/../x?y=1", "/?a=<b>", "/?a=b#2#3"]) expect(appStudioRouteSchema.safeParse(bad).success, bad).toBe(false);
     expect(appStudioEventSchema.parse({ id: "asevt:abcdef12", ownerUserId: "user:operator", paneId: "pane:abcdef12", type: "BRIEF", status: "PENDING",
       message: "Build a todo app", payload: {}, createdAt: "2026-10-19T09:00:00.000Z", updatedAt: "2026-10-19T09:00:00.000Z" }).type).toBe("BRIEF");
   });

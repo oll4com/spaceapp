@@ -1,4 +1,5 @@
-import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
+import type { FileHandle } from "node:fs/promises";
 import { z } from "zod";
 import { idSchema, isAgentFileArtifact, listArtifactsQuerySchema } from "@space/contracts";
 import { SpaceNotFoundError, type SpaceStore } from "@space/runtime";
@@ -10,6 +11,24 @@ import { sendApiError } from "./http-errors.js";
 import { imageDimensions, readPngText } from "./design/images.js";
 
 const idParamSchema = z.object({ id: idSchema });
+
+/** A file's bytes, or the one range a player asks for (`Range: bytes=a-b`); the stream closes the handle. */
+async function sendBytes(request: FastifyRequest, reply: FastifyReply, handle: FileHandle, size: number) {
+  reply.header("accept-ranges", "bytes");
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(request.headers.range ?? ""));
+  if (range && size > 0 && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+    const end = range[1] && range[2] ? Math.min(size - 1, Number(range[2])) : size - 1;
+    if (start > end || start >= size) {
+      await handle.close();
+      return reply.code(416).header("content-range", `bytes */${size}`).send();
+    }
+    reply.code(206).header("content-range", `bytes ${start}-${end}/${size}`).header("content-length", String(end - start + 1));
+    return reply.send(handle.createReadStream({ start, end }));
+  }
+  reply.header("content-length", String(size));
+  return reply.send(handle.createReadStream());
+}
 /** Images up to the Design pane's limit are read for their size and embedded metadata; larger files answer the record only. */
 const METADATA_READ_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -56,8 +75,8 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
       if (artifact.mimeType.toLowerCase().startsWith("image/")) {
         reply.header("cache-control", "private, max-age=86400, stale-while-revalidate=604800");
       }
-      reply.header("content-length", String(fileStat.size));
-      return reply.send(handle.createReadStream());
+      // A player scrubs a video or a track with byte ranges (the Video pane's Studio and Library).
+      return await sendBytes(request, reply, handle, fileStat.size);
     } catch (error) { await handle.close(); throw error; }
   });
   // What the Details dialog shows (Agent Files and the Design pane): the record, an image's measured size and the metadata a
@@ -153,11 +172,10 @@ export function registerArtifactReadRoutes(app: FastifyInstance, options: {
         }
       }
       if (previewKind === "IMAGE" || previewKind === "VIDEO" || previewKind === "AUDIO" || previewKind === "PDF") {
-        reply
-          .type(artifact.mimeType)
-          .header("content-length", String(fileStat.size));
+        reply.type(artifact.mimeType);
         streaming = true;
-        return reply.send(handle.createReadStream());
+        // Byte ranges, so a long video plays and seeks without loading all of it first.
+        return await sendBytes(request, reply, handle, fileStat.size);
       }
       return sendApiError(reply, 415, "PREVIEW_UNSUPPORTED", "Preview is not available for this file type. Download remains available.");
     } finally { if (!streaming) await handle.close(); }

@@ -23,20 +23,20 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.12",
-    "ip-address": "10.7.1",
+    "ip-address": "10.7.4",
     "@xmldom/xmldom": "0.8.15",
     "mammoth": {
       "@xmldom/xmldom": "0.8.15"
     },
     "browserslist": "4.28.9",
-    "fast-uri": "3.1.8",
+    "fast-uri": "3.1.9",
     "fast-json-stringify@7": {
-      "fast-uri": "4.2.2"
+      "fast-uri": "4.2.3"
     },
-    "sanitize-html": "2.17.7",
+    "sanitize-html": "2.18.1",
     "@fastify/busboy": "3.2.2",
-    "hono": "4.13.7",
-    "qs": "6.16.0",
+    "hono": "4.13.11",
+    "qs": "6.16.1",
     "proxy-addr": "2.0.8",
     "http-cache-semantics": "4.3.0",
     "source-map-js": "1.2.2",
@@ -70,13 +70,13 @@
     "@vitejs/plugin-react": "^5.1.2",
     "eslint": "10.11.0",
     "eslint-plugin-react-hooks": "7.1.1",
-    "fastify": "5.12.5",
+    "fastify": "5.12.6",
     "globals": "17.12.0",
     "jsdom": "^27.3.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "8.70.1",
-    "vite": "^7.3.0",
-    "vitest": "^4.1.11"
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
   }
 }

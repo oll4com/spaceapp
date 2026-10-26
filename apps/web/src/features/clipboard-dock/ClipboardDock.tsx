@@ -430,7 +430,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                   </span>
                   {item.occurrenceCount > 1 ? <span className="dock-kit-badge">Used {item.occurrenceCount}×</span> : null}
                 </div>
-                {item.title ? <div className="dock-kit-card-title">{item.title}</div> : null}
+                {item.title ? <div className="dock-kit-card-title" data-sensitive-masked="manual">{item.title}</div> : null}
                 {isPlan ? (
                   <div className="clipboard-plan-progress-container">
                     <div className="clipboard-plan-progress-header">
@@ -482,7 +482,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                           return (
                             <div className={`clipboard-plan-step-item is-${step.status.toLowerCase()}`} key={step.id}>
                               <span className={`clipboard-plan-step-bullet is-${step.status.toLowerCase()}`} />
-                              <span className="clipboard-plan-step-title" title={step.title}>{stepTitleWithoutModel(step.title)}</span>
+                              <span className="clipboard-plan-step-title" data-sensitive-masked="manual" title={step.title}>{stepTitleWithoutModel(step.title)}</span>
                               {step.progress > 0 && step.status !== "COMPLETED" ? (
                                 <span className="clipboard-plan-step-pct">{step.progress}%</span>
                               ) : null}
@@ -517,6 +517,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                     toggleExpanded(item.id);
                   }}
                   aria-label="Copy clip text"
+                  data-sensitive-masked="manual"
                   title="Click to copy, double-click to expand or collapse"
                 >
                   {snippet ? <span className="clipboard-card-snippet">{snippet}</span> : item.text}

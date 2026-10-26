@@ -164,7 +164,7 @@ const chessMoveServer = process.env.SPACE_CHESS_MOVE_SOCKET === "disabled"
   ? null
   : await startChessMoveServer(process.env.SPACE_CHESS_MOVE_SOCKET || CHESS_MOVE_SOCKET, undefined, {
     "/nous-turn": { maxBodyBytes: NOUS_TURN_MAX_BODY_BYTES, isInputError: (error) => error instanceof NousTurnInputError,
-      handle: (body, signal) => runNousTurn(validateNousTurnInput(body), signal) }
+      handle: (body, signal, emit) => runNousTurn(validateNousTurnInput(body), signal, emit) }
   }).catch((error: unknown) => {
       workerLog("warn", "worker.chess_move_server", { status: "UNAVAILABLE", error: error instanceof Error ? error.message : String(error) });
       return null;

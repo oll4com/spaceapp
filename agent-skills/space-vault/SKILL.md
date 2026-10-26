@@ -14,7 +14,8 @@ one-time code or seed: Space types them into the page and tells you only the res
 ## Tools (MCP server `space_vault`)
 
 - `space_vault_status`: `{agentAccess, delegatedItems}`, whether you may use the Vault now.
-- `space_vault_list`: the items you may use (handles, labels, exact origins, fields).
+- `space_vault_list`: the items you may use (handles, labels, exact origins, fields, and `account`: the Google account a login
+  belongs to, e.g. from a Chrome import). Pick the login of the account your browser pane uses; a fill prefers it by itself.
 - `space_vault_request_fill {handle, fields: ["USERNAME", "PASSWORD"], submit?, targetPaneId?}`: fill the login form open in
   the browser. Default browser: this pane's own, else the room's first browser pane; name another with `targetPaneId`.
 - `space_vault_request_totp_fill {handle, submit?, targetPaneId?}`: fill the one-time code field.
@@ -26,9 +27,17 @@ one-time code or seed: Space types them into the page and tells you only the res
 - `space_vault_save {site, username, password?, label}`: save a login you created with a password you chose yourself. It is
   sealed at once and fillable as soon as `space_vault_list` shows it (at once; it never waits for the operator's unlock).
 - `space_vault_audit {limit?}`: this pane's recent attempts (result codes only).
+- `space_vault_key_install {id, path, content, mode?}`: an API key the operator handed to you (the operator gives you its id,
+  `vault_key:...`, from the Vault dock's API keys). Pass the absolute path of the file it belongs in and that file's content with
+  `{{SPACE_VAULT_KEY}}` where the key goes (`mode` `write` replaces the file, `append` adds the content at its end); Space takes
+  the key and writes the file itself, you never see the key, and it is deleted from the Vault once written. Never a path under
+  `/opt/spaceapp`, `/opt/spaceapp-dev` or `/etc`. `BLOCKED` with `KEY_UNAVAILABLE`: the id is unknown, used, expired or another pane
+  took it; ask the operator for a new one instead of guessing.
 
 Answers carry `status` `FILLED`, `SUBMITTED`, `SAVED`, `LISTED`, `BLOCKED`, `EXPIRED`, `REVOKED`, `ORIGIN_MISMATCH` or
-`RATE_LIMITED`, and an `auditId`.
+`RATE_LIMITED`, an `auditId`, and for fills a `reason` code. `FIELD_NOT_FOUND_AFTER_RELOAD` means Space reloaded the page
+before filling (your session had run code in that page) and the field was gone: redo the steps that showed it using only
+`space_browser_navigate`, clicks, typing and `space_browser_press` (no evaluate), then fill again; that fill needs no reload.
 
 ## How a sign-in goes
 
@@ -37,7 +46,8 @@ Answers carry `status` `FILLED`, `SUBMITTED`, `SAVED`, `LISTED`, `BLOCKED`, `EXP
 3. Until that page is gone the browser holds the filled value, so you can only navigate, click, type, scroll and press
    keys in it (`space_browser_press`: Enter, Tab, Shift+Tab); reads, plain screenshots, DevTools and Playwright are refused.
    Your own pane also gets `space_browser_masked_screenshot` (every field drawn as dots; it returns the image path).
-   Click "Next" or "Sign in" if needed, or fill the next step.
+   Click "Next" or "Sign in" if needed, or fill the next step. A human check or CAPTCHA on the filled page (before Submit) goes
+   to the operator with `space_browser_request_handoff`; no reload is needed, and the fence stays on through the handoff.
 4. A code the site mailed you (passcode, verification code): finish it yourself, never ask the operator for it or hand
    Verify over. Read the code from the mail, type it, then `space_browser_press` Enter; if the form does not submit,
    press Tab to the Verify or Continue button and Enter (a masked screenshot shows where you are). If the code expired,

@@ -156,6 +156,11 @@ test("release is manual-only on main and publishes only approved sanitized artif
     release,
     /node scripts\/verify-published-containers\.mjs[\s\S]*--version "\$\{\{ inputs\.runtime_version \}\}"/
   );
+  // A full release's images are verified as built by this run's commit (image-attestations.mjs, review IR117-C-F7).
+  assert.match(
+    release,
+    /verify-containers:[\s\S]*node scripts\/verify-published-containers\.mjs\n\s+--version "\$\{\{ inputs\.version \}\}"\n\s+--workflow-sha "\$\{\{ github\.sha \}\}"/
+  );
   assert.match(release, /container-candidate:[\s\S]*if: inputs\.release_mode == 'full'/);
   assert.match(
     release,

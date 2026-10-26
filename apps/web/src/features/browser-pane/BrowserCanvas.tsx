@@ -367,7 +367,8 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
       inputRef.current({
         type: "TOUCH",
         eventType: eventType === "mousePressed" ? "touchStart" : eventType === "mouseReleased" ? "touchEnd" : "touchMove",
-        touchPoints: eventType === "mouseReleased" ? [] : [{ x: mapped.x, y: mapped.y, id: Math.max(0, event.pointerId), force: event.pressure }],
+        // Chrome numbers touch pointers upward for the page's life; the contract takes ids 0-100.
+        touchPoints: eventType === "mouseReleased" ? [] : [{ x: mapped.x, y: mapped.y, id: Math.max(0, event.pointerId) % 100, force: event.pressure }],
         modifiers: modifierMaskFromEvent(event)
       });
       if (eventType === "mouseReleased") lastPointerPointRef.current.delete(event.pointerId);

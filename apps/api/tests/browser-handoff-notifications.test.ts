@@ -57,17 +57,20 @@ describe("browser handoff notifications", () => {
     store.updatePane(closed.pane.id, { isClosed: true, status: "CLOSED" });
     complete(read);
     await repository.setStatus(owner, read.notification.id, "READ");
+    // The Job Copilot agent logs the same handoff as its own card; the settle ends it with the browser's.
+    const { notification: jobCard } = await repository.raise({ ownerUserId: owner, roomId: completed.pane.roomId, paneId: completed.pane.id, source: "JOB_COPILOT", kind: "HANDOFF_REQUESTED",
+      severity: "ATTENTION", title: "Upwork needs you", body: "", link: {}, dedupeKey: `job-apply:handoff:${completed.pane.id}`, payload: {}, telegram: null });
     vi.setSystemTime(start + 61_000);
 
     // One pane at a time (a closed pane's event) leaves the others for the sweep.
     expect(await settleBrowserHandoffNotifications({ store, notifications }, closed.pane.id)).toBe(1);
     expect(await statusOf(completed.notification.id)).toBe("OPEN");
     expect(await settleBrowserHandoffNotifications({ store, notifications })).toBe(5);
-    for (const ended of [completed, cancelled, timedOut, closed, read, { notification: deleted }]) expect(await statusOf(ended.notification.id)).toBe("RESOLVED");
+    for (const ended of [completed, cancelled, timedOut, closed, read, { notification: deleted }, { notification: jobCard }]) expect(await statusOf(ended.notification.id)).toBe("RESOLVED");
     expect(store.getBrowserHandoffRequest(timedOut.handoff.handoffRequestId)?.status).toBe("EXPIRED");
     expect(await statusOf(active.notification.id)).toBe("OPEN");
     // Resolved, never deleted: the Notification Center keeps them.
-    expect((await repository.list(owner, { status: "ALL", limit: 50 })).length).toBe(7);
+    expect((await repository.list(owner, { status: "ALL", limit: 50 })).length).toBe(8);
     expect(await settleBrowserHandoffNotifications({ store, notifications })).toBe(0);
   });
 
@@ -75,6 +78,7 @@ describe("browser handoff notifications", () => {
     expect(browserHandoffTitle("CAPTCHA: Upwork: Cloudflare check, tick the box\nmore")).toBe("Upwork: Cloudflare check, tick the box");
     expect(browserHandoffTitle(null)).toBe("The browser needs you");
     expect(browserHandoffTitle("LOGIN: ")).toBe("The browser needs you");
+    expect(browserHandoffTitle(`CAPTCHA: ${"x".repeat(250)}`)).toHaveLength(200);
     const { store, repository, notifications, room } = setup();
     const eventBus = new SpaceEventBus();
     const stop = startBrowserHandoffNotifications({ store, notifications, eventBus, roomOwner: async () => owner, log: { warn: () => {} } });
@@ -87,6 +91,14 @@ describe("browser handoff notifications", () => {
     await vi.waitFor(async () => expect((await repository.list(owner, { status: "ALL", limit: 5 }))[0]).toMatchObject({
       title: "Upwork: Cloudflare check, tick the box", body: "CAPTCHA: Upwork: Cloudflare check, tick the box", roomId: room.id, paneId: pane.id,
       link: { roomId: room.id, paneId: pane.id } }));
+    // A closed pane needs nobody: a CLI's needs-you card and Nous's card for it resolve at once (Needs you, operator request 2026-10-24).
+    const cards = await Promise.all([`agent:needs-you:${pane.id}`, `nous:pane:${pane.id}`].map((dedupeKey) => repository.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id,
+      source: dedupeKey.startsWith("agent") ? "AGENT" : "NOUS", kind: dedupeKey.startsWith("agent") ? "NEEDS_YOU" : "NEEDS_HANDS", severity: "ATTENTION", title: "Freelance needs you", body: "",
+      link: {}, dedupeKey, payload: {}, telegram: null })));
+    store.updatePane(pane.id, { isClosed: true, status: "CLOSED" });
+    eventBus.publish(eventSchema.parse({ id: makeSpaceId("event"), roomId: room.id, paneId: pane.id, turnId: null, workflowId: null, traceId: "pane-closed", type: "PANE_CLOSED",
+      message: "closed", payload: {}, createdAt: new Date().toISOString() }));
+    await vi.waitFor(async () => { for (const { notification } of cards) expect((await repository.get(owner, notification.id))?.status).toBe("RESOLVED"); });
     stop();
   });
 });

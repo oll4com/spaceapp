@@ -24,7 +24,7 @@ function store() {
       ? { leaseId: "lease:1", holderType: "OPERATOR", heartbeatAt: "t3", acquiredAt: "t0" } : null),
     getActiveBrowserHandoffRequest: vi.fn(async (sessionId: string) => sessionId.endsWith("copilot1")
       ? { status: "REQUESTED", requestedAt: "t4", reason: "CAPTCHA: secret" } : null),
-    getRoom: vi.fn(async () => ({ ownerUserId: "user:operator" })),
+    getRoom: vi.fn(async () => ({ name: "Felix", ownerUserId: "user:operator" })),
     listGoogleAccounts: vi.fn(async () => []),
     listCliAccountProfiles: vi.fn(async () => [])
   };
@@ -95,12 +95,17 @@ describe("browser census", () => {
     let role = "USER";
     app.addHook("onRequest", async (request) => { (request as unknown as { user: unknown }).user = { role }; });
     registerBrowserCensusRoutes(app, { store: store() as never, browserSessionManager: { status: () => ({ capacity: undefined }) as never },
-      controlActivity: { idleMs: () => 0 }, routeOptions: {} });
+      controlActivity: { idleMs: () => 0, agentFor: (paneId) => paneId === "pane:browser1"
+        ? { paneId: "pane:iris", at: Date.parse("2026-10-22T08:00:00.000Z"), active: false } : null }, routeOptions: {} });
     expect((await app.inject({ method: "GET", url: "/api/admin/browser-census" })).statusCode).toBe(403);
     role = "ADMIN";
     const answer = await app.inject({ method: "GET", url: "/api/admin/browser-census" });
     expect(answer.statusCode).toBe(200);
     expect(answer.json().sessions).toHaveLength(2);
+    // The CLI pane that last drove each browser, as the frame label shows it (operator 2026-10-22).
+    expect(answer.json().sessions.map((row: { agent: unknown }) => row.agent)).toEqual([
+      { paneId: "pane:iris", title: "Browser 7", paneName: "Bob", roomId: undefined, roomName: "Felix", drivenAt: "2026-10-22T08:00:00.000Z", active: false }, null
+    ]);
     await app.close();
   });
 });

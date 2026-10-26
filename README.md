@@ -43,7 +43,7 @@ Run up to 16 AI coding assistants, terminals, or workspace monitors simultaneous
   <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-16-pane-matrix.png" alt="SpaceApp 16-Pane Multi-Agent Workspace" width="950" />
 </p>
 
-*Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot, Hermes, Droid, and terminal tools in a live 16-pane room grid.*
+*Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot and terminal tools in a live 16-pane room grid (screenshot of the maintainers' instance; Hermes and Droid there are not available in the public installer).*
 
 ### 2. Live Agent Execution & Streaming Telemetry
 Watch agent output, shell commands and test runs as they stream from each pane. Token usage appears where the runtime reports it (for example Codex rollouts); otherwise it is shown as unavailable:
@@ -156,7 +156,7 @@ By default, the SpaceApp containers get no bind mount of your host filesystem: a
 | `workspace list` | Lists all currently registered workspaces and their mount IDs. | `npx --yes run-spaceapp@latest workspace list` |
 | `workspace remove <path>` | Unregisters a workspace from the SpaceApp environment. | `npx --yes run-spaceapp@latest workspace remove /home/user/my-project` |
 
-> *Note: After adding or removing workspaces, run `npx --yes run-spaceapp@latest up` to apply the updated mounts to the running stack.*
+> *Note: `workspace add` and `workspace remove` apply at once: they recreate the core and CLI services with the new mounts.*
 
 ### 🤖 AI Providers & Credentials
 

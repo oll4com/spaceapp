@@ -6,12 +6,13 @@ import { InMemorySpaceStore, SpaceConflictError, SpaceNotFoundError } from "@spa
 import type { PaneCliSession } from "@space/contracts";
 import { registerCliLocalComposerRoutes } from "../src/cli-local-composer-routes.js";
 import { parseCliHttpControlAuthority, CliTerminalControlRequiredError } from "../src/cli-http-control.js";
+import { configureQueueOperatorGrants, takePaneQueueGrant } from "../src/queue-operator-grants.js";
 
 const apps: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map(app => app.close())); });
 
-function fixture(sessionOverrides: Partial<PaneCliSession> = {}) {
-  const user = { id: "user:alice", email: "alice@example.test", role: "ADMIN" as const };
+function fixture(sessionOverrides: Partial<PaneCliSession> = {}, userOverrides: Record<string, unknown> = {}) {
+  const user = { id: "user:alice", email: "alice@example.test", role: "ADMIN" as const, ...userOverrides };
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "Composer", initialPaneCount: 0 }, "trace:composer", user.id);
   const pane = store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL", terminalRuntimeId: "cli:claude", cwd: "/etc" });
@@ -63,6 +64,17 @@ describe("local composer route authority", () => {
     expect(read.headers["cache-control"]).toBe("no-store");
     const unknown = await f.app.inject({ url: `${f.url}/${randomUUID()}` });
     expect(unknown.json()).toMatchObject({ status: "NOT_FOUND", sessionId: null });
+  });
+
+  it("holds the pane's promote grant for a promote the operator sends from their own draft, never an agent's session (2026-10-21)", async () => {
+    configureQueueOperatorGrants("composer-test-secret-with-length");
+    const f = fixture();
+    const sent = await f.app.inject({ method: "POST", url: f.url, headers: f.headers, payload: { ...f.input(), text: "κάνε promote" } });
+    expect(sent.json().status).toBe("SENT");
+    expect(takePaneQueueGrant(f.pane.id, "promote")).toEqual(expect.any(String));
+    const proof = fixture({}, { brokerScope: "UI_PROOF" });
+    await proof.app.inject({ method: "POST", url: proof.url, headers: proof.headers, payload: { ...proof.input(), text: "κάνε promote" } });
+    expect(takePaneQueueGrant(proof.pane.id, "promote")).toBeNull();
   });
 
   it("requires a live lease and all matching browser identities even when no controller exists", async () => {

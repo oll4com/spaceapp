@@ -1,6 +1,9 @@
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
-import { countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, sweepIdleOperatorLeases } from "../src/browser-control-activity.js";
+import { BROWSER_CONTROL_IDLE_RELEASE_MS, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, sweepIdleOperatorLeases } from "../src/browser-control-activity.js";
 import { registerVaultFenceHooks } from "../src/vault/fence-hooks.js";
 
 describe("browser control activity", () => {
@@ -22,21 +25,43 @@ describe("browser control activity", () => {
     expect(activity.idleMs(lease)).toBe(120_000);
   });
 
-  it("names the last agent pane that drove a browser for 10 minutes, or as long as it stays attached", () => {
-    let now = Date.parse("2026-10-20T10:00:00.000Z");
+  it("names the last agent pane that drove a browser: active for 10 minutes or as long as it stays attached, then last", () => {
+    const start = Date.parse("2026-10-20T10:00:00.000Z");
+    let now = start;
     const activity = createBrowserControlActivity(() => now);
     expect(activity.agentFor("pane:browser")).toBeNull();
     activity.noteAgent("pane:browser", "pane:codex");
     activity.noteAgent("pane:browser", "pane:claude");
     now += 10 * 60_000;
-    expect(activity.agentFor("pane:browser")).toBe("pane:claude");
+    expect(activity.agentFor("pane:browser")).toEqual({ paneId: "pane:claude", at: start, active: true });
     now += 1;
-    expect(activity.agentFor("pane:browser")).toBeNull();
-    expect(activity.agentFor("pane:browser", true)).toBe("pane:claude");
+    expect(activity.agentFor("pane:browser")).toEqual({ paneId: "pane:claude", at: start, active: false });
+    expect(activity.agentFor("pane:browser", true)).toEqual({ paneId: "pane:claude", at: start, active: true });
+  });
+
+  it("keeps the last driver of each browser across an API restart (operator 2026-10-22)", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "browser-agents-")), "browser-agents.json");
+    const start = Date.parse("2026-10-22T08:00:00.000Z");
+    let now = start;
+    const before = createBrowserControlActivity(() => now, file);
+    before.noteAgent("pane:hugo", "pane:iris");
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ "pane:hugo": { paneId: "pane:iris", at: start } }));
+    // The same driver within the minute waits for the next write; a new driver writes the whole map at once.
+    now += 30_000;
+    before.noteAgent("pane:hugo", "pane:iris");
+    before.noteAgent("pane:emma", "pane:iris");
+    await vi.waitFor(() => expect(Object.keys(JSON.parse(readFileSync(file, "utf8")))).toEqual(["pane:hugo", "pane:emma"]));
+    now += 25 * 60_000;
+    const after = createBrowserControlActivity(() => now, file);
+    expect(after.agentFor("pane:hugo")).toEqual({ paneId: "pane:iris", at: start + 30_000, active: false });
+    expect(after.agentFor("pane:other")).toBeNull();
+    // A missing or broken file starts empty.
+    writeFileSync(file, "{");
+    expect(createBrowserControlActivity(() => now, file).agentFor("pane:hugo")).toBeNull();
   });
 });
 
-describe("browser control idle release (operator 2026-10-15: back to the agent within 2 minutes)", () => {
+describe("browser control idle release (operator 2026-10-15, 60 s since 2026-10-24: back to the agent after the idle limit)", () => {
   async function setup() {
     const store = new InMemorySpaceStore();
     store.upsertUser({ id: "user:operator", email: "operator@example.test", role: "ADMIN" });
@@ -63,7 +88,7 @@ describe("browser control idle release (operator 2026-10-15: back to the agent w
     return { store, pane, sessionId, handoff, lease, browserSessionManager };
   }
 
-  it("releases an accepted handoff's lease after 2 minutes without a press, completes the handoff and audits it", async () => {
+  it("releases an accepted handoff's lease after the idle limit without a press, completes the handoff and audits it", async () => {
     const start = Date.parse("2026-10-15T12:00:00.000Z");
     vi.useFakeTimers({ toFake: ["Date"], now: start });
     try {
@@ -76,22 +101,23 @@ describe("browser control idle release (operator 2026-10-15: back to the agent w
       vi.setSystemTime(start + 60_000);
       renew();
       activity.noteInput(lease.leaseId);
-      vi.setSystemTime(start + 150_000);
+      const lastPress = start + 60_000;
+      vi.setSystemTime(lastPress + BROWSER_CONTROL_IDLE_RELEASE_MS - 30_000);
       renew();
       expect(countsAsOperatorInput({ type: "POINTER", eventType: "mouseMoved", button: "none" })).toBe(false);
       expect(countsAsOperatorInput({ type: "POINTER", eventType: "mouseMoved", button: "left" })).toBe(true);
       expect(countsAsOperatorInput({ type: "KEY", eventType: "keyDown" })).toBe(true);
-      // 90 s after his last press the operator keeps it.
+      // 30 s before the limit the operator keeps it.
       expect(await sweepIdleOperatorLeases(deps)).toBe(0);
       expect(store.getBrowserControlLease(lease.leaseId)?.status).toBe("ACTIVE");
-      vi.setSystemTime(start + 181_000);
+      vi.setSystemTime(lastPress + BROWSER_CONTROL_IDLE_RELEASE_MS + 1_000);
       renew();
       expect(await sweepIdleOperatorLeases(deps)).toBe(1);
       expect(store.getBrowserControlLease(lease.leaseId)?.status).toBe("RELEASED");
       expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
       expect(store.getPaneBrowserSession(sessionId)?.controlState).toBe("UNCONTROLLED");
       expect(store.listAuditEvents().filter((event) => event.action === "pane.browser.control.idle_release")).toEqual([
-        expect.objectContaining({ actorUserId: null, metadata: { sessionId, leaseId: lease.leaseId, idleSeconds: 121 } })
+        expect.objectContaining({ actorUserId: null, metadata: { sessionId, leaseId: lease.leaseId, idleSeconds: BROWSER_CONTROL_IDLE_RELEASE_MS / 1000 + 1 } })
       ]);
       expect(activity.watched()).toEqual([]);
     } finally {

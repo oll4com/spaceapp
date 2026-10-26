@@ -33,6 +33,18 @@ describe("dashboard native activity", () => {
     expect(read).not.toHaveBeenCalled();
     expect(await store.getActivePaneCliSession(idle.id)).toBeNull();
   });
+  it("reads the CLI of copilot, Design, App Studio and Video panes, whose terminal is a rail tab", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
+    const modes = ["APP_STUDIO", "DESIGN", "VIDEO", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_APPLY"] as const;
+    const panes = modes.map((mode) => store.createPane({ roomId: room.id, title: mode, mode, terminalRuntimeId: "cli:claude" }));
+    for (const pane of panes) store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "anthropic", agentId: "claude", purpose: "NORMAL", status: "RUNNING" });
+    const browser = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+    const read = vi.fn(async () => "working" as const);
+    const result = await readDashboardActivity([...panes, browser], store, read);
+    expect(result.activity).toEqual(Object.fromEntries(panes.map((pane) => [pane.id, "working"])));
+    expect(read).toHaveBeenCalledTimes(panes.length);
+  });
   it("correctly propagates working status for OpenCode parity sessions", async () => {
     const store = new InMemorySpaceStore();
     const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });

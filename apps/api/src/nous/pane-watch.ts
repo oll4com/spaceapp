@@ -16,7 +16,7 @@ export const PANE_DUE_WORKING_MS = 60 * MINUTE;
 export const paneCheckedArgsSchema = z.object({
   room: z.string().trim().min(1).max(200).describe("The room's name as shown in the world (or its id)."),
   pane: z.string().trim().min(1).max(160).describe("The pane's name in that room."),
-  verdict: z.enum(NOUS_PANE_VERDICTS).describe("OK_WORKING, WAITING_OPERATOR, WAITING_DATE (give nextCheckInMinutes), NEEDS_ACTION, BLOCKED, or OPERATOR_TEST (the operator's own test pane: drive it, never close it until they confirm)."),
+  verdict: z.enum(NOUS_PANE_VERDICTS).describe("OK_WORKING, WAITING_OPERATOR, WAITING_DATE (give nextCheckInMinutes), NEEDS_ACTION, BLOCKED, OPERATOR_TEST (the operator's own test pane: drive it while its task runs; once that task is done it is saved and closed like any finished pane), or KEEP_OPEN (a finished pane Space must not list for closing until nextCheckInMinutes: say why in the note)."),
   note: z.string().trim().max(200).optional().describe("One line: what you saw or what it waits for."),
   nextCheckInMinutes: z.number().int().min(1).max(20_160).optional().describe("When to look again; without it the 30/60-minute rule applies.")
 });
@@ -54,7 +54,7 @@ export function paneCheckedText(entry: PaneWatchEntry | undefined, clock: (iso: 
   if (!entry) return null;
   if (!entry.check) return "never checked";
   const verdict = verdictText(entry.check.verdict);
-  return `checked ${clock(entry.check.checkedAt)}${verdict ? ` (${verdict})` : ""}${entry.check.verdict === "OPERATOR_TEST" ? ", keep open" : ""}`;
+  return `checked ${clock(entry.check.checkedAt)}${verdict ? ` (${verdict})` : ""}${entry.check.verdict === "KEEP_OPEN" ? ", keep open" : ""}`;
 }
 
 /** The world's "Panes not checked" section; empty when every open pane is in date. */
@@ -64,7 +64,7 @@ export function renderPanesNotChecked(entries: PaneWatchEntry[], clock: (iso: st
   return ["## Panes not checked (never checked or due: read each, then record it with space_pane_checked)",
     ...due.map((entry) => `- ${where(entry)}${entry.state ? ` · ${entry.state}` : ""} · ${entry.check
       ? `checked ${clock(entry.check.checkedAt)}${entry.check.verdict ? ` (${verdictText(entry.check.verdict)})` : ""}, due ${clock(entry.dueAt)}`
-      : "never checked"}${entry.check?.verdict === "OPERATOR_TEST" ? " · the operator's test pane: never close it" : ""}`)].join("\n");
+      : "never checked"}${entry.check?.verdict === "OPERATOR_TEST" ? " · the operator's test pane: close it after its save once its task is done" : ""}`)].join("\n");
 }
 
 /** The heartbeat's inbox line, null when no pane is due. */
@@ -93,8 +93,8 @@ export function createNousPaneWatch(deps: { repository: NousPaneChecksRepository
     async checked(owner: string, room: Room, pane: Pane, args: PaneCheckedArgs): Promise<{ ok: boolean; display: string; result: string }> {
       const at = now();
       const nextCheckAt = args.nextCheckInMinutes ? new Date(at + args.nextCheckInMinutes * MINUTE).toISOString() : null;
-      if (args.verdict === "WAITING_DATE" && !nextCheckAt) {
-        return { ok: false, display: "Give the next check", result: "WAITING_DATE needs nextCheckInMinutes: when to look again." };
+      if ((args.verdict === "WAITING_DATE" || args.verdict === "KEEP_OPEN") && !nextCheckAt) {
+        return { ok: false, display: "Give the next check", result: `${args.verdict} needs nextCheckInMinutes: when to look again.` };
       }
       await deps.repository.record(owner, { paneId: pane.id, roomId: room.id, at: new Date(at).toISOString(),
         verdict: { verdict: args.verdict, note: args.note?.trim() || null, nextCheckAt } });

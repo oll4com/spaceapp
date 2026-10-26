@@ -1,13 +1,20 @@
 import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionControlRequest, PlanStageOverrideRequest } from "@space/contracts";
+import type { AppDeviceSession } from "@space/contracts";
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
+import type { SetupVoiceProvider } from "./features/setup-connections/SetupVoiceConnection.js";
+import type { SetupDraft, SetupPlan, SetupRun, SetupTask, SetupReadinessReceipt, SetupExecutionEvent, SetupFeature, SetupFeatureId, SetupAvailability } from "@space/contracts";
 import type { LiveRoomContext } from "@space/contracts";
 import type { DesignAsset, DesignBrandKit, DesignBrandKitInput, DesignEvent, DesignFormat, DesignNetwork, DesignPaneMetadata, DesignRequest, DesignRequestCreate, DesignTemplateId, DesignView } from "@space/contracts";
 import type { AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, AppStudioRunStatus } from "@space/contracts";
+import type { SecurityCopilotPaneMetadata, SecurityEvent, SecurityMemory } from "@space/contracts";
+import type { SecurityCopilotState, SecurityFindingView, SecurityRunView } from "./features/security-copilot-pane/types.js";
+import type { VideoAsset, VideoAssetKind, VideoEvent, VideoJob, VideoPaneMetadata, VideoRequest, VideoRequestCreateInput, VideoRequestStatus, VideoView } from "@space/contracts";
+import type { SetupClientRuntimeFeatureId, SetupClientRuntimeChallenge, SetupClientRuntimeObservation } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
-import type { VaultPendingSecret, VaultSignupGrant, VaultSignupGrantRequest, VaultAuditRecord, VaultItemMetadata, VaultItemRecord, VaultItemRecordInput, VaultKdfParams, VaultRecovery, VaultSymmetricEnvelope, VaultTransportEnvelope } from "@space/contracts";
+import type { VaultHandoffKey, VaultPendingSecret, VaultSignupGrant, VaultSignupGrantRequest, VaultAuditRecord, VaultItemMetadata, VaultItemRecord, VaultItemRecordInput, VaultKdfParams, VaultRecovery, VaultSymmetricEnvelope, VaultTransportEnvelope } from "@space/contracts";
 import type {
   DemoAccountsResponse,
   DemoConnection,
@@ -440,6 +447,7 @@ import type {
   SwarmTaskStatus,
   TaskItem,
   TaskStatus,
+  TaskSource,
   TelegramIntegrationStatus,
   TelegramPairingResponse,
   Turn,
@@ -570,6 +578,15 @@ function cliTerminalControlHeaders(paneId: string): Record<string, string> | und
   };
 }
 
+/** `GET /api/video/tools`: what `space-video-tools-setup.mjs --status` reports (ok, the missing tools, an error). */
+export interface VideoToolsStatus { ok?: boolean; missing?: string[]; error?: string; [key: string]: unknown }
+/** A CC BY track `POST .../video/music/search` found: the attribution line is what the licence asks for. */
+export interface VideoMusicResult { title: string; artist: string | null; url: string; license: string | null; attribution: string }
+/** A request with its result assets as the API views them (the asset ids, poster, size, description, credits). */
+export interface VideoRequestView {
+  request: VideoRequest;
+  assets: Array<Pick<VideoAsset, "artifactId" | "thumbnailArtifactId" | "label" | "formatId" | "width" | "height" | "durationSec" | "mimeType" | "kind" | "description" | "madeBy" | "credits" | "parentAssetId" | "createdAt"> & { assetId: string; replacedBy: string | null }>;
+}
 interface Paginated<T> {
   data: T[];
   pagination: {
@@ -1360,6 +1377,43 @@ export const api = {
       body: JSON.stringify(input)
     }).then(noteServerModules),
   setupOverview: () => request<SetupOverview>("/api/setup/overview"),
+  askSetupAssistant: (question: string, signal?: AbortSignal) => request<{ available: boolean; modelId: string | null; message: string }>("/api/setup/assistant", { method: "POST", body: JSON.stringify({ question }), signal }),
+  beginSetupCaptureCheck: (draftRevision: number) => request<{ checkId: string; colors: string[] }>("/api/setup/capture/checks", { method: "POST", body: JSON.stringify({ draftRevision }) }),
+  beginSetupClientRuntimeCheck: (featureId: SetupClientRuntimeFeatureId, draftRevision: number, signal?: AbortSignal) => request<SetupClientRuntimeChallenge>("/api/setup/client-runtime/checks", { method: "POST", signal, body: JSON.stringify({ featureId, draftRevision }) }),
+  completeSetupClientRuntimeCheck: (checkId: string, observation: SetupClientRuntimeObservation, signal?: AbortSignal) => request<{ verified: boolean }>(`/api/setup/client-runtime/checks/${encodeURIComponent(checkId)}/complete`, { method: "POST", signal, body: JSON.stringify(observation) }),
+  cancelSetupClientRuntimeCheck: async (checkId: string) => { await request(`/api/setup/client-runtime/checks/${encodeURIComponent(checkId)}`, { method: "DELETE" }); },
+  completeSetupCaptureCheck: (checkId: string, rgba: string) => request<{ verified: boolean }>(`/api/setup/capture/checks/${encodeURIComponent(checkId)}/complete`, { method: "POST", body: JSON.stringify({ rgba }) }),
+  cancelSetupCaptureCheck: async (checkId: string) => { await request(`/api/setup/capture/checks/${encodeURIComponent(checkId)}`, { method: "DELETE" }); },
+  getSetupServiceChoices: (featureId: SetupFeatureId) => request<{ choices: Array<{ id: string; label: string }> }>(`/api/setup/services/${encodeURIComponent(featureId)}/choices`),
+  checkSetupService: (featureId: SetupFeatureId, draftRevision: number, choiceId: string) => request<{ verified: boolean }>(`/api/setup/services/${encodeURIComponent(featureId)}/check`, { method: "POST", body: JSON.stringify({ draftRevision, choiceId }) }),
+  getSetupVoiceProviders: () => request<{ providers: SetupVoiceProvider[] }>("/api/setup/voice/providers"),
+  saveSetupVoiceCredential: (input: Record<string, string>) => request<{ configured: boolean; credentialRef: string }>("/api/setup/voice/credentials", { method: "POST", body: JSON.stringify(input) }),
+  startSetupVoiceCheck: (draftRevision: number) => request<{ checkId: string; websocketUrl: string; sampleRate: 16000 }>("/api/setup/voice/checks", { method: "POST", body: JSON.stringify({ draftRevision }) }),
+  getSetupCatalog: () => request<{ protocolVersion: 2; catalogVersion: string; features: Array<SetupFeature & { availability: SetupAvailability; reasonCode: string | null }> }>("/api/setup/catalog"),
+  getSetupFreeModels: () => request<{ selectedModelId: string | null; checkedAt: string | null; models: Array<{ id: string; anonymousAvailable: boolean; setupPassed: number; latencyMs: number }>; selectable?: boolean }>("/api/setup/free-models"),
+  selectSetupFreeModel: (modelId: string | null) => request<{ modelId: string | null; verified: boolean }>("/api/setup/free-model", { method: "POST", body: JSON.stringify({ modelId }) }),
+  getSetupFreeModel: () => request<{ choice: "AUTO_BEST_FREE"; modelId: string | null; verified: boolean }>("/api/setup/free-model"),
+  getSetupDraft: () => request<SetupDraft | (Pick<SetupDraft, "ownerId" | "protocolVersion" | "persona" | "level" | "requestedFeatureIds" | "connectionChoices" | "catalogVersion"> & { id: null; revision: null })>("/api/setup/draft"),
+  saveSetupDraft: (input: Pick<SetupDraft, "persona" | "level" | "requestedFeatureIds" | "connectionChoices"> & { expectedRevision: number | null }) =>
+    request<SetupDraft>("/api/setup/draft", { method: "PUT", body: JSON.stringify(input) }),
+  createSetupPlan: (draftRevision: number) =>
+    request<SetupPlan>("/api/setup/plan", { method: "POST", body: JSON.stringify({ draftRevision }) }),
+  startSetupRun: (plan: Pick<SetupPlan, "id" | "planDigest">, idempotencyKey: string) =>
+    request<SetupRun>("/api/setup/runs", { method: "POST", body: JSON.stringify({ planId: plan.id, planDigest: plan.planDigest, idempotencyKey }) }),
+  getSetupRun: (runId: string) => request<{ run: SetupRun; plan: SetupPlan; tasks: SetupTask[]; receipts: SetupReadinessReceipt[] }>(`/api/setup/runs/${encodeURIComponent(runId)}`),
+  getCurrentSetup: () => request<{ run: SetupRun | null; plan: SetupPlan | null; completedRunId: string | null; tasks: SetupTask[]; receipts: SetupReadinessReceipt[] }>("/api/setup/current"),
+  getSetupRunEvents: (runId: string, after = 0) => request<{ events: SetupExecutionEvent[] }>(`/api/setup/runs/${encodeURIComponent(runId)}/events?after=${after}`),
+  retrySetupRun: (runId: string, taskIds: string[], expectedRunRevision: number) =>
+    request<{ run: SetupRun }>(`/api/setup/runs/${encodeURIComponent(runId)}/retry`, { method: "POST", body: JSON.stringify({ taskIds, expectedRunRevision }) }),
+  pauseSetupRun: (runId: string) =>
+    request<{ run: SetupRun }>(`/api/setup/runs/${encodeURIComponent(runId)}/pause`, { method: "POST", body: "{}" }),
+  resumeSetupRun: (runId: string) =>
+    request<{ run: SetupRun }>(`/api/setup/runs/${encodeURIComponent(runId)}/resume`, { method: "POST", body: "{}" }),
+  reconcileSetupTask: (runId: string, taskId: string) =>
+    request<{ run: SetupRun; plan: SetupPlan; tasks: SetupTask[]; receipts: SetupReadinessReceipt[] }>(
+      `/api/setup/runs/${encodeURIComponent(runId)}/reconcile`, { method: "POST", body: JSON.stringify({ taskId }) }),
+  finishSetupRun: (run: Pick<SetupRun, "id">, plan: Pick<SetupPlan, "draftRevision" | "planDigest">) =>
+    request<SetupOverview>("/api/setup/finish", { method: "POST", body: JSON.stringify({ runId: run.id, draftRevision: plan.draftRevision, planDigest: plan.planDigest }) }),
   setupStarterRoom: () =>
     request<SetupStarterRoomResponse>("/api/setup/starter-room", { method: "POST" }),
   startSetupConnectionChecks: () =>
@@ -1422,6 +1476,8 @@ export const api = {
     method: "PATCH", body: JSON.stringify({ isPrimary: true })
   }),
   removeGoogleAccount: (id: string) => request<{ ok: true }>(`/api/auth/google/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  listAppDevices: () => request<{ devices: AppDeviceSession[] }>("/api/auth/devices"),
+  revokeAppDevice: (id: string) => request<{ device: AppDeviceSession }>(`/api/auth/devices/${encodeURIComponent(id)}/revoke`, { method: "POST", body: JSON.stringify({}) }),
   checkGoogleAccountBrowser: (id: string) => request<{ account: GoogleAccountSummary; check: GoogleBrowserCheckSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}/browser-check`, {
     method: "POST", body: JSON.stringify({})
   }),
@@ -1552,21 +1608,32 @@ export const api = {
   vaultLock: () => request<{ epoch: number }>("/api/space-vault/lock", { method: "POST", body: "{}" }),
   vaultItems: () => request<{ items: VaultItemMetadata[]; stats?: Record<string, VaultItemStats> }>("/api/space-vault/items"),
   vaultItem: (id: string) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(id)}`),
+  vaultItemRecords: () => request<{ items: VaultItemRecord[] }>("/api/space-vault/item-records"),
+  vaultSaveItems: (items: VaultItemRecordInput[]) => request<{ saved: number; refused: number }>("/api/space-vault/items", { method: "PUT", body: JSON.stringify({ items }) }),
+  // Deletes, the recovery envelope, the password envelope and the inbox key carry the unlocked dock's signature (vault-client.ts signVaultOperatorRequest).
+  vaultDeleteItems: (body: { ids: string[]; epoch: number; operatorSignature: string }) => request<{ deleted: number }>("/api/space-vault/items/delete", { method: "POST", body: JSON.stringify(body) }),
+  vaultSiteCheck: (origins: string[]) => request<{ results: Array<{ origin: string; status: "OK" | "NO_DNS" | "UNREACHABLE" | "LOCAL"; detail: string | null }> }>(
+    "/api/space-vault/site-check", { method: "POST", body: JSON.stringify({ origins }) }),
   vaultSaveItem: (item: VaultItemRecordInput) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(item.metadata.id)}`, { method: "PUT", body: JSON.stringify(item) }),
-  vaultDeleteItem: (id: string) => request<{ deleted: true }>(`/api/space-vault/items/${encodeURIComponent(id)}`, { method: "DELETE" }),
   vaultRotatePassword: (body: unknown) => request<{ epoch: number }>("/api/space-vault/password", { method: "POST", body: JSON.stringify(body) }),
-  vaultSetRecovery: (recovery: VaultRecovery) => request<{ recovery: true }>("/api/space-vault/recovery", { method: "PUT", body: JSON.stringify(recovery) }),
+  vaultSetRecovery: (body: VaultRecovery & { epoch: number; operatorSignature: string }) => request<{ recovery: true }>("/api/space-vault/recovery", { method: "PUT", body: JSON.stringify(body) }),
   vaultRecovery: () => request<{ recovery: VaultRecovery | null }>("/api/space-vault/recovery"),
   vaultInbox: () => request<{ inbox: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope } | null }>("/api/space-vault/inbox"),
-  vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope }) => request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
+  vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope; epoch: number; operatorSignature: string }) =>
+    request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
   vaultPending: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending"),
   vaultDeletePending: (id: string) => request<{ deleted: true }>(`/api/space-vault/pending/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  vaultSetAgentAccess: (enabled: boolean) => request<{ agentAccess: boolean }>("/api/space-vault/agent-access", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  /** Off revokes: the answer then carries the new generation and epoch. */
+  vaultSetAgentAccess: (enabled: boolean) => request<{ agentAccess: boolean; generation?: number; epoch?: number }>("/api/space-vault/agent-access", { method: "PUT", body: JSON.stringify({ enabled }) }),
   vaultRevoke: () => request<{ generation: number; epoch: number }>("/api/space-vault/revoke", { method: "POST", body: "{}" }),
   vaultDelegate: (body: unknown) => request<{ generation: number }>("/api/space-vault/delegations", { method: "POST", body: JSON.stringify(body) }),
   vaultSignupGrants: () => request<{ grants: VaultSignupGrant[] }>("/api/space-vault/signup-grants"),
   vaultCreateSignupGrant: (body: VaultSignupGrantRequest) => request<{ grant: VaultSignupGrant }>("/api/space-vault/signup-grants", { method: "POST", body: JSON.stringify(body) }),
   vaultRevokeSignupGrant: (id: string) => request<{ revoked: true }>(`/api/space-vault/signup-grants/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  // API keys handed to agents (plan clipboard:-qvpC_Q0rAVg): the value goes in once and never comes back out here.
+  vaultHandoffKeys: () => request<{ keys: VaultHandoffKey[] }>("/api/space-vault/keys"),
+  vaultCreateHandoffKey: (body: { label: string; value: string; expiresInHours: number }) => request<{ key: VaultHandoffKey }>("/api/space-vault/keys", { method: "POST", body: JSON.stringify(body) }),
+  vaultDeleteHandoffKey: (id: string) => request<{ deleted: true }>(`/api/space-vault/keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
   vaultAudit: (beforeSeq?: number) => request<{ entries: Array<{ id: string; seq: number; event: VaultAuditRecord; createdAt: string }>; nextBeforeSeq: number | null }>(
     `/api/space-vault/audit?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ""}`),
   councilModels: () => request<CouncilModelsResponse>("/api/council/models"),
@@ -1581,7 +1648,7 @@ export const api = {
     }),
   deleteCouncilRun: (id: string) => request<void>(`/api/council/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   nous: () => request<{ state: NousState }>("/api/nous"),
-  nousMessages: () => request<{ messages: NousMessage[]; attachments?: Record<string, NousAttachment[]> }>("/api/nous/messages"),
+  nousMessages: () => request<{ messages: NousMessage[]; waiting?: string[]; attachments?: Record<string, NousAttachment[]> }>("/api/nous/messages"),
   sendNousMessage: (content: string, attachmentIds: string[] = []) => request<{ message: NousMessage; attachments?: NousAttachment[] }>("/api/nous/messages",
     { method: "POST", body: JSON.stringify(attachmentIds.length ? { content, attachmentIds } : { content }) }),
   uploadNousAttachments: (files: File[]) => {
@@ -1606,12 +1673,16 @@ export const api = {
     request<NousPaneBoardAnswerResult>(`/api/nous/pane-board/${encodeURIComponent(paneId)}/answer`, { method: "POST", body: JSON.stringify(input) }),
   answerNousDecision: (id: string, input: NousDecisionAnswerInput) =>
     request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify(input) }),
+  /** "Show everything": the texts a decision sends, read whole from the files Nous named (operator request 2026-10-21). */
+  nousDecisionFiles: (id: string) =>
+    request<{ files: Array<{ ref: string; text: string | null; total: number | null; truncated: boolean; error?: string }> }>(`/api/nous/decisions/${encodeURIComponent(id)}/files`),
   nousDecisionFeedback: (id: string, couldHaveDecided: boolean) =>
     request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/feedback`, { method: "POST", body: JSON.stringify({ couldHaveDecided }) }),
-  taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
+  taskItems: (query: { q?: string; status?: TaskStatus; source?: TaskSource; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
     if (query.status) params.set("status", query.status);
+    if (query.source) params.set("source", query.source);
     if (query.page !== undefined) params.set("page", String(query.page));
     if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
     const suffix = params.toString();
@@ -1773,7 +1844,7 @@ export const api = {
   roomAgentPending: () => request<{ rooms: Record<string, number>; latest: RoomAgentEvent[]; roomNames?: Record<string, string> }>("/api/room-agent/pending"),
   // Space notifications: what waits for the user, the newest records, read / acknowledge, and a test.
   notificationsPending: () => request<import("@space/contracts").NotificationsPending>("/api/notifications/pending", { cache: "no-store" }),
-  notifications: (query: { status?: "OPEN" | "ALL"; source?: string; limit?: number; before?: string } = {}) =>
+  notifications: (query: { status?: "OPEN" | "ALL" | "NEEDS_YOU"; source?: string; limit?: number; before?: string } = {}) =>
     request<{ notifications: import("@space/contracts").SpaceNotification[] }>(`/api/notifications?${new URLSearchParams({ ...(query.status ? { status: query.status } : {}),
       ...(query.source ? { source: query.source } : {}), ...(query.limit ? { limit: String(query.limit) } : {}), ...(query.before ? { before: query.before } : {}) })}`, { cache: "no-store" }),
   notification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}`, { cache: "no-store" }),
@@ -2879,6 +2950,12 @@ export const api = {
   watchYouTube: (paneId: string) => request<{ currentUrl: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/watch`, { method: "POST", body: "{}" }),
   youtubeVideoText: (paneId: string, videoId: string, kind: "summary" | "transcript") =>
     request<{ text: string; model: string }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/summary`, { method: "POST", body: JSON.stringify({ videoId, kind }) }),
+  /** The YouTube pane's Download: the video at full resolution into the Video library; `rightsConfirmed` is the operator's click. */
+  youtubeDownload: (paneId: string, videoId: string, title: string) =>
+    request<{ job: VideoJob }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/download`, { method: "POST", body: JSON.stringify({ videoId, title: title.slice(0, 200), rightsConfirmed: true }) }),
+  /** The download's job; the server answers when it ends or after 20 s. */
+  youtubeDownloadJob: (paneId: string, jobId: string) =>
+    request<{ job: VideoJob }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/download/${encodeURIComponent(jobId)}`, { cache: "no-store" }),
   browserSession: (paneId: string) => request<PaneBrowserSessionResponse>(`/api/panes/${encodeURIComponent(paneId)}/browser/session`),
   startBrowserSession: (
     paneId: string,
@@ -3469,7 +3546,7 @@ export const api = {
   uploadPaneFiles: (input: {
     roomId: string;
     paneId?: string | null;
-    source: "USER_UPLOAD" | "CLIPBOARD" | "DROP" | "SCREEN_CAPTURE";
+    source: "USER_UPLOAD" | "CLIPBOARD" | "DROP" | "SCREEN_CAPTURE" | "LIVE_RECORDING";
     files: File[];
     signal?: AbortSignal;
   }) => {
@@ -3969,6 +4046,56 @@ export const api = {
   designEvents: (paneId: string, limit = 100) =>
     request<{ events: DesignEvent[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/events?limit=${limit}`, { cache: "no-store" }),
   designBrandKits: () => request<{ brandKits: DesignBrandKit[] }>("/api/design/brand-kits", { cache: "no-store" }),
+  // Video pane: settings and view, the Studio's sources, the library, music, jobs, requests and activity.
+  videoFormats: () => request<{ formats: DesignFormat[] }>("/api/video/formats", { cache: "no-store" }),
+  videoTools: () => request<{ tools: VideoToolsStatus }>("/api/video/tools", { cache: "no-store" }),
+  videoSettings: (paneId: string) =>
+    request<{ metadata: VideoPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/video/settings`, { cache: "no-store" }),
+  updateVideoSettings: (paneId: string, metadata: VideoPaneMetadata) =>
+    request<{ metadata: VideoPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/video/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  updateVideoView: (paneId: string, view: Partial<Omit<VideoView, "updatedAt">>) =>
+    request<{ view: VideoView }>(`/api/panes/${encodeURIComponent(paneId)}/video/view`, { method: "PUT", body: JSON.stringify(view) }),
+  uploadVideoSource: (paneId: string, file: File, fields: { label?: string; description?: string; requestId?: string } = {}) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) if (value) form.append(key, value);
+    form.append("file", file, file.name || "source");
+    return request<{ asset: VideoAsset; probe: Record<string, unknown> }>(`/api/panes/${encodeURIComponent(paneId)}/video/sources`, { method: "POST", body: form });
+  },
+  videoAssets: (paneId: string, query: { formatId?: string; kind?: VideoAssetKind; requestId?: string; limit?: number } = {}) =>
+    request<{ assets: VideoAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/video/assets?${new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}`, { cache: "no-store" }),
+  deleteVideoAsset: (paneId: string, assetId: string) =>
+    request<{ deleted: true }>(`/api/panes/${encodeURIComponent(paneId)}/video/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" }),
+  /** Deletes a video or audio file for good: out of the library and Media (an Agent File the library points at stays in Agent Files). */
+  deleteVideoFile: (paneId: string, artifactId: string) =>
+    request<{ deleted: true; removedAssets: number; keptInAgentFiles: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/video/files/${encodeURIComponent(artifactId)}`, { method: "DELETE" }),
+  /** Copies a video or audio file into Agent Files › Media / Video on the server. */
+  saveVideoToAgentFiles: (paneId: string, artifactId: string) =>
+    request<{ artifact: Artifact; folder: string; alreadyThere: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/video/files/${encodeURIComponent(artifactId)}/agent-file`, { method: "POST", body: "{}" }),
+  videoMusicSearch: (paneId: string, input: { query: string; limit?: number }) =>
+    request<{ results: VideoMusicResult[] }>(`/api/panes/${encodeURIComponent(paneId)}/video/music/search`, { method: "POST", body: JSON.stringify(input) }),
+  videoMusicFetch: (paneId: string, input: { url: string; title?: string; artist?: string; attribution: string }) =>
+    request<{ asset: VideoAsset }>(`/api/panes/${encodeURIComponent(paneId)}/video/music/fetch`, { method: "POST", body: JSON.stringify(input) }),
+  uploadVideoMusic: (paneId: string, file: File, fields: { label?: string; credits?: string } = {}) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) if (value) form.append(key, value);
+    form.append("file", file, file.name || "music");
+    return request<{ asset: VideoAsset }>(`/api/panes/${encodeURIComponent(paneId)}/video/music`, { method: "POST", body: form });
+  },
+  videoJob: (paneId: string, jobId: string) => request<{ job: VideoJob }>(`/api/panes/${encodeURIComponent(paneId)}/video/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" }),
+  videoRequests: (paneId: string, query: { status?: VideoRequestStatus; limit?: number } = {}) =>
+    request<{ requests: VideoRequest[] }>(`/api/panes/${encodeURIComponent(paneId)}/video/requests?${new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}`, { cache: "no-store" }),
+  createVideoRequest: (paneId: string, input: VideoRequestCreateInput) =>
+    request<VideoRequestView & { videoPaneId: string | null; runStarted: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/video/requests`, { method: "POST", body: JSON.stringify(input) }),
+  videoRequest: (paneId: string, requestId: string) =>
+    request<VideoRequestView & { events: VideoEvent[] }>(`/api/panes/${encodeURIComponent(paneId)}/video/requests/${encodeURIComponent(requestId)}`, { cache: "no-store" }),
+  approveVideoRequest: (paneId: string, requestId: string, input: { assetIds?: string[]; message?: string | null } = {}) =>
+    request<VideoRequestView>(`/api/panes/${encodeURIComponent(paneId)}/video/requests/${encodeURIComponent(requestId)}/approve`, { method: "POST", body: JSON.stringify(input) }),
+  cancelVideoRequest: (paneId: string, requestId: string) =>
+    request<VideoRequestView>(`/api/panes/${encodeURIComponent(paneId)}/video/requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST", body: "{}" }),
+  answerVideoRequest: (paneId: string, requestId: string, answer: string) =>
+    request<VideoRequestView>(`/api/panes/${encodeURIComponent(paneId)}/video/requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  videoEvents: (paneId: string, limit = 100) =>
+    request<{ events: VideoEvent[] }>(`/api/panes/${encodeURIComponent(paneId)}/video/events?limit=${limit}`, { cache: "no-store" }),
   // App Studio pane: settings, everything the pane shows in one read, briefs, answers and the run.
   appStudioState: (paneId: string) =>
     request<{ metadata: AppStudioPaneMetadata; run: { status: AppStudioRunStatus; paused: boolean; openQuestions: number; pendingBriefs: number }; previews: AppStudioPreview[]; events: AppStudioEvent[] }>(
@@ -3979,6 +4106,27 @@ export const api = {
     request<{ brief: AppStudioEvent; kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/briefs`, { method: "POST", body: JSON.stringify({ text }) }),
   answerAppStudioQuestion: (paneId: string, questionId: string, answer: string) =>
     request<{ question: AppStudioEvent }>(`/api/panes/${encodeURIComponent(paneId)}/app-studio/questions/${encodeURIComponent(questionId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  // Security Copilot pane: everything the pane shows in one read, settings, briefs, answers, reviews, findings, memory and "Check now".
+  securityCopilotState: (paneId: string) => request<SecurityCopilotState>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/state`, { cache: "no-store" }),
+  updateSecurityCopilotSettings: (paneId: string, metadata: SecurityCopilotPaneMetadata) =>
+    request<{ metadata: SecurityCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  createSecurityCopilotBrief: (paneId: string, text: string) =>
+    request<{ brief: SecurityEvent; kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/briefs`, { method: "POST", body: JSON.stringify({ text }) }),
+  answerSecurityCopilotQuestion: (paneId: string, questionId: string, answer: string) =>
+    request<{ question: SecurityEvent }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/questions/${encodeURIComponent(questionId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  decideSecurityCopilotReview: (paneId: string, reviewId: string, approve: boolean, note?: string) =>
+    request<{ review: SecurityEvent }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/reviews/${encodeURIComponent(reviewId)}/decide`, { method: "POST", body: JSON.stringify({ approve, ...(note ? { note } : {}) }) }),
+  updateSecurityCopilotFinding: (paneId: string, findingId: string, status: SecurityFindingView["status"], note: string) =>
+    request<{ finding: SecurityFindingView }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/findings/${encodeURIComponent(findingId)}`, { method: "PATCH", body: JSON.stringify({ status, note }) }),
+  securityCopilotMemory: (paneId: string) => request<{ memories: SecurityMemory[] }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/memory`, { cache: "no-store" }),
+  createSecurityCopilotMemory: (paneId: string, input: { kind: SecurityMemory["kind"]; key?: string; text: string; pinned?: boolean }) =>
+    request<{ memory: SecurityMemory }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/memory`, { method: "POST", body: JSON.stringify(input) }),
+  deleteSecurityCopilotMemory: (paneId: string, memoryId: string) =>
+    request<{ deleted: true }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/memory/${encodeURIComponent(memoryId)}`, { method: "DELETE" }),
+  securityCopilotRun: (paneId: string, action: "start" | "pause" | "stop") =>
+    request<SecurityRunView & { kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/run/${action}`, { method: "POST", body: "{}" }),
+  checkSecurityCopilotNow: (paneId: string) =>
+    request<{ owners: number; newFindings: number; kicked: number }>(`/api/panes/${encodeURIComponent(paneId)}/security-copilot/watch`, { method: "POST", body: "{}" }),
   createDesignBrandKit: (input: DesignBrandKitInput) => request<{ brandKit: DesignBrandKit }>("/api/design/brand-kits", { method: "POST", body: JSON.stringify(input) }),
   updateDesignBrandKit: (id: string, input: Partial<DesignBrandKitInput>) =>
     request<{ brandKit: DesignBrandKit }>(`/api/design/brand-kits/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }),
@@ -4353,5 +4501,11 @@ export const api = {
     request<string>(
       `/api/databases/connections/${encodeURIComponent(connectionId)}/transfers/export${body.mode ? `?mode=${body.mode}` : ""}`,
       { method: "POST", body: JSON.stringify(body) }
-    )
+    ),
+  /** A video request from a pane the operator works in (the Live pane); the Video pane of the room delivers it as Media. */
+  requestVideoFromPane: (paneId: string, input: import("@space/contracts").VideoRequestCreateInput) =>
+    request<{ request: import("@space/contracts").VideoRequest; assets: unknown[]; videoPaneId: string | null; runStarted: boolean }>("/api/video/requests", {
+      method: "POST",
+      body: JSON.stringify({ fromPaneId: paneId, ...input })
+    })
 };

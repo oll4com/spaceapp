@@ -5,7 +5,7 @@ import { claudeNativeSessionIdPattern } from "./claude-native-turns.js";
 export interface ClaudeAccountSwitchDeps {
   store: Pick<SpaceStore, "getCliAccountProfile" | "getCliTaskRevision" | "updatePaneCliSession">;
   /** A fresh read; it also records the conversation's native session id on the task revision. */
-  inspect(pane: Pane): Promise<{ state: string }>;
+  inspect(pane: Pane): Promise<{ state: string; usageLimited?: boolean }>;
   /** Space Control's exact native resume of the pane's task, on the given account profile. */
   resume(pane: Pane, input: { taskId: string; accountProfileId: string | null }, traceId: string): Promise<{ pane: Pane }>;
   ensureReady(pane: Pane, traceId: string, selection?: { accountProfileId: string | null }): Promise<unknown>;
@@ -24,7 +24,10 @@ export async function switchClaudePaneAccount(deps: ClaudeAccountSwitchDeps, pan
   if ((session.accountProfileId ?? null) === target) return false;
   const observed = await deps.inspect(pane);
   if (observed.state !== "IDLE") {
-    throw new SpaceConflictError(`Switching a Claude Code pane's account restarts its CLI, so it runs only at an idle prompt (state ${observed.state}). Use when AFTER_TURN to switch once the turn ends.`);
+    // Cleo/Dana 2026-10-21: a turn at its usage limit stayed RUNNING for hours (background agents and shells), and Esc did not end it.
+    const limited = observed.state === "RUNNING" && observed.usageLimited ? " It waits at its usage limit while Claude keeps the turn running (background agents or shells),"
+      + " so AFTER_TURN fires only when that work ends; otherwise it continues by itself after the limit resets." : "";
+    throw new SpaceConflictError(`Switching a Claude Code pane's account restarts its CLI, so it runs only at an idle prompt (state ${observed.state}). Use when AFTER_TURN to switch once the turn ends.${limited}`);
   }
   const revision = session.cliTaskRevisionId ? await deps.store.getCliTaskRevision(session.cliTaskRevisionId) : null;
   if (session.cliTaskId && revision?.nativeTaskRef && claudeNativeSessionIdPattern.test(revision.nativeTaskRef)) {

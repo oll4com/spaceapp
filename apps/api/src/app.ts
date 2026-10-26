@@ -1,5 +1,6 @@
-import { applyUnmanagedCodexModelSettings } from "./plan-execution-mutations.js";
+import { applyUnmanagedCodexModelSettings, assertUnmanagedPlanPane } from "./plan-execution-mutations.js";
 import { registerPlanExecutionRoutes } from "./plan-execution-routes.js";
+import { claudePaneManagedTurnDriver, claudePlanTarget } from "./plan-execution-claude-driver.js";
 import { registerDotsRoutes, validateSessionDotOwner } from "./dots-routes.js";
 import { dotConversationContext, dotRuntimeFor, registerDotHomeRoutes } from "./dot-home.js";
 import { createDotProactiveService, createProactiveDecider } from "./dot-proactive.js";
@@ -15,7 +16,7 @@ import { createDotMemoryService, registerDotMemoryRoutes } from "./dot-memory.js
 import { InMemoryRoomAgentMonitorRepository, PostgresRoomAgentMonitorRepository, type RoomAgentMonitorRepository } from "@space/db";
 import { InMemorySpaceNotificationsRepository, PostgresSpaceNotificationsRepository, type SpaceNotificationsRepository } from "@space/db";
 import { createNotificationService } from "./notifications/service.js";
-import { startBrowserHandoffNotifications } from "./notifications/browser-handoff.js";
+import { settleBrowserHandoffNotifications, startBrowserHandoffNotifications } from "./notifications/browser-handoff.js";
 import { createFcmSender, loadFcmServiceAccount, type FcmSender } from "./notifications/fcm.js";
 import { registerNotificationRoutes } from "./notifications/routes.js";
 import { mailCopilotEventNotifies, notifyMailCopilotEvent } from "./mail-copilot/notify.js";
@@ -66,14 +67,16 @@ import { InMemoryMailCopilotRepository, PostgresMailCopilotRepository, type Mail
 import { registerMarketingCopilot, type MarketingCopilotWiring } from "./marketing-copilot/wiring.js";
 import { registerFreelanceCopilot, type FreelanceCopilotWiring } from "./freelance-copilot/wiring.js";
 import { dotDesignRequest, registerDesign, type DesignWiring } from "./design/wiring.js";
+import { dotVideoRequest, registerVideo, type VideoWiring } from "./video/wiring.js";
 import { registerAppStudio, type AppStudioWiring } from "./app-studio/wiring.js";
+import { registerSecurityCopilot, type SecurityCopilotWiring } from "./security-copilot/wiring.js";
 import { collectStorageReadiness } from "./storage-readiness.js";
 import { resumeRoomCliFromMenu, selectRoomCliMenuRow } from "./room-cli-menu.js";
 import { createGatewayCliAccounts } from "./gateway/gateway-cli-accounts.js";
 import { createGatewayAdminService, type GatewayAdminService } from "./gateway/gateway-service.js";
 import { registerGatewayAdminRoutes } from "./gateway/gateway-routes.js";
 import { registerTraceRoutes } from "./trace-routes.js";
-import { apiLogRedaction, redactRequestUrlForLog } from "./request-logging.js";
+import { apiLoggerOptions } from "./request-logging.js";
 export { redactRequestUrlForLog } from "./request-logging.js";
 import { registerArtifactReadRoutes } from "./artifact-read-routes.js";
 import { sendApiError } from "./http-errors.js";
@@ -85,8 +88,10 @@ import { withStagedBufferUpload, withPersistedUpload } from "./multipart-upload.
 import { recordUploadedArtifact } from "./upload-record.js";
 import { cliUsageLimited, createCliDashboardActivityReader, readDashboardActivity, type DashboardActivityDetail, type DashboardStatus } from "./agents-dashboard.js";
 import { createRoomAgentSnapshotProvider } from "./room-agent-snapshot.js";
+import { startPaneCli } from "./nous/copilot-control.js";
 import { createDashboardCliProofController } from "./agents-dashboard-proof.js";
 import { PostgresSessionRevocationRepository } from "@space/db";
+import { registerAppSignIn } from "./app-signin.js";
 import { brokerScopeAllows, DOT_TOOL_GATEWAY_VERSION, dotWorkspacePath, slackAppUrl, summarizeAutoRouteShadow } from "@space/contracts";
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
 import { createCliRenderAiController } from "./cli-render-ai-proof.js";
@@ -100,7 +105,7 @@ import { PANE_CATALOG_VERSION, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady
 import { controlSkills, controlSkillsPage, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
 import { captureControlSettingsSnapshot, restoreControlSettingsSnapshot, executeControlPluginAction } from "./space-control-settings.js";
 import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
-import { createControlScreenshotCapture } from "./space-control-capture.js";
+import { createCaptureTerminalFit, createControlScreenshotCapture } from "./space-control-capture.js";
 import { registerSpaceControlRoutes } from "./space-control-routes.js";
 import { pluginsService } from "./plugins-service.js";
 import { InMemorySourceControlRepository, PostgresSourceControlRepository } from "@space/db";
@@ -110,6 +115,7 @@ import { WorktreeService } from "./worktrees/worktree-service.js";
 import { registerWorktreeRoutes } from "./worktrees/worktree-routes.js";
 import { GitControlError } from "./source-control/errors.js";
 import { registerVault, type VaultOverrides } from "./vault/wiring.js";
+import { assertVaultBrowserActionAllowed } from "./vault/protection.js";
 import { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
 import { createRoomRoutedActions } from "./room-routed-actions.js";
 import { createRoomPaneCommands } from "./room-pane-commands.js";
@@ -121,7 +127,7 @@ import { createRoomQuickActions } from "./room-quick-actions.js";
 import { SystemHealthMonitor } from "./system-health-service.js";
 import { SystemTopologyService } from "./system-topology-service.js";
 import { InMemorySystemHealthRepository, PostgresSystemHealthRepository } from "@space/db";
-import { YouTubeAccountStore, freelanceProfileKey, privatePaneProfileId, youtubeAccountProfileKey } from "./youtube-accounts.js";
+import { YouTubeAccountStore, privatePaneProfileId, youtubeAccountProfileKey } from "./youtube-accounts.js";
 import type { PaneBrowserSessionResponse } from "@space/contracts";
 import { YouTubePlaybackStore, youtubeBrowserPlayback } from "./youtube-playback-state.js";
 import type { MemoryEmbeddingBackfill } from "./memory-embedding-backfill.js";
@@ -374,7 +380,7 @@ import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { verifyGeminiPaneSession } from "./gemini-session-verification.js";
 import { loadGeminiNativeTurns } from "./gemini-native-turns.js";
 import { QuietRequestLogController } from "./request-log-policy.js";
-import { createClaudeNativeRefRecorder, loadClaudeNativeTurns, type ClaudeNativeTurns } from "./claude-native-turns.js";
+import { createClaudeNativeRefRecorder, expireClaudeNativeTurns, loadClaudeNativeTurns, type ClaudeNativeTurns } from "./claude-native-turns.js";
 import { switchClaudePaneAccount, type ClaudeAccountSwitchDeps } from "./claude-account-switch.js";
 import { CLAUDE_GATEWAY_PROFILE, claudeLimitMoveDeps, createClaudeDirectPins, createClaudeLimitMove } from "./claude-limit-move.js";
 import { createCliPaneReopener } from "./cli-pane-reopen.js";
@@ -482,7 +488,7 @@ import {
   type KernelCacheReclaimResult
 } from "./toolbar-system-services.js";
 import { createAntigravityUsageAccountProvider, discoverAntigravityProfiles } from "./antigravity-usage-services.js";
-import { claudeProfileUsageSchema, createClaudeUsageAccountProvider } from "./claude-usage-services.js";
+import { anthropicMonthSpendUsd, claudeGatewayApiKeyUsage, claudeProfileUsageSchema, createClaudeUsageAccountProvider } from "./claude-usage-services.js";
 import type { ClaudeProfileUsage } from "./claude-usage.js";
 import { createApiProviderAccountProvider } from "./api-provider-balance-services.js";
 import {
@@ -592,7 +598,6 @@ import { registerActivityLogRoutes } from "./activity-log-routes.js";
 import { registerAppDiagnosticsSettingsRoutes, registerAppDiagnosticsCaptureRoutes } from "./app-diagnostics-routes.js";
 import { cookieValueFromHeader, isLoopbackRequest, requestIpForLog, requestPathname, requestRoutePath, secureTokenMatches } from "./request-helpers.js";
 import { registerAuthRoutes } from "./auth-routes.js";
-import { registerSetupRoutes } from "./setup-routes.js";
 import { registerDesktopReleaseRoutes } from "./desktop-release-routes.js";
 import { registerHealthRoutes } from "./health-routes.js";
 import { registerSharedChatRoutes } from "./shared-chat-routes.js";
@@ -624,9 +629,11 @@ import {
 } from "./voice-transcription.js";
 import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./worker-readiness.js";
 import { createDecisionsService, type DecisionsService } from "./decisions-service.js";
+import { registerFirstSetup, type FirstSetupAppOptions } from "./setup-wiring.js";
 
-
-export interface CreateAppOptions {
+export interface CreateAppOptions extends FirstSetupAppOptions {
+  /** Where the API log goes instead of stdout (tests read it). */
+  logStream?: { write(message: string): void };
   /** The production server continues a chess tournament its restart interrupted (tests never do). */
   resumeChessTournament?: boolean;
   decisionsService?: DecisionsService;
@@ -738,14 +745,14 @@ export interface CreateAppOptions {
   /** False keeps the periodic Job Copilot mail triage off (tests drive triageMail directly). */
   jobApplyMailTriage?: boolean;
   /** Tests replace the pane CLI kickoff (the live path types the prompt into the pane host session). */
-  jobApplyKickoff?: (pane: Pane, run: JobApplyRun) => Promise<void>;
+  jobApplyKickoff?: (pane: Pane, run: JobApplyRun, discover: boolean) => Promise<void>;
   /** Tests replace the Google connector behind Mail Copilot's mailboxes, and the Gmail API. */
   mailCopilotGoogle?: MailCopilotGoogleAccess;
   mailCopilotGmailFetch?: typeof fetch;
   mailCopilotRepository?: MailCopilotRepository;
   vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
   /** Tests replace the Design pane's repository, gateway client, template renderer and CLI kickoff. */
-  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"];
+  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"]; securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"]; videoKickoff?: VideoWiring["kickoff"];
   /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
   mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
   /** false: no Gmail history polling (tests call the sync themselves). */
@@ -811,7 +818,7 @@ const publicPaths = new Set([
   "/api/auth/google/start",
   "/api/auth/google/callback",
   "/api/auth/google/credential",
-  "/api/auth/desktop-handoff",
+  "/api/auth/desktop-handoff", "/api/auth/app-handoff",
   "/api/auth/logout",
   "/api/auth/logout-all",
   "/logout",
@@ -831,7 +838,6 @@ const publicPaths = new Set([
   "/api/desktop/latest",
   "/api/desktop/update.ps1",
   "/api/desktop/update.bat",
-  "/api/desktop/update.sh",
   "/api/desktop/install.sh",
   "/api/desktop/download/:filename",
   "/api/admin/streaming/providers/:provider/oauth/authorize",
@@ -1157,7 +1163,7 @@ function requiresCsrf(request: FastifyRequest): boolean {
   return (
     routeUrl.startsWith("/api/") &&
     routeUrl !== "/api/auth/login" &&
-    routeUrl !== "/api/auth/google/credential" && routeUrl !== "/api/auth/desktop-handoff" &&
+    routeUrl !== "/api/auth/google/credential" && routeUrl !== "/api/auth/desktop-handoff" && routeUrl !== "/api/auth/app-handoff" &&
     routeUrl !== "/api/voice/realtime/history/search" &&
     routeUrl !== "/api/voice/realtime/logs" &&
     routeUrl !== "/api/voice/client-error" &&
@@ -1450,15 +1456,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const cliUpdateAllRunner = options.cliUpdateAllRunner ?? createCliUpdateAllRunner();
   const releasePublishingManager =
     options.releasePublishingManager ?? new ReleasePublishingManager({ store });
+  // Nous's Telegram two-way (2026-10-24) reads the same paired chat and bot secret; a test's own manager leaves Nous without Telegram.
+  const telegramPersistence = store instanceof PostgresSpaceStore ? store.createTelegramPersistence() : new InMemoryTelegramPersistence();
+  const telegramSecrets = new TelegramSecretStore(config.telegramSecretRoot);
   const telegramIntegrationManager =
     options.telegramIntegrationManager ??
-    new TelegramIntegrationManager({
-      persistence:
-        store instanceof PostgresSpaceStore
-          ? store.createTelegramPersistence()
-          : new InMemoryTelegramPersistence(),
-      secrets: new TelegramSecretStore(config.telegramSecretRoot)
-    });
+    new TelegramIntegrationManager({ persistence: telegramPersistence, secrets: telegramSecrets });
   let reportEventSubscriberError: (error: unknown, event: Event) => void = () => undefined;
   const eventBus = options.eventBus ?? new SpaceEventBus({
     onSubscriberError: (error, event) => reportEventSubscriberError(error, event)
@@ -1895,7 +1898,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     loginTimeoutMs: options.cliLoginTimeoutMs,
     loginObservationIntervalMs: options.cliLoginObservationIntervalMs,
     onTelemetry: (event) => { reportCliTerminalManagerTelemetry(event); installTelemetry.observeCliEvent(event); },
-    onTaskInput: (paneId) => taskTitleInputNotifier?.(paneId),
+    onTaskInput: (paneId) => { expireClaudeNativeTurns(paneId); taskTitleInputNotifier?.(paneId); },
     withOperatorMutation: async (paneId, work) => spaceControl.withOperatorMutation(await store.getPane(paneId), work),
     codexBuildDefaultsProvider: () => codexCliModeDefaultsService.build(),
     newPaneAccountProfileId: (runtimeId) => gatewayCliAccounts.newPaneProfileId(runtimeId),
@@ -2002,13 +2005,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // Dashboard and live agent counts poll every Claude pane; one launcher read per session
   // serves every room request and browser tab for a few seconds.
   const claudeLiveTurnsCache = new Map<string, { expires: number; value: Promise<ClaudeNativeTurns | null> }>();
-  const readClaudeLiveTurns = (session: PaneCliSession): Promise<ClaudeNativeTurns | null> => {
+  const readClaudeLiveTurns = (session: PaneCliSession, { fresh = false }: { fresh?: boolean } = {}): Promise<ClaudeNativeTurns | null> => {
     const now = Date.now();
     const cached = claudeLiveTurnsCache.get(session.sessionId);
-    if (cached && cached.expires > now) return cached.value;
+    if (!fresh && cached && cached.expires > now) return cached.value;
     for (const [key, entry] of claudeLiveTurnsCache) if (entry.expires <= now) claudeLiveTurnsCache.delete(key);
     const value = cliTerminalManager.activeSessionPids([session]).catch(() => null)
-      .then(pids => loadClaudeNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: pids?.get(session.sessionId) ?? null }))
+      .then(pids => loadClaudeNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: pids?.get(session.sessionId) ?? null }, { fresh }))
       .then(async native => {
         if (native) await recordClaudeNativeRef(session, native).catch(() => undefined);
         return native;
@@ -2233,18 +2236,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       },
       hiddenEmails: async () => emailsOutOfRotation(await gatewayRepositoryFor().listAccounts(), "ANTIGRAVITY", Date.now())
     });
-  const claudeUsageProvider =
-    options.claudeUsageProvider ??
-    createClaudeUsageAccountProvider({
-      listProfiles: async () => store.listCliAccountProfiles("cli:claude"),
-      readUsage: readClaudeAccountProfileUsage,
-      gatewayAccounts: () => gatewayRepositoryFor().listAccounts(),
-      gatewaySettings: () => gatewayRepositoryFor().getSettings(),
-      gatewayAccountUsage: (accountId) => gatewayRepositoryFor().usageTotals({ accountId })
-    });
+  const claudeUsageProvider = options.claudeUsageProvider ?? createClaudeUsageAccountProvider({
+    listProfiles: async () => store.listCliAccountProfiles("cli:claude"),
+    readUsage: readClaudeAccountProfileUsage,
+    gatewayAccounts: () => gatewayRepositoryFor().listAccounts(),
+    gatewaySettings: () => gatewayRepositoryFor().getSettings(),
+    gatewayAccountUsage: (accountId) => claudeGatewayApiKeyUsage(gatewayRepositoryFor(), accountId, Date.now()),
+    anthropicMonthUsd: async () => anthropicMonthSpendUsd(await resolveGatewayAdminService().anthropicBilling(new Date().getUTCDate()), Date.now())
+  });
   const apiProviderAccountsProvider =
     options.apiProviderAccountsProvider ??
-    createApiProviderAccountProvider();
+    createApiProviderAccountProvider({ anthropic: { billing: () => resolveGatewayAdminService().anthropicBilling(31), settings: () => gatewayRepositoryFor().getSettings(),
+      usage: () => gatewayRepositoryFor().listAnthropicUsage("2000-01-01", new Date().toISOString().slice(0, 10)) } });
   // One Space Gateway repository for the admin routes and, once Codex reads from the gateway, the quota views.
   // It is created before the Fastify app exists, so its pool is closed by the onClose hook added after the app is built.
   let sharedGatewayRepository: GatewayRepository | null = null;
@@ -3523,6 +3526,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     roomCliObservationCache.delete(pane.id);
     const session = await roomCliSession(pane, action.expectedSessionId);
     const startMs = Date.now();
+    // One key per command: Nous's trace is per turn, so a second answer or key to the same pane in a turn was dropped (review 2026-10-24).
+    const inputKey = `${traceId}:${randomUUID()}`;
     const COMMAND_WATCHDOG_TIMEOUT_MS = 8000;
 
     let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
@@ -3544,36 +3549,36 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           throw new SpaceConflictError("The pane is not waiting for an answer; inspect it again.");
         // Text with Enter is a prompt; a single key ("1", "y") or text without Enter goes as keys, for menus.
         if (action.submit !== false && action.answer.length > 1) {
-          await submitCliPrompt(cliTerminalManager, session.sessionId, action.answer, traceId, `${traceId}:answer`,
+          await submitCliPrompt(cliTerminalManager, session.sessionId, action.answer, traceId, `${inputKey}:answer`,
             { assertCurrent: () => roomCliSession(pane, action.expectedSessionId) });
         } else {
-          if (action.answer) await cliTerminalManager.sendInput(session.sessionId, action.answer, traceId, null, `${traceId}:answer`);
+          if (action.answer) await cliTerminalManager.sendInput(session.sessionId, action.answer, traceId, null, `${inputKey}:answer`);
           if (action.submit !== false) {
             await new Promise((resolve) => setTimeout(resolve, 200));
             await roomCliSession(pane, action.expectedSessionId);
-            await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:submit-answer`);
+            await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${inputKey}:submit-answer`);
           }
         }
       }
       if (action.command) {
-        await cliTerminalManager.sendInput(session.sessionId, action.command, traceId, null, `${traceId}:command`);
+        await cliTerminalManager.sendInput(session.sessionId, action.command, traceId, null, `${inputKey}:command`);
         // Let native paste/burst detection finish before Enter. Otherwise
         // Codex retains even a short slash command as an unsubmitted line.
         await new Promise((resolve) => setTimeout(resolve, 200));
         await roomCliSession(pane, action.expectedSessionId);
-        await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:submit-command`);
+        await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${inputKey}:submit-command`);
         // Antigravity / Gemini CLI displays an interactive autocomplete menu for slash
         // commands. The first Enter selects the menu item into the input line; a second
         // Enter is required to submit the command.
         if (action.command.startsWith("/") && session.runtimeId === "cli:gemini") {
           await new Promise((resolve) => setTimeout(resolve, 150));
           await roomCliSession(pane, action.expectedSessionId);
-          await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:submit-command-confirm`);
+          await cliTerminalManager.sendInput(session.sessionId, "\r", traceId, null, `${inputKey}:submit-command-confirm`);
         }
       }
       if (action.key) {
         const keys = { UP: "\u001b[A", DOWN: "\u001b[B", LEFT: "\u001b[D", RIGHT: "\u001b[C", ENTER: "\r", ESCAPE: "\u001b", TAB: "\t", SHIFT_TAB: "\u001b[Z" };
-        await cliTerminalManager.sendInput(session.sessionId, keys[action.key], traceId, null, `${traceId}:key`);
+        await cliTerminalManager.sendInput(session.sessionId, keys[action.key], traceId, null, `${inputKey}:key`);
       }
       let screen = before;
       const typed = Boolean(action.command || action.key || action.answer !== undefined);
@@ -3586,7 +3591,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (typed && screen.revision === before.revision) throw new SpaceConflictError("CLI command produced no observable response.");
       if (/unknown command|unrecognized command|invalid slash command/i.test(screen.text)) throw new SpaceConflictError("The CLI rejected the command.");
       if (action.selection) screen = await selectRoomCliMenuRow({ screen, selection: action.selection, command: action.command,
-        send: (data, step) => cliTerminalManager.sendInput(session.sessionId, data, traceId, null, `${traceId}:${step}`),
+        send: (data, step) => cliTerminalManager.sendInput(session.sessionId, data, traceId, null, `${inputKey}:${step}`),
         observe: async () => { await roomCliSession(pane, action.expectedSessionId); return cliTerminalManager.observeRoomScreen(session.sessionId); } });
       return { sessionId: session.sessionId, command: action.command, selection: action.selection ?? null,
         key: action.key ?? null, answered: action.answer !== undefined, state: roomTerminalState(screen.text), text: redactMemoryText(screen.text), checkedAt: nowIso() };
@@ -3597,8 +3602,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     } catch (error) {
       if (error instanceof Error && error.message === "COMMAND_WATCHDOG_TIMEOUT") {
         const interruptKey = roomTerminalInterruptKey(session.runtimeId);
-        await cliTerminalManager.sendInput(session.sessionId, interruptKey, traceId, null, `${traceId}:watchdog:interrupt`).catch(() => {});
-        await cliTerminalManager.sendInput(session.sessionId, "\u001b", traceId, null, `${traceId}:watchdog:esc`).catch(() => {});
+        await cliTerminalManager.sendInput(session.sessionId, interruptKey, traceId, null, `${inputKey}:watchdog:interrupt`).catch(() => {});
+        await cliTerminalManager.sendInput(session.sessionId, "\u001b", traceId, null, `${inputKey}:watchdog:esc`).catch(() => {});
         const cmdName = action.command ? `command "${action.command}"` : (action.key ? `key "${action.key}"` : "operation");
         const alertMessage = `Room Watchdog: Auto-killed hanging ${cmdName} in pane "${pane.title}" (${session.runtimeId}) after 8s to prevent room freeze.`;
         const watchdogEvent = eventSchema.parse({
@@ -3632,10 +3637,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (watchdogTimer) clearTimeout(watchdogTimer);
     }
   }
-  const assertNoManagedModelMutation = async (paneId: string) => {
-    if ((await store.planExecutions.listActive()).some(execution => execution.paneId === paneId))
-      throw new SpaceConflictError("This pane has a managed plan execution. Change the exact stage through its override endpoint.");
-  };
+  const assertNoManagedModelMutation = (paneId: string) => assertUnmanagedPlanPane(store, paneId);
   const claudeAccountSwitchDeps: ClaudeAccountSwitchDeps = { store, inspect: (target) => inspectRoomCli(target, { fresh: true }), now: nowIso, interrupt: (id) => cliTerminalManager.interrupt(id),
     resume: (target, input, trace) => resumePaneCliTask(target, input, trace, undefined, true), ensureReady: (target, trace, selection) => cliTerminalManager.ensurePaneControlReady(target, trace, selection) };
   const roomPaneController = createRoomPaneController({
@@ -4154,8 +4156,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return result;
   };
   const roomAgentSnapshots = createRoomAgentSnapshotProvider({ listPanes: async roomId => store.listPanes(roomId), readActivity: readDashboardAgents });
+  // A rail-tab CLI pane's headless start and whether its session record has a live host process (Space Control and Nous).
+  const railCli = { start: (pane: Pane) => roomPaneController.start(pane, makeSpaceId("trace")), hostRunning: async (session: PaneCliSession) => (await cliTerminalManager.activeSessionPids([session]).catch(() => new Map())).has(session.sessionId) };
   const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,pluginsService,queueDisconnected:true,
-    captureScreenshot: process.env.VITEST === "true" ? undefined : createControlScreenshotCapture({ instance: config.instance, cookieName, sessionSecret: auth.sessionSecret, artifactRoot: config.browserEvidenceArtifactRoot, resolveUser: controlUser, createArtifact: async (input) => store.createArtifact(input) }),
+    startRailCli: (actor, pane) => startPaneCli({ invoke: controlInvoke, store, ...railCli }, actor.id, pane),
+    captureScreenshot: process.env.VITEST === "true" ? undefined : createControlScreenshotCapture({ instance: config.instance, cookieName, sessionSecret: auth.sessionSecret, artifactRoot: config.browserEvidenceArtifactRoot, resolveUser: controlUser, createArtifact: async (input) => store.createArtifact(input),
+      fitTerminals: createCaptureTerminalFit({ getRoom: async (id) => store.getRoom(id), getPane: async (id) => store.getPane(id),
+        fitPaneTerminal: (paneId, cols, rows) => cliTerminalManager.fitPaneTerminal(paneId, cols, rows), recordAuditEvent: async (input) => store.recordAuditEvent(input) }) }),
     publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
     publishEvent: (event) => eventBus.publish(event),
     resolveActor: controlUser,
@@ -5098,22 +5105,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     },
     // Loopback plus the reverse proxies named in SPACE_TRUSTED_PROXIES; forwarded IPs from every other remote remain untrusted.
     trustProxy: ["127.0.0.1", "::1", "::ffff:127.0.0.1", ...config.trustedProxies],
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      redact: apiLogRedaction,
-      serializers: {
-        req(request: FastifyRequest & { socket?: { remoteAddress?: string; remotePort?: number } }) {
-          const socket = request.raw?.socket ?? request.socket;
-          return {
-            method: request.method,
-            url: redactRequestUrlForLog(request.url),
-            host: request.headers.host,
-            remoteAddress: requestIpForLog(request) ?? socket?.remoteAddress,
-            remotePort: socket?.remotePort
-          };
-        }
-      }
-    }
+    logger: apiLoggerOptions(options.logStream)
   });
   // SEC-011: logouts and "log out everywhere" survive API restarts. Until the persisted revocations load,
   // every session is refused (fail closed, review 2026-10-16); loading is retried until it succeeds.
@@ -5260,7 +5252,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   await app.register(multipart, {
     throwFileSizeLimit: false,
     limits: {
-      fileSize: Math.max(imageArtifactMaxBytes, paneCliUploadMaxBytes, paneArtifactUploadMaxBytes, voiceTranscriptionMaxBytes) + 1,
+      fileSize: Math.max(imageArtifactMaxBytes, paneCliUploadMaxBytes, paneArtifactUploadMaxBytes, voiceTranscriptionMaxBytes, config.videoSourceMaxBytes) + 1,
       files: turnArtifactMaxCount + 1,
       fields: 4,
       parts: turnArtifactMaxCount + 5
@@ -5740,9 +5732,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  registerSetupRoutes(app, {
-    auth, store, setupConnections, setupConnectionCheckRuns, routeOptions: defaultRouteRateLimitOptions, optionalModules: [...config.optionalModules], onOwnerClaimed: () => installTelemetry.setupCompleted.observe()
-  });
+  const { setupOwnerVoiceRuntime, setupVoiceCredentials } = await registerFirstSetup(app, { options, config, store, auth, publicCredentialHost,
+    setupConnections, setupConnectionCheckRuns, routeOptions: defaultRouteRateLimitOptions, streamingService, sourceControlService,
+    browserSessionManager, visibleCliRuntimeIds, agentSessionHistoryService, readSystemHealth: () => healthMonitor.snapshot(),
+    quotaProviders: { codex: toolbarUsageProvider, antigravity: antigravityUsageProvider, api: apiProviderAccountsProvider },
+    onOwnerClaimed: () => installTelemetry.setupCompleted.observe() });
 
   if (config.optionalModules.has("waitlist")) app.post(
     "/api/public/waitlist",
@@ -5945,7 +5939,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const connectorServiceRef: { current: ReturnType<typeof createConnectorService> | null } = { current: null };
   registerAuthRoutes(app, {
     config, auth, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
-    googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation
+    googleAccountBrowserStatuses, dotsAuthenticatedOwner, connectorStateTools, connectorServiceRef, persistRevocation, appSignIn: registerAppSignIn(app, { store, sessionSecret: auth.sessionSecret, routeOptions: defaultRouteRateLimitOptions, persistRevocation, revocations: defaultSessionRevocationStore, databaseUrl: store instanceof PostgresSpaceStore ? config.databaseUrl : null })
   });
 
   registerAdminUserRoutes(app, {
@@ -5982,7 +5976,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   registerTaskItemRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, recordAudit: (request, input) => recordAudit(store, request, input),
     schedules: config.instanceJobs["task-schedules"] ? { inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }),
-      answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, makeSpaceId("trace")) } : null });
+      answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, makeSpaceId("trace")), reopen: async (pane, owner) => spaceControl.execute(await controlUser(owner), controlExecuteSchema.parse({ roomId: pane.roomId, requestId: makeSpaceId("task_reopen"), actions: [{ kind: "pane", operation: pane.mode === "TERMINAL" ? "reopen" : "start", target: { paneIds: [pane.id], state: "ALL" }, when: "NOW" }] })) } : null });
 
   registerLinkInspectRoutes(app, { routeOptions: defaultRouteRateLimitOptions });
 
@@ -6288,9 +6282,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   roomCoordination.registerRoutes(app, defaultRouteRateLimitOptions);
-  registerInstanceReleaseRoutes(app, {
-    store, releases: options.releasesOptions, managedHere: config.instance === "stable", routeOptions: defaultRouteRateLimitOptions, sessionSecret: auth.sessionSecret
-  });
+  registerInstanceReleaseRoutes(app, { store, releases: options.releasesOptions, managedHere: config.instance === "stable", routeOptions: defaultRouteRateLimitOptions,
+    sessionSecret: auth.sessionSecret, grantStateFile: process.env.VITEST === "true" ? null : join(dirname(config.cliAccountBalancerStateFile), "queue-operator-grants.json") });
 
   app.post("/api/agent-tools/launch", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") {
@@ -6511,10 +6504,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertCliPaneCompatible(pane);
     await assertPaneCliRuntimeEnabled(pane);
     const session = await store.getActivePaneCliSession(pane.id);
-    if (!session || !session.isActive || session.status !== "RUNNING" ||
-        (expectedSessionId && session.sessionId !== expectedSessionId) || !isCodexDirectParityRuntime(session.runtimeId))
-      throw new SpaceConflictError("Managed execution requires the same running Codex session.");
+    if (!session || !session.isActive || session.status !== "RUNNING" || (expectedSessionId && session.sessionId !== expectedSessionId) ||
+        !(isCodexDirectParityRuntime(session.runtimeId) || isClaudeDirectParityRuntime(session.runtimeId)))
+      throw new SpaceConflictError("Managed execution requires the same running Codex or Claude Code session.");
     assertNormalCliSession(session);
+    if (isClaudeDirectParityRuntime(session.runtimeId)) return claudePlanTarget(session, (options) => readClaudeLiveTurns(session, options));
     let threadId = await resolvePaneCodexThreadId({store,session,traceId:"managed-plan",findThreadId:options.findCodexThreadId});
     if (!threadId && session.cwd) {
       // Fresh TUI threads have a writer lock before their first persisted turn.
@@ -6550,6 +6544,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         throw new SpaceConflictError("Managed execution identity changed.");
       const session = await store.getPaneCliSession(execution.sessionId);
       if (!session || session.paneId !== execution.paneId) throw new SpaceConflictError("Managed session was not found.");
+      if (isClaudeDirectParityRuntime(session.runtimeId)) return claudePaneManagedTurnDriver({ store, terminal: cliTerminalManager, pane: await getPaneById(store, session.paneId),
+        session, executionId: execution.id, cwd: target.cwd, readTurns: readClaudeLiveTurns, inspect: inspectRoomCli, settings: readPaneNativeModelSettings, applyModel: applyNativePaneModel, log: (fields, message) => app.log.warn(fields, message) });
       return codexSocketControlFactory(codexPrivateAppServerSocketPath(session));
     },
     publish: async event => {
@@ -6646,12 +6642,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     store,
     routeOptions: defaultRouteRateLimitOptions,
     // The run's kickoff goes through the pane CLI input path Room Agent uses (typed line + Enter).
-    kickoff: options.jobApplyKickoff ?? (async (pane, run) => {
+    kickoff: options.jobApplyKickoff ?? (async (pane, run, discover) => {
       const session = await store.getActivePaneCliSession(pane.id);
       if (!session || session.purpose !== "NORMAL" || !session.isActive || session.status === "EXITED" || session.status === "ERROR") {
         throw new SpaceConflictError("Open the copilot's terminal first: the pane has no running CLI session to receive the run.");
       }
-      const prompt = `Job Copilot run ${run.id} started in this pane. Read the space-job-applications skill (SKILL.md), then loop: call space_jobapply space_job_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); for each application follow the skill's steps (space_job_memory_recall before asking, space_job_fields_record on every step, evidence before VERIFIED) and close it with space_job_report.`;
+      const prompt = `Job Copilot run ${run.id} started in this pane. Read the space-job-applications skill (SKILL.md), then ${discover ? "first find new postings, because nothing queued can be taken now (the queue is empty or every posting waits for an employer limit): follow references/discovery.md (space_job_discover_search with the operator's PREFERENCE filters, score each against the CV) and queue each one scoring 3 or more with space_job_application_start status QUEUED; then " : ""}loop: call space_jobapply space_job_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); for each application follow the skill's steps (space_job_memory_recall before asking, space_job_fields_record on every step, evidence before VERIFIED) and close it with space_job_report.`;
       const traceId = `job-apply:${run.id}`;
       await cliTerminalManager.runSerializedTerminalMutation(session.sessionId, async () => {
         await submitCliPrompt(cliTerminalManager, session.sessionId, prompt, traceId, `${traceId}:kickoff`);
@@ -6739,12 +6735,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "mail_copilot", targetId, metadata })
   });
   const paneBrowserAccounts: { current: PaneBrowserAccountControl | null } = { current: null };
-  const marketingCopilotService = !config.optionalModules.has("marketing-copilot") ? undefined : registerMarketingCopilot(app, { store, eventBus, paneBrowserAccounts, artifactRoot: config.browserEvidenceArtifactRoot, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.marketingCopilotRepository, kickoff: options.marketingCopilotKickoff, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["marketing-copilot-scheduler"] && options.marketingCopilotScheduler !== false, metrics: config.instanceJobs["marketing-copilot-metrics"] && options.marketingCopilotMetrics !== false,
-    assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "marketing_copilot", targetId, metadata }),
-    authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use Marketing Copilot.", 401); return (await store.upsertUser(request.user)).id; } });
-  const freelanceCopilotService = !config.optionalModules.has("freelance-copilot") ? undefined : registerFreelanceCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.freelanceCopilotRepository, kickoff: options.freelanceCopilotKickoff, crypto: connectorCrypto, mailboxes: options.freelanceCopilotMailboxes ?? createImapMailboxFactory(), routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["freelance-copilot-scheduler"] && options.freelanceCopilotScheduler !== false,
-    assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
-    authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use Freelance Copilot.", 401); return (await store.upsertUser(request.user)).id; } });
+  // The copilot-style panes (Marketing, Freelance, Design, App Studio, Video, Security Copilot) share one route auth: the room's access, the audit row's target type, the signed-in owner.
+  const paneModuleAuth = (targetType: string, product: string) => ({ assertPaneAccess: async (request: FastifyRequest, pane: Pane) => { await assertRoomAccess(pane.roomId, request.user); },
+    audit: (request: FastifyRequest, action: string, targetId: string | null, metadata?: Record<string, unknown>) => recordAudit(store, request, { action, targetType, targetId, metadata }),
+    authenticatedOwner: async (request: FastifyRequest) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", `Sign in to use ${product}.`, 401); return (await store.upsertUser(request.user)).id; } });
+  const marketingCopilotService = !config.optionalModules.has("marketing-copilot") ? undefined : registerMarketingCopilot(app, { store, eventBus, paneBrowserAccounts, artifactRoot: config.browserEvidenceArtifactRoot, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.marketingCopilotRepository, kickoff: options.marketingCopilotKickoff, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["marketing-copilot-scheduler"] && options.marketingCopilotScheduler !== false, metrics: config.instanceJobs["marketing-copilot-metrics"] && options.marketingCopilotMetrics !== false, ...paneModuleAuth("marketing_copilot", "Marketing Copilot") });
+  const freelanceCopilotService = !config.optionalModules.has("freelance-copilot") ? undefined : registerFreelanceCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.freelanceCopilotRepository, kickoff: options.freelanceCopilotKickoff, crypto: connectorCrypto, mailboxes: options.freelanceCopilotMailboxes ?? createImapMailboxFactory(), routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["freelance-copilot-scheduler"] && options.freelanceCopilotScheduler !== false, ...paneModuleAuth("freelance_copilot", "Freelance Copilot") });
 
   const designService = !config.optionalModules.has("design") ? undefined : registerDesign(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.designRepository,
     generate: options.designGenerate, render: options.designRender, kickoff: options.designKickoff, notifications: notificationService, roomOwner, artifactRoot: config.browserEvidenceArtifactRoot,
@@ -6752,19 +6748,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log,
     marketingPostExists: marketingCopilotService ? async (owner, postId) => Boolean(await marketingCopilotService.getPost(owner, postId).catch(() => null)) : undefined,
     attachToMarketingPost: marketingCopilotService ? async (owner, postId, assets) => { await marketingCopilotService.attachAssets(owner, postId, assets); } : undefined,
-    invoke: controlInvoke, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: (pane) => roomPaneController.start(pane, makeSpaceId("trace")),
-    assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "design", targetId, metadata }),
-    authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use the Design pane.", 401); return (await store.upsertUser(request.user)).id; } });
-  const appStudioService = !config.optionalModules.has("app-studio") ? undefined : registerAppStudio(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.appStudioRepository,
-    kickoff: options.appStudioKickoff, notifications: notificationService, artifactRoot: config.browserEvidenceArtifactRoot, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log,
-    inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); },
-    audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "app_studio", targetId, metadata }),
-    authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use App Studio.", 401); return (await store.upsertUser(request.user)).id; } });
+    invoke: controlInvoke, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: (pane) => roomPaneController.start(pane, makeSpaceId("trace")), ...paneModuleAuth("design", "the Design pane") });
+  const appStudioService = !config.optionalModules.has("app-studio") ? undefined : registerAppStudio(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.appStudioRepository, kickoff: options.appStudioKickoff, notifications: notificationService, artifactRoot: config.browserEvidenceArtifactRoot, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("app_studio", "App Studio") });
+  const securityCopilotService = !config.optionalModules.has("security-copilot") ? undefined : registerSecurityCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.securityCopilotRepository, feeds: options.securityCopilotFeeds, kickoff: options.securityCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["security-copilot-watch"] && options.securityCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("security_copilot", "the Security Copilot") });
 
-  const vault = registerVault(app, { config, auth, store, browser: browserSessionManager, routeOptions: defaultRouteRateLimitOptions, overrides: options.vault });
+  const videoService = !config.optionalModules.has("video") ? undefined : registerVideo(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.videoRepository,
+    engine: options.videoEngine, kickoff: options.videoKickoff, notifications: notificationService, roomOwner, artifactRoot: config.browserEvidenceArtifactRoot, workRoot: config.videoWorkRoot, toolsDir: config.videoToolsDir,
+    sourceMaxBytes: config.videoSourceMaxBytes, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, invoke: controlInvoke, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: (pane) => roomPaneController.start(pane, makeSpaceId("trace")), marketingPostExists: marketingCopilotService ? async (owner, postId) => Boolean(await marketingCopilotService.getPost(owner, postId).catch(() => null)) : undefined,
+    attachToMarketingPost: marketingCopilotService ? async (owner, postId, assets) => { await marketingCopilotService.attachAssets(owner, postId, assets); } : undefined, ...paneModuleAuth("video", "the Video pane") });
+  const vault = registerVault(app, { config, auth, store, browser: browserSessionManager, routeOptions: defaultRouteRateLimitOptions, overrides: options.vault, paneAccount: effectivePaneProfileId, crypto: connectorCrypto,
+    // The CDP proxy is made below; it is asked only per fill, long after start.
+    documentDirty: (paneId, targetId, document) => cliBrowserCdpProxy.documentDirty(paneId, targetId, document) });
   registerCliBrowserBridgeRoutes(app, {
     options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity, vault, nous: nousRef,
-    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, appStudioService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
+    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, videoService, appStudioService, securityCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
   });
 
   async function withYouTubeAccountLock<T>(paneId: string, operation: () => Promise<T>): Promise<T> {
@@ -6793,24 +6790,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const key = profileId.split(":")[3];
     return key && /^[a-f0-9]{64}$/.test(key) ? key : null;
   }
-  // What a pane opens: its explicit choice (Freelance: the account's Freelance profile, in its own Chrome with its routes),
-  // else the user's primary Google account (one shared profile for every pane), else the pane's own profile. `choice`: one tab's account.
+  // What a pane opens: its explicit choice, else the user's primary Google account (one shared profile for every pane, Freelance
+  // included since 2026-10-21: the Browser Host starts the account's Chrome with its routes), else the pane's own profile. `choice`: one tab's account.
   async function resolvePaneBrowserAccount(userId: string, pane: Pane, choice?: string | null): Promise<PaneBrowserAccount> {
     const selectedProfileId = choice !== undefined ? choice : await paneGoogleAccountSelection(userId, pane);
     if (selectedProfileId === privatePaneProfileId) return { selectedProfileId, profileKey: null };
     const account = await selectedGoogleBrowserAccount(userId, pane, selectedProfileId);
-    if (account) return pane.mode === "FREELANCE_COPILOT" ? { selectedProfileId, profileKey: createHash("sha256").update(JSON.stringify([userId, account.id])).digest("hex"), sharedProfileKey: freelanceProfileKey(userId, account.id) } : { selectedProfileId, account, profileKey: null };
+    if (account) return { selectedProfileId, account, profileKey: null };
     if (selectedProfileId !== null) {
       if (!await store.getCliAccountProfile("cli:gemini", selectedProfileId)) {
         throw new SpaceConflictError("The selected Google account is no longer available. Choose another account.");
       }
       const key = youtubeAccountProfileKey(await youtubeAccountOwner(userId, pane), selectedProfileId)!;
-      // A CLI (Gemini) account is one Chrome profile for all of the user's panes (Freelance: one of its own); proof rooms stay per pane.
+      // A CLI (Gemini) account is one Chrome profile for all of the user's panes; proof rooms stay per pane.
       // The per-pane key stays alongside so an older Browser Host keeps the pane's own legacy profile.
       if ((await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") return { selectedProfileId, profileKey: key };
-      return { selectedProfileId, profileKey: key, sharedProfileKey: pane.mode === "FREELANCE_COPILOT" ? freelanceProfileKey(userId, selectedProfileId) : key };
+      return { selectedProfileId, profileKey: key, sharedProfileKey: key };
     }
-    if (pane.mode !== "FREELANCE_COPILOT" && (await store.getRoom(pane.roomId)).kind !== "AGENT_PROOF") { // Freelance: its own profile and routes
+    if ((await store.getRoom(pane.roomId)).kind !== "AGENT_PROOF") {
       const primary = (await store.listGoogleAccounts(userId)).find(candidate => candidate.isPrimary);
       if (primary) return { selectedProfileId: null, account: primary, profileKey: null };
     }
@@ -6820,7 +6817,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // user's Google accounts, that sign-in moves once into the account's shared profile
   // so every Browser and YouTube pane reuses it.
   async function adoptPaneSignIn(userId: string, pane: Pane, resolved: PaneBrowserAccount, actor: BrowserHostActorContext): Promise<PaneBrowserAccount> {
-    if (pane.mode === "FREELANCE_COPILOT" || resolved.selectedProfileId === privatePaneProfileId || resolved.sharedProfileKey || (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") return resolved;
+    if (resolved.selectedProfileId === privatePaneProfileId || resolved.sharedProfileKey || (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") return resolved;
     const byDefault = Boolean(resolved.account) && resolved.selectedProfileId === null;
     const active = await store.getActivePaneBrowserSession(pane.id);
     if (active) {
@@ -6942,7 +6939,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       proofRoom ? new Map<string, string | null>() : geminiAccountEmails(gemini.map(profile => profile.profileId)),
       proofRoom ? [] : Promise.all(gemini.map(profile => geminiAccountBrowserStatus(userId, profile.profileId)))
     ]);
-    const choices = [...accounts.map(account => ({
+    return [...accounts.map(account => ({
       profileId: account.id,
       displayName: `Google account · ${account.displayName || account.email}`,
       label: account.displayName || account.email,
@@ -6954,8 +6951,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       label: displayName,
       ...(proofRoom ? {} : { email: emails.get(profileId) ?? null, browserStatus: geminiStatuses[index]! })
     }))];
-    if (pane.mode !== "FREELANCE_COPILOT" || proofRoom) return choices; // Freelance: the sign-in of the account's Freelance profile.
-    return Promise.all(choices.map(async choice => ({ ...choice, browserStatus: await cliAccountBrowserStatus(sharedCliProfilePathFor(config.browserSessionsProfileRoot, freelanceProfileKey(userId, choice.profileId))) })));
   }
 
   // CLI agents attach element-level automation to a pane browser through this proxy; operator control drops it.
@@ -6964,6 +6959,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     config,
     isBrowserPane,
     assertRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId),
+    vaultProtection: vault.protection,
     log: app.log,
     onConnected: (request, resolution) => {
       browserControlActivity.noteAgent(resolution.pane.id, resolution.claims.paneId);
@@ -6977,17 +6973,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   cliBrowserCdpProxy.register(app, defaultRouteRateLimitOptions); vault.protection.onProtected((paneId) => cliBrowserCdpProxy.closeForPane(paneId, "VAULT_PROTECTED", "This browser is protected for the Vault."));
 
-  registerBrowserCensusRoutes(app, { store, browserSessionManager, controlActivity: browserControlActivity, geminiEmails: geminiAccountEmails, routeOptions: defaultRouteRateLimitOptions });
+  registerBrowserCensusRoutes(app, { store, browserSessionManager, controlActivity: browserControlActivity, cdpConnectionCount: (paneId) => cliBrowserCdpProxy.connectionCount(paneId), geminiEmails: geminiAccountEmails, routeOptions: defaultRouteRateLimitOptions });
   paneBrowserAccounts.current = registerPaneBrowserRoutes(app, {
     config, readGeminiAccountProfileDetails, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions, cliBrowserCdpProxy,
     controlActivity: browserControlActivity, youtubePlaybackStore, youtubeAccountStore, browserAccountStore, youtubeSessionStarts, youtubeAccountOperations,
     withYouTubeAccountLock, youtubeAccountOwner, selectedGoogleBrowserAccount, paneGoogleAccountSelection,
-    resolvePaneBrowserAccount, adoptPaneSignIn, effectivePaneProfileId, browserAccountChoices, previousCopilotPane,
-    onJobCopilotAccountSelected: async (userId, email) => { await jobApplyService.setGoogleAccount(userId, email); }
+    resolvePaneBrowserAccount, adoptPaneSignIn, effectivePaneProfileId, browserAccountChoices, previousCopilotPane, videoEngine: options.videoEngine,
+    onJobCopilotAccountSelected: async (userId, email) => { await jobApplyService.setGoogleAccount(userId, email); },
+    onControlReleased: (paneId) => void settleBrowserHandoffNotifications({ store, notifications: notificationService }, paneId)
+      .catch((error: unknown) => app.log.warn({ err: error, paneId }, "Browser handoff notifications could not be settled after a release."))
   });
 
   registerInternalAgentActionRoutes(app, {
-    config, store, browserSessionManager, cliRuntimeVisibility, roomActionExecutor,
+    config, store, browserSessionManager, cliRuntimeVisibility, roomActionExecutor, vaultProtection: vault.protection,
     routeOptions: defaultRouteRateLimitOptions
   });
 
@@ -7559,6 +7557,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const browserPane = await getPaneById(store, input.targetPaneId);
       assertBrowserPaneCompatible(browserPane);
       if (browserPane.roomId !== input.roomId) throw new SpaceNotFoundError(`Browser pane ${browserPane.id} was not found in room ${input.roomId}.`);
+      await assertVaultBrowserActionAllowed(vault.protection, browserPane.id, input.action.type);
       const actionResult = await browserSessionManager.action(browserPane, input.action, request.requestIdForSpace,
         { holderType: "AGENT", holderId: input.agentSessionId });
       await recordAudit(store, request, { action: "pane.browser.agent_action.executed", targetType: "pane", targetId: browserPane.id,
@@ -7570,7 +7569,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     },
     goalTool: dotGoalService ? (sessionId, toolId, args) => dotGoalService.tool(sessionId, toolId, args) : undefined,
     computerBrowser: dotComputerService ? (session, owner, args) => dotComputerService.browser(session, owner, args) : undefined,
-    delegate: dotDelegationService ? (session, owner, args) => dotDelegationService.delegate(session, owner, args) : undefined, designRequest: designService && dotDesignRequest(designService),
+    delegate: dotDelegationService ? (session, owner, args) => dotDelegationService.delegate(session, owner, args) : undefined, designRequest: designService && dotDesignRequest(designService), videoRequest: videoService && dotVideoRequest(videoService),
     memoryTool: dotMemoryService ? (session, owner, toolId, args) => dotMemoryService.tool(session, owner, toolId, args) : undefined,
     memoryScope: dotMemoryService ? (owner, dotId, memoryId) => dotMemoryService.scope(owner, dotId, memoryId) : undefined,
     publishDeliverable: dotDeliverablesService ? (owner, dotId, input) => dotDeliverablesService.publish(owner, dotId,
@@ -7638,16 +7637,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   registerVoiceRoutes(app, {
+    setupOwnerVoiceRuntime, setupVoiceCredentials,
     config, decisionsService, store, routeOptions: defaultRouteRateLimitOptions,
     websocketRouteOptions: defaultWebsocketRateLimitOptions, assertRoomAccess
   });
 
   const { livePersonalMemory, liveHistory } = registerLiveRoutes(app, { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, readDashboardAgents });
   const councilService = registerCouncil(app, { config, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, claudeUsageProvider, jobApplyRepository, jobApplyService, livePersonalMemory, canonicalMemory, notifications: notificationService });
-  nousRef.current = registerNous(app, { config, vault, autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents,
+  nousRef.current = registerNous(app, { config, vault, browser: browserSessionManager, ...(options.telegramIntegrationManager ? {} : { telegram: { persistence: telegramPersistence, secrets: telegramSecrets } }), autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents, railCli,
     roomTools: roomAgentTools, inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }), releaseTrain: roomCoordination.releaseTrain, notifications: notificationService, runner: options.nousRunner, vaultBrokerReinstall: options.vaultBrokerReinstall, monitorEvents: roomAgentMonitorRepository,
-    answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId), activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), ops: { health: healthMonitor, services: systemServicesProvider, tokenUsage: (range) => systemAnalyticsService.models(range, "all"), gateway: () => gatewayAdminService!.status(), ...(gatewayAdminService ? { gatewayAdmin: gatewayAdminService } : {}) },
-    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService, design: designService, appStudio: appStudioService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider, paneBoardJob: config.instanceJobs["nous-pane-board"], paneBoardRunner: options.paneBoardRunner, council: councilService, liveHistory });
+    answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId), pressKeys: (sessionId, keys, traceId) => cliTerminalManager.runSerializedTerminalMutation(sessionId, () => cliTerminalManager.sendInput(sessionId, keys, traceId, null, `${traceId}:keys:${randomUUID()}`)), activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), ops: { health: healthMonitor, services: systemServicesProvider, tokenUsage: (range) => systemAnalyticsService.models(range, "all"), gateway: () => gatewayAdminService!.status(), ...(gatewayAdminService ? { gatewayAdmin: gatewayAdminService } : {}) },
+    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService, design: designService, appStudio: appStudioService, video: videoService, security: securityCopilotService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider, paneBoardJob: config.instanceJobs["nous-pane-board"], paneBoardRunner: options.paneBoardRunner, council: councilService, liveHistory });
 
   registerVoiceAttachmentRoutes(app, { config, store, routeOptions: defaultRouteRateLimitOptions });
 

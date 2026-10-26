@@ -23,6 +23,8 @@ describe("Space checkbox switch inventory", () => {
     // The Gateway filters, key efforts/accounts and the CLI disable acknowledgement use SpaceToggle since 9c5fc521df.
     const allowed = [
       "features/nous/NousDock.tsx", // Nous's On/Off power switch (role="switch", operator request 2026-10-17)
+      "features/vault/VaultDock.tsx", // select all dead sites for the bulk delete (picking several items from a list, 599dc90542)
+      "features/vault/VaultDock.tsx", // select one dead site for the bulk delete
       "features/ui-controls/SpaceToggle.tsx"
     ].sort();
     expect(matches).toEqual(allowed);

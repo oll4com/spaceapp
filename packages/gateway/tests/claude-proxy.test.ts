@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemoryGatewayRepository } from "@space/db";
 import { AccountPool, type CredentialRefresher, type StoredCredentials } from "../src/accounts/account-pool.js";
 import { generateGatewayApiKey } from "../src/api-keys.js";
@@ -121,6 +121,8 @@ describe("Claude stream inspection", () => {
 });
 
 describe("Claude proxy", () => {
+  // Loading the o200k ranks takes about a second, more on a busy host; keep it out of the compression test's time limit.
+  beforeAll(() => { tokenCounter.count("warm up"); }, 60_000);
   it("streams from the least-used account and logs cache-aware usage", async () => {
     const { post, calls, logs, repository } = await setup(() => streamResponse(messageStream("msg_1"), 200, {
       "anthropic-ratelimit-unified-5h-utilization": "0.2", "request-id": "req_up_1" }));

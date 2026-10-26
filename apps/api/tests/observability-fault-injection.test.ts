@@ -1,3 +1,4 @@
+import { Writable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, MetricsRegistry, SpaceNotFoundError } from "@space/runtime";
 import { parseTraceparent, traceLookupResponseSchema, type DummyTurnInput } from "@space/contracts";
@@ -38,6 +39,8 @@ let csrfToken: string;
 let roomId: string;
 let paneId: string;
 const starts: StartCall[] = [];
+// The API's own log lines (1.1.7 review, Codex #9: the start failure's secret reached the log while the test passed).
+const apiLog: string[] = [];
 let startFailure: Error | null = null;
 
 beforeAll(async () => {
@@ -59,6 +62,7 @@ beforeAll(async () => {
     close: async () => undefined
   });
   app = await createApp({
+    logStream: new Writable({ write(chunk, _encoding, callback) { apiLog.push(String(chunk)); callback(); } }),
     store,
     codexTurnStarter: new TemporalCodexAppServerTurnStarter({ address: "unused", namespace: "default", taskQueue: "space-test", clientFactory }),
     auth: { sessionSecret: "fault-injection-session-secret-123", devLogin: true, secureCookies: false }
@@ -194,6 +198,9 @@ describe("observability fault injection", () => {
     expect(metrics).toMatch(/space_http_error_responses_total\{code="INTERNAL_ERROR",category="INTERNAL",status_class="5xx"\} [1-9]/);
     expectNoSecrets("API metrics", metrics);
     expect(metrics).not.toContain("10.9.8.7");
+    const logged = apiLog.join("");
+    expect(logged).toContain("14 UNAVAILABLE");
+    expect(logged).not.toContain(secrets[1]);
   }, 60_000);
 
   it("rejects trace lookups from non-administrators and malformed ids", async () => {

@@ -65,6 +65,37 @@ it("lets the browser cache image files, whose bytes never change", async () => {
   expect(response.headers["content-security-policy"]).toContain("sandbox");
 });
 
+it("serves byte ranges of a video so a player can scrub it (Video pane, 2026-10-21)", async () => {
+  const file = artifact("clip.mp4", "video/mp4");
+  await writeFile(join(root, "browser-evidence", "fixture", "clip.mp4"), "0123456789");
+  const whole = await app.inject(`/api/artifacts/${encodeURIComponent(file.id)}/file`);
+  expect(whole.statusCode).toBe(200);
+  expect(whole.headers["accept-ranges"]).toBe("bytes");
+  expect(whole.headers["content-length"]).toBe("10");
+  const part = await app.inject({ url: `/api/artifacts/${encodeURIComponent(file.id)}/file`, headers: { range: "bytes=2-5" } });
+  expect(part.statusCode).toBe(206);
+  expect(part.headers["content-range"]).toBe("bytes 2-5/10");
+  expect(part.body).toBe("2345");
+  const tail = await app.inject({ url: `/api/artifacts/${encodeURIComponent(file.id)}/file`, headers: { range: "bytes=-3" } });
+  expect([tail.statusCode, tail.body]).toEqual([206, "789"]);
+  const open = await app.inject({ url: `/api/artifacts/${encodeURIComponent(file.id)}/file`, headers: { range: "bytes=8-" } });
+  expect([open.statusCode, open.headers["content-range"], open.body]).toEqual([206, "bytes 8-9/10", "89"]);
+  expect((await app.inject({ url: `/api/artifacts/${encodeURIComponent(file.id)}/file`, headers: { range: "bytes=20-30" } })).statusCode).toBe(416);
+});
+
+it("previews an Agent Files video in byte ranges, so a long YouTube download plays and seeks at once", async () => {
+  const file = artifact("talk.mp4", "video/mp4", true);
+  const directory = join(root, "agent-files", "room_fixture", "pane_fixture", "session_fixture", "2026-10-03");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "talk.mp4"), "0123456789");
+  const url = `/api/artifacts/${encodeURIComponent(file.id)}/preview`;
+  const whole = await app.inject(url);
+  expect([whole.statusCode, whole.headers["accept-ranges"], whole.headers["content-type"], whole.body]).toEqual([200, "bytes", "video/mp4", "0123456789"]);
+  const part = await app.inject({ url, headers: { range: "bytes=4-" } });
+  expect([part.statusCode, part.headers["content-range"], part.body]).toEqual([206, "bytes 4-9/10", "456789"]);
+  expect((await app.inject({ url, headers: { range: "bytes=10-" } })).statusCode).toBe(416);
+});
+
 it("preserves plain text preview and forced Agent File download", async () => {
   const file = artifact("note.txt", "text/plain", true);
   const directory = join(root, "agent-files", "room_fixture", "pane_fixture", "session_fixture", "2026-10-03");

@@ -1,6 +1,6 @@
 import { useManagedPlanExecution } from "./use-managed-plan-execution.js";
 import { LocalCliComposer } from "./LocalCliComposer.js";
-import { routePaneModelSwitch, routePanePlanSelection, usesManagedPlanExecution, isFinishedExecution, type ManagedStageScope } from "./managed-plan-client.js";
+import { routePaneModelSwitch, routePanePlanSelection, usesManagedPlanExecution, startsManagedPlan, isFinishedExecution, type ManagedStageScope } from "./managed-plan-client.js";
 import { holdTerminalReconnectFrame } from "./terminal-reconnect-frame.js";
 import {
   nextTerminalControlReplayBudget,
@@ -34,6 +34,8 @@ import {
   expandPromptVariables,
   filterPromptVariables,
   findActiveVariableToken,
+  readStoredPromptVariables,
+  readStoredPromptVariablesSettings,
   usePromptVariables,
   type PromptVariableToken
 } from "../prompt-variables/prompt-variables-store.js";
@@ -142,6 +144,7 @@ import {
 export { isNonMutatingTerminalProtocolResponse };
 
 import { reasoningEffortBadge, reasoningEffortLabel } from "../codex-model-picker/reasoning-effort.js";
+import { AgentFileLinkLayer, AgentFileLinkStore } from "./AgentFileLinks.js";
 
 const LazyCodexModelPicker = lazy(() =>
   import("../codex-model-picker/CodexModelPicker.js").then((module) => ({ default: module.CodexModelPicker }))
@@ -173,7 +176,8 @@ export function buildTerminalVoiceSubmit(
     .replace(/\s+/gu, " ")
     .trim();
   if (!normalized) return null;
-  if (insertMode === "replace") return { data: `\u0015${normalized}`, enter: "\r", replace: true };
+  // replace: the caller clears the draft (rewriteTerminalPrompt) before the transcript goes in.
+  if (insertMode === "replace") return { data: normalized, enter: "\r", replace: true };
   const separator = draft && !/\s$/.test(draft) ? " " : "";
   return { data: `${separator}${normalized}`, enter: "\r", replace: false };
 }
@@ -419,6 +423,7 @@ const CLIPBOARD_TEXT_FILE_NOTICE = "Clip attached as TXT file.";
 const HIDDEN_UPLOAD_NOTICE_DISMISS_MS = 1_600;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
+const PROMPT_REWRITE_GAP_MS = 150;
 
 
 
@@ -1120,15 +1125,15 @@ function clipboardTextFilename(now = new Date()): string {
 }
 
 function containsCliUploadPath(text: string): boolean {
-  return text.includes("/opt/spaceapp/var/artifacts/cli-uploads/") || text.includes("/cli-uploads/");
+  return text.includes("/cli-uploads/");
 }
 
 // Match the host's disjoint wrap branches to avoid freezing on PTY padding.
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
-  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
+  /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:(?:\/[A-Za-z0-9_.-]+){0,16}\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
 const CLI_UPLOAD_PATH_SEPARATOR_PATTERN = /(\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t\r\n])/;
-const CLI_UPLOAD_PATH_START_PATTERN = /(?=\/srv\/space\/var\/artifacts\/cli-uploads\/)|(?<!\/srv\/space\/var\/artifacts)(?=\/cli-uploads\/)/;
+const CLI_UPLOAD_PATH_START_PATTERN = /(?<=^|[^A-Za-z0-9_.\/-]|\.[A-Za-z0-9]{1,10})(?=(?:\/[A-Za-z0-9_.-]+){0,16}\/artifacts\/cli-uploads\/)|(?<!\/artifacts)(?=\/cli-uploads\/)/;
 
 function uploadPathLabel(pathText: string): string {
   if (!pathText.includes("/cli-uploads/")) return " ".repeat(pathText.length);
@@ -1872,6 +1877,7 @@ export const TerminalPane = memo(function TerminalPane({
   const uploadPreviewsPickerRef = useRef<HTMLDivElement | null>(null);
   const uploadPreviewsButtonRef = useRef<HTMLButtonElement | null>(null);
   const [photoContextMenu, setPhotoContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [agentFileLinks] = useState(() => new AgentFileLinkStore());
   const photoContextMenuRef = useRef<HTMLDivElement | null>(null);
   const photoTouchContext = useTouchContextMenu(
     (source) => (source instanceof Element ? source.closest<HTMLElement>(".terminal-upload-preview-trigger") : null),
@@ -1982,12 +1988,19 @@ export const TerminalPane = memo(function TerminalPane({
   // A bare '#' only picks a variable on Enter after the operator moved through the list with the arrows.
   const variableListNavigatedTokenRef = useRef<string | null>(null);
 
-  const handleSelectPromptVariable = useCallback((variable: PromptVariable) => {
+  const handleSelectPromptVariable = useCallback((variable: PromptVariable, submit = false) => {
     const activeToken = activeVariableToken;
     if (!activeToken) return;
-    const tokenLen = activeToken.token.length;
-    const backspaces = "\u007f".repeat(tokenLen);
-    sendTerminalInput(`${backspaces}#${variable.name} `, "prompt variable selection", "visible", true);
+    if (submit) {
+      // Enter picks and sends at once: the prompt is rewritten with the value, then submitted.
+      const draft = terminalPromptDraftRef.current.text;
+      const picked = `${draft.slice(0, activeToken.startIndex)}#${variable.name}${draft.slice(activeToken.endIndex)}`;
+      const expanded = expandPromptVariables(picked, readStoredPromptVariables(), { autoUnescape: true });
+      rewriteTerminalPrompt(draft, expanded, "prompt variable selection",
+        () => sendTerminalSubmit("\r", "prompt variable enter", { turnMarker: createCliTurnMarker() }));
+    } else {
+      sendTerminalInput(`${"\u007f".repeat(activeToken.token.length)}#${variable.name} `, "prompt variable selection", "visible", true);
+    }
     variableListNavigatedTokenRef.current = null;
     setSelectedVariableIndex(0);
     setDismissedVariableToken(activeToken.token);
@@ -2026,7 +2039,7 @@ export const TerminalPane = memo(function TerminalPane({
           event.stopPropagation();
           const picked = filteredVariables[highlightedVariableIndex] ?? filteredVariables[0];
           if (picked) {
-            handleSelectPromptVariable(picked);
+            handleSelectPromptVariable(picked, event.key === "Enter");
           }
           return false;
         }
@@ -2295,7 +2308,7 @@ export const TerminalPane = memo(function TerminalPane({
   const [modelSettings, setModelSettings] = useState<PaneCliModelSettings | null>(null);
   const [modelSettingsError, setModelSettingsError] = useState<string | null>(null);
   const managedPlan = useManagedPlanExecution({ api, paneId: pane.id, sessionId: sessionResponse?.session.sessionId ?? null,
-    enabled: isVisible && !pane.isMinimized && sessionResponse?.session.runtimeId === "cli:codex" });
+    enabled: isVisible && !pane.isMinimized && usesManagedPlanExecution(sessionResponse?.session.runtimeId) });
   const hasManagedPlan = Boolean(managedPlan.execution && managedPlan.execution.sessionId === sessionResponse?.session.sessionId && !isFinishedExecution(managedPlan.execution));
   const managedModelClickScope: ManagedStageScope | null = hasManagedPlan && managedPlan.execution
     ? { executionId: managedPlan.execution.id, stageId: managedPlan.execution.snapshot.stages[managedPlan.execution.activeStageIndex]?.id ?? "" } : null;
@@ -4827,6 +4840,8 @@ export const TerminalPane = memo(function TerminalPane({
         // termios already handles line endings, so enabling it corrupts TUI cursors.
         // https://github.com/xtermjs/xterm.js/blob/6.0.0/typings/xterm.d.ts#L48-L58
         convertEol: false,
+        // Agent Files links mark names with xterm decorations, a proposed API (operator-approved 2026-10-21).
+        allowProposedApi: true,
         cursorBlink: true,
         fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
         fontSize: terminalFontSizeRef.current,
@@ -4847,6 +4862,7 @@ export const TerminalPane = memo(function TerminalPane({
       fitAddon = new FitAddon();
       fitAddonRef.current = fitAddon;
       terminal.loadAddon(fitAddon);
+      terminal.loadAddon(agentFileLinks.addon());
       terminalRef.current = terminal;
       resizeTrace.sync();
       lastTerminalOutputRefitAtRef.current = 0;
@@ -5289,7 +5305,9 @@ export const TerminalPane = memo(function TerminalPane({
           const presize = fullscreenPresizeRef.current;
           fullscreenPresizeRef.current = null;
           if (presize && !isVisibleRef.current) {
-            geometryCoordinator.backgroundResize(presize.cols, presize.rows);
+            // A grid recorded while this lease was pending was dropped; send the newest one.
+            const latest = readFullscreenGeometry() ?? presize;
+            geometryCoordinator.backgroundResize(latest.cols, latest.rows);
             releaseTerminalControl();
           }
           return;
@@ -6867,49 +6885,68 @@ export const TerminalPane = memo(function TerminalPane({
     return true;
   }
 
+  // Claude Code's Ctrl+U clears one wrapped row, ~45+ bytes of keys in one read become a dropped paste, and a Ctrl+U and a
+  // paste in one read get mixed up (nothing cleared, or the text's start cut). So: one Ctrl+U per estimated row (rows taken
+  // as half the width, at most 30), then the text as a bracketed paste after a gap.
+  // shortcut: a draft over ~30 wrapped rows keeps its first rows, upgrade if Claude Code gets a clear-input key.
+  function rewriteTerminalPrompt(draft: string, text: string, source: string, then?: () => void): boolean {
+    const rowWidth = Math.max(10, Math.floor((terminalRef.current?.cols ?? 80) / 2));
+    const rows = draft.split(/\r\n|\r|\n/).reduce((total, line) => total + Math.max(1, Math.ceil(line.length / rowWidth)), 0);
+    // Untracked: the draft model clears with the Ctrl+U sent with the text, so attachment labels in the text stay pending.
+    if (!sendTerminalInput("\u0015".repeat(Math.min(30, rows + 1)), source, "visible", true, { trackDraft: false })) return false;
+    const bracketed = Boolean(terminalRef.current?.modes?.bracketedPasteMode || isCodexCliSession || isClaudeCliSession);
+    const paste = bracketed ? `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}` : text;
+    window.setTimeout(() => {
+      if (sendTerminalInput(`\u0015${paste}`, source, "visible", true)) then?.();
+    }, PROMPT_REWRITE_GAP_MS);
+    return true;
+  }
+
   function sendTerminalSubmit(
     data: string,
     source: string,
     options: { turnMarker?: string } = {}
   ): boolean {
-    const attachmentState = managedPromptAttachmentsRef.current;
-    const visiblePrompt = attachmentState.pending.length
-      ? visibleTerminalPromptText(terminalRef.current)
-      : "";
-    const activeAttachments = attachmentState.pending.filter((attachment) =>
-      terminalPromptDraftRef.current.text.includes(attachment.token) ||
-      data.includes(attachment.token) ||
-      visiblePrompt.includes(attachment.token.replace(/\s+/g, ""))
-    );
-    if (activeAttachments.length) {
-      const hiddenPaths = ` ${activeAttachments.map((attachment) => attachment.terminalInputPath).join(" ")} `;
-      if (!sendTerminalInput(hiddenPaths, `${source}: attachment paths`, "hidden", true, { trackDraft: false })) {
-        return false;
-      }
-      updateClipboardDebug(
-        "good",
-        "attachment paths resolved",
-        `${source}: tokenCount=${activeAttachments.length}; insertedPathLength=${hiddenPaths.length}; display=hidden; containsUploadPath=true.`
+    // Read the store, not render state: keyboard Enter reaches this through the socket effect's closure.
+    const variablesSettings = readStoredPromptVariablesSettings();
+    const draft = terminalPromptDraftRef.current.text;
+    const variables = variablesSettings.enabled && variablesSettings.autoExpandOnSubmit && draft ? readStoredPromptVariables() : [];
+    const expanded = variables.length ? expandPromptVariables(draft, variables, { autoUnescape: true }) : draft;
+    // Attachment paths go in after the rewrite, which would clear them.
+    if (expanded !== draft) return rewriteTerminalPrompt(draft, expanded, "auto expand prompt variables", submit);
+    return submit();
+
+    function submit(): boolean {
+      const attachmentState = managedPromptAttachmentsRef.current;
+      const visiblePrompt = attachmentState.pending.length
+        ? visibleTerminalPromptText(terminalRef.current)
+        : "";
+      const activeAttachments = attachmentState.pending.filter((attachment) =>
+        terminalPromptDraftRef.current.text.includes(attachment.token) ||
+        data.includes(attachment.token) ||
+        visiblePrompt.includes(attachment.token.replace(/\s+/g, ""))
       );
-    }
-    if (promptVariablesSettings.enabled && promptVariablesSettings.autoExpandOnSubmit) {
-      const currentDraft = terminalPromptDraftRef.current.text;
-      if (currentDraft && promptVariables.length) {
-        const expanded = expandPromptVariables(currentDraft, promptVariables, { autoUnescape: true });
-        if (expanded !== currentDraft) {
-          sendTerminalInput(`\u0015${expanded}`, "auto expand prompt variables", "visible", true);
+      if (activeAttachments.length) {
+        const hiddenPaths = ` ${activeAttachments.map((attachment) => attachment.terminalInputPath).join(" ")} `;
+        if (!sendTerminalInput(hiddenPaths, `${source}: attachment paths`, "hidden", true, { trackDraft: false })) {
+          return false;
         }
+        updateClipboardDebug(
+          "good",
+          "attachment paths resolved",
+          `${source}: tokenCount=${activeAttachments.length}; insertedPathLength=${hiddenPaths.length}; display=hidden; containsUploadPath=true.`
+        );
       }
+      const sent = sendTerminalInput(data, source, "visible", false, options);
+      if (sent) {
+        managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
+        wasAtBottomRef.current = true;
+        terminalRef.current?.scrollToBottom();
+        const host = xtermHostRef.current;
+        syncTerminalViewportEvidence(host, terminalRef.current);
+      }
+      return sent;
     }
-    const sent = sendTerminalInput(data, source, "visible", false, options);
-    if (sent) {
-      managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
-      wasAtBottomRef.current = true;
-      terminalRef.current?.scrollToBottom();
-      const host = xtermHostRef.current;
-      syncTerminalViewportEvidence(host, terminalRef.current);
-    }
-    return sent;
   }
 
   async function runCliShortcut(command: OskCliCommand) {
@@ -7090,7 +7127,7 @@ export const TerminalPane = memo(function TerminalPane({
         if (sessionResponseRef.current?.session.sessionId !== session?.sessionId || !isVisibleRef.current) return;
         setError(failure instanceof Error ? failure.message : "Managed plan could not be started. Complete its stage configuration and retry.");
       }
-    }, submitLegacyPlan);
+    }, submitLegacyPlan, plan);
 
     async function submitLegacyPlan() {
       if (typeof window !== "undefined") {
@@ -7227,9 +7264,9 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }
 
-  // Only the non-managed path clears typed text before sending; Codex starts a managed plan instead.
-  function planSendClearsDraft(): boolean {
-    return !usesManagedPlanExecution(sessionResponseRef.current?.session.runtimeId) && Boolean(terminalPromptDraftRef.current.text.trim());
+  // Only the non-managed path clears typed text before sending; Codex (and Claude for a staged plan) starts a managed plan instead.
+  function planSendClearsDraft(plan: ClipboardItem): boolean {
+    return !startsManagedPlan(sessionResponseRef.current?.session.runtimeId, plan) && Boolean(terminalPromptDraftRef.current.text.trim());
   }
 
   function submitVoiceTranscript(transcript: string): boolean {
@@ -7245,8 +7282,10 @@ export const TerminalPane = memo(function TerminalPane({
       : {};
     if (voiceSubmit.replace) {
       managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
-      if (!sendTerminalInput(voiceSubmit.data, "voice transcript replace", "visible", true)) return false;
-    } else if (!sendTerminalInput(voiceSubmit.data, "voice transcript append", "visible", true)) {
+      return rewriteTerminalPrompt(terminalPromptDraftRef.current.text, voiceSubmit.data, "voice transcript replace",
+        () => sendTerminalSubmit(voiceSubmit.enter, "voice transcript enter", options));
+    }
+    if (!sendTerminalInput(voiceSubmit.data, "voice transcript append", "visible", true)) {
       return false;
     }
     return sendTerminalSubmit(voiceSubmit.enter, "voice transcript enter", options);
@@ -7279,7 +7318,7 @@ export const TerminalPane = memo(function TerminalPane({
       ? detection.convertedText
       : toggleKeyboardLayout(draft);
     if (replacement && replacement !== draft) {
-      sendTerminalInput(`\u0015${replacement}`, "terminal layout fix", "visible", true);
+      rewriteTerminalPrompt(draft, replacement, "terminal layout fix");
       setTerminalLayoutSuggestion(null);
       focusTerminal();
     }
@@ -7468,7 +7507,7 @@ export const TerminalPane = memo(function TerminalPane({
     const currentSession = sessionResponseRef.current;
     if (!currentSession) throw new Error("Attach a CLI session before changing model settings.");
     const expectedSessionId = currentSession.session.sessionId;
-    if (currentSession.session.runtimeId === "cli:codex") {
+    if (usesManagedPlanExecution(currentSession.session.runtimeId)) {
       return routePaneModelSwitch(managedPlan.getClient(), { modelId, reasoningEffort }, async () => {
         const settings = await api.cliModelSettings(pane.id);
         if (sessionResponseRef.current?.session.sessionId !== expectedSessionId) throw new Error("The CLI session changed while reading model settings.");
@@ -8727,6 +8766,7 @@ export const TerminalPane = memo(function TerminalPane({
   });
 
   return (
+    <>
     <section
       className={dragActive ? "terminal-pane drag-active" : "terminal-pane"}
       aria-label={`CLI pane ${pane.title.replace(/^Terminal\b/i, "CLI")}`}
@@ -9468,5 +9508,8 @@ export const TerminalPane = memo(function TerminalPane({
         );
       })() : null}
     </section>
+    {/* Beside the section so the preview's keys, pastes and drops never reach the CLI's handlers. */}
+    <AgentFileLinkLayer store={agentFileLinks} themeAttributes={() => portalThemeAttributes(xtermHostRef.current)} />
+    </>
   );
 });

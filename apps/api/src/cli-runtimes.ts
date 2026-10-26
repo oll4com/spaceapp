@@ -16,6 +16,7 @@ import type { SpaceApiConfig } from "./config.js";
 import { cliRuntimeDescriptors, findCliRuntimeDescriptor, type CliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { describeCliAdapter } from "./cli-run-lifecycle-adapters.js";
 import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
+import { readVerifiedFreeModel } from "./verified-free-model.js";
 
 const execFileAsync = promisify(execFile);
 const credentialStatusTimeoutMs = 5_000;
@@ -327,6 +328,8 @@ async function cliRuntime(
   const commandRoot = config.cliCommandPath;
   const detectedCommandPath = config.cliEnabled && commandRoot ? await detectCommand(commandRoot, commandName) : null;
   const staticallyVerified = config.cliCredentialSmoke[definition.key];
+  const publicOpenCode = process.env.SPACE_PUBLIC_DISTRIBUTION === "true" && definition.key === "opencode";
+  const provenFreeModel = publicOpenCode ? await readVerifiedFreeModel() : null;
   const commandIsDirectParity = commandName === definition.commandName;
   const adapterEnabled = Boolean(config.cliEnabled && commandRoot && detectedCommandPath && commandIsDirectParity);
   const adapterStatus: AgentRuntime["adapterStatus"] = adapterEnabled
@@ -391,7 +394,8 @@ async function cliRuntime(
     statusReason: authReason,
     commandName,
     detectedCommandPath,
-    defaultModelId: definition.defaultModelId,
+    // The bare Zen id, like the descriptor's own default ("big-pickle").
+    defaultModelId: publicOpenCode ? provenFreeModel?.replace(/^opencode\//, "") ?? null : definition.defaultModelId,
     supportedReasoningEfforts: [],
     checkedAt
   });

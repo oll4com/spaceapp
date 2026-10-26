@@ -4,9 +4,10 @@ import {
   isoDateTimeSchema,
   type ClaudeGatewayPoolAccount,
   type ClaudeUsageAccount,
-  type ClaudeUsageAccountList
+  type ClaudeUsageAccountList,
+  type GatewayAnthropicBillingReport
 } from "@space/contracts";
-import type { GatewayAccountRecord } from "@space/db";
+import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
 import type { ClaudeProfileUsage } from "./claude-usage.js";
 
 const usageCacheTtlMs = 120_000;
@@ -34,14 +35,35 @@ export interface ClaudeUsageProviderOptions {
   readUsage: (profileId: string) => Promise<ClaudeProfileUsage>;
   /** The Claude accounts Space Gateway holds: the gateway profile's pool, and the usage of an idle profile's account. */
   gatewayAccounts?: () => Promise<GatewayAccountRecord[]>;
-  /** Space Gateway's settings, for whether the Claude API key serves as its fallback. */
-  gatewaySettings?: () => Promise<{ claudeApiKeyFallback: boolean }>;
+  /** Space Gateway's settings: whether the Claude API key serves as its fallback, and the operator's monthly API budget. */
+  gatewaySettings?: () => Promise<GatewayClaudeSettings>;
+  /** This UTC month's Anthropic bill in USD from the Admin API key's reports; null without an admin key. */
+  anthropicMonthUsd?: () => Promise<number | null>;
   /** Lifetime totals of one gateway account (the request log's daily rollups), for what went through the key. */
-  gatewayAccountUsage?: (accountId: string) => Promise<{ requests: number; costUsd: number }>;
+  gatewayAccountUsage?: (accountId: string) => Promise<{ requests: number; costUsd: number; lastRequest?: { at: string; succeeded: boolean } | null }>;
   now?: () => Date;
 }
 
 type ProfileUsage = z.infer<typeof claudeProfileUsageSchema>;
+type GatewayClaudeSettings = { claudeApiKeyFallback: boolean; anthropicMonthlyBudgetUsd?: number | null };
+
+/** Lifetime usage plus the latest request outcome; a recent failed request must not look like a working fallback. */
+export async function claudeGatewayApiKeyUsage(repository: Pick<GatewayRepository, "usageTotals" | "listRequestLogs">, accountId: string, nowMs: number) {
+  const [totals, logs] = await Promise.all([
+    repository.usageTotals({ accountId }),
+    repository.listRequestLogs({ limit: 1, accountId, filter: { from: new Date(nowMs - 5 * 60_000).toISOString() } }).catch(() => [])
+  ]);
+  const latest = logs[0];
+  return { ...totals, lastRequest: latest ? { at: latest.requestedAt, succeeded: latest.status === "success" } : null };
+}
+
+/** This UTC month's bill in a billing report: Anthropic's posted days, Space Gateway's estimate for days not posted yet. */
+export function anthropicMonthSpendUsd(report: GatewayAnthropicBillingReport, nowMs: number): number | null {
+  if (!report.status.configured) return null;
+  const month = new Date(nowMs).toISOString().slice(0, 7);
+  return report.days.filter((day) => day.day.startsWith(month))
+    .reduce((sum, day) => sum + (day.reported ? day.organizationUsd : day.gatewayEstimateUsd), 0);
+}
 
 /** A Claude account's two quota windows as the gateway last sampled them, in the profile reader's used-percent terms. */
 export interface ClaudeGatewayAccountUsage {
@@ -154,6 +176,7 @@ export function createClaudeUsageAccountProvider(
   const now = options.now ?? (() => new Date());
   let cached: { value: ClaudeUsageAccountList; collectedAtMs: number } | null = null;
   let inFlight: Promise<ClaudeUsageAccountList> | null = null;
+  let collectFailed = false;
   const lastConnected = new Map<string, { usage: ProfileUsage; sampledAt: Date }>();
 
   // An idle account is still signed in, but its expired token cannot ask for usage. The gateway's sample of the
@@ -176,7 +199,7 @@ export function createClaudeUsageAccountProvider(
 
   async function account(profile: { profileId: string; displayName: string },
     gateway: () => Promise<GatewayAccountRecord[] | null>,
-    gatewaySettings: () => Promise<{ claudeApiKeyFallback: boolean } | null>): Promise<ClaudeUsageAccount> {
+    gatewaySettings: () => Promise<GatewayClaudeSettings | null>): Promise<ClaudeUsageAccount> {
     const sampled = await options.readUsage(profile.profileId)
       .then((value) => claudeProfileUsageSchema.parse(value))
       .catch(() => null);
@@ -190,7 +213,14 @@ export function createClaudeUsageAccountProvider(
     const gatewayFallback = apiKey?.settings && apiKey.accounts ? claudeGatewayFallbackState(apiKey.accounts, apiKey.settings) : undefined;
     const keyAccount = apiKey?.accounts ? claudeGatewayApiKeyAccount(apiKey.accounts) : null;
     const keyTotals = keyAccount && options.gatewayAccountUsage ? await options.gatewayAccountUsage(keyAccount.id).catch(() => null) : null;
-    const apiKeyUsage = keyAccount && keyTotals ? { requests: keyTotals.requests, costUsd: keyTotals.costUsd, lastUsedAt: keyAccount.lastUsedAt } : undefined;
+    const apiKeyUsage = keyAccount && keyTotals ? {
+      requests: keyTotals.requests, costUsd: keyTotals.costUsd, lastUsedAt: keyAccount.lastUsedAt,
+      ...(keyTotals.lastRequest !== undefined ? { lastRequest: keyTotals.lastRequest } : {})
+    } : undefined;
+    const apiKeyMonth = apiKey ? {
+      spentUsd: options.anthropicMonthUsd ? await options.anthropicMonthUsd().catch(() => null) : null,
+      budgetUsd: apiKey.settings?.anthropicMonthlyBudgetUsd ?? null
+    } : null;
     return {
       id: profile.profileId,
       label: profile.displayName,
@@ -206,7 +236,8 @@ export function createClaudeUsageAccountProvider(
       ...(pool ? { pool } : {}),
       ...(apiKey ? { apiKeyVerified: apiKey.apiKeyVerified } : {}),
       ...(gatewayFallback ? { gatewayFallback } : {}),
-      ...(apiKeyUsage ? { apiKeyUsage } : {})
+      ...(apiKeyUsage ? { apiKeyUsage } : {}),
+      ...(apiKeyMonth && (apiKeyMonth.spentUsd !== null || apiKeyMonth.budgetUsd !== null) ? { apiKeyMonth } : {})
     };
   }
 
@@ -215,7 +246,7 @@ export function createClaudeUsageAccountProvider(
     // Read once per collection, and only when a profile signs in through the gateway, sits idle or bills a key.
     let accounts: Promise<GatewayAccountRecord[] | null> | null = null;
     const gateway = () => (accounts ??= options.gatewayAccounts ? options.gatewayAccounts().catch(() => null) : Promise.resolve(null));
-    let settings: Promise<{ claudeApiKeyFallback: boolean } | null> | null = null;
+    let settings: Promise<GatewayClaudeSettings | null> | null = null;
     const gatewaySettings = () => (settings ??= options.gatewaySettings ? options.gatewaySettings().catch(() => null) : Promise.resolve(null));
     const data = await Promise.all(profiles.slice(0, 100).map((profile) => account(profile, gateway, gatewaySettings)));
     const collectedAt = now();
@@ -249,7 +280,13 @@ export function createClaudeUsageAccountProvider(
 
   function refresh(): Promise<ClaudeUsageAccountList> {
     if (inFlight) return inFlight;
-    const request = collect().catch(() => unavailable());
+    const request = collect().then((value) => {
+      collectFailed = false;
+      return value;
+    }, () => {
+      collectFailed = true;
+      return unavailable();
+    });
     inFlight = request;
     const clear = () => {
       if (inFlight === request) inFlight = null;
@@ -258,13 +295,15 @@ export function createClaudeUsageAccountProvider(
     return request;
   }
 
-  return async () => {
-    const ageMs = cached ? now().getTime() - cached.collectedAtMs : Number.POSITIVE_INFINITY;
-    if (cached && ageMs <= usageCacheTtlMs) return cached.value;
-    if (cached && ageMs <= usageStaleFallbackMs) {
-      void refresh();
-      return cached.value;
-    }
-    return refresh();
+  // The last sample answers at once and an old one starts a fresh collection: the account menus never wait for the profile
+  // wrappers (each may take seconds), only the first read after the API starts does. A sample past the stale window is
+  // dropped only while collecting keeps failing.
+  const provider = async () => {
+    if (!cached) return refresh();
+    const ageMs = now().getTime() - cached.collectedAtMs;
+    if (ageMs > usageCacheTtlMs) void refresh();
+    return ageMs > usageStaleFallbackMs && collectFailed ? unavailable() : cached.value;
   };
+  // Nous's world may read the last sample, but must never start a profile probe or a refresh.
+  return Object.assign(provider, { peek: (): ClaudeUsageAccountList | null => cached?.value ?? null });
 }

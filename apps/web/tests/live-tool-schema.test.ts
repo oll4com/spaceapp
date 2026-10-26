@@ -5,7 +5,8 @@ import {
   googleLiveToolParameters,
   SAVE_PERSONAL_MEMORY_TOOL,
   SPACE_OPEN_PANES_TOOL,
-  SPACE_PLAN_MISSION_TOOL
+  SPACE_PLAN_MISSION_TOOL,
+  SPACE_REQUEST_VIDEO_TOOL
 } from "../src/features/live-pane/live-session.js";
 import * as livePaneModule from "../src/features/live-pane/live-session.js";
 
@@ -98,5 +99,13 @@ describe("Gemini Live tool schema compatibility", () => {
     expect(sanitized.properties.counts?.properties).toHaveProperty("live");
     expect(unsupportedSchemaKeys(SAVE_PERSONAL_MEMORY_TOOL.parameters)).toEqual([]);
     expect(unsupportedSchemaKeys(SPACE_PLAN_MISSION_TOOL.parameters)).toEqual([]);
+  });
+
+  it("declares the Video pane request tool for every Live provider", () => {
+    expect(SPACE_REQUEST_VIDEO_TOOL.name).toBe("space_request_video");
+    expect(unsupportedSchemaKeys(SPACE_REQUEST_VIDEO_TOOL.parameters)).toEqual([]);
+    expect(Object.keys(SPACE_REQUEST_VIDEO_TOOL.parameters.properties).sort()).toEqual(["brief", "formatIds", "narration", "sourceArtifactIds", "technique"]);
+    expect(SPACE_REQUEST_VIDEO_TOOL.parameters.required).toEqual(["brief"]);
+    expect(SPACE_REQUEST_VIDEO_TOOL.parameters.properties.technique.enum).toEqual(["silence", "scene", "highlights", "manual"]);
   });
 });

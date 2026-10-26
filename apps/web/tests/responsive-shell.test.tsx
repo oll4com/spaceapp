@@ -4231,8 +4231,8 @@ describe("Space responsive shell", () => {
     await waitFor(() => expect(document.activeElement).toBe(toggle));
 
     fireEvent.click(toggle);
-    const restoreItem = await screen.findByRole("button", { name: "Restore pane Review 1" });
-    expect(restoreItem.getAttribute("title")).toBe("Review 1");
+    const restoreItem = await screen.findByRole("button", { name: /^Restore pane Review 1 · / });
+    expect(restoreItem.getAttribute("title")).toBe("Review 1 · Review");
 
     const restoredHeader = firstPane.querySelector<HTMLElement>("header")!;
     const focusRestoredHeader = restoredHeader.focus.bind(restoredHeader);
@@ -4286,7 +4286,7 @@ describe("Space responsive shell", () => {
     const { container } = render(<App />);
 
     await showMinimizedBar();
-    const restoreItem = await screen.findByRole("button", { name: "Restore pane Colored runner" });
+    const restoreItem = await screen.findByRole("button", { name: /^Restore pane Colored runner · / });
     expect(restoreItem.getAttribute("data-category-color")).toBe("green");
     expect(container.querySelector(".minimized-pane-run-indicator")).toBeNull();
 
@@ -4334,7 +4334,7 @@ describe("Space responsive shell", () => {
 
     expect(await screen.findByText("Restore all partially failed for 1 pane. Room state was refreshed.")).toBeTruthy();
     await waitFor(() => expect(container.querySelector('[data-space-pane-id="pane:maximized"]')?.classList.contains("is-maximized")).toBe(false));
-    expect(screen.getByRole("button", { name: "Restore pane Restore fails" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Restore pane Restore fails · / })).toBeTruthy();
   });
 
   it("plays the original logo GIF and minimizes visible room panes on click, then restores them", async () => {
@@ -4413,18 +4413,18 @@ describe("Space responsive shell", () => {
 
     fireEvent.click(toggle);
 
-    const chip = await screen.findByRole("button", { name: "Restore pane Also visible" });
+    const chip = await screen.findByRole("button", { name: /^Restore pane Also visible · / });
     expect(chip.querySelector(".minimized-pane-chip-label")?.textContent).toBe("Also visible");
     expect(chip.querySelector(".minimized-pane-chip-icon")).toBeTruthy();
     expect(chip.getAttribute("data-status")).toBe("idle");
-    expect(chip.getAttribute("title")).toBe("Also visible");
+    expect(chip.getAttribute("title")).toBe("Also visible · Review");
     expect(container.querySelector("#minimized-pane-bar")).toBeTruthy();
     expect(container.querySelectorAll(".minimized-pane-bar-toggle")).toHaveLength(1);
     expect(container.querySelectorAll(".minimized-pane-floats")).toHaveLength(0);
 
     fireEvent.click(container.querySelector<HTMLButtonElement>(".minimized-pane-bar-toggle")!);
     await waitFor(() => expect(container.querySelector(".minimized-pane-bar")).toBeNull());
-    expect(screen.queryByRole("button", { name: "Restore pane Also visible" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Restore pane Also visible · / })).toBeNull();
   });
 
   it("toggles the preview bar height and displays real preview cards when preview toggle is clicked", async () => {
@@ -4504,7 +4504,7 @@ describe("Space responsive shell", () => {
 
     fireEvent.click(railToggle);
     expect(railRender.container.querySelector("#minimized-pane-bar")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Restore pane Visible friend" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Restore pane Visible friend · / })).toBeTruthy();
 
     // When resource indicators are enabled, resource items appear alongside the toggle in health-indicator-rail
     railRender.unmount();
@@ -4534,21 +4534,21 @@ describe("Space responsive shell", () => {
     const alphaPane = await screen.findByLabelText("Alpha pane agent 1");
     fireEvent.click(within(alphaPane).getByRole("button", { name: "Minimize pane Alpha pane" }));
     await showMinimizedBar();
-    expect(await screen.findByRole("button", { name: "Restore pane Alpha pane" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Restore pane Alpha pane · / })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Next room" }));
     expect(await screen.findByRole("heading", { name: "Beta" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Restore pane Alpha pane" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Restore pane Alpha pane · / })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Previous room" }));
     expect(await screen.findByRole("heading", { name: "Alpha" })).toBeTruthy();
     await showMinimizedBar();
-    expect(await screen.findByRole("button", { name: "Restore pane Alpha pane" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Restore pane Alpha pane · / })).toBeTruthy();
 
     firstRender.unmount();
     render(<App />);
     await showMinimizedBar();
-    expect(await screen.findByRole("button", { name: "Restore pane Alpha pane" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Restore pane Alpha pane · / })).toBeTruthy();
     expect(fixture.requestBodies.some((request) => request.body.includes('"isMinimized":true'))).toBe(true);
   });
 

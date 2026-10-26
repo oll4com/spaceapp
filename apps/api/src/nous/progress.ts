@@ -36,7 +36,7 @@ export const NOUS_CATALOG_V1: NousCatalogEntry[] = [
   entry("list copilot items", ["space_copilot_items"], true), entry("answer a copilot question", ["space_copilot_answer"], true),
   entry("copilot settings or pause", []), entry("start a copilot run or brief", ["space_copilot_brief"]),
   entry("release train operations", ["space_release"], true), entry("release approval through a decision", ["space_ask_operator.action"], true),
-  entry("ask the operator", ["space_ask_operator"], true), entry("withdraw a decision", ["space_withdraw_decision"]), entry("merge-queue status", ["space_room_status"]),
+  entry("ask the operator", ["space_ask_operator"], true), entry("withdraw a decision", ["space_withdraw_decision"]), entry("merge-queue status", ["space_room_status", "space_queue_status"]),
   entry("own notes", ["space_note"], true), entry("Space Memory recall", ["space_memory_recall"]), entry("Space Memory save", ["space_memory_save"]),
   entry("query the monitor feed", ["space_room_status"]), entry("worktree and overlap view", ["space_room_status"]),
   entry("service status and logs", []), entry("token and gateway usage", [])

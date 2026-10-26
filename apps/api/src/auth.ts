@@ -52,6 +52,8 @@ export interface SessionPayload {
   lc?: string;
   /** One id for a session and all its renewals, so logging out ends every copy of it. */
   sid?: string;
+  /** A mobile app's device session (app-signin.ts): a fixed lifetime, never renewed. */
+  app?: string;
 }
 
 export const cookieName = SESSION_COOKIE;
@@ -157,7 +159,7 @@ export function signSessionWithTtl(user: AuthUser, secret: string, ttlSeconds: n
   return `${body}.${sig}`;
 }
 
-export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), carried: { iat?: number; lc?: string; sid?: string } = {}): string {
+export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), carried: { iat?: number; lc?: string; sid?: string; app?: string } = {}): string {
   if (user.id === "user:operator-proof") throw new Error("Proof operators cannot receive persistent sessions.");
   if (secret.length < 16) throw new Error("SPACE_SESSION_SECRET must be at least 16 characters.");
   const payload: SessionPayload = {
@@ -166,7 +168,8 @@ export function signSession(user: AuthUser, secret: string, nowMs = Date.now(), 
     iat: carried.iat ?? Math.floor(nowMs / 1000),
     v: 2,
     sid: carried.sid ?? randomBytes(32).toString("hex"),
-    ...(carried.lc ? { lc: carried.lc } : {})
+    ...(carried.lc ? { lc: carried.lc } : {}),
+    ...(carried.app ? { app: carried.app } : {})
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = createHmac("sha256", secret).update(body).digest("base64url");
@@ -216,7 +219,8 @@ export function renewSessionIfDue(sessionToken: string | undefined, secret: stri
   const payload = signedSessionPayload(sessionToken, secret);
   if (!payload || !sessionToken) return null;
   const now = Math.floor(nowMs / 1000);
-  if (payload.exp <= now || payload.user?.id === "user:operator-proof") return null;
+  // A mobile app's device session keeps its fixed 30 days: the app signs in again (Nous decision 2026-10-23).
+  if (payload.exp <= now || payload.user?.id === "user:operator-proof" || payload.app) return null;
   const issuedAt = typeof payload.iat === "number" ? payload.iat : undefined;
   if (payload.v === 2) {
     if (payload.exp - now >= slidingSessionRenewBelowSeconds) return null;
@@ -292,6 +296,16 @@ function sessionIdOf(token: string): string | null {
   }
 }
 
+/** The form a device session's id is kept and revoked in (app_device_sessions.sid_sha256). */
+export function sessionIdHash(sid: string): string {
+  return createHash("sha256").update(sid).digest("hex");
+}
+
+/** A session token's own id, when it is a sliding session (64 hex characters). */
+export function sessionIdOfToken(token: string | undefined): string | null {
+  return token ? sessionIdOf(token) : null;
+}
+
 export class SessionRevocationStore {
   // Keyed by SHA-256 of the token signature, the same form that is persisted.
   private readonly revokedSignatures = new Map<string, number>();
@@ -346,6 +360,13 @@ export class SessionRevocationStore {
     return Promise.all([this.saveSignature(hash, ttl), ...(sid ? [this.saveSignature(sid, ttl)] : [])]).then(() => undefined);
   }
 
+  /** Revokes a session by the SHA-256 of its id (a mobile device session: the table keeps only that hash). */
+  public revokeSessionHash(sidSha256: string, expiryMs: number): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(sidSha256)) return Promise.resolve();
+    this.revokedSignatures.set(sidSha256, Math.max(this.revokedSignatures.get(sidSha256) ?? 0, expiryMs));
+    return this.saveSignature(sidSha256, expiryMs);
+  }
+
   public revokeUser(userId: string, epochMs = Date.now()): Promise<void> {
     if (!userId) return Promise.resolve();
     this.userRevocationEpochs.set(userId, Math.max(this.userRevocationEpochs.get(userId) ?? 0, epochMs));
@@ -392,6 +413,8 @@ export class SessionRevocationStore {
     const sid = sessionIdOf(token);
     const sessionExp = sid ? this.revokedSignatures.get(sid) : undefined;
     if (sessionExp !== undefined && Date.now() <= sessionExp) return true;
+    const sidHashExp = sid && this.revokedSignatures.size ? this.revokedSignatures.get(sessionIdHash(sid)) : undefined;
+    if (sidHashExp !== undefined && Date.now() <= sidHashExp) return true;
     if (userId) {
       const userEpoch = this.userRevocationEpochs.get(userId);
       if (userEpoch !== undefined) {

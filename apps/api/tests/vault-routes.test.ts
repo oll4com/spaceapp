@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { generateVaultTransportKey, newVaultHandle, vaultBase64url } from "@space/contracts";
+import {
+  generateVaultSigningKey, generateVaultTransportKey, newVaultHandle, sealVaultEnvelope, signVaultMessage, vaultBase64url, vaultOperatorRequestMessage, vaultRandomBytes,
+  type VaultOperatorSignedKind
+} from "@space/contracts";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { VaultBrokerUnavailableError } from "../src/vault/broker-client.js";
 import { SENTINEL, enrollment, fixture, itemRecord } from "./support/vault-fakes.js";
@@ -75,9 +78,58 @@ describe("Vault operator routes", () => {
       expect(listed.json().stats).toEqual({ [item.metadata.id]: expect.objectContaining({ uses: 0, lastUsedAt: null }) });
       expect(listed.body).not.toContain(SENTINEL);
       expect((await app.inject({ method: "GET", url, headers: bob.headers })).json().error.code).toBe("VAULT_ITEM_NOT_FOUND");
-      expect((await app.inject({ method: "DELETE", url, headers: bob.headers })).statusCode).toBe(404);
+      // The only delete is the signed batch route; a user without a vault has nothing to delete in.
+      expect((await app.inject({ method: "DELETE", url, headers: alice.headers })).statusCode).toBe(404);
+      expect((await app.inject({ method: "POST", url: "/api/space-vault/items/delete", headers: bob.headers, payload: { ids: [item.metadata.id], epoch: 1, operatorSignature: "s".repeat(86) } })).statusCode).toBe(404);
       expect((await app.inject({ method: "POST", url: "/api/space-vault/revoke", headers: alice.headers, payload: {} })).json()).toEqual({ generation: 1, epoch: 2 });
       expect((await app.inject({ method: "POST", url: "/api/space-vault/revoke", headers: bob.headers, payload: {} })).json().error.code).toBe("VAULT_NOT_ENROLLED");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("needs the unlock key's signature at the current epoch to set the inbox key, rotate the password, set recovery and delete items (Vault review 2026-10-22)", async () => {
+    const { app, brokerKey, session } = await fixture();
+    try {
+      const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
+      const { body, signing } = await enrollment(brokerKey.publicKey, "user:alice");
+      await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
+      const item = await itemRecord("user:alice", body.vaultId);
+      await app.inject({ method: "PUT", url: `/api/space-vault/items/${encodeURIComponent(item.metadata.id)}`, headers: alice.headers, payload: item });
+      const scope = { ownerUserId: "user:alice", vaultId: body.vaultId };
+      const other = (await generateVaultSigningKey()).privateKey;
+      const sign = async (kind: VaultOperatorSignedKind, request: Record<string, unknown>, key = signing.privateKey) =>
+        ({ ...request, operatorSignature: await signVaultMessage(key, vaultOperatorRequestMessage(kind, { ...scope, ...request })) });
+      const call = (method: "PUT" | "POST", url: string, payload: unknown) => app.inject({ method, url, headers: alice.headers, payload: payload as never });
+
+      // The inbox key: unsigned, signed by another key, or signed for another epoch is refused and audited; nothing is stored.
+      const inbox = await generateVaultTransportKey();
+      const inboxBody = { publicKey: vaultBase64url.encode(inbox.publicKey), privateKeyEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), inbox.privateKey, { ...scope, keyVersion: 1, purpose: "INBOX_KEY" }), epoch: 1 };
+      expect((await call("PUT", "/api/space-vault/inbox", inboxBody)).statusCode).toBe(422);
+      expect((await call("PUT", "/api/space-vault/inbox", await sign("inbox", inboxBody, other))).json().error.code).toBe("VAULT_SIGNATURE_REFUSED");
+      expect((await call("PUT", "/api/space-vault/inbox", await sign("inbox", { ...inboxBody, epoch: 2 }))).json().error.code).toBe("VAULT_EPOCH_STALE");
+      expect((await app.inject({ url: "/api/space-vault/inbox", headers: alice.headers })).json().inbox).toBeNull();
+      expect((await call("PUT", "/api/space-vault/inbox", await sign("inbox", inboxBody))).json()).toEqual({ inbox: true });
+      // Deletes: the same signature over the ids.
+      const deletion = { ids: [item.metadata.id], epoch: 1 };
+      expect((await call("POST", "/api/space-vault/items/delete", deletion)).statusCode).toBe(422);
+      expect((await call("POST", "/api/space-vault/items/delete", await sign("item-delete", deletion, other))).json().error.code).toBe("VAULT_SIGNATURE_REFUSED");
+      expect((await app.inject({ url: "/api/space-vault/items", headers: alice.headers })).json().items).toHaveLength(1);
+      expect((await call("POST", "/api/space-vault/items/delete", await sign("item-delete", deletion))).json()).toEqual({ deleted: 1 });
+      // The recovery envelope and the password envelope: a swapped unlock key signed by itself does not pass, the stored key verifies.
+      const recovery = { keyVersion: 1, envelope: await sealVaultEnvelope(vaultRandomBytes(32), vaultRandomBytes(32), { ...scope, keyVersion: 1, purpose: "RECOVERY_SHARE" }), createdAt: new Date().toISOString(), epoch: 1 };
+      expect((await call("PUT", "/api/space-vault/recovery", await sign("recovery", recovery, other))).json().error.code).toBe("VAULT_SIGNATURE_REFUSED");
+      expect((await call("PUT", "/api/space-vault/recovery", await sign("recovery", recovery))).json()).toEqual({ recovery: true });
+      const rotation = { expectedEpoch: 1, kdf: body.kdf, passwordEnvelope: body.passwordEnvelope, unlockPublicKey: body.unlockPublicKey, unlockKeyVersion: 1 };
+      const swapped = await generateVaultSigningKey();
+      expect((await call("POST", "/api/space-vault/password", await sign("password", { ...rotation, unlockPublicKey: vaultBase64url.encode(swapped.publicKey) }, swapped.privateKey))).json().error.code).toBe("VAULT_SIGNATURE_REFUSED");
+      expect((await call("POST", "/api/space-vault/password", await sign("password", rotation))).json()).toEqual({ epoch: 2 });
+      // After the rotation the epoch moved: a signature for epoch 1 is stale now.
+      expect((await call("PUT", "/api/space-vault/inbox", await sign("inbox", inboxBody))).json().error.code).toBe("VAULT_EPOCH_STALE");
+      const audit = (await app.inject({ url: "/api/space-vault/audit?limit=30", headers: alice.headers })).json();
+      const events = audit.entries.map((entry: { event: { action: string; result: string; reason: string | null } }) => `${entry.event.action}:${entry.event.result}:${entry.event.reason}`);
+      expect(events).toEqual(expect.arrayContaining(["INBOX_SET:BLOCKED:SIGNATURE_REFUSED", "INBOX_SET:BLOCKED:EPOCH_STALE", "INBOX_SET:OK:null", "ITEM_DELETE:BLOCKED:SIGNATURE_REFUSED",
+        "RECOVERY_SET:BLOCKED:SIGNATURE_REFUSED", "PASSWORD_ROTATE:BLOCKED:SIGNATURE_REFUSED", "PASSWORD_ROTATE:OK:null"]));
     } finally {
       await app.close();
     }
@@ -97,7 +149,7 @@ describe("Vault agent routes", () => {
 
       expect((await call("fill", { handle: newVaultHandle("vault_item"), fields: ["PASSWORD"] }, { "content-type": "application/json" })).statusCode).toBe(401);
       // No vault yet: still the fixed result, with nothing to audit in.
-      expect((await call("list", {})).json()).toEqual({ status: "BLOCKED", auditId: null });
+      expect((await call("list", {})).json()).toEqual({ status: "BLOCKED", auditId: null, reason: "NOT_ENROLLED" });
       const { body } = await enrollment(brokerKey.publicKey, (await store.getRoom(room.id)).ownerUserId!);
       await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
       const handle = newVaultHandle("vault_item");
@@ -106,7 +158,7 @@ describe("Vault agent routes", () => {
         ["generate-fill", { purpose: "CHANGE_PASSWORD", handle }], ["save", { site: "https://shop.example", username: "synthetic@example.com", password: SENTINEL, label: "Shop" }]] as const) {
         const answer = await call(path, payload);
         expect(answer.statusCode, path).toBe(200);
-        expect(answer.json(), path).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/) });
+        expect(answer.json(), path).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/), reason: "AGENT_ACCESS_OFF" });
         expect(answer.body, path).not.toContain(SENTINEL);
       }
       expect((await call("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), agentAccess: false, delegatedItems: 0, pendingItems: 0 });
@@ -123,6 +175,56 @@ describe("Vault agent routes", () => {
       }
       const audit = (await app.inject({ method: "GET", url: "/api/space-vault/audit?limit=3", headers: alice.headers })).json();
       expect(audit.entries[0].event).toMatchObject({ actor: "AGENT", paneId: pane.id });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("Vault API key handoff", () => {
+  it("hands a pasted key to one of the owner's panes once, deletes its value once written, and lists ids and states only (operator request 2026-10-22)", async () => {
+    const { app, store, config, brokerKey, session } = await fixture();
+    try {
+      const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
+      const bob = await session({ id: "user:bob", email: "bob@space.local", role: "USER" });
+      const { body } = await enrollment(brokerKey.publicKey, "user:alice");
+      await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
+      const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Keys", initialPaneCount: 0 } })).json();
+      const pane = store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+      const cli = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING", purpose: "NORMAL" });
+      const agent = { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: cli.sessionId })!, "content-type": "application/json" };
+      const call = (path: string, payload: unknown) => app.inject({ method: "POST", url: `/api/cli/space-vault/${path}`, headers: agent, payload: payload as never });
+      // The operator pastes a key: an id comes back, never the value; the list shows ids and states, per owner.
+      const created = await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "Synthetic service", value: SENTINEL, expiresInHours: 24 } });
+      expect(created.statusCode).toBe(201);
+      const key = created.json().key;
+      expect(key).toMatchObject({ id: expect.stringMatching(/^vault_key:/), label: "Synthetic service", hasValue: true, takenAt: null, usedAt: null });
+      expect(created.body).not.toContain(SENTINEL);
+      const listed = await app.inject({ url: "/api/space-vault/keys", headers: alice.headers });
+      expect(listed.json().keys.map((entry: { id: string }) => entry.id)).toEqual([key.id]);
+      expect(listed.body).not.toContain(SENTINEL);
+      expect((await app.inject({ url: "/api/space-vault/keys", headers: bob.headers })).json().keys).toEqual([]);
+      expect((await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "Two lines", value: "a\nb" } })).statusCode).toBe(422);
+      // Agents need the switch on; then the owner's pane takes the value once and confirms the write, which deletes the value.
+      expect((await call("key-take", { id: key.id })).json()).toMatchObject({ status: "BLOCKED", reason: "AGENT_ACCESS_OFF" });
+      await app.inject({ method: "PUT", url: "/api/space-vault/agent-access", headers: alice.headers, payload: { enabled: true } });
+      expect((await call("key-take", { id: newVaultHandle("vault_key") })).json()).toMatchObject({ status: "BLOCKED", reason: "KEY_UNAVAILABLE" });
+      expect((await call("key-used", { id: key.id })).json()).toMatchObject({ status: "BLOCKED", reason: "KEY_NOT_TAKEN" });
+      expect((await call("key-take", { id: key.id })).json()).toEqual({ status: "TAKEN", auditId: expect.stringMatching(/^vault_audit:/), reason: null, value: SENTINEL });
+      // The same pane may take it again (a failed write), another pane may not.
+      expect((await call("key-take", { id: key.id })).json().status).toBe("TAKEN");
+      expect((await call("key-used", { id: key.id })).json()).toMatchObject({ status: "USED" });
+      expect((await call("key-take", { id: key.id })).json()).toMatchObject({ status: "BLOCKED", reason: "KEY_UNAVAILABLE" });
+      const after = (await app.inject({ url: "/api/space-vault/keys", headers: alice.headers })).json().keys[0];
+      expect(after).toMatchObject({ id: key.id, hasValue: false, usedByPaneId: pane.id });
+      expect(after.usedAt).toBeTruthy();
+      // The receipt goes only on the owner's delete; everything is audited as KEY_HANDOFF.
+      expect((await app.inject({ method: "DELETE", url: `/api/space-vault/keys/${encodeURIComponent(key.id)}`, headers: bob.headers })).statusCode).toBe(404);
+      expect((await app.inject({ method: "DELETE", url: `/api/space-vault/keys/${encodeURIComponent(key.id)}`, headers: alice.headers })).json()).toEqual({ deleted: true });
+      const audit = (await app.inject({ url: "/api/space-vault/audit?limit=20", headers: alice.headers })).json();
+      expect(audit.entries.map((entry: { event: { action: string; result: string } }) => `${entry.event.action}:${entry.event.result}`))
+        .toEqual(expect.arrayContaining(["KEY_HANDOFF:OK", "KEY_HANDOFF:TAKEN", "KEY_HANDOFF:USED", "KEY_HANDOFF:BLOCKED"]));
+      expect(JSON.stringify(audit)).not.toContain(SENTINEL);
     } finally {
       await app.close();
     }

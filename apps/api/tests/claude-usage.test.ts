@@ -8,8 +8,9 @@ import {
   parseClaudeOAuthUsage,
   readClaudeProfileUsage
 } from "../src/claude-usage.js";
-import { claudeGatewayPool, createClaudeUsageAccountProvider } from "../src/claude-usage-services.js";
+import { anthropicMonthSpendUsd, claudeGatewayApiKeyUsage, claudeGatewayPool, createClaudeUsageAccountProvider } from "../src/claude-usage-services.js";
 import type { GatewayAccountRecord } from "@space/db";
+import type { GatewayRequestLog } from "@space/contracts";
 
 const now = new Date("2026-10-11T01:00:00.000Z");
 const accessToken = "sk-ant-oat01-fixture-secret";
@@ -26,6 +27,13 @@ const teamUsage = {
 };
 
 const roots: string[] = [];
+
+// An old sample answers at once and starts a fresh collection in the background; this reads after that collection.
+async function afterRefresh<T>(provider: () => Promise<T>): Promise<T> {
+  await provider();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return provider();
+}
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -323,7 +331,7 @@ describe("Claude usage account provider", () => {
     expect(first.data[1]).toMatchObject({ id: "dev", status: "CONNECTED", fiveHourRemainingPercent: null, weeklyRemainingPercent: null, sampledAt: null });
     status = "IDLE";
     clock = Date.parse("2026-10-11T06:00:00.000Z");
-    const idle = await provider();
+    const idle = await afterRefresh(provider);
     expect(idle.data[0]).toEqual({
       id: "lab",
       label: "lab",
@@ -480,7 +488,8 @@ describe("Claude usage account provider", () => {
 
   it("tells what Space Gateway sent through the key: nothing, or how much and when", async () => {
     const keyAccount = record("key", { email: null, label: "Claude API key …kkkk", planType: "api", source: "API_KEY", lastUsedAt: "2026-10-11T00:40:00.000Z" });
-    const gatewayAccountUsage = vi.fn(async (accountId: string) => ({ requests: accountId === keyAccount.id ? 3 : 99, costUsd: 0.4321 }));
+    const lastRequest = { at: "2026-10-11T00:59:00.000Z", succeeded: true };
+    const gatewayAccountUsage = vi.fn(async (accountId: string) => ({ requests: accountId === keyAccount.id ? 3 : 99, costUsd: 0.4321, lastRequest }));
     const provider = createClaudeUsageAccountProvider({
       listProfiles: async () => [{ profileId: "api", displayName: "api" }, { profileId: "crew", displayName: "crew" }],
       readUsage: async (profileId) => profileId === "api" ? { ...idle(null), status: "API_KEY" as const, plan: null, apiKeyVerified: true } : idle("crew@spaceapp.dev"),
@@ -488,7 +497,7 @@ describe("Claude usage account provider", () => {
       gatewaySettings: async () => ({ claudeApiKeyFallback: true }), gatewayAccountUsage, now: () => now
     });
     const list = await provider();
-    expect(list.data[0]).toMatchObject({ id: "api", apiKeyUsage: { requests: 3, costUsd: 0.4321, lastUsedAt: "2026-10-11T00:40:00.000Z" } });
+    expect(list.data[0]).toMatchObject({ id: "api", apiKeyUsage: { requests: 3, costUsd: 0.4321, lastUsedAt: "2026-10-11T00:40:00.000Z", lastRequest } });
     // Only the key account's totals are read, once, and only for the API-key profile.
     expect(gatewayAccountUsage).toHaveBeenCalledTimes(1);
     expect(gatewayAccountUsage).toHaveBeenCalledWith(keyAccount.id);
@@ -500,6 +509,65 @@ describe("Claude usage account provider", () => {
       gatewayAccountUsage: async () => ({ requests: 0, costUsd: 0 }), now: () => now
     });
     expect((await unused()).data[0]).toMatchObject({ gatewayFallback: "OFF", apiKeyUsage: { requests: 0, costUsd: 0, lastUsedAt: null } });
+  });
+
+  it.each(["success", "error", "missing", "unavailable"])("reads the latest completed API request with outcome %s", async (status) => {
+    const at = "2026-10-11T00:59:00.000Z";
+    const repository = {
+      usageTotals: vi.fn(async () => ({ requests: 3, costUsd: 0.4321, inputTokens: 100, cachedInputTokens: 0, outputTokens: 20 })),
+      listRequestLogs: vi.fn(async () => {
+        if (status === "unavailable") throw new Error("logs unavailable");
+        return status === "missing" ? [] : [{ requestedAt: at, status } as GatewayRequestLog];
+      })
+    };
+    expect(await claudeGatewayApiKeyUsage(repository, "key", now.getTime())).toMatchObject({
+      requests: 3, costUsd: 0.4321,
+      lastRequest: status === "missing" || status === "unavailable" ? null : { at, succeeded: status === "success" }
+    });
+    expect(repository.listRequestLogs).toHaveBeenCalledWith({ limit: 1, accountId: "key", filter: { from: "2026-10-11T00:55:00.000Z" } });
+  });
+
+  it("gives the api profile this month's Anthropic bill and the monthly budget set in Space Gateway", async () => {
+    const keyAccount = record("key", { email: null, label: "Claude API key …kkkk", planType: "api", source: "API_KEY" });
+    const make = (anthropicMonthlyBudgetUsd: number | null, spent: number | null) => createClaudeUsageAccountProvider({
+      listProfiles: async () => [{ profileId: "api", displayName: "api" }, { profileId: "crew", displayName: "crew" }],
+      readUsage: async (profileId) => profileId === "api" ? { ...idle(null), status: "API_KEY" as const, plan: null, apiKeyVerified: true } : idle("crew@spaceapp.dev"),
+      gatewayAccounts: async () => [keyAccount], gatewaySettings: async () => ({ claudeApiKeyFallback: true, anthropicMonthlyBudgetUsd }),
+      anthropicMonthUsd: async () => spent, now: () => now
+    });
+    const list = await make(500, 42.5)();
+    expect(list.data[0]).toMatchObject({ id: "api", apiKeyMonth: { spentUsd: 42.5, budgetUsd: 500 } });
+    expect(list.data[1]).not.toHaveProperty("apiKeyMonth");
+    expect((await make(null, 7)()).data[0]).toMatchObject({ apiKeyMonth: { spentUsd: 7, budgetUsd: null } });
+    expect((await make(null, null)()).data[0]).not.toHaveProperty("apiKeyMonth");
+  });
+
+  it("sums this UTC month's bill: Anthropic's posted days, the gateway's estimate for days not posted yet", () => {
+    const day = (date: string, reported: boolean, organizationUsd: number, gatewayEstimateUsd: number) =>
+      ({ day: date, reported, organizationUsd, workspaceUsd: 0, gatewayEstimateUsd, gatewayBilledUsd: 0, models: [] });
+    const status = { configured: true, keyHint: "…abcd", savedAt: null, lastSyncAt: null, lastError: null, upstream: [] };
+    const report = { status, days: [day("2026-10-11", false, 0, 3), day("2026-10-10", true, 20, 9), day("2026-09-30", true, 100, 0)] };
+    expect(anthropicMonthSpendUsd(report, now.getTime())).toBe(23);
+    expect(anthropicMonthSpendUsd({ status: { ...status, configured: false }, days: [] }, now.getTime())).toBeNull();
+  });
+
+  it("answers an old sample at once and collects a fresh one in the background", async () => {
+    let clock = now.getTime();
+    let release: (() => void) | null = null;
+    let fiveHourUsedPercent = 10;
+    const readUsage = vi.fn(async () => {
+      if (clock !== now.getTime()) await new Promise<void>((resolve) => { release = resolve; });
+      return { ...idle("crew@spaceapp.dev"), status: "CONNECTED" as const, fiveHourUsedPercent, fiveHourResetAt: "2026-10-11T04:00:00.000Z" };
+    });
+    const provider = createClaudeUsageAccountProvider({ listProfiles: async () => [{ profileId: "crew", displayName: "crew" }], readUsage, now: () => new Date(clock) });
+    expect((await provider()).data[0]).toMatchObject({ fiveHourRemainingPercent: 90 });
+    clock += 30 * 60_000;
+    fiveHourUsedPercent = 40;
+    // The wrapper now hangs; the menu still gets the last sample without waiting for it.
+    expect((await provider()).data[0]).toMatchObject({ fiveHourRemainingPercent: 90 });
+    expect(readUsage).toHaveBeenCalledTimes(2);
+    release!();
+    await vi.waitFor(async () => expect((await provider()).data[0]).toMatchObject({ fiveHourRemainingPercent: 60 }));
   });
 
   it("prefers the gateway's current sample over an idle profile's own older one", async () => {
@@ -522,7 +590,7 @@ describe("Claude usage account provider", () => {
     expect(gatewayAccounts).not.toHaveBeenCalled();
     status = "IDLE";
     clock = Date.parse("2026-10-11T01:11:00.000Z");
-    expect((await provider()).data[0]).toMatchObject({
+    expect((await afterRefresh(provider)).data[0]).toMatchObject({
       status: "CONNECTED", fiveHourRemainingPercent: 20, fiveHourResetAt: "2026-10-11T04:49:59.732Z", weeklyRemainingPercent: 80,
       weeklyScope: null, sampledAt: "2026-10-11T01:11:00.000Z"
     });
@@ -554,7 +622,7 @@ describe("Claude usage account provider", () => {
     expect((await provider()).data).toHaveLength(1);
     fail = true;
     clock += 3 * 60_000;
-    expect(await provider()).toMatchObject({ isStale: false, data: [expect.objectContaining({ id: "api", status: "ERROR" })] });
+    expect(await afterRefresh(provider)).toMatchObject({ isStale: false, data: [expect.objectContaining({ id: "api", status: "ERROR" })] });
     clock += 8 * 60_000;
     const stale = await provider();
     expect(stale).toMatchObject({ isStale: true, data: [], error: "Claude usage data is temporarily unavailable." });

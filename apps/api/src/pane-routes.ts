@@ -247,7 +247,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
     // keeps it, not the pane row (the Browser Host parses pane rows with the contracts it started with).
     for (const [index, item] of input.panes.entries()) {
       const runtimeId = paneInputs[index]?.terminalRuntimeId;
-      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT" && item.mode !== "FREELANCE_COPILOT" && item.mode !== "DESIGN" && item.mode !== "APP_STUDIO") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
+      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT" && item.mode !== "FREELANCE_COPILOT" && item.mode !== "DESIGN" && item.mode !== "APP_STUDIO" && item.mode !== "VIDEO" && item.mode !== "SECURITY_COPILOT") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
       if (!await store.getCliAccountProfile(runtimeId, item.accountProfileId)) {
         throw new SpaceConflictError(`CLI account profile ${runtimeId}/${item.accountProfileId} was not found.`);
       }

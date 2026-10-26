@@ -42,9 +42,9 @@ async function fixture() {
   const eventBus = new SpaceEventBus();
   const roomEvents: Event[] = [];
   eventBus.subscribe((event) => { if (event.type === "JOB_APPLY_UPDATED") roomEvents.push(event); });
-  const kickoffs: Array<{ paneId: string; runId: string }> = [];
+  const kickoffs: Array<{ paneId: string; runId: string; discover: boolean }> = [];
   const app = await createApp({ store, config: { ...config, jobApplyRoot: join(root, "job-apply") }, telegramIntegrationManager, eventBus,
-    jobApplyKickoff: async (pane: Pane, run: JobApplyRun) => { kickoffs.push({ paneId: pane.id, runId: run.id }); },
+    jobApplyKickoff: async (pane: Pane, run: JobApplyRun, discover: boolean) => { kickoffs.push({ paneId: pane.id, runId: run.id, discover }); },
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
@@ -63,7 +63,6 @@ describe("job copilot run supervisor", () => {
     const { app, pane, headers, agent, roomEvents, kickoffs } = await fixture();
     try {
       const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
-      expect((await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).statusCode).toBe(409);
       const queued = await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/1", "nope", "https://jobs.ashbyhq.com/globex/2"] } });
       expect(queued.statusCode).toBe(200);
       expect(queued.json()).toMatchObject({ existing: 0, rejected: ["nope"] });
@@ -84,7 +83,7 @@ describe("job copilot run supervisor", () => {
       expect(started.statusCode).toBe(200);
       expect(started.json()).toMatchObject({ status: "RUNNING", kickoffSent: true });
       expect(started.json().run.counters).toEqual({ taken: 0, submitted: 0, verified: 0, failed: 0, needsUser: 0 });
-      expect(kickoffs).toEqual([{ paneId: pane.id, runId: started.json().run.id }]);
+      expect(kickoffs).toEqual([{ paneId: pane.id, runId: started.json().run.id, discover: false }]);
       expect(started.json().run.kickoffSentAt).not.toBeNull();
 
       // job_next takes the head of the queue (Globex after the reorder) and returns the task packet.
@@ -219,7 +218,7 @@ describe("job copilot run supervisor", () => {
   });
 
   it("defers a posting until an employer limit expires, holds the company's other postings and serves them after the date", async () => {
-    const { app, pane, headers, agent } = await fixture();
+    const { app, pane, headers, agent, kickoffs } = await fixture();
     try {
       const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
       // Two postings of one company on different boards (pacing is per board) and one of another company.
@@ -247,12 +246,13 @@ describe("job copilot run supervisor", () => {
       await app.inject({ method: "PATCH", url: `/api/cli/job-apply/applications/${globex!.id}`, headers: agent, payload: { status: "FAILED", notes: "closed" } });
       await app.inject({ method: "POST", url: "/api/cli/job-apply/job/report", headers: agent, payload: { applicationId: globex!.id, outcome: "failed", summary: "closed" } });
 
-      // Only deferred work is left: the run finishes and says when the next posting is free; a new run waits for it.
+      // Only deferred work is left: the run finishes and says when the next posting is free. Start still works: the new
+      // run has nothing to take, so its kickoff sends the agent to find new postings first.
       const finished = await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } });
       expect(finished.json()).toMatchObject({ done: true, reason: "QUEUE_DEFERRED", nextDeferredAt: until, run: { status: "STOPPED" } });
       const early = await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
-      expect(early.statusCode).toBe(409);
-      expect(early.json().error.message).toContain("waits for an employer limit");
+      expect(early.json()).toMatchObject({ status: "RUNNING", kickoffSent: true });
+      expect(kickoffs.at(-1)).toMatchObject({ runId: early.json().run.id, discover: true });
 
       // Once the date has passed, both Acme postings are served again and the deferral clears when one is taken.
       await new Promise((resolve) => setTimeout(resolve, Date.parse(until) - Date.now() + 100));

@@ -52,6 +52,8 @@ export function sanitizeControlExecute(raw:unknown):unknown{
    }
    if(act.kind==="resource"&&act.operation==="panes.open"&&act.input&&typeof act.input==="object"){
     const inputObj={...(act.input as Record<string,unknown>)};
+    // Nous sent {type, count} 8 times in 7 days (review 2026-10-24): one type is a count of that type.
+    if(!inputObj.counts&&typeof inputObj.type==="string"){inputObj.counts={[inputObj.type]:inputObj.count??1};delete inputObj.type;delete inputObj.count;}
     if(inputObj.counts&&typeof inputObj.counts==="object"){
      const rawCounts=inputObj.counts as Record<string,unknown>;
      const cleanCounts:Record<string,number>={};
@@ -84,6 +86,7 @@ export function sanitizeControlExecute(raw:unknown):unknown{
      act.input=inputObj;
     }
    }
+    if(act.kind==="resource"&&act.operation==="panes.move"&&!act.id&&typeof (act.input as Record<string,unknown>|undefined)?.paneId==="string")act.id=(act.input as Record<string,unknown>).paneId;
     if(act.kind==="resource"&&act.operation==="ui.scale"&&act.input&&typeof act.input==="object"){
      const inputObj={...(act.input as Record<string,unknown>)};
      if(typeof inputObj.scale==="number"&&!inputObj.zoomLevel)inputObj.zoomLevel=inputObj.scale;

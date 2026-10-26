@@ -199,6 +199,10 @@ The default installation roots are:
 To isolate an installation or clean-room test, set `SPACEAPP_HOME` to an
 absolute path before every launcher command.
 
+Before it first uses a SpaceApp version, the launcher checks its images' provenance on ghcr.io. Behind a proxy it
+uses `HTTPS_PROXY` and `NO_PROXY`, or else the proxy in `~/.docker/config.json`. On an air-gapped host,
+`SPACEAPP_IMAGE_VERIFY=off` skips that check; every launcher command then prints a warning.
+
 ## Register a workspace
 
 SpaceApp mounts no host project by default. Register only directories the CLI

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureSharedServer } from '../../deploy/docker/opencode-shared-server.mjs';
 
-// VM218 2026-10-20: two OpenCode panes started together in the Getting Started room; each ran its own --standalone server on
+// Linux lab, 2026-10-20: two OpenCode panes started together in the Getting Started room; each ran its own --standalone server on
 // the shared provider store and the second died ("Standalone server exited before reporting readiness"). The fake below
 // behaves the same way: one server per store, a second one exits; /api/info answers with the server's Basic auth.
 const fakeOpenCode = `#!/usr/bin/env node

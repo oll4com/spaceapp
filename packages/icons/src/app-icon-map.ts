@@ -114,6 +114,7 @@ export const appIconMaterialSymbols = {
   "Megaphone": "campaign",
   "Handshake": "handshake",
   "TabletSmartphone": "devices",
+  "ShieldHalf": "shield_lock",
   "Gavel": "gavel",
   "NotebookPen": "edit_note",
   "Blend": "join",

@@ -54,10 +54,10 @@ const fromVaultRow = (row: VaultRow): VaultState => ({
   agentAccess: row.agentAccess === true
 });
 
-interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
-const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
+interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; googleAccountId: string | null; loginKey: string | null; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
+const itemColumns = `i.id, i.label, i.origins, i.field_roles AS "fieldRoles", i.policy, i.status, i.google_account_id AS "googleAccountId", i.login_key AS "loginKey", i.key_version AS "keyVersion", i.dek_envelope AS "dekEnvelope", i.fields, i.history`;
 const fromItemRow = (row: ItemRow): VaultItemRecord => vaultItemRecordSchema.parse({
-  metadata: { id: row.id, label: row.label, origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status },
+  metadata: { id: row.id, label: row.label, origins: row.origins, fieldRoles: row.fieldRoles, policy: row.policy, status: row.status, googleAccountId: row.googleAccountId, loginKey: row.loginKey },
   keyVersion: row.keyVersion, dekEnvelope: row.dekEnvelope, fields: row.fields, history: row.history
 });
 
@@ -163,23 +163,36 @@ export class PostgresVaultRepository {
   }
 
   async saveItem(owner: string, input: VaultItemRecordInput): Promise<VaultItemRecord | null> {
-    const item = vaultItemRecordSchema.parse(input);
-    const { metadata } = item;
+    return (await this.saveItems(owner, [input]))?.[0] ?? null;
+  }
+
+  /**
+   * Several items in one transaction, each audited as ITEM_SAVE (a Chrome import of hundreds of logins in a few requests). An
+   * entry is null when its handle belongs to another owner; the whole answer is null without a vault.
+   */
+  async saveItems(owner: string, inputs: VaultItemRecordInput[]): Promise<Array<VaultItemRecord | null> | null> {
+    const items = inputs.map((input) => vaultItemRecordSchema.parse(input));
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
       if (!vault) return null;
-      // A handle belongs to one owner for good: another owner's id is never overwritten.
-      const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb)
-        ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, origins = EXCLUDED.origins, field_roles = EXCLUDED.field_roles, policy = EXCLUDED.policy,
-          key_version = EXCLUDED.key_version, dek_envelope = EXCLUDED.dek_envelope, fields = EXCLUDED.fields, status = EXCLUDED.status, history = EXCLUDED.history, updated_at = now()
-        WHERE i.owner_user_id = EXCLUDED.owner_user_id AND i.vault_id = EXCLUDED.vault_id
-        RETURNING ${itemColumns}`,
-      [metadata.id, vault.id, owner, metadata.label, metadata.origins, metadata.fieldRoles, JSON.stringify(metadata.policy), item.keyVersion,
-        JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history)]);
-      if (!saved.rows[0]) return null;
-      await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_SAVE", result: "OK", itemId: metadata.id });
-      return fromItemRow(saved.rows[0]);
+      const results: Array<VaultItemRecord | null> = [];
+      for (const item of items) {
+        const { metadata } = item;
+        // A handle belongs to one owner for good: another owner's id is never overwritten.
+        const saved = await client.query<ItemRow>(`INSERT INTO vault_items AS i (id, vault_id, owner_user_id, label, origins, field_roles, policy, key_version, dek_envelope, fields, status, history, google_account_id, login_key)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12::jsonb, $13, $14)
+          ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, origins = EXCLUDED.origins, field_roles = EXCLUDED.field_roles, policy = EXCLUDED.policy,
+            key_version = EXCLUDED.key_version, dek_envelope = EXCLUDED.dek_envelope, fields = EXCLUDED.fields, status = EXCLUDED.status, history = EXCLUDED.history,
+            google_account_id = EXCLUDED.google_account_id, login_key = EXCLUDED.login_key, updated_at = now()
+          WHERE i.owner_user_id = EXCLUDED.owner_user_id AND i.vault_id = EXCLUDED.vault_id
+          RETURNING ${itemColumns}`,
+        [metadata.id, vault.id, owner, metadata.label, metadata.origins, metadata.fieldRoles, JSON.stringify(metadata.policy), item.keyVersion,
+          JSON.stringify(item.dekEnvelope), JSON.stringify(item.fields), metadata.status, JSON.stringify(item.history), metadata.googleAccountId, metadata.loginKey]);
+        if (!saved.rows[0]) { results.push(null); continue; }
+        await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_SAVE", result: "OK", itemId: metadata.id });
+        results.push(fromItemRow(saved.rows[0]));
+      }
+      return results;
     });
   }
 
@@ -196,6 +209,20 @@ export class PostgresVaultRepository {
     return rows.map((row) => fromItemRow(row).metadata);
   }
 
+  /** Every item with its envelopes in one read (the dock's hand-over and Chrome import, instead of one request per item). */
+  async listItemRecords(owner: string): Promise<VaultItemRecord[]> {
+    const rows = (await this.pool.query<ItemRow>(`SELECT ${itemColumns} FROM vault_items i JOIN users u ON u.id = i.owner_user_id AND u.disabled_at IS NULL
+      WHERE i.owner_user_id = $1 ORDER BY lower(i.label), i.id`, [owner])).rows;
+    return rows.map(fromItemRow);
+  }
+
+  /** The items of one login under every account (same browser-made login key), through vault_items_login_key_idx. */
+  async itemsByLoginKey(owner: string, loginKey: string): Promise<VaultItemMetadata[]> {
+    const rows = (await this.pool.query<ItemRow>(`SELECT ${itemColumns} FROM vault_items i JOIN users u ON u.id = i.owner_user_id AND u.disabled_at IS NULL
+      WHERE i.owner_user_id = $1 AND i.login_key = $2`, [owner, loginKey])).rows;
+    return rows.map((row) => fromItemRow(row).metadata);
+  }
+
   /** Per item: when it was added and last changed, and how many fills used it (successful FILL audit events). */
   async itemStats(owner: string): Promise<Record<string, { addedAt: string; changedAt: string; uses: number; lastUsedAt: string | null }>> {
     const rows = (await this.pool.query<{ id: string; addedAt: Date | string; changedAt: Date | string; uses: string | number; lastUsedAt: Date | string | null }>(
@@ -207,13 +234,22 @@ export class PostgresVaultRepository {
   }
 
   async deleteItem(owner: string, id: string): Promise<boolean> {
+    return (await this.deleteItems(owner, [id])) === 1;
+  }
+
+  /** The operator's explicit delete of several items in one transaction, each audited as ITEM_DELETE; answers how many went. */
+  async deleteItems(owner: string, ids: string[]): Promise<number> {
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
-      if (!vault) return false;
-      const deleted = await client.query(`DELETE FROM vault_items WHERE owner_user_id = $1 AND vault_id = $2 AND id = $3`, [owner, vault.id, id]);
-      if (((deleted as { rowCount?: number | null }).rowCount ?? 0) === 0) return false;
-      await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_DELETE", result: "OK", itemId: id });
-      return true;
+      if (!vault) return 0;
+      let count = 0;
+      for (const id of new Set(ids)) {
+        const deleted = await client.query(`DELETE FROM vault_items WHERE owner_user_id = $1 AND vault_id = $2 AND id = $3`, [owner, vault.id, id]);
+        if (((deleted as { rowCount?: number | null }).rowCount ?? 0) === 0) continue;
+        await this.audit(client, vault, { actor: "OPERATOR", action: "ITEM_DELETE", result: "OK", itemId: id });
+        count += 1;
+      }
+      return count;
     });
   }
 
@@ -457,5 +493,52 @@ export class PostgresVaultRepository {
     });
   }
 
+  // API key handoff (operator request 2026-10-22, plan clipboard:-qvpC_Q0rAVg): a key the operator pasted, sealed by the API
+  // (ConnectorCrypto, a string here), taken once by one of the owner's panes and deleted once that pane wrote it where it belongs.
+  async addHandoffKey(owner: string, input: { id: string; label: string; valueSealed: string; expiresAt: string }): Promise<boolean> {
+    const result = await this.pool.query(`INSERT INTO vault_handoff_keys (id, owner_user_id, label, value_sealed, expires_at)
+      SELECT $1, $2, $3, $4, $5 FROM users WHERE id = $2 AND disabled_at IS NULL`, [input.id, owner, input.label, input.valueSealed, input.expiresAt]);
+    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
+  }
+  /** The owner's keys, newest first, never a value; a key past its expiry loses its value here. */
+  async listHandoffKeys(owner: string): Promise<VaultHandoffKey[]> {
+    await this.pool.query(`UPDATE vault_handoff_keys SET value_sealed = NULL WHERE owner_user_id = $1 AND value_sealed IS NOT NULL AND expires_at <= now()`, [owner]);
+    const rows = (await this.pool.query<HandoffRow>(`SELECT ${handoffColumns} FROM vault_handoff_keys k JOIN users u ON u.id = k.owner_user_id AND u.disabled_at IS NULL
+      WHERE k.owner_user_id = $1 ORDER BY k.created_at DESC`, [owner])).rows;
+    return rows.map(fromHandoffRow);
+  }
+  /** The sealed value for one of the owner's panes: once per key until it is used; null when unknown, used, expired or another pane took it. */
+  async takeHandoffKey(owner: string, id: string, paneId: string): Promise<{ label: string; valueSealed: string } | null> {
+    const row = (await this.pool.query<{ label: string; valueSealed: string }>(`UPDATE vault_handoff_keys k SET taken_at = now(), taken_by_pane_id = $3 FROM users u
+      WHERE k.id = $2 AND k.owner_user_id = $1 AND u.id = k.owner_user_id AND u.disabled_at IS NULL AND k.used_at IS NULL AND k.value_sealed IS NOT NULL AND k.expires_at > now()
+        AND (k.taken_by_pane_id IS NULL OR k.taken_by_pane_id = $3)
+      RETURNING k.label, k.value_sealed AS "valueSealed"`, [owner, id, paneId])).rows[0];
+    return row ?? null;
+  }
+  /** The pane that took the key wrote it where it belongs: the value is deleted, the receipt stays. */
+  async useHandoffKey(owner: string, id: string, paneId: string): Promise<boolean> {
+    const result = await this.pool.query(`UPDATE vault_handoff_keys SET used_at = now(), used_by_pane_id = $3, value_sealed = NULL
+      WHERE id = $2 AND owner_user_id = $1 AND used_at IS NULL AND taken_by_pane_id = $3`, [owner, id, paneId]);
+    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
+  }
+  async deleteHandoffKey(owner: string, id: string): Promise<boolean> {
+    const result = await this.pool.query(`DELETE FROM vault_handoff_keys WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
+    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
+  }
+
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }
+
+/** A key the operator handed to agents, as the dock lists it (never its value). */
+export interface VaultHandoffKey {
+  id: string; label: string; createdAt: string; expiresAt: string; takenAt: string | null; takenByPaneId: string | null; usedAt: string | null; usedByPaneId: string | null;
+  /** False once used or expired: nothing is left to take. */
+  hasValue: boolean;
+}
+interface HandoffRow { id: string; label: string; createdAt: Date | string; expiresAt: Date | string; takenAt: Date | string | null; takenByPaneId: string | null; usedAt: Date | string | null; usedByPaneId: string | null; hasValue: boolean }
+const handoffColumns = `k.id, k.label, k.created_at AS "createdAt", k.expires_at AS "expiresAt", k.taken_at AS "takenAt", k.taken_by_pane_id AS "takenByPaneId",
+  k.used_at AS "usedAt", k.used_by_pane_id AS "usedByPaneId", (k.value_sealed IS NOT NULL) AS "hasValue"`;
+const fromHandoffRow = (row: HandoffRow): VaultHandoffKey => ({
+  id: row.id, label: row.label, createdAt: iso(row.createdAt), expiresAt: iso(row.expiresAt), takenAt: row.takenAt === null ? null : iso(row.takenAt), takenByPaneId: row.takenByPaneId,
+  usedAt: row.usedAt === null ? null : iso(row.usedAt), usedByPaneId: row.usedByPaneId, hasValue: row.hasValue
+});

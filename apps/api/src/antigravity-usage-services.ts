@@ -151,6 +151,7 @@ export function createAntigravityUsageAccountProvider(
   const codexHome = options.codexHome ?? "/var/lib/spaceapp-user/.codex";
   const fetchTimeoutMs = options.fetchTimeoutMs ?? ANTIGRAVITY_FETCH_TIMEOUT_MS;
 
+  let collectFailed = false;
   let cached: { value: AntigravityUsageAccountList; collectedAtMs: number } | null = null;
   let inFlight: Promise<AntigravityUsageAccountList> | null = null;
 
@@ -403,7 +404,13 @@ export function createAntigravityUsageAccountProvider(
 
   function refresh(): Promise<AntigravityUsageAccountList> {
     if (inFlight) return inFlight;
-    const request = collect().catch(() => unavailable());
+    const request = collect().then((value) => {
+      collectFailed = false;
+      return value;
+    }, () => {
+      collectFailed = true;
+      return unavailable();
+    });
     inFlight = request;
     const clear = () => {
       if (inFlight === request) inFlight = null;
@@ -413,13 +420,12 @@ export function createAntigravityUsageAccountProvider(
   }
 
   async function current(): Promise<AntigravityUsageAccountList> {
-    const nowMs = now().getTime();
-    if (cached && nowMs - cached.collectedAtMs <= usageCacheTtlMs) return cached.value;
-    if (cached && nowMs - cached.collectedAtMs <= usageStaleFallbackMs) {
-      void refresh();
-      return cached.value;
-    }
-    return refresh();
+    // The last sample answers at once and an old one starts a fresh collection; a sample past the stale window is dropped
+    // only while collecting keeps failing.
+    if (!cached) return refresh();
+    const ageMs = now().getTime() - cached.collectedAtMs;
+    if (ageMs > usageCacheTtlMs) void refresh();
+    return ageMs > usageStaleFallbackMs && collectFailed ? unavailable() : cached.value;
   }
 
   // Applied on every read, not cached: pausing an account in Space Gateway hides it at once.

@@ -15,11 +15,25 @@ export const notifyOperatorArgsSchema = z.object({
   pane: z.string().trim().min(1).max(160).optional().describe("The pane that needs the operator; without it the card is the room's general one."),
   title: z.string().trim().min(1).max(80).describe("What waits there, in a few English words."),
   items: z.array(z.object({
-    text: z.string().trim().min(1).max(200).describe("One thing only the operator can do, in English."),
+    text: z.string().trim().min(1).max(200).describe("One thing only the operator can do, in English, at most 200 characters (details stay in the pane)."),
     ref: z.string().trim().min(1).max(120).optional().describe("The notification, decision or task id it comes from.")
   })).min(1).max(12).describe("The whole list for that pane now: it replaces the card's earlier list.")
 });
 export type NotifyOperatorArgs = z.infer<typeof notifyOperatorArgsSchema>;
+
+/**
+ * space_focus_pane (Needs you, operator request 2026-10-24): an alias of space_notify_operator for one pane with one item. The card is the
+ * focus: the operator's screen brings them to the pane for it (banner, maximize, focus, back when it resolves). One open card per pane.
+ */
+export const focusPaneSchema = z.object({
+  room: z.string().trim().min(1).max(200).describe("The room's name as shown in the world (or its id)."),
+  pane: z.string().trim().min(1).max(160).describe("A pane's name in that room (Andy, Bob, ...)."),
+  reason: z.string().trim().min(1).max(200).describe("What only the operator can do or answer there, in one English line (it is the card's item).")
+});
+export const FOCUS_PANE_DESCRIPTION = "Bring the operator to a pane that needs their hands or their answer (a sign-in, CAPTCHA or browser handoff, a prompt only they "
+  + "can answer): the same card as space_notify_operator with one item. Their screen offers Go now / Not now, switches room, maximizes the pane, focuses what needs "
+  + "them and takes them back when the card resolves; resolve it with space_resolve_notification when nothing is left. One open card per pane: the same reason "
+  + "again changes nothing. Never for what you can answer yourself or for decisions (those go through space_ask_operator).";
 
 export interface NousPaneNoticesDeps {
   notifications: {

@@ -122,6 +122,24 @@ test('the credential agent runs only a wrapper\'s fixed credential actions, inpu
   await assert.rejects(() => startCredentialAgent({ socketPath, commandPath: root }), /Refusing to replace non-socket path/);
 });
 
+test('the credential agent answers busy beyond its concurrent actions instead of piling up processes (1.1.8)', async () => {
+  const root = await mkdtemp('/tmp/spaceapp-agent-');
+  await writeFile(join(root, 'codex-vscode-parity'), '#!/bin/sh\nsleep 1\nprintf "%s\\n" "$1"\n');
+  await chmod(join(root, 'codex-vscode-parity'), 0o755);
+  const socketPath = join(root, 'credentials.sock');
+  const server = await startCredentialAgent({ socketPath, commandPath: root, maxConcurrent: 1 });
+  try {
+    const slow = ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' }), { exitCode: 75, stdout: 'FAILED busy\n' });
+    assert.deepEqual(await slow, { exitCode: 0, stdout: 'credential-status\n' });
+    // The slot is free again once the first action ended.
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' }), { exitCode: 0, stdout: 'credential-status\n' });
+  } finally {
+    server.close();
+  }
+});
+
 test('the public wrapper runs the API\'s OpenCode calls only for OpenCode, through the standalone helper', () => {
   const wrapper = readFileSync(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8');
   const branch = wrapper.match(/\n  opencode-text\|opencode-models\)\n[\s\S]*?\n    ;;\n/)?.[0] ?? '';
@@ -133,6 +151,6 @@ test('the public wrapper runs the API\'s OpenCode calls only for OpenCode, throu
 
 test('the CLI container starts the credential agent as the CLI user next to the pane host', () => {
   const entrypoint = readFileSync(new URL('../../deploy/docker/cli-entrypoint.sh', import.meta.url), 'utf8');
-  assert.match(entrypoint, /credential_agent_user=spaceapp\nif \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\n  credential_agent_user=root:spaceapp\nfi\ngosu "\$credential_agent_user" node \/app\/deploy\/docker\/credential-agent\.mjs &\n/);
+  assert.match(entrypoint, /credential_agent_user=spaceapp\nif \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\n  credential_agent_user=root:spaceapp\nfi\n(?:#[^\n]*\n)*\(\ while :; do gosu "\$credential_agent_user" node \/app\/deploy\/docker\/credential-agent\.mjs; sleep 2; done \) &\n/);
   assert.equal(entrypoint.match(/credential-agent\.mjs/g).length, 1);
 });

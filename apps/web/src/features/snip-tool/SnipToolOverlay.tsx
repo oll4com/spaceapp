@@ -473,6 +473,36 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     }
   };
 
+  /** Ctrl+V for the target pane: a clipboard image goes the way a snip does, text through the CLI pane's own paste. */
+  const pasteClipboard = async () => {
+    if (operation.current || missingTarget) return;
+    const dest = destinationSnapshot(), label = targetDisplay, cli = isCliPane(targetId, targetPane?.mode);
+    const controller = begin();
+    setBusy("send"); setToast(null); setMenuOpen(false);
+    try {
+      if (!navigator.clipboard?.read) throw new Error("This browser cannot read the clipboard. Click the pane and press Ctrl+V.");
+      // image/png is the only image type the async clipboard exposes.
+      const item = (await navigator.clipboard.read()).find(entry => entry.types.includes("image/png"));
+      checkAbort(controller.signal);
+      if (item) {
+        const blob = await item.getType("image/png");
+        checkAbort(controller.signal);
+        await onCapture(new File([blob], `space-paste-${Date.now()}.png`, { type: "image/png" }), dest.targetId, dest.roomId, controller.signal);
+        checkAbort(controller.signal);
+        showToast("ok", dest.targetId ? `Pasted into ${label}.` : "Saved to Media Dock.");
+      } else if (cli) {
+        window.dispatchEvent(new CustomEvent("space:terminal-pane-action", { detail: { paneId: dest.targetId, action: "paste" } }));
+      } else {
+        showToast("error", "The clipboard holds no image.");
+      }
+    } catch (error) {
+      const message = failed(error, controller.signal);
+      if (message) showToast("error", (error as Error).name === "NotAllowedError" ? "The browser did not allow reading the clipboard. Click the pane and press Ctrl+V." : message);
+    } finally {
+      finish(controller);
+    }
+  };
+
   const startSelecting = () => {
     if (operation.current) return;
     rememberFocus();
@@ -600,7 +630,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   }, [floating, docked, phase, snipLabel]);
 
   /**
-   * The drag follows the pointer on the window, like the desktop widgets: the capsule is only ~40px tall,
+   * The drag follows the pointer on the window, like the desktop widgets: the capsule is only ~70px tall,
    * so an ordinary flick leaves it before any move lands on it, and the drag must not depend on that.
    */
   const onCapsulePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -790,6 +820,8 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
           <GripVertical aria-hidden="true" />
         </span>
       )}
+      <div className="snip-capsule-rows">
+      <div className="snip-capsule-row">
       <div className="snip-split">
         <button type="button" className="snip-capsule-snip" onClick={startSelecting} disabled={busyAny} aria-label={snipLabel}
           title={copyToClipboard ? "Snip an area to the clipboard (PrtScn)" : `Snip an area for ${targetDisplay}${isLocked ? " (locked)" : ""} (PrtScn)`}>
@@ -801,6 +833,11 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
           <ChevronDown aria-hidden="true" />
         </button>
       </div>
+      <button type="button" className="snip-icon-btn snip-close-btn" onClick={close} aria-label="Close Snip Tool" title="Close Snip Tool">
+        <X aria-hidden="true" />
+      </button>
+      </div>
+      <div className="snip-capsule-row">
       <button type="button" className="snip-icon-btn" onClick={() => void capture()} disabled={busyAny || (!copyToClipboard && missingTarget)}
         aria-label={copyToClipboard ? "Capture full screen to clipboard" : `Capture full screen for ${targetDisplay}`}
         title={copyToClipboard ? "Capture the full screen to the clipboard" : `Capture the full screen for ${targetDisplay}`}>
@@ -822,14 +859,17 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
         title={copyToClipboard ? "Clipboard mode is on: snips are copied for Ctrl+V" : "Clipboard mode is off: snips go to the target"}>
         <Clipboard aria-hidden="true" />
       </button>
+      <button type="button" className="snip-icon-btn" onClick={() => void pasteClipboard()} disabled={busyAny || missingTarget}
+        aria-label={`Paste the clipboard into ${targetDisplay}`} title={`Paste the clipboard into ${targetDisplay} (Ctrl+V)`}>
+        <span className="snip-keycap" aria-hidden="true">Ctrl<b>V</b></span>
+      </button>
       <button type="button" className={`snip-icon-btn${isLocked ? " is-locked" : ""}`} onClick={toggleTargetLock} disabled={busyAny}
         aria-label={isLocked ? `Unlock target pane (locked to ${targetDisplay})` : `Lock target pane to ${targetDisplay}`} aria-pressed={isLocked}
         title={isLocked ? `Target locked to ${targetDisplay}. Click to follow the focused CLI pane.` : `Following the focused CLI pane. Click to lock to ${targetDisplay}.`}>
         {isLocked ? <Lock aria-hidden="true" /> : <Unlock aria-hidden="true" />}
       </button>
-      <button type="button" className="snip-icon-btn snip-close-btn" onClick={close} aria-label="Close Snip Tool" title="Close Snip Tool">
-        <X aria-hidden="true" />
-      </button>
+      </div>
+      </div>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={e => { void openImageFile(e.target.files?.[0]); e.target.value = ""; }} />
 
       {menuOpen && (

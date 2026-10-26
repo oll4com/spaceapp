@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateVaultTransportKey, newVaultHandle, sealToVaultPublicKey, sealVaultEnvelope, vaultRandomBytes } from "@space/contracts";
+import { generateVaultTransportKey, newVaultHandle, sealToVaultPublicKey, sealVaultEnvelope, signVaultMessage, vaultOperatorRequestMessage, vaultRandomBytes } from "@space/contracts";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { SENTINEL, enrollment, fixture, itemRecord } from "./support/vault-fakes.js";
 
@@ -8,7 +8,7 @@ import { SENTINEL, enrollment, fixture, itemRecord } from "./support/vault-fakes
 async function setup() {
   const harness = await fixture();
   const alice = await harness.session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
-  const { body } = await enrollment(harness.brokerKey.publicKey, "user:alice");
+  const { body, signing } = await enrollment(harness.brokerKey.publicKey, "user:alice");
   await harness.app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
   const room = (await harness.app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Vault inbox", initialPaneCount: 0 } })).json();
   const pane = harness.store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
@@ -25,7 +25,10 @@ async function setup() {
   const sealedFillKey = await sealToVaultPublicKey(harness.brokerKey.publicKey, vaultRandomBytes(32), { ownerUserId: "user:alice", vaultId: body.vaultId, keyVersion: 1 });
   await as("POST", "/api/space-vault/delegations", { items: [{ handle, origins: ["https://example.com"], fields: ["PASSWORD"], approvalMode: "FULL", submit: true }], fillEnvelopes, sealedFillKey,
     operatorSignature: "s".repeat(86), generation: 1, unlockEpoch: 1, expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
-  return { ...harness, vaultId: body.vaultId, pane, handle, agent, as };
+  // The unlocked dock's signature over a key change (Vault review 2026-10-22).
+  const signed = async (kind: "inbox", request: Record<string, unknown>) =>
+    ({ ...request, operatorSignature: await signVaultMessage(signing.privateKey, vaultOperatorRequestMessage(kind, { ownerUserId: "user:alice", vaultId: body.vaultId, ...request })) });
+  return { ...harness, vaultId: body.vaultId, pane, handle, agent, as, signed };
 }
 
 describe("Vault inbox for generated passwords", () => {
@@ -35,8 +38,8 @@ describe("Vault inbox for generated passwords", () => {
       const inbox = await generateVaultTransportKey();
       const privateKeyEnvelope = await sealVaultEnvelope(vaultRandomBytes(32), inbox.privateKey, { ownerUserId: "user:alice", vaultId: vault.vaultId, keyVersion: 1, purpose: "INBOX_KEY" });
       const publicKey = Buffer.from(inbox.publicKey).toString("base64url");
-      expect((await vault.as("PUT", "/api/space-vault/inbox", { publicKey, privateKeyEnvelope: { plaintext: SENTINEL } })).statusCode).toBe(422);
-      expect((await vault.as("PUT", "/api/space-vault/inbox", { publicKey, privateKeyEnvelope })).json()).toEqual({ inbox: true });
+      expect((await vault.as("PUT", "/api/space-vault/inbox", await vault.signed("inbox", { publicKey, privateKeyEnvelope: { plaintext: SENTINEL }, epoch: 1 }))).statusCode).toBe(422);
+      expect((await vault.as("PUT", "/api/space-vault/inbox", await vault.signed("inbox", { publicKey, privateKeyEnvelope, epoch: 1 }))).json()).toEqual({ inbox: true });
       expect((await vault.as("GET", "/api/space-vault/inbox")).json().inbox).toEqual({ publicKey, privateKeyEnvelope });
 
       // A fill (phase 3) seals the generated password to the inbox key; here one is stored the same way.

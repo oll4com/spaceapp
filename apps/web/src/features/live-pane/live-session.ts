@@ -137,6 +137,19 @@ export interface LiveSessionHandle {
   sendVideoFrame?: (frame: { dataUrl: string }) => void;
   /** Explicitly reconnect this Google session using its latest provider handle. */
   reconnect?: () => Promise<LiveSessionHandle>;
+  /** The assistant's voice as a stream that plays nowhere (the session recorder mixes it with the microphone). */
+  tapPlayback?: () => MediaStream;
+  /** The microphone the session listens to; muting silences its tracks for every reader. */
+  microphone?: MediaStream;
+}
+
+/** A playback destination created on first tap; every played node is also connected to it while it exists. */
+function createPlaybackTap(context: () => AudioContext) {
+  let node: MediaStreamAudioDestinationNode | null = null;
+  return {
+    connect: (source: AudioNode) => { if (node) source.connect(node); },
+    stream: () => (node ??= context().createMediaStreamDestination()).stream
+  };
 }
 
 /** Bounded exact-event deduplication for provider transcript replays. */
@@ -395,6 +408,7 @@ export async function openGoogleGeminiConversationSession(
 
   const audioContext = createAudioContextWithFallback(); // Use native hardware rate — will downsample to 16kHz before sending
   const playbackContext = createAudioContextWithFallback(24000);
+  const playbackTap = createPlaybackTap(() => playbackContext);
   console.log("[GeminiLive][DIAG] AudioContext created — capture sampleRate:", audioContext.sampleRate, "state:", audioContext.state, "| playback sampleRate:", playbackContext.sampleRate, "state:", playbackContext.state);
   if (audioContext.state === "suspended") {
     void audioContext.resume();
@@ -476,6 +490,7 @@ export async function openGoogleGeminiConversationSession(
     const sourceNode = playbackContext.createBufferSource();
     sourceNode.buffer = audioBuffer;
     sourceNode.connect(playbackContext.destination);
+    playbackTap.connect(sourceNode);
 
     const now = playbackContext.currentTime;
     const startTime = Math.max(now, nextPlayTime);
@@ -1253,6 +1268,8 @@ export async function openGoogleGeminiConversationSession(
       });
     },
     isMuted: () => muted,
+    tapPlayback: playbackTap.stream,
+    microphone: stream,
     sendTextMessage: (text: string) => { void sendInput([{ type: "text", text }]); },
     sendInput,
     sendVideoFrame: (frame: { dataUrl: string }) => {
@@ -1306,6 +1323,7 @@ export async function openAmazonNovaConversationSession(
 
   const audioContext = createAudioContextWithFallback(16000);
   const playbackContext = createAudioContextWithFallback(24000);
+  const playbackTap = createPlaybackTap(() => playbackContext);
 
   const source = audioContext.createMediaStreamSource(stream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -1347,6 +1365,7 @@ export async function openAmazonNovaConversationSession(
     const sourceNode = playbackContext.createBufferSource();
     sourceNode.buffer = audioBuffer;
     sourceNode.connect(playbackContext.destination);
+    playbackTap.connect(sourceNode);
 
     const now = playbackContext.currentTime;
     const startTime = Math.max(now, nextPlayTime);
@@ -1556,6 +1575,8 @@ export async function openAmazonNovaConversationSession(
       });
     },
     isMuted: () => muted,
+    tapPlayback: playbackTap.stream,
+    microphone: stream,
     sendTextMessage: (text: string) => { void sendInput([{ type: "text", text }]); },
     sendInput
   };
@@ -1576,6 +1597,7 @@ async function openLocalVoiceConversationSession(
   const socket = new WebSocket(wsUrl, typeof session.token === "string" ? [session.token] : undefined);
   socket.binaryType = "arraybuffer";
   const audioContext = new AudioContext();
+  const playbackTap = createPlaybackTap(() => audioContext);
   const source = audioContext.createMediaStreamSource(stream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
   const output = audioContext.createGain();
@@ -1594,6 +1616,7 @@ async function openLocalVoiceConversationSession(
     const node = audioContext.createBufferSource();
     node.buffer = audio;
     node.connect(audioContext.destination);
+    playbackTap.connect(node);
     node.start();
   };
   socket.onopen = () => { callbacks.onStatusChange?.("active"); socket.send(JSON.stringify({ type: "start", sample_rate: 16000, language: options.language ?? "auto" })); };
@@ -1615,8 +1638,206 @@ async function openLocalVoiceConversationSession(
     close: () => { closed = true; socket.close(); processor.disconnect(); source.disconnect(); output.disconnect(); audioContext.close(); stream.getTracks().forEach((track) => track.stop()); callbacks.onStatusChange?.("idle"); },
     setMuted: (next) => { muted = next; stream.getAudioTracks().forEach((track) => { track.enabled = !next; }); if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: next ? "mute" : "unmute" })); },
     isMuted: () => muted,
+    tapPlayback: playbackTap.stream,
+    microphone: stream,
     sendTextMessage: (text) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "text", text })); }
   };
+}
+
+const FISH_CLOSE_REASONS: Record<string, string> = {
+  fish_401: "Fish Audio rejected the API key.",
+  fish_402: "Fish Audio has no balance left for this key.",
+  fish_429: "Fish Audio is busy or rate limited. Try again shortly."
+};
+
+/**
+ * Fish Audio (Drama 3): Fish hears the operator and decides when a turn ends, Space's voice delegate answers or picks a
+ * Live tool, and Drama 3 speaks the answer. Space's bridge (`/api/voice/ws-proxy`) holds the key and the MessagePack.
+ */
+async function openFishAudioConversationSession(
+  options: LiveSessionOptions,
+  callbacks: LiveSessionCallbacks
+): Promise<LiveSessionHandle> {
+  const runtime = getSpaceRuntime();
+  if (runtime.kind === "demo") throw new Error(DEMO_LOCAL_REPLY);
+  if (!runtime.platform.userMediaSupported) throw new Error("Microphone capture is not available in this browser.");
+  callbacks.onStatusChange?.("connecting");
+  const ctx = await buildLiveSessionContext(options);
+  const session = await api.createVoiceRealtimeCall({ provider: "fish", model: "drama-3", language: options.language });
+  if (session.protocol !== "fish-cascade" || !session.websocketUrl?.startsWith("/")) throw new Error("Fish Audio returned an incompatible voice protocol.");
+  const voice = /^[0-9a-f]{32}$/.test(String(options.voice ?? "")) ? String(options.voice) : LIVE_AUDIO_PROVIDERS.fish.defaultVoice;
+  const stream = await getAudioStreamWithFallback(runtime, options.audioDeviceId);
+  let audioContext: AudioContext | undefined;
+  let playbackContext: AudioContext | undefined;
+  const playbackTap = createPlaybackTap(() => playbackContext!);
+  let source: MediaStreamAudioSourceNode | undefined;
+  let processor: ScriptProcessorNode | undefined;
+  let gain: GainNode | undefined;
+  let socket: WebSocket | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+  let ready = false;
+  let muted = options.muted === true;
+  if (muted) stream.getAudioTracks().forEach(track => { track.enabled = false; });
+  const toolSessionId = options.liveSessionId ?? crypto.randomUUID();
+  const history: string[] = [];
+  let turn = 0;
+  let speaking = false;
+  let ttsDone = true;
+  let carry: Uint8Array | null = null;
+  let nextPlayTime = 0;
+  const playing = new Set<AudioBufferSourceNode>();
+  const send = (message: Record<string, unknown>) => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message)); };
+  const stopAudio = () => {
+    for (const node of playing) { try { node.stop(); } catch {} }
+    playing.clear();
+    nextPlayTime = 0;
+    carry = null;
+  };
+  const finishSpeaking = () => {
+    if (!speaking) return;
+    speaking = false;
+    send({ type: "agent_speaking", speaking: false });
+    if (!closed) callbacks.onStatusChange?.("listening");
+  };
+  // Barge-in, or a newer turn: the reply in flight is dropped and Fish learns the agent went quiet.
+  const stopSpeaking = () => {
+    stopAudio();
+    if (!ttsDone) send({ type: "stop" });
+    ttsDone = true;
+    finishSpeaking();
+  };
+  const playPcm = (data: ArrayBuffer) => {
+    if (!playbackContext || closed) return;
+    let bytes = new Uint8Array(data);
+    if (carry) { const joined = new Uint8Array(carry.length + bytes.length); joined.set(carry); joined.set(bytes, carry.length); bytes = joined; carry = null; }
+    if (bytes.length % 2) { carry = bytes.slice(-1); bytes = bytes.subarray(0, bytes.length - 1); }
+    if (!bytes.length) return;
+    const pcm = new Int16Array(bytes.slice().buffer);
+    const buffer = playbackContext.createBuffer(1, pcm.length, 24000);
+    const samples = buffer.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) samples[i] = pcm[i]! / 32768;
+    const node = playbackContext.createBufferSource();
+    node.buffer = buffer;
+    node.connect(playbackContext.destination);
+    playbackTap.connect(node);
+    nextPlayTime = Math.max(nextPlayTime, playbackContext.currentTime);
+    node.start(nextPlayTime);
+    nextPlayTime += buffer.duration;
+    playing.add(node);
+    node.onended = () => { playing.delete(node); node.disconnect(); if (ttsDone && !playing.size) finishSpeaking(); };
+  };
+  const say = (text: string) => {
+    const spoken = text.trim();
+    if (!spoken || closed) { callbacks.onStatusChange?.("listening"); return; }
+    callbacks.onTranscriptUpdate?.({ id: `fish-assistant-${Date.now()}`, role: "assistant", text: spoken, timestamp: new Date().toISOString() });
+    history.push(`Assistant: ${spoken}`);
+    speaking = true;
+    ttsDone = false;
+    send({ type: "agent_speaking", speaking: true });
+    send({ type: "say", text: spoken, voice });
+    callbacks.onStatusChange?.("speaking");
+  };
+  // One user turn: the delegate answers, or picks a tool whose result it then puts in a sentence.
+  const answer = async (text: string) => {
+    const mine = ++turn;
+    stopSpeaking();
+    history.push(`User: ${text}`);
+    callbacks.onStatusChange?.("thinking");
+    const room = options.getCommandRoom ? options.getCommandRoom() : options.roomId;
+    const origin = () => !closed && mine === turn && (options.getCommandRoom ? options.getCommandRoom() : options.roomId) === room ? room : undefined;
+    let query = "";
+    for (const line of history.slice(-12).reverse()) { if (query.length + line.length > 3500) break; query = `${line}\n${query}`; }
+    try {
+      const first = await api.delegateVoiceIntent({ query, roomId: room, tools: ctx.tools });
+      if (!origin()) return;
+      if (!first.toolCall?.name) { say(first.message ?? ""); return; }
+      const output = await executeLiveFunction(first.toolCall.name, JSON.stringify(first.toolCall.args ?? {}),
+        { ...options, getCommandRoom: origin, callbacks, callId: `${toolSessionId}:fish:${mine}`, provider: "fish", streamingMode: options.streamingMode });
+      if (!origin()) return;
+      const follow = await api.delegateVoiceIntent({ roomId: room,
+        query: `${query}Tool ${first.toolCall.name} returned: ${output.slice(0, 1200)}\nTell the user the result in one or two short spoken sentences, in the language of their last message.` });
+      if (origin()) say(follow.message || output.slice(0, 300));
+    } catch (error) {
+      if (!origin()) return;
+      callbacks.onError?.(`Fish Audio reply failed: ${error instanceof Error ? error.message : String(error)}`);
+      callbacks.onStatusChange?.("listening");
+    }
+  };
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    stopAudio();
+    processor?.disconnect(); source?.disconnect(); gain?.disconnect();
+    if (audioContext?.state !== "closed") void audioContext?.close();
+    if (playbackContext?.state !== "closed") void playbackContext?.close();
+    stream.getTracks().forEach((track) => track.stop());
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+    updateLiveSessionStats({ sessionActive: false });
+  };
+  const fail = (message: string) => { if (!closed) { cleanup(); callbacks.onError?.(message); callbacks.onStatusChange?.("error"); } };
+  const userText = (text: string) => {
+    callbacks.onTranscriptUpdate?.({ id: `fish-user-${Date.now()}`, role: "user", text, timestamp: new Date().toISOString() });
+    void answer(text);
+  };
+  try {
+    audioContext = createAudioContextWithFallback(16000);
+    playbackContext = createAudioContextWithFallback(24000);
+    await Promise.all([audioContext.resume(), playbackContext.resume()]);
+    source = audioContext.createMediaStreamSource(stream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+    gain = audioContext.createGain();
+    gain.gain.value = 0;
+    source.connect(processor); processor.connect(gain); gain.connect(audioContext.destination);
+    socket = new WebSocket(`${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}${session.websocketUrl}`);
+    socket.binaryType = "arraybuffer";
+    timer = setTimeout(() => fail("Fish Audio did not start the session in time."), 15_000);
+    socket.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) { if (!ttsDone) playPcm(event.data); return; }
+      let message: { type?: string; text?: string; user_turn?: boolean; reason?: string; recoverable?: boolean };
+      try { message = JSON.parse(String(event.data)); } catch { return; }
+      if (message.type === "session_started") {
+        ready = true;
+        clearTimeout(timer);
+        updateLiveSessionStats({ sessionActive: true, sessionStartedAt: Date.now(), model: "drama-3", voice, toolsCount: ctx.tools.length });
+        callbacks.onStatusChange?.("listening");
+      } else if (message.type === "user_turn_taken") {
+        noteLiveUserTurn();
+        callbacks.onInputStart?.();
+        turn += 1;
+        stopSpeaking();
+      } else if (message.type === "committed") {
+        // Sound tags such as [laughter] are not words.
+        const text = String(message.text ?? "").replace(/\[[^[\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+        if (message.user_turn && text) userText(text);
+      } else if (message.type === "tts_done") {
+        ttsDone = true;
+        if (!playing.size) finishSpeaking();
+        if (message.reason !== "stop") callbacks.onError?.(FISH_CLOSE_REASONS[message.reason ?? ""] ?? "Drama 3 could not speak this reply.");
+      } else if (message.type === "error" && message.recoverable === false) fail("Fish Audio ended the session.");
+    };
+    socket.onerror = () => fail("Fish Audio connection failed.");
+    socket.onclose = (event) => fail(FISH_CLOSE_REASONS[event.reason] ?? "Fish Audio connection closed.");
+    processor.onaudioprocess = (event) => {
+      if (closed || !ready || socket?.readyState !== WebSocket.OPEN) return;
+      if (socket.bufferedAmount > 1_048_576) { fail("Fish Audio microphone transport is congested."); return; }
+      socket.send(pcm16FromFloat32(downsampleBuffer(event.inputBuffer.getChannelData(0), audioContext!.sampleRate, 16000)));
+    };
+    return {
+      close: () => { cleanup(); callbacks.onStatusChange?.("idle"); },
+      setMuted: (value) => { muted = value; stream.getAudioTracks().forEach((track) => { track.enabled = !value; }); },
+      isMuted: () => muted,
+      tapPlayback: playbackTap.stream,
+      microphone: stream,
+      sendTextMessage: (text) => { if (text.trim()) userText(text.trim()); },
+      sendInput: (parts) => {
+        if (parts.some((part) => part.type !== "text")) throw new Error("Attachments are not supported by Fish Audio.");
+        const text = parts.map((part) => part.type === "text" ? part.text : "").join("\n").trim();
+        if (text) userText(text);
+      }
+    };
+  } catch (error) { cleanup(); throw error; }
 }
 
 export function detectSpaceActionFromQuery(_query: string): { name: string; args: Record<string, unknown> } | null {
@@ -1640,6 +1861,7 @@ export async function openGatewayRealtimeConversationSession(
   const stream = await getAudioStreamWithFallback(runtime, options.audioDeviceId);
   let audioContext: AudioContext | undefined;
   let playbackContext: AudioContext | undefined;
+  const playbackTap = createPlaybackTap(() => playbackContext!);
   let source: MediaStreamAudioSourceNode | undefined;
   let processor: ScriptProcessorNode | undefined;
   let gain: GainNode | undefined;
@@ -1717,6 +1939,7 @@ export async function openGatewayRealtimeConversationSession(
       const node = playbackContext.createBufferSource();
       node.buffer = buffer;
       node.connect(playbackContext.destination);
+      playbackTap.connect(node);
       nextPlayTime = Math.max(nextPlayTime, playbackContext.currentTime);
       node.start(nextPlayTime);
       nextPlayTime += buffer.duration;
@@ -1760,6 +1983,8 @@ export async function openGatewayRealtimeConversationSession(
       close: () => { controller.close(); cleanup(); callbacks.onStatusChange?.("idle"); },
       setMuted: (value) => { muted = value; stream.getAudioTracks().forEach((track) => { track.enabled = !value; }); },
       isMuted: () => muted,
+      tapPlayback: playbackTap.stream,
+      microphone: stream,
       updateContext: context => {
         if (context.roomId !== options.roomId) controller.invalidateCommands();
         controller.updateInstructions(ctx.combinedPrompt + "\n\n" + applyLiveRoomContext(options, context));
@@ -1822,6 +2047,7 @@ export async function openVercelLiveConversationSession(
 
   const audioContext = createAudioContextWithFallback(24000);
   const playbackContext = createAudioContextWithFallback(24000);
+  const playbackTap = createPlaybackTap(() => playbackContext);
 
   const source = audioContext.createMediaStreamSource(stream);
   const processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -1870,6 +2096,7 @@ export async function openVercelLiveConversationSession(
     const sourceNode = playbackContext.createBufferSource();
     sourceNode.buffer = audioBuffer;
     sourceNode.connect(playbackContext.destination);
+    playbackTap.connect(sourceNode);
 
     const now = playbackContext.currentTime;
     const startTime = Math.max(now, nextPlayTime);
@@ -2524,6 +2751,8 @@ export async function openVercelLiveConversationSession(
       });
     },
     isMuted: () => muted,
+    tapPlayback: playbackTap.stream,
+    microphone: stream,
     sendTextMessage: (text: string) => { void sendInput([{ type: "text", text }]); },
     sendInput
   };
@@ -3454,6 +3683,41 @@ export const SPACE_SET_PANE_MODEL_TOOL = {
   }
 };
 
+export const SPACE_REQUEST_VIDEO_TOOL = {
+  type: "function",
+  name: "space_request_video",
+  description: "Ask the Video pane to make a video from Media artifacts of this room: the recording this session saved (its artifact id was announced to you), uploads or screen recordings. The Video pane cuts, captions and narrates it and delivers it as Media of the room; it is not announced here, so tell the operator where to find it.",
+  parameters: {
+    type: "object",
+    properties: {
+      brief: {
+        type: "string",
+        description: "What the video is about, the moments to keep and any text to show."
+      },
+      formatIds: {
+        type: "array",
+        items: { type: "string" },
+        description: "Output formats (video preset ids such as youtube, square, story); omit for the Video pane's defaults."
+      },
+      sourceArtifactIds: {
+        type: "array",
+        items: { type: "string" },
+        description: "Media artifact ids to cut from, e.g. the recording this session just saved."
+      },
+      narration: {
+        type: "string",
+        description: "The description spoken over the video; omit for no narration."
+      },
+      technique: {
+        type: "string",
+        enum: ["silence", "scene", "highlights", "manual"],
+        description: "How the clips are chosen; highlights by default."
+      }
+    },
+    required: ["brief"]
+  }
+};
+
 export const SPACE_RUN_CLI_SHORTCUT_TOOL = {
   type: "function",
   name: "space_run_cli_shortcut",
@@ -3831,6 +4095,8 @@ export async function buildLiveSessionContext(
     SEARCH_WEB_TOOL,
     FETCH_WEB_PAGE_TOOL
   ];
+  // Asking the Video pane for a video acts on the app, so it is a Space Control tool: off when they are.
+  if (enableMcp) tools.push(SPACE_REQUEST_VIDEO_TOOL);
   if (options.enableSpaceMemory !== false) {
     tools.push(SPACE_RECALL_MEMORY_TOOL);
   }
@@ -4603,6 +4869,18 @@ async function runLiveFunction(
           });
         }
 
+      } else if (name === "space_request_video") {
+        const parsedArgs = JSON.parse(argsStr) as { brief?: string; formatIds?: string[]; sourceArtifactIds?: string[]; narration?: string; technique?: "silence" | "scene" | "highlights" | "manual" };
+        if (!paneId || !paneId.startsWith("pane:")) throw new Error("A video request needs a Live pane: the shared Live session has no pane to request from.");
+        const narration = parsedArgs.narration?.trim();
+        const res = await api.requestVideoFromPane(paneId, {
+          brief: parsedArgs.brief?.trim() || "",
+          sources: (parsedArgs.sourceArtifactIds ?? []).filter((id) => typeof id === "string" && id.trim()).map((artifactId) => ({ artifactId: artifactId.trim() })),
+          formatIds: (parsedArgs.formatIds ?? []).filter((id) => typeof id === "string" && id.trim()),
+          options: { ...(parsedArgs.technique ? { technique: parsedArgs.technique } : {}), ...(narration ? { narration: { text: narration } } : {}) }
+        });
+        outputText = JSON.stringify({ ok: true, requestId: res.request.id, status: res.request.status, videoPaneId: res.videoPaneId, formats: res.request.formatIds,
+          message: "The Video pane makes the video and delivers it as Media of this room (open the Video pane or Media to see it); it is not announced in this conversation." });
       } else if (name.startsWith("space_")) {
         let parsedArgs: Record<string, any> = {};
         try {
@@ -6477,6 +6755,9 @@ export async function openLiveConversationSession(
   if (provider === "vercel") {
     return openVercelLiveConversationSession(options, callbacks, options.paneId ?? "live");
   }
+  if (provider === "fish") {
+    return openFishAudioConversationSession(options, callbacks);
+  }
   return openOpenAiVoiceConversationSession(options, callbacks);
 }
 
@@ -6694,9 +6975,10 @@ export async function openOpenAiVoiceConversationSession(
 
   let statsInterval: number | null = null;
   let remoteAudioEl: HTMLAudioElement | null = null;
+  let remoteStream: MediaStream | null = null;
 
   connection.addEventListener("track", (event) => {
-    const remoteStream =
+    remoteStream =
       event.streams && event.streams[0]
         ? event.streams[0]
         : new MediaStream([event.track]);
@@ -7669,6 +7951,8 @@ export async function openOpenAiVoiceConversationSession(
       }
     },
     isMuted: () => muted,
+    tapPlayback: () => { if (!remoteStream) throw new Error("The assistant's voice stream has not arrived yet."); return remoteStream; },
+    microphone: stream,
     sendTextMessage: (text: string) => { void sendInput([{ type: "text", text }]); },
     sendInput
   };

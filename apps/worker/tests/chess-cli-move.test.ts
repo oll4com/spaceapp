@@ -68,6 +68,8 @@ describe("chess CLI moves in the worker", () => {
 
   it("serves moves over a socket only its owner can open and stops a move when the caller leaves", async () => {
     const socketPath = join(dir, "worker.sock");
+    // Unix socket paths hold about 104-107 bytes: a long TMPDIR fails here, not later as ENOENT or EADDRINUSE (1.1.7 review).
+    if (socketPath.length > 103) throw new Error(`TMPDIR is too long for a Unix socket path (${socketPath.length} bytes); use a short TMPDIR such as /tmp/s.`);
     let aborted = false;
     const server = await startChessMoveServer(socketPath, async (input, signal) => {
       if (input.prompt === "slow") {

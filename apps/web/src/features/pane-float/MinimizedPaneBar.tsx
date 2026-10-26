@@ -6,7 +6,7 @@ import { Eye, Grid2X2, Loader2, Minus, Zap } from "../ui-theme/app-icons.js";
 import { openManage } from "../server-actions/manage-navigation.js";
 import { MINIMIZED_PANE_BAR_ID } from "./MinimizedPaneBarToggle.js";
 import { MinimizedPaneChip, MinimizedPanePreviewCard } from "./MinimizedPanePreview.js";
-import { formatPaneFullTitle, minimizedPaneSubtitle, paneModeLabel } from "./pane-mode-labels.js";
+import { formatPaneFullTitle, minimizedPaneSubtitle, paneModeLabel, paneTypeLabel } from "./pane-mode-labels.js";
 import type { MinimizedPaneBar as MinimizedPaneBarState } from "./useMinimizedPaneBar.js";
 
 /** The expanded minimized-pane bar: one chip or preview card per pane, then the bar actions. */
@@ -59,7 +59,7 @@ export function MinimizedPaneBar({
         {minimizedPanes.map((pane) => {
           const paneRunActive =
             paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null;
-          const fullTitle = formatPaneFullTitle(pane);
+          const fullTitle = `${formatPaneFullTitle(pane)} · ${paneTypeLabel(pane)}`;
           const latestTurn = pane.mode === "CHAT" ? turns.find((t) => t.paneId === pane.id) ?? null : null;
           if (minimizedBarPreviewMode) {
             return (

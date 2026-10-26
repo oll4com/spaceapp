@@ -398,3 +398,67 @@
   color: #b91c1c;
 }
 
+
+/* API providers: the balance up front, the provider's details as chips. */
+.api-provider-value {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .api-provider-value strong {
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: #f1ece2;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .api-provider-card.is-exhausted .api-provider-value strong {
+  color: var(--availability-color);
+}
+
+.api-provider-value small {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #7f8a88;
+}
+
+.api-provider-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+:is(.toolbar-metric-list, .account-quota-list) .api-provider-facts span {
+  max-width: 100%;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid #262e30;
+  border-radius: 4px;
+  background: #181d1e;
+  color: #a3adaa;
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .api-provider-value strong {
+  color: #17232d;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .api-provider-card.is-exhausted .api-provider-value strong {
+  color: var(--availability-color);
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .api-provider-value small {
+  color: #5f707e;
+}
+
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) :is(.toolbar-metric-list, .account-quota-list) .api-provider-facts span {
+  border-color: #dde5eb;
+  background: #f4f7f9;
+  color: #4b5b68;
+}

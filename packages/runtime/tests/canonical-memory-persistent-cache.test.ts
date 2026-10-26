@@ -15,6 +15,9 @@ async function fixture() {
  const cacheDir=join(root,'cache');
  return {root,paths,cacheDir,open:()=>createCanonicalSpaceMemoryBridge(paths,{persistentCacheDir:cacheDir})};
 }
+// Each list() parses its sources in a fresh worker thread that imports @space/memory-graph (about a second per
+// source on an idle host, 2026-10-24), so these cases get a bound sized to that work, like the save tests' lock case.
+const parseBound=15_000;
 describe('persistent parse cache for recall',()=>{
  it('writes private entries and returns identical results from a new process-like reader',async()=>{
   const {cacheDir,open}=await fixture();
@@ -25,7 +28,7 @@ describe('persistent parse cache for recall',()=>{
   expect(files.length).toBeGreaterThanOrEqual(2);
   for (const file of files) expect((await stat(join(cacheDir,file))).mode&0o777).toBe(0o600);
   expect(await open().list({...query,q:'CachedFact'})).toEqual(first);
- });
+ },parseBound);
  it('reparses a source whose fingerprint changed and ignores corrupt entries',async()=>{
   const {cacheDir,paths,open}=await fixture();
   await open().list({...query,q:'CachedFact'});
@@ -33,11 +36,11 @@ describe('persistent parse cache for recall',()=>{
   expect(await open().list({...query,q:'LaterFact'})).toHaveLength(1);
   for (const file of await readdir(cacheDir)) await writeFile(join(cacheDir,file),'{not json');
   expect(await open().list({...query,q:'CachedFact'})).toHaveLength(1);
- });
+ },parseBound);
  it('does not use a cache directory that other users can read',async()=>{
   const {cacheDir,open}=await fixture();
   await mkdir(cacheDir); await chmod(cacheDir,0o755);
   expect(await open().list({...query,q:'CachedFact'})).toHaveLength(1);
   expect(await readdir(cacheDir)).toEqual([]);
- });
+ },parseBound);
 });

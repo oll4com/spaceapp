@@ -414,6 +414,12 @@ describe("shared health UI", () => {
     cleanup();
     vi.useRealTimers();
   });
+  it("shows unavailable account capacity when neither usage source reports a quota", async () => {
+    render(<SystemHealth userId="operator" railVisible environment={null} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const rail = screen.getByRole("navigation", { name: "Resource indicators" });
+    expect(within(rail).getByRole("button", { name: /^Account remaining: Codex Unavailable/ })).toBeTruthy();
+  });
   it("opens resources and health with shared telemetry and stops hidden polling", async () => {
     render(<SystemHealth userId="operator" railVisible environment={null} />);
     await act(async () => {
@@ -1406,6 +1412,5 @@ describe("shared health UI", () => {
     view.unmount();
   });
 });
-
 
 

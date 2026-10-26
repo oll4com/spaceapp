@@ -33,6 +33,7 @@ import { recordAudit } from "./request-audit.js";
 import type { RoomPaneController } from "./room-pane-control.js";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
+import { isOperatorPerson, noteOperatorPaneInput } from "./queue-operator-grants.js";
 
 const cliTerminalClientEventBodyLimitBytes = 2 * 1024;
 
@@ -201,7 +202,9 @@ export function registerPaneCliTerminalRoutes(app: FastifyInstance, options: {
         userId: request.user!.id,
         proofScope: request.user?.proofScope,
         proofSession: request.sessionPrincipal === "user:operator-proof",
-        requestId: request.requestIdForSpace
+        onOperatorInput: isOperatorPerson(request.user) ? noteOperatorPaneInput : undefined,
+        requestId: request.requestIdForSpace,
+        log: request.log
       });
     } catch (error) {
       closeCliSocketWithSetupError(socket, error instanceof Error ? error.message : "CLI terminal setup failed.");

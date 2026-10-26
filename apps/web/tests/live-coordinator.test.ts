@@ -74,6 +74,45 @@ describe("application Live coordinator", () => {
     f.coordinator.toggle(); await vi.advanceTimersByTimeAsync(0);
     expect(f.open).toHaveBeenCalledTimes(2);
   });
+  // Mobile 2026-10-22: a restored Live retried a call OpenAI refused (no credits) every 32 s, and each try opened the
+  // phone's microphone, pausing the operator's music.
+  it("turns Live off instead of retrying a connection that fails to open, also after the next app start", async () => {
+    vi.useFakeTimers();
+    const records = new Map<string, string>(); const storage = { getItem: (k: string) => records.get(k) ?? null, setItem: (k: string, v: string) => { records.set(k, v); } };
+    const open = vi.fn(async (_options: LiveSessionOptions, cb: LiveSessionCallbacks): Promise<LiveSessionHandle> => {
+      cb.onStatusChange?.("connecting"); cb.onError?.("OpenAI API quota or credit balance exhausted.", { retryable: true });
+      cb.onStatusChange?.("error"); cb.onStatusChange?.("idle");
+      throw new Error("OpenAI API quota or credit balance exhausted.");
+    });
+    const f = fixture({ open, storage }); await f.coordinator.start();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(f.coordinator.getSnapshot()).toMatchObject({ enabled: false, status: "error", error: "OpenAI API quota or credit balance exhausted." });
+    f.coordinator.dispose(); const next = fixture({ open, storage }); await vi.advanceTimersByTimeAsync(60_000);
+    expect(open).toHaveBeenCalledTimes(1); expect(next.coordinator.getSnapshot().enabled).toBe(false);
+    next.coordinator.toggle(); await vi.advanceTimersByTimeAsync(0);
+    expect(open).toHaveBeenCalledTimes(2);
+  });
+  it("in the phone app brings Live left on back off after a reload, mute kept, until one tap starts it", async () => {
+    const records = new Map<string, string>(); const storage = { getItem: (k: string) => records.get(k) ?? null, setItem: (k: string, v: string) => { records.set(k, v); } };
+    const f = fixture({ storage }); await f.coordinator.start(); f.coordinator.setMuted(true); f.coordinator.dispose();
+    const next = fixture({ storage, restoreEnabled: false }); await new Promise(resolve => setTimeout(resolve, 20));
+    expect(next.open).not.toHaveBeenCalled();
+    expect(next.coordinator.getSnapshot()).toMatchObject({ enabled: false, muted: true, status: "idle" });
+    next.coordinator.toggle(); await vi.waitFor(() => expect(next.open).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(next.transport.setMuted).toHaveBeenCalledWith(true));
+  });
+  it("reconnects a dropped live conversation once and gives up when that reconnect fails to open", async () => {
+    vi.useFakeTimers();
+    const f = fixture(); await f.coordinator.start();
+    f.open.mockImplementationOnce(async () => { throw new Error("Network down"); });
+    f.callbacks().onStatusChange?.("idle");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(f.open).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(f.open).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.getSnapshot()).toMatchObject({ enabled: false, status: "error", error: "Network down" });
+  });
   it("ignores stale room context responses", async () => {
     let resolve!: (c: LiveRoomContext) => void;
     const f = fixture({ context: id => id === "room:a" ? new Promise(r => { resolve = r; }) : Promise.resolve(context(id)) });

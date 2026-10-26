@@ -82,9 +82,10 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
       }
       const callId = typeof call.data._meta?.["claudecode/toolUseId"] === "string" ? String(call.data._meta["claudecode/toolUseId"]).slice(0, 80) : `${Date.now()}`;
       const outcome = helper
-        ? await deps.service.callTool(claims.owner, helper.parentTurnId, call.data.name, call.data.arguments ?? {}, callId, { subagentId: claims.turnId, title: helper.title })
+        ? await deps.service.callTool(claims.owner, helper.parentTurnId, call.data.name, call.data.arguments ?? {}, callId, { subagentId: claims.turnId, title: helper.title, modelChoice: helper.modelChoice })
         : await deps.service.callTool(claims.owner, claims.turnId, call.data.name, call.data.arguments ?? {}, callId);
-      return answer({ content: [{ type: "text", text: outcome.result || outcome.display }], isError: !outcome.ok });
+      // space_look answers with image blocks too (operator decision 2026-10-24: the image is shown to the model, never stored).
+      return answer({ content: [{ type: "text", text: outcome.result || outcome.display }, ...(outcome.images ?? []).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))], isError: !outcome.ok });
     }
     return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } };
   });
@@ -95,10 +96,11 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
  * A deploy restarts the worker (stable 2026-10-17: a turn failed with ENOENT on its socket): a call that could not connect
  * waits for it, at most `tries` times. Nothing reached the worker, so nothing runs twice.
  */
-export async function postToWorkerWhenUp<T>(socketPath: string, path: string, body: unknown, signal: AbortSignal, waitMs = 10_000, tries = 6): Promise<T> {
+export async function postToWorkerWhenUp<T>(socketPath: string, path: string, body: unknown, signal: AbortSignal, waitMs = 10_000, tries = 6,
+  onLine?: (line: Record<string, unknown>) => void): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await postToWorker<T>(socketPath, path, body, signal);
+      return await postToWorker<T>(socketPath, path, body, signal, onLine);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (attempt >= tries || signal.aborted || (code !== "ENOENT" && code !== "ECONNREFUSED")) throw error;
@@ -107,17 +109,44 @@ export async function postToWorkerWhenUp<T>(socketPath: string, path: string, bo
   }
 }
 
-export function postToWorker<T>(socketPath: string, path: string, body: unknown, signal: AbortSignal): Promise<T> {
+/**
+ * `onLine`: a streamed answer (200 application/x-ndjson, operator request 2026-10-24) hands each event line over as it arrives;
+ * the stream ends with {"result": …} (resolves) or {"error": …} (rejects). A plain JSON answer is read whole as before.
+ */
+export function postToWorker<T>(socketPath: string, path: string, body: unknown, signal: AbortSignal, onLine?: (line: Record<string, unknown>) => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) { reject(new Error("The turn was stopped.")); return; }
     const data = JSON.stringify(body);
     const onAbort = () => { call.destroy(new Error("The turn was stopped.")); };
     const call = httpRequest({ socketPath, path, method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, (response) => {
       let text = "";
+      let settled = false;
+      const streaming = /application\/x-ndjson/.test(String(response.headers["content-type"] ?? ""));
+      const settle = (line: Record<string, unknown>) => {
+        if (settled) return;
+        if ("result" in line) { settled = true; resolve(line.result as T); }
+        else if ("error" in line) { settled = true; reject(new Error(typeof line.error === "string" ? line.error : "The worker's answer failed.")); }
+        else onLine?.(line);
+      };
+      const takeLines = (final: boolean) => {
+        const lines = text.split("\n");
+        text = final ? "" : lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let parsed: Record<string, unknown> | null = null;
+          try { parsed = JSON.parse(line) as Record<string, unknown>; } catch { parsed = null; }
+          if (parsed) settle(parsed);
+        }
+      };
       response.setEncoding("utf8");
-      response.on("data", (chunk: string) => { text += chunk; });
+      response.on("data", (chunk: string) => { text += chunk; if (streaming) takeLines(false); });
       response.on("end", () => {
         signal.removeEventListener("abort", onAbort);
+        if (streaming) {
+          takeLines(true);
+          if (!settled) { settled = true; reject(new Error("The worker's answer ended early.")); }
+          return;
+        }
         let payload: Record<string, unknown> = {};
         try { payload = JSON.parse(text) as Record<string, unknown>; } catch { /* not JSON */ }
         if (response.statusCode === 200) resolve(payload as T);

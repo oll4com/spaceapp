@@ -22,6 +22,8 @@ export function createLiveCoordinator(deps: {
   storage?: Pick<Storage, "getItem" | "setItem">;
   history?: ReturnType<typeof createLiveHistorySync>;
   acquireMicrophone?: (ownerId: string) => Promise<() => void>;
+  /** false: Live left on comes back off after a reload (mute and conversation kept); one tap starts it. */
+  restoreEnabled?: boolean;
   onStream?: (stream: MediaStream) => void;
   onState?: (state: LiveCoordinatorState) => void;
   onTurn?: (item: LiveTranscriptItem) => void;
@@ -168,6 +170,9 @@ export function createLiveCoordinator(deps: {
     await historyRead;
     if (version !== generation || disposed || !state.enabled) { if (version === generation) starting = false; return; }
     const current = () => version === generation && !disposed && state.enabled;
+    // Every attempt opens the microphone (pausing the phone's other audio), so only a conversation that went live reconnects.
+    let live = false;
+    const giveUp = (message: string) => { stop(); patch({ error: message, status: "error" }); };
     const callbacks: LiveSessionCallbacks = {
       onInputStart: () => { if (current()) { if (!inputActive) inputRoom = state.roomId; inputActive = true; lastInputAt = Date.now(); } },
       onInputEnd: () => { if (current()) { inputActive = false; lastInputAt = inputEndedAt = Date.now(); } },
@@ -177,13 +182,13 @@ export function createLiveCoordinator(deps: {
         patch({ status });
         if ((status === "active" || status === "listening") && connectStartedAt) { updateLiveSessionStats({ connectMs: Date.now() - connectStartedAt }); connectStartedAt = 0; }
         if (status === "speaking" && inputEndedAt) { updateLiveSessionStats({ lastReplyMs: Date.now() - inputEndedAt }); inputEndedAt = 0; }
-        if (status === "idle" || status === "error") scheduleReconnect();
-        else if (status === "active" || status === "listening") reconnectAttempts = 0;
+        if (status === "idle" || status === "error") { if (live) scheduleReconnect(); else giveUp(state.error ?? "Live connection closed before it started."); }
+        else if (status === "active" || status === "listening") { live = true; reconnectAttempts = 0; }
       },
       onError: (message, options) => {
         if (!current()) return;
         // A rejected configuration fails again on every retry and each new session is billed.
-        if (options?.retryable === false) { stop(); patch({ error: message, status: "error" }); return; }
+        if (options?.retryable === false || !live) { giveUp(message); return; }
         patch({ error: message, status: "error" }); scheduleReconnect();
       },
       onReconnect: resumeSession => { if (current()) { cancelReconnect(); scheduleReconnect(resumeSession); } },
@@ -213,10 +218,8 @@ export function createLiveCoordinator(deps: {
       hasConnected = true;
       patch({ handle }); scheduleNotifications();
     } catch (error) {
-      if (current()) {
-        patch({ status: "error", error: error instanceof Error ? error.message : "Live connection failed." });
-        if (!(error instanceof Error && /NotAllowed|permission|denied|another tab/i.test(error.name + error.message))) scheduleReconnect();
-      }
+      // A failed provider resumption gets one fresh connection; a fresh one that fails is not retried.
+      if (current()) { if (resume) scheduleReconnect(); else giveUp(error instanceof Error ? error.message : "Live connection failed."); }
     } finally { if (version === generation) starting = false; }
   };
   const beginConnect = (resume?: () => Promise<LiveSessionHandle>): Promise<void> => {
@@ -243,7 +246,7 @@ export function createLiveCoordinator(deps: {
       try { saved = JSON.parse(deps.storage?.getItem(`space.live.coordinator.v2:${ownerId}`) || "{}"); } catch {}
       liveSessionId = (saved as { liveSessionId?: string }).liveSessionId || crypto.randomUUID();
       inputRoom = null; configured = {}; hasConnected = (saved as { hasConnected?: boolean }).hasConnected === true;
-      patch({ ownerId, roomId: null, roomName: "", enabled: saved.enabled === true, muted: saved.muted === true, transcripts: Array.isArray(saved.transcripts) ? saved.transcripts.slice(-200) : [], context: null, contextState: "unavailable" });
+      patch({ ownerId, roomId: null, roomName: "", enabled: deps.restoreEnabled !== false && saved.enabled === true, muted: saved.muted === true, transcripts: Array.isArray(saved.transcripts) ? saved.transcripts.slice(-200) : [], context: null, contextState: "unavailable" });
       if (deps.history) {
         patch({ transcripts: [] });
         historyRead = deps.history.setOwner(ownerId).then(transcripts => { if (state.ownerId === ownerId && !disposed) patch({ transcripts }); });

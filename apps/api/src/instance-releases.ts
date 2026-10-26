@@ -89,7 +89,8 @@ export async function readReleases(options: ReleasesOptions = defaultReleasesOpt
     readDeployQueue(options.devQueueRoot)
   ]);
   // Dev deploys publish their commit into the stable repository, so the history is readable there.
-  const { pending, count } = await pendingChanges(options.stableRepo, stableCommit, devCommit);
+  // Promote ships dev's verified commit, never a dev batch still deploying.
+  const { pending, count } = await pendingChanges(options.stableRepo, stableCommit, verifiedCommit ?? devCommit);
   const promotion = [...stableQueue.active, ...stableQueue.recent].find((ticket) => ticket.summary.startsWith(PROMOTION_PREFIX)) ?? null;
   return releasesReportSchema.parse({
     available,

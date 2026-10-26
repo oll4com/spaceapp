@@ -1,11 +1,14 @@
 import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   detectNullAgentMessageRollout,
   findRecentCodexCliTurnActivity,
   findCodexCliTurnFinalResult,
+  findCodexCliPlanState,
+  findCurrentCodexCliTurnActivity,
   findRecentNullAgentMessageDiagnostic,
   inspectCodexCliTurnActivity,
   inspectCodexCliPlanState,
@@ -540,5 +543,30 @@ describe("Codex rollout diagnostics", () => {
         markerAtMs
       })
     ).resolves.toEqual({ status: "RUNNING", turnId: "turn:current", lastActivityAtMs: currentRolloutMtimeMs });
+  });
+
+  it("parses a rollout again only when its size or mtime changed", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "codex-rollout-cache-"));
+    try {
+      const rollout = join(codexHome, "rollout-cache.jsonl");
+      const turn = (id: string) => `${JSON.stringify({ type: "turn_context", payload: { turn_id: id } })}\n`;
+      execFileSync("sqlite3", [join(codexHome, "state_5.sqlite"),
+        `create table threads(id text, rollout_path text); insert into threads values ('thread-a','${rollout}');`]);
+      const fixedTime = new Date("2026-10-24T10:00:00.000Z");
+      await writeFile(rollout, turn("t1"));
+      await utimes(rollout, fixedTime, fixedTime);
+      expect(await findCurrentCodexCliTurnActivity({ codexHome, threadId: "thread-a" })).toEqual({ status: "RUNNING", turnId: "t1" });
+      expect(await findCodexCliPlanState({ codexHome, threadId: "thread-a" })).toBeNull();
+      // Same size and mtime: the kept results come back without a read (and no state DB is asked again).
+      await writeFile(rollout, turn("t9"));
+      await utimes(rollout, fixedTime, fixedTime);
+      await rm(join(codexHome, "state_5.sqlite"));
+      expect(await findCurrentCodexCliTurnActivity({ codexHome, threadId: "thread-a" })).toEqual({ status: "RUNNING", turnId: "t1" });
+      await appendFile(rollout, `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "t9" } })}\n`);
+      expect(await findCurrentCodexCliTurnActivity({ codexHome, threadId: "thread-a" })).toEqual({ status: "COMPLETED", turnId: "t9" });
+      expect(await findCodexCliPlanState({ codexHome, threadId: "thread-a" })).toBeNull();
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 });

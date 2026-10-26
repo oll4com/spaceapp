@@ -27,6 +27,7 @@ import { noteLiveUserText, noteLiveUserTurn } from "./live-command-origin.js";
 import { createRealView, grabVideoFrame, type RealView, type RealViewSource, type RealViewState } from "./live-real-view.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { loadLivePaneConfig, saveLivePaneConfig, type LivePaneStoredConfig } from "./live-pane-config.js";
+import { createLiveRecorder, type LiveRecorderState } from "./live-recorder.js";
 import { readLivePaneDot } from "../agent-pane/dot-home-events.js";
 
 function extractTargetNames(toolCall?: LiveTranscriptItem["toolCall"]): string[] {
@@ -265,6 +266,9 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   const [enableProfileMemory, setEnableProfileMemory] = useState(cfg.enableProfileMemory ?? true);
   const [voiceOnly, setVoiceOnly] = useState(cfg.voiceOnly ?? false);
   const [showToolCalls, setShowToolCalls] = useState(cfg.showToolCalls ?? false);
+  const [recordSession, setRecordSession] = useState(cfg.recordSession ?? false);
+  const [recording, setRecording] = useState<LiveRecorderState | null>(null);
+  const recorderRef = useRef<ReturnType<typeof createLiveRecorder> | null>(null);
 
   const [voiceModelCollapsed, setVoiceModelCollapsed] = useState(false);
   const [memoryControlCollapsed, setMemoryControlCollapsed] = useState(false);
@@ -473,6 +477,18 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   const [realViewClock, setRealViewClock] = useState(() => Date.now());
   useEffect(() => () => { realViewRef.current?.stop(); realViewRef.current = null; }, [pane.id, pane.roomId]);
   useEffect(() => {
+    const recorder = createLiveRecorder({
+      roomId: pane.roomId, paneId: pane.id,
+      getHandle: () => (shared ? coordinator.getSnapshot()?.handle ?? null : sessionRef.current),
+      // One recording per switch-on: a saved (or failed) recording turns the switch off, so nothing restarts on its own.
+      onState: (next) => { setRecording(next); if (next.status === "error" || next.status === "saved") setRecordSession(false); }
+    });
+    recorderRef.current = recorder;
+    return () => { recorder.stop(); recorderRef.current = null; };
+  }, [pane.id, pane.roomId, shared, coordinator]);
+  // The shared session's handle changes on a reconnect: the recording follows the new one.
+  useEffect(() => { recorderRef.current?.retap(); }, [sharedState?.handle]);
+  useEffect(() => {
     if (realView?.status !== "live") return;
     const timer = setInterval(() => setRealViewClock(Date.now()), 1000);
     return () => clearInterval(timer);
@@ -533,6 +549,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       selectedDeviceId,
       voiceOnly,
       showToolCalls,
+      recordSession,
       personalMemoryCollapsed,
       personalMemories
     }, true);
@@ -871,6 +888,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   return;
                 }
                 sessionRef.current = nextHandle;
+                recorderRef.current?.retap();
                 if (typeof window !== "undefined") {
                   (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = {
                     handle: nextHandle,
@@ -1121,7 +1139,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     realViewRef.current?.stop();
     const platform = getSpaceRuntime().platform;
     const view = createRealView({
-      getMedia: (kind) => kind === "camera" ? platform.getUserMedia({ video: true, audio: false }) : platform.getDisplayMedia({ video: true, audio: false }),
+      getMedia: async (kind) => {
+        const media = await (kind === "camera" ? platform.getUserMedia({ video: true, audio: false }) : platform.getDisplayMedia({ video: true, audio: false }));
+        recorderRef.current?.setRealView(media);
+        return media;
+      },
       send: deliverRealViewFrame,
       onState: (next) => { if (realViewRef.current === view) setRealView(next); },
       grab: grabVideoFrame,
@@ -1137,6 +1159,17 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     // Ending the Live conversation ends Real View: no frames are captured without a conversation to receive them.
     if (!isLive && realViewRef.current && realView?.status === "live") realViewRef.current.stop("The Live conversation ended.");
   }, [isLive, realView?.status]);
+  const wasLiveRef = useRef(false);
+  useEffect(() => {
+    // "Record this session" records only while the operator's switch is on and the conversation runs; the switch ends with the session.
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    const active = recording?.status === "recording";
+    if (recordSession && isLive && status !== "connecting" && !active && recording?.status !== "saving") recorder.start();
+    else if (active && (!recordSession || !isLive)) recorder.stop();
+    if (wasLiveRef.current && !isLive && recordSession) setRecordSession(false);
+    wasLiveRef.current = isLive;
+  }, [recordSession, isLive, status, recording?.status]);
 
   useEffect(() => {
     if (!shared) window.dispatchEvent(new CustomEvent("space-live-pane-status", { detail: { paneId: pane.id, status } }));
@@ -1199,6 +1232,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       if (detail.action === "camera") void captureVisual("camera");
       if (detail.action === "screen") void captureVisual("screen");
       if (detail.action === "real-view") setRealViewOpen((open) => !open);
+      if (detail.action === "record") setRecordSession((on) => !on);
     };
     window.addEventListener("space-live-pane-start", onStart);
     window.addEventListener("space-live-pane-toggle", onToggle);
@@ -1374,6 +1408,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
               label="Show tool calls in chat"
               checked={showToolCalls}
               onChange={setShowToolCalls}
+            />
+            <SpaceToggle
+              className="live-pane-toggle"
+              label="Record this session"
+              checked={recordSession}
+              onChange={setRecordSession}
+              detail="Your voice, the assistant's voice and Real View go to Media when it stops (10 minutes at most)."
             />
             <div className="live-toggle-row" style={{ marginTop: 6 }}>
               <span className="live-toggle-label">Live statistics</span>
@@ -1600,7 +1641,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             )}
           </div>}
 
-          {provider !== "google" && provider !== "local" && (
+          {provider !== "google" && provider !== "local" && provider !== "fish" && (
             <>
               <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle, #30363d)", margin: "4px 0" }} />
 
@@ -1875,6 +1916,17 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                   <strong>Error:</strong> {error}
                 </div>
               )}
+              {recording && recording.status !== "idle" && recording.status !== "recording" && (
+                <div className="live-recording-notice" role="status">
+                  {recording.status === "saving" ? "Saving the recording…"
+                    : recording.status === "error" ? `Recording: ${recording.reason ?? "failed."}`
+                    : recording.videoRequestId ? "Video requested · the Video pane delivers it as Media of this room."
+                    : <>
+                        {recording.video ? "Recording saved" : "Recording saved (audio only: Real View was off)"} ·
+                        <button type="button" onClick={() => { void recorderRef.current?.makeVideo().catch((err) => setError(err instanceof Error ? err.message : "The video request failed.")); }}>Make a video from it</button>
+                      </>}
+                </div>
+              )}
               {realViewOpen && (
                 <div className="live-real-view" role="group" aria-label="Real View">
                   <strong>Real View</strong>
@@ -1961,7 +2013,10 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                           ? "Talk to Local Qwen"
                           : provider === "vercel"
                           ? "Talk to GPT-Live (Vercel)"
+                          : provider === "fish"
+                          ? "Talk to Drama 3"
                           : "Talk to GPT-Live"}
+                        {recording?.status === "recording" && <span className="live-recording-dot" role="status" aria-label="Recording this session" title="Recording this session" />}
                       </div>
                       <div className="live-session-card-subtitle">
                         <LiveClockTime timeZone={timeZone} /> · {TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label || timeZone}
@@ -2123,7 +2178,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                           )}
                         </div>
                         <div className="live-transcript-meta">
-                          {item.toolCall ? "Space Control MCP" : item.role === "user" ? "You" : item.role === "assistant" ? (provider === "google" ? "Gemini Live" : provider === "amazon" ? "Nova Sonic" : provider === "local" ? "Local Qwen" : provider === "vercel" ? "GPT-Live (Vercel)" : "GPT-Live") : "System"} • {item.timestamp}
+                          {item.toolCall ? "Space Control MCP" : item.role === "user" ? "You" : item.role === "assistant" ? (provider === "google" ? "Gemini Live" : provider === "amazon" ? "Nova Sonic" : provider === "local" ? "Local Qwen" : provider === "vercel" ? "GPT-Live (Vercel)" : provider === "fish" ? "Drama 3" : "GPT-Live") : "System"} • {item.timestamp}
                         </div>
                       </div>
                     ))}

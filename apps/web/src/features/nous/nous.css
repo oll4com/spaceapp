@@ -27,7 +27,7 @@
 
 /* The views take one full row; a narrow dock (four views no longer fit) shows them as a 2×2 grid. Labels ellipsize only as a last resort. */
 .nous-dock > .nous-toolbar { padding-inline: 0.5rem; container-type: inline-size; }
-/* Six views: a narrow dock (a 360-412 px phone) shows them as two rows of three instead of clipping each name. */
+/* Five views: a narrow dock (a 360-412 px phone) shows them as two rows of three instead of clipping each name. */
 /* A column is never narrower than its label (the docked desktop view is about 300 px); too narrow even for that, two a row. */
 @container (max-width: 36rem) {
   .nous-toolbar .dock-kit-chips { display: grid; grid-template-columns: repeat(3, minmax(max-content, 1fr)); }
@@ -103,7 +103,6 @@
 .nous-messages,
 .nous-decisions,
 .nous-overview,
-.nous-quotas,
 .nous-plan-view {
   flex: 1 1 auto;
   min-height: 0;
@@ -126,24 +125,58 @@
   color: var(--dock-text);
 }
 .nous-message.is-answer { color: var(--dock-text); }
+.nous-message.is-draft { opacity: 0.88; }
+.nous-message.is-draft .nous-queue { margin-top: 0.25rem; font-size: 0.85em; color: var(--dock-accent); }
 .nous-message.is-decision { padding: 0.4rem 0.6rem; border-left: 2px solid var(--dock-accent); color: var(--dock-muted); }
 .nous-message.is-error { padding: 0.4rem 0.6rem; border-radius: var(--dock-radius-sm); background: var(--dock-danger-soft); color: var(--dock-danger); }
 
 .nous-tool { font-size: 0.72rem; color: var(--dock-muted); padding-left: 0.6rem; border-left: 2px solid var(--dock-border); }
 .nous-tool.is-running { color: var(--dock-accent); }
-.nous-tool.is-failed, .nous-tool.is-refused { color: var(--dock-warning); }
+.nous-tool.is-failed { color: var(--dock-warning); }
+/* A helper's steps (space_subagents) stand out inside the folded run. */
+.nous-steps .nous-tool.is-helper { padding-left: 0.5rem; border-left: 2px solid var(--dock-accent); }
+
+/* The operator's message an answer replies to, quoted on top as in a chat; a click shows it. */
+.nous-quote {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  width: 100%;
+  margin: 0 0 0.35rem;
+  padding: 0.3rem 0.55rem;
+  border: 0;
+  border-left: 3px solid var(--dock-accent);
+  border-radius: var(--dock-radius-sm);
+  background: var(--dock-accent-soft);
+  color: var(--dock-muted);
+  font: inherit;
+  font-size: 0.92em;
+  text-align: left;
+  white-space: pre-wrap;
+  cursor: pointer;
+}
+.nous-quote:hover { color: var(--dock-text); }
+.nous-quote:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-message.is-operator .nous-queue { margin-top: 0.25rem; font-size: 0.85em; color: var(--dock-muted); text-align: right; }
+.nous-message.is-operator .nous-queue.is-answering { color: var(--dock-accent); }
+.nous-message.is-operator[data-jumped] { outline: 2px solid var(--dock-accent); outline-offset: 2px; }
 
 .nous-inbox { font-size: 0.72rem; color: var(--dock-muted); }
 .nous-inbox summary { cursor: pointer; }
 .nous-inbox pre, .nous-trains { margin: 0.3rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.7rem; line-height: 1.4; color: var(--dock-muted); }
 
+/* The field takes the whole width with Send beside it, as tall as the field; the other controls sit in a row above (operator requests 2026-10-21). */
 .nous-composer {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 0.35rem;
   padding: 0 0.5rem 0.5rem;
 }
+.nous-composer > .dock-kit-icon-button { --dock-control: 2.75rem; --dock-icon: 1.3rem; }
+.nous-composer-tools { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.25rem; }
+.nous-composer-jump { display: flex; gap: 0.25rem; margin-left: auto; }
 
 .nous-composer textarea,
 .nous-decision-answer input {
@@ -180,6 +213,9 @@
 .nous-category.is-external { background: var(--dock-danger-soft); color: var(--dock-danger); }
 .nous-recommendation { margin: 0; font-size: var(--dock-font-sm); color: var(--dock-text); overflow-wrap: anywhere; }
 .nous-decision-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+/* A long option wraps instead of widening the card past a narrow dock (it scrolled the conversation sideways). */
+.nous-decision > .nous-decision-everything { justify-self: start; }
+.nous-decision-actions .dock-kit-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding-block: 0.3rem; }
 .nous-decision-answer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem; width: 100%; }
 
 .nous-overview section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
@@ -213,12 +249,18 @@
 .dock-panel.nous-dock.is-fullscreen {
   position: fixed;
   inset: max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) 0 0 0;
+  /* The dock's height: 100% would win over bottom: 0 and push its last title-bar height below the window. */
+  height: auto;
   z-index: 90;
   padding: 1rem;
   background: var(--dock-surface);
 }
+/* It stops before the right rail (operator request 2026-10-21): the same reserve the shell's padding keeps for it (workspace-chrome.css). */
+.space-shell[data-workspace-rail="true"] .dock-panel.nous-dock.is-fullscreen { right: calc(64px + env(safe-area-inset-right)); }
+.space-shell:is([data-shell-mode="desktop"], [data-shell-mode="tablet"], [data-shell-mode="mobile"])[data-workspace-rail="true"] .dock-panel.nous-dock.is-fullscreen { right: calc(52px + env(safe-area-inset-right)); }
+.space-shell[data-rail-downscaled="true"][data-workspace-rail="true"] .dock-panel.nous-dock.is-fullscreen { right: calc(var(--rail-padding-right, 46px) + env(safe-area-inset-right)); }
 /* A readable column on wide screens: the scroll areas keep the full width (scrollbar at the edge), the text stays about 76ch. */
-.dock-panel.nous-dock.is-fullscreen :is(.nous-messages, .nous-decisions, .nous-overview, .nous-quotas, .nous-plan-view, .nous-composer, .nous-files.is-pending) {
+.dock-panel.nous-dock.is-fullscreen :is(.nous-messages, .nous-decisions, .nous-overview, .nous-plan-view, .nous-composer, .nous-files.is-pending) {
   padding-inline: max(0.5rem, calc((100% - 76ch) / 2));
 }
 
@@ -368,7 +410,7 @@
   background: var(--dock-surface);
 }
 .nous-workspace ::selection { background: color-mix(in srgb, var(--dock-accent) 32%, transparent); }
-.nous-workspace :is(.nous-rail, .nous-board, .nous-messages, .nous-decisions, .nous-overview, .nous-quotas, .nous-plan-view) {
+.nous-workspace :is(.nous-rail, .nous-board, .nous-messages, .nous-decisions, .nous-overview, .nous-plan-view) {
   scrollbar-width: thin;
   scrollbar-color: var(--dock-border-strong) transparent;
 }
@@ -488,10 +530,12 @@
 .nous-steps summary:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
 .nous-steps-chevron { flex: none; width: 0.85rem; height: 0.85rem; transition: transform 150ms ease-out; }
 .nous-steps[open] .nous-steps-chevron { transform: rotate(90deg); }
+.nous-steps-helpers { flex: none; padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--dock-accent-soft); color: var(--dock-accent); }
 .nous-steps-count { flex: none; padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-text); font-variant-numeric: tabular-nums; }
 .nous-steps.is-running .nous-steps-count { background: var(--dock-accent-soft); color: var(--dock-accent); }
 .nous-steps-last { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nous-steps-failed { flex: none; color: var(--dock-warning); }
+.nous-steps-held { flex: none; color: var(--dock-muted); }
 .nous-steps ol { display: grid; gap: 0.3rem; margin: 0.4rem 0 0.2rem 0.9rem; padding: 0 0 0 0.75rem; border-left: 1px solid var(--dock-border); list-style: none; }
 .nous-steps .nous-tool { padding-left: 0; border-left: 0; }
 
@@ -584,7 +628,7 @@
 .nous-decision-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .nous-decision-feedback .dock-kit-button[aria-pressed="true"] { border-color: var(--dock-accent); color: var(--dock-accent); background: var(--dock-accent-soft); }
 
-/* Plan clipboard:wr9yNPJwkDrp: the dock's controls at its far right edge, the live stats, the launcher. */
+/* Plan clipboard:wr9yNPJwkDrp: the dock's controls at its far right edge and the live stats. */
 .nous-workspace-tools {
   grid-area: tools;
   display: flex;
@@ -614,28 +658,8 @@
 .nous-live-plans-legend { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-size: 0.7rem; color: var(--dock-muted); }
 .nous-live-plan-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dock-text); }
 .nous-live-plan-percent { text-align: right; color: var(--dock-muted); font-variant-numeric: tabular-nums; }
-.nous-live-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.35rem; }
-.nous-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 2.9rem; border: 1px solid var(--dock-border); border-radius: 10px; color: var(--dock-text); }
-.nous-tile svg { width: 1rem; height: 1rem; color: var(--dock-muted); }
-.nous-tile strong { font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
-.nous-tile-gauge { position: absolute; left: 6px; right: 6px; bottom: 3px; height: 2px; border-radius: 2px; background: var(--dock-border); overflow: hidden; }
-.nous-tile-gauge > span { display: block; height: 100%; background: var(--dock-accent); }
-.nous-live-sparks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.4rem; }
-.nous-live-sparks > div { display: grid; gap: 0.15rem; font-size: 0.66rem; color: var(--dock-muted); }
-.nous-spark { width: 100%; height: 1.6rem; stroke: var(--dock-accent); stroke-width: 1.5; }
-.nous-spark.is-empty { display: block; height: 1.6rem; border-bottom: 1px dashed var(--dock-border); }
 .nous-live-collapsible { padding-bottom: 0.4rem; border-bottom: 1px solid var(--dock-border); }
 .nous-live-collapsible > summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--dock-text); padding-block: 0.2rem; }
-.nous-launcher { display: flex; gap: 0.35rem; margin-top: auto; padding-top: 0.75rem; }
-.nous-launcher-button { display: inline-grid; place-items: center; width: 2.1rem; height: 2.1rem; border: 1px solid var(--dock-border); border-radius: 8px; background: transparent; color: var(--dock-text); cursor: pointer; }
-.nous-launcher-button:hover, .nous-launcher-button[aria-expanded="true"] { border-color: var(--dock-accent); background: var(--dock-soft); }
-.nous-launcher-button:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
-.nous-launcher-button svg { width: 1rem; height: 1rem; }
-.nous-launcher-menu-anchor { position: relative; }
-.nous-launcher-menu { position: absolute; bottom: calc(100% + 0.35rem); left: 0; z-index: 2; display: grid; min-width: 12rem; padding: 0.3rem; border: 1px solid var(--dock-border-strong); border-radius: 10px; background: var(--dock-surface); box-shadow: 0 8px 24px rgb(0 0 0 / 35%); }
-.nous-launcher-menu button { padding: 0.4rem 0.55rem; border: 0; border-radius: 6px; background: transparent; color: var(--dock-text); font: inherit; font-size: 0.8rem; text-align: left; cursor: pointer; }
-.nous-launcher-menu button:hover, .nous-launcher-menu button:focus-visible { background: var(--dock-soft); }
-.nous-launcher-menu button[aria-checked="true"]::after { content: " ·  on"; color: var(--dock-muted); }
 @media (max-width: 1279px) {
   .dock-panel.nous-dock.nous-workspace { grid-template-areas: "rail tools" "rail stage"; }
   .nous-stage { grid-row: auto; padding-top: 0; }
@@ -709,19 +733,37 @@ button.nous-board-item:hover { border-color: var(--dock-border-strong); }
   .dock-panel.nous-dock.nous-workspace.is-pane-board { grid-template-columns: 18rem minmax(0, 1fr) auto; grid-template-areas: "rail stage tools" "rail stage tools"; }
   .nous-workspace.is-pane-board .nous-board { display: none; }
 }
-.nous-launcher { flex-wrap: wrap; }
 
 /* The Plans tab (plan clipboard:7PiQv4Cnq0C2): Live's rows as buttons that open the plan, a finger's height each. */
 .nous-live-plan-open { width: 100%; min-height: 2.5rem; padding: 0.3rem 0.35rem; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .nous-live-plan-open:hover { background: var(--dock-soft); }
 .nous-live-plan-open:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: -2px; }
-/* The Tokens tab is Resources → Accounts & quotas: like there, the list grows with the dock and the provider chips scroll sideways. */
-.nous-quotas .toolbar-metric-list { max-height: none; overflow: visible; }
-.nous-quotas .toolbar-metric-provider-tabs { overflow-x: auto; scrollbar-width: none; }
-.nous-quotas .toolbar-metric-tab-btn { flex: 1 0 auto; white-space: nowrap; }
-/* Narrower than Resources (the ~300 px docked desktop view): the four status filters go two a row and the email · plan line wraps. */
-.nous-quotas { container-type: inline-size; }
-@container (max-width: 20rem) {
-  .nous-quotas .account-availability-filter { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .nous-quotas .account-quota-meta small { white-space: normal; overflow-wrap: anywhere; }
+
+/* "Show everything" (operator request 2026-10-21): the whole decision and every text it sends, in a modal read before Approve. */
+.nous-everything {
+  width: min(60rem, calc(100vw - 2rem));
+  max-width: none;
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--dock-border);
+  border-radius: 14px;
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
 }
+.nous-everything[open] { display: flex; flex-direction: column; }
+.nous-everything::backdrop { background: rgb(0 0 0 / 0.55); }
+.nous-everything-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem 0.75rem; align-items: start; padding: 1rem 1.25rem 0.75rem; border-bottom: 1px solid var(--dock-border); }
+.nous-everything-head .nous-category { grid-column: 1; }
+.nous-everything-head h3 { grid-column: 1; margin: 0; font-size: 1.05rem; line-height: 1.35; overflow-wrap: anywhere; }
+.nous-everything-head .dock-kit-icon-button { grid-column: 2; grid-row: 1 / span 2; }
+.nous-everything-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: 0.9rem; padding: 1rem 1.25rem; font-size: 0.9rem; line-height: 1.6; }
+.nous-everything-body section { display: grid; gap: 0.5rem; }
+.nous-everything-body h4 { margin: 0; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--dock-muted); }
+.nous-everything-action { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nous-everything-file { display: grid; gap: 0.35rem; }
+.nous-everything-file h5 { margin: 0; font-size: 0.78rem; font-weight: 600; color: var(--dock-muted); overflow-wrap: anywhere; }
+.nous-everything-file pre { margin: 0; padding: 0.75rem 0.9rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); font: inherit; font-size: 0.86rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nous-everything > .nous-decision-actions { padding: 0.75rem 1.25rem 1rem; border-top: 1px solid var(--dock-border); }

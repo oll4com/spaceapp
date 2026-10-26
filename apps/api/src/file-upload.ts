@@ -68,7 +68,9 @@ export async function stageFileUpload(options: {
       transform(chunk: Buffer, _encoding, callback) {
         bytes += chunk.length;
         options.budget.bytes += chunk.length;
-        if (bytes > Math.min(options.fileBytes ?? fileUploadLimits.fileBytes, fileUploadLimits.fileBytes) || options.budget.bytes > fileUploadLimits.requestBytes) {
+        // A route names its own cap (the Video pane's sources go past the shared 100 MiB); the request budget grows with it.
+        const cap = options.fileBytes ?? fileUploadLimits.fileBytes;
+        if (bytes > cap || options.budget.bytes > Math.max(fileUploadLimits.requestBytes, cap)) {
           callback(new FilesystemError("File upload exceeded its byte limit.", 413, "UPLOAD_TOO_LARGE"));
         } else {
           hash.update(chunk);

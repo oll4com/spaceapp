@@ -18,6 +18,7 @@ import {
   createBrowserSessionManager,
   dispatchBrowserRuntimeInput,
   isPrivateOrReservedAddress,
+  PANE_CHROME_STORAGE_ARGS,
   readPageMetadata,
   recordBrowserFramesInSegments,
   recoverInterruptedBrowserCaptureJobs,
@@ -1283,5 +1284,14 @@ describe("live frame pacing", () => {
     const resumed = nextBrowserFrameDeadline(30000, deadline, 35)!;
     expect(resumed).toBeCloseTo(30000 + 1000 / 35);
     expect(nextBrowserFrameDeadline(30001, resumed, 35)).toBeNull();
+  });
+});
+
+describe("pane Chrome storage flags (plan clipboard:LPzoMHnHzK9A F7)", () => {
+  it("caps the HTTP cache, stops on-device model downloads and keeps one --disable-features with Vulkan", () => {
+    expect(PANE_CHROME_STORAGE_ARGS).toContain("--disk-cache-size=268435456");
+    const disabled = PANE_CHROME_STORAGE_ARGS.filter((arg) => arg.startsWith("--disable-features="));
+    expect(disabled).toHaveLength(1);
+    expect(disabled[0].slice("--disable-features=".length).split(",")).toEqual(expect.arrayContaining(["Vulkan", "OptimizationGuideModelDownloading"]));
   });
 });
