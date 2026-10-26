@@ -6345,7 +6345,9 @@ describe("TerminalPane uploads and paste", () => {
 
     expect(await screen.findByText("Clipboard TXT upload failed")).toBeTruthy();
     expect(apiMock.uploadCliFiles).toHaveBeenCalledTimes(1);
-    expect(socket.sent).toEqual([]);
+    // Longniang, 2026-10-26: delayed geometry resize is unrelated to failed TXT upload; still reject every other frame, including inline input.
+    expect(socket.sent.filter((frame) => JSON.parse(frame).type !== "resize")).toEqual([]);
+    expect(socket.sent.some((frame) => frame.includes(clipText))).toBe(false);
   });
 
   it("ignores the legacy clipboard debug flag until CLI debug mode is enabled", async () => {

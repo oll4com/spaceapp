@@ -672,7 +672,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     }
     const nextSessionId = reusableSession?.sessionId ?? makeSpaceId("cli_session");
     let sessionCwd = railTabCarriedCwd ?? (directOperatorParity && !railTabWorkspace
-      ? resolveDirectOperatorParityCwd(requestedCwd, config.cliWorkspaceRoot)
+      ? resolveDirectOperatorParityCwd(requestedCwd, config.cliWorkspaceRoot, config.instance)
       : requestedManagedWorkspace
         ? buildCliWorkspacePath({
             workspaceRoot: config.cliWorkspaceRoot,
