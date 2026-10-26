@@ -16,6 +16,22 @@ WSL2 with Docker available inside that distribution. Native Windows PowerShell
 is not supported by this Unix socket/PTY development stack. Keep the checkout
 path short: the CLI socket path must fit within 100 bytes.
 
+<!-- Longniang, 2026-10-26: an isolated HOME cannot load a user's Docker Desktop/Colima context metadata. -->
+Docker Desktop and Colima commonly use a user-specific Unix socket. The stack
+isolates `HOME` and does not copy your Docker configuration. Before starting,
+resolve the active local Docker context through Docker's own CLI, pass its
+endpoint explicitly, and remove a context override that would take precedence:
+
+```sh
+export DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+unset DOCKER_CONTEXT
+npm run dev:stack
+```
+
+Keep the same endpoint when running down, reset and rebuild. A standard Linux
+Docker Engine listening at `/var/run/docker.sock` needs no endpoint override.
+These instructions cover local Unix sockets, not remote TLS credential setup.
+
 The source `node-pty` dependency may need Python 3, Make and a C++ compiler.
 Internet access is needed for locked npm dependencies, the pinned infrastructure
 images and the exact OpenCode package version declared by the repository
