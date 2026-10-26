@@ -43,7 +43,7 @@ invoked outside an interactive logon.
 
 ### Container engine selection
 
-Docker is the default engine. To use Podman instead, install Podman (>= 4.9)
+Docker is the default engine. To use Podman instead, install Podman 5.0.0 or newer
 and a Compose v2 provider such as `docker-compose-plugin`, then run:
 
 ```bash
@@ -59,6 +59,11 @@ On macOS, Podman requires a running Podman machine with at least 4 CPUs,
 7 GiB memory and 15 GiB disk. The install wizard detects the machine and
 reports its resources; if they are too small it prints the exact
 `podman machine set` command to resize it.
+
+The selected engine is persisted and is used by later lifecycle commands,
+including `up`, `down`, `status`, `logs`, `update`, and `rollback`.
+An existing installation cannot change engines in place. Back up the
+installation and reinstall to select a different engine.
 
 The launcher selects `small`, `medium`, or `large` automatically using CPU,
 RAM and free disk. Docker's CPU and RAM allocation is checked as well.

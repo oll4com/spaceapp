@@ -102,6 +102,20 @@ Run the universal command in your terminal:
 npx --yes run-spaceapp@latest install
 ```
 
+Docker is the default engine. To use Podman on Linux, or on macOS with a
+running Podman machine, install Podman 5.0.0 or newer and a Compose v2
+provider, then run:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+The selected engine is persisted and is used by later lifecycle commands,
+including `up`, `down`, `status`, `logs`, `update`, and `rollback`.
+An existing installation cannot change engines in place. Back up the
+installation and reinstall to select a different engine. Podman does not
+support `--access host-root`; use `--access isolated` or Docker instead.
+
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
 ### What Happens Next (Step-by-Step Onboarding):

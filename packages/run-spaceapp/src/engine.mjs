@@ -66,7 +66,7 @@ export function parseEngineVersion(output = "") {
   return match ? match[1] : null;
 }
 
-const MIN_PODMAN_VERSION = "4.9.0";
+const MIN_PODMAN_VERSION = "5.0.0";
 
 function compareVersions(a, b) {
   const parse = (v) => v.split(".").map(Number);

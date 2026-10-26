@@ -54,15 +54,15 @@ describe("engine support", () => {
   test("podman version support gate", () => {
     assert.equal(isPodmanVersionSupported("5.2.0"), true);
     assert.equal(isPodmanVersionSupported("5.0.0"), true);
-    assert.equal(isPodmanVersionSupported("4.9.3"), true);
-    assert.equal(isPodmanVersionSupported("4.9.0"), true);
+    assert.equal(isPodmanVersionSupported("4.9.3"), false);
+    assert.equal(isPodmanVersionSupported("4.9.0"), false);
     assert.equal(isPodmanVersionSupported("4.8.0"), false);
     assert.equal(isPodmanVersionSupported("3.4.2"), false);
     assert.equal(isPodmanVersionSupported(null), false);
   });
 
   test("minimum podman version is documented", () => {
-    assert.equal(minimumPodmanVersion(), "4.9.0");
+    assert.equal(minimumPodmanVersion(), "5.0.0");
   });
 
   test("inspectPodmanMachine parses the default machine JSON", async () => {

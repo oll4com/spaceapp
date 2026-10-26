@@ -2555,7 +2555,7 @@ async function doctor({
     (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
   }
   if (engineCli.code !== 0 || engineCompose.code !== 0) {
-    stderr.write(`${dockerInstallHelp(platform)}\n`);
+    stderr.write(`${engine === "podman" ? podmanInstallHelp() : dockerInstallHelp(platform)}\n`);
   } else if (engineInfo.code !== 0) {
     stderr.write(`${dockerEngineHelp(platform)}\n`);
   }
@@ -2806,6 +2806,10 @@ function commandNeedsRuntimeFiles(command, args) {
     return args[0] === "reset-password" || args[0] === "rotate-setup-token";
   }
   return false;
+}
+
+function podmanInstallHelp() {
+  return `Install Podman 5.0.0 or newer and a Compose v2 provider (for example podman-compose or the docker-compose-plugin provider), then rerun "${UNIVERSAL_COMMAND} doctor".`;
 }
 
 function dockerInstallHelp(platform) {
