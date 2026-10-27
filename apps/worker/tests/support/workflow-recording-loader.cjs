@@ -1,4 +1,5 @@
 // Test-only bundles. Production files and the Temporal SDK are never mocked.
+/** Select the legacy branch for recording, or add a timer to prove replay rejects drift. */
 module.exports = function (source) {
   const { mode } = this.getOptions();
   if (mode === "legacy") {

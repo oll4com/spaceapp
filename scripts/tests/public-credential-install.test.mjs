@@ -85,7 +85,7 @@ test('the credential agent runs only a wrapper\'s fixed credential actions, inpu
   // Short path: Unix socket paths are limited to about 100 bytes.
   const root = await mkdtemp('/tmp/spaceapp-agent-');
   for (const name of ['codex-vscode-parity', 'opencode-vscode-parity']) {
-    await writeFile(join(root, name), '#!/bin/sh\nprintf "%s %d\\n" "$1" "$(wc -c)"\n');
+    await writeFile(join(root, name), '#!/bin/sh\nprintf "%s %s\\n" "$1" "$(wc -c)"\n');
     await chmod(join(root, name), 0o755);
   }
   const socketPath = join(root, 'credentials.sock');

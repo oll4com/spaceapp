@@ -20,6 +20,7 @@ export const historyNames = [
 const here = fileURLToPath(new URL(".", import.meta.url));
 export const historiesDirectory = resolve(here, "../fixtures/workflow-histories");
 const bundles = new Map<Mode, Promise<WorkflowBundle>>();
+/** Cache the real workflow bundle, with test-only legacy or replay-drift transforms. */
 export function workflowBundle(mode: Mode = "current") {
   if (!bundles.has(mode)) bundles.set(mode, bundleWorkflowCode({
     workflowsPath: resolve(here, "workflow-sandbox-entry.ts"),
@@ -48,6 +49,7 @@ const activityNames = [
 type ActivityName = typeof activityNames[number];
 export type Activities = Partial<Record<ActivityName, (...args: any[]) => any>>;
 
+/** Expose completion controls so tests can order signals around running activities. */
 export function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -55,6 +57,7 @@ export function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
+/** Poll a test observation with a bounded wall-clock deadline and useful failure label. */
 export async function until(predicate: () => boolean | Promise<boolean>, label = "condition", timeout = 10_000) {
   const deadline = Date.now() + timeout;
   while (!await predicate()) {
@@ -63,6 +66,7 @@ export async function until(predicate: () => boolean | Promise<boolean>, label =
   }
 }
 
+/** Own an isolated time-skipping server, activity stubs, workers and workflow handles. */
 export class Sandbox {
   env!: TestWorkflowEnvironment;
   activities: Activities = {};
@@ -75,6 +79,7 @@ export class Sandbox {
   private initialized = false;
   private opened = false;
 
+  /** Start a fresh server and workers for both supervisor branches and memory child queues. */
   async open() {
     if (!this.initialized) {
       Runtime.install({ logger: new DefaultLogger("ERROR") });
@@ -112,6 +117,7 @@ export class Sandbox {
     }
   }
 
+  /** Start a real workflow and retain its handle for deterministic cleanup. */
   async start(type: string, input: unknown, mode: "current" | "legacy" = "current", workflowId?: string) {
     const handle = await this.env.client.workflow.start(type, {
       taskQueue: `sandbox-${mode}`, workflowId: workflowId ?? `synthetic-${type}-${++this.sequence}`, args: [input]
@@ -120,19 +126,24 @@ export class Sandbox {
     return handle;
   }
 
+  /** Allow server time to advance only while the supplied test operation runs. */
   async skipping<T>(body: () => Promise<T>): Promise<T> {
     await this.env.connection.testService.unlockTimeSkipping({});
     try { return await body(); }
     finally { await this.env.connection.testService.lockTimeSkipping({}); }
   }
 
+  /** Count invocations of a named stub activity. */
   count(name: ActivityName) { return this.calls.filter(call => call.name === name).length; }
+  /** Return the captured arguments for every invocation of a named activity. */
   named(name: ActivityName) { return this.calls.filter(call => call.name === name); }
 
+  /** Fetch the original execution history even after continue-as-new advances the handle. */
   async firstHistory(handle: WorkflowHandleWithFirstExecutionRunId) {
     return this.env.client.workflow.getHandle(handle.workflowId, handle.firstExecutionRunId).fetchHistory();
   }
 
+  /** Require continue-as-new and return the next execution input plus the original history. */
   async continued(handle: WorkflowHandleWithFirstExecutionRunId) {
     let nextRunId: string | undefined;
     await assert.rejects(this.env.client.workflow.result(handle.workflowId, handle.firstExecutionRunId, { followRuns: false }), error => {
@@ -148,6 +159,7 @@ export class Sandbox {
     return { next, input: JSON.parse(new TextDecoder().decode(payload.data!)), history: await this.firstHistory(handle) };
   }
 
+  /** Write synthetic history only in recorder mode, removing machine-local failure stacks. */
   async record(name: typeof historyNames[number], handle: WorkflowHandleWithFirstExecutionRunId) {
     const destination = process.env.SPACE_RECORD_WORKFLOW_HISTORIES;
     if (!destination) return;
@@ -162,6 +174,7 @@ export class Sandbox {
       synthetic.events.map((event: unknown) => "    " + JSON.stringify(event)).join(",\n") + '\n  ]\n}\n');
   }
 
+  /** Terminate remaining runs, drain workers and reject any activity lacking an explicit stub. */
   async reset() {
     for (const handle of this.handles.splice(0)) {
       const current = this.env.client.workflow.getHandle(handle.workflowId);
@@ -179,6 +192,7 @@ export class Sandbox {
     assert.deepEqual(missing, [], "Every executed production activity must have an explicit test stub");
   }
 
+  /** Drain test work and tear down every worker and the ephemeral server. */
   async close() {
     if (!this.opened) return;
     this.opened = false;
