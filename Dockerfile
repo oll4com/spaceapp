@@ -6,10 +6,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential liblzma5 python3 pkg-config \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN npm ci --no-audit --no-fund \
+RUN npm_config_nodedir=/usr/local npm ci --no-audit --no-fund \
     && npm run build \
-    && npm prune --omit=dev \
-    && find node_modules -type f \( -name '*.js.map' -o -name '*.mjs.map' -o -name '*.cjs.map' -o -name '*.css.map' \) -delete
+    && node scripts/container-runtime.mjs core /out/core \
+    && node scripts/container-runtime.mjs browser /out/browser \
+    && node scripts/container-runtime.mjs cli /out/cli
 
 FROM node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 AS runtime-base
 ARG TARGETARCH
@@ -54,17 +55,8 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && groupadd --gid 10001 spaceapp \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/spaceapp-cli --shell /bin/bash spaceapp
 WORKDIR /app
-COPY --from=build --chown=spaceapp:spaceapp /app/package.json /app/package-lock.json ./
-COPY --from=build --chown=spaceapp:spaceapp /app/node_modules ./node_modules
-COPY --from=build --chown=spaceapp:spaceapp /app/apps ./apps
-COPY --from=build --chown=spaceapp:spaceapp /app/packages ./packages
-COPY --from=build --chown=spaceapp:spaceapp /app/agent-skills ./agent-skills
 COPY --from=build --chown=spaceapp:spaceapp /app/LICENSE /app/NOTICE /app/THIRD_PARTY_NOTICES.md ./
 COPY --from=build --chown=spaceapp:spaceapp /app/THIRD_PARTY_LICENSES ./THIRD_PARTY_LICENSES
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
-COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp deploy/docker ./deploy/docker
 RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint.sh deploy/docker/cli-entrypoint.sh \
     && install -m 0755 deploy/docker/public-cli-wrapper.sh /usr/local/bin/spaceapp-cli-wrapper \
@@ -73,6 +65,11 @@ RUN chmod 0755 deploy/docker/core-entrypoint.sh deploy/docker/browser-entrypoint
        done
 
 FROM runtime-base AS core
+COPY --from=build --chown=spaceapp:spaceapp /out/core/ ./
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/reset-owner-password.mjs ./scripts/reset-owner-password.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/rotate-owner-setup-token.mjs ./scripts/rotate-owner-setup-token.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-backup.mjs ./scripts/portable-backup.mjs
+COPY --from=build --chown=spaceapp:spaceapp /app/scripts/portable-restore.mjs ./scripts/portable-restore.mjs
 COPY --chown=spaceapp:spaceapp starter-memory /opt/spaceapp/starter-memory
 # The Databases tool's SQLite worker (apps/api/src/databases/sqlite-worker.py) needs Python 3.12+ with its sqlite3 module;
 # python3-minimal has no sqlite3 (1.1.7 review: SQLite could not run in public installations).
@@ -91,8 +88,9 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
 ENTRYPOINT ["/app/deploy/docker/core-entrypoint.sh"]
 
 FROM runtime-base AS browser
+COPY --from=build --chown=spaceapp:spaceapp /out/browser/ ./
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium fonts-liberation liblzma5 \
+    && apt-get install -y --no-install-recommends chromium xvfb fonts-liberation liblzma5 \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -o spaceapp -g spaceapp -m 0700 \
       /var/lib/spaceapp \
@@ -103,16 +101,21 @@ ENV SPACE_BROWSER_CHROME_PATH=/usr/bin/chromium \
 ENTRYPOINT ["/app/deploy/docker/browser-entrypoint.sh"]
 
 FROM runtime-base AS cli
+COPY --from=build --chown=spaceapp:spaceapp /out/cli/ ./
 COPY --chown=root:root starter-memory/AGENTS.md /etc/AGENTS.md
 COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-installation-guide.md
 RUN chmod 0644 /etc/AGENTS.md
 ARG TARGETARCH
 # python3-minimal (about 13 MB): agents often check their work with a short python3 script (pilot F18).
 # OpenCode 2 (@opencode/cli): its postinstall picks the native binary for the image's platform.
+# npm also installs musl optional packages; Debian uses glibc. Keep the selected
+# binary and both compatible x64 CPU variants, and verify the command after pruning.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global --no-audit --no-fund @opencode/cli@2.0.32 \
+    && rm -rf /usr/local/lib/node_modules/@opencode/cli/node_modules/@opencode/*-musl \
+    && opencode --version \
     && install -d -o spaceapp -g spaceapp -m 0700 /var/lib/spaceapp-cli/vendor \
     && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \

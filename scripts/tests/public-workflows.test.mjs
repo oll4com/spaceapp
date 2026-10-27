@@ -76,6 +76,14 @@ test("container matrices load each image and enforce the public size budgets", a
   }
 });
 
+test("each container matrix target and architecture executes a runtime smoke", async () => {
+  const containers = await workflow("containers.yml");
+  assert.match(containers, /runs-on: \$\{\{ matrix\.arch == 'arm64' && 'ubuntu-24\.04-arm' \|\| 'ubuntu-latest' \}\}/);
+  assert.match(containers, /node scripts\/container-smoke\.mjs\s+"\$\{\{ matrix\.target \}\}"\s+"spaceapp-ci:\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.arch \}\}"\s+"linux\/\$\{\{ matrix\.arch \}\}"/);
+  assert.match(containers, /- "scripts\/container-runtime\.mjs"/);
+  assert.match(containers, /- "scripts\/container-smoke\.mjs"/);
+});
+
 test("security workflow scans secrets, dependencies, source, images, and emits an SBOM", async () => {
   const security = await workflow("security.yml");
 

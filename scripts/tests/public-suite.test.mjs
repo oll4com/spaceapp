@@ -1,3 +1,4 @@
+import "./container-runtime.test.mjs";
 import "./publish-npm-candidate.test.mjs";
 import "./container-image-size-budget.test.mjs";
 import "./mcp-hono-compatibility.test.mjs";
