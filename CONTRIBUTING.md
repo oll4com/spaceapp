@@ -127,7 +127,7 @@ After `npm ci`, start the source application with:
 npm run dev:stack
 ```
 
-Use Node 22.12–22.x, Python 3 and a C/C++ build toolchain (for `node-pty`), and Docker with Compose v2 or newer. On Linux, start
+Use Node 22.12–22.x, Python 3 (also used for the OS-held checkout lock), a C/C++ build toolchain (for `node-pty`), and Docker with Compose v2 or newer. On Linux, start
 Docker Engine first; on Ubuntu, install `build-essential` and `python3` before
 `npm ci`. On macOS, the Xcode Command Line Tools provide the compiler. On macOS, start Docker Desktop or Colima (`colima start`).
 On Windows, use WSL2 with Docker Desktop's WSL integration. Run the commands
@@ -166,6 +166,8 @@ volume, network, short temporary socket directory, and `.dev-stack/`. It refuses
 unmarked, moved, or symlinked state. Keep the checkout at its original path until
 you reset. Only the project's own resources are managed; the published
 `run-spaceapp` installation is independent.
+The ignored, empty `.dev-stack.lock` file stays in place so concurrent commands
+always lock the same inode. Do not delete or replace it while commands run.
 
 All five listeners bind to `127.0.0.1`. To change ports, set these variables on
 the **first** start (reset before changing an existing stack's ports):
@@ -200,8 +202,20 @@ worker exit stops the supervisor with status 1. The Contributor stack workflow
 runs the acceptance check on Ubuntu.
 
 If startup reports a Docker connection error, start your Docker engine and run
-`docker compose version` before retrying. A port conflict names the occupied
+`docker info` before retrying. A port conflict names the occupied
 port; choose a free `SPACE_DEV_*_PORT` before the first start. If `npm ci` cannot
 build `node-pty`, install the platform compiler and Python prerequisites above.
-A stale run marker is not permission to stop an unrelated process: stop the
-original stack terminal before retrying `down` or `reset`.
+Ctrl-C also cancels builds, installs and Docker startup; cleanup then stops the
+owned containers. After a crash or reboot the OS releases the checkout lock.
+Retry `down` or `reset`; a later `up` restores a missing temporary socket directory
+without changing secrets. If a forced kill left app processes alive, stop those
+known processes before restarting; port preflight will refuse a second stack.
+For a legacy `running/pid` marker, automatic recovery requires a confirmed dead
+PID under the checkout lock. A live/reused PID, permission error, or missing or
+invalid PID refuses recovery and never triggers a process kill. After verifying
+all old stack processes are stopped, move that legacy `running` directory aside
+and retry. An older incomplete `.dev-stack` without `owner.json` also requires
+inspection and moving aside; ownership cannot safely be inferred. New state is
+published only after initialization completes. A forced kill during initialization
+may leave an ignored `.dev-stack-init-*` staging directory; it does not block
+startup and can be removed after confirming no command is initializing it.

@@ -83,3 +83,115 @@ test("macOS PTY preparation restores only the owned helper execute bit", async (
     await assert.rejects(preparePtyHelper(checkout, "darwin", "arm64"), /Refusing/);
   } finally { await rm(checkout, { recursive: true, force: true }); }
 });
+
+test("missing temporary sockets recover without rotating secrets, and reset tolerates their absence", async () => {
+  const checkout = await realpath(await mkdtemp(join(tmpdir(), "stack-recover-")));
+  let state;
+  try {
+    state = await createState(checkout, {});
+    const secret = await readFile(join(state.dir, "secrets/session-secret"), "utf8");
+    await rm(state.sockets, { recursive: true });
+    assert.equal((await readState(checkout)).id, state.id);
+    const recovered = await createState(checkout, {});
+    assert.equal(recovered.id, state.id);
+    assert.equal(await readFile(join(recovered.sockets, "owner"), "utf8"), state.id);
+    assert.equal(await readFile(join(state.dir, "secrets/session-secret"), "utf8"), secret);
+    await rm(state.sockets, { recursive: true });
+    await removeState(state); state = null;
+    assert.equal(await readState(checkout), null);
+  } finally { if (state) await removeState(state); await rm(checkout, { recursive: true, force: true }); }
+});
+
+test("failed initialization leaves no published or staging state; failed atomic write preserves the old value", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const { privateWrite } = await import("../dev-stack/state.mjs");
+  const checkout = await realpath(await mkdtemp(join(tmpdir(), "stack-atomic-")));
+  const previous = process.env.TMPDIR;
+  try {
+    process.env.TMPDIR = join(checkout, "missing-temp-parent");
+    await assert.rejects(createState(checkout, {}), { code: "ENOENT" });
+    assert.deepEqual(await readdir(checkout), []);
+    if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+    const marker = join(checkout, "marker");
+    await privateWrite(marker, "complete");
+    await assert.rejects(privateWrite(marker, {}), { code: "ERR_INVALID_ARG_TYPE" });
+    assert.equal(await readFile(marker, "utf8"), "complete");
+    assert.deepEqual(await readdir(checkout), ["marker"]);
+    await mkdir(join(checkout, ".dev-stack-init-abandoned"));
+    const state = await createState(checkout, {});
+    await removeState(state);
+  } finally {
+    if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("checkout lock admits one concurrent command and survives reset without inode replacement", { skip: process.platform === "win32" }, async () => {
+  const { acquireLock } = await import("../dev-stack/lock.mjs");
+  const checkout = await realpath(await mkdtemp(join(tmpdir(), "stack-lock-")));
+  let lease;
+  try {
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () => acquireLock(checkout)));
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    for (const r of results) if (r.status === "rejected") assert.equal(r.reason.code, "EBUSY");
+    lease = results.find((r) => r.status === "fulfilled").value;
+    const inode = (await stat(join(checkout, ".dev-stack.lock"))).ino;
+    const state = await createState(checkout, {}); await removeState(state);
+    await assert.rejects(acquireLock(checkout), { code: "EBUSY" });
+    await lease.release(); lease = await acquireLock(checkout);
+    assert.equal((await stat(join(checkout, ".dev-stack.lock"))).ino, inode);
+  } finally { if (lease) await lease.release(); await rm(checkout, { recursive: true, force: true }); }
+});
+
+test("a killed lock owner releases automatically without stale PID reclamation", { skip: process.platform === "win32" }, async () => {
+  const { spawn } = await import("node:child_process");
+  const { acquireLock } = await import("../dev-stack/lock.mjs");
+  const { waitFor } = await import("../dev-stack/processes.mjs");
+  const checkout = await realpath(await mkdtemp(join(tmpdir(), "stack-crash-")));
+  const module = new URL("../dev-stack/lock.mjs", import.meta.url).href;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", `const { acquireLock } = await import(${JSON.stringify(module)}); await acquireLock(${JSON.stringify(checkout)}); console.log('ready');`], { stdio: ["ignore", "pipe", "pipe"] });
+  const ended = new Promise((resolve) => owner.once("exit", resolve));
+  let lease;
+  try {
+    await new Promise((resolve, reject) => { owner.stdout.once("data", resolve); owner.once("error", reject); });
+    await assert.rejects(acquireLock(checkout), { code: "EBUSY" });
+    owner.kill("SIGKILL"); await ended;
+    await waitFor(async () => { lease = await acquireLock(checkout); return true; }, "released crash lock", new AbortController().signal, 5000);
+  } finally { if (lease) await lease.release(); owner.kill("SIGKILL"); await ended; await rm(checkout, { recursive: true, force: true }); }
+});
+
+test("SIGINT during Docker startup stops the detached child and releases control/checkout locks", { skip: process.platform === "win32" }, async () => {
+  const { spawn } = await import("node:child_process");
+  const { cp } = await import("node:fs/promises");
+  const { acquireLock } = await import("../dev-stack/lock.mjs");
+  const { waitFor } = await import("../dev-stack/processes.mjs");
+  const checkout = await realpath(await mkdtemp(join(tmpdir(), "stack-signal-")));
+  let owner, ended, state, pid, lease;
+  try {
+    await mkdir(join(checkout, "scripts")); await mkdir(join(checkout, "bin"));
+    await cp(join(root, "scripts/dev-stack"), join(checkout, "scripts/dev-stack"), { recursive: true });
+    await cp(join(root, "scripts/dev-stack.mjs"), join(checkout, "scripts/dev-stack.mjs"));
+    await mkdir(join(checkout, "packages/run-spaceapp/templates"), { recursive: true });
+    await cp(join(root, "packages/run-spaceapp/templates/compose.yml"), join(checkout, "packages/run-spaceapp/templates/compose.yml"));
+    const pidFile = join(checkout, "docker.pid");
+    await writeFile(join(checkout, "bin/docker"), `#!${process.execPath}\nif (process.argv.includes('up')) { require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(()=>{},1000); }\n`, { mode: 0o700 });
+    owner = spawn(process.execPath, [join(checkout, "scripts/dev-stack.mjs")], { env: { ...process.env, PATH: `${join(checkout, "bin")}:${process.env.PATH}`, npm_execpath: "unused-startup-fixture" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    for (const stream of [owner.stdout, owner.stderr]) stream.on("data", (chunk) => { output += chunk; });
+    ended = new Promise((resolve) => owner.once("exit", (code) => resolve(code)));
+    await waitFor(async () => { pid = Number(await readFile(pidFile, "utf8")); return true; }, "Docker startup fixture", new AbortController().signal, 10_000);
+    state = await readState(checkout);
+    const start = Date.now(); owner.kill("SIGINT");
+    assert.equal(await ended, 0, output); assert.ok(Date.now() - start < 5000);
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    lease = await acquireLock(checkout);
+    await assert.rejects(stat(join(state.sockets, "control.sock")), { code: "ENOENT" });
+  } finally {
+    if (owner && owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+    if (ended) await ended;
+    if (pid && owner?.signalCode === "SIGKILL") { try { process.kill(pid, "SIGKILL"); } catch { /* already exited */ } }
+    if (lease) await lease.release();
+    if (state) await removeState(state);
+    await rm(checkout, { recursive: true, force: true });
+  }
+});

@@ -10,6 +10,7 @@ export class Processes {
   constructor(secrets, onFailure) { this.secrets = secrets; this.onFailure = onFailure; }
   redact(text) { for (const secret of this.secrets) text = text.replaceAll(secret, "[redacted]"); return text; }
   start(name, command, args, options = {}, required = false) {
+    if (this.stopping) throw new Error("Stack startup cancelled.");
     const child = spawn(command, args, { ...options, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     this.children.add(child);
     for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream }).on("line", (line) => console.log(`[${name}] ${this.redact(line)}`));

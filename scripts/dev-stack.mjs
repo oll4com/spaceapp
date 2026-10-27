@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { chmod, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { chmod, lstat, readFile, realpath, rm } from "node:fs/promises";
 import net from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+import { acquireLock } from "./dev-stack/lock.mjs";
 import { createState, readState, removeState, privateWrite, secretNames } from "./dev-stack/state.mjs";
 import { applicationEnv, composeConfig, openCodePin, writeWrapper } from "./dev-stack/config.mjs";
 import { Processes, assertPortsFree, requestControl, waitFor } from "./dev-stack/processes.mjs";
@@ -19,8 +21,50 @@ const [major, minor] = process.versions.node.split(".").map(Number);
 if (major !== 22 || minor < 12) throw new Error("The contributor stack requires Node >=22.12 <23.");
 
 async function main() {
-  const state = action === "up" ? await createState(root, process.env) : await readState(root);
-  if (!state) { console.log("No contributor stack exists in this checkout."); return; }
+  let acknowledged = false;
+  if (action !== "up") {
+    const state = await readState(root);
+    if (!state) { console.log("No contributor stack exists in this checkout."); return; }
+    try { await requestControl(state, action === "reset" ? "down" : action); acknowledged = true; }
+    catch (error) {
+      if (!["ECONNREFUSED", "ENOENT"].includes(error.code)) throw error;
+      if (action === "rebuild") throw new Error("Start dev:stack before rebuilding.", { cause: error });
+    }
+    if (action === "rebuild") return;
+  }
+  let lease;
+  const deadline = Date.now() + 60_000;
+  while (!lease) {
+    try { lease = await acquireLock(root); }
+    catch (error) {
+      if (!acknowledged || error.code !== "EBUSY" || Date.now() >= deadline) throw error;
+      await delay(100); // the acknowledged supervisor is finishing its finally block
+    }
+  }
+  // Always observe loss, including during state creation.
+  let lockFailure;
+  lease.lost.catch((error) => { lockFailure = error; });
+  try {
+    const state = action === "up" ? await createState(root, process.env) : await readState(root);
+    if (lockFailure) throw lockFailure;
+    if (state) { await removeLegacyMarker(state); await run(state, lease); }
+  } finally { await lease.release(); }
+}
+
+async function removeLegacyMarker(state) {
+  const marker = join(state.dir, "running");
+  let stat;
+  try { stat = await lstat(marker); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Invalid legacy run marker; inspect it manually.");
+  let pid;
+  try { pid = (await readFile(join(marker, "pid"), "utf8")).trim(); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (!/^[1-9][0-9]*$/.test(pid ?? "") || !Number.isSafeInteger(Number(pid))) throw new Error("Legacy run marker has no valid PID; inspect it manually before recovery.");
+  try { process.kill(Number(pid), 0); }
+  catch (error) { if (error.code === "ESRCH") { await rm(marker, { recursive: true }); return; } throw error; }
+  throw new Error("Legacy stack PID is still present (possibly reused); stop or inspect it before recovery. No process was killed.");
+}
+
+async function run(state, lease) {
   const env = await applicationEnv(state);
   const secrets = await Promise.all(secretNames.map((name) => readFile(join(state.dir, "secrets", name), "utf8")));
   const abort = new AbortController();
@@ -30,22 +74,12 @@ async function main() {
   const dockerOptions = { cwd: root, env: process.env };
   const composeArgs = ["compose", "--project-name", state.project, "--file", join(state.dir, "compose.json")];
   const compose = (args, timeout) => children.run("docker", "docker", [...composeArgs, ...args], dockerOptions, timeout);
-  const lock = join(state.dir, "running");
   if (action !== "up") {
-    try { await requestControl(state, action === "reset" ? "down" : action); }
-    catch (error) {
-      if (!["ECONNREFUSED", "ENOENT"].includes(error.code)) throw error;
-      if (action === "rebuild") throw new Error("Start dev:stack before rebuilding.", { cause: error });
-      // A failed connection is not permission to kill arbitrary PIDs or remove a live stack's data.
-      try { await readFile(join(lock, "pid")); throw new Error("Stack control is unavailable while its run marker exists. Stop the owning terminal process before retrying.", { cause: error }); }
-      catch (markerError) { if (markerError.code !== "ENOENT") throw markerError; }
-    }
+    await privateWrite(join(state.dir, "compose.json"), JSON.stringify(await composeConfig(state), null, 2));
     if (action === "reset") { await compose(["down", "--volumes", "--remove-orphans"]); await removeState(state); console.log("Contributor stack reset; owned containers, volume and state removed."); }
     else if (action === "down") { await compose(["stop", "--timeout", "15"]); console.log("Contributor stack stopped."); }
     return;
   }
-  await mkdir(lock); // an existing run must never be displaced
-  await privateWrite(join(lock, "pid"), String(process.pid));
   let server, readinessTimer;
   async function stop() {
     if (stopped) return stopped;
@@ -53,12 +87,13 @@ async function main() {
       abort.abort();
       clearInterval(readinessTimer);
       await children.stop();
-      try { await compose(["stop", "--timeout", "15"], 60_000); }
-      finally { await rm(lock, { recursive: true }); }
+      const cleanup = new Processes(secrets, () => {});
+      await cleanup.run("docker", "docker", [...composeArgs, "stop", "--timeout", "15"], dockerOptions, 60_000);
     })();
     return stopped;
   }
-  const onSignal = () => { abort.abort(); };
+  const onSignal = () => { void stop().catch((error) => { fatal ??= error; }); };
+  lease.lost.catch((error) => { fatal ??= error; onSignal(); });
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
   const options = { cwd: root, env };
   const npm = process.env.npm_execpath;
@@ -79,6 +114,11 @@ async function main() {
   try {
     await privateWrite(join(state.dir, "compose.json"), JSON.stringify(await composeConfig(state), null, 2));
     await assertPortsFree(state.ports);
+    const controlPath = join(state.sockets, "control.sock");
+    try {
+      if (!(await lstat(controlPath)).isSocket()) throw new Error("Invalid stack control socket.");
+      await rm(controlPath);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
     server = net.createServer((socket) => {
       let data = "";
       socket.setTimeout(300_000, () => socket.destroy());
@@ -101,7 +141,8 @@ async function main() {
     });
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(join(state.sockets, "control.sock"), resolve); });
     await chmod(join(state.sockets, "control.sock"), 0o600);
-    await children.run("Docker preflight", "docker", ["compose", "version"], dockerOptions, 15_000);
+    await children.run("Docker engine", "docker", ["info"], dockerOptions, 15_000);
+    await children.run("Docker Compose", "docker", ["compose", "version"], dockerOptions, 15_000);
     await compose(["up", "--detach", "--wait", "--wait-timeout", "240"], 600_000);
     await build();
     await children.run("migrations", node, ["packages/db/dist/migrate.js"], options);
@@ -144,12 +185,14 @@ async function main() {
     if (!abort.signal.aborted) await new Promise((resolve) => abort.signal.addEventListener("abort", resolve, { once: true }));
     if (fatal) throw fatal;
   } catch (error) {
-    throw fatal ?? error;
+    if (!abort.signal.aborted || fatal) throw fatal ?? error;
   } finally {
-    await stop();
-    await rm(join(state.dir, "ready.json"), { force: true });
-    if (server) await new Promise((resolve) => server.close(resolve));
-    process.off("SIGINT", onSignal); process.off("SIGTERM", onSignal);
+    try { await stop(); }
+    finally {
+      await rm(join(state.dir, "ready.json"), { force: true });
+      if (server) await new Promise((resolve) => server.close(resolve));
+      process.off("SIGINT", onSignal); process.off("SIGTERM", onSignal);
+    }
   }
 }
 let runtimeReady = false;

@@ -80,6 +80,7 @@ export const publicRepositoryMaintainedFiles = new Set(["docs/security-model.md"
 const publicScripts = new Set([
   "scripts/dev-stack.mjs",
   "scripts/dev-stack/state.mjs",
+  "scripts/dev-stack/lock.mjs",
   "scripts/dev-stack/pty.mjs",
   "scripts/dev-stack/config.mjs",
   "scripts/dev-stack/processes.mjs",
