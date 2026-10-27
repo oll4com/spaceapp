@@ -118,3 +118,90 @@ which certifies the [Developer Certificate of Origin 1.1](https://developercerti
 that you wrote the contribution or have the right to submit it under the MIT
 License. `git commit -s` adds the line. There is no separate contributor
 license agreement.
+
+## Run the full app from source
+
+After `npm ci`, start the source application with:
+
+```sh
+npm run dev:stack
+```
+
+Use Node 22.12–22.x, Python 3 and a C/C++ build toolchain (for `node-pty`), and Docker with Compose v2 or newer. On Linux, start
+Docker Engine first; on Ubuntu, install `build-essential` and `python3` before
+`npm ci`. On macOS, the Xcode Command Line Tools provide the compiler. On macOS, start Docker Desktop or Colima (`colima start`).
+On Windows, use WSL2 with Docker Desktop's WSL integration. Run the commands
+inside the Linux checkout; native Windows is not supported by the Unix PTY host.
+Initial startup downloads PostgreSQL/pgvector, Temporal and the pinned OpenCode
+CLI, so network access is required. No AI provider account is needed to open
+its terminal UI.
+
+The foreground command starts its own Compose project, waits for both database
+services, builds the internal packages and worker, applies migrations, then
+starts the API watcher, Vite, worker and source-built CLI host. It prints
+`http://127.0.0.1:14911` and a one-time owner setup token. Open the URL, enter the
+token, create the owner account, and sign in with its password. The Getting
+Started room includes an OpenCode terminal. Sending a model request follows
+OpenCode's provider configuration and is separate from opening the UI.
+
+API edits restart through `tsx watch`; web edits use Vite HMR. After changing
+an internal package, the worker or CLI host, run this in another terminal:
+
+```sh
+npm run dev:stack -- rebuild
+```
+
+This rebuilds internal packages and restarts the worker and CLI host; open PTY
+sessions end during that restart. The API watcher reloads changed dependencies.
+A required process exiting stops the stack with its name and a nonzero status.
+Ctrl-C and `down` stop the processes and containers, preserving development data:
+
+```sh
+npm run dev:stack -- down
+npm run dev:stack -- reset
+```
+
+`reset` additionally removes this checkout's Compose containers, database
+volume, network, short temporary socket directory, and `.dev-stack/`. It refuses
+unmarked, moved, or symlinked state. Keep the checkout at its original path until
+you reset. Only the project's own resources are managed; the published
+`run-spaceapp` installation is independent.
+
+All five listeners bind to `127.0.0.1`. To change ports, set these variables on
+the **first** start (reset before changing an existing stack's ports):
+
+| Variable | Default |
+| --- | ---: |
+| `SPACE_DEV_API_PORT` | 14910 |
+| `SPACE_DEV_WEB_PORT` | 14911 |
+| `SPACE_DEV_POSTGRES_PORT` | 15432 |
+| `SPACE_DEV_TEMPORAL_PORT` | 17233 |
+| `SPACE_DEV_OPENCODE_PORT` | 14747 |
+
+The launcher reads image digests from the installer's Compose template and the
+OpenCode version from `Dockerfile`. `.dev-stack/` is ignored; it holds generated
+0600 secrets, the private Compose configuration, isolated provider home and
+CLI install. It does not import installed-instance credentials or enable dev
+login. Only the setup token is printed. Background operator jobs and host analytics, root panes,
+browser hosts and optional companions are disabled in this development instance.
+
+For repeatable Linux/macOS acceptance on a fresh stack:
+
+```sh
+npm run test:dev-stack
+npm run smoke:stack
+```
+
+The smoke starts without a TTY, checks worker/database readiness, creates and
+signs in the owner, opens the real OpenCode pane through the API and WebSocket,
+then stops and resets. It verifies ports, containers, volumes, network and state
+were removed. It refuses to overwrite existing development state. Use `npm run smoke:stack -- --rebuild --worker-exit` to also check internal package rebuild/restart and that an unexpected
+worker exit stops the supervisor with status 1. The Contributor stack workflow
+runs the acceptance check on Ubuntu.
+
+If startup reports a Docker connection error, start your Docker engine and run
+`docker compose version` before retrying. A port conflict names the occupied
+port; choose a free `SPACE_DEV_*_PORT` before the first start. If `npm ci` cannot
+build `node-pty`, install the platform compiler and Python prerequisites above.
+A stale run marker is not permission to stop an unrelated process: stop the
+original stack terminal before retrying `down` or `reset`.

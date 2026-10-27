@@ -5446,7 +5446,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     // Like the model bench refresh, the default collectors do not scan the
     // host's processes and CLI history inside test runs (routes still sample
     // on demand); an injected analytics service keeps its schedule.
-    if (options.systemAnalyticsService || (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true")) {
+    if (options.systemAnalyticsService || (config.instanceJobs["system-analytics"] && process.env.NODE_ENV !== "test" && process.env.VITEST !== "true")) {
       void systemAnalyticsService.sample().catch((error) => {
         app.log.error({ err: error }, "Initial system analytics sample failed.");
       });

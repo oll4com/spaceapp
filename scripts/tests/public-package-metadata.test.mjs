@@ -31,7 +31,8 @@ const publicTestModules = [
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
   "trivy-report-summary.test.mjs",
-  "verify-export-provenance.test.mjs"
+  "verify-export-provenance.test.mjs",
+  "dev-stack.test.mjs"
 ];
 
 async function packageFiles(directory) {

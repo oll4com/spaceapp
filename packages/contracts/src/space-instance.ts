@@ -39,6 +39,8 @@ export function sessionCookieNameFor(instance: SpaceInstance): string {
  * there would repeat stable's schedules, messages and maintenance.
  */
 export const instanceBackgroundJobs = [
+  // Contributor instances must not collect the operator host's processes or CLI history.
+  "system-analytics",
   "space-control-ticks",
   "dot-schedules",
   // Scheduled Tasks dock entries are typed into their CLI panes; a dev copy must not run stable's tasks again.
