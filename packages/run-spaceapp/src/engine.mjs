@@ -37,7 +37,8 @@ export async function selectContainerEngine({ requested, existing, execute, plat
   if (requested !== undefined) return containerEngine(requested);
   if (existing) return containerEngine(existing.engine);
   if (platform === "win32" || !await hasPodman("podman", env) || await available(execute, "docker", ["info"])) return "docker";
-  if (await available(execute, "podman", ["--version"])) return "podman";
+  const podmanVersion = await capture(execute, "podman", ["--version"]);
+  if (/^podman version \d+\.\d+(?:\.\d+)?(?:\s|$)/i.test(podmanVersion ?? "")) return "podman";
   // Keep the existing Docker prerequisite installer when neither engine is available.
   return "docker";
 }

@@ -38,8 +38,14 @@ test("automatic selection prefers working Docker; Podman-only hosts never instal
   const selection = { platform: "linux", hasPodman: async () => true };
   assert.equal(await selectContainerEngine({ ...selection, execute: async () => 0 }), "docker");
   const seen = [];
-  assert.equal(await selectContainerEngine({ ...selection, execute: async (spec) => { seen.push(spec.command); return spec.command === "docker" ? 127 : 0; } }), "podman");
+  assert.equal(await selectContainerEngine({ ...selection, execute: async (spec, io) => {
+    seen.push(spec.command);
+    if (spec.command === "docker") return 127;
+    io.stdout.write("podman version 6.1.4\n");
+    return 0;
+  } }), "podman");
   assert.deepEqual(seen, ["docker", "podman"]);
+  assert.equal(await selectContainerEngine({ ...selection, execute: async (spec) => spec.command === "docker" ? 127 : 0 }), "docker", "an empty successful response does not identify a Podman executable");
   assert.equal(await selectContainerEngine({ ...selection, existing: { engine: "podman" }, execute: () => { throw new Error("no autodetection for saved choice"); } }), "podman");
   assert.throws(() => containerEngine("sh"), /docker or podman/);
 });
