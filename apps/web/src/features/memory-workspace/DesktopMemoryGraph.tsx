@@ -338,6 +338,17 @@ export default function DesktopMemoryGraph({
     }
     neighborsRef.current = neighbors;
 
+    const edgesByNode = new Map<string, MemoryGraphEdge[]>();
+    for (const edge of edges) {
+      if (edge.source === edge.target) continue;
+      let sList = edgesByNode.get(edge.source);
+      if (!sList) { sList = []; edgesByNode.set(edge.source, sList); }
+      sList.push(edge);
+      let tList = edgesByNode.get(edge.target);
+      if (!tList) { tList = []; edgesByNode.set(edge.target, tList); }
+      tList.push(edge);
+    }
+
     let revealTimer: number | null = null;
     const isCurrent = () => (
       graphGenerationRef.current === generation &&
@@ -345,14 +356,12 @@ export default function DesktopMemoryGraph({
       !rendererFailedRef.current
     );
 
-    const addAvailableEdges = () => {
-      for (const edge of edges) {
-        if (
-          edge.source === edge.target ||
-          graph.hasEdge(edge.id) ||
-          !graph.hasNode(edge.source) ||
-          !graph.hasNode(edge.target)
-        ) continue;
+    const addEdgesForNode = (nodeId: string) => {
+      const incidentEdges = edgesByNode.get(nodeId);
+      if (!incidentEdges) return;
+      for (const edge of incidentEdges) {
+        if (graph.hasEdge(edge.id)) continue;
+        if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) continue;
         const style = memoryGraphEdgeStyle(edge);
         const sourceGroup = atlasPositions?.get(edge.source);
         const targetGroup = atlasPositions?.get(edge.target);
@@ -394,20 +403,22 @@ export default function DesktopMemoryGraph({
           topicOrigin,
           atlasGroupId: atlas?.groupId
         });
+        addEdgesForNode(node.id);
       }
-      addAvailableEdges();
       setRevealedCount(end);
     };
 
     const scheduleNextBatch = (currentEnd: number) => {
       if (!isCurrent() || currentEnd >= orderedNodes.length) return;
+      const batchSize = Math.max(REVEAL_BATCH_SIZE, Math.floor(orderedNodes.length / 20));
+      const delay = orderedNodes.length > 2000 ? 16 : REVEAL_DELAY_MS;
       revealTimer = window.setTimeout(() => {
         if (!isCurrent()) return;
-        const nextEnd = Math.min(orderedNodes.length, currentEnd + REVEAL_BATCH_SIZE);
+        const nextEnd = Math.min(orderedNodes.length, currentEnd + batchSize);
         revealThrough(nextEnd);
         renderer.refresh();
         scheduleNextBatch(nextEnd);
-      }, REVEAL_DELAY_MS);
+      }, delay);
     };
 
     try {

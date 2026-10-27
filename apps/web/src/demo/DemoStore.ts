@@ -1,4 +1,5 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached, SETUP_CATALOG, SETUP_CATALOG_VERSION, buildSetupSelection } from "@space/contracts";
+import { generateSyntheticMemoryDataset, type SyntheticGraphScale, type SyntheticMemoryDataset } from "./synthetic-memory-graph.js";
 import { demoHealthSnapshot } from "./demo-health.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
@@ -148,6 +149,8 @@ type DemoMemoryGraphQuery = {
   relationMode?: "CLUSTERED" | "RELATIONS";
   page?: number;
   pageSize?: number;
+  scale?: SyntheticGraphScale;
+  benchmarkScale?: SyntheticGraphScale;
 };
 
 function memoryChangeSetSummary(changeSet: MemoryChangeSet): MemoryChangeSetSummary {
@@ -668,11 +671,57 @@ export class DemoStore {
     };
   }
 
+  private syntheticScale: SyntheticGraphScale | null = null;
+  private syntheticDataset: SyntheticMemoryDataset | null = null;
+
+  setSyntheticGraphScale(scale: SyntheticGraphScale | null): void {
+    this.syntheticScale = scale;
+    this.syntheticDataset = scale ? generateSyntheticMemoryDataset(scale) : null;
+  }
+
+  getSyntheticGraphScale(): SyntheticGraphScale | null {
+    return this.syntheticScale;
+  }
+
+  private resolveActiveSyntheticScale(query: DemoMemoryGraphQuery = {}): SyntheticGraphScale | null {
+    if (query.scale) return query.scale;
+    if (query.benchmarkScale) return query.benchmarkScale;
+    if (this.syntheticScale) return this.syntheticScale;
+    if (typeof window !== "undefined") {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const benchmarkParam = params.get("benchmark") || params.get("graphScale") || params.get("nodes");
+        if (benchmarkParam) {
+          if (benchmarkParam === "2k" || benchmarkParam === "2000") return "2k";
+          if (benchmarkParam === "10k" || benchmarkParam === "10000") return "10k";
+          if (benchmarkParam === "50k" || benchmarkParam === "50000") return "50k";
+        }
+        const storageVal = window.localStorage?.getItem("space.demo.graphScale");
+        if (storageVal === "2k" || storageVal === "10k" || storageVal === "50k") return storageVal;
+      } catch {
+        // ignore storage/search errors
+      }
+    }
+    return null;
+  }
+
   private memoryGraph(query: DemoMemoryGraphQuery = {}): MemoryGraphPayload {
-    const base = this.fixture.memoryWorkspace.graph;
+    const activeScale = this.resolveActiveSyntheticScale(query);
+    let base = this.fixture.memoryWorkspace.graph;
+    let nodeDetails = this.fixture.memoryWorkspace.nodeDetails;
+
+    if (activeScale) {
+      if (!this.syntheticDataset || this.syntheticScale !== activeScale) {
+        this.syntheticScale = activeScale;
+        this.syntheticDataset = generateSyntheticMemoryDataset(activeScale);
+      }
+      base = this.syntheticDataset.graph;
+      nodeDetails = this.syntheticDataset.nodeDetails;
+    }
+
     const needle = query.q?.trim().toLowerCase();
     const nodes = base.nodes.filter((node) => {
-      const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
+      const record = node.recordId ? nodeDetails[node.id]?.record : null;
       const expectedMonthPath = query.month && query.month !== "all"
         ? `space_memory_${query.month}.md`
         : null;
@@ -694,7 +743,7 @@ export class DemoStore {
         recordCount,
         nodeCount: nodes.length,
         edgeCount: edges.length,
-        issueCount: this.fixture.memoryWorkspace.issues.filter((issue) => !issue.recordId || nodes.some((node) => node.recordId === issue.recordId)).length
+        issueCount: activeScale ? 0 : this.fixture.memoryWorkspace.issues.filter((issue) => !issue.recordId || nodes.some((node) => node.recordId === issue.recordId)).length
       },
       nodes,
       edges,
@@ -1591,9 +1640,18 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
-        const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
+        const nodeId = roomId ?? "";
+        if (this.syntheticDataset && this.syntheticDataset.nodeDetails[nodeId]) {
+          return Promise.resolve(structuredClone(this.syntheticDataset.nodeDetails[nodeId]));
+        }
+        const detail = this.fixture.memoryWorkspace.nodeDetails[nodeId];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));
+      }
+      case "setSyntheticGraphScale": {
+        const scale = args[0] as SyntheticGraphScale | null;
+        this.setSyntheticGraphScale(scale);
+        return Promise.resolve({ ok: true, scale });
       }
       case "memoryChangeSets": {
         const query = (args[0] ?? {}) as { kind?: string; status?: string; sourcePath?: string; recordId?: string; issueId?: string; page?: number; pageSize?: number };

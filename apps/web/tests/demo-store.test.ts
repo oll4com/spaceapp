@@ -429,6 +429,40 @@ describe("Space deterministic demo store", () => {
     expect(unchangedChangeSet).toEqual(changeSet);
   });
 
+  it("supports synthetic graph generation for 2k, 10k, and 50k nodes with 150k edges", async () => {
+    const store = new DemoStore();
+
+    // 2k scale
+    store.setSyntheticGraphScale("2k");
+    const g2k = await store.api.memoryGraphOverview();
+    expect(g2k.data.nodes).toHaveLength(2000);
+    expect(g2k.data.edges).toHaveLength(6000);
+
+    // 10k scale
+    store.setSyntheticGraphScale("10k");
+    const g10k = await store.api.memoryGraphOverview();
+    expect(g10k.data.nodes).toHaveLength(10000);
+    expect(g10k.data.edges).toHaveLength(30000);
+
+    // 50k scale with 150,000 edges
+    store.setSyntheticGraphScale("50k");
+    const g50k = await store.api.memoryGraphOverview();
+    expect(g50k.data.nodes).toHaveLength(50000);
+    expect(g50k.data.edges).toHaveLength(150000);
+    expect(g50k.data.summary.nodeCount).toBe(50000);
+    expect(g50k.data.summary.edgeCount).toBe(150000);
+
+    // Node detail lookup for synthetic nodes
+    const synthNodeDetail = await store.api.memoryGraphNode("memory:synth-42");
+    expect(synthNodeDetail.record?.id).toBe("memory:synth-42");
+    expect(synthNodeDetail.node.id).toBe("memory:synth-42");
+
+    // Reset restores canonical fixture
+    store.setSyntheticGraphScale(null);
+    const gDefault = await store.api.memoryGraphOverview();
+    expect(gDefault.data.nodes.length).toBeLessThan(100);
+  });
+
   it("keeps Links and Clipboard CRUD local, deterministic, and contract-valid", async () => {
     const store = new DemoStore();
 

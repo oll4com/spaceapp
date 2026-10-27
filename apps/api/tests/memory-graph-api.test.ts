@@ -7,6 +7,7 @@ import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
 import type { MemoryMutationCoordinator } from "../src/memory-mutation-coordinator.js";
 import type { MemoryConsolidationCoordinator } from "../src/memory-consolidation-coordinator.js";
+import { requireMemoryGraphAdmin, selectOverviewNodes } from "../src/memory-graph-routes.js";
 
 const sessionSecret = "test-secret-with-enough-length";
 const sessionToken = signSession(
@@ -431,6 +432,165 @@ describe("Memory graph API", () => {
     expect(data.edges).toContainEqual(expect.objectContaining({ id: "edge:tag" }));
     expect(data.truncated).toBe(true);
     expect(data.totalMatchingNodes).toBe(2202);
+    await app.close();
+  });
+
+  it("enforces limit parameter, server max cap, default cap, and edge scaling on overview", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 3000 }, (_, index) => ({
+      id: `memory:${String(index).padStart(4, "0")}`,
+      type: "MEMORY" as const,
+      label: `Memory ${index}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    graphSnapshot.edges = Array.from({ length: 7000 }, (_, index) => ({
+      id: `edge:contains-${String(index).padStart(5, "0")}`,
+      type: "CONTAINS" as const,
+      source: `memory:${String(index % 2500).padStart(4, "0")}`,
+      target: `memory:${String((index + 1) % 2500).padStart(4, "0")}`,
+      evidence: "Edge evidence"
+    }));
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    // 1. Default without limit returns at most 2,000 nodes and scales edges
+    const defaultResponse = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview",
+      headers: { cookie }
+    });
+    expect(defaultResponse.statusCode).toBe(200);
+    const defaultData = defaultResponse.json().data;
+    expect(defaultData.nodes).toHaveLength(2000);
+    expect(defaultData.truncated).toBe(true);
+    expect(defaultData.totalMatchingNodes).toBe(3000);
+    expect(defaultData.edges.length).toBeLessThanOrEqual(6000);
+
+    // 2. Custom limit parameter is respected (e.g. limit=2500)
+    const customResponse = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=2500",
+      headers: { cookie }
+    });
+    expect(customResponse.statusCode).toBe(200);
+    const customData = customResponse.json().data;
+    expect(customData.nodes).toHaveLength(2500);
+    expect(customData.truncated).toBe(true);
+    expect(customData.totalMatchingNodes).toBe(3000);
+    expect(customData.edges.length).toBeGreaterThan(6000);
+
+    // 3. Validation rejects limit > 50,000 or limit < 1
+    const overLimitResponse = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=50001",
+      headers: { cookie }
+    });
+    expect(overLimitResponse.statusCode).toBe(422);
+
+    const zeroLimitResponse = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=0",
+      headers: { cookie }
+    });
+    expect(zeroLimitResponse.statusCode).toBe(422);
+
+    // 4. selectOverviewNodes directly enforces hard server max 50,000
+    const massiveNodes = Array.from({ length: 50005 }, (_, i) => ({
+      id: `mem:${i}`,
+      type: "MEMORY" as const,
+      label: `Mem ${i}`,
+      sourcePath: null,
+      recordId: null
+    }));
+    const cappedNodes = selectOverviewNodes(massiveNodes, [], 100000);
+    expect(cappedNodes).toHaveLength(50000);
+
+    await app.close();
+  });
+
+  it("preserves label redaction on overview nodes even when requested with custom limit", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = [
+      {
+        id: "source:secret",
+        type: "SOURCE" as const,
+        label: "secret-source.md password=super-secret-pw-1234",
+        sourcePath: "/opt/spaceapp/docs/secret-source.md",
+        recordId: null
+      },
+      {
+        id: "memory:secret",
+        type: "MEMORY" as const,
+        label: "Durable memory token=confidential-token-5678",
+        sourcePath: "/opt/spaceapp/docs/secret-source.md",
+        recordId: null
+      }
+    ];
+    graphSnapshot.edges = [{
+      id: "edge:secret",
+      type: "CONTAINS" as const,
+      source: "source:secret",
+      target: "memory:secret",
+      evidence: "edge secret token=sensitive-edge-data-999"
+    }];
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview?limit=500",
+      headers: { cookie }
+    });
+    expect(response.statusCode).toBe(200);
+    const rawBody = response.body;
+    expect(rawBody).not.toContain("super-secret-pw-1234");
+    expect(rawBody).not.toContain("confidential-token-5678");
+    expect(rawBody).not.toContain("sensitive-edge-data-999");
+    await app.close();
+  });
+
+  it("enforces admin-only protection on the memory graph overview route and via requireMemoryGraphAdmin", async () => {
+    const app = await memoryGraphApp(true);
+
+    // Unauthenticated request is rejected with 401
+    const unauthenticated = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview"
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    // Regular USER role is rejected
+    const userSession = signSession(
+      { id: "user:regular", email: "regular@space.test", role: "USER" },
+      sessionSecret
+    );
+    const userResponse = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview",
+      headers: { cookie: `space_session=${userSession}` }
+    });
+    expect([403, 404]).toContain(userResponse.statusCode);
+
+    // Admin role is allowed
+    const adminSession = signSession(
+      { id: "user:admin", email: "admin@space.test", role: "ADMIN" },
+      sessionSecret
+    );
+    const adminResponse = await app.inject({
+      method: "GET",
+      url: "/api/admin/memory/graph/overview",
+      headers: { cookie: `space_session=${adminSession}` }
+    });
+    expect(adminResponse.statusCode).toBe(200);
+
+    // Direct unit test of requireMemoryGraphAdmin guard
+    const config = getApiConfig({ SPACE_MEMORY_GRAPH_ENABLED: "true" });
+    expect(() => requireMemoryGraphAdmin({ user: { role: "ADMIN" } } as any, config)).not.toThrow();
+    expect(() => requireMemoryGraphAdmin({ user: { role: "OPERATOR" } } as any, config)).not.toThrow();
+    expect(() => requireMemoryGraphAdmin({ user: { role: "USER" } } as any, config)).toThrow("Administrator permissions are required.");
+    expect(() => requireMemoryGraphAdmin({ user: null } as any, config)).toThrow("Administrator permissions are required.");
+    expect(() => requireMemoryGraphAdmin({} as any, config)).toThrow("Administrator permissions are required.");
+    expect(() => requireMemoryGraphAdmin({ user: { role: "ADMIN" } } as any, { ...config, memoryGraphEnabled: false })).toThrow();
+
     await app.close();
   });
 

@@ -96,18 +96,59 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   }, []);
 
   const atlas = useMemo(() => createMemoryAtlas(graph?.data.nodes ?? [], graph?.data.edges ?? [], false), [graph]);
-  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D> } | null>(null);
+  const [layout, setLayout] = useState<{ atlas: typeof atlas; positions: Map<string, MemoryAtlasPosition>; depth: Map<string, MemoryPoint3D>; done: boolean; step: number } | null>(null);
   useEffect(() => {
     if (workspaceMode !== "atlas" || !atlas.nodes.length || typeof Worker === "undefined") return;
     const worker = new Worker(new URL("./memory-network-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]> }>) => {
-      const coordinates = new Map(event.data.positions);
-      setLayout({ atlas, depth: new Map(event.data.depth), positions: new Map([...atlas.positions].map(([id, position]) => [id, { ...position, ...coordinates.get(id) }])) });
+    let rafId: number | null = null;
+    let pendingData: { positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]>; step?: number; totalSteps?: number; done?: boolean } | null = null;
+
+    const flushUpdate = () => {
+      rafId = null;
+      if (!pendingData) return;
+      const data = pendingData;
+      pendingData = null;
+      const coordinates = new Map(data.positions);
+      const nextPositions = new Map<string, MemoryAtlasPosition>();
+      for (const [id, position] of atlas.positions) {
+        const coord = coordinates.get(id);
+        nextPositions.set(id, coord ? { ...position, ...coord } : position);
+      }
+      const isDone = data.done !== false;
+      setLayout({
+        atlas,
+        depth: new Map(data.depth),
+        positions: nextPositions,
+        done: isDone,
+        step: data.step ?? 180
+      });
+      if (isDone) {
+        worker.terminate();
+      }
+    };
+
+    worker.onmessage = (event: MessageEvent<{ positions: Array<[string, { x: number; y: number }]>; depth: Array<[string, MemoryPoint3D]>; step?: number; totalSteps?: number; done?: boolean }>) => {
+      pendingData = event.data;
+      if (event.data.done) {
+        if (rafId === null) {
+          rafId = requestAnimationFrame(flushUpdate);
+        }
+      } else if (rafId === null) {
+        rafId = requestAnimationFrame(flushUpdate);
+      }
+    };
+
+    worker.onerror = event => {
+      setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`);
       worker.terminate();
     };
-    worker.onerror = event => { setError(`Memory layout could not be calculated: ${event.message || "worker unavailable"}`); worker.terminate(); };
+
     worker.postMessage({ nodes: atlas.nodes, edges: atlas.edges });
-    return () => worker.terminate();
+
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      worker.terminate();
+    };
   }, [workspaceMode, atlas]);
   const layoutPending = typeof Worker !== "undefined" && atlas.nodes.length > 0 && layout?.atlas !== atlas;
   const atlasPositions = layout?.atlas === atlas ? layout.positions : atlas.positions;

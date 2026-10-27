@@ -7,8 +7,19 @@ const unit = (value: string) => {
   return (hash >>> 0) / 4294967295;
 };
 
+export interface Layout2DProgress {
+  step: number;
+  totalSteps: number;
+  positions: Map<string, { x: number; y: number }>;
+  done: boolean;
+}
+
 /** Bounded force relaxation driven by actual edges; color never affects geometry. */
-export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]) {
+export function layoutMemoryNetwork(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  onStep?: (progress: Layout2DProgress) => void
+): Map<string, { x: number; y: number }> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const sources = ordered.filter(node => node.type === "SOURCE");
@@ -31,20 +42,38 @@ export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraph
     return [{ a, b, length: fileLink ? 85 : edge.type === "CONTAINS" ? 28 : 45, strength: fileLink ? 0.026 : edge.type === "CONTAINS" ? 0.017 : 0.0025 }];
   });
   const count = points.length;
+
+  if (onStep) {
+    onStep({
+      step: 0,
+      totalSteps: 150,
+      positions: new Map(ordered.map((node, i) => [node.id, { ...points[i]! }])),
+      done: false
+    });
+  }
+
   const fx = new Float64Array(count), fy = new Float64Array(count);
+  const cellKey = (gx: number, gy: number) => (gx + 100000) * 1000000 + (gy + 100000);
+  const isLarge = count > 2000;
+  const maxPerCell = isLarge ? 24 : Infinity;
+
   for (let step = 0; step < 150; step++) {
     fx.fill(0); fy.fill(0);
-    const grid = new Map<string, number[]>();
+    const grid = new Map<number, number[]>();
     for (let i = 0; i < count; i++) {
-      const p = points[i]!;
-      const key = `${Math.floor(p.x / 25)},${Math.floor(p.y / 25)}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key)!.push(i);
+      const p = points[i]!, key = cellKey(Math.floor(p.x / 25), Math.floor(p.y / 25));
+      let cell = grid.get(key);
+      if (!cell) { cell = []; grid.set(key, cell); }
+      if (cell.length < maxPerCell) {
+        cell.push(i);
+      }
     }
     for (let i = 0; i < count; i++) {
       const p = points[i]!, gx = Math.floor(p.x / 25), gy = Math.floor(p.y / 25);
       for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) {
-        for (const j of grid.get(`${x},${y}`) ?? []) {
+        const cell = grid.get(cellKey(x, y));
+        if (!cell) continue;
+        for (const j of cell) {
           if (j <= i) continue;
           const q = points[j]!;
           const dx = p.x - q.x || 0.01, dy = p.y - q.y || 0.01;
@@ -68,6 +97,15 @@ export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraph
       const p = points[i]!;
       p.x += Math.max(-4, Math.min(4, fx[i]! - p.x * 0.0004)) * cooling;
       p.y += Math.max(-4, Math.min(4, fy[i]! - p.y * 0.0004)) * cooling;
+    }
+
+    if (onStep && ((step + 1) % 15 === 0 || step === 149)) {
+      onStep({
+        step: step + 1,
+        totalSteps: 150,
+        positions: new Map(ordered.map((node, i) => [node.id, { ...points[i]! }])),
+        done: step === 149
+      });
     }
   }
   return new Map(ordered.map((node, i) => [node.id, points[i]!]));
