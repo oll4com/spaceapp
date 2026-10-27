@@ -83,13 +83,15 @@ export async function smokeContainer({ target, image, platform }) {
       docker(["run", "-d", "--name", `${id}-db`, "--network", id, "--label", `com.spaceapp.container-smoke=${id}`,
         "-e", "POSTGRES_USER=space", "-e", "POSTGRES_DB=space", "-e", `POSTGRES_PASSWORD=${password}`, postgresImage]);
       names.push(`${id}-db`);
-      await until(() => docker(["exec", `${id}-db`, "pg_isready", "-U", "space", "-d", "space"]), "PostgreSQL");
+      // The entrypoint temporarily serves a Unix socket during initialization.
+      // TCP readiness waits for the final server, after that process restarts.
+      await until(() => docker(["exec", `${id}-db`, "pg_isready", "-h", "127.0.0.1", "-U", "space", "-d", "space"]), "PostgreSQL");
       if (target === "browser") {
         // The browser connects to the existing installation's schema. The core
         // smoke separately exercises the application's migration runner.
         const migrations = join(root, "packages/db/migrations");
         for (const name of (await readdir(migrations)).filter((name) => name.endsWith(".sql")).sort()) {
-          docker(["exec", "-i", `${id}-db`, "psql", "--single-transaction", "-v", "ON_ERROR_STOP=1", "-U", "space", "-d", "space"], await readFile(join(migrations, name)));
+          docker(["exec", "-i", `${id}-db`, "psql", "-h", "127.0.0.1", "--single-transaction", "-v", "ON_ERROR_STOP=1", "-U", "space", "-d", "space"], await readFile(join(migrations, name)));
         }
       }
     }
