@@ -1,3 +1,4 @@
+import { selectedPodmanMachine } from "./engine.mjs";
 import { Writable } from "node:stream";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -99,6 +100,8 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
   let engine = null;
   try { engine = JSON.parse(dockerInfo); } catch { /* Conservative reserve when the engine is unavailable. */ }
+  if (engine?.host) engine = { ...engine, DockerRootDir: engine.store?.graphRoot,
+    NCPU: engine.host.cpus, MemTotal: engine.host.memTotal, Architecture: engine.host.arch };
   const cachedLayers = new Set();
   if (engine && existingConfig) {
     const existingDigests = await installedImageDigests(root, existingConfig.version);
@@ -127,9 +130,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     let cached = null;
     for (const ref of refs) {
       cached = await captureProbe(execute, { command: "docker", args: ["image", "inspect", "--format", "{{.Id}}", ref] });
-      if (/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) break;
+      if (/^(?:sha256:)?[a-f0-9]{64}$/.test(cached ?? "")) break;
     }
-    if (!/^sha256:[a-f0-9]{64}$/.test(cached ?? "")) {
+    if (!/^(?:sha256:)?[a-f0-9]{64}$/.test(cached ?? "")) {
       missingImages.push(image);
       let reserve = imageReserve[type] ?? GiB;
       if (engine && existingConfig && cachedLayers.size && typeof fetch === "function") {
@@ -154,13 +157,19 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     const free = await captureProbe(execute, composeCommand("storageFree", root, existingConfig));
     if (/^\d+$/.test(free ?? "")) dockerFreeDiskBytes = Number(free);
   }
-  // Linux can measure the Docker filesystem directly even on a fresh install.
-  if (engine?.DockerRootDir && process.platform === "linux") {
+  if (config.engine === "podman" && (execute.platform ?? process.platform) === "darwin") {
+    const machine = await selectedPodmanMachine(execute);
+    const free = machine && await captureProbe(execute, { command: "podman", args: ["machine", "ssh", machine.name, "--", "df", "-B1", "--output=avail", "/var/home"] });
+    const value = free?.trim().split(/\s+/).at(-1);
+    if (/^\d+$/.test(value ?? "")) dockerFreeDiskBytes = Number(value);
+  }
+  // Linux can measure the engine filesystem directly even on a fresh install.
+  if (engine?.DockerRootDir && (execute.platform ?? process.platform) === "linux") {
     const { inspectSystemResources } = await import("./index.mjs");
     try { dockerFreeDiskBytes = (await inspectSystemResources(engine.DockerRootDir)).freeDiskBytes; } catch {}
   }
-  return { ...plan, missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
-    resources: { ...resources,
+  return { ...plan, engineName: config.engine === "podman" ? "Podman" : "Docker", missingImages, sharedLayersEstimated, dockerFreeDiskBytes,
+    resources: { ...resources, engineName: config.engine === "podman" ? "Podman" : "Docker",
       freeDiskBytes: dockerFreeDiskBytes === null ? resources.freeDiskBytes : Math.min(resources.freeDiskBytes, dockerFreeDiskBytes),
       engineCpuCount: engine?.NCPU,
       engineMemoryBytes: engine?.MemTotal
@@ -170,9 +179,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
 export function storageChecks(plan, resources) {
   const checks = [{ name: "Free disk", ok: resources.freeDiskBytes >= plan.requiredDiskBytes,
     detail: `${gib(resources.freeDiskBytes)} GiB available; ${gib(plan.requiredDiskBytes)} GiB required additionally for ${plan.operation} (images ${gib(plan.missingImageBytes)}, checkpoint ${gib(plan.checkpointBytes)}, reserve 0.5)` }];
-  if (plan.dockerFreeDiskBytes !== null) checks.push({ name: "Docker storage", ok: plan.dockerFreeDiskBytes >= plan.requiredDiskBytes,
+  if (plan.dockerFreeDiskBytes !== null) checks.push({ name: `${plan.engineName ?? "Docker"} storage`, ok: plan.dockerFreeDiskBytes >= plan.requiredDiskBytes,
     detail: `${gib(plan.dockerFreeDiskBytes)} GiB available; ${gib(plan.requiredDiskBytes)} GiB required additionally` });
-  else checks.push({ name: "Docker storage", ok: true, detail: "Separate engine disk capacity unavailable; host estimate used. Docker ENOSPC will stop the operation before cutover." });
+  else checks.push({ name: `${plan.engineName ?? "Docker"} storage`, ok: plan.engineName !== "Podman", detail: plan.engineName === "Podman" ? "Cannot measure Podman storage. Start the selected rootless machine/engine and retry; disk capacity must be known before cutover." : "Separate engine disk capacity unavailable; host estimate used. Docker ENOSPC will stop the operation before cutover." });
   return checks;
 }
 

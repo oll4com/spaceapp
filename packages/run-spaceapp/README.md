@@ -1,6 +1,6 @@
 # run-spaceapp
 
-Cross-platform Docker launcher for SpaceApp.
+Cross-platform container launcher for SpaceApp: Docker, or rootless Podman on Linux and macOS.
 
 Run the same command in Linux, macOS, or Windows 11 Command Prompt:
 
@@ -17,7 +17,7 @@ npm install -g run-spaceapp
 
 The smallest profile requires Node.js 20.11 or newer, 4 CPUs, 8 GB-class RAM
 (7 GiB usable), and 6.5 GiB free for a fresh installation. Keep `@latest` in the command so npm resolves the current release instead
-of matching an existing local launcher. If Docker is missing, the universal
+of matching an existing local launcher. With the Docker engine selected, if Docker is missing the universal
 install command automatically installs it from official Docker sources on
 Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native
 `pacman` packages on Arch-family Linux including CachyOS. It starts Docker and
@@ -41,7 +41,7 @@ credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
 
 The launcher selects `small`, `medium`, or `large` automatically using CPU,
-RAM and free disk. Docker's CPU and RAM allocation is checked as well.
+RAM and free disk. The selected engine's CPU and RAM allocation is checked as well.
 
 | Profile | CPU | Usable RAM | Fresh free space | Services |
 | --- | --- | --- | --- | --- |
@@ -61,6 +61,51 @@ a conservative estimate is shown. Space is checked again after pulling and
 before pausing writers. Existing data is kept in place; the launcher never deletes
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
+
+### Rootless Podman (Linux and macOS)
+
+Install Podman **5 or newer** and **Docker Compose 5.6.0 or newer** first.
+Set `PODMAN_COMPOSE_PROVIDER` to the Docker Compose executable if Podman does
+not select it automatically. The alternative `podman-compose` Python provider
+is not supported. Run as your normal user; cgroup v2 with delegated CPU and
+memory controllers is required. `podman info` must report rootless operation.
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The engine is saved in `config.json`; `up`, `down`, `status`, `logs`, updates,
+rollback, backup/restore, provider commands, `doctor --fix`, and uninstall all
+reuse it. Non-interactive installation accepts `"engine": "podman"` in
+`--answers`. Without an explicit choice, a working Docker engine takes
+precedence; a Podman-only host selects Podman without installing Docker.
+Existing configurations without an engine field continue using Docker.
+SpaceApp refuses to switch an existing installation's engine because its
+volumes belong to that engine. Use a separate `SPACEAPP_HOME` for a fresh
+installation; there is no automatic data migration. Podman only supports
+`--access isolated`; `--access host-root` is refused before changes.
+
+On macOS, create/start a rootless `podman machine` first. Its resources must
+meet the selected profile, in addition to the host requirements above. For
+example, `small` needs at least 4 CPUs, 8192 MiB machine RAM, and sufficient
+free space inside the machine and on the host. Inspect with
+`podman machine inspect <name>`. To increase capacity, stop the machine, run
+`podman machine set --cpus 4 --memory 8192 --disk-size 40 <name>`, and start it
+again. SpaceApp reports insufficient capacity and never resizes a machine.
+Installation and workspace directories must be shared with that machine.
+
+The regular published images are used. Containers initialize volumes as
+namespace root and run application processes as uid 10001; `keep-id` maps
+that uid to your host user so workspace writes keep your ownership. On
+SELinux hosts, launcher-owned secret binds and explicitly added workspaces
+receive a shared `z` label; read-only workspaces stay read-only. No whole-home
+relabel or host `chown` is performed. `doctor` and `support-bundle` report the
+engine/version, Compose provider, rootless state, cgroup delegation and
+available CPU/RAM/disk without including the raw engine environment.
+
+`uninstall` removes containers while preserving data; `uninstall --purge`
+(or `--purge-data`) additionally removes this installation's volumes after
+confirmation.
 
 ### Telemetry
 

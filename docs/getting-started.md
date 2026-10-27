@@ -1,9 +1,10 @@
 # Getting started
 
 SpaceApp packages its application services and redistributable AI coding CLIs
-in Docker. The host needs Node.js only for the small `spaceapp` launcher,
-and enough resources for the stack. The launcher installs and starts Docker
-automatically when it is missing.
+in containers. The host needs Node.js only for the small `spaceapp` launcher,
+and enough resources for the stack. Docker is the default engine; the launcher
+installs and starts it when selected and missing. Rootless Podman is also
+supported on Linux and macOS.
 
 ## Requirements
 
@@ -52,6 +53,41 @@ Desktop's terms, downloads the official architecture-specific DMG, verifies
 its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
+
+## Rootless Podman on Linux or macOS
+
+Install Podman >=5 and Docker Compose >=5.6.0, then select the provider with
+`PODMAN_COMPOSE_PROVIDER=/path/to/docker-compose` when needed. Use a normal
+user with cgroup v2 and delegated CPU/memory controllers. `podman info` must
+report rootless mode. On macOS, start a rootless Podman machine first and
+allocate at least 4 CPUs and 8192 MiB RAM for `small`; the larger profiles need
+their listed CPU/RAM allocation inside the machine too. Ensure both the host
+and machine have enough free disk and share your installation/workspace paths.
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+npx --yes run-spaceapp@latest doctor
+```
+
+The engine choice persists for every lifecycle, workspace, provider, backup,
+restore, update/rollback and diagnostic command. `--answers` also accepts
+`"engine": "podman"`. A working Docker engine wins automatic selection; a
+Podman-only installation does not install Docker. Existing configurations
+without an engine field use Docker. Changing an existing installation's engine
+is refused; use a separate `SPACEAPP_HOME` for a fresh install. The Podman path
+requires isolated access and refuses host-root access.
+
+`doctor` shows the engine and Compose versions, rootless/cgroup capabilities,
+and actual CPU/RAM/disk capacity. On macOS, it includes machine limits and
+resize guidance: stop the machine, run `podman machine set --cpus N --memory
+MiB --disk-size GiB <name>`, and start it again. The launcher does not resize it.
+
+With Podman's `keep-id` user namespace, application uid 10001 maps to your
+host user. Workspace writes retain your ownership without host `chown` or ACL
+changes. On SELinux systems, only launcher-owned binds and explicitly added
+workspace paths receive shared `z` labels. Read-only workspaces remain
+read-only. The same published application images are used by both engines.
+For provider details and commands see the [launcher guide](../packages/run-spaceapp/README.md#rootless-podman-linux-and-macos).
 
 ## Windows 11 — Command Prompt
 
@@ -312,8 +348,8 @@ npx --yes run-spaceapp@latest status
 npx --yes run-spaceapp@latest logs
 ```
 
-`doctor` checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU,
-memory, and free disk exactly once each. It distinguishes a missing CLI or
+`doctor` checks Node.js, the selected container engine and Compose provider,
+CPU, memory, and free disk. It distinguishes a missing CLI or
 Compose plugin from an installed engine that is stopped or inaccessible.
 The `small` profile should show core, CLI, and PostgreSQL running; `medium`
 adds Temporal, and `large` also adds the browser service. If startup is still

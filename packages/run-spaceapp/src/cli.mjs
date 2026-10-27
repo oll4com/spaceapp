@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
+import { containerEngine, selectContainerEngine, assertEngineSelection, engineExecutor, ensurePodmanAvailable, inspectContainerEngine, podmanChecks, withPodmanWritersPaused } from "./engine.mjs";
 import { PromptController } from "./prompt-controller.mjs";
 import {
   copyFile,
@@ -23,6 +24,7 @@ import {
   applyConfigRepairs,
   commitInstallation,
   composeCommand,
+  composeProjectName,
   credentialProviders,
   initializeInstallation,
   inspectSystemResources,
@@ -81,6 +83,7 @@ const SETUP_STATUS_TIMEOUT_MS = 10_000;
 const trustedCommands = new Set([
   "codesign",
   "docker",
+  "podman",
   "hdiutil",
   "open",
   "powershell.exe",
@@ -293,12 +296,17 @@ export async function run(argv, {
     plan: false,
     nonInteractive: false,
     logFile: null,
+    requestedEngine: undefined,
     answersFile: null
   };
   const filteredArgv = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--local-images") {
+    if (arg === "--engine") {
+      globalFlags.requestedEngine = containerEngine(argv[++i] ?? "");
+    } else if (arg.startsWith("--engine=")) {
+      globalFlags.requestedEngine = containerEngine(arg.slice("--engine=".length));
+    } else if (arg === "--local-images") {
       globalFlags.localImages = true;
     } else if (arg === "--json") {
       globalFlags.json = true;
@@ -341,10 +349,26 @@ export async function run(argv, {
     stdout.write(helpText());
     return 0;
   }
+  const installationCommand = ["install", "reinstall", "init"].includes(command);
+  const requestedEngine = globalFlags.requestedEngine ?? (installationCommand ? promptController.answers.engine : undefined);
+  if (requestedEngine !== undefined && !installationCommand) {
+    throw new Error("--engine is an installation choice; later commands use the saved engine.");
+  }
+  const existingEngineConfig = await readRawConfig(root);
+  const selectedEngine = ["install", "reinstall"].includes(command)
+    ? await selectContainerEngine({ requested: requestedEngine, existing: existingEngineConfig, execute, platform, env })
+    : containerEngine(requestedEngine ?? existingEngineConfig?.engine);
+  const accessIndex = args.indexOf("--access");
+  const requestedAccess = accessIndex >= 0 ? args[accessIndex + 1] : args.find((arg) => arg.startsWith("--access="))?.slice(9);
+  assertEngineSelection(selectedEngine, existingEngineConfig, requestedAccess ?? promptController.answers.access ?? existingEngineConfig?.accessMode, platform);
+  if (selectedEngine === "podman") {
+    ensureDocker = ensurePodmanAvailable;
+    stdout.write("Container engine: Podman (rootless).\n");
+  }
   if (globalFlags.localImages) {
     const originalExecute = execute;
     execute = async (spec, io) => {
-      if (spec.command === "docker" && spec.args?.includes("compose")) {
+      if (["docker", "podman"].includes(spec.command) && spec.args?.includes("compose")) {
         if (spec.args.at(-1) === "pull") {
           stdout.write("Local images only: skipping registry downloads; missing images will fail startup.\n");
           return 0;
@@ -355,6 +379,8 @@ export async function run(argv, {
       return originalExecute(spec, io);
     };
   }
+  execute = engineExecutor(execute, selectedEngine, platform, env);
+  if (selectedEngine === "podman") prepareDockerPath = async () => {};
   if (command !== "install") {
     await prepareDockerPath({ platform, env });
   }
@@ -400,7 +426,7 @@ export async function run(argv, {
     if (!approved) {
       return 0;
     }
-    const result = await initializeInstallation(root, { version: runtimeVersion });
+    const result = await initializeInstallation(root, { version: runtimeVersion, engine: selectedEngine });
     stdout.write(`SpaceApp initialized at ${root}\n`);
     if (result.setupToken) {
       stdout.write(`One-time setup token: ${result.setupToken}\n`);
@@ -421,6 +447,12 @@ export async function run(argv, {
     return repairRuntime({ root, config: null, platform, stdin, stdout, stderr, execute, request, sleep, ensureDocker, env, arch, inspectResources, dryRun: args.includes("--dry-run") });
   }
   const config = await loadConfig(root);
+  // Recheck the selected connection before runtime writes: a saved Podman choice
+  // must not silently use a rootful connection selected after installation.
+  if (selectedEngine === "podman" && !["support-bundle", "open"].includes(command)) {
+    const prerequisites = await ensurePodmanAvailable({ execute, platform, stdout, stderr });
+    if (prerequisites.code !== 0) return prerequisites.code;
+  }
   if (commandNeedsRuntimeFiles(command, args)) {
     await writeRuntimeFiles(root, config);
   }
@@ -430,6 +462,10 @@ export async function run(argv, {
     io,
     { platform, stderr }
   );
+
+  runtimeExecute.engine = selectedEngine;
+  runtimeExecute.platform = platform;
+  runtimeExecute.engineEnvironment = env;
 
   if (["up", "down", "status", "logs"].includes(command)) {
     assertNoArgs(args, command);
@@ -458,7 +494,7 @@ export async function run(argv, {
   }
   if (command === "repair") {
     const dryRun = args.includes("--dry-run");
-    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, request, sleep, dryRun });
+    return repairRuntime({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, request, sleep, dryRun, ensureDocker, env, arch, inspectResources });
   }
   if (command === "reinstall") {
     const keepData = !args.includes("--purge-data");
@@ -589,11 +625,12 @@ export async function run(argv, {
     return 0;
   }
   if (command === "uninstall") {
+    const engineName = selectedEngine === "podman" ? "Podman" : "Docker";
     if (args.length === 0) {
       const approved = await requireChangeApproval(stdin, stdout, stderr, [
         "Stop and remove SpaceApp containers and network.",
         "Data, configuration, secrets, and backups remain at the installation root.",
-        "Docker volumes are retained; the global SpaceApp CLI remains installed."
+        `${engineName} volumes are retained; the global SpaceApp CLI remains installed.`
       ]);
       if (!approved) {
         return 0;
@@ -606,37 +643,37 @@ export async function run(argv, {
       if (code === 0) {
         stdout.write("SpaceApp runtime removed successfully. It is safe to run this command again.\n");
         stdout.write(`Data, configuration, secrets, and backups remain at ${root}.\n`);
-        stdout.write("Docker volumes are retained. The global SpaceApp CLI remains installed.\n");
+        stdout.write(`${engineName} volumes are retained. The global SpaceApp CLI remains installed.\n`);
         stdout.write("To remove only the global CLI, run: npm uninstall -g run-spaceapp\n");
       } else {
-        stderr.write(`Uninstall could not remove the runtime (Docker exit ${code}).\n`);
+        stderr.write(`Uninstall could not remove the runtime (${engineName} exit ${code}).\n`);
         stdout.write(`Data, configuration, secrets, and backups remain at ${root}.\n`);
         stdout.write("The global SpaceApp CLI remains installed.\n");
       }
       return code;
     }
-    if (args.length === 1 && args[0] === "--purge-data") {
-      const confirmation = await readSecret(stdin, stdout, "Type DELETE to remove Docker volumes: ", { mask: false, answerKey: "purgeConfirm" });
+    if (args.length === 1 && ["--purge-data", "--purge"].includes(args[0])) {
+      const confirmation = await readSecret(stdin, stdout, `Type DELETE to remove ${engineName} volumes: `, { mask: false, answerKey: "purgeConfirm" });
       if (confirmation !== "DELETE") {
         throw new Error("Purge cancelled.");
       }
-      stdout.write("Removing SpaceApp containers, network, and Docker volumes...\n");
+      stdout.write(`Removing SpaceApp containers, network, and ${engineName} volumes...\n`);
       const code = await runtimeExecute(
         composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
         { stdin, stdout, stderr }
       );
       if (code === 0) {
-        stdout.write("SpaceApp runtime and Docker volumes removed successfully.\n");
+        stdout.write(`SpaceApp runtime and ${engineName} volumes removed successfully.\n`);
         stdout.write(`Host configuration and backups remain at ${root} for manual review.\n`);
         stdout.write("The global SpaceApp CLI remains installed.\n");
         stdout.write("To remove only the global CLI, run: npm uninstall -g run-spaceapp\n");
       } else {
-        stderr.write(`SpaceApp Docker volume purge failed (Docker exit ${code}).\n`);
+        stderr.write(`SpaceApp ${engineName} volume purge failed (${engineName} exit ${code}).\n`);
         stdout.write(`Host files and the global SpaceApp CLI remain at ${root}.\n`);
       }
       return code;
     }
-    throw new Error(`Usage: ${UNIVERSAL_COMMAND} uninstall [--purge-data]`);
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} uninstall [--purge-data|--purge]`);
   }
 
   throw new Error(`Unknown command "${command}". Run "${UNIVERSAL_COMMAND} help".`);
@@ -688,6 +725,7 @@ async function installCommand(args, {
     requestedAccessMode,
     existingConfig?.accessMode ?? "isolated"
   );
+  assertEngineSelection(execute.engine ?? "docker", existingConfig, accessMode, platform);
   if (accessMode === "host-root" && platform !== "linux") {
     throw new Error("Host-root access is supported only on Linux.");
   }
@@ -707,6 +745,7 @@ async function installCommand(args, {
   }
   const result = await prepareInstallation(root, {
     version: runtimeVersion,
+    engine: execute.engine ?? "docker",
     profile,
     accessMode,
     ...(companionsEnabled ? { companionsEnabled } : {})
@@ -1148,7 +1187,7 @@ async function planInteractiveSetup({
       `Access mode: ${accessChoice}`,
       `Companions: ${companionsChoice ? "enabled" : "disabled"}`,
       `Telemetry: ${telemetryChoice ? "enabled" : "disabled"}`,
-      `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`,
+      execute.engine === "podman" ? "Container engine: Podman (already installed; rootless)" : `Docker installation: ${dockerChoice ? "automatic if missing" : "not included"}`,
       `Open browser afterwards: ${openBrowserChoice ? "yes" : "no"}`,
       "Future refreshes preserve data, workspaces, credentials, secrets, and persistent Docker volumes."
     ]);
@@ -1322,8 +1361,7 @@ async function repairRuntime({ root, config, platform, stdin, stdout, stderr, ex
   if(prerequisites.reexecuted || prerequisites.code !== 0) return prerequisites.code;
   config = repaired;
   if (await verifyStorage({ root, config, existingConfig: config, operation: "repair", inspectResources, execute, stdout, stderr }) !== 0) return 1;
-  await saveConfig(root, config);
-  await writeRuntimeFiles(root, config);
+  await commitInstallation(root, config);
   const pullCode = await withHeadlessDockerConfig(
     platform,
     composeCommand("pull", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
@@ -1480,6 +1518,8 @@ async function collectFiles(directory, logicalDirectory) {
 async function backupWithWritersPaused(execute, root, config, io) {
   const options = { profile: config.profile, companionsEnabled: config.companionsEnabled };
   io.stdout.write("Pausing SpaceApp writers for the backup; the app and CLI sessions resume afterwards...\n");
+  if (config.engine === "podman") return withPodmanWritersPaused(execute, composeProjectName(root), io,
+    () => execute(composeCommand("backup", root, options), io));
   const pauseCode = await execute(composeCommand("pauseWriters", root, options), io);
   if (pauseCode !== 0) return pauseCode;
   let backupCode = 1;
@@ -1747,7 +1787,7 @@ function parseInstallArgs(args) {
       continue;
     }
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--engine docker|podman] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
   if (
@@ -1758,7 +1798,7 @@ function parseInstallArgs(args) {
     )
   ) {
     throw new Error(
-      `Usage: ${UNIVERSAL_COMMAND} install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
+      `Usage: ${UNIVERSAL_COMMAND} install [--engine docker|podman] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]`
     );
   }
   return { requestedProfile, requestedAccessMode, noOpen, companionsEnabled };
@@ -1811,7 +1851,7 @@ async function workspaceCommand(rawArgs, { root, config, platform, stdin, stdout
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace registered: ${identity}\n`);
-    if (platform === "linux" && !readOnly) await writeAccessHint(identity, stdout);
+    if (platform === "linux" && config.engine !== "podman" && !readOnly) await writeAccessHint(identity, stdout);
     return applyWorkspaces(updated);
   }
   if (action === "remove") {
@@ -2067,7 +2107,7 @@ async function providerCommand(rawArgs, { root, config, stdin, stdout, stderr, e
   const provider=args[1];
   // A user's CLIs run in their own container, so an optional CLI goes into that container's volume.
   const service = userId ? `spaceapp-cli-${userSlug(userId)}` : undefined;
-  stdout.write(`Installing optional provider ${provider} into ${userId ? `the private provider volume of ${userId}` : "this installation's private provider volume"}.\n`);
+  stdout.write(provider === "opencode" ? "Verifying bundled OpenCode in the CLI container.\n" : `Installing optional provider ${provider} into ${userId ? `the private provider volume of ${userId}` : "this installation's private provider volume"}.\n`);
   // Keep the existing Claude path compatible with older runtime images.
   const action=provider === "claude" ? "installClaude" : "installProvider";
   return execute(composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, provider, service }), { stdin, stdout, stderr });
@@ -2170,6 +2210,8 @@ async function supportBundleCommand({
   request,
   outPath
 }) {
+  const resources = await inspectSystemResources(root);
+  const storage = config ? await inspectStoragePlan({ root, config, resources, execute, operation: "repair" }) : null;
   const bundle = {
     schemaVersion: "1.0.0",
     collectedAt: new Date().toISOString(),
@@ -2196,6 +2238,14 @@ async function supportBundleCommand({
             previousVersion: config.previousVersion ?? null
           }
         : null
+    },
+    engine: await inspectContainerEngine(execute, containerEngine(config?.engine), platform),
+    capacity: {
+      hostCpuCount: resources.cpuCount, hostMemoryBytes: resources.totalMemoryBytes,
+      hostFreeDiskBytes: resources.freeDiskBytes,
+      engineCpuCount: storage?.resources.engineCpuCount ?? null,
+      engineMemoryBytes: storage?.resources.engineMemoryBytes ?? null,
+      engineFreeDiskBytes: storage?.dockerFreeDiskBytes ?? null
     },
     services: {},
     health: {}
@@ -2279,7 +2329,7 @@ async function factoryResetCommand({
     await rm(join(root, "compose.yml"), { force: true });
   } catch {}
 
-  const result = await initializeInstallation(root, { version: runtimeVersion });
+  const result = await initializeInstallation(root, { version: runtimeVersion, engine: config.engine });
   stdout.write(`SpaceApp factory reset complete. Clean installation initialized at ${root}\n`);
   if (result.setupToken) {
     stdout.write(`One-time setup token: ${result.setupToken}\n`);
@@ -2433,6 +2483,15 @@ async function doctor({
     ...resourceChecks.filter((check) => !storagePlan || check.name !== "Free disk"),
     ...(storagePlan ? storageChecks(storagePlan, detectedResources) : [])
   ];
+  if (execute.engine === "podman") {
+    const info = await inspectContainerEngine(execute, "podman", platform);
+    checks.push(...podmanChecks(info, platform));
+    if (!storagePlan) checks.push(...installResourceChecks({ ...detectedResources, engineName: "Podman",
+      engineCpuCount: info.cpuCount, engineMemoryBytes: info.memoryBytes }, resolvedProfile, { operation })
+      .filter((check) => check.name.startsWith("Podman")));
+    for (const check of checks) (check.ok ? stdout : stderr).write(`${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}\n`);
+    return checks.every((check) => check.ok) ? 0 : 1;
+  }
   const dockerResults = [];
   for (const probe of [
     { name: "Docker CLI", command: "docker", args: ["--version"] },
@@ -2655,6 +2714,7 @@ function spawnTrustedCommand(spec, options) {
   switch (spec.command) {
     case "codesign": return spawn("codesign", args, options);
     case "docker": return spawn("docker", args, options);
+    case "podman": return spawn("podman", args, options);
     case "hdiutil": return spawn("hdiutil", args, options);
     case "open": return spawn("open", args, options);
     case "powershell.exe":
@@ -2760,12 +2820,12 @@ Usage: ${UNIVERSAL_COMMAND} <command>
        spaceapp <command>             Optional global launcher
 
   init                              Create a local SpaceApp installation
-  install [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
+  install [--engine docker|podman] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Install prerequisites, initialize, and start
   reinstall [--keep-data] [--profile auto|small|medium|large|light|standard] [--access isolated|host-root] [--with-companions] [--no-open]
                                     Clean reinstallation preserving data and credentials
   repair [--dry-run]                Verify and repair configuration and runtime files
-  up | down | status | logs         Manage the Docker application
+  up | down | status | logs         Manage the saved container engine application
   open                              Open the local web application
   doctor [--fix]                    Diagnose; --fix repairs existing config and runtime
   support-bundle                    Generate a diagnostic bundle JSON for support

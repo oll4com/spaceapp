@@ -92,7 +92,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 - **Hardware**:
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
-- **Docker**: If Docker is not installed, the installer automatically installs official Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- **Container engine**: Docker on Linux/macOS/Windows, or rootless Podman >=5 with Docker Compose >=5.6.0 on Linux/macOS. Docker installation remains automatic when selected; Podman and its Compose provider must already be installed.
 
 ### Run the Installation Command
 
@@ -102,10 +102,17 @@ Run the universal command in your terminal:
 npx --yes run-spaceapp@latest install
 ```
 
+For rootless Podman, use `install --engine podman --profile small`. On macOS,
+start a rootless Podman machine with at least 4 CPUs, 8192 MiB RAM, and enough
+free disk first. The engine is saved for every later command. A working Docker
+engine is preferred automatically; Podman-only hosts use Podman without a
+Docker install. Existing installations cannot switch engines in place, and
+Podman requires isolated access. See [Podman setup and diagnostics](packages/run-spaceapp/README.md#rootless-podman-linux-and-macos).
+
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
 ### What Happens Next (Step-by-Step Onboarding):
-1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
+1. **System & Engine Verification**: The launcher verifies CPU, RAM, disk space and the selected engine; the Docker path installs/starts Docker if needed.
 2. **Container Initialization**: Pulls SpaceApp's images by the digest the npm package pins (from run-spaceapp 1.1.7; earlier packages by exact version tag; published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.

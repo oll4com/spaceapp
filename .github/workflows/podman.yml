@@ -1,0 +1,75 @@
+name: Rootless Podman launcher
+on:
+  pull_request:
+    paths:
+      - 'packages/run-spaceapp/**'
+      - 'scripts/podman-launcher-smoke.mjs'
+      - '.github/workflows/podman.yml'
+      - 'Dockerfile'
+  push:
+    paths:
+      - 'packages/run-spaceapp/**'
+      - 'scripts/podman-launcher-smoke.mjs'
+      - '.github/workflows/podman.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: podman-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  small:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install rootless engine and Compose provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ubuntu-latest currently includes Podman 4.9; use the Linux Homebrew bottle for >=5.
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install podman docker-compose
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "PODMAN_COMPOSE_PROVIDER=$(brew --prefix)/bin/docker-compose" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y uidmap
+          # Grant user namespaces to this engine binary on Ubuntu's restricted-userns hosts.
+          # This leaves the system restriction and other applications' profiles in place.
+          if command -v apparmor_parser >/dev/null; then
+            printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile spaceapp-ci-podman /home/linuxbrew/.linuxbrew/Cellar/podman/*/bin/podman flags=(unconfined) {\n  userns,\n}\n' | sudo tee /etc/apparmor.d/spaceapp-ci-podman >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/spaceapp-ci-podman
+          fi
+          test "$(id -u)" != 0
+          podman info --format json
+      - name: Unit tests and runtime images
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test --workspace=run-spaceapp
+          version=$(node -p "require('./packages/run-spaceapp/package.json').spaceappRuntimeVersion")
+          for target in core cli; do
+            podman build --format docker --layers --build-arg TARGETARCH=amd64 --target "$target" -t "ghcr.io/oll4com/spaceapp-$target:$version" .
+          done
+          podman pull pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+      - name: Real small install, readiness, ownership, backup, restore and purge
+        shell: bash
+        env:
+          SPACEAPP_SMOKE_LOCAL_IMAGES: '1'
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          mkdir -p "$XDG_RUNTIME_DIR/podman"
+          podman system service --time=0 "unix://$XDG_RUNTIME_DIR/podman/podman.sock" > "$RUNNER_TEMP/spaceapp-podman-api.log" 2>&1 &
+          service_pid=$!
+          trap 'kill "$service_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent --unix-socket "$XDG_RUNTIME_DIR/podman/podman.sock" http://localhost/_ping; then break; fi
+            sleep 1
+          done
+          node scripts/podman-launcher-smoke.mjs small

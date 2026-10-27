@@ -21,6 +21,8 @@ import { UNIVERSAL_COMMAND } from "./package-info.mjs";
 import { imageVerificationOff, verifyLockedImages } from "./image-attestations.mjs";
 import { IMAGE_TARGETS, imageDigestEnv, PACKAGE_IMAGE_LOCK, parseRecordedDigests } from "./image-lock.mjs";
 
+import { containerEngine, assertEngineSelection, renderEngineCompose } from "./engine.mjs";
+
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
 export const MIN_INSTALL_FREE_DISK_BYTES_STANDARD = 15 * 1024 ** 3;
@@ -120,6 +122,7 @@ export const CLI_SETTINGS_FILES = Object.freeze([
   "claude/settings.json", "claude/.claude.json", "codex/config.toml", "opencode/config/opencode/opencode.json"
 ]);
 const CONFIG_KEYS = new Set([
+  "engine",
   "schemaVersion",
   "version",
   "previousVersion",
@@ -283,7 +286,9 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
   const requirements = PROFILE_REQUIREMENTS[profile];
   if (!requirements) throw new Error("Unknown installation profile.");
   const minFreeDisk = requiredDiskBytes ?? (operation === "fresh" ? requirements.freshDiskBytes : 512 * 1024 ** 2);
-  const engineMemoryBytes = { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
+  const engineMemoryBytes = resources.engineName === "Podman" ? requirements.memoryBytes
+    : { small: 3, medium: 5, large: 7, light: 3, standard: 3 }[profile] * 1024 ** 3;
+  const engineCpuCount = resources.engineName === "Podman" ? requirements.cpuCount : 4;
   return [
     {
       name: "CPU",
@@ -300,10 +305,10 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
       ok: freeDiskBytes >= minFreeDisk,
       detail: `${formatGibibytes(freeDiskBytes)} GiB available; ${formatGibibytes(minFreeDisk)} GiB required${operation === "fresh" ? "" : " additionally for " + operation}`
     },
-    ...(resources.engineMemoryBytes > 0 ? [{ name: "Docker memory", ok: resources.engineMemoryBytes >= engineMemoryBytes,
+    ...(resources.engineMemoryBytes > 0 ? [{ name: `${resources.engineName ?? "Docker"} memory`, ok: resources.engineMemoryBytes >= engineMemoryBytes,
       detail: `${formatGibibytes(resources.engineMemoryBytes)} GiB allocated; ${formatGibibytes(engineMemoryBytes)} GiB required for ${profile}` }] : []),
-    ...(resources.engineCpuCount > 0 ? [{ name: "Docker CPU", ok: resources.engineCpuCount >= 4,
-      detail: `${resources.engineCpuCount} allocated; 4 required` }] : [])
+    ...(resources.engineCpuCount > 0 ? [{ name: `${resources.engineName ?? "Docker"} CPU`, ok: resources.engineCpuCount >= engineCpuCount,
+      detail: `${resources.engineCpuCount} allocated; ${engineCpuCount} required` }] : [])
   ];
 }
 
@@ -311,7 +316,8 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
@@ -319,6 +325,7 @@ export function createDefaultConfig({
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
   return {
+    ...(engine === undefined ? {} : { engine: containerEngine(engine) }),
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
     previousVersion: null,
@@ -348,6 +355,7 @@ export function validateConfig(config) {
   if (config.schemaVersion !== CONFIG_SCHEMA_VERSION) {
     throw new Error(`Unsupported SpaceApp config schema ${config.schemaVersion}.`);
   }
+  assertEngineSelection(containerEngine(config.engine), null, config.accessMode, process.platform);
   assertVersion(config.version);
   if (config.previousVersion !== null) {
     assertVersion(config.previousVersion);
@@ -676,11 +684,15 @@ const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli
 
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
+  // Podman uses its native default seccomp/AppArmor policy. Docker Compose sends
+  // custom seccomp JSON inline, which Podman's compatibility API treats as a path.
+  cliSandbox = cliSandbox && config.engine !== "podman";
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(config.engine === "podman" ? ["        bind:", "          selinux: z"] : [])
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
@@ -695,12 +707,14 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
+    `        read_only: ${workspace.readOnly}`,
+    ...(config.engine === "podman" ? ["        bind:", "          selinux: z"] : [])
   ];
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
     return [
       `  spaceapp-cli-${slug}:`,
+      ...(config.engine === "podman" ? ['    userns_mode: "keep-id:uid=10001,gid=10001"', '    user: "0:0"'] : []),
       // The owner's pinned CLI image (runtime.env sets the digest; 1.1.7 review: a moved tag cannot change a user's).
       "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}",
       "    restart: unless-stopped",
@@ -719,7 +733,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       `      - spaceapp-memory-${slug}:/var/lib/spaceapp/memory`,
       `      - spaceapp-cli-socket-${slug}:/run/spaceapp-cli`,
       `      - spaceapp-workspaces-${slug}:/workspaces`,
-      `      - ./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro`,
+      `      - ./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro${config.engine === "podman" ? ",z" : ""}`,
       ...user.workspaces.flatMap(bind),
       // Its own network: internet only, never the owner's internal services (temporal, companions) or other users.
       "    networks:",
@@ -734,7 +748,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      SPACE_CLI_HOST_SOCKETS_FILE: /etc/spaceapp/cli-hosts.json",
     "    volumes:",
     ...(mounts.length > 0 ? mounts : []),
-    "      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro",
+    `      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro${config.engine === "podman" ? ",z" : ""}`,
     ...users.map((user) => `      - spaceapp-cli-socket-${userSlug(user.id)}:/run/spaceapp-cli-users/${userSlug(user.id)}`),
     "  spaceapp-cli:",
     ...service,
@@ -879,7 +893,8 @@ export function composeCommand(action, root, options = {}) {
   };
   if (action === "installProvider") {
     assertProvider(options.provider);
-    actions.installProvider = ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
+    actions.installProvider = ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli",
+      ...(options.provider === "opencode" ? ["opencode", "--version"] : ["node", "/app/deploy/docker/provider-install.mjs", options.provider])];
   }
   let selected = actions[action];
   if (action === "restore") {
@@ -909,7 +924,7 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  return { command: containerEngine(options.engine), args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -984,9 +999,12 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
+  const existing = await loadConfig(root).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+  if (engine !== undefined) assertEngineSelection(engine, existing, accessMode ?? existing?.accessMode, process.platform);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([
     mkdir(join(root, "backups"), { recursive: true, mode: 0o700 }),
@@ -1007,7 +1025,8 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine
     });
   }
   if (config.version !== version) {
@@ -1027,6 +1046,7 @@ export async function prepareInstallation(root, {
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };
   }
+  if (engine !== undefined) config = { ...config, engine: containerEngine(engine) };
   validateConfig(config);
 
   const postgresPasswordPath = join(root, "secrets", "postgres-password");
@@ -1093,7 +1113,7 @@ export async function commitInstallation(root, config, {
   validateConfig(config);
   const composeTemplate = await readFile(join(templateDir, "compose.yml"), "utf8");
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await atomicWrite(join(root, "compose.yml"), composeTemplate);
+  await atomicWrite(join(root, "compose.yml"), renderEngineCompose(composeTemplate, config.engine));
   await mkdir(projectRoot, { recursive: true, mode: 0o700 });
   await atomicWrite(join(projectRoot, "seccomp-cli.json"), await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8"));
   await writeRuntimeFiles(root, config);
