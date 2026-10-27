@@ -35,7 +35,14 @@ case "$runtime_name" in
     export XDG_DATA_HOME="$state_root/data"
     export XDG_CACHE_HOME="$state_root/cache"
     export XDG_STATE_HOME="$state_root/state"
+    # The image pins OpenCode and run-spaceapp releases update it: OpenCode's own update check opened an "Update available"
+    # dialog over a new pane that took the user's first prompt, Enter choosing Update (1.1.7 devtest, Windows lab, 2026-10-20).
+    # The pane TUIs and the shared server inherit this; the standalone helpers set it in their own environments.
+    export OPENCODE_DISABLE_AUTOUPDATE=true
     export OPENCODE_API_KEY="$(cat "$credential_file" 2>/dev/null || true)"
+    # OpenCode reaches Anthropic and OpenAI with the keys set for Claude Code and Codex (credentials set claude|codex).
+    if [ -s "$credential_root/claude.key" ]; then export ANTHROPIC_API_KEY="$(cat "$credential_root/claude.key")"; fi
+    if [ -s "$credential_root/codex.key" ]; then export OPENAI_API_KEY="$(cat "$credential_root/codex.key")"; fi
     ;;
   qwen)
     command_name="qwen"
@@ -140,6 +147,15 @@ case "${1:-}" in
     ensure_runtime_dirs
     exec node /app/deploy/docker/credential-install.mjs "$runtime_name" "$state_root"
     ;;
+  opencode-text|opencode-models)
+    # The API's OpenCode calls (core has no OpenCode): a request on stdin, run --standalone in a throwaway home.
+    if [ "$runtime_name" != "opencode" ]; then
+      echo "This action is only for OpenCode." >&2
+      exit 64
+    fi
+    ensure_runtime_dirs
+    exec node /app/deploy/docker/opencode-standalone.mjs "${1#opencode-}"
+    ;;
   inspect-env)
     printf 'runtime=%s\nhome=isolated\ncredential=%s\n' \
       "$runtime_name" "$(credential_ready && printf present || printf absent)"
@@ -152,7 +168,7 @@ case "${1:-}" in
     case "$runtime_name" in
       codex) exec "$command_name" login --device-auth "$@" ;;
       kimi|grok|claude) exec "$command_name" login "$@" ;;
-      opencode) exec "$command_name" auth login "$@" ;;
+      opencode) exec "$command_name" auth login --standalone "$@" ;;
       gemini|qwen) exec "$command_name" "$@" ;;
       deepseek)
         echo "Set DeepSeek credentials with: spaceapp credentials set deepseek" >&2
@@ -175,6 +191,17 @@ esac
 
 ensure_runtime_dirs
 ensure_optional_provider
+# OpenCode 2 starts a per-user background service unless a command runs --standalone (help and version need neither).
+# A pane (a fresh or resumed TUI) attaches to the one shared server below with --server: two --standalone servers on this
+# provider store fail ("Standalone server exited before reporting readiness", two panes started together, Linux lab, 2026-10-20).
+opencode_pane=0
+if [ "$runtime_name" = "opencode" ]; then
+  case "${1:-}" in
+    --help|-h|--version|-v) ;;
+    ""|--continue|-c) opencode_pane=1 ;;
+    *) set -- "$@" --standalone ;;
+  esac
+fi
 if [ "$runtime_name" = "opencode" ]; then
   case "${1:-}" in
     models|auth|--help|--version|version) ;;
@@ -188,6 +215,22 @@ fi
 if ! command -v "$command_name" >/dev/null 2>&1; then
   echo "$runtime_name could not be installed. Run spaceapp doctor for help." >&2
   exit 69
+fi
+
+if [ "$opencode_pane" = 1 ]; then
+  server_url=""
+  while IFS='=' read -r key value; do
+    case "$key" in
+      OPENCODE_SERVER_URL) server_url="$value" ;;
+      OPENCODE_SERVER_USERNAME) export OPENCODE_SERVER_USERNAME="$value" ;;
+      OPENCODE_SERVER_PASSWORD) export OPENCODE_SERVER_PASSWORD="$value" ;;
+    esac
+  done < <(node /app/deploy/docker/opencode-shared-server.mjs || true)
+  if [ -z "$server_url" ]; then
+    echo "SpaceApp could not start OpenCode. Reopen this pane; run spaceapp doctor if it keeps failing." >&2
+    exit 69
+  fi
+  set -- --server "$server_url" "$@" "$PWD"
 fi
 
 exec "$command_name" "$@"

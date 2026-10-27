@@ -1,5 +1,5 @@
 import type { Pane } from "@space/contracts";
-import { Boxes, Briefcase, CodeXml, Database, FolderOpen, GitCompare, Globe, Handshake, Mail, Megaphone, MessageSquare, Mic, Monitor, Network, PenTool, Presentation, SquareCode, Terminal, Youtube, type LucideIcon } from "../ui-theme/app-icons.js";
+import { Boxes, Briefcase, CodeXml, Database, Film, FolderOpen, GitCompare, Globe, Handshake, Mail, Megaphone, MessageSquare, Mic, Monitor, Network, PenTool, Presentation, ShieldHalf, SquareCode, TabletSmartphone, Terminal, Youtube, type LucideIcon } from "../ui-theme/app-icons.js";
 
 // One icon per pane type: pane headers, the Create menu and the pane visibility settings all use these.
 export const modeIcons: Record<Pane["mode"], LucideIcon> = {
@@ -21,5 +21,8 @@ export const modeIcons: Record<Pane["mode"], LucideIcon> = {
   JOB_APPLY: Briefcase,
   MAIL_COPILOT: Mail,
   MARKETING_COPILOT: Megaphone,
-  FREELANCE_COPILOT: Handshake
+  FREELANCE_COPILOT: Handshake,
+  APP_STUDIO: TabletSmartphone,
+  SECURITY_COPILOT: ShieldHalf,
+  VIDEO: Film
 };

@@ -1,5 +1,5 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { MAX_ROOMS, type AuthMe, type Pane, type Room } from "@space/contracts";
+import { isTestRoom, type AuthMe, type Pane, type Room } from "@space/contracts";
 import { api } from "../../api.js";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import type { SpaceRuntime } from "../../runtime/SpaceRuntime.js";
@@ -15,6 +15,8 @@ import { ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal
 import { workspaceRoomActivity } from "../ui-theme/workspace-room-filter.js";
 import type { AdminUsers } from "./useAdminUsers.js";
 import { ensureProjectFolder } from "./room-catalog.js";
+import { RoomSharing } from "./RoomSharing.js";
+import { isViewOnlyRoom } from "./room-share-view.js";
 import type { AdminRoomFilterMode, RoomsDock } from "./useRoomsDock.js";
 import "./rooms-dock.css";
 
@@ -23,7 +25,7 @@ const LazyProjectSourcePicker = lazyWithPreload(() => import("../source-control/
 export interface RoomEntry { room: Room; activity: ReturnType<typeof workspaceRoomActivity> }
 
 /** Rooms shown in the dock: own rooms, or the admin's account filter, then the search. */
-export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, completions, roomCliActivityCounts, isAdminMode, userId, dock, userEmailById, notificationRooms }: {
+export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, completions, roomCliActivityCounts, isAdminMode, userId, dock, userEmailById, notificationRooms, listsEveryRoom = false }: {
   rooms: Room[];
   selectedRoomId: string | null;
   /** Panes of the active room. */
@@ -37,6 +39,8 @@ export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, 
   userEmailById: Map<string, string>;
   /** Open notifications per room, from the notification store. */
   notificationRooms?: Record<string, number>;
+  /** A USER's room list already holds only their own and shared rooms (multi-user, operator-approved 2026-10-17). */
+  listsEveryRoom?: boolean;
 }): { entries: RoomEntry[]; isRoomListFiltered: boolean } {
   const { roomSearch, adminRoomFilterMode, adminSelectedUserId } = dock;
   const entries = rooms.map(room => ({
@@ -44,7 +48,7 @@ export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, 
     activity: workspaceRoomActivity(room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? [], completions, roomCliActivityCounts[room.id], notificationRooms?.[room.id] ?? 0)
   })).filter(({ room }) => {
     if (!isAdminMode) {
-      if (room.ownerUserId && room.ownerUserId !== userId) return false;
+      if (!listsEveryRoom && room.ownerUserId && room.ownerUserId !== userId) return false;
     } else {
       if (adminRoomFilterMode === "mine") {
         if (room.ownerUserId && room.ownerUserId !== userId) return false;
@@ -125,8 +129,6 @@ const adminRoomFilterOptions: { id: AdminRoomFilterMode; label: string }[] = [
 ];
 const MAX_ROOM_CLI_ICONS = 3;
 
-/** Agent Proof and CLI Recovery rooms are listed apart from the operator's own rooms. */
-const isTestRoom = (room: Room) => room.kind === "AGENT_PROOF" || room.kind === "CLI_RECOVERY";
 
 /** The Rooms dock: room list with filters, per-room project settings and the pane composer. */
 export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, catalog, access, actions, composer }: RoomsDockPanelProps) {
@@ -307,7 +309,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
                 : roomRuntimes[room.id]?.panes.filter((pane) => !pane.isClosed).length ?? "—")}
             </span>
           </button>
-          <button
+          {room.sharePermission ? null : <button
             type="button"
             className="room-dock-expand-btn"
             aria-expanded={isExpanded}
@@ -319,7 +321,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
             }}
           >
             <MoreHorizontal aria-hidden="true" />
-          </button>
+          </button>}
         </div>
         {isExpanded && (
           <div className="room-dock-expansion" onClick={(e) => e.stopPropagation()}>
@@ -527,6 +529,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
                 </DockButton>
               </div>
             ) : null}
+            <RoomSharing roomId={room.id} />
             <DockButton
               tone="ghost"
               icon={Trash2}
@@ -554,9 +557,9 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
             icon={Plus}
             className="rooms-new"
             onClick={() => void createRoom()}
-            disabled={roomCreationPending || rooms.length >= MAX_ROOMS}
+            disabled={roomCreationPending}
             busy={roomCreationPending}
-            title={rooms.length >= MAX_ROOMS ? `Maximum room limit (${MAX_ROOMS}) reached` : "Create empty room"}
+            title="Create empty room"
           >
             New room
           </DockButton>
@@ -639,7 +642,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
         >
           <span className="spaceapp-download-card">
             <Rocket aria-hidden="true" />
-            <span className="spaceapp-download-title"><strong>SpaceApp</strong> is source-available</span>
+            <span className="spaceapp-download-title"><strong>SpaceApp</strong> is open source (MIT)</span>
             <span>and <strong>free</strong> to self-host.</span>
           </span>
         </a>
@@ -655,7 +658,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           />
         </RecoverableSurface>
       ) : null}
-      <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
+      {isViewOnlyRoom(presentationRoom) ? null : <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
         <RoomPaneComposer
           activePaneCount={presentationPanes.length}
           onApply={addRoomPanes}
@@ -664,7 +667,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           isWorktreeEnabled={presentationRoom ? isRoomWorktreeEnabled(presentationRoom.id) : false}
           defaultCollapsed={true}
         />
-      </div>
+      </div>}
       {roomDeleteConfirmDialog}
     </div>
   );

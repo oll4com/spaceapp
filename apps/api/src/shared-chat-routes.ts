@@ -8,6 +8,7 @@ import {
 } from "@space/contracts";
 import { makeSpaceId, type SpaceStore } from "@space/runtime";
 import { type AuthConfig, verifyAgentPostToken } from "./auth.js";
+import { submitCliPrompt } from "./cli-prompt-submit.js";
 import type { CliTerminalManager } from "./cli-terminal.js";
 import { sendApiError } from "./http-errors.js";
 import { parseBody, parseQuery } from "./route-parsing.js";
@@ -86,11 +87,12 @@ export function registerSharedChatRoutes(app: FastifyInstance, options: {
         continue;
       }
       try {
-        await input.cliTerminalManager.sendInput(
+        // Text and Enter in one write left long prompts as Claude Code drafts; the shared submit pastes, then presses Enter.
+        await submitCliPrompt(
+          input.cliTerminalManager,
           target.session.sessionId,
           buildSharedChatDispatchPrompt(input.message.content, target.pane.title ?? target.session.paneId, runtimeId),
           input.requestId,
-          null,
           `shared-chat-dispatch:${input.message.id}`
         );
         dispatched += 1;

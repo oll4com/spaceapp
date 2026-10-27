@@ -20,8 +20,11 @@ export interface LanAccess {
 
 export const defaultLanPort = 4925;
 
-/** What LAN clients may call: health and the provider proxy routes. */
-export const lanPathPrefixes = ["/health", "/v1", "/backend-api/codex", "/backend-api/transcribe", "/antigravity", "/api/codex/weekly-remaining", "/pools"];
+/**
+ * What LAN clients may call: health and the provider proxy routes that need a gateway key. `/antigravity` is not one:
+ * it relays any Google sign-in without a key, so it stays on loopback (security addendum step 8).
+ */
+export const lanPathPrefixes = ["/health", "/v1", "/backend-api/codex", "/backend-api/transcribe", "/api/codex/weekly-remaining", "/pools"];
 
 function ipv4ToInt(address: string): number | null {
   const parts = address.split(".");

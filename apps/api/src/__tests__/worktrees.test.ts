@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdir, mkdtemp, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execGit, WorktreeService } from "../worktrees/worktree-service.js";
@@ -257,6 +257,37 @@ describe("WorktreeService", () => {
     await expect(service.mergeWorktree("/tmp/totally-fake-never-existed-path")).rejects.toThrow(
       "Worktree not found for /tmp/totally-fake-never-existed-path."
     );
+  });
+
+  it("reads branch, HEAD, dirty state and repository like before, and rewrites the registry only on a change", async () => {
+    const wt = await service.createWorktree({
+      repoPath: tempRepo,
+      roomId: "room:badge-read-test",
+      branchName: "feat/badge-read",
+      baseBranch: "main",
+      linkModules: false
+    });
+    const head = (await execGit(wt.worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+    const clean = await service.getWorktree(wt.worktreePath);
+    expect(clean).toMatchObject({ branch: "feat/badge-read", baseCommit: head, isDirty: false, status: "ACTIVE", aheadCount: 0 });
+    expect(clean?.repoPath).toBe(await realpath(tempRepo));
+    await writeFile(join(wt.worktreePath, "untracked.txt"), "new\n");
+    expect(await service.getWorktree(wt.worktreePath)).toMatchObject({ isDirty: true, status: "DIRTY" });
+    await execGit(wt.worktreePath, ["checkout", "-q", "--detach"]);
+    expect(await service.getWorktree(wt.worktreePath)).toMatchObject({ branch: "", baseCommit: head });
+
+    const registry = join(tempStorage, ".worktree-registry.json");
+    const record = { worktreePath: wt.worktreePath, branch: "feat/badge-read", baseCommit: head, status: "DIRTY" as const };
+    await service.recordWorktree(record);
+    const before = await stat(registry);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await service.recordWorktree(record);
+    const unchanged = await stat(registry);
+    expect([unchanged.ino, unchanged.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+    await service.recordWorktree({ ...record, status: "ACTIVE" });
+    expect((await stat(registry)).mtimeMs).not.toBe(before.mtimeMs);
+    expect((await service.getRecordedWorktree(wt.worktreePath))?.status).toBe("ACTIVE");
+    await service.removeWorktree(wt.worktreePath, true);
   });
 
   it("preserves ACTIVE status for freshly created clean worktrees on disk", async () => {

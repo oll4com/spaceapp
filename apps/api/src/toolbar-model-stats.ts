@@ -208,34 +208,35 @@ export async function readOpenCodeModelRows(input: {
   windowMinutes: number;
   now: () => Date;
   stateRoot: string;
+  dbPath?: string;
 }): Promise<OpenCodeDbRow[]> {
   const validIds = input.nativeSessionIds.filter((id) => opencodeNativeSessionIdPattern.test(id));
   if (validIds.length === 0) return [];
-  const dbPath = await resolveOpenCodeDbPath(input.stateRoot);
+  const dbPath = input.dbPath ?? await resolveOpenCodeDbPath(input.stateRoot);
   if (!dbPath) return [];
   const windowMs = Math.max(1, input.windowMinutes) * 60_000;
   const sinceMs = input.now().getTime() - windowMs;
   const sessionClause = validIds.map(sqliteQuote).join(", ");
-  const sql = [
-    "select",
-    "s.id as sessionId,",
-    "m.id as messageId,",
-    "json_extract(m.data, '$.modelID') as modelID,",
-    "json_extract(m.data, '$.providerID') as providerID,",
+  // OpenCode 2 only (OpenCode 1 was retired, plan clipboard:kJ1BIeylJRLG); a store it has not opened (no session_v2) has
+  // nothing to count.
+  if (!(await runSqliteJson(dbPath, "select 1 as found from sqlite_master where type = 'table' and name = 'session_v2';")).length) return [];
+  // OpenCode 2 stores one message per step with its own times; emit the step-start/text/step-finish rows from them.
+  return runSqliteJson<OpenCodeDbRow>(dbPath, [
+    "select m.session_id as sessionId, m.id as messageId,",
+    "json_extract(m.data, '$.model.id') as modelID, json_extract(m.data, '$.model.providerID') as providerID,",
     "m.time_created as msgCreated,",
-    "json_extract(m.data, '$.tokens.input') as msgTokensIn,",
-    "json_extract(m.data, '$.tokens.output') as msgTokensOut,",
+    "json_extract(m.data, '$.tokens.input') as msgTokensIn, json_extract(m.data, '$.tokens.output') as msgTokensOut,",
     "json_extract(m.data, '$.tokens.reasoning') as msgTokensReasoning,",
-    "json_extract(p.data, '$.type') as partType,",
-    "p.time_created as partTime",
-    "from message m",
-    "join part p on p.message_id = m.id",
-    "join session s on s.id = m.session_id",
-    `where m.time_created >= ${sinceMs}`,
-    `and s.id in (${sessionClause})`,
-    "order by p.time_created asc"
-  ].join(" ");
-  return runSqliteJson<OpenCodeDbRow>(dbPath, `${sql};`);
+    "k.partType as partType,",
+    "case k.partType when 'step-start' then json_extract(m.data, '$.time.created')",
+    "when 'step-finish' then json_extract(m.data, '$.time.completed')",
+    "else (select min(json_extract(c.value, '$.time.created')) from json_each(m.data, '$.content') c) end as partTime",
+    "from session_message m",
+    "cross join (select 'step-start' as partType union all select 'text' union all select 'step-finish') k",
+    `where m.type = 'assistant' and m.time_created >= ${sinceMs}`,
+    `and m.session_id in (${sessionClause})`,
+    "order by partTime asc;"
+  ].join(" "));
 }
 
 export function parseCodexRolloutStats(
@@ -422,10 +423,57 @@ export function parseCodexRolloutStats(
   return result;
 }
 
+// Rollout lookups ran sqlite3 on up to 65 state DBs per call and listed ~/.codex/space-codex-homes (34,469
+// entries) every time: ~8,200 sqlite3 an hour on stable (2026-10-24). The DB list is kept a minute, a found
+// rollout path ten minutes, a miss is retried after five, and a DB whose files did not change is not queried again.
+const codexStateDbListTtlMs = 60_000;
+const codexRolloutPathTtlMs = 10 * 60_000;
+const codexRolloutMissRetryMs = 5 * 60_000;
+const codexRolloutCacheMax = 10_000;
+const codexHomeStateDbs = new Map<string, { at: number; dbs: Promise<string[]> }>();
+const codexRolloutPaths = new Map<string, { path: string | null; until: number }>();
+const codexRecentRows = new Map<string, { fingerprint: string; sinceSec: number; limit: number; rows: Array<{ id: string; path: string; updatedAt: number }> }>();
+
+/** The per-pane Codex homes' state DBs (the first 64 listed, as before), listed at most once a minute. */
+function codexHomeStateDbList(codexHome: string): Promise<string[]> {
+  const cached = codexHomeStateDbs.get(codexHome);
+  if (cached && Date.now() - cached.at < codexStateDbListTtlMs) return cached.dbs;
+  const dbs = (async () => {
+    const found: string[] = [];
+    const homes = await readdir(join(codexHome, "space-codex-homes")).catch(() => [] as string[]);
+    for (const home of homes.slice(0, codexStateDbCandidatesMax)) {
+      const dbPath = join(codexHome, "space-codex-homes", home, "state_5.sqlite");
+      try {
+        const metadata = await stat(dbPath);
+        if (metadata.isFile() && metadata.size > 0) found.push(dbPath);
+      } catch {
+        // Unreadable per-home state DBs are skipped.
+      }
+    }
+    return found;
+  })();
+  codexHomeStateDbs.set(codexHome, { at: Date.now(), dbs });
+  return dbs;
+}
+
+async function sqliteFilesFingerprint(dbPath: string): Promise<string> {
+  const parts = await Promise.all([dbPath, `${dbPath}-wal`].map((path) =>
+    stat(path).then((metadata) => `${metadata.size}:${metadata.mtimeMs}`, () => "-")));
+  return parts.join("|");
+}
+
 export async function resolveCodexRolloutPaths(threadIds: string[], codexHome: string): Promise<Map<string, string>> {
   const byThread = new Map<string, string>();
-  const requestedIds = new Set(threadIds);
+  const requestedIds = new Set<string>();
+  const now = Date.now();
+  for (const id of new Set(threadIds)) {
+    const cached = codexRolloutPaths.get(`${codexHome}\n${id}`);
+    if (cached && cached.until > now) {
+      if (cached.path) byThread.set(id, cached.path);
+    } else requestedIds.add(id);
+  }
   if (requestedIds.size === 0) return byThread;
+  const found = new Map<string, string>();
   const placeholders = [...requestedIds].map(sqliteQuote).join(", ");
   const sql = `select id, rollout_path from threads where id in (${placeholders});`;
   const readPaths = async (dbPath: string) => {
@@ -434,32 +482,24 @@ export async function resolveCodexRolloutPaths(threadIds: string[], codexHome: s
       for (const row of rows) {
         const id = stringValue(row.id);
         const path = stringValue(row.rollout_path);
-        if (requestedIds.has(id) && path && !byThread.has(id)) byThread.set(id, path);
+        if (requestedIds.has(id) && path && !found.has(id)) found.set(id, path);
       }
     } catch {
       // A broken state DB must not fail the whole room sample.
     }
   };
   await readPaths(join(codexHome, "state_5.sqlite"));
-  if (byThread.size === requestedIds.size) return byThread;
-  const candidates: string[] = [];
-  try {
-    const homes = await readdir(join(codexHome, "space-codex-homes")).catch(() => []);
-    for (const home of homes.slice(0, codexStateDbCandidatesMax)) {
-      const dbPath = join(codexHome, "space-codex-homes", home, "state_5.sqlite");
-      try {
-        const metadata = await stat(dbPath);
-        if (metadata.isFile() && metadata.size > 0) candidates.push(dbPath);
-      } catch {
-        // Unreadable per-home state DBs are skipped.
-      }
+  if (found.size < requestedIds.size) {
+    for (const dbPath of await codexHomeStateDbList(codexHome)) {
+      await readPaths(dbPath);
+      if (found.size === requestedIds.size) break;
     }
-  } catch {
-    // No per-home state DBs.
   }
-  for (const dbPath of candidates) {
-    await readPaths(dbPath);
-    if (byThread.size === requestedIds.size) break;
+  if (codexRolloutPaths.size > codexRolloutCacheMax) codexRolloutPaths.clear();
+  for (const id of requestedIds) {
+    const path = found.get(id) ?? null;
+    codexRolloutPaths.set(`${codexHome}\n${id}`, { path, until: now + (path ? codexRolloutPathTtlMs : codexRolloutMissRetryMs) });
+    if (path) byThread.set(id, path);
   }
   return byThread;
 }
@@ -469,29 +509,33 @@ export async function resolveRecentCodexRollouts(
   codexHome: string,
   limit = 200
 ): Promise<Array<{ threadId: string; rolloutPath: string }>> {
-  const candidates = [join(codexHome, "state_5.sqlite")];
-  try {
-    const homes = await readdir(join(codexHome, "space-codex-homes")).catch(() => []);
-    for (const home of homes.slice(0, codexStateDbCandidatesMax)) {
-      const dbPath = join(codexHome, "space-codex-homes", home, "state_5.sqlite");
-      try {
-        const metadata = await stat(dbPath);
-        if (metadata.isFile() && metadata.size > 0) candidates.push(dbPath);
-      } catch {}
-    }
-  } catch {}
+  const candidates = [join(codexHome, "state_5.sqlite"), ...await codexHomeStateDbList(codexHome)];
   const sinceSec = Math.floor(sinceMs / 1000);
+  const rowLimit = Math.max(1, Math.min(Math.trunc(limit), 5000));
   const byThread = new Map<string, string>();
-  const sql = `select id, rollout_path from threads where updated_at >= ${sinceSec} order by updated_at desc limit ${Math.max(1, Math.min(Math.trunc(limit), 5000))};`;
+  const sql = `select id, rollout_path, updated_at from threads where updated_at >= ${sinceSec} order by updated_at desc limit ${rowLimit};`;
   for (const dbPath of candidates) {
-    try {
-      const rows = await runSqliteJson<{ id?: unknown; rollout_path?: unknown }>(dbPath, sql);
-      for (const row of rows) {
-        const id = stringValue(row.id);
-        const path = stringValue(row.rollout_path);
-        if (id && path && !byThread.has(id)) byThread.set(id, path);
+    const fingerprint = await sqliteFilesFingerprint(dbPath);
+    let cached = codexRecentRows.get(dbPath);
+    // Rows newest first since an earlier or equal time and at least as many cover this query as a prefix.
+    if (!cached || cached.fingerprint !== fingerprint || cached.sinceSec > sinceSec || cached.limit < rowLimit) {
+      try {
+        const rows = await runSqliteJson<{ id?: unknown; rollout_path?: unknown; updated_at?: unknown }>(dbPath, sql);
+        cached = {
+          fingerprint, sinceSec, limit: rowLimit,
+          rows: rows.map((row) => ({ id: stringValue(row.id), path: stringValue(row.rollout_path), updatedAt: Number(row.updated_at) }))
+        };
+        if (codexRecentRows.size > codexRolloutCacheMax) codexRecentRows.clear();
+        codexRecentRows.set(dbPath, cached);
+      } catch {
+        continue;
       }
-    } catch {}
+    }
+    let taken = 0;
+    for (const row of cached.rows) {
+      if (!(row.updatedAt >= sinceSec) || taken++ >= rowLimit) break;
+      if (row.id && row.path && !byThread.has(row.id)) byThread.set(row.id, row.path);
+    }
   }
   return [...byThread.entries()].map(([threadId, rolloutPath]) => ({ threadId, rolloutPath }));
 }

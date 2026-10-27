@@ -1,15 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   collectOpenCodeStatsFromRows,
   parseCodexRolloutStats,
+  readOpenCodeModelRows,
   readCodexRolloutTail,
   resolveCodexRolloutPaths,
+  resolveRecentCodexRollouts,
   runSqliteSnapshotFallback
 } from "../toolbar-model-stats.js";
 
@@ -265,6 +267,48 @@ describe("batched Codex rollout resolution", () => {
   });
 });
 
+describe("Codex rollout lookup caches", () => {
+  const execFileAsync = promisify(execFile);
+
+  it("keeps found paths and misses, and looks a missing thread up again only after five minutes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "model-stats-cache-test-"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const db = join(root, "state_5.sqlite");
+      await execFileAsync("sqlite3", [db, "create table threads(id text, rollout_path text); insert into threads values ('a','/primary/a');"]);
+      expect(await resolveCodexRolloutPaths(["a", "late"], root)).toEqual(new Map([["a", "/primary/a"]]));
+      await execFileAsync("sqlite3", [db, "insert into threads values ('late','/primary/late');"]);
+      expect(await resolveCodexRolloutPaths(["a", "late"], root)).toEqual(new Map([["a", "/primary/a"]]));
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      expect(await resolveCodexRolloutPaths(["a", "late"], root)).toEqual(new Map([["a", "/primary/a"], ["late", "/primary/late"]]));
+    } finally {
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("asks a state DB again only when its files changed, and serves later windows from the kept rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "model-stats-recent-test-"));
+    const db = join(root, "state_5.sqlite");
+    const nowSec = Math.floor(Date.now() / 1000);
+    try {
+      await execFileAsync("sqlite3", [db, `create table threads(id text, rollout_path text, updated_at integer); insert into threads values ('new','/r/new',${nowSec - 10}),('old','/r/old',${nowSec - 300});`]);
+      expect(await resolveRecentCodexRollouts((nowSec - 600) * 1000, root)).toEqual([
+        { threadId: "new", rolloutPath: "/r/new" }, { threadId: "old", rolloutPath: "/r/old" }
+      ]);
+      // An unreadable DB proves the next answers come from the kept rows: a query would now fail.
+      await chmod(db, 0o000);
+      expect(await resolveRecentCodexRollouts((nowSec - 600) * 1000, root)).toHaveLength(2);
+      expect(await resolveRecentCodexRollouts((nowSec - 60) * 1000, root)).toEqual([{ threadId: "new", rolloutPath: "/r/new" }]);
+      await utimes(db, nowSec, nowSec + 5);
+      expect(await resolveRecentCodexRollouts((nowSec - 600) * 1000, root)).toEqual([]);
+    } finally {
+      await chmod(db, 0o644).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("readCodexRolloutTail", () => {
   it("keeps the session_meta line of a rollout too large to read whole, so its provider is known", async () => {
     const root = mkdtempSync(join(tmpdir(), "space-rollout-tail-"));
@@ -277,6 +321,34 @@ describe("readCodexRolloutTail", () => {
       expect(tail.startsWith(`${meta}\n`)).toBe(true);
       expect(tail.length).toBeLessThan(8 * 1024 * 1024 + meta.length + 2);
       expect(tail.trimEnd().endsWith('"token_count"}}')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readOpenCodeModelRows on an OpenCode 2 store", () => {
+  it("turns each v2 step message into step-start, first output and step-finish rows", async () => {
+    const execFileAsync = promisify(execFile);
+    const root = mkdtempSync(join(tmpdir(), "space-opencode2-stats-"));
+    const dbPath = join(root, "opencode.db");
+    // Message shape recorded from OpenCode 2.0.31 (2026-10-16).
+    const data = JSON.stringify({ type: "assistant", time: { created: 1_000, streamed: 4_000, completed: 5_000 },
+      model: { id: "big-pickle", providerID: "opencode", variant: "default" },
+      content: [{ type: "reasoning", text: "r", time: { created: 2_500, completed: 3_000 } }, { type: "text", text: "Done." }],
+      tokens: { input: 60, output: 10, reasoning: 40, cache: { read: 0, write: 0 } } });
+    try {
+      await execFileAsync("sqlite3", [dbPath, [
+        "create table session_v2 (id text primary key);",
+        "create table session_message (id text primary key, session_id text, type text, seq integer, time_created integer, time_updated integer, data text);",
+        `insert into session_message values ('msg_a', 'ses_v2stats', 'assistant', 1, 1000, 5000, '${data}');`,
+        `insert into session_message values ('msg_u', 'ses_v2stats', 'user', 0, 900, 900, '{"type":"user","text":"hi"}');`
+      ].join(" ")]);
+      const rows = await readOpenCodeModelRows({ nativeSessionIds: ["ses_v2stats"], windowMinutes: 60, now: () => new Date(6_000), stateRoot: root, dbPath });
+      expect(rows.map((row) => [row.partType, row.partTime])).toEqual([["step-start", 1_000], ["text", 2_500], ["step-finish", 5_000]]);
+      expect([...collectOpenCodeStatsFromRows(rows).values()]).toEqual([expect.objectContaining({
+        modelId: "big-pickle", providerId: "opencode", turns: 1, avgDurationMs: 4_000, tokensIn: 60, tokensOut: 10, tokensReasoning: 40
+      })]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

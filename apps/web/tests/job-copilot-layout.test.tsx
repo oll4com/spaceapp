@@ -19,15 +19,15 @@ function bar(layout: "split" | "stacked", onToggleRail = vi.fn()) {
 }
 
 describe("job copilot layout", () => {
-  it("shows postings deferred by an employer limit and keeps Start off with the reason when nothing else is queued", () => {
+  it("shows postings deferred by an employer limit and keeps Start on to find new postings when nothing else is queued", () => {
     render(
       <CommandBar pane={pane} runtimeOptions={[]} counts={{ ...counts, queued: 0, deferred: 2, nextFreeAt: "2026-11-28T00:00:00.000Z" }} runState="IDLE" progress={null} paused={false} railOpen
         switching={false} needsYou={0} runBusy={false} onRun={noop} onSwitchRuntime={noop} onSetDefault={noop} onTogglePaused={noop} onToggleRail={noop} />
     );
     expect(screen.getByText("2 deferred")).toBeTruthy();
     const start = screen.getByRole("button", { name: "Start" }) as HTMLButtonElement;
-    expect(start.disabled).toBe(true);
-    expect(start.title).toBe("Every queued posting waits for an employer limit; the next one is free on 2026-11-28");
+    expect(start.disabled).toBe(false);
+    expect(start.title).toBe("Find new postings, queue them and apply (every queued posting waits for an employer limit; the next one is free on 2026-11-28)");
   });
 
   it("stacks phones and narrow panes, splits wider ones", () => {
@@ -37,11 +37,15 @@ describe("job copilot layout", () => {
     expect(layoutForWidth(1440)).toBe("split");
     // No measurement yet (0) keeps the split layout rather than flashing a phone layout on desktop.
     expect(layoutForWidth(0)).toBe("split");
+    // Under 900px the split puts the rail under the browser: a short pane stacks instead of showing two slivers.
+    expect(layoutForWidth(700, 384)).toBe("stacked");
+    expect(layoutForWidth(700, 900)).toBe("split");
+    expect(layoutForWidth(1000, 384)).toBe("split");
   });
 
   it("offers the browser as the first tab only when stacked, and falls back to Activity for a tab the layout lacks", () => {
-    expect(tabsForLayout("stacked")).toEqual(["browser", "activity", "queue", "fields", "memory", "setup", "terminal"]);
-    expect(tabsForLayout("split")).toEqual(["activity", "queue", "fields", "memory", "setup", "terminal"]);
+    expect(tabsForLayout("stacked")).toEqual(["browser", "activity", "queue", "fields", "memory", "bookmarks", "setup", "terminal"]);
+    expect(tabsForLayout("split")).toEqual(["activity", "queue", "fields", "memory", "bookmarks", "setup", "terminal"]);
     expect(resolveActiveTab("browser", "split")).toBe("activity");
     expect(resolveActiveTab("browser", "stacked")).toBe("browser");
     expect(resolveActiveTab("terminal", "stacked")).toBe("terminal");

@@ -3,6 +3,7 @@ import type { AuthMe } from "@space/contracts";
 import { CheckCircle2, Shield, Link2, Eye, EyeOff } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import { GoogleAccountsManager } from "./GoogleAccountsManager.js";
+import { AppDevicesManager } from "./AppDevicesManager.js";
 
 export function maskEmail(email: string): string {
   if (!email || !email.includes("@")) return "***";
@@ -330,6 +331,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
       ) : null}
 
       <GoogleAccountsManager enabled={googleAuthEnabled} onAuthRefresh={onAuthRefresh} />
+      <AppDevicesManager />
 
       {error ? (
         <div className="validation-result bad" role="alert" style={{ marginTop: "0.5rem" }}>

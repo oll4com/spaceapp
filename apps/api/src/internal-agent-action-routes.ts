@@ -14,6 +14,7 @@ import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
 import type { SpaceApiConfig } from "./config.js";
 import { assertAgentPaneCompatible, assertBrowserPaneCompatible, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
+import { assertVaultBrowserActionAllowed, type VaultProtection } from "./vault/protection.js";
 import type { RoomActionExecutor } from "./room-actions.js";
 import { parseBody } from "./route-parsing.js";
 
@@ -27,9 +28,10 @@ export function registerInternalAgentActionRoutes(app: FastifyInstance, options:
   browserSessionManager: BrowserSessionManagerWithHostHealth;
   cliRuntimeVisibility: CliRuntimeVisibilityPolicy;
   roomActionExecutor: RoomActionExecutor;
+  vaultProtection?: Pick<VaultProtection, "ownerOf" | "release">;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
-  const { config, store, browserSessionManager, cliRuntimeVisibility, roomActionExecutor,
+  const { config, store, browserSessionManager, cliRuntimeVisibility, roomActionExecutor, vaultProtection,
     routeOptions: defaultRouteRateLimitOptions } = options;
   app.post("/api/internal/agent/browser-actions", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
@@ -109,6 +111,7 @@ export function registerInternalAgentActionRoutes(app: FastifyInstance, options:
         if (browserPane.roomId !== input.roomId) {
           throw new SpaceNotFoundError(`Browser pane ${browserPane.id} was not found in room ${input.roomId}.`);
         }
+        if (vaultProtection) await assertVaultBrowserActionAllowed(vaultProtection, browserPane.id, actionRequest.action.type);
         const actionResult = await browserSessionManager.action(
           browserPane,
           actionRequest.action,

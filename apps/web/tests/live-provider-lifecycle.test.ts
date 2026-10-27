@@ -25,9 +25,11 @@ function openAIHarness() {
   return { sent: channel.send, channel, inspectRoomMission, emitTrack, open: () => handlers.get("open")?.({}), receive: (data: object) => handlers.get("message")?.({ data: JSON.stringify(data) }) };
 }
 
-function harness(protocol: "google-live" | "gateway-realtime") {
+function harness(protocol: "google-live" | "gateway-realtime" | "fish-cascade") {
   const processors: any[] = [];
   const contexts: any[] = [];
+  const taps: any[] = [];
+  const playbackNodes: any[] = [];
   const track = { enabled: true, stop: vi.fn() };
   const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
   class Context {
@@ -38,6 +40,9 @@ function harness(protocol: "google-live" | "gateway-realtime") {
     createMediaStreamSource() { return { connect: vi.fn(), disconnect: vi.fn() }; }
     createScriptProcessor() { const node = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: undefined }; processors.push(node); return node; }
     createGain() { return { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }; }
+    createMediaStreamDestination() { const node = { stream: { id: "tap" }, connect: vi.fn() }; taps.push(node); return node; }
+    createBuffer(_channels: number, length: number) { return { duration: length / 24000, getChannelData: () => new Float32Array(length) }; }
+    createBufferSource() { const node = { buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn(), onended: null }; playbackNodes.push(node); return node; }
   }
   const sockets: Socket[] = [];
   class Socket {
@@ -56,11 +61,31 @@ function harness(protocol: "google-live" | "gateway-realtime") {
   const processAudio = (level = 0) => processors[0].onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(100).fill(level) } });
   const open = () => { sockets[0]!.readyState = 1; sockets[0]!.onopen?.({}); };
   const receive = (data: object) => sockets[0]!.onmessage?.({ data: JSON.stringify(data) });
-  return { contexts, processors, track, sockets, open, receive, processAudio, createVoiceRealtimeCall, getUserMedia, inspectRoomMission, delegateVoiceIntent };
+  return { contexts, processors, taps, playbackNodes, stream, track, sockets, open, receive, processAudio, createVoiceRealtimeCall, getUserMedia, inspectRoomMission, delegateVoiceIntent };
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); installSpaceRuntime(liveRuntime); });
 
 describe("voice provider readiness and cleanup", () => {
+  it("taps the Google reply for the session recorder without a second playout", async () => {
+    const h = harness("google-live");
+    const session = await openGoogleGeminiConversationSession({ model: "gemini-3.8-live", getCommandRoom: () => "room:a" });
+    try {
+      h.open(); await h.receive({ setupComplete: {} });
+      const chunk = { serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm", data: "AAAAAA==" } }] } } };
+      await h.receive(chunk);
+      expect(h.taps).toHaveLength(0);
+      expect(h.playbackNodes[0].connect).toHaveBeenCalledTimes(1);
+      expect(session.microphone).toBe(h.stream);
+      const tapped = session.tapPlayback!();
+      expect(session.tapPlayback!()).toBe(tapped);
+      expect(h.taps).toHaveLength(1);
+      await h.receive(chunk);
+      // The played node reaches the speakers and the tap; the tap itself is never connected to the destination.
+      expect(h.playbackNodes[1].connect.mock.calls.map((call: any[]) => call[0])).toEqual([h.contexts[1].destination, h.taps[0]]);
+      expect(h.taps[0].connect).not.toHaveBeenCalled();
+    } finally { session.close(); }
+  });
+
   it("plays the OpenAI reply through one path only, so echo cancellation sees one source", async () => {
     const h = openAIHarness();
     const webAudioSources = vi.fn();
@@ -737,6 +762,45 @@ describe("voice provider readiness and cleanup", () => {
         .map(c => c[0])
         .filter(item => item.role === "assistant" && !item.isDelta);
       expect(assistantItems.map(i => i.text)).toEqual(["Ελέγχω την ώρα.", "Η ώρα είναι 10:00."]);
+    } finally { session.close(); }
+  });
+});
+
+describe("Fish Audio (Drama 3) provider", () => {
+  it("answers a heard turn through the delegate and a tool, speaks it with Drama 3 and stops on barge-in", async () => {
+    const h = harness("fish-cascade");
+    h.delegateVoiceIntent
+      .mockResolvedValueOnce({ toolCall: { name: "space_plan_mission", args: { action: "status" } }, message: null })
+      .mockResolvedValueOnce({ toolCall: null, message: "Η αποστολή προχωράει." });
+    const statuses: string[] = [];
+    const session = await openLiveConversationSession({ provider: "fish", model: "drama-3", getCommandRoom: () => "room:a" },
+      { onStatusChange: (status) => statuses.push(status) });
+    const sent = () => h.sockets[0]!.send.mock.calls.map(([data]) => data);
+    const json = () => sent().filter((data): data is string => typeof data === "string").map((data) => JSON.parse(data));
+    try {
+      h.processAudio(0.1);
+      expect(sent()).toHaveLength(0);
+      h.open(); await h.receive({ type: "session_started" });
+      h.processAudio(0.1);
+      expect(sent()[0]).toBeInstanceOf(ArrayBuffer);
+      await h.receive({ type: "committed", user_turn: true, text: "Πώς πάει η αποστολή; [laughter]" });
+      for (let i = 0; i < 40; i++) await Promise.resolve();
+      expect(h.delegateVoiceIntent.mock.calls[0]![0]).toMatchObject({ query: "User: Πώς πάει η αποστολή;\n", roomId: "room:a" });
+      expect(h.inspectRoomMission).toHaveBeenCalledExactlyOnceWith("room:a");
+      expect(h.delegateVoiceIntent.mock.calls[1]![0]).toMatchObject({ query: expect.stringContaining("Tool space_plan_mission returned:") });
+      expect(json()).toEqual([
+        { type: "agent_speaking", speaking: true },
+        { type: "say", text: "Η αποστολή προχωράει.", voice: "c70cfb98867a4bfb9ae20d2401257b92" }
+      ]);
+      h.sockets[0]!.onmessage?.({ data: new Int16Array([1000, -1000]).buffer });
+      expect(h.playbackNodes).toHaveLength(1);
+      await h.receive({ type: "user_turn_taken" });
+      expect(h.playbackNodes[0].stop).toHaveBeenCalled();
+      expect(json().slice(2)).toEqual([{ type: "stop" }, { type: "agent_speaking", speaking: false }]);
+      h.sockets[0]!.onmessage?.({ data: new Int16Array([5, 5]).buffer });
+      expect(h.playbackNodes).toHaveLength(1);
+      expect(statuses).toContain("speaking");
+      expect(statuses.at(-1)).toBe("listening");
     } finally { session.close(); }
   });
 });

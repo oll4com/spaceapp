@@ -14,6 +14,7 @@ import { z } from "zod";
 import type { SpaceApiConfig } from "./config.js";
 import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
 import { childProcessEnv } from "./child-process-env.js";
+import { agentTokenLive, agentTokenSecret, agentTokenTtlMs } from "./cli-browser-bridge.js";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
 export const agentFileMaxBytes = 100 * 1024 * 1024;
@@ -26,7 +27,7 @@ export const agentFileStorageMode = 0o644;
 export const agentFileDirectoryMode = 0o750;
 
 const tokenPrefix = "cliagentfiles.v1";
-const defaultTokenTtlMs = 12 * 60 * 60 * 1000;
+const defaultTokenTtlMs = agentTokenTtlMs;
 const execFileAsync = promisify(execFile);
 const docxMimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const textExtensions = new Set([
@@ -109,6 +110,10 @@ export interface PersistAgentFileInput {
   declaredMimeType: string;
   buffer?: Buffer;
   sourcePath?: string;
+  /** Where `sourcePath` must lie (default the artifact root): the Video work root for a YouTube download. */
+  sourceRoot?: string;
+  /** Default agentFileMaxBytes; a YouTube download allows its own cap. */
+  maxBytes?: number;
   traceId: string;
   docxNormalizer?: AgentFileDocxNormalizer;
   source?: "AGENT_OUTPUT" | "AGENT_OUTPUT_BACKFILL" | "USER_UPLOAD";
@@ -142,8 +147,9 @@ export class AgentFileDocxNormalizationError extends Error {
   }
 }
 
-function signingSecret(config: Pick<SpaceApiConfig, "internalApiToken">): string | null {
-  return config.internalApiToken ? `cli-agent-files:${config.internalApiToken}` : null;
+function signingSecret(config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">): string | null {
+  const root = agentTokenSecret(config);
+  return root ? `cli-agent-files:${root}` : null;
 }
 
 function signPayload(secret: string, encodedPayload: string): string {
@@ -329,12 +335,12 @@ export function agentFilePreviewKind(artifact: Artifact): AgentFilePreviewKind {
   return agentFilePreviewKindFor(artifact.mimeType, filename);
 }
 
-export function cliAgentFilesEnabled(config: Pick<SpaceApiConfig, "internalApiToken">): boolean {
-  return Boolean(config.internalApiToken);
+export function cliAgentFilesEnabled(config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">): boolean {
+  return Boolean(agentTokenSecret(config));
 }
 
 export function issueCliAgentFilesToken(
-  config: Pick<SpaceApiConfig, "internalApiToken">,
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">,
   context: CliAgentFilesContext,
   nowMs = Date.now()
 ): string | null {
@@ -353,7 +359,7 @@ export function issueCliAgentFilesToken(
 }
 
 export function verifyCliAgentFilesToken(
-  config: Pick<SpaceApiConfig, "internalApiToken">,
+  config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret">,
   token: string | null | undefined,
   nowMs = Date.now()
 ): CliAgentFilesTokenPayload | null {
@@ -369,7 +375,7 @@ export function verifyCliAgentFilesToken(
     const payload = cliAgentFilesTokenPayloadSchema.parse(
       JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"))
     );
-    if (payload.exp <= Math.floor(nowMs / 1000)) return null;
+    if (!agentTokenLive(payload.iat, nowMs)) return null;
     return payload;
   } catch {
     return null;
@@ -416,12 +422,12 @@ export function agentFileStoragePath(input: {
 
 export async function persistAgentFile(input: PersistAgentFileInput) {
   if ((input.buffer === undefined) === (input.sourcePath === undefined)) throw new Error("Exactly one Agent File source is required.");
-  const sourceHandle = input.sourcePath ? await openWorkspacePath(input.artifactRoot, input.sourcePath) : undefined;
+  const sourceHandle = input.sourcePath ? await openWorkspacePath(input.sourceRoot ?? input.artifactRoot, input.sourcePath) : undefined;
   let storageHandle: Awaited<ReturnType<typeof openWorkspacePath>> | undefined;
   try {
     const originalFilename = safeOriginalFilename(input.originalFilename);
     const sourceSize = input.buffer?.byteLength ?? (await sourceHandle!.stat()).size;
-    if (sourceSize <= 0 || sourceSize > agentFileMaxBytes) throw new Error("Invalid Agent File source size.");
+    if (sourceSize <= 0 || sourceSize > (input.maxBytes ?? agentFileMaxBytes)) throw new Error("Invalid Agent File source size.");
     const sample = input.buffer ?? Buffer.alloc(Math.min(sourceSize, 8192));
     if (sourceHandle) await sourceHandle.read(sample, 0, sample.length, 0);
     const sourceMimeType = resolveAgentFileMimeType(originalFilename, input.declaredMimeType, sample);

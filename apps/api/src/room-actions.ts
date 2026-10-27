@@ -18,7 +18,8 @@ import type { SpaceAgentAdapter } from "./space-agent.js";
 import type { RoomPlanInventoryProvider } from "./room-plan-inventory.js";
 import { unavailableRoomTaskEvaluator, type RoomTaskEvaluator } from "./room-task-evaluator.js";
 import type { RoomCommandAction, RoomPaneController } from "./room-pane-control.js";
-import { roomApprovalPromptCue } from "./room-terminal-screen.js";
+import { roomApprovalPromptCue, roomComposerEmpty } from "./room-terminal-screen.js";
+import { confirmCliPromptSubmitted } from "./cli-prompt-submit.js";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
 import { summarizeNativeTasks } from "./room-task-telemetry.js";
 import { isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
@@ -148,7 +149,7 @@ export function createRoomActionExecutor(options: {
   control?: (roomId:string,tool:string,args:Record<string,unknown>,missionId?:string)=>Promise<unknown>;
   enqueueAction?: (actionId: string, bridge: SpaceAgentRoomActionBridgeRequest, traceId: string) => Promise<void>;
   cliTerminalManager: Pick<CliTerminalManager, "sendInput" | "getTurnActivity" | "interrupt"> &
-    Partial<Pick<CliTerminalManager, "ensurePaneControlReady" | "getCurrentTurnActivity" | "getTurnFinalResult" | "listRuntimes">>;
+    Partial<Pick<CliTerminalManager, "ensurePaneControlReady" | "getCurrentTurnActivity" | "getTurnFinalResult" | "listRuntimes" | "observeRoomScreenUndimmed">>;
   spaceAgentAdapter: SpaceAgentAdapter;
   browserSessionManager: BrowserSessionManager;
   roomPlanInventoryProvider?: RoomPlanInventoryProvider;
@@ -552,12 +553,17 @@ export function createRoomActionExecutor(options: {
           }
         }
       }
+      // The send keeps its durable phases (content, then Enter), so it uses the shared submit's re-press step alone:
+      // a mission typed into an empty composer gets Enter again while it stays a draft (cli-prompt-submit.ts).
+      let typedPrompt: string | null = null;
       if (checkpoint.phase === "INTENT") {
         const markedInstruction = [
           input.instruction.trim(),
           "",
           `<space-room-action marker="${checkpoint.marker}">Internal recovery marker; ignore and do not mention.</space-room-action>`
         ].join("\n");
+        const observe = cliTerminalManager.observeRoomScreenUndimmed?.bind(cliTerminalManager);
+        if (observe && roomComposerEmpty(await observe(checkpoint.sessionId))) typedPrompt = markedInstruction;
         const sent = await cliTerminalManager.sendInput(
           checkpoint.sessionId,
           markedInstruction,
@@ -585,6 +591,11 @@ export function createRoomActionExecutor(options: {
           null,
           `${input.actionId}:submit`
         );
+        if (typedPrompt && cliTerminalManager.observeRoomScreenUndimmed) {
+          await confirmCliPromptSubmitted({ sendInput: cliTerminalManager.sendInput.bind(cliTerminalManager),
+            observeRoomScreenUndimmed: cliTerminalManager.observeRoomScreenUndimmed.bind(cliTerminalManager) },
+          checkpoint.sessionId, typedPrompt, input.traceId, `${input.actionId}:submit`);
+        }
         checkpoint = { ...checkpoint, phase: "SENT" };
         await store.updateRoomAgentAction(input.actionId, {
           evidence: { cliSend: checkpoint },

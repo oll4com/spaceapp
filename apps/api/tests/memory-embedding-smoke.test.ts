@@ -116,7 +116,7 @@ describe("memory embedding smoke", () => {
     expect(JSON.stringify(calls[0]?.init?.headers)).toContain("dummy-credential-that-must-not-leak");
   });
 
-  it("calls Codex-LB embeddings through the dedicated Space credential when provider smoke passes", async () => {
+  it("calls Space Gateway embeddings through the dedicated Space credential, where the old OpenAI default reads as the local bge-m3", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const result = await runMemoryEmbeddingSmoke(
       getApiConfig({
@@ -151,11 +151,12 @@ describe("memory embedding smoke", () => {
       pgvectorReady: true,
       embeddingProviderReady: true,
       provider: "codex-lb",
-      model: "text-embedding-3-small",
+      model: "bge-m3",
       dimensions: 3
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("http://codex-lb.local/v1/embeddings");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ model: "bge-m3", dimensions: 3 });
     expect(calls[0]?.init?.method).toBe("POST");
     expect(JSON.stringify(result)).not.toContain("dummy-codex-lb-credential");
   });
@@ -217,6 +218,22 @@ describe("memory embedding smoke", () => {
     expect(embedding).toEqual([0.7, 0.8, 0.9]);
     expect(calls[0]?.url).toBe("http://codex-lb.local/v1/embeddings");
     expect(JSON.stringify(calls[0]?.init?.body)).not.toContain("dummy-codex-lb-credential");
+  });
+
+  it("tells Space Gateway whether a vector is for a query or a document, and never sends the task type to OpenAI itself", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return { ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }) };
+    };
+    const env = { SPACE_RUNTIME_STORE: "postgres", SPACE_DATABASE_URL: TEST_DATABASE_URL, SPACE_MEMORY_EMBEDDING_MODEL: "gemini-embedding-001",
+      SPACE_MEMORY_EMBEDDING_DIMENSIONS: "3", SPACE_MEMORY_EMBEDDING_KEY_FILE: "/opt/spaceapp/secrets/space-gateway-internal.key", SPACE_MEMORY_EMBEDDING_KEY_NAME: "space-gateway-internal" };
+    const readFileImpl = async () => "dummy";
+    await createMemoryEmbedding(getApiConfig({ ...env, SPACE_MEMORY_EMBEDDING_PROVIDER: "codex-lb", SPACE_MEMORY_EMBEDDING_BASE_URL: "http://127.0.0.1:4920/v1" }),
+      "what did we decide", { readFileImpl, fetchImpl, taskType: "RETRIEVAL_QUERY" });
+    await createMemoryEmbedding(getApiConfig({ ...env, SPACE_MEMORY_EMBEDDING_PROVIDER: "openai" }), "doc", { readFileImpl, fetchImpl, taskType: "RETRIEVAL_DOCUMENT" });
+    expect(bodies[0]).toEqual({ model: "gemini-embedding-001", input: "what did we decide", dimensions: 3, task_type: "RETRIEVAL_QUERY" });
+    expect(bodies[1]).not.toHaveProperty("task_type");
   });
 
   it("fails closed when OpenAI embedding response dimensions do not match pgvector", async () => {

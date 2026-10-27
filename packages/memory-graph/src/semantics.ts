@@ -217,6 +217,11 @@ function semanticRelations(
     const targetVector = vectors.get(target)!;
     const smaller = sourceVector.size <= targetVector.size ? sourceVector : targetVector;
     const larger = smaller === sourceVector ? targetVector : sourceVector;
+    // Most pairs fall far below the threshold: skip them before sorting their terms. The margin covers round() to
+    // 6 decimals and the different summation order, so the pairs kept and their confidences stay exactly the same.
+    let unorderedSum = 0;
+    for (const [term, weight] of smaller) unorderedSum += weight * (larger.get(term) ?? 0);
+    if (unorderedSum < semanticSimilarityThreshold - 0.000001) continue;
     const contributions = [...smaller]
       .flatMap(([term, weight]) => {
         const otherWeight = larger.get(term);

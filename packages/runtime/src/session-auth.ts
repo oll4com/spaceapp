@@ -8,7 +8,8 @@ export interface SignedSessionPayload {
 
 const maximumEphemeralSessionTtlSeconds = 60 * 60 * 12;
 const proofOperatorUserId = "user:operator-proof";
-export const persistentOperatorSessionTtlSeconds = 60 * 60 * 24 * 400;
+// 30 days, renewed on use (security addendum step 12, operator decision 2026-10-19).
+export const persistentOperatorSessionTtlSeconds = 60 * 60 * 24 * 30;
 
 function signSessionToken(user: AuthUser, secret: string, ttlSeconds: number, nowMs: number): string {
   if (secret.length < 16) throw new Error("SPACE_SESSION_SECRET must be at least 16 characters.");

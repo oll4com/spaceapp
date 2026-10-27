@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { isIP } from "node:net";
-import { sanitizeConfigBundleData, type SpaceConfigBundle, type SpaceConfigData } from "@space/contracts";
+import { sanitizeConfigBundleData, type ConfigSection, type SpaceConfigBundle, type SpaceConfigData } from "@space/contracts";
 
 export interface PreparedConfigImport {
   data: SpaceConfigData;
@@ -9,6 +9,29 @@ export interface PreparedConfigImport {
   missingProjectRoots: string[];
   /** The bundle's default provider is one of its own custom providers, which arrive unvalidated. */
   keepTargetDefaultProvider: boolean;
+}
+
+/** Whether an import takes a section: all of them when none are named. */
+export function configImportIncludes(sections: readonly ConfigSection[] | undefined, section: ConfigSection): boolean {
+  return !sections?.length || sections.includes(section);
+}
+
+export const CONFIG_REPLACE_UNCONFIRMED = "Replace deletes this account's rooms, links, clipboard and tasks of the imported sections before importing: confirm Replace, or import with Merge.";
+
+/** Replace deletes durable records before it imports, so it runs only on an explicit, confirmed choice (Record Retention Invariant). */
+export function assertConfigReplaceConfirmed(options: { mode?: string; confirmReplace?: boolean }): void {
+  if (options.mode === "replace" && options.confirmReplace !== true) throw new Error(CONFIG_REPLACE_UNCONFIRMED);
+}
+
+/** Merge keeps the settings the bundle does not name; room-keyed maps keep this host's rooms too. */
+export function mergeImportedUserSettings<T extends { roomExtraEmptySlots?: Record<string, number>; roomWorktreeOverrides?: Record<string, boolean> }>(existing: T | null | undefined, imported: T): T {
+  if (!existing) return imported;
+  return {
+    ...existing,
+    ...imported,
+    ...(existing.roomExtraEmptySlots || imported.roomExtraEmptySlots ? { roomExtraEmptySlots: { ...existing.roomExtraEmptySlots, ...imported.roomExtraEmptySlots } } : {}),
+    ...(existing.roomWorktreeOverrides || imported.roomWorktreeOverrides ? { roomWorktreeOverrides: { ...existing.roomWorktreeOverrides, ...imported.roomWorktreeOverrides } } : {})
+  };
 }
 
 /** Only a confirmed absence counts: a folder this process may not read can still exist for the CLI user. */
@@ -50,10 +73,19 @@ function hostOnlyEndpoint(url: string | null): boolean {
  */
 export async function prepareConfigImport(
   bundle: SpaceConfigBundle,
-  options: { pathRewrite?: { from: string; to: string } },
+  options: { pathRewrite?: { from: string; to: string }; sections?: readonly ConfigSection[] },
   host: { profileExists(runtimeId: string, profileId: string): Promise<boolean> }
 ): Promise<PreparedConfigImport> {
   const data = sanitizeConfigBundleData(bundle.data, bundle.source.instance);
+  const take = (section: ConfigSection) => configImportIncludes(options.sections, section);
+  if (!take("rooms")) data.rooms = [];
+  if (!take("userSettings")) delete data.userSettings;
+  if (!take("userLinks")) data.userLinks = [];
+  if (!take("clipboardItems")) data.clipboardItems = [];
+  if (!take("taskItems")) data.taskItems = [];
+  if (!take("cliRuntimeSettings")) { data.cliRuntimeSettings = []; delete data.codexCliModeDefaults; }
+  if (!take("providers")) { data.providers = []; delete data.providerSettings; }
+  if (!take("apiKeys")) delete data.apiKeys;
   const warnings: string[] = [];
   const rewrite = options.pathRewrite;
 

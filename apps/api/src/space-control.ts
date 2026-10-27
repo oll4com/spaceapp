@@ -1,22 +1,24 @@
 import { liveWatchedTask, liveWatchSubmission } from "./live-watch-identity.js";
-import { terminalRenderAuditEvidenceSchema, terminalRenderBatchSchema, terminalRenderFreshnessMs, type TerminalRenderObservation, type controlScreenshotViewports } from "@space/contracts";
+import { terminalRenderAuditEvidenceSchema, terminalRenderBatchSchema, terminalRenderFreshnessMs, type TerminalRenderObservation, type controlScreenshotViewports, controlCaptureAspects } from "@space/contracts";
 import { createHash } from "node:crypto";
 import { appendFileSync, promises as fsPromises } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { controlExecuteSchema, controlLayoutSchema, controlOperationSchema, controlScheduleSchema, controlWatchSchema, controlToolSchemas, controlToolDescriptions, controlResourceOperations, controlInspectSections, SPACE_CONTROL_VERSION, cliToggleRuntimeIds,
   controlActionCatalog, controlInspectSectionCatalog, controlSecurityPolicy, controlUnavailableResources, controlVoicePreferencePatchSchema,
-  resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName,
+  resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached,
   type ControlAction, type ControlExecute, type ControlInspect, type ControlLayout, type ControlOperation, type ControlResult, type ControlTarget,
-  type ControlSchedule, type ControlWatch, type Pane, type AuthUser, type Event } from "@space/contracts";
+  type ControlSchedule, type ControlWatch, type Pane, type Event } from "@space/contracts";
 import type { ControlRecord, ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
-import { resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
+import { isCliPane } from "./pane-guards.js";
+import { type ControlActor, resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
+import type { ControlCaptureParams } from "./space-control-capture.js";
 
 /** `dotId` attributes operations and schedules to the Space Dot acting for this user. */
-export interface ControlActor {id:string; role:AuthUser["role"]; dotId?:string}
+export type { ControlActor } from "./space-control-settings.js";
 export interface ControlClientCommand {id:string; actorId:string; roomId:string; action:ControlAction; expiresAt:number; clientId:string; createdAt?:number; result?:{ok:boolean;evidence:Record<string,unknown>}}
 function required<T>(value:T|undefined|null,message:string):T {if(value===undefined||value===null)throw new SpaceConflictError(message);return value;}
 function hash(value:unknown){return createHash("sha256").update(JSON.stringify(value)).digest("hex");}
@@ -70,13 +72,15 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   publishEvent?: (event: Event) => void;
   send(pane:Pane,text:string,traceId:string):Promise<unknown>;
   closePane?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
+  /** pane start on a rail-tab CLI pane (copilots, Design, App Studio, Video): opens its session as its terminal does and starts the CLI. */
+  startRailCli?(actor:ControlActor,pane:Pane,traceId:string):Promise<unknown>;
   resolveActor?(id:string):Promise<ControlActor>;
   checkQuota?(pane:Pane):Promise<{allowed:boolean;reason:string;resetAt?:string}>;
   requireClientAcknowledgement?:boolean;
   integration?(actor:ControlActor,roomId:string,action:ControlAction):Promise<unknown>;
   inspectExtra?(actor:ControlActor,input:ControlInspect):Promise<unknown>;
   inspectPaneState?(pane:Pane):Promise<Record<string,unknown>|null>;
-  captureScreenshot?(actor:ControlActor,roomId:string,options?:{format?:string;quality?:number;maxWidth?:number;maxHeight?:number;viewport?:string;query?:string}):Promise<Record<string,unknown>>;
+  captureScreenshot?(actor:ControlActor,roomId:string,options?:ControlCaptureParams):Promise<Record<string,unknown>>;
   describePaneTypes?(roomId?:string):Promise<{types:Array<{typeId:string;label:string;kind:string;countsKey:string;available:boolean;reason?:string}>;roomCap:number|null}>;
   decisionsService?: DecisionsService;
   pluginsService?: any;
@@ -110,45 +114,78 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
  // Nested native adapters must share the same room critical section, including
  // authenticated internal HTTP calls. Expired contexts cannot bypass the lock.
  const roomContext=new AsyncLocalStorage<{roomId:string;held:boolean}>();
- async function withRoomLock<T>(roomId:string,work:()=>Promise<T>):Promise<T>{
+ // Who takes a room lock: the watchdog alert names the blocked mutation's pane and the current holder
+ // (operator request 2026-10-17: the alert named the room's first pane, closed ones included).
+ // retrying: another attempt follows, so the journal gets the timeout but the room gets no alert yet.
+ type RoomLockOwner={source:string;paneIds?:readonly string[];requestId?:string|null;actorId?:string|null;retrying?:boolean};
+ class RoomLockTimeoutError extends SpaceConflictError { readonly code="ROOM_LOCK_TIMEOUT"; }
+ const roomLockHolders=new Map<string,RoomLockOwner&{since:number}>();
+ // The panes and request a control record targets: an execute command, a schedule's command, a watch's pane.
+ const lockTarget=(value:unknown):Pick<RoomLockOwner,"paneIds"|"requestId">=>{
+  const v=value as {paneId?:unknown;requestId?:unknown;actions?:unknown;command?:{requestId?:unknown;actions?:unknown}}|null;
+  const actions=Array.isArray(v?.actions)?v.actions:Array.isArray(v?.command?.actions)?v.command.actions:[];
+  const paneIds=typeof v?.paneId==="string"?[v.paneId]:actions.flatMap((action:{target?:{paneIds?:unknown}})=>
+   Array.isArray(action?.target?.paneIds)?action.target.paneIds.filter((id):id is string=>typeof id==="string"):[]);
+  const requestId=typeof v?.requestId==="string"?v.requestId:typeof v?.command?.requestId==="string"?v.command.requestId:null;
+  return {paneIds:[...new Set(paneIds)],requestId};
+ };
+ async function withRoomLock<T>(roomId:string,work:()=>Promise<T>,owner:RoomLockOwner={source:"control"}):Promise<T>{
   const context=roomContext.getStore();
   if(context?.held&&context.roomId===roomId)return work();
+  const waitingSince=Date.now();
   try {
     return await repository.withLock(`room:${roomId}`,async()=>{
      const scope={roomId,held:true};
-     try{return await roomContext.run(scope,work);}finally{scope.held=false;}
+     const holder={...owner,since:Date.now()};
+     roomLockHolders.set(roomId,holder);
+     try{return await roomContext.run(scope,work);}finally{scope.held=false;if(roomLockHolders.get(roomId)===holder)roomLockHolders.delete(roomId);}
     }, 30000);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes("timed out") || msg.includes("freeze")) {
-      let panes: Pane[] = [];
-      try { panes = await store.listPanes(roomId, true); } catch {}
+      const describe=(who:RoomLockOwner)=>`${who.source}${who.paneIds?.length?` for ${who.paneIds.join(", ")}`:""}${who.requestId?` (request ${who.requestId})`:""}`;
+      const current=roomLockHolders.get(roomId);
+      // A holder of this process; the lock is held elsewhere (another process) or was just released when there is none.
+      const holder=current?{source:current.source,paneIds:current.paneIds??[],requestId:current.requestId??null,actorId:current.actorId??null,heldMs:Date.now()-current.since}:null;
+      const blocked={source:owner.source,paneIds:owner.paneIds??[],requestId:owner.requestId??null,actorId:owner.actorId??null,waitedMs:Date.now()-waitingSince};
+      // The repository's execution timer: this mutation held the lock itself past the timeout (it keeps running, unlocked).
+      const overran=msg.includes("holding lock");
       const alertEvent: Event = {
         id: makeSpaceId("event"),
         roomId,
-        paneId: panes[0]?.id ?? null,
+        paneId: blocked.paneIds[0] ?? null,
         turnId: null,
         workflowId: null,
         traceId: makeSpaceId("trace"),
         type: "ROOM_WATCHDOG_ALERT",
-        message: `Room watchdog detected lock timeout on room "${roomId}". Aborted blocked mutation to prevent room freeze.`,
+        message: overran
+          ? `Room watchdog: ${describe(owner)} held the lock on room "${roomId}" for ${holder?.heldMs??blocked.waitedMs} ms; `
+            + "the lock was released so the room's other work can go on."
+          : `Room watchdog detected lock timeout on room "${roomId}" for ${describe(owner)}; `
+            + `${holder?`held by ${describe(current!)} for ${holder.heldMs} ms`:"no holder recorded in this process"}. Aborted blocked mutation to prevent room freeze.`,
         payload: {
           kind: "ROOM_LOCK_TIMEOUT_ABORT",
           roomId,
           error: msg,
+          blocked,
+          holder,
           abortedAt: nowIso()
         },
         createdAt: nowIso()
       };
-      try { await store.recordRoomEvent(alertEvent); } catch {}
-      options.publishEvent?.(alertEvent);
-      throw new SpaceConflictError(`Room watchdog prevented freeze on room "${roomId}": lock timed out.`);
+      console.warn(JSON.stringify({level:40,time:Date.now(),event:"space_control.room_lock_timeout",roomId,blocked,holder,retrying:Boolean(owner.retrying),error:msg}));
+      if (!owner.retrying) {
+        // Publish the stored copy: it gets its own id, and a later latest-event republish must not raise a second URGENT card.
+        const recorded = await Promise.resolve(store.recordRoomEvent(alertEvent)).catch(() => null);
+        options.publishEvent?.(recorded ?? alertEvent);
+      }
+      throw new RoomLockTimeoutError(`Room watchdog prevented freeze on room "${roomId}": lock timed out (${holder?`held by ${describe(current!)} for ${holder.heldMs} ms`:"holder unknown"}).`);
     }
     throw error;
   }
  }
  async function withOperatorMutation<T>(pane:Pane,work:()=>Promise<T>):Promise<T>{
-  return withRoomLock(pane.roomId,async()=>{await rememberStop(pane);return work();});
+  return withRoomLock(pane.roomId,async()=>{await rememberStop(pane);return work();},{source:"pane control",paneIds:[pane.id]});
  }
  const clients=new Map<string,{actorId:string;roomId:string;lastSeen:number;targets:unknown[];geometry:unknown;terminalRender:TerminalRenderObservation[]}>();
  const clientCommands=new Map<string,ControlClientCommand>();
@@ -194,7 +231,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   await withRoomLock(pane.roomId,async()=>{
    const old=await repository.get("pane_state","shared",pane.id);
    await writeValue("pane_state","shared",pane.id,pane.roomId,{stoppedAt:nowIso()},old?.version??0);
-  });
+  },{source:"stop",paneIds:[pane.id]});
  }
  async function fetchRoomState(roomId:string){
   const [room,panes,saved]=await Promise.all([activeRoom(roomId),store.listPanes(roomId,true),layoutRecord(roomId)]);
@@ -226,7 +263,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
          isUnused: false
        };
      }
-    const cli=pane.mode==="TERMINAL"?await lastCli(pane):null;
+    // Copilot, Design, App Studio and Video panes run their CLI in a rail tab: the same session row as a terminal pane.
+    const cli=isCliPane(pane)?await lastCli(pane):null;
     const chat=pane.mode==="CHAT"?await store.getActiveSpaceAgentSession(pane.id):null;
     const extraState = options.inspectPaneState
       ? await Promise.race([
@@ -242,11 +280,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     const accountVerificationStatus = (extraState?.accountVerificationStatus as string | undefined) ?? (pane.terminalRuntimeId === "cli:gemini" ? (accountProfileId ? "UNVERIFIED" : "UNKNOWN") : undefined);
     const verificationEvidence = (extraState?.verificationEvidence as Record<string, unknown> | undefined) ?? undefined;
 
-    let hasUserInput = false;
-    if (cli?.sessionId) {
+    // The task title service records every submitted prompt in the pane's task metadata. Transcript retention keeps
+    // only a session's newest 200 chunks, so a long turn pushes the prompt's stdin out of the tail read below.
+    let hasUserInput = Boolean(pane.taskMetadata);
+    if (!hasUserInput && cli?.sessionId) {
       try {
-        const chunks = await store.listPaneCliTranscriptChunks(cli.sessionId, 10);
-        hasUserInput = Array.isArray(chunks) && chunks.some((c: any) => c.stream === "stdin");
+        hasUserInput = (await store.listPaneCliTranscriptChunks(cli.sessionId, 10)).some((chunk) => chunk.stream === "stdin");
       } catch {
         hasUserInput = false;
       }
@@ -699,8 +738,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    if(spec.operation==="rename"){const result=await store.updateRoom(roomId,{name:required(spec.name,"Room name is required.")},traceId);await options.publish(roomId);return done(result);}
    if(spec.operation==="create"){
      const existingRooms = await store.listRooms(actor.id ?? null);
-     if (existingRooms.length >= MAX_ROOMS) {
-       throw new SpaceConflictError(`Maximum room limit of ${MAX_ROOMS} rooms reached.`);
+     const roomLimit = actor.id ? (await store.getUserSettings(actor.id)).roomLimit : MAX_ROOMS;
+     if (roomLimitReached(existingRooms, roomLimit)) {
+       throw new SpaceConflictError(`Maximum room limit of ${roomLimit} rooms reached. Test rooms do not count; change the limit in Settings → Workspace → Rooms.`);
      }
      const roomName = spec.name?.trim() || pickNextAvailableRoomName(existingRooms.map((r) => r.name));
      return done(await store.createRoom({name: roomName, initialPaneCount: 0}, traceId, actor.id ?? null));
@@ -724,11 +764,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    // Only an explicitly configured, authenticated capture adapter may provide
    // APP evidence. A client DOM drawing or anonymous login page is not a shot.
    if(!options.captureScreenshot)throw new SpaceConflictError("Authenticated room screenshot capture is unavailable. Use the Live Screen button to share a real image.");
-   const evidence=await options.captureScreenshot(actor,roomId,{format:spec.format,quality:spec.quality,maxWidth:spec.maxWidth,maxHeight:spec.maxHeight,viewport:spec.viewport});
+   if(spec.video&&actor.dotId)throw new SpaceConflictError("Dots capture stills only.");
+   const evidence=await options.captureScreenshot(actor,roomId,spec);
    if(evidence.roomId!==roomId||evidence.authenticated!==true||evidence.captureSource!=="AUTHENTICATED_APP"||typeof evidence.artifactId!=="string"||!evidence.artifactId){
      throw new SpaceConflictError("Capture did not provide authenticated evidence for the requested room.");
    }
-   return done(evidence,"Authenticated room screenshot captured.");
+   return done(evidence,spec.video?"Authenticated room recording captured.":"Authenticated room screenshot captured.");
   }
   if(spec.kind==="layout"){
    const applied=async(evidence:unknown)=>{
@@ -845,7 +886,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      }else if(spec.kind==="pane"&&["reopen","restart","resume","start"].includes(spec.operation)){
       const priorSession=pane.mode==="TERMINAL"?await lastCli(pane):null;
       if(pane.isClosed)pane=await store.updatePane(pane.id,{isClosed:false,status:"IDLE"},traceId);
-      if(!["TERMINAL","CHAT"].includes(pane.mode))evidence=pane;
+      // Only an explicit start starts a rail-tab CLI; opening such a pane never does (operator decision 2026-10-23).
+      if(!["TERMINAL","CHAT"].includes(pane.mode))evidence=spec.operation==="start"&&isCliPane(pane)&&options.startRailCli?await options.startRailCli(actor,pane,traceId):pane;
       else if(pane.mode==="CHAT"&&["reopen","start"].includes(spec.operation))evidence=await controller.start(pane,traceId);
        else if(spec.operation==="start"){
         const observed=await controller.inspect(pane);
@@ -864,14 +906,18 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        if(["EXITED","ERROR","UNKNOWN"].includes(observed.state))return {index,paneId,status:"UNKNOWN" as const,detail:"CLI readiness has not been confirmed.",evidence:{result:evidence}};
       }
      }else{
-      const observed=await controller.inspect(pane);
+      // An account switch restarts the CLI, so whether it waits for the turn is decided on a fresh read.
+      let observed=await controller.inspect(pane,spec.kind==="configure"&&spec.accountProfileId!==undefined?{fresh:true}:undefined);
+      // The 15 s cached read may predate a CLI that just started: read once fresh before reporting no session.
+      if(!observed.sessionId)observed=await controller.inspect(pane,{fresh:true});
       if(spec.kind==="pane"&&(spec.operation==="stop"||spec.operation==="cancel")){
        await rememberStop(pane);evidence=await controller.interrupt(pane,traceId);
-       let after=await controller.inspect(pane);
+       let after=await controller.inspect(pane,{fresh:true});
        if(after.state==="RUNNING"){
         for(let i=0;i<10;i++){
          await new Promise(r=>setTimeout(r,350));
-         after=await controller.inspect(pane);
+         // Fresh: the 15 s cached read never changed inside this loop (stable 2026-10-22: Nous's stops answered "not yet confirmed").
+         after=await controller.inspect(pane,{fresh:true});
          if(after.state!=="RUNNING")break;
         }
        }
@@ -982,10 +1028,22 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(!await repository.write({kind:"operation",actorId:actor.id,key,roomId:command.roomId,version:1,value:initial},0))return execute(actor,raw,waitForCompletion);
   return drive(actor,command,key,waitForCompletion);
  }
+ const ROOM_LOCK_ATTEMPTS=2;
  async function drive(actor:ControlActor,command:ControlExecute,key:string,waitForCompletion=false){
-  const readOnlyAudit=command.actions.length===1&&command.actions[0]?.kind==="pane"&&command.actions[0].operation==="visual_audit";
-  // Diagnostics must never enter the room mutation watchdog (which can interrupt tasks).
-  const run=readOnlyAudit ? <T>(work:()=>Promise<T>)=>work() : <T>(work:()=>Promise<T>)=>withRoomLock(command.roomId,work);
+  const readOnlyAudit=command.actions.length===1&&(command.actions[0]?.kind==="screenshot"||(command.actions[0]?.kind==="pane"&&command.actions[0].operation==="visual_audit"));
+  // Diagnostics and read-only captures (a video runs for minutes) must never enter the room mutation watchdog (which can interrupt tasks).
+  // A mutation that cannot take the room lock tries once more, then fails back as ROOM_LOCK_TIMEOUT before the caller is
+  // answered, instead of answering RUNNING and never running (operator request 2026-10-17, via Nous).
+  let started=false,markStarted!:()=>void;
+  const startedSignal=new Promise<void>((resolve)=>{markStarted=resolve;});
+  const owner={source:"execute",...lockTarget(command),actorId:actor.id};
+  const locked=async <T>(work:()=>Promise<T>):Promise<T>=>{
+   for(let attempt=1;;attempt++){
+    try{return await withRoomLock(command.roomId,()=>{started=true;markStarted();return work();},{...owner,retrying:attempt<ROOM_LOCK_ATTEMPTS});}
+    catch(error){if(started||attempt>=ROOM_LOCK_ATTEMPTS||!(error instanceof RoomLockTimeoutError))throw error;}
+   }
+  };
+  const run=readOnlyAudit ? <T>(work:()=>Promise<T>)=>work() : locked;
   const work=run(async()=>{
    try{
     const initial=await operation(actor,command.roomId,key);
@@ -1092,13 +1150,28 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   });
   active.set(key,work);
   void work.finally(()=>active.delete(key)).catch(()=>{});
+  // Nothing ran when the lock never came: the operation fails with ROOM_LOCK_TIMEOUT, so the tick does not re-drive it either.
+  const failedBack=work.then(()=>false,async(error:unknown)=>{
+   if(started||!(error instanceof RoomLockTimeoutError))return false;
+   const detail=`ROOM_LOCK_TIMEOUT: ${message(error)} Nothing was sent; retry later.`;
+   await updateRecord("operation",actor.id,key,raw=>{
+    const value=controlOperationSchema.parse(raw);
+    if(value.status!=="RUNNING")return value;
+    value.status="FAILED";value.results.push({index:value.results.length,status:"FAILED",detail,error:"ROOM_LOCK_TIMEOUT",evidence:{code:"ROOM_LOCK_TIMEOUT"}});
+    value.updatedAt=nowIso();return value;
+   }).catch(()=>{});
+   return true;
+  });
+  if(!readOnlyAudit)await Promise.race([startedSignal,failedBack]);
+  // A lock failure is in the operation record now; the caller reads it there rather than as a thrown error.
+  const settled=readOnlyAudit?work:failedBack;
    if(waitForCompletion){
     let timeout:ReturnType<typeof setTimeout>|undefined;
-    try{await Promise.race([work,new Promise(r=>{timeout=setTimeout(r,30000);})]);}finally{if(timeout)clearTimeout(timeout);}
+    try{await Promise.race([settled,new Promise(r=>{timeout=setTimeout(r,30000);})]);}finally{if(timeout)clearTimeout(timeout);}
     return operation(actor,command.roomId,key);
    }
    let timeout:ReturnType<typeof setTimeout>|undefined;
-   try{await Promise.race([work,new Promise(r=>{timeout=setTimeout(r,6000);})]);}finally{if(timeout)clearTimeout(timeout);}
+   try{await Promise.race([settled,new Promise(r=>{timeout=setTimeout(r,6000);})]);}finally{if(timeout)clearTimeout(timeout);}
    return operation(actor,command.roomId,key);
  }
  function outcome(value:ControlOperation):ControlOperation["status"]{
@@ -1152,7 +1225,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    if(!panes.length)throw new SpaceConflictError("No panes match this schedule.");
    for(const pane of panes){
     assertRuntime(pane);
-    if(pane.mode!=="CHAT"&&(pane.mode!=="TERMINAL"||!supportsRuntime(pane)))throw new SpaceConflictError("Schedules require Chat or supported CLI panes.");
+    // Copilot, Design and App Studio panes run the terminals' CLIs (operator order 2026-10-20: their account switch waits for the turn too).
+    if(pane.mode!=="CHAT"&&(!isCliPane(pane)||!supportsRuntime({...pane,mode:"TERMINAL"})))throw new SpaceConflictError("Schedules require Chat or supported CLI panes.");
     const observed=await controller.inspect(pane);
     const taskRef=observed.nativeTaskRef||observed.sessionId;
     const modelId=observed.modelId||pane.modelId;
@@ -1237,12 +1311,18 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   await updateRecord("schedule",record.actorId,record.key,raw=>{
    const latest=controlScheduleSchema.parse(raw);return latest.status==="CANCELLED"?latest:value;
   });
-  });
+  },{source:"schedule tick",...lockTarget(saved.value),actorId:saved.actorId});
  }
  
   async function watches(actor:ControlActor,roomId:string,op:string,params:{id?:string;paneId?:string;targetTaskRef?:string;timeoutMs?:number;maxRetries?:number;verificationPrompt?:string;remediationPrompt?:string}){
    await activeRoom(roomId);
    if(op==="list")return (await repository.list("watch",actor.id,roomId)).map(r=>r.value);
+   // Stable 2026-10-21/22: a prompt scheduled after a turn answers a control_schedule id, which Nous then read as a watch ("Watch not found").
+   if((op==="status"||op==="get")&&params.id?.startsWith("control_schedule:")){
+    const schedule=required(await repository.get("schedule",actor.id,params.id),"Schedule not found.");
+    if(schedule.roomId!==roomId)throw new SpaceConflictError("Schedule belongs to another room.");
+    return controlScheduleSchema.parse(schedule.value);
+   }
    if(op==="status"||op==="get"){
     const record=required(await repository.get("watch",actor.id,required(params.id,"Watch ID is required.")),"Watch not found.");
     if(record.roomId!==roomId)throw new SpaceConflictError("Watch belongs to another room.");
@@ -1481,7 +1561,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       return;
      }
     }
-   });
+   },{source:"watch tick",...lockTarget(saved.value),actorId:saved.actorId});
   }
 
  const activeWatchStatuses:readonly string[]=["PENDING","RUNNING","VERIFYING"];
@@ -1538,11 +1618,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(idle&&idle.signal===workSignal&&Date.now()-idle.since<idleRecheckMs)return;
   await tick();
  }
-  async function screenshot(actor:ControlActor,roomId:string,params:{format?:"jpeg"|"png"|"webp";quality?:number;maxWidth?:number;maxHeight?:number;viewport?:(typeof controlScreenshotViewports)[number];query?:string}){
-   const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:params.format??"jpeg",quality:params.quality??80,maxWidth:params.maxWidth,maxHeight:params.maxHeight,viewport:params.viewport};
-   const op=await execute(actor,{roomId,requestId:makeSpaceId("control_shot"),actions:[spec]},true);
+  async function screenshot(actor:ControlActor,roomId:string,params:z.infer<typeof controlToolSchemas.space_screenshot>|{format?:"jpeg"|"png"|"webp";viewport?:(typeof controlScreenshotViewports)[number]}){
+   const p=params as Partial<z.infer<typeof controlToolSchemas.space_screenshot>>;
+   const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:p.format??"jpeg",quality:p.quality??80,maxWidth:p.maxWidth,maxHeight:p.maxHeight,
+    viewport:p.viewport??(p.aspect?controlCaptureAspects[p.aspect]:undefined),paneId:p.paneId,crop:p.crop,dock:p.dock,settings:p.settings,health:p.health,video:p.video,fitTerminals:p.fitTerminals};
+   // A still waits for its image; a video answers RUNNING at once and the caller polls space_operations get.
+   // shortcut: an API restart during a recording runs it again from the start and leaves the old directory; add a started marker if that matters.
+   const op=await execute(actor,{roomId,requestId:makeSpaceId("control_shot"),actions:[spec]},!p.video);
    const result=op.results[0];
-   if(!result||result.status==="FAILED")throw new SpaceConflictError(result?.detail||"Screenshot capture failed.");
+   if(!result)return {status:op.status,operationId:op.id,detail:"The capture is still running: poll space_operations {operation:\"get\", id:operationId} until COMPLETED for the artifactId."};
+   if(result.status==="FAILED")throw new SpaceConflictError(result.detail||"Screenshot capture failed.");
     return {status:result.status,detail:result.detail,evidence:(result.evidence?.result as Record<string,unknown>)||result.evidence||{}};
    }
 
@@ -1602,7 +1687,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         run: async () => {
           if (!effectiveRoomId) return { skipped: true, reason: "No active room" };
           const res = (await inspect(actor, { roomId: effectiveRoomId, section: "STATE", offset: 0, limit: 25 })) as any;
-          return { totalOpenPanes: res.totalOpenPanes ?? res.openPanes?.length ?? 0, paneCap: res.paneCap ?? 16 };
+          return { totalOpenPanes: (res.panes ?? []).filter((pane: any) => !pane.isClosed).length, paneCap: res.room?.paneCap ?? 16 };
         }
       },
       {

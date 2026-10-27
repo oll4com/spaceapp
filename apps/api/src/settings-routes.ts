@@ -7,6 +7,11 @@ import { sendApiError } from "./http-errors.js";
 import { recordAudit } from "./request-audit.js";
 import { parseBody } from "./route-parsing.js";
 
+const agentAppearanceSettings = new Set(["uiTheme", "modernAppearance", "modernIconPack", "uiBackground", "liquidGlassTint", "roomTheme", "uiZoom", "sensitiveDataMasked"]);
+const agentRefusedSettings = new Set(["nous", "notifications", "suppressNotifications", "livePane", "voice", "promptVariables", "promptVariablesEnabled",
+  "promptVariablesAutoExpandOnSubmit", "workspaceQuickActions", "projectPresets", "worktreeDefaultEnabled", "roomWorktreeOverrides",
+  "jobCopilot", "mailCopilot", "marketingCopilot", "freelanceCopilot", "design", "appStudio", "video", "securityCopilot"]);
+
 /** Provider settings and per-user settings; the parent retains authentication, CSRF, errors and rate limits. */
 export function registerSettingsRoutes(app: FastifyInstance, options: {
   store: SpaceStore;
@@ -37,6 +42,14 @@ export function registerSettingsRoutes(app: FastifyInstance, options: {
   const patchUserSettingsHandler = async (request: any, reply: any) => {
     if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
     const input = parseBody(updateUserSettingsInputSchema, request.body);
+    // An agent's session (hardening steps 5 and 19): an admin action changes only appearance; a proof drives the rest of the
+    // UI but never what silences the operator, steers their assistants, copilots or Nous.
+    const scope = request.user.brokerScope ?? (request.user.proofScope || request.user.automationScope ? "UI_PROOF" : null);
+    if (scope) {
+      const keys = Object.keys(input);
+      const refused = scope.startsWith("ADMIN_ACTION:") ? keys.filter((key) => !agentAppearanceSettings.has(key)) : keys.filter((key) => agentRefusedSettings.has(key));
+      if (refused.length) return sendApiError(reply, 403, "OPERATOR_REQUIRED", `Only the operator changes ${refused.join(", ")}.`);
+    }
     const updated = await store.updateUserSettings(request.user.id, input);
     await recordAudit(store, request, {
       action: "user_settings.update",

@@ -30,6 +30,11 @@ export const FREELANCE_CHANNEL_LOGIN_URLS: Record<FreelanceChannel, string> = {
 export const FREELANCE_CHANNEL_HOSTS: Record<FreelanceChannel, readonly string[]> = {
   UPWORK: ["upwork.com"], CONTRA: ["contra.com"], FIVERR: ["fiverr.com"], TOPTAL: ["toptal.com"], ARC: ["arc.dev"], BRAINTRUST: ["usebraintrust.com", "braintrust.com"]
 };
+/**
+ * Platforms whose account signs in only with "Continue with Google" on the pane's Google account (operator rule 2026-10-17):
+ * never the email/password form or the alias.
+ */
+export const FREELANCE_GOOGLE_SIGN_IN_CHANNELS: readonly FreelanceChannel[] = ["UPWORK"];
 /** The Plesk alias each platform account signs up with; all of them deliver into work@example.invalid. */
 export const FREELANCE_CHANNEL_ALIASES: Record<FreelanceChannel, string> = {
   UPWORK: "upwork@example.invalid", CONTRA: "contra@example.invalid", FIVERR: "fiverr@example.invalid", TOPTAL: "toptal@example.invalid", ARC: "arc@example.invalid", BRAINTRUST: "braintrust@example.invalid"
@@ -483,11 +488,16 @@ export function freelanceUrlMatchesChannel(raw: string, channelId: FreelanceChan
 
 // ---- wording and scam checks ------------------------------------------------------------------------
 /** Links a message may carry before a contract: the platform itself, the operator's own sites and code. */
-const FREELANCE_ALLOWED_LINK_HOSTS = ["oll4.com", "spaceapp.dev", "github.com", "loom.com", "npmjs.com"];
+// The operator's sites match exactly: other oll4.com hosts (the private Space, webmail) never go to a client.
+const FREELANCE_ALLOWED_LINK_HOSTS = ["oll4.com", "example.invalid", "spaceapp.dev", "www.spaceapp.dev"];
+const FREELANCE_ALLOWED_LINK_DOMAINS = ["github.com", "loom.com", "npmjs.com"];
 const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   { id: "email-address", pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { id: "phone-number", pattern: /(?:\+|\b00)\d[\d\s().-]{7,}\d|\b\d{3}[\s.-]\d{3}[\s.-]\d{4}\b/ },
-  { id: "messenger", pattern: /\b(?:telegram|whats\s?app|skype|discord|wechat|viber)\b/i },
+  // "Telegram bot" is product wording (offer: an agent with a Telegram bot); "on Telegram", a handle or a t.me link is contact.
+  { id: "messenger", pattern: /\b(?:telegram\b(?!\s+bots?\b)|(?:whats\s?app|skype|discord|wechat|viber)\b)/i },
+  { id: "messenger-handle", pattern: /(?:^|[\s(,:;])@[A-Za-z][A-Za-z0-9_]{4,31}\b(?![/.@-])/ },
+  { id: "messenger-link", pattern: /\b(?:t\.me|telegram\.me|telegram\.dog)\/\S/i },
   { id: "off-platform-payment", pattern: /\b(?:pay(?:ment)?\s+(?:me\s+)?(?:directly|outside|off[- ]platform)|paypal|western union|wire (?:me|it) directly)\b/i }
 ];
 /**
@@ -499,11 +509,11 @@ export function freelanceWordingIssues(text: string, input: { channel: Freelance
   const issues = new Set(marketingWordingIssues(text));
   if (!input.contracted) {
     for (const rule of OFF_PLATFORM_RULES) if (rule.pattern.test(text)) issues.add(rule.id);
-    const allowed = [...FREELANCE_CHANNEL_HOSTS[input.channel], ...FREELANCE_ALLOWED_LINK_HOSTS];
+    const domains = [...FREELANCE_CHANNEL_HOSTS[input.channel], ...FREELANCE_ALLOWED_LINK_DOMAINS];
     for (const match of text.matchAll(/https?:\/\/[^\s)<>"']+/gi)) {
       let host = "";
       try { host = new URL(match[0]).hostname.toLowerCase(); } catch { issues.add("outside-link"); continue; }
-      if (!allowed.some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
+      if (!FREELANCE_ALLOWED_LINK_HOSTS.includes(host) && !domains.some((entry) => host === entry || host.endsWith(`.${entry}`))) issues.add("outside-link");
     }
   }
   if (input.bid?.type === "HOURLY" && input.bid.amount < (input.rateFloorHourly ?? 35)) issues.add("below-rate-floor");

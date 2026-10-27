@@ -17,11 +17,14 @@ import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
 import { recordAudit } from "./request-audit.js";
 import { parseBody } from "./route-parsing.js";
 import { sniffImageMime } from "./upload-media.js";
+import type { SetupOwnerVoiceRuntime } from "./setup-owner-voice-runtime.js";
+import type { SetupVoiceCredentials } from "./setup-voice-credentials.js";
 import { buildVoiceTranscriptionSettings } from "./voice-settings.js";
 import {
-  createLocalVoiceSession, createVoiceAttachmentResponse, createVoiceDelegateResponse, createVoiceRealtimeCall,
+  createVoiceAttachmentResponse, createVoiceDelegateResponse,
   fetchOpenAiModels, getLiveAudioProvidersStatus, getLocalVoiceProviderStatus
 } from "./voice-transcription.js";
+import { bridgeFishVoice } from "./fish-voice-bridge.js";
 import { relayVoiceSockets, voiceProxyLimits, VoiceProxyTickets } from "./voice-ws-proxy.js";
 
 /**
@@ -35,14 +38,18 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
   routeOptions: Pick<RouteShorthandOptions, "config">;
   websocketRouteOptions: Pick<RouteShorthandOptions, "config"> & { websocket: true };
   assertRoomAccess: (roomId: string, user: AuthUser | null | undefined) => Promise<Room>;
+  /** The owner's encrypted Live connections saved in First Setup; the server's own keys stay the fallback. */
+  setupOwnerVoiceRuntime: SetupOwnerVoiceRuntime;
+  setupVoiceCredentials: SetupVoiceCredentials;
 }) {
   const { config, decisionsService, store, routeOptions: defaultRouteRateLimitOptions,
-    websocketRouteOptions: defaultWebsocketRateLimitOptions, assertRoomAccess } = options;
+    websocketRouteOptions: defaultWebsocketRateLimitOptions, assertRoomAccess, setupOwnerVoiceRuntime, setupVoiceCredentials } = options;
   app.get("/api/voice/transcription/settings", defaultRouteRateLimitOptions, async () => buildVoiceTranscriptionSettings(config));
   app.get("/api/voice/local/status", defaultRouteRateLimitOptions, async () => getLocalVoiceProviderStatus(config));
   app.post("/api/voice/local/sessions", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user || request.user.automationScope || request.user.proofScope === "READ_ONLY") return sendApiError(reply, 403, "VOICE_OWNER_REQUIRED", "An authenticated interactive owner is required.");
     try {
-      return await createLocalVoiceSession(config, (request.body as Record<string, unknown>) || {});
+      return await setupOwnerVoiceRuntime.localSession(request.user.id, (request.body as Record<string, unknown>) || {});
     } catch (error) {
       return sendApiError(reply, 502, "LOCAL_VOICE_PROVIDER_FAILED", error instanceof Error ? error.message : "Local voice provider failed.");
     }
@@ -51,8 +58,8 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     const models = await fetchOpenAiModels(config);
     return openAiModelsResponseSchema.parse({ models });
   });
-  app.get("/api/voice/providers", defaultRouteRateLimitOptions, async () => {
-    return await getLiveAudioProvidersStatus(config);
+  app.get("/api/voice/providers", defaultRouteRateLimitOptions, async (request) => {
+    return request.user ? setupOwnerVoiceRuntime.status(request.user.id) : getLiveAudioProvidersStatus(config);
   });
   // --- WebSocket Proxy for Voice Live sessions ---
   // The browser cannot connect directly to external WebSocket endpoints (Google, Vercel)
@@ -81,7 +88,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     }
     const input = parseBody(voiceRealtimeSessionRequestSchema, request.body);
     const provider: LiveAudioProviderId = input.provider || inferProviderFromModel(input.model);
-    if (provider === "openai") {
+    if (provider === "openai" && (await setupVoiceCredentials.resolve(request.user.id, provider))?.source !== "OWNER") {
       const settings = buildVoiceTranscriptionSettings(config);
       if (!settings.enabled) {
         throw new SpaceFeatureDisabledError("VOICE_TRANSCRIPTION_DISABLED", settings.statusReason);
@@ -93,10 +100,12 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
         ? "amazon.nova-2-sonic-v1:0"
         : provider === "local"
           ? "local-qwen3-greek"
-          : config.voiceTranscriptionModel || "gpt-live-1";
+          : provider === "fish"
+            ? "drama-3"
+            : config.voiceTranscriptionModel || "gpt-live-1";
     const model = input.model?.trim() || defaultModel;
     try {
-      const result = await createVoiceRealtimeCall(config, {
+      const result = await setupOwnerVoiceRuntime.call(request.user.id, {
         provider,
         transport: input.transport,
         offerSdp: input.offerSdp,
@@ -117,7 +126,7 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
 
       // If the provider returned an external WebSocket URL (Google, Vercel, Amazon),
       // create a proxy session so the browser connects to Space API which relays to the provider.
-      if (result.websocketUrl && (provider === "google" || provider === "vercel" || provider === "amazon")) {
+      if (result.websocketUrl && (provider === "google" || provider === "vercel" || provider === "amazon" || provider === "fish")) {
         const proxySessionId = pendingVoiceWsSessions.create({
           ownerId: request.user.id,
           // Bind the one-shot ticket to the browser's validated Origin.  On
@@ -245,6 +254,14 @@ export function registerVoiceRoutes(app: FastifyInstance, options: {
     const session = pendingVoiceWsSessions.take(sessionId, request.user.id, origin);
     if (!session) {
       clientSocket.close(4404, "session_not_found");
+      return;
+    }
+    if (session.provider === "fish") {
+      const stop = bridgeFishVoice(clientSocket, { apiKey: session.token ?? "", onClose: (metadata) => {
+        activeVoiceProxies.delete(stop);
+        request.log.info({ sessionId, provider: session.provider, ...metadata, event: "voice_ws_proxy_closed" }, "Voice relay closed");
+      } });
+      activeVoiceProxies.add(stop);
       return;
     }
     try {

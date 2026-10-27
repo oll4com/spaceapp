@@ -1,3 +1,4 @@
+import { handoffTtlSeconds, ownerHandsAnswer, ownerQuietState } from "./owner-clock.js";
 import { BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS, createBrowserControlActivity, releaseBrowserControlLease, settleEndedOperatorLease, type BrowserControlActivity } from "./browser-control-activity.js";
 import type {} from "./request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
@@ -12,6 +13,9 @@ import {
 } from "@space/runtime";
 import type { BrowserHostActorContext } from "@space/browser-host";
 import { withStagedAgentFiles } from "./agent-file-upload.js";
+import { withPersistedUpload } from "./multipart-upload.js";
+import { buildGenericUserUploadStorage, inferUploadMimeType, isAllowedImageMime, isVideoMimeType, sniffImageMime } from "./upload-media.js";
+import { recordUploadedArtifact } from "./upload-record.js";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import {
@@ -38,11 +42,24 @@ import { registerMailCopilotAgentRoutes } from "./mail-copilot/agent-routes.js";
 import type { MailCopilotService } from "./mail-copilot/service.js";
 import { registerMarketingCopilotAgentRoutes } from "./marketing-copilot/agent-routes.js";
 import type { MarketingCopilotService } from "./marketing-copilot/service.js";
+import { registerDesignAgentRoutes } from "./design/agent-routes.js";
+import { registerVideoAgentRoutes } from "./video/agent-routes.js";
+import type { VideoService } from "./video/service.js";
+import type { DesignService } from "./design/service.js";
+import { registerAppStudioAgentRoutes } from "./app-studio/agent-routes.js";
+import type { AppStudioService } from "./app-studio/service.js";
+import { registerSecurityCopilotAgentRoutes } from "./security-copilot/agent-routes.js";
+import type { SecurityCopilotService } from "./security-copilot/service.js";
 import { registerFreelanceCopilotAgentRoutes } from "./freelance-copilot/agent-routes.js";
 import { registerTaskAgentRoutes } from "./task-agent-routes.js";
+import { registerPaneReportRoutes } from "./pane-report-routes.js";
+import { registerQueueOperatorGrantRoute } from "./queue-operator-grants.js";
+import type { PaneReports } from "./pane-reports.js";
+import { registerVaultAgentBridge, type VaultModule } from "./vault/wiring.js";
 import type { FreelanceCopilotService } from "./freelance-copilot/service.js";
 import type { JobApplyService } from "./job-apply/service.js";
 import { isT3AgentSessionId, t3AgentPrincipal, T3_AGENT_RUNTIME_ID } from "./t3code/agent-tokens.js";
+import { harnessAgentPrincipal, HARNESS_AGENT_RUNTIME_ID, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
 
 /**
  * Browser status and the CLI bridge routes (Agent Files publishing, browser context, session, actions and commands
@@ -61,10 +78,20 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   mailCopilotService?: MailCopilotService;
   marketingCopilotService?: MarketingCopilotService;
   freelanceCopilotService?: FreelanceCopilotService;
+  /** Design requests (every CLI pane) and the Design pane's worker tools; see design/agent-routes.ts. */
+  designService?: DesignService;
+  videoService?: VideoService;
+  /** The App Studio pane's agent tools; see app-studio/agent-routes.ts. */
+  appStudioService?: AppStudioService;
+  /** The Security Copilot pane's agent tools; see security-copilot/agent-routes.ts. */
+  securityCopilotService?: SecurityCopilotService;
+  vault?: VaultModule;
   /** Set once the pane browser routes are registered; agents choose saved Google sign-ins through it. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
   /** Operator input per control lease (shared with the browser routes); RECLAIM_CONTROL reads it. */
   controlActivity?: BrowserControlActivity;
+  /** Set once Nous is registered; panes report their progress to it (/api/cli/progress). */
+  nous?: { current: { paneReports: PaneReports } | null };
 }) {
   const { options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity,
     routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts } = deps;
@@ -89,6 +116,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         return null;
       }
       return { claims, runtimeId: T3_AGENT_RUNTIME_ID };
+    }
+    if (isHarnessAgentSessionId(claims.cliSessionId)) {
+      if (!await harnessAgentPrincipal(store, claims)) {
+        await sendApiError(reply, 404, "HARNESS_PANE_NOT_FOUND", "The Harness pane for this browser bridge token is closed or was not found.");
+        return null;
+      }
+      return { claims, runtimeId: HARNESS_AGENT_RUNTIME_ID };
     }
     const cliSession = await store.getPaneCliSession(claims.cliSessionId);
     // A moved pane keeps its running CLI session; the token then acts in the pane's current room.
@@ -146,9 +180,54 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       parseBody,
       parseQuery,
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
-      candidate: deps.jobApplyService ? async (owner) => (await deps.jobApplyService!.getProfile(owner)).candidate : undefined
+      candidate: deps.jobApplyService ? async (owner) => (await deps.jobApplyService!.getProfile(owner)).candidate : undefined,
+      bookmarks: deps.marketingCopilotService
     });
   }
+  if (deps.designService) {
+    registerDesignAgentRoutes(app, deps.designService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      uploadRoot: config.browserEvidenceArtifactRoot,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "design", targetId, metadata })
+    });
+  }
+  if (deps.videoService) {
+    registerVideoAgentRoutes(app, deps.videoService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      uploadRoot: config.browserEvidenceArtifactRoot,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "video", targetId, metadata })
+    });
+  }
+  if (deps.appStudioService) {
+    registerAppStudioAgentRoutes(app, deps.appStudioService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      uploadRoot: config.browserEvidenceArtifactRoot,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "app_studio", targetId, metadata })
+    });
+  }
+  if (deps.securityCopilotService) {
+    registerSecurityCopilotAgentRoutes(app, deps.securityCopilotService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "security_copilot", targetId, metadata })
+    });
+  }
+  if (deps.vault) registerVaultAgentBridge(app, deps.vault, { store, requireBridge: requireCliBrowserBridgeContext });
   registerTaskAgentRoutes(app, {
     store,
     routeOptions: defaultRouteRateLimitOptions,
@@ -157,6 +236,9 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     parseQuery,
     audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "task_item", targetId, metadata })
   });
+  registerPaneReportRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, requireBridge: requireCliBrowserBridgeContext, parseBody,
+    reports: () => deps.nous?.current?.paneReports ?? null });
+  registerQueueOperatorGrantRoute(app, { routeOptions: defaultRouteRateLimitOptions, requireBridge: requireCliBrowserBridgeContext });
   async function requireCliAgentFilesContext(request: FastifyRequest, reply: FastifyReply) {
     if (!cliAgentFilesEnabled(config)) {
       await sendApiError(
@@ -190,6 +272,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         return null;
       }
       return { claims, runtimeId: T3_AGENT_RUNTIME_ID };
+    }
+    if (isHarnessAgentSessionId(claims.cliSessionId)) {
+      if (!await harnessAgentPrincipal(store, claims)) {
+        await sendApiError(reply, 404, "HARNESS_PANE_NOT_FOUND", "The Harness pane for this Agent Files token is closed or was not found.");
+        return null;
+      }
+      return { claims, runtimeId: HARNESS_AGENT_RUNTIME_ID };
     }
     const cliSession = await store.getPaneCliSession(claims.cliSessionId);
     if (!cliSession || cliSession.paneId !== claims.paneId) {
@@ -234,9 +323,28 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
     }
 
     let folder: string | null = null;
+    let media = false;
     return withStagedAgentFiles(request, config.browserEvidenceArtifactRoot, async (uploads, totalBytes) => {
       const artifacts: Artifact[] = [];
-      for (const upload of uploads) {
+      // collection=media puts the files in the pane's own room's Media dock: images by their bytes, videos by extension.
+      const mediaTypes = media ? uploads.map((upload) => sniffImageMime(upload.sample) ?? inferUploadMimeType(upload.filename, "")) : [];
+      const refused = mediaTypes.findIndex((mimeType) => !isAllowedImageMime(mimeType) && !isVideoMimeType(mimeType));
+      if (refused >= 0) {
+        return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", `${uploads[refused]!.filename} is not a PNG, JPEG or WebP image or an MP4, MOV or WebM video.`);
+      }
+      for (const [index, upload] of uploads.entries()) {
+        if (media) {
+          const mimeType = mediaTypes[index]!;
+          const storage = buildGenericUserUploadStorage({ artifactRoot: config.browserEvidenceArtifactRoot, roomId: bridge.claims.roomId, originalFilename: upload.filename });
+          const saved = await withPersistedUpload(config.browserEvidenceArtifactRoot, upload, storage.filePath, (pinnedPath) =>
+            recordUploadedArtifact(store, { roomId: bridge.claims.roomId, paneId: bridge.claims.paneId, kind: isVideoMimeType(mimeType) ? "VIDEO" : "IMAGE",
+              mimeType, storageUri: storage.storageUri, sha256: upload.sha256, byteSize: upload.byteSize,
+              metadata: { source: "CLI_AGENT", originalFilename: upload.filename, storedFilename: storage.storedFilename,
+                cliSessionId: bridge.claims.cliSessionId, runtimeId: bridge.runtimeId } }, request.requestIdForSpace, pinnedPath));
+          eventBus.publish(saved.event);
+          artifacts.push(saved.artifact);
+          continue;
+        }
         let record: Awaited<ReturnType<typeof persistAgentFile>>;
         try {
           record = await persistAgentFile({
@@ -263,7 +371,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         artifacts.push(record.artifact);
       }
       await recordAudit(store, request, {
-        action: "agent_file.publish",
+        action: media ? "room_media.publish" : "agent_file.publish",
         targetType: "pane",
         targetId: bridge.claims.paneId,
         metadata: {
@@ -279,6 +387,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return { artifacts };
     }, (name, value) => {
       if (name === "folder") folder = typeof value === "string" ? value.trim() : null;
+      if (name === "collection") media = value === "media";
     });
   });
   app.get("/api/cli/browser/context", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -332,6 +441,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       ownerAgentId: `cli:${bridge.claims.cliSessionId}`,
       traceId: request.requestIdForSpace
     }, { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` });
+    controlActivity?.noteAgent(browserPane.id, bridge.claims.paneId);
     await recordAudit(store, request, {
       action: "pane.cli.browser_session",
       targetType: "pane",
@@ -367,6 +477,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           request.requestIdForSpace,
           { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` }
         );
+        controlActivity?.noteAgent(browserPane.id, bridge.claims.paneId);
+        // A Browser Host started before these actions existed ignores them and answers no text: say so (fail closed).
+        if ((actionRequest.action.type === "press" || actionRequest.action.type === "masked_screenshot") && !actionResult.text) {
+          throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `${actionRequest.action.type} needs the Browser Host restart that brings it.`);
+        }
         const observation = {
           sessionId: actionResult.session.sessionId,
           paneId: actionResult.session.paneId,
@@ -435,7 +550,8 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       const ownerUserId = (await store.getRoom(pane.roomId)).ownerUserId;
       const owner = ownerUserId ? await store.getControlActor(ownerUserId) : null;
       if (owner?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires a room owned by an ADMIN.");
-      if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
+      // Freelance Copilot (operator 2026-10-18): the copilot saves each platform's bookmark with the account its sign-in lives in.
+      if (pane.mode !== "BROWSER" && pane.mode !== "FREELANCE_COPILOT") throw new SpaceConflictError("Google account selection requires a Browser or Freelance Copilot pane.");
       const accounts = paneBrowserAccounts.current;
       if (!accounts) throw new SpaceFeatureDisabledError("BROWSER_ACCOUNTS_UNAVAILABLE", "Google account selection is unavailable on this runtime.");
       const actor: BrowserHostActorContext = { holderType: "AGENT", holderId: `cli:${bridge.claims.cliSessionId}` };
@@ -461,6 +577,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       return accountResult;
     }
     const session = await getActiveBrowserSessionForPane(store, pane);
+    controlActivity?.noteAgent(pane.id, bridge.claims.paneId);
     const actorId = `cli:${bridge.claims.cliSessionId}`;
     let result: unknown;
 
@@ -518,12 +635,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         if (!browserSessionManager.setStreamMode) {
           throw new SpaceFeatureDisabledError("BROWSER_STREAM_MODE_UNAVAILABLE", "Adaptive browser stream modes are unavailable on this runtime.");
         }
-        result = await browserSessionManager.setStreamMode(
+        // The summary leaves out the base64 frame, which flooded agent context (~357K characters).
+        result = { session: summarizeCliBrowserSession((await browserSessionManager.setStreamMode(
           pane,
           input.command.streamMode,
           request.requestIdForSpace,
           { holderType: "AGENT", holderId: actorId }
-        );
+        )).session) };
         break;
       case "START_CAPTURE":
         if (!browserSessionManager.createCapture) {
@@ -594,6 +712,9 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         break;
       }
       case "REQUEST_HANDOFF": {
+        // The operator's local time (plan clipboard:9XSwTPyxXP1W): at night the request waits for their morning, alive until an hour after it.
+        const owner = (await store.getRoom(pane.roomId)).ownerUserId;
+        const night = ownerQuietState(owner ? await store.getUserSettings(owner) : null);
         const handoff = await store.createBrowserHandoffRequest({
           sessionId: session.sessionId,
           paneId: pane.id,
@@ -603,11 +724,11 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           reason: `${input.command.kind}: ${input.command.reason}`.slice(0, 500),
           // A login or MFA needs the operator to come to the pane and a phone; five minutes ran out before
           // they arrived and "Take control" then had nothing to accept. The agent waits up to 15 minutes.
-          ttlSeconds: 1800
+          ttlSeconds: handoffTtlSeconds(night)
         });
         const handoffEvent = (await store.listEvents(pane.roomId)).find((event) => event.traceId === handoff.handoffRequestId);
         if (handoffEvent) eventBus.publish(handoffEvent);
-        result = { handoff };
+        result = { handoff, operator: ownerHandsAnswer(night) };
         break;
       }
       case "HANDOFF_STATUS": {

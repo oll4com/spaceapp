@@ -216,6 +216,26 @@ All 16 inventories passed their flag and launch-gate checks (Cursor:
 | Muse Code | 1.4.4 (1.4.4-R5419.1) | `~/.local/bin/muse` launcher | not managed |
 | Droid | 0.238.0 | `~/.local/bin/droid` | not managed |
 
+**OpenCode 2 (`@opencode/cli`), 2026-10-16.** Space supported both majors until OpenCode 1 was retired on 2026-10-18
+(plan `clipboard:kJ1BIeylJRLG`); it now speaks OpenCode 2 only. Stable runs OpenCode 2.0.32 since the
+cutover of 2026-10-17, which migrated 1171 sessions in 22 s (`docs/runbooks/opencode-2-cutover.md`).
+- **Canary:** passes for 2.0.31 (`cli-canary --binary`, OpenCode 2 expectations: `--server`, `--standalone`,
+  `--session`, `run --format/--title/--model`).
+- **Verified in isolation on 2.0.31:**
+  - the v2 API (Basic user `opencode`),
+  - the pane launch (`--server`) with a live TUI,
+  - a Big Pickle real tool call through the API and through `run --standalone`,
+  - a model switch that the TUI follows,
+  - interrupt,
+  - native titles,
+  - the free-model picker.
+- **Existing sessions:** OpenCode 2 migrates the v1 history only once `GET /api/experimental/migration/v1` is read. On a
+  copy of the real store this moved all 1168 sessions in 176 s; OpenCode 1 still reads the migrated store.
+- **Stable-host rehearsal 2026-10-17:** stable's wrapper, launcher, daemon and control package passed with the staged
+  2.0.31 against a store copy on a port of its own: pane, resume, fallback, updater checks, tool call, model switch,
+  interrupt. Evidence: `reports/opencode-v2/phase8-stable-rehearsal.json`. The credential smoke needed stdin closed
+  (`186b7bbee7`): OpenCode 2's `run` waits for EOF.
+
 Evidence types: **CT** contract test (`cli-adapter-runtime-contract.test.ts`;
 for send/interrupt/reconnect the runtime-agnostic PTY host tests
 `packages/cli-host/tests/ipc.test.ts`, `session-registry.test.ts` and

@@ -15,7 +15,7 @@ describe("Voice Provider Session Routing and Credentials", () => {
   it("resolves status for all supported providers", async () => {
     const config = getApiConfig({});
     const status = await getLiveAudioProvidersStatus(config);
-    expect(status.providers.map((p) => p.id)).toEqual(["openai", "google", "amazon", "local", "vercel"]);
+    expect(status.providers.map((p) => p.id)).toEqual(["openai", "google", "amazon", "local", "fish", "vercel"]);
 
     const openai = status.providers.find((p) => p.id === "openai");
     expect(openai).toBeDefined();

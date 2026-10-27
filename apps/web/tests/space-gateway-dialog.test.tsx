@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { GatewayAccount, GatewayApiKey, GatewayDashboard, GatewayRequestLog, GatewaySettings, GatewayStatus } from "@space/contracts";
 import { SpaceGatewayDialog, type SpaceGatewayClient } from "../src/features/space-gateway/SpaceGatewayDialog.js";
 
@@ -15,7 +15,7 @@ const settings: GatewaySettings = {
   compressionTimeBudgetMs: 250, compressionProviders: { CLAUDE: { mode: "OFF", outputPolicy: "LEAN" } }, requestLogRetentionDays: 30, displayTimeFormat: "24H",
   displayAccountWindows: "BOTH", displayBurnProjection: true,
   upstreamStreamTransport: "DEFAULT", promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false, warmupWindows: "BOTH",
-  warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false, lanMode: "ENV", lanHost: null, lanPort: null,
+  warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false, anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null, lanMode: "ENV", lanHost: null, lanPort: null,
   lanAllowedSources: [], updatedAt: "2026-10-11T10:00:00.000Z"
 };
 
@@ -97,6 +97,8 @@ const dashboard: GatewayDashboard = {
   recent: [log]
 };
 
+const noAnthropicKey = { configured: false, keyHint: null, savedAt: null, lastSyncAt: null, lastError: null, upstream: [] };
+
 function client(overrides: Partial<SpaceGatewayClient> = {}): SpaceGatewayClient {
   return {
     status: vi.fn(async () => status),
@@ -168,6 +170,11 @@ function client(overrides: Partial<SpaceGatewayClient> = {}): SpaceGatewayClient
         byStrategy: [{ mode: "ON" as const, strategy: "smart_crusher", blocks: 3, rejectedBlocks: 0, errorBlocks: 0, tokensSaved: 1200, savingsPercent: 50 }],
         history: [{ hour: "2026-10-11T10:00:00.000Z", appliedSaved: 1200, shadowSaved: 0, requests: 3 }] };
     }),
+    anthropicAdmin: vi.fn(async () => noAnthropicKey),
+    saveAnthropicAdminKey: vi.fn(async () => ({ ...noAnthropicKey, configured: true, keyHint: "…aaaa", savedAt: "2026-10-18T09:00:00.000Z",
+      lastSyncAt: "2026-10-18T09:00:02.000Z", upstream: [{ accountId: account.id, apiKeyId: "apikey_gateway", keyName: "Space Gateway", workspaceId: "" }] })),
+    removeAnthropicAdminKey: vi.fn(async () => ({ removed: true })),
+    syncAnthropicBilling: vi.fn(async () => noAnthropicKey),
     report: vi.fn(async (from: string, to: string) => {
       const row = (key: string, requests: number) => ({ key, requests, errors: 1, inputTokens: 5000, cachedInputTokens: 1000, outputTokens: 300, reasoningTokens: 50, reasoningReported: 2, costUsd: 0.25, compressionTokensSaved: 0 });
       return { from, to, days: [row("2026-10-10", 4), row("2026-10-11", 6)], models: [row("gpt-5.5", 10)], accounts: [row(account.id, 10)], totals: row("total", 10) };
@@ -229,7 +236,7 @@ describe("SpaceGatewayDialog", () => {
     await waitFor(() => expect(api.updateAccount).toHaveBeenCalledWith(account.id, { warmupEnabled: true }));
     fireEvent.click(screen.getByRole("button", { name: "Export auth.json" }));
     expect(api.exportAccount).not.toHaveBeenCalled();
-    expect(screen.getByText(/The export contains a working sign-in/)).toBeTruthy();
+    expect(screen.getByText(/The export contains this account.s current access token but no refresh token/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Confirm export" }));
     expect(((await screen.findByLabelText("Exported auth.json")) as HTMLTextAreaElement).value).toContain("chatgpt");
   });
@@ -282,6 +289,20 @@ describe("SpaceGatewayDialog", () => {
       accountDetail: vi.fn(async () => ({ ...baseDetail, account: used, lifetime: { ...baseDetail.lifetime, requests: 4 } })) });
     render(<SpaceGatewayDialog client={usedApi} initialTab="accounts" onClose={() => undefined} />);
     await waitFor(() => expect(screen.getByTestId("claude-api-key-role").textContent).toMatch(/Served 4 requests · last used 5 min ago\./));
+  });
+
+  it("shows Anthropic's bill on the Claude API key account", async () => {
+    const keyAccount = { ...account, id: `gw_account:${"4".repeat(32)}`, label: "Claude API key …kkkk", provider: "CLAUDE" as const, planType: "api", email: null,
+      primaryWindow: { usedPercent: null, resetAt: null, windowMinutes: null }, secondaryWindow: { usedPercent: null, resetAt: null, windowMinutes: null } };
+    const today = new Date().toISOString().slice(0, 10);
+    const anthropicBilling = vi.fn(async () => ({
+      status: { ...noAnthropicKey, configured: true, lastSyncAt: new Date().toISOString() },
+      days: [{ day: today, reported: true, organizationUsd: 12.5, workspaceUsd: 12.5, gatewayEstimateUsd: 13, gatewayBilledUsd: 12.4, models: [] }]
+    }));
+    render(<SpaceGatewayDialog client={client({ accounts: vi.fn(async () => ({ data: [keyAccount] })), anthropicBilling })} initialTab="accounts" onClose={() => undefined} />);
+    await waitFor(() => expect(screen.getAllByTestId("claude-api-key-bill").map((line) => line.textContent)).toEqual([
+      "Anthropic bill: today $12.50 · 7 days $12.50 · this month $12.50 · 31 days $12.50.", expect.stringMatching(/^Synced \d\d:\d\d /)]));
+    expect(anthropicBilling).toHaveBeenCalledWith(31);
   });
 
   it("jumps from Routing to the Claude API key form in Accounts", async () => {
@@ -432,7 +453,7 @@ describe("SpaceGatewayDialog", () => {
     fireEvent.change(screen.getByLabelText(/^Codex upstream transport/), { target: { value: "WEBSOCKET" } });
     expect(screen.getByText(/After a failed WebSocket open, HTTP is used for 60 seconds/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save policies" }));
-    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ requestLogRetentionDays: 30, promptCacheTtlSeconds: 1800, importWithoutOverwrite: true,
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ promptCacheTtlSeconds: 1800, importWithoutOverwrite: true,
       upstreamStreamTransport: "WEBSOCKET" }));
 
     fireEvent.click(screen.getByLabelText("On"));
@@ -443,6 +464,50 @@ describe("SpaceGatewayDialog", () => {
     await waitFor(() => expect(api.reload).toHaveBeenCalled());
     expect(await screen.findByText(/A new gateway worker is taking over/)).toBeTruthy();
     expect(screen.getByText(/Space sign-in replaces a separate dashboard password/)).toBeTruthy();
+  });
+
+  it("saves the Anthropic admin key write-only, shows its hint and matched key, and removes it only after confirmation", async () => {
+    const api = client();
+    render(<SpaceGatewayDialog client={api} initialTab="settings" onClose={() => undefined} />);
+    const card = await screen.findByRole("form", { name: "Anthropic billing" });
+    const input = within(card).getByLabelText("Admin API key") as HTMLInputElement;
+    expect(input.type).toBe("password");
+    expect((within(card).getByRole("button", { name: "Save and check" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(input, { target: { value: `  sk-ant-admin01-${"a".repeat(40)} ` } });
+    fireEvent.click(within(card).getByRole("button", { name: "Save and check" }));
+    await waitFor(() => expect(api.saveAnthropicAdminKey).toHaveBeenCalledWith(`sk-ant-admin01-${"a".repeat(40)}`));
+    expect(await within(card).findByText("Space Gateway")).toBeTruthy();
+    expect(within(card).getByText("Admin key …aaaa")).toBeTruthy();
+    expect((within(card).getByLabelText("Replace admin key") as HTMLInputElement).value).toBe("");
+    fireEvent.click(within(card).getByRole("button", { name: "Remove key" }));
+    expect(api.removeAnthropicAdminKey).not.toHaveBeenCalled();
+    fireEvent.click(within(card).getByRole("button", { name: "Confirm remove" }));
+    await waitFor(() => expect(api.removeAnthropicAdminKey).toHaveBeenCalled());
+    expect(await within(card).findByText("No admin key")).toBeTruthy();
+  });
+
+  it("saves the monthly Anthropic API budget and credits, refuses a non-positive one and clears them when emptied", async () => {
+    const api = client();
+    render(<SpaceGatewayDialog client={api} initialTab="settings" onClose={() => undefined} />);
+    const card = await screen.findByRole("form", { name: "Anthropic billing" });
+    const budget = within(card).getByLabelText(/Monthly API budget/) as HTMLInputElement;
+    const save = () => fireEvent.click(within(screen.getByRole("form", { name: "Anthropic billing" })).getByRole("button", { name: "Save budget and credits" }));
+    fireEvent.change(budget, { target: { value: "0" } });
+    save();
+    expect(await within(card).findByText("The budget and the credits must be dollar amounts above 0.")).toBeTruthy();
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    fireEvent.change(budget, { target: { value: "500" } });
+    fireEvent.change(within(card).getByLabelText(/Anthropic credits/), { target: { value: "1500" } });
+    save();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ anthropicMonthlyBudgetUsd: 500, anthropicCreditsUsd: 1500 }));
+    // Saved settings remount the tab, which reads the amounts back.
+    await waitFor(() => expect((within(screen.getByRole("form", { name: "Anthropic billing" })).getByLabelText(/Monthly API budget/) as HTMLInputElement).value).toBe("500"));
+    const saved = screen.getByRole("form", { name: "Anthropic billing" });
+    expect((within(saved).getByLabelText(/Anthropic credits/) as HTMLInputElement).value).toBe("1500");
+    fireEvent.change(within(saved).getByLabelText(/Monthly API budget/), { target: { value: "" } });
+    fireEvent.change(within(saved).getByLabelText(/Anthropic credits/), { target: { value: "" } });
+    save();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null }));
   });
 
   it("shows an empty request log", async () => {

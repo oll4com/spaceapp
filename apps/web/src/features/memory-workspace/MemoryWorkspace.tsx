@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Calendar as CalendarIcon, Network, Search, X } from "../ui-theme/app-icons.js";
+import { AlertTriangle, Calendar as CalendarIcon, ClipboardCheck, Network, Search, X } from "../ui-theme/app-icons.js";
 import type { MemoryGraphNodeDetail } from "@space/contracts";
 import { api, type MemoryGraphOverviewResponse } from "../../api.js";
 import { MemoryGraphErrorBoundary } from "./MemoryGraphErrorBoundary.js";
@@ -9,6 +9,7 @@ import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 import { MemoryGraph3D } from "./MemoryGraph3D.js";
 import type { MemoryPoint3D } from "./memory-3d.js";
 import { MemoryCalendarView } from "./MemoryCalendarView.js";
+import { MemoryReviewView } from "./MemoryReviewView.js";
 import "./memory-atlas.css";
 
 const DesktopMemoryGraph = lazy(() => import("./DesktopMemoryGraph.js"));
@@ -17,9 +18,11 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   shellMode: "desktop" | "tablet" | "mobile";
   activeRoomId: string | null;
   onClose: () => void;
-  initialMode?: "atlas" | "calendar";
+  initialMode?: "atlas" | "calendar" | "review";
 }) {
-  const [workspaceMode, setWorkspaceMode] = useState<"atlas" | "calendar">(initialMode);
+  const [selectedMode, setWorkspaceMode] = useState<"atlas" | "calendar" | "review">(initialMode);
+  // Mobile shows the Calendar list only: no graph canvas (ADR-006) and no review panels.
+  const workspaceMode = shellMode === "mobile" ? "calendar" : selectedMode;
   const [view3D, setView3D] = useState(false);
   const [showTitles, setShowTitles] = useState(true);
   const [reset3D, setReset3D] = useState(0);
@@ -115,9 +118,9 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
     <section id="memory-atlas" className="memory-workspace memory-atlas" aria-label="Memory workspace" data-shell-mode={shellMode} data-workspace-mode={workspaceMode} data-view-mode={view3D ? "3D" : "2D"} data-titles-visible={showTitles} data-atlas-layout="network" data-layout-ready={layout?.atlas === atlas} data-layout-root-x={atlasPositions.get(atlas.nodes.find(node => isMemoryCoreLabel(node.label))?.id ?? "")?.x} data-atlas-group-count={displayGroups.length} data-atlas-color-count={new Set(displayGroups.map(group => group.color)).size}>
       <header className="memory-atlas-header memory-workspace-header">
         <div className="memory-atlas-brand">
-          {workspaceMode === "calendar" ? <CalendarIcon aria-hidden="true" /> : <Network aria-hidden="true" />}
+          {workspaceMode === "calendar" ? <CalendarIcon aria-hidden="true" /> : workspaceMode === "review" ? <ClipboardCheck aria-hidden="true" /> : <Network aria-hidden="true" />}
           <h2>Memory</h2>
-          <span>{workspaceMode === "calendar" ? "CALENDAR" : "ATLAS"}</span>
+          <span>{workspaceMode.toUpperCase()}</span>
         </div>
         <form className="memory-workspace-controls memory-workspace-search" role="search" onSubmit={event => { event.preventDefault(); setQuery(queryDraft.trim()); }}>
           <label className="memory-search-input">
@@ -127,7 +130,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
           </label>
         </form>
         <div className="memory-atlas-actions">
-          <div className="memory-workspace-mode-selector" role="group" aria-label="Memory mode switcher">
+          {shellMode === "mobile" ? null : <div className="memory-workspace-mode-selector" role="group" aria-label="Memory mode switcher">
             <button
               type="button"
               className={`memory-mode-pill ${workspaceMode === "atlas" ? "is-active" : ""}`}
@@ -144,7 +147,15 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
             >
               <CalendarIcon aria-hidden="true" /> Calendar
             </button>
-          </div>
+            <button
+              type="button"
+              className={`memory-mode-pill ${workspaceMode === "review" ? "is-active" : ""}`}
+              aria-pressed={workspaceMode === "review"}
+              onClick={() => { setWorkspaceMode("review"); closeDetail(); }}
+            >
+              <ClipboardCheck aria-hidden="true" /> Review
+            </button>
+          </div>}
           {workspaceMode === "atlas" ? (
             <div className="memory-atlas-view-controls" aria-label="Memory view controls">
               <button type="button" aria-label="Toggle 3D memory view" aria-pressed={view3D} onClick={() => setView3D(value => !value)}><span aria-hidden="true">◇</span> {view3D ? "2D" : "3D"}</button>
@@ -162,6 +173,8 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
             selectedNodeId={selectedNodeId}
             onCloseDetail={closeDetail}
           />
+        ) : workspaceMode === "review" ? (
+          <MemoryReviewView onOpenRecord={selectNode} />
         ) : (
           <>
             <div className="memory-atlas-intro" aria-label="Memory overview">

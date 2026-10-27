@@ -23,8 +23,9 @@ describe("Codex account usage for local tools", () => {
     await repository.setAccountStatus(await add("3", "pro"), "PAUSED", null);
     const pool = new AccountPool({ provider: "CODEX", repository, cipher: () => null, refresher: { needsRefresh: () => false, refresh: vi.fn() } });
     const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true,
-      routes: (app) => registerCodexAccountUsageRoute(app, { pool }) });
-    const response = await server.app.inject({ method: "GET", url: "/__space-gateway/codex/account-usage" });
+      routes: (app) => registerCodexAccountUsageRoute(app, { pool, internalToken: "internal-test" }) });
+    expect((await server.app.inject({ method: "GET", url: "/__space-gateway/codex/account-usage" })).statusCode).toBe(403);
+    const response = await server.app.inject({ method: "GET", url: "/__space-gateway/codex/account-usage", headers: { "x-space-internal-token": "internal-test" } });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ schemaVersion: 1, source: "space-gateway", accounts: [{
       id: plus, label: "Account 1", fiveHourRemainingPercent: 75, weeklyRemainingPercent: 40, fiveHourResetAt: "2030-01-01T05:00:00.000Z",

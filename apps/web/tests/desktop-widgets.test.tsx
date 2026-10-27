@@ -483,7 +483,7 @@ describe("Desktop Float Widgets", () => {
       );
 
       expect(screen.getByText("SpaceApp.dev it's FREE!!!")).toBeTruthy();
-      expect(screen.getByText("SOURCE-AVAILABLE")).toBeTruthy();
+      expect(screen.getByText("OPEN SOURCE")).toBeTruthy();
       expect(screen.getByText("FOR ALL PLATFORMS")).toBeTruthy();
       expect(screen.getByText("Linux")).toBeTruthy();
       expect(screen.getByText("macOS")).toBeTruthy();

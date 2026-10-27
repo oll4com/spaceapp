@@ -13,6 +13,7 @@ import {
   FolderPlus,
   Grid2X2,
   Images,
+  Info,
   List,
   Music2,
   RefreshCw,
@@ -23,8 +24,10 @@ import {
   AgentFiles
 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
+import { agentFileName } from "./agent-files-api.js";
 import { ARTIFACTS_UPDATED_EVENT, dispatchArtifactsUpdated, isArtifactsUpdatedDetail } from "../../artifact-events.js";
 import { setArtifactDragData } from "../artifacts/artifact-drag.js";
+import { FileInfoDialog } from "../file-info/FileInfoDialog.js";
 import {
   DATE_TIME_SETTINGS_UPDATED_EVENT,
   formatAppDateTime
@@ -152,11 +155,7 @@ function metadataString(artifact: Artifact, key: string): string | null {
 }
 
 function artifactFilename(artifact: Artifact): string {
-  return (
-    metadataString(artifact, "originalFilename") ??
-    metadataString(artifact, "storedFilename") ??
-    `agent-file-${artifact.id}`
-  );
+  return agentFileName(artifact) ?? `agent-file-${artifact.id}`;
 }
 
 function previewKindFor(artifact: Artifact): AgentFilePreviewKind {
@@ -222,15 +221,24 @@ function mergeAgentFiles(current: Artifact[], incoming: Artifact[]): Artifact[] 
   return sortAgentFiles(Array.from(byId.values()));
 }
 
-function agentFileEntries(artifacts: Artifact[], paneTitles?: Readonly<Record<string, string>>): AgentFileEntry[] {
-  return sortAgentFiles(artifacts).filter(isAgentFileArtifact).map((artifact) => ({
+function agentFileEntry(artifact: Artifact, paneTitles?: Readonly<Record<string, string>>): AgentFileEntry {
+  return {
     artifact,
     filename: artifactFilename(artifact),
     previewKind: previewKindFor(artifact),
     provenance: agentFileProvenance(artifact, paneTitles),
     timestamp: formatTimestamp(artifact.createdAt),
     size: formatBytes(artifact.byteSize)
-  }));
+  };
+}
+
+function agentFileEntries(artifacts: Artifact[], paneTitles?: Readonly<Record<string, string>>): AgentFileEntry[] {
+  return sortAgentFiles(artifacts).filter(isAgentFileArtifact).map((artifact) => agentFileEntry(artifact, paneTitles));
+}
+
+// The folder rows hide their scrollbar, so a plain mouse wheel scrolls them sideways.
+function scrollTabsSideways(event: React.WheelEvent<HTMLElement>) {
+  if (!event.deltaX) event.currentTarget.scrollLeft += event.deltaY;
 }
 
 function smartFolder(id: string): FolderDef | undefined {
@@ -294,36 +302,65 @@ export function getAssignedFolder(artifact: Artifact, folderMap: Record<string, 
   return null;
 }
 
-function getStoredCustomFolders(roomId: string): string[] {
+/** Every folder Agent Files knows (its folders, the dock's own and the files', with their parents), for folder pickers elsewhere. */
+export function knownAgentFileFolders(artifacts: Artifact[]): string[] {
+  const folders = new Set(SMART_FOLDERS.filter((folder) => folder.id !== "ALL" && folder.id !== "UPLOADS").map((folder) => folder.id));
+  const folderMap = getStoredFolderMap();
+  for (const path of [...getStoredCustomFolders(), ...artifacts.map((artifact) => getAssignedFolder(artifact, folderMap) ?? "")]) {
+    for (let current: string | null = normalizeFolderPath(path); current; current = getParentFolderPath(current)) folders.add(current);
+  }
+  return [...folders].sort((left, right) => left.localeCompare(right));
+}
+
+// Agent Files are shared by every room: one list, one cache and one set of folders.
+const AGENT_FILES_SHARED_KEY = "all";
+const CUSTOM_FOLDERS_PREFIX = "space_agent_files_custom_folders_";
+const FOLDER_MAP_PREFIX = "space_agent_files_folder_map_";
+
+/** The shared value, or, before it was first saved, every per-room value folders were kept in until 2026-10-18. */
+function readStoredFolderValues(prefix: string): unknown[] {
+  if (typeof localStorage === "undefined") return [];
+  const shared = localStorage.getItem(`${prefix}${AGENT_FILES_SHARED_KEY}`);
+  if (shared !== null) return [JSON.parse(shared)];
+  const values: unknown[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    const raw = key?.startsWith(prefix) ? localStorage.getItem(key) : null;
+    if (raw) values.push(JSON.parse(raw));
+  }
+  return values;
+}
+
+function getStoredCustomFolders(): string[] {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`space_agent_files_custom_folders_${roomId}`) : null;
-    return raw ? JSON.parse(raw) : [];
+    const folders = readStoredFolderValues(CUSTOM_FOLDERS_PREFIX).flatMap((value) => (Array.isArray(value) ? value : []));
+    return Array.from(new Set(folders.filter((folder): folder is string => typeof folder === "string"))).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
 }
 
-function setStoredCustomFolders(roomId: string, folders: string[]) {
+function setStoredCustomFolders(folders: string[]) {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(`space_agent_files_custom_folders_${roomId}`, JSON.stringify(folders));
+      localStorage.setItem(`${CUSTOM_FOLDERS_PREFIX}${AGENT_FILES_SHARED_KEY}`, JSON.stringify(folders));
     }
   } catch {}
 }
 
-function getStoredFolderMap(roomId: string): Record<string, string> {
+function getStoredFolderMap(): Record<string, string> {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(`space_agent_files_folder_map_${roomId}`) : null;
-    return raw ? JSON.parse(raw) : {};
+    const maps = readStoredFolderValues(FOLDER_MAP_PREFIX).filter((value): value is Record<string, string> => Boolean(value) && typeof value === "object" && !Array.isArray(value));
+    return Object.assign({}, ...maps);
   } catch {
     return {};
   }
 }
 
-function setStoredFolderMap(roomId: string, map: Record<string, string>) {
+function setStoredFolderMap(map: Record<string, string>) {
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(`space_agent_files_folder_map_${roomId}`, JSON.stringify(map));
+      localStorage.setItem(`${FOLDER_MAP_PREFIX}${AGENT_FILES_SHARED_KEY}`, JSON.stringify(map));
     }
   } catch {}
 }
@@ -524,9 +561,8 @@ export function clearStoredAgentFilesCache(roomId?: string): void {
   }
 }
 
-function roomHasLoaded(roomId: string | undefined): boolean {
-  if (!roomId) return false;
-  return agentFilesLastFetched.has(roomId) || getStoredAgentFilesCache(roomId).length > 0;
+function sharedFilesLoaded(): boolean {
+  return agentFilesLastFetched.has(AGENT_FILES_SHARED_KEY) || getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY).length > 0;
 }
 
 function kindIcon(kind: AgentFilePreviewKind) {
@@ -537,14 +573,194 @@ function kindIcon(kind: AgentFilePreviewKind) {
   return File;
 }
 
+/** Downloads an Agent File after checking its size, type and SHA-256 against the record. */
+async function saveAgentFile(entry: AgentFileEntry): Promise<void> {
+  const savePicker = windowsAgentFileSavePicker(entry);
+  let fileHandle: AgentFileHandle | null = null;
+  if (savePicker) {
+    try {
+      fileHandle = await savePicker({
+        suggestedName: entry.filename,
+        types: [{
+          description: "Microsoft Word document",
+          accept: { [entry.artifact.mimeType]: [".docx"] }
+        }]
+      });
+    } catch (pickerError) {
+      if (pickerError instanceof DOMException && pickerError.name === "AbortError") return;
+      throw pickerError;
+    }
+  }
+
+  const response = await fetch(api.agentFileDownloadUrl(entry.artifact.id), {
+    credentials: "same-origin",
+    headers: { accept: entry.artifact.mimeType }
+  });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  const contentLengthHeader = response.headers.get("content-length");
+  const contentEncoding = response.headers.get("content-encoding");
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    contentLengthHeader !== null
+    && !contentEncoding
+    && Number(contentLengthHeader) !== entry.artifact.byteSize
+  ) {
+    throw new Error("Download size verification failed.");
+  }
+  if (contentType !== entry.artifact.mimeType.toLowerCase()) {
+    throw new Error("Download type verification failed.");
+  }
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength !== entry.artifact.byteSize) {
+    throw new Error("Downloaded file is incomplete.");
+  }
+  const digest = bytesToHex(await crypto.subtle.digest("SHA-256", buffer));
+  if (digest !== entry.artifact.sha256.toLowerCase()) {
+    throw new Error("Download integrity verification failed.");
+  }
+
+  const blob = new Blob([buffer], { type: entry.artifact.mimeType });
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return;
+  }
+
+  const spaceNative = (window as unknown as { SpaceNative?: { saveFile?: (b64: string, name: string, mime: string) => boolean } }).SpaceNative;
+  if (typeof spaceNative?.saveFile === "function") {
+    const base64 = await blobToBase64(blob);
+    const saved = spaceNative.saveFile(base64, entry.filename, entry.artifact.mimeType);
+    if (saved) return;
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = entry.filename;
+  anchor.rel = "noopener";
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+/** The Agent Files preview. CLI panes open it over the pane for a file an agent names (AgentFileLinks.tsx). */
+export function AgentFilePreviewDialog({ artifact, paneTitles, onClose }: {
+  artifact: Artifact;
+  paneTitles?: Readonly<Record<string, string>>;
+  onClose: () => void;
+}) {
+  const entry = useMemo(() => agentFileEntry(artifact, paneTitles), [artifact, paneTitles]);
+  const [textPreview, setTextPreview] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const previewUrl = api.agentFilePreviewUrl(entry.artifact.id);
+
+  useEffect(() => {
+    setTextPreview(null);
+    setPreviewError(null);
+    if (entry.previewKind !== "TEXT") return;
+    let live = true;
+    fetch(previewUrl, { credentials: "same-origin", headers: { accept: "text/plain" } })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+        return response.text();
+      })
+      .then(
+        (content) => { if (live) setTextPreview(content); },
+        (previewLoadError: unknown) => { if (live) setPreviewError(previewLoadError instanceof Error ? previewLoadError.message : "Preview failed"); }
+      );
+    return () => { live = false; };
+  }, [entry.previewKind, previewUrl]);
+
+  // The dock's own Escape handler stops the event first; outside the dock this one closes the preview.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function download() {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      await saveAgentFile(entry);
+    } catch (failure) {
+      setDownloadError(failure instanceof Error ? failure.message : "The file could not be downloaded.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  function previewBody() {
+    if (entry.previewKind === "IMAGE") {
+      return <img src={previewUrl} alt={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "VIDEO") {
+      return <video src={previewUrl} controls playsInline preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "AUDIO") {
+      return <audio src={previewUrl} controls preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "PDF") {
+      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} />;
+    }
+    if (entry.previewKind === "DOCX") {
+      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} sandbox="" />;
+    }
+    if (entry.previewKind === "TEXT") {
+      if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
+      if (textPreview === null) return <div className="agent-files-preview-note" role="status">Loading preview…</div>;
+      return <pre className="agent-files-text-preview">{textPreview}</pre>;
+    }
+    return (
+      <div className="agent-files-preview-note">
+        <File aria-hidden="true" />
+        <strong>Preview is not available for this file type.</strong>
+        <small>You can still download the original file.</small>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="attachment-modal agent-files-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${entry.filename}`}
+      onClick={onClose}
+    >
+      <div className="attachment-modal-body agent-files-modal-body is-preview" onClick={(event) => event.stopPropagation()}>
+        <div className="agent-files-modal-head">
+          <div className="agent-files-modal-heading">
+            <span className="dock-kit-card-title" data-sensitive-masked="manual" title={entry.filename}>{entry.filename}</span>
+            <span className="dock-kit-meta-text">{entry.provenance} · {entry.timestamp} · {entry.size}</span>
+            {downloadError ? <DockNotice onDismiss={() => setDownloadError(null)}>{downloadError}</DockNotice> : null}
+          </div>
+          <div className="agent-files-modal-actions">
+            <DockIconButton
+              label={`Download ${entry.filename}`}
+              title={`Download and verify ${entry.filename}`}
+              icon={Download}
+              busy={downloading}
+              disabled={downloading}
+              onClick={() => void download()}
+            />
+            <DockIconButton label="Close Agent File preview" icon={X} autoFocus onClick={onClose} />
+          </div>
+        </div>
+        <div className="agent-files-modal-preview">{previewBody()}</div>
+      </div>
+    </div>
+  );
+}
+
 export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: AgentFilesDockProps) {
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();
   const filterPanelId = useId();
-  const [artifacts, setArtifacts] = useState<Artifact[]>(() =>
-    activeRoom?.id ? getStoredAgentFilesCache(activeRoom.id) : []
-  );
-  const [hasLoaded, setHasLoaded] = useState(() => roomHasLoaded(activeRoom?.id));
+  const [artifacts, setArtifacts] = useState<Artifact[]>(() => getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY));
+  const [hasLoaded, setHasLoaded] = useState(sharedFilesLoaded);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -552,9 +768,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   const [clearingAll, setClearingAll] = useState(false);
   const [isFullscreen, setIsFullscreen] = useDockFullscreen();
   const [selected, setSelected] = useState<AgentFileEntry | null>(null);
-  const [textPreview, setTextPreview] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -568,6 +781,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [fileFolderMap, setFileFolderMap] = useState<Record<string, string>>({});
   const [movingEntry, setMovingEntry] = useState<AgentFileEntry | null>(null);
+  const [detailsEntry, setDetailsEntry] = useState<AgentFileEntry | null>(null);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [newFolderParent, setNewFolderParent] = useState<string>("");
   const [newFolderName, setNewFolderName] = useState("");
@@ -594,7 +808,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   });
 
   const loadSequence = useRef(0);
-  const previewSequence = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const activeRoomId = useRef<string | null>(activeRoom?.id ?? null);
@@ -602,6 +815,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const entries = useMemo(() => agentFileEntries(artifacts, paneTitles), [artifacts, paneTitles, dateTimeTick]);
+  const roomFileCount = useMemo(() => entries.filter((entry) => entry.artifact.roomId === activeRoom?.id).length, [entries, activeRoom?.id]);
 
   const allKnownFolders = useMemo(() => {
     const folderSet = new Set<string>();
@@ -772,10 +986,9 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     return () => observer.disconnect();
   }, [displayedEntries.length, filteredEntries.length]);
 
-  async function loadAgentFiles(roomId: string, force = false) {
-    if (activeRoomId.current !== roomId) return;
-    const last = agentFilesLastFetched.get(roomId);
-    const cached = getStoredAgentFilesCache(roomId);
+  async function loadAgentFiles(force = false) {
+    const last = agentFilesLastFetched.get(AGENT_FILES_SHARED_KEY);
+    const cached = getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY);
     if (
       !force &&
       cached.length > 0 &&
@@ -791,7 +1004,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setError(null);
     try {
       const firstPage = await api.artifacts({
-        roomId,
         collection: "AGENT_FILES",
         pageSize: 100,
         sortOrder: "desc"
@@ -801,7 +1013,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         const remainingPages = await Promise.all(
           Array.from({ length: firstPage.pagination.totalPages - 1 }, (_, i) =>
             api.artifacts({
-              roomId,
               collection: "AGENT_FILES",
               page: i + 2,
               pageSize: 100,
@@ -813,15 +1024,15 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
           loaded.push(...payload.data);
         }
       }
-      if (sequence !== loadSequence.current || activeRoomId.current !== roomId) return;
+      if (sequence !== loadSequence.current) return;
       const merged = mergeAgentFiles([], loaded);
-      persistAgentFilesCache(roomId, merged);
-      agentFilesLastFetched.set(roomId, { timestamp: Date.now(), refreshKey });
+      persistAgentFilesCache(AGENT_FILES_SHARED_KEY, merged);
+      agentFilesLastFetched.set(AGENT_FILES_SHARED_KEY, { timestamp: Date.now(), refreshKey });
       setArtifacts(merged);
       setLoadError(null);
       setHasLoaded(true);
     } catch (loadFailure) {
-      if (sequence !== loadSequence.current || activeRoomId.current !== roomId) return;
+      if (sequence !== loadSequence.current) return;
       setLoadError(loadFailure instanceof Error ? loadFailure.message : "Agent Files could not be loaded.");
       setHasLoaded(true);
     } finally {
@@ -830,13 +1041,9 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   }
 
   useEffect(() => {
-    const cached = activeRoom?.id ? getStoredAgentFilesCache(activeRoom.id) : null;
-    setArtifacts(cached && cached.length > 0 ? cached : []);
-    setHasLoaded(roomHasLoaded(activeRoom?.id));
+    setArtifacts(getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY));
+    setHasLoaded(sharedFilesLoaded());
     setSelected(null);
-    setTextPreview(null);
-    setPreviewError(null);
-    setPreviewLoading(false);
     setLoading(false);
     setLoadError(null);
     setError(null);
@@ -852,41 +1059,34 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setShowNewFolderModal(false);
     setDragOver(false);
     setBrokenThumbs(new Set());
-    if (activeRoom?.id) {
-      setCustomFolders(getStoredCustomFolders(activeRoom.id));
-      setFileFolderMap(getStoredFolderMap(activeRoom.id));
-    } else {
-      setCustomFolders([]);
-      setFileFolderMap({});
-    }
+    setCustomFolders(getStoredCustomFolders());
+    setFileFolderMap(getStoredFolderMap());
     if (!activeRoom) setIsFullscreen(false);
     return () => {
       loadSequence.current += 1;
-      previewSequence.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id]);
 
   useEffect(() => {
     if (!activeRoom) return;
-    void loadAgentFiles(activeRoom.id);
+    void loadAgentFiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoom?.id, refreshKey]);
 
   useEffect(() => {
     function handleArtifactsUpdated(event: Event) {
       if (!(event instanceof CustomEvent) || !isArtifactsUpdatedDetail(event.detail)) return;
-      if (event.detail.roomId !== activeRoom?.id) return;
       setArtifacts((current) => {
         const merged = mergeAgentFiles(current, event.detail.artifacts);
-        if (activeRoom?.id) persistAgentFilesCache(activeRoom.id, merged);
+        persistAgentFilesCache(AGENT_FILES_SHARED_KEY, merged);
         return merged;
       });
       setError(null);
     }
     window.addEventListener(ARTIFACTS_UPDATED_EVENT, handleArtifactsUpdated);
     return () => window.removeEventListener(ARTIFACTS_UPDATED_EVENT, handleArtifactsUpdated);
-  }, [activeRoom?.id]);
+  }, []);
 
   useEffect(() => {
     const handleSettingsUpdate = () => setDateTimeTick((count) => count + 1);
@@ -909,13 +1109,17 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
   }, [isDockActive, setIsFullscreen]);
 
   // Escape closes the top dialog first; fullscreen waits for the next Escape.
-  const hasOpenDialog = Boolean(selected || movingEntry || showNewFolderModal);
+  const hasOpenDialog = Boolean(selected || movingEntry || showNewFolderModal || detailsEntry);
   useEffect(() => {
     if (!hasOpenDialog || !isDockActive) return;
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       if (event.target instanceof Element && event.target.closest(".dock-kit-confirm")) return;
       event.stopPropagation();
+      if (detailsEntry) {
+        setDetailsEntry(null);
+        return;
+      }
       if (movingEntry) {
         setMovingEntry(null);
         return;
@@ -929,7 +1133,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     document.addEventListener("keydown", handleEscape, true);
     return () => document.removeEventListener("keydown", handleEscape, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasOpenDialog, isDockActive, movingEntry, showNewFolderModal]);
+  }, [hasOpenDialog, isDockActive, movingEntry, showNewFolderModal, detailsEntry]);
 
   function handleSetViewMode(mode: "list" | "grid") {
     setViewMode(mode);
@@ -992,7 +1196,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
 
   function handleAddCustomFolder(name: string, parentFolderCandidate?: string | null): string | undefined {
     const trimmed = name.trim();
-    if (!trimmed || !activeRoom?.id) return undefined;
+    if (!trimmed) return undefined;
     let fullPath: string;
     if (trimmed.includes("/")) {
       fullPath = normalizeFolderPath(trimmed);
@@ -1012,24 +1216,22 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     }
     const next = Array.from(nextSet).sort((a, b) => a.localeCompare(b));
     setCustomFolders(next);
-    setStoredCustomFolders(activeRoom.id, next);
+    setStoredCustomFolders(next);
     return fullPath;
   }
 
   async function handleDeleteCustomFolder(name: string) {
-    if (!activeRoom?.id) return;
-    const roomId = activeRoom.id;
     const isParent = allKnownFolders.some((f) => f.startsWith(`${name}/`));
     const accepted = await confirm({
       title: isParent ? "Delete this folder and its subfolders?" : "Delete this folder?",
-      message: `"${getFolderDisplayPath(name)}" will be removed. The files inside stay in this room.`,
+      message: `"${getFolderDisplayPath(name)}" will be removed. The files inside stay in Agent Files.`,
       confirmLabel: "Delete folder"
     });
-    if (!accepted || activeRoomId.current !== roomId) return;
+    if (!accepted) return;
 
     setCustomFolders((current) => {
       const nextFolders = current.filter((f) => f !== name && !f.startsWith(`${name}/`));
-      setStoredCustomFolders(roomId, nextFolders);
+      setStoredCustomFolders(nextFolders);
       return nextFolders;
     });
 
@@ -1048,14 +1250,13 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         }
       }
       if (!changed) return current;
-      setStoredFolderMap(roomId, nextMap);
+      setStoredFolderMap(nextMap);
       return nextMap;
     });
     setActiveFolder((current) => (current === name || current.startsWith(`${name}/`) ? parent || "ALL" : current));
   }
 
   function handleMoveFile(artifactId: string, folderId: string) {
-    if (!activeRoom?.id) return;
     const nextMap = { ...fileFolderMap };
     if (!folderId) {
       delete nextMap[artifactId];
@@ -1063,39 +1264,15 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       nextMap[artifactId] = normalizeFolderPath(folderId);
     }
     setFileFolderMap(nextMap);
-    setStoredFolderMap(activeRoom.id, nextMap);
+    setStoredFolderMap(nextMap);
   }
 
   function closePreview() {
-    previewSequence.current += 1;
     setSelected(null);
-    setTextPreview(null);
-    setPreviewLoading(false);
-    setPreviewError(null);
   }
 
-  async function openPreview(entry: AgentFileEntry) {
-    const sequence = ++previewSequence.current;
+  function openPreview(entry: AgentFileEntry) {
     setSelected(entry);
-    setTextPreview(null);
-    setPreviewError(null);
-    setPreviewLoading(entry.previewKind === "TEXT");
-    if (entry.previewKind !== "TEXT") return;
-    try {
-      const response = await fetch(api.agentFilePreviewUrl(entry.artifact.id), {
-        credentials: "same-origin",
-        headers: { accept: "text/plain" }
-      });
-      if (!response.ok) throw new Error(`Preview failed (${response.status})`);
-      const content = await response.text();
-      if (sequence !== previewSequence.current) return;
-      setTextPreview(content);
-    } catch (previewLoadError) {
-      if (sequence !== previewSequence.current) return;
-      setPreviewError(previewLoadError instanceof Error ? previewLoadError.message : "Preview failed");
-    } finally {
-      if (sequence === previewSequence.current) setPreviewLoading(false);
-    }
   }
 
   async function deleteAgentFile(entry: AgentFileEntry) {
@@ -1105,15 +1282,11 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       confirmLabel: "Delete"
     });
     if (!accepted) return;
-    const roomId = activeRoom?.id ?? null;
     setDeletingId(entry.artifact.id);
     setError(null);
     try {
       await api.deleteArtifact(entry.artifact.id);
-      // Update the cache of the room the file was deleted from, even after a room switch.
-      if (roomId) {
-        persistAgentFilesCache(roomId, getStoredAgentFilesCache(roomId).filter((artifact) => artifact.id !== entry.artifact.id));
-      }
+      persistAgentFilesCache(AGENT_FILES_SHARED_KEY, getStoredAgentFilesCache(AGENT_FILES_SHARED_KEY).filter((artifact) => artifact.id !== entry.artifact.id));
       setArtifacts((current) => current.filter((artifact) => artifact.id !== entry.artifact.id));
       if (selected?.artifact.id === entry.artifact.id) closePreview();
     } catch (deleteError) {
@@ -1127,72 +1300,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setDownloadingId(entry.artifact.id);
     setError(null);
     try {
-      const savePicker = windowsAgentFileSavePicker(entry);
-      let fileHandle: AgentFileHandle | null = null;
-      if (savePicker) {
-        try {
-          fileHandle = await savePicker({
-            suggestedName: entry.filename,
-            types: [{
-              description: "Microsoft Word document",
-              accept: { [entry.artifact.mimeType]: [".docx"] }
-            }]
-          });
-        } catch (pickerError) {
-          if (pickerError instanceof DOMException && pickerError.name === "AbortError") return;
-          throw pickerError;
-        }
-      }
-
-      const response = await fetch(api.agentFileDownloadUrl(entry.artifact.id), {
-        credentials: "same-origin",
-        headers: { accept: entry.artifact.mimeType }
-      });
-      if (!response.ok) throw new Error(`Download failed (${response.status})`);
-      const contentLengthHeader = response.headers.get("content-length");
-      const contentEncoding = response.headers.get("content-encoding");
-      const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-      if (
-        contentLengthHeader !== null
-        && !contentEncoding
-        && Number(contentLengthHeader) !== entry.artifact.byteSize
-      ) {
-        throw new Error("Download size verification failed.");
-      }
-      if (contentType !== entry.artifact.mimeType.toLowerCase()) {
-        throw new Error("Download type verification failed.");
-      }
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength !== entry.artifact.byteSize) {
-        throw new Error("Downloaded file is incomplete.");
-      }
-      const digest = bytesToHex(await crypto.subtle.digest("SHA-256", buffer));
-      if (digest !== entry.artifact.sha256.toLowerCase()) {
-        throw new Error("Download integrity verification failed.");
-      }
-
-      const blob = new Blob([buffer], { type: entry.artifact.mimeType });
-      if (fileHandle) {
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        return;
-      }
-
-      const spaceNative = (window as unknown as { SpaceNative?: { saveFile?: (b64: string, name: string, mime: string) => boolean } }).SpaceNative;
-      if (typeof spaceNative?.saveFile === "function") {
-        const base64 = await blobToBase64(blob);
-        const saved = spaceNative.saveFile(base64, entry.filename, entry.artifact.mimeType);
-        if (saved) return;
-      }
-
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = entry.filename;
-      anchor.rel = "noopener";
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      await saveAgentFile(entry);
     } catch (downloadError) {
       setError(downloadError instanceof Error ? downloadError.message : "The file could not be downloaded.");
     } finally {
@@ -1200,12 +1308,13 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     }
   }
 
+  // Clear all removes only the active room's files, so one click never empties every room.
   async function clearAllAgentFiles() {
-    if (!activeRoom || !entries.length) return;
+    if (!activeRoom || !roomFileCount) return;
     const room = activeRoom;
     const accepted = await confirm({
       title: "Clear all Agent Files?",
-      message: `Permanently delete all Agent Files from ${room.name}? This cannot be undone.`,
+      message: `Permanently delete the ${roomFileCount} Agent File${roomFileCount === 1 ? "" : "s"} from ${room.name}? Files from other rooms stay. This cannot be undone.`,
       confirmLabel: "Clear all"
     });
     if (!accepted) return;
@@ -1216,8 +1325,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       const result = await api.deleteRoomAgentFiles(roomId);
       if (activeRoomId.current !== roomId) return;
       closePreview();
-      clearStoredAgentFilesCache(roomId);
-      await loadAgentFiles(roomId, true);
+      clearStoredAgentFilesCache(AGENT_FILES_SHARED_KEY);
+      await loadAgentFiles(true);
       if (activeRoomId.current === roomId && result.failedCount > 0) {
         setError(`${result.failedCount} Agent File${result.failedCount === 1 ? "" : "s"} could not be deleted.`);
       }
@@ -1235,13 +1344,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     setError(null);
     try {
       const uploaded = await api.uploadAgentFiles({ roomId, files });
-      if (activeRoomId.current === roomId) {
-        setArtifacts((current) => {
-          const merged = mergeAgentFiles(current, uploaded.artifacts);
-          persistAgentFilesCache(roomId, merged);
-          return merged;
-        });
-      }
       dispatchArtifactsUpdated(roomId, uploaded.artifacts);
     } catch (uploadError) {
       if (activeRoomId.current === roomId) setError(uploadError instanceof Error ? uploadError.message : "The upload failed.");
@@ -1275,37 +1377,6 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
     void uploadFiles(Array.from(event.dataTransfer.files));
   }
 
-  function previewBody(entry: AgentFileEntry) {
-    const previewUrl = api.agentFilePreviewUrl(entry.artifact.id);
-    if (entry.previewKind === "IMAGE") {
-      return <img src={previewUrl} alt={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "VIDEO") {
-      return <video src={previewUrl} controls playsInline preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "AUDIO") {
-      return <audio src={previewUrl} controls preload="metadata" aria-label={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "PDF") {
-      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} />;
-    }
-    if (entry.previewKind === "DOCX") {
-      return <iframe src={previewUrl} title={`Preview of ${entry.filename}`} sandbox="" />;
-    }
-    if (entry.previewKind === "TEXT") {
-      if (previewLoading) return <div className="agent-files-preview-note" role="status">Loading preview…</div>;
-      if (previewError) return <div className="agent-files-preview-note is-error" role="alert">{previewError}</div>;
-      return <pre className="agent-files-text-preview">{textPreview ?? ""}</pre>;
-    }
-    return (
-      <div className="agent-files-preview-note">
-        <File aria-hidden="true" />
-        <strong>Preview is not available for this file type.</strong>
-        <small>You can still download the original file.</small>
-      </div>
-    );
-  }
-
   function folderOptionGroups() {
     return (
       <>
@@ -1331,7 +1402,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
       ? undefined
       : isFiltered || activeFolder !== "ALL"
         ? <><strong>{filteredEntries.length}</strong> of {entries.length} file{entries.length === 1 ? "" : "s"}{filterLabels.length ? ` · ${filterLabels.join(" · ")}` : ""}</>
-        : <><strong>{entries.length}</strong> file{entries.length === 1 ? "" : "s"} in this room</>;
+        : <><strong>{entries.length}</strong> file{entries.length === 1 ? "" : "s"} in all rooms</>;
 
   const movingAssignedFolder = movingEntry ? getAssignedFolder(movingEntry.artifact, fileFolderMap) : null;
 
@@ -1363,14 +1434,14 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             icon={RefreshCw}
             busy={loading && hasLoaded}
             disabled={!activeRoom || loading || clearingAll}
-            onClick={() => activeRoom && void loadAgentFiles(activeRoom.id, true)}
+            onClick={() => activeRoom && void loadAgentFiles(true)}
           />
           <DockIconButton
             label="Clear all Agent Files"
             icon={Trash2}
             tone="danger"
             busy={clearingAll}
-            disabled={!activeRoom || !entries.length || clearingAll || Boolean(deletingId) || Boolean(downloadingId)}
+            disabled={!activeRoom || !roomFileCount || clearingAll || Boolean(deletingId) || Boolean(downloadingId)}
             onClick={() => void clearAllAgentFiles()}
           />
           <DockFullscreenButton name="Agent Files" active={isFullscreen} onToggle={() => setIsFullscreen((current) => !current)} />
@@ -1379,7 +1450,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
         {activeRoom ? (
           <div ref={foldersRef} className="dock-kit-controls agent-files-controls">
             <div className="agent-files-folders">
-              <div className="agent-files-folder-tabs" role="tablist" aria-label="Agent Files Folders">
+              <div className="agent-files-folder-tabs" role="tablist" aria-label="Agent Files Folders" onWheel={scrollTabsSideways}>
                 {SMART_FOLDERS.map((folder) => {
                   const isSelected = activeFolder === folder.id || activeRootFolder === folder.id;
                   const Icon = folder.id === "GRAPHICS" ? Images : folder.id === "DOCUMENTS" ? FileText : folder.id === "ALL" ? FolderOpen : Folder;
@@ -1433,12 +1504,12 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 title={activeFolder === "ALL" ? "Create a new folder" : `Create a folder inside ${getFolderDisplayPath(activeFolder)}`}
                 onClick={openNewFolderModal}
               >
-                New folder
+                <span className="agent-files-new-folder-label">New folder</span>
               </DockButton>
             </div>
 
             {activeRootFolder !== "ALL" && subfoldersForActiveRoot.length > 0 ? (
-              <div className="agent-files-folder-tabs is-sub" role="tablist" aria-label="Agent Files Subfolders">
+              <div className="agent-files-folder-tabs is-sub" role="tablist" aria-label="Agent Files Subfolders" onWheel={scrollTabsSideways}>
                 <button
                   type="button"
                   role="tab"
@@ -1625,7 +1696,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             kind="error"
             title="Files could not be loaded"
             detail={loadError}
-            action={{ label: "Try again", onClick: () => void loadAgentFiles(activeRoom.id, true) }}
+            action={{ label: "Try again", onClick: () => void loadAgentFiles(true) }}
           />
         ) : isFiltered || activeFolder !== "ALL" ? (
           <DockState
@@ -1640,8 +1711,8 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
             kind="empty"
             icon={Upload}
             className={dragOver ? "is-dragover" : undefined}
-            title="No files in this room yet"
-            detail="Drop files here or use the upload button to add files to this room."
+            title="No Agent Files yet"
+            detail="Drop files here or use the upload button to add files."
             action={{ label: "Upload files", icon: Upload, onClick: openFilePicker }}
           />
         )}
@@ -1707,7 +1778,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 </button>
 
                 <div className="agent-files-item-body">
-                  <div className="dock-kit-card-title" title={entry.filename}>{entry.filename}</div>
+                  <div className="dock-kit-card-title" data-sensitive-masked="manual" title={entry.filename}>{entry.filename}</div>
                   <div className="dock-kit-meta">
                     <span className="dock-kit-meta-text" title={entry.provenance}>{entry.provenance}</span>
                   </div>
@@ -1717,6 +1788,7 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
                 </div>
 
                 <div className="dock-kit-card-actions agent-files-item-actions">
+                  <DockIconButton label={`Details of ${entry.filename}`} icon={Info} onClick={() => setDetailsEntry(entry)} />
                   <DockIconButton
                     label={`Move ${entry.filename} to folder`}
                     icon={FolderPlus}
@@ -1769,36 +1841,9 @@ export function AgentFilesDock({ activeRoom, refreshKey = null, paneTitles }: Ag
           onChange={(event) => void uploadFiles(Array.from(event.target.files ?? []))}
         />
 
-        {selected ? (
-          <div
-            className="attachment-modal agent-files-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Preview ${selected.filename}`}
-            onClick={closePreview}
-          >
-            <div className="attachment-modal-body agent-files-modal-body is-preview" onClick={(event) => event.stopPropagation()}>
-              <div className="agent-files-modal-head">
-                <div className="agent-files-modal-heading">
-                  <span className="dock-kit-card-title" title={selected.filename}>{selected.filename}</span>
-                  <span className="dock-kit-meta-text">{selected.provenance} · {selected.timestamp} · {selected.size}</span>
-                </div>
-                <div className="agent-files-modal-actions">
-                  <DockIconButton
-                    label={`Download ${selected.filename}`}
-                    title={`Download and verify ${selected.filename}`}
-                    icon={Download}
-                    busy={downloadingId === selected.artifact.id}
-                    disabled={downloadingId === selected.artifact.id}
-                    onClick={() => void downloadAgentFile(selected)}
-                  />
-                  <DockIconButton label="Close Agent File preview" icon={X} autoFocus onClick={closePreview} />
-                </div>
-              </div>
-              <div className="agent-files-modal-preview">{previewBody(selected)}</div>
-            </div>
-          </div>
-        ) : null}
+        {selected ? <AgentFilePreviewDialog artifact={selected.artifact} paneTitles={paneTitles} onClose={closePreview} /> : null}
+
+        {detailsEntry ? <FileInfoDialog artifactId={detailsEntry.artifact.id} filename={detailsEntry.filename} onClose={() => setDetailsEntry(null)} /> : null}
 
         {movingEntry ? (
           <div

@@ -92,6 +92,8 @@ export class BrowserHostClient {
   stopCapture(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob> { return this.request("stopCapture", { pane, jobId, traceId, context }) as Promise<BrowserCaptureJob>; }
   cancelCapture(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob> { return this.request("cancelCapture", { pane, jobId, traceId, context }) as Promise<BrowserCaptureJob>; }
   diagnostics(pane: Pane, includeNetwork: boolean, limit: number): Promise<BrowserHostDiagnostics> { return this.request("diagnostics", { pane, includeNetwork, limit }) as Promise<BrowserHostDiagnostics>; }
+  vaultTarget(pane: Pane): Promise<unknown> { return this.request("vaultTarget", { pane }); }
+  vaultFill(pane: Pane, request: unknown, traceId: string): Promise<unknown> { return this.request("vaultFill", { pane, request, traceId }); }
   checkGoogleAccount(identity: BrowserHostGoogleAccountIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<BrowserHostGoogleAccountCheck> {
     return this.request("checkGoogleAccount", { identity, launch, context }) as Promise<BrowserHostGoogleAccountCheck>;
   }

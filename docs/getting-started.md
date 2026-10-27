@@ -199,6 +199,10 @@ The default installation roots are:
 To isolate an installation or clean-room test, set `SPACEAPP_HOME` to an
 absolute path before every launcher command.
 
+Before it first uses a SpaceApp version, the launcher checks its images' provenance on ghcr.io. Behind a proxy it
+uses `HTTPS_PROXY` and `NO_PROXY`, or else the proxy in `~/.docker/config.json`. On an air-gapped host,
+`SPACEAPP_IMAGE_VERIFY=off` skips that check; every launcher command then prints a warning.
+
 ## Register a workspace
 
 SpaceApp mounts no host project by default. Register only directories the CLI
@@ -227,10 +231,17 @@ Adding a workspace grants the application CLIs access to that host directory.
 Repository files are untrusted input, so review the project and its agent
 instructions before allowing tools to operate on it.
 
-Apply the updated mount list to the running stack:
+`workspace add` and `workspace remove` apply the change to the running
+services. Run `npx --yes run-spaceapp@latest up` only if the command says the
+services could not pick it up.
+
+On Linux the CLIs run as uid 10001 inside Docker, and a mounted folder keeps its
+host owner. When they cannot write to it, `workspace add` prints the command that
+gives them access without changing the owner (install the `acl` package if
+`setfacl` is missing):
 
 ```bash
-npx --yes run-spaceapp@latest up
+sudo setfacl -R -m u:10001:rwX -m u:$(id -u):rwX -m d:u:10001:rwX -m d:u:$(id -u):rwX /home/alice/code/example
 ```
 
 ## First browser setup
@@ -282,6 +293,11 @@ npx --yes run-spaceapp@latest provider install claude
 npx --yes run-spaceapp@latest credentials set claude
 npx --yes run-spaceapp@latest credentials set gemini
 ```
+
+`credentials set claude` and `credentials set codex` store an Anthropic and an
+OpenAI API key; OpenCode uses the same two keys for its Anthropic and OpenAI
+models (choose them with `/models`). `credentials set opencode` takes an
+OpenCode Zen key only.
 
 Credentials are never accepted as command-line arguments. See
 [CLI providers](cli-providers.md) for bundled versus owner-installed versions,

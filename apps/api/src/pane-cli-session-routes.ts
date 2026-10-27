@@ -23,8 +23,9 @@ import {
   makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown } from "./agent-bootstrap.js";
+import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown, buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, SECURITY_COPILOT_CLAUDE_SETTINGS } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
+import { isCliPane } from "./pane-guards.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
 import { claudeNativeSessionIdPattern, loadClaudeNativeTurns } from "./claude-native-turns.js";
 import { isCliAccountProfileRuntimeId } from "./cli-account-profile-runtimes.js";
@@ -39,7 +40,7 @@ import {
   type createAgentRuntimeRegistryCache, discoverAgentRuntimes, findRuntime, isCliRuntimeTerminalLaunchable
 } from "./cli-runtimes.js";
 import { type CliTerminalManager, resolveCodexCliLaunchSettings, supportsNativeCliResume } from "./cli-terminal.js";
-import type { CodexCliModeDefaultsService } from "./codex-cli-mode-defaults.js";
+import { codexChoosesDefaults as codexChoosesOwnDefaults, type CodexCliModeDefaultsService } from "./codex-cli-mode-defaults.js";
 import type { SpaceApiConfig } from "./config.js";
 import {
   clearGeminiPaneConversation, geminiNativeConversationIdPattern, readGeminiNativeConversationIdFromProcessTree,
@@ -58,6 +59,7 @@ import type { SpaceControl } from "./space-control.js";
 import { isAllowedImageMime, sniffImageMime } from "./upload-media.js";
 import { recordUploadedArtifact } from "./upload-record.js";
 import { descriptorPath, openWorkspacePath } from "./workspace-filesystem.js";
+import { CLAUDE_GATEWAY_PROFILE } from "./claude-limit-move.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -192,7 +194,8 @@ function buildCliWorkspacePath(input: { workspaceRoot: string; roomId: string; p
 
 async function writeCliWorkspaceBootstrap(
   sessionCwd: string,
-  input: { roomId: string; paneId: string; sessionId: string; runtimeId: string; paneMode?: Pane["mode"] | null }
+  input: { roomId: string; paneId: string; sessionId: string; runtimeId: string; paneMode?: Pane["mode"] | null;
+    publicMemoryFiles?: { indexPath: string; monthlyPath: string } | null }
 ): Promise<void> {
   await writeFile(
     join(sessionCwd, "AGENTS.md"),
@@ -201,7 +204,8 @@ async function writeCliWorkspaceBootstrap(
       paneId: input.paneId,
       cliSessionId: input.sessionId,
       runtimeId: input.runtimeId,
-      paneMode: input.paneMode ?? null
+      paneMode: input.paneMode ?? null,
+      publicMemoryFiles: input.publicMemoryFiles ?? null
     }),
     { encoding: "utf8", mode: 0o640 }
   );
@@ -230,6 +234,32 @@ async function writeCliWorkspaceBootstrap(
       buildFreelanceCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
+  } else if (input.paneMode === "DESIGN") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildDesignPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "APP_STUDIO") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildAppStudioPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "VIDEO") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildVideoPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "SECURITY_COPILOT") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildSecurityCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+    await mkdir(join(sessionCwd, ".claude"), { recursive: true });
+    await writeFile(join(sessionCwd, ".claude", "settings.json"), SECURITY_COPILOT_CLAUDE_SETTINGS, { encoding: "utf8", mode: 0o640 });
   }
 }
 
@@ -273,11 +303,17 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
   cliAccountBalancer?: Pick<CliAccountBalancer, "pick" | "isAuto" | "setAuto">;
   /** A pending resume (reopened pane, new Job Copilot pane) finishes before a fresh session can start. */
   cliPaneReopener?: Pick<CliPaneReopener, "settled">;
+  /** Multi-user: true when the pane's CLI runs in its user's own container (cli-user-hosts.ts). */
+  onUserCliHost?: (paneId: string) => Promise<boolean>;
+  /** A Claude pane the operator put on a direct account stays there at a usage limit (claude-limit-move.ts). */
+  claudeDirectPins?: { set(paneId: string, pinned: boolean): Promise<void> };
 }) {
   const { config, deletingCliAccountProfileKeys, cliAccountProfileKey, store, eventBus, codexCliModeDefaultsService,
     spaceAgentAdapter, cliRuntimeRegistryCache, cliTerminalManager, assertCliHttpMutationControl,
     cliRuntimeVisibility, resolveOpenCodeServerControl, resumePaneCliTask, spaceControl, assertRootAdmin,
-    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener } = options;
+    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener, onUserCliHost } = options;
+  // Public CLI images have neither /opt/spaceapp/docs nor the memory bridge; their bootstrap names the memory files the core uses.
+  const publicMemoryFiles = config.publicDistribution ? { indexPath: config.spaceMemoryIndexPath, monthlyPath: config.spaceMemoryMonthlyPath } : null;
   const paneCliSessionStartTails = new Map<string, Promise<void>>();
   function serializePaneCliSessionStart<T>(
     operation: (request: FastifyRequest) => Promise<T>
@@ -378,6 +414,11 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     const requestedAccountProfileId = isCliAccountProfileRuntimeId(runtime.id) && input.accountProfileId !== "main"
       ? input.accountProfileId ?? null
       : null;
+    // The operator's own pick of another Claude account in the pane (its account picker restarts the CLI): a direct one is kept.
+    if (runtime.id === "cli:claude" && input.forceRestart && input.accountProfileId !== undefined && active
+      && (active.accountProfileId ?? null) !== requestedAccountProfileId) {
+      await options.claudeDirectPins?.set(pane.id, requestedAccountProfileId !== CLAUDE_GATEWAY_PROFILE);
+    }
     if (input.resume && (!input.forceRestart || !supportsNativeCliResume(runtime.id))) {
       throw new SpaceConflictError(
         input.forceRestart
@@ -460,6 +501,13 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     if (config.publicDistribution && (!requestedCwd || requestedCwd === "/etc" || requestedCwd === "/opt/spaceapp")) {
       requestedCwd = publicRoomWorkspacePath(config.cliWorkspaceRoot, pane.roomId);
     }
+    // Multi-user: a user's own CLI container sees only its own /workspaces, never the folders this core makes (room
+    // and session folders), so the CLI starts in the workspace root unless the pane names one of the user's folders.
+    const onUserHost = await onUserCliHost?.(pane.id) === true;
+    if (onUserHost && (!requestedCwd || !pathInside(config.cliWorkspaceRoot, requestedCwd)
+      || requestedCwd === publicRoomWorkspacePath(config.cliWorkspaceRoot, pane.roomId))) {
+      requestedCwd = config.cliWorkspaceRoot;
+    }
     const directCodexParity = isCodexDirectParityRuntime(runtime.id);
     const directOperatorParity = isDirectOperatorParityRuntime(runtime.id);
     // Status reasons name the runtime that actually restarted (e.g. "Qoder CLI"), never a hard-coded fallback.
@@ -495,8 +543,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     // must never reinterpret stale pane/model state as permission to terminate that process.
     const preserveActiveCodex = Boolean(reusableSession && directCodexParity);
     const rollingClientGenericReasoningEcho = input.modelId === undefined && input.reasoningEffort === "medium";
-    // Public installs have no Codex app-server to ask for its defaults: Codex resolves them itself at launch.
-    const codexChoosesDefaults = config.publicDistribution === true;
+    const codexChoosesDefaults = codexChoosesOwnDefaults(config);
     const codexBuildDefaults = directCodexParity && !preserveActiveCodex && !codexChoosesDefaults
       ? await codexCliModeDefaultsService.build()
       : null;
@@ -520,7 +567,17 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
       : input.modelId === undefined
         ? undefined
         : input.modelId ?? runtime.defaultModelId ?? null;
-    const requestedManagedWorkspace = directOperatorParity ? false : shouldUseManagedCliWorkspace(requestedCwd, config.cliWorkspaceRoot);
+    // Session folders and their bootstrap are for agent CLIs; the operator's root shell starts in the pane's own folder.
+    // A rail-tab CLI (copilots, Design, App Studio, Video) gets one even on a parity runtime, so its pane persona loads (Nous decision
+    // 2026-10-24); a restart or resume keeps the folder its conversation lives in (Claude keeps conversations per folder).
+    const railTab = isCliPane(pane) && pane.mode !== "TERMINAL" && !onUserHost && runtime.id !== "cli:root";
+    const railTabCarriedCwd = railTab && (input.forceRestart || input.resume) && active?.cwd && pathInside(config.cliWorkspaceRoot, active.cwd) ? active.cwd : null;
+    // Shared folders no pane owns (/opt/spaceapp, /etc, the workspace root): /etc is where Agent Proof rooms start their panes.
+    const railTabWorkspace = railTab && !railTabCarriedCwd
+      && (shouldUseManagedCliWorkspace(requestedCwd, config.cliWorkspaceRoot) || resolve(requestedCwd ?? "/") === "/etc");
+    const requestedManagedWorkspace = railTabWorkspace || (directOperatorParity || onUserHost || runtime.id === "cli:root"
+      ? false
+      : shouldUseManagedCliWorkspace(requestedCwd, config.cliWorkspaceRoot));
     const activeCodexReasoningEffort = active
       ? reasoningEffortSchema.safeParse(active.reasoningEffort).data
       : undefined;
@@ -614,7 +671,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
       );
     }
     const nextSessionId = reusableSession?.sessionId ?? makeSpaceId("cli_session");
-    let sessionCwd = directOperatorParity
+    let sessionCwd = railTabCarriedCwd ?? (directOperatorParity && !railTabWorkspace
       ? resolveDirectOperatorParityCwd(requestedCwd, config.cliWorkspaceRoot)
       : requestedManagedWorkspace
         ? buildCliWorkspacePath({
@@ -623,13 +680,17 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
             paneId: pane.id,
             sessionId: nextSessionId
           })
-        : requestedCwd;
-    if (!reusableSession && sessionCwd) {
+        : requestedCwd);
+    // This core's filesystem says nothing about a user's own container (multi-user), so it neither creates nor checks there.
+    if (!reusableSession && sessionCwd && !onUserHost) {
       try {
         if (!existsSync(sessionCwd) && await mayCreateCliSessionDirectory({
           cwd: sessionCwd, role: request.user?.role, projectsRoot: config.projectsRoot, installRoot: config.installRoot,
           worktreesRoot: WORKTREES_ROOT, workspaceRoot: config.cliWorkspaceRoot
         })) await mkdir(sessionCwd, { recursive: true, mode: 0o750 });
+        // The API makes the folder as its own user; a rail-tab CLI runs as the CLI user in the folder's group and works in it
+        // (stable 2026-10-24: role.txt EACCES in a 0750 session folder). Explicit chmod: the API's umask would strip group write.
+        if (railTabWorkspace && pathInside(config.cliWorkspaceRoot, sessionCwd)) await chmod(sessionCwd, 0o770);
         if (sessionCwd.startsWith("/opt/spaceapp/projects/") && existsSync(sessionCwd) && !existsSync(join(sessionCwd, ".git"))) {
           await execFileAsync("git", ["init", "-b", "main", sessionCwd]);
         }
@@ -654,7 +715,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
           paneId: pane.id,
           sessionId: nextSessionId,
           runtimeId: runtime.id,
-          paneMode: pane.mode
+          paneMode: pane.mode,
+          publicMemoryFiles
         });
       }
     }
@@ -664,7 +726,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
         paneId: reusableSession.paneId,
         sessionId: reusableSession.sessionId,
         runtimeId: reusableSession.runtimeId,
-        paneMode: pane.mode
+        paneMode: pane.mode,
+        publicMemoryFiles
       });
     }
     if (
@@ -682,7 +745,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
         request.requestIdForSpace
       );
     }
-    if (!reusableSession && sessionCwd && pane.cwd !== sessionCwd) {
+    // A rail-tab pane keeps its own folder: each new session gets a fresh workspace from it.
+    if (!reusableSession && sessionCwd && pane.cwd !== sessionCwd && !railTabWorkspace && !railTabCarriedCwd) {
       await store.updatePane(
         pane.id,
         { cwd: sessionCwd },

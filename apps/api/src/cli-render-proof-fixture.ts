@@ -1,16 +1,35 @@
 import type { CliHostGateway } from "./cli-terminal.js";
 import { CliHostClient, type CliHostIdentity } from "@space/cli-host";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
-import type { Pane, PaneCliSession } from "@space/contracts";
+import { warmMixedProofManifests, type WarmMixedProofProfile, type Pane, type PaneCliSession } from "@space/contracts";
 
 export const warmCapacityProofDescription = "Fixed sixteen-terminal warm capacity fixture. [WARM_CAPACITY:v1]";
 export const cliRenderProofDescription = "Fixed synthetic CLI render fixture. [CLI_RENDER:v1]";
+export const warmMixedProofDescriptions = Object.freeze(Object.fromEntries(
+  Object.keys(warmMixedProofManifests).map(profile => [profile, `Fixed mixed switch fixture. [${profile}:v1]`])
+) as Record<WarmMixedProofProfile,string>);
+export function mixedProofProfileForDescription(description: string | null | undefined): WarmMixedProofProfile | null {
+  return (Object.keys(warmMixedProofDescriptions) as WarmMixedProofProfile[]).find(profile => warmMixedProofDescriptions[profile] === description) ?? null;
+}
+export function mixedProofPanesMatch(profile: WarmMixedProofProfile, roomId: string, panes: readonly Pane[]): boolean {
+  const modes = warmMixedProofManifests[profile];
+  return panes.length === modes.length && new Set(panes.map(pane=>pane.id)).size === modes.length && panes.every((pane,index)=>
+    pane.roomId === roomId && pane.mode === modes[index] && !pane.isClosed && !pane.isMinimized &&
+    pane.title === `Mixed ${profile.slice(-1)} ${index + 1}` &&
+    pane.terminalRuntimeId === (modes[index] === "BROWSER" ? null : "cli:codex") &&
+    pane.cwd === (modes[index] === "BROWSER" ? null : "/tmp"));
+}
 export const cliRenderProofRuntimeIds = ["cli:codex", "cli:gemini", "cli:opencode"] as const;
 export type CliRenderProofRuntimeId = typeof cliRenderProofRuntimeIds[number];
 export const isCliRenderProofRuntimeId = (value:string|null|undefined): value is CliRenderProofRuntimeId => cliRenderProofRuntimeIds.includes(value as CliRenderProofRuntimeId);
 export async function isCliRenderProofSession(store:SpaceStore,session:PaneCliSession):Promise<boolean> {
   if(session.purpose!=="NORMAL"||session.cwd!=="/tmp"||!isCliRenderProofRuntimeId(session.runtimeId))return false;
   const room=await store.getRoom(session.roomId);
+  const mixed = mixedProofProfileForDescription(room.description);
+  if (mixed) {
+    const panes = await store.listPanes(room.id);
+    return room.kind === "AGENT_PROOF" && session.runtimeId === "cli:codex" && mixedProofPanesMatch(mixed,room.id,panes) && panes.some(pane=>pane.id===session.paneId && pane.mode!=="BROWSER");
+  }
   return room.kind==="AGENT_PROOF"&&[cliRenderProofDescription,warmCapacityProofDescription].includes(room.description??"");
 }
 const identity = (session: PaneCliSession): CliHostIdentity => ({cliSessionId:session.sessionId,paneId:session.paneId,roomId:session.roomId,runtimeId:session.runtimeId,codexThreadId:session.codexThreadId,modelId:session.modelId,reasoningEffort:session.reasoningEffort});
@@ -20,11 +39,14 @@ async function withHost<T>(socketPath:string, supplied:CliHostGateway|undefined,
 }
 export async function createCliRenderProofFixture(store:SpaceStore,pane:Pane,traceId:string,socketPath:string,host?:CliHostGateway) {
   const room=await store.getRoom(pane.roomId);
-  if(room.kind!=="AGENT_PROOF"||![cliRenderProofDescription,warmCapacityProofDescription].includes(room.description??"")||!isCliRenderProofRuntimeId(pane.terminalRuntimeId))throw new SpaceConflictError("CLI render fixture requires an isolated allowlisted proof pane.");
+  const mixed = mixedProofProfileForDescription(room.description);
+  const mixedPanes = mixed ? await store.listPanes(room.id) : [];
+  if (mixed && (!mixedProofPanesMatch(mixed,room.id,mixedPanes) || !mixedPanes.some(p=>p.id===pane.id && p.mode!=="BROWSER"))) throw new SpaceConflictError("Mixed fixture pane set changed.");
+  if(room.kind!=="AGENT_PROOF"||(!mixed && ![cliRenderProofDescription,warmCapacityProofDescription].includes(room.description??""))||!isCliRenderProofRuntimeId(pane.terminalRuntimeId))throw new SpaceConflictError("CLI render fixture requires an isolated allowlisted proof pane.");
   // Resolve from the versioned API bundle, never caller input or the current cwd.
   const fixtureUrl=new URL("../../../scripts/cli-render-fixture.mjs",import.meta.url);
   const {fixtureProgram}=await import(fixtureUrl.href) as {fixtureProgram:()=>string};
-  const warmCapacity = room.description === warmCapacityProofDescription;
+  const warmCapacity = room.description === warmCapacityProofDescription || mixed !== null;
   if (warmCapacity && pane.terminalRuntimeId !== "cli:codex") throw new SpaceConflictError("Warm capacity runtime changed.");
   const runtimeName=pane.terminalRuntimeId.slice(4);
   const session=await store.createPaneCliSession({paneId:pane.id,roomId:pane.roomId,runtimeId:pane.terminalRuntimeId,providerId:runtimeName,agentId:runtimeName,modelId:null,reasoningEffort:"low",launchMode:"FRESH",cwd:"/tmp",codexThreadId:null,status:"IDLE",statusReason:"Fixed synthetic CLI render fixture; no AI provider task."},traceId);
@@ -38,9 +60,10 @@ export async function createCliRenderProofFixture(store:SpaceStore,pane:Pane,tra
     }
   });
 }
-export async function startCliRenderProofFixture(store:SpaceStore,roomId:string,socketPath:string,host?:CliHostGateway) {
+export async function startCliRenderProofFixture(store:SpaceStore,roomId:string,socketPath:string,host?:CliHostGateway,mode?:"COMPOSER") {
   const room=await store.getRoom(roomId),panes=await store.listPanes(roomId);
   if(room.kind!=="AGENT_PROOF"||room.description!==cliRenderProofDescription||![1,3].includes(panes.length))throw new SpaceConflictError("CLI render fixture scope changed.");
+  if(mode==="COMPOSER"&&(panes.length!==1||panes[0]!.terminalRuntimeId!=="cli:codex"))throw new SpaceConflictError("Composer proof requires one fixed Codex fixture.");
   const sessions=await Promise.all(panes.map(pane=>store.getActivePaneCliSession(pane.id)));
   if(sessions.some((session,index)=>!session||session.status!=="RUNNING"||session.cwd!=="/tmp"||!isCliRenderProofRuntimeId(session.runtimeId)||session.runtimeId!==panes[index]!.terminalRuntimeId))throw new SpaceConflictError("CLI render fixture session unavailable.");
   return withHost(socketPath,host,async client=>{
@@ -48,7 +71,7 @@ export async function startCliRenderProofFixture(store:SpaceStore,roomId:string,
     for(const session of sessions) {
       if(!session||!await client.inspect(identity(session)))throw new SpaceConflictError("Fixture expired; it cannot be respawned by this control.");
       const attached=await client.attach({identity:identity(session),afterSequence:Number.MAX_SAFE_INTEGER});
-      try{await client.input(identity(session),attached.attachmentId,"SPACE_RENDER_START\n","hidden",`cli-render:${session.sessionId}`);started.push({sessionId:session.sessionId,runtimeId:session.runtimeId});}
+      try{await client.input(identity(session),attached.attachmentId,mode==="COMPOSER"?"SPACE_LOCAL_COMPOSER_START\n":"SPACE_RENDER_START\n","hidden",`cli-render:${mode==="COMPOSER"?"composer:":""}${session.sessionId}`);started.push({sessionId:session.sessionId,runtimeId:session.runtimeId});}
       finally{await client.detach(identity(session),attached.attachmentId);}
     }
     return {started:true,sessions:started};

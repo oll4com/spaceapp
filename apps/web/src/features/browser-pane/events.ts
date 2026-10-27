@@ -20,9 +20,9 @@ export const BROWSER_PANE_ACCOUNT_SELECTED_EVENT = "space:browser-pane-account-s
 
 /** The operator took or gave back a pane browser's control lease; the detail is { paneId, held }. */
 export const BROWSER_PANE_CONTROL_EVENT = "space:browser-pane-control";
-/** An operator who pressed nothing for this long gives the browser back (operator decision 2026-10-15: 2 minutes), so an
+/** An operator who pressed nothing for this long gives the browser back (operator decision 2026-10-24: 60 s, was 2 minutes), so an
  * ended handoff cannot lock the agent out. Same value as the API's BROWSER_CONTROL_IDLE_RELEASE_MS. */
-export const BROWSER_CONTROL_IDLE_RELEASE_MS = 2 * 60_000;
+export const BROWSER_CONTROL_IDLE_RELEASE_MS = 60_000;
 
 const heldBrowserControl = new Set<string>();
 

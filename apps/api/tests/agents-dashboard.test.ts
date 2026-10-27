@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
-import { claudeDashboardActivity, createCliDashboardActivityReader, DASHBOARD_SCREEN_SETTLE_MS, dashboardScreenState, openCodeDashboardActivity, readDashboardActivity, type CliDashboardActivityReaders } from "../src/agents-dashboard.js";
+import { claudeDashboardActivity, cliUsageLimited, createCliDashboardActivityReader, DASHBOARD_SCREEN_SETTLE_MS, dashboardScreenState, openCodeDashboardActivity, readDashboardActivity, type CliDashboardActivityReaders } from "../src/agents-dashboard.js";
 
 describe("dashboard native activity", () => {
   it("reports three working native tasks even when every persisted pane is idle", async () => {
@@ -32,6 +32,18 @@ describe("dashboard native activity", () => {
     expect(result.details[login.id]).toMatchObject({ reason: "Sign-in session" });
     expect(read).not.toHaveBeenCalled();
     expect(await store.getActivePaneCliSession(idle.id)).toBeNull();
+  });
+  it("reads the CLI of copilot, Design, App Studio and Video panes, whose terminal is a rail tab", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Dashboard", initialPaneCount: 0 });
+    const modes = ["APP_STUDIO", "DESIGN", "VIDEO", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_APPLY"] as const;
+    const panes = modes.map((mode) => store.createPane({ roomId: room.id, title: mode, mode, terminalRuntimeId: "cli:claude" }));
+    for (const pane of panes) store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "anthropic", agentId: "claude", purpose: "NORMAL", status: "RUNNING" });
+    const browser = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
+    const read = vi.fn(async () => "working" as const);
+    const result = await readDashboardActivity([...panes, browser], store, read);
+    expect(result.activity).toEqual(Object.fromEntries(panes.map((pane) => [pane.id, "working"])));
+    expect(read).toHaveBeenCalledTimes(panes.length);
   });
   it("correctly propagates working status for OpenCode parity sessions", async () => {
     const store = new InMemorySpaceStore();
@@ -236,6 +248,23 @@ describe("dashboard native activity", () => {
     expect(dashboardScreenState(expectations.find(([name]) => name === "muse sign-in")![1])).toMatchObject({ rule: "approval", reason: "Sign-in required" });
     // A new turn after the failure reads as working even while the old error is still on screen.
     expect(dashboardScreenState(reasonix("  Insufficient Balance (request_id: <token>)\n  ⣽ working · 1s")).state).toBe("RUNNING");
+  });
+  it("reads a Claude pane's usage limit from its transcript (this session, until the reset), else from the screen", () => {
+    // The three ways Claude Code says it (operator, 2026-10-20), above its empty composer.
+    const composer = "\n────\n❯ \n────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+    for (const said of ["  ⎿  You've hit your session limit · resets 6:30pm (Europe/Athens)", "  ⎿  Claude usage limit reached. Your limit will reset at 8pm.",
+      "  Automatic continue cancelled · /rate-limit-options"]) {
+      expect(dashboardScreenState(said + composer)).toMatchObject({ state: "WAITING_FOR_INPUT", reason: "Usage limit" });
+    }
+    const screen = "  ⎿  You've hit your session limit · resets 6:30pm (Europe/Athens)" + composer;
+    const now = Date.parse("2026-10-20T14:00:00.000Z");
+    const limit = { at: "2026-10-20T13:55:00.000Z", resetsAt: "2026-10-20T15:30:00.000Z" };
+    expect(cliUsageLimited(screen, null, null, now)).toBe(true);
+    expect(cliUsageLimited(composer, { rateLimit: limit }, "2026-10-20T13:00:00.000Z", now)).toBe(true);
+    // The transcript moved on, a later session (moved or restarted) has not hit it, or the reset passed: the old screen text does not count.
+    expect(cliUsageLimited(screen, { rateLimit: null }, null, now)).toBe(false);
+    expect(cliUsageLimited(screen, { rateLimit: limit }, "2026-10-20T13:58:00.000Z", now)).toBe(false);
+    expect(cliUsageLimited(screen, { rateLimit: limit }, null, Date.parse("2026-10-20T15:31:00.000Z"))).toBe(false);
   });
   it("shows Done for screen-only CLIs once a watched turn goes quiet, and when each state began", async () => {
     let clock = Date.parse("2026-10-12T08:00:00.000Z");

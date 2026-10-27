@@ -1,7 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { defaultUserSettings, updateUserSettingsInputSchema, userSettingsSchema } from "../src/schemas.js";
+import { nousLowSpendSettingsSchema, nousSettingsInputSchema, nousSettingsSchema } from "../src/nous.js";
 
 describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
+  it("defaults existing Nous JSON to automatic low-spend settings without a migration", () => {
+    const legacy = nousSettingsSchema.parse({ enabled: true, lowTokenAutomatic: false });
+    expect(legacy.lowSpend).toMatchObject({ mode: "AUTO", cheaperModel: true, minMaxAccountsWithRoom: 2, roomRemainingPercent: 10, lowBudgetRemainingPercent: 40,
+      criticalBudgetRemainingPercent: 20, maxTurnsPerHour: 6, models: { inbox: { model: "claude-sonnet-5-5", effort: "medium" } },
+      criticalModels: { inbox: { model: "claude-haiku-5-5", effort: "medium" }, standing: { model: "claude-haiku-5-5", effort: "medium" }, helper: { model: "claude-haiku-5-5", effort: "medium" } } });
+    expect(nousSettingsInputSchema.parse({ maxTurnsPerHour: 5 })).not.toHaveProperty("lowSpend");
+  });
+
+  it("preserves an explicit cheaper-model opt-out without patching the configured models", () => {
+    const lowSpend = nousLowSpendSettingsSchema.parse({ cheaperModel: false });
+    const patch = nousSettingsInputSchema.parse({ lowSpend });
+    expect(patch.lowSpend?.cheaperModel).toBe(false);
+    expect(patch).not.toHaveProperty("models");
+    expect(userSettingsSchema.parse({ nous: patch }).nous?.lowSpend.cheaperModel).toBe(false);
+  });
+
+  it("round-trips low-spend settings independently of normal models and rejects inverted thresholds", () => {
+    for (const mode of ["AUTO", "ON", "OFF"] as const) {
+      const lowSpend = nousLowSpendSettingsSchema.parse({ mode, maxTurnsPerHour: 4 });
+      expect(nousSettingsInputSchema.parse({ lowSpend })).toEqual({ lowSpend });
+      expect(userSettingsSchema.parse({ nous: { lowSpend } }).nous?.lowSpend).toEqual(lowSpend);
+    }
+    expect(nousLowSpendSettingsSchema.safeParse({ lowBudgetRemainingPercent: 10, criticalBudgetRemainingPercent: 20 }).success).toBe(false);
+    expect(nousLowSpendSettingsSchema.safeParse({ roomRemainingPercent: 0 }).success).toBe(false);
+  });
+
+  it("round-trips CRITICAL models per kind and accepts only low or medium effort", () => {
+    const lowSpend = nousLowSpendSettingsSchema.parse({ criticalModels: {
+      inbox: { model: "claude-sonnet-5-5", effort: "low" }, standing: { model: "claude-fable-5-1", effort: "medium" }, helper: { model: "claude-opus-5-5", effort: "low" }
+    } });
+    const patch = nousSettingsInputSchema.parse({ lowSpend });
+    expect(patch).toEqual({ lowSpend });
+    expect(patch).not.toHaveProperty("models");
+    expect(userSettingsSchema.parse({ nous: patch }).nous?.lowSpend.criticalModels).toEqual(lowSpend.criticalModels);
+    for (const effort of ["high", "xhigh", "max"]) expect(nousLowSpendSettingsSchema.safeParse({ criticalModels: { inbox: { effort } } }).success).toBe(false);
+    expect(nousLowSpendSettingsSchema.parse({ criticalModels: { inbox: { effort: "low" } } }).criticalModels.inbox).toEqual({ model: "claude-haiku-5-5", effort: "low" });
+  });
   it("defaults have expected per-user cloud sync values", () => {
     expect(defaultUserSettings.docksHidden).toEqual([]);
     expect(defaultUserSettings.panesHidden).toEqual([]);
@@ -30,6 +68,14 @@ describe("userSettingsSchema & updateUserSettingsInputSchema", () => {
     const settings = userSettingsSchema.parse({ uiTheme: "liquid-glass", uiBackground: "liquid-glass" });
     expect([settings.uiTheme, settings.uiBackground]).toEqual(["liquid-glass", "liquid-glass"]);
     expect(updateUserSettingsInputSchema.parse({ uiTheme: "liquid-glass", uiBackground: "liquid-glass" })).toEqual({ uiTheme: "liquid-glass", uiBackground: "liquid-glass" });
+  });
+
+  it("accepts the Jarvis and Aira themes and their backgrounds", () => {
+    for (const id of ["jarvis", "aira"] as const) {
+      const settings = userSettingsSchema.parse({ uiTheme: id, uiBackground: id });
+      expect([settings.uiTheme, settings.uiBackground]).toEqual([id, id]);
+      expect(updateUserSettingsInputSchema.parse({ uiTheme: id, uiBackground: id })).toEqual({ uiTheme: id, uiBackground: id });
+    }
   });
 
   it("keeps the Liquid Glass tint between ultra clear (0) and fully tinted (100), 50 by default", () => {

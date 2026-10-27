@@ -6,7 +6,9 @@ import { getApiConfig } from "../src/config.js";
 import { isCliBridgeRoutePath } from "../src/cli-bridge-paths.js";
 
 // Review F13 (2026-10-14): every route that answers a request without a session is listed
-// in fixtures/routes-without-session.json, so a new unauthenticated surface needs review.
+// in fixtures/routes-without-session.json, so a new unauthenticated surface needs review. Its "<METHOD> *" entries are
+// Fastify's built-in not-found handler (fastify/lib/four-oh-four.js, it answers 404, never data); the ":token*" demo
+// preview routes check their own preview token (security addendum step 12 traced both).
 const fixtureUrl = new URL("./fixtures/routes-without-session.json", import.meta.url);
 
 // printRoutes() prints a radix tree: each line holds a segment below its parent (4 columns per level).

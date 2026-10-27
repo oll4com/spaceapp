@@ -203,20 +203,30 @@ function countsLabel(value: unknown): string {
 }
 
 /** Space Control actions that only the operator may approve, or that need their explicit yes. */
-export function roomAgentControlRisk(tool: string, args: Record<string, unknown>): { level: "SAFE" | "DESTRUCTIVE" | "PROTECTED"; reason: string | null } {
+/** What a Space Control operation is, by its type (hardening plan step 12): the wording of its arguments never lowers it. */
+export type ControlActionClass = { level: "SAFE" | "DESTRUCTIVE" | "PROTECTED"; category: "RELEASE" | "DESTRUCTIVE" | "EXTERNAL" | null; reason: string | null };
+export function controlActionClass(kind: string, operation: string): ControlActionClass {
+  if (kind === "resource" && operation === "ops.deploy") return { level: "PROTECTED", category: "RELEASE", reason: "Deploys go only through the merge queue, by the operator." };
+  if (kind === "resource" && ["files.publish", "media.publish"].includes(operation)) return { level: "DESTRUCTIVE", category: "EXTERNAL", reason: operation };
+  if (kind === "pane" && ["close", "restart", "stop", "cancel"].includes(operation)) return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: `${operation} panes` };
+  if (kind === "resource" && (operation.endsWith(".delete") || ["settings.update", "settings.rollback", "ops.test", "ops.verify", "ops.proof", "access.cli"].includes(operation))) {
+    return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: operation };
+  }
+  if (kind === "clipboard" && operation === "delete") return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: "delete a clipboard record" };
+  if (["room", "cli", "vpn"].includes(kind)) return { level: "DESTRUCTIVE", category: "DESTRUCTIVE", reason: `${kind} ${operation}`.trim() };
+  return { level: "SAFE", category: null, reason: null };
+}
+
+export function roomAgentControlRisk(tool: string, args: Record<string, unknown>): ControlActionClass {
   const command = tool === "space_execute" ? args : tool === "space_schedules" ? (args.command as Record<string, unknown> | undefined) : undefined;
   const actions = Array.isArray(command?.actions) ? command!.actions as Array<Record<string, unknown>> : [];
-  let destructive: string | null = null;
+  let first: ControlActionClass | null = null;
   for (const action of actions) {
-    const kind = String(action.kind ?? "");
-    const operation = String(action.operation ?? "");
-    if (kind === "resource" && operation === "ops.deploy") return { level: "PROTECTED", reason: "Deploys go only through the merge queue, by the operator." };
-    if (kind === "pane" && ["close", "restart", "stop", "cancel"].includes(operation)) destructive ??= `${operation} panes`;
-    else if (kind === "resource" && (operation.endsWith(".delete") || ["settings.update", "settings.rollback", "files.publish", "media.publish", "ops.test", "ops.verify", "ops.proof", "access.cli"].includes(operation))) destructive ??= operation;
-    else if (kind === "clipboard" && operation === "delete") destructive ??= "delete a clipboard record";
-    else if (["room", "cli", "vpn"].includes(kind)) destructive ??= `${kind} ${operation}`.trim();
+    const risk = controlActionClass(String(action.kind ?? ""), String(action.operation ?? ""));
+    if (risk.level === "PROTECTED") return risk;
+    if (risk.level === "DESTRUCTIVE") first ??= risk;
   }
-  return destructive ? { level: "DESTRUCTIVE", reason: destructive } : { level: "SAFE", reason: null };
+  return first ?? { level: "SAFE", category: null, reason: null };
 }
 
 function operationOutcome(operation: ControlOperation, done: string, failure: string): RoomAgentToolOutcome {
@@ -230,6 +240,8 @@ function operationOutcome(operation: ControlOperation, done: string, failure: st
       results: operation.results.map((result) => ({ paneId: result.paneId ?? null, status: result.status, detail: result.detail })) })
   };
 }
+
+const SET_MODEL_READY_WAIT_MS = 20_000;
 
 export function createRoomAgentTools(deps: RoomAgentToolDeps) {
   async function resolvePanes(ctx: RoomAgentToolContext, refs: string[], prefer: "OPEN" | "CLOSED" = "OPEN") {
@@ -259,13 +271,25 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     return operationOutcome(operation, done, failure);
   }
 
-  async function settleMonitorEvents(ctx: RoomAgentToolContext, pane: Pane, decision: string) {
+  async function settleMonitorEvents(ctx: RoomAgentToolContext, pane: Pane, decision: string, kinds?: RoomAgentEvent["kind"][]) {
     if (!deps.monitor) return;
     const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 }).catch(() => []);
     for (const event of open) {
+      if (kinds && !kinds.includes(event.kind)) continue;
       const updated = await deps.monitor.updateEvent(event.eventId, { status: "HANDLED", decision }, ["OPEN", "ESCALATED"]).catch(() => null);
       if (updated) await deps.monitor.changed(updated).catch(() => {});
     }
+  }
+
+  /**
+   * Claude says it waits on a question (the monitor's open "Question for you") while its screen shows an empty prompt: the answer
+   * goes as its next prompt. Daily review 2026-10-22: 18 one-word answers ("1", "3") in 7 days were refused as "not waiting"; Nous
+   * then sent them with send_to_pane and the panes moved on, but the waits never counted as answered.
+   */
+  async function waitsOnTextQuestion(ctx: RoomAgentToolContext, pane: Pane): Promise<boolean> {
+    if (!deps.monitor) return false;
+    const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 }).catch(() => []);
+    return open.some((event) => event.kind === "WAITING" && /waiting: Question for you/.test(event.title));
   }
 
   const handlers: { [K in RoomAgentToolName]: (args: z.infer<typeof schemas[K]>, ctx: RoomAgentToolContext, raw: Record<string, unknown>) => Promise<RoomAgentToolOutcome> } = {
@@ -296,8 +320,15 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     async send_to_pane(args, ctx) {
       const { panes, problem } = await resolvePanes(ctx, args.panes);
       if (problem) return fail(`Could not find ${args.panes.join(", ")}`, problem);
-      return control(ctx, [{ kind: "pane", operation: "prompt", target: { paneIds: panes.map((pane) => pane.id), state: "OPEN" }, text: args.text,
-        when: args.when === "now" ? "NOW" : "AFTER_TURN" }], `Sent to ${names(panes)}`, `Could not send to ${names(panes)}`);
+      const operation = await deps.controlExecute(ctx.actorId!, { roomId: ctx.roomId, requestId: ctx.requestId, ...(ctx.confirmed ? { userExplicitlyAuthorized: true } : {}),
+        actions: [{ kind: "pane", operation: "prompt", target: { paneIds: panes.map((pane) => pane.id), state: "OPEN" }, text: args.text,
+          when: args.when === "now" ? "NOW" : "AFTER_TURN" }] });
+      // A text delivered to a pane that waited on a question or a stop answers that wait.
+      const delivered = new Set(operation.results.filter((result) => result.status === "COMPLETED" && result.paneId).map((result) => result.paneId!));
+      for (const pane of panes.filter((entry) => delivered.has(entry.id))) {
+        await settleMonitorEvents(ctx, pane, `The Room Agent sent "${args.text.trim().replace(/\s+/g, " ").slice(0, 80)}" for you.`, ["WAITING", "STUCK"]);
+      }
+      return operationOutcome(operation, `Sent to ${names(panes)}`, `Could not send to ${names(panes)}`);
     },
     async answer_pane_prompt(args, ctx, raw) {
       if (args.answer === undefined && !args.decline) return fail("No answer given", "Give an answer (or an empty string to press Enter) or decline:true.");
@@ -306,8 +337,11 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
       if (pane.mode !== "TERMINAL") return fail(`${paneName(pane)} has no prompt to answer`, "Only CLI panes have prompts to answer.");
       const observed = await deps.inspectPane(pane);
       if (!observed.sessionId) return fail(`${paneName(pane)} has no running CLI`);
-      if (!args.decline && !["WAITING_FOR_INPUT", "UNKNOWN"].includes(observed.state)) {
-        return fail(`${paneName(pane)} is not waiting for an answer`, `${paneName(pane)} is not waiting for an answer (state ${observed.state}). Read the pane again.`);
+      const textQuestion = !args.decline && observed.state === "IDLE" && Boolean(args.answer?.trim()) && await waitsOnTextQuestion(ctx, pane);
+      if (!args.decline && !textQuestion && !["WAITING_FOR_INPUT", "UNKNOWN"].includes(observed.state)) {
+        const next = observed.state === "IDLE" ? "It is at an empty prompt: send the answer as its next prompt (send_to_pane) instead."
+          : observed.state === "RUNNING" ? "Its turn is still running: send the answer with send_to_pane (after its turn)." : "Read the pane again.";
+        return fail(`${paneName(pane)} is not waiting for an answer`, `${paneName(pane)} is not waiting for an answer (state ${observed.state}). ${next}`);
       }
       const expected = typeof raw.expectedPromptFingerprint === "string" ? raw.expectedPromptFingerprint : null;
       if (ctx.confirmed && expected && observed.promptFingerprint !== expected) {
@@ -324,6 +358,14 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
             action: `Answer "${args.answer}" to ${paneName(pane)}'s prompt (${verdict.reasons.join(", ")})`,
             args: { ...args, ...(observed.promptFingerprint ? { expectedPromptFingerprint: observed.promptFingerprint } : {}) } } };
         }
+      }
+      if (textQuestion) {
+        const sent = await control(ctx, [{ kind: "pane", operation: "prompt", target: { paneIds: [pane.id], state: "OPEN" }, text: args.answer!.trim(), when: "NOW" }],
+          `Answered ${paneName(pane)}: "${args.answer!.trim().slice(0, 60)}"`, `Could not answer ${paneName(pane)}`);
+        if (!sent.ok) return sent;
+        const decision = `The Room Agent answered "${args.answer!.trim().slice(0, 80)}" for you.`;
+        await settleMonitorEvents(ctx, pane, decision);
+        return { ...sent, result: `${decision.replace("The Room Agent", "You")} ${paneName(pane)} asked it at an empty prompt, so it went as its next prompt; read it again to see the effect.` };
       }
       await deps.answerCli(pane, args.decline
         ? { sessionId: observed.sessionId, key: "ESCAPE" }
@@ -384,6 +426,12 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     async set_pane_model(args, ctx) {
       const { panes: [pane], problem } = await resolvePanes(ctx, [args.pane]);
       if (!pane) return fail(`Could not find ${args.pane}`, problem!);
+      // A just-opened CLI reads UNKNOWN until it shows its prompt (stable 2026-10-19: 32 "Native state is unknown" in 7 days).
+      if (pane.mode === "TERMINAL") {
+        for (let waited = 0; waited < SET_MODEL_READY_WAIT_MS && (await deps.inspectPane(pane).catch(() => null))?.state === "UNKNOWN"; waited += 1_000) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      }
       return control(ctx, [{ kind: "configure", target: { paneIds: [pane.id], state: "OPEN" }, modelId: args.modelId,
         ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}), when: args.when === "now" ? "NOW" : "AFTER_TURN" }],
         `Set ${paneName(pane)}'s model to ${args.modelId}${args.reasoningEffort ? ` (${args.reasoningEffort})` : ""}`, `Could not change ${paneName(pane)}'s model`);

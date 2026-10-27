@@ -16,6 +16,14 @@ export function youtubeAccountProfileKey(userId: string, profileId: string | nul
   return profileId === null ? undefined : createHash('sha256').update(JSON.stringify([userId, cliAccountProfileIdSchema.parse(profileId)])).digest('hex');
 }
 
+/**
+ * The Chrome profile Freelance Copilot panes opened for an account from 2026-10-17 until 2026-10-21, when they moved to the
+ * account's one shared profile (operator request); kept so the browser census still names a browser that runs on one.
+ */
+export function freelanceProfileKey(userId: string, profileId: string): string {
+  return createHash('sha256').update(JSON.stringify(['freelance', userId, profileId])).digest('hex');
+}
+
 export function youtubeAccountSignInUrl(email: string | null): string {
   const url = new URL('https://accounts.google.com/ServiceLogin');
   url.searchParams.set('service', 'youtube');

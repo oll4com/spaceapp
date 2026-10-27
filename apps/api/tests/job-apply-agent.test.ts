@@ -1,11 +1,13 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
+import { localArtifactFilePath } from "../src/artifact-storage.js";
+import { cvPdf, sampleJpeg } from "./fixtures/cv-photo-pdf.js";
 import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown } from "../src/agent-bootstrap.js";
 import type { MailboxFactory } from "../src/job-apply/mailbox.js";
 import { matchAnswerMemory, type JobApplyGoogleAccess } from "../src/job-apply/service.js";
@@ -36,8 +38,9 @@ async function fixture(extra: { jobApplyGoogle?: JobApplyGoogleAccess } = {}) {
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
     SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-job-apply-tests",
-    SPACE_ARTIFACT_ROOT: root
+    SPACE_ARTIFACT_ROOT: root, SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key")
   });
+  await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
   const store = new InMemorySpaceStore();
   const app = await createApp({ store, config: { ...config, jobApplyRoot: join(root, "job-apply") }, jobApplyMailboxes: mailboxes, ...extra,
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
@@ -52,7 +55,7 @@ async function fixture(extra: { jobApplyGoogle?: JobApplyGoogleAccess } = {}) {
   const cliSession = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING", purpose: "NORMAL" });
   const token = issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: cliSession.sessionId })!;
   const agent = { [cliBrowserBridgeTokenHeader]: token, "content-type": "application/json" };
-  return { app, store, room, pane, headers, agent };
+  return { app, store, room, pane, headers, agent, root };
 }
 
 describe("job copilot persona", () => {
@@ -165,6 +168,39 @@ describe("job copilot first-run setup through the bridge", () => {
   });
 });
 
+describe("job copilot CV photo (operator rule 2026-10-17)", () => {
+  it("copies the CV's photo into the copilot's own files, hands its path to the agent and records the standing rule", async () => {
+    const { app, store, headers, agent, root } = await fixture();
+    try {
+      expect((await app.inject({ method: "POST", url: "/api/job-apply/profile/photo-from-cv", headers })).statusCode).toBe(409);
+      const photo = sampleJpeg(48, 0x44);
+      const pdf = cvPdf([{ width: 940, height: 1329, filter: "/FlateDecode", data: Buffer.alloc(60) }, { width: 600, height: 600, filter: "/DCTDecode", data: photo }]);
+      const created = await store.createArtifact({ roomId: null, paneId: null, kind: "EXPORT", mimeType: "application/pdf",
+        storageUri: "space-artifact://agent-files/room_x/pane_y/session_z/2026-10-17/cv.pdf", sha256: "0".repeat(64), byteSize: pdf.length, metadata: { originalFilename: "cv.pdf" } });
+      const artifact = "artifact" in created ? created.artifact : created;
+      const cvPath = localArtifactFilePath({ artifactRoot: root, artifact });
+      await mkdir(dirname(cvPath), { recursive: true });
+      await writeFile(cvPath, pdf);
+      expect((await app.inject({ method: "PATCH", url: "/api/job-apply/profile", headers, payload: { cvArtifactId: artifact.id } })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: agent })).json().photo).toBeNull();
+
+      const saved = await app.inject({ method: "POST", url: "/api/job-apply/profile/photo-from-cv", headers });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json().photo).toMatchObject({ width: 600, height: 600, bytes: photo.length });
+      expect(saved.json().photo.path).toBeUndefined();
+      const profile = (await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: agent })).json();
+      expect(profile.photo).toMatchObject({ width: 600, height: 600 });
+      expect(profile.photo.path.startsWith(join(root, "job-apply"))).toBe(true);
+      expect((await readFile(profile.photo.path)).equals(photo)).toBe(true);
+      const memories = (await app.inject({ method: "GET", url: "/api/job-apply/memory?kinds=FACT", headers })).json().memories;
+      expect(memories).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "FACT", key: "photo", pinned: true, text: expect.stringContaining("photo.path") })]));
+      expect((await store.listAuditEvents()).some((event) => event.action === "job_apply.profile.photo_from_cv")).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("job apply agent routes", () => {
   it("queues for the agent's own Job Copilot pane, and for every Job Copilot pane when the agent works from another CLI pane", async () => {
     const { app, store, room, pane, headers, agent } = await fixture();
@@ -182,6 +218,9 @@ describe("job apply agent routes", () => {
         payload: { company: "PlanetScale", role: "Software Engineer - Postgres", ats: "greenhouse", url: "https://job-boards.greenhouse.io/planetscale/jobs/4251150009" } });
       expect(shared.statusCode).toBe(200);
       expect(shared.json().application).toMatchObject({ status: "QUEUED", paneId: null });
+      // Only queueing is open to other panes; the operator's tracker, profile and mail stay with the Job Copilot pane's agent.
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/applications", headers: foreign })).statusCode).toBe(409);
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: foreign })).statusCode).toBe(409);
 
       // The Job Copilot pane's queue lists its own row and the shared one, in queue order.
       const queue = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(pane.id)}/job-apply/queue`, headers });

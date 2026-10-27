@@ -13,7 +13,7 @@ import { DockActiveContext } from "../src/features/docks/dock-active-context.js"
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const csrfHeaderName = "x-space-csrf-token";
 const listUrl =
-  "/api/artifacts?roomId=room%3Aagent-files&collection=AGENT_FILES&pageSize=100&sortOrder=desc";
+  "/api/artifacts?collection=AGENT_FILES&pageSize=100&sortOrder=desc";
 const clearUrl = "/api/rooms/room%3Aagent-files/agent-files";
 
 const room: Room = {
@@ -116,26 +116,48 @@ describe("AgentFilesDock", () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 
-  it("clears the previous room and preview while the next room is loading", async () => {
-    let resolveNext!: (value: ReturnType<typeof paginated>) => void;
-    vi.spyOn(liveRuntime.api, "artifacts")
-      .mockResolvedValueOnce(paginated([artifact({ id: "artifact:old", mimeType: "image/png", storageUri: "space-artifact://agent-files/old.png", metadata: { source: "AGENT_OUTPUT", originalFilename: "Old room.png" } })]))
-      .mockImplementationOnce(() => new Promise((resolve) => { resolveNext = resolve; }));
-    const { rerender } = render(<AgentFilesDock activeRoom={room} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Preview Old room.png" }));
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    rerender(<AgentFilesDock activeRoom={{ ...room, id: "room:next", name: "Next" }} />);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.queryByText("Old room.png")).toBeNull();
+  it("lists Agent Files of every room, keeps them across a room switch and closes the preview", async () => {
+    let resolveFirst!: (value: ReturnType<typeof paginated>) => void;
+    const list = vi.spyOn(liveRuntime.api, "artifacts").mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }));
+    const { container, rerender } = render(<AgentFilesDock activeRoom={room} />);
     // Loading is shown once, as the kit loading state.
     expect(screen.getAllByText(/Loading/)).toHaveLength(1);
     expect(screen.getByRole("status").textContent).toContain("Loading Agent Files…");
-    await act(async () => resolveNext(paginated([])));
-    expect(screen.queryByText("Loading Agent Files…")).toBeNull();
-    expect(screen.getByRole("button", { name: "Upload files" })).toBeTruthy();
+    await act(async () => resolveFirst(paginated([
+      artifact({ id: "artifact:old", mimeType: "image/png", storageUri: "space-artifact://agent-files/old.png", metadata: { source: "AGENT_OUTPUT", originalFilename: "Old room.png" } }),
+      artifact({ id: "artifact:elsewhere", roomId: "room:elsewhere", mimeType: "text/plain", storageUri: "space-artifact://agent-files/elsewhere.txt", metadata: { source: "AGENT_OUTPUT", originalFilename: "Other room.txt" } }),
+      artifact({ id: "artifact:orphan", roomId: null, mimeType: "text/plain", storageUri: "space-artifact://agent-files/orphan.txt", metadata: { source: "AGENT_OUTPUT", originalFilename: "Deleted room.txt" } })
+    ])));
+    expect(list).toHaveBeenCalledWith({ collection: "AGENT_FILES", pageSize: 100, sortOrder: "desc" });
+    expect(screen.getByText("Other room.txt")).toBeTruthy();
+    expect(screen.getByText("Deleted room.txt")).toBeTruthy();
+    expect(summaryText(container)).toBe("3 files in all rooms");
+    fireEvent.click(screen.getByRole("button", { name: "Preview Old room.png" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    rerender(<AgentFilesDock activeRoom={{ ...room, id: "room:next", name: "Next" }} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("Old room.png")).toBeTruthy();
+    expect(screen.getByText("Other room.txt")).toBeTruthy();
+    expect(list).toHaveBeenCalledTimes(1);
+    // Clear all deletes only the active room's files, so it stays off in a room without files of its own.
+    expect((screen.getByRole("button", { name: "Clear all Agent Files" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("does not publish a late upload into the newly selected room", async () => {
+  it("keeps folders that were stored per room before Agent Files were shared", async () => {
+    localStorage.setItem("space_agent_files_custom_folders_room:a", JSON.stringify(["Releases"]));
+    localStorage.setItem("space_agent_files_custom_folders_room:b", JSON.stringify(["Docs", "Releases"]));
+    localStorage.setItem("space_agent_files_folder_map_room:b", JSON.stringify({ "artifact:apk": "Releases" }));
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated([
+      artifact({ id: "artifact:apk", mimeType: "application/octet-stream", storageUri: "space-artifact://agent-files/app.apk", metadata: { source: "AGENT_OUTPUT", originalFilename: "app.apk" } })
+    ]));
+    render(<AgentFilesDock activeRoom={room} />);
+    expect(await screen.findByText("app.apk")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Docs/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /Releases/ }));
+    expect(screen.getByText("app.apk")).toBeTruthy();
+  });
+
+  it("shows a late upload after a room switch, because Agent Files are shared", async () => {
     let resolveUpload!: (value: Awaited<ReturnType<typeof liveRuntime.api.uploadAgentFiles>>) => void;
     vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated([]));
     vi.spyOn(liveRuntime.api, "uploadAgentFiles").mockImplementationOnce(() => new Promise((resolve) => { resolveUpload = resolve; }));
@@ -144,7 +166,7 @@ describe("AgentFilesDock", () => {
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [new File(["hello"], "old.txt")] } });
     rerender(<AgentFilesDock activeRoom={{ ...room, id: "room:next" }} />);
     await act(async () => resolveUpload({ artifacts: [artifact({ id: "artifact:late", mimeType: "text/plain", storageUri: "space-artifact://agent-files/old.txt", metadata: { source: "AGENT_OUTPUT", originalFilename: "Late old file.txt" } })] }));
-    expect(screen.queryByText("Late old file.txt")).toBeNull();
+    expect(screen.getByText("Late old file.txt")).toBeTruthy();
   });
 
   it("shows a retry after a failed initial load instead of claiming the room is empty", async () => {
@@ -155,13 +177,13 @@ describe("AgentFilesDock", () => {
     expect(alert.textContent).toContain("Network unavailable");
     expect(alert.querySelector(".dock-kit-state-icon svg")).toBeTruthy();
     expect(screen.getAllByRole("alert")).toHaveLength(1);
-    expect(screen.queryByText("Drop files here or use the upload button to add files to this room.")).toBeNull();
+    expect(screen.queryByText("Drop files here or use the upload button to add files.")).toBeNull();
     fireEvent.click(within(alert).getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("button", { name: "Upload files" })).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows real filenames and provenance, previews text and DOCX safely, and reacts only to active-room Agent Files", async () => {
+  it("shows real filenames and provenance, previews text and DOCX safely, and adds new Agent Files of any room", async () => {
     const textFile = artifact({
       id: "artifact:text",
       mimeType: "text/plain",
@@ -236,13 +258,7 @@ describe("AgentFilesDock", () => {
     });
     act(() => {
       window.dispatchEvent(new CustomEvent("space:artifacts-updated", {
-        detail: { roomId: "room:other", artifacts: [newFile] }
-      }));
-    });
-    expect(screen.queryByText("report.pdf")).toBeNull();
-    act(() => {
-      window.dispatchEvent(new CustomEvent("space:artifacts-updated", {
-        detail: { roomId: room.id, artifacts: [newFile] }
+        detail: { roomId: "room:other", artifacts: [{ ...newFile, roomId: "room:other" }] }
       }));
     });
     expect(await screen.findByText("report.pdf")).toBeTruthy();
@@ -403,7 +419,7 @@ describe("AgentFilesDock", () => {
     );
 
     const { container } = render(<AgentFilesDock activeRoom={room} />);
-    await waitFor(() => expect(summaryText(container)).toBe("2 files in this room"));
+    await waitFor(() => expect(summaryText(container)).toBe("2 files in all rooms"));
     expect(screen.queryByRole("heading", { name: "Agent Files" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Agent Files fullscreen" }));
@@ -429,10 +445,11 @@ describe("AgentFilesDock", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Clear all Agent Files" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Clear all Agent Files" }));
     const clearDialog = screen.getByRole("alertdialog", { name: "Clear all Agent Files?" });
-    expect(clearDialog.textContent).toContain("Deliverables");
+    expect(clearDialog.textContent).toContain("the 1 Agent File from Deliverables");
+    expect(clearDialog.textContent).toContain("Files from other rooms stay.");
     fireEvent.click(within(clearDialog).getByRole("button", { name: "Clear all" }));
     await waitFor(() => expect(requests).toContain(`DELETE ${clearUrl}`));
-    expect(await screen.findByText("Drop files here or use the upload button to add files to this room.")).toBeTruthy();
+    expect(await screen.findByText("Drop files here or use the upload button to add files.")).toBeTruthy();
     expect(nativeConfirm).not.toHaveBeenCalled();
   });
 
@@ -474,7 +491,7 @@ describe("AgentFilesDock", () => {
     );
 
     const { container } = render(<AgentFilesDock activeRoom={room} />);
-    expect(await screen.findByText("Drop files here or use the upload button to add files to this room.")).toBeTruthy();
+    expect(await screen.findByText("Drop files here or use the upload button to add files.")).toBeTruthy();
 
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
     expect(fileInput).toBeTruthy();
@@ -889,7 +906,7 @@ describe("AgentFilesDock", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Releases folder" }));
     const dialog = screen.getByRole("alertdialog", { name: "Delete this folder?" });
-    expect(dialog.textContent).toContain("stay in this room");
+    expect(dialog.textContent).toContain("stay in Agent Files");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("tab", { name: /Releases/ })).toBeTruthy();
 
@@ -930,6 +947,36 @@ describe("AgentFilesDock", () => {
     rerender(view(true));
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shows a file's details: what a design shows, who made it and the metadata inside the file", async () => {
+    const files = [
+      artifact({ id: "artifact:design", mimeType: "image/png", storageUri: "space-artifact://agent-files/design-linkedin.png",
+        metadata: { source: "USER_UPLOAD", originalFilename: "design-linkedin.png", folder: "GRAPHICS/Design", previewKind: "IMAGE" } })
+    ];
+    vi.spyOn(liveRuntime.api, "artifacts").mockResolvedValue(paginated(files));
+    const metadata = vi.spyOn(liveRuntime.api, "artifactMetadata").mockResolvedValue({
+      artifact: { id: "artifact:design", filename: "design-linkedin.png", mimeType: "image/png", byteSize: 206184, sha256: "c".repeat(64), createdAt: "2026-10-19T05:02:21.000Z",
+        roomId: room.id, metadata: { source: "USER_UPLOAD", folder: "GRAPHICS/Design" } },
+      image: { width: 1200, height: 627 },
+      embedded: { Description: "6 AI models played chess. Zero checkmates.", Software: "SpaceApp Design", "spaceapp:design": "{}" },
+      design: { formatId: "linkedin", description: "6 AI models played chess. Zero checkmates.", madeBy: { by: "AGENT", runtimeId: "cli:claude", model: "claude-opus-5-5" }, engine: "UPLOAD" }
+    });
+    const { container } = render(<DockActiveContext.Provider value><AgentFilesDock activeRoom={room} /></DockActiveContext.Provider>);
+    expect(await screen.findByText("design-linkedin.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Agent Files fullscreen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Details of design-linkedin.png" }));
+    const dialog = await screen.findByRole("dialog", { name: "Details of design-linkedin.png" });
+    expect(metadata).toHaveBeenCalledWith("artifact:design");
+    expect(await within(dialog).findByText("6 AI models played chess. Zero checkmates.")).toBeTruthy();
+    expect(within(dialog).getByText("claude-opus-5-5 · cli:claude")).toBeTruthy();
+    expect(within(dialog).getByText(/1200 × 627 px · LinkedIn post \(matches the format\)/)).toBeTruthy();
+    expect(within(dialog).getByText("Description, Software, spaceapp:design")).toBeTruthy();
+    expect(within(dialog).getByText("USER_UPLOAD · GRAPHICS/Design")).toBeTruthy();
+    // Escape closes the dialog first; fullscreen waits for the next Escape.
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(container.querySelector(".agent-files-dock-shell.is-fullscreen")).toBeTruthy();
   });
 
   it("leaves fullscreen when the dock is hidden", async () => {
@@ -974,6 +1021,9 @@ describe("AgentFilesDock", () => {
     expect(source).toContain('import "./agent-files-dock.css";');
     expect(source).not.toContain("window.confirm");
     expect(agentFilesCss).toContain("@media (max-width: 520px)");
+    // File cards follow the dock's width, not the window's: a narrow dock on a wide screen squeezed names to "correc…".
+    expect(agentFilesCss).toContain("container: agent-files / inline-size;");
+    expect(agentFilesCss).toContain("@container agent-files (max-width: 32rem)");
     expect(agentFilesCss).toContain(".agent-files-modal-body");
     expect(agentFilesCss).not.toContain("!important");
   });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, Room } from "@space/contracts";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
+import { SpaceNotFoundError } from "@space/runtime";
 import type { DashboardActivityDetail } from "../src/agents-dashboard.js";
 import {
   createRoomAgentMonitor, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
@@ -44,7 +45,10 @@ describe("room agent monitor", () => {
     expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "Usage limit" })).toEqual({ kind: "USAGE_LIMIT", severity: "ATTENTION" });
     expect(roomMonitorTransition({ activity: "IDLE", reason: null }, { activity: "WAITING", reason: "Sign-in required" })).toEqual({ kind: "SIGN_IN", severity: "ATTENTION" });
     expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "API error" })).toEqual({ kind: "STUCK", severity: "ATTENTION" });
+    // A CLI's question for the operator is its own kind (operator decision 2026-10-24): it reaches them while Nous works.
+    expect(roomMonitorTransition({ activity: "WORKING", reason: null }, { activity: "WAITING", reason: "Question for you" })).toEqual({ kind: "QUESTION", severity: "ATTENTION" });
     expect(roomMonitorEventText("STUCK", "Cody", "API error", { title: null, summary: null }).title).toBe("Cody stopped on an API error");
+    expect(roomMonitorEventText("QUESTION", "Cody", "Question for you", { title: null, summary: null }).title).toBe("Cody has a question for you");
     expect(roomMonitorTransition({ activity: "WAITING", reason: "Permission prompt" }, { activity: "WAITING", reason: "Permission prompt" })).toBeNull();
     expect(roomMonitorTransition({ activity: "IDLE", reason: null }, { activity: "WORKING", reason: null })).toBeNull();
   });
@@ -138,6 +142,26 @@ describe("room agent monitor", () => {
     c.advance(ROOM_MONITOR_EMPTY_MS);
     await c.monitor.tick();
     expect(c.readActivity).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops a room deleted while it is read without a warning and still warns on real failures", async () => {
+    const warn = vi.fn();
+    let rooms = [room("room:gone")];
+    const readActivity = vi.fn(async (): Promise<{ data: Pane[]; details: Record<string, DashboardActivityDetail> }> => {
+      throw new SpaceNotFoundError("Room room:gone was not found.");
+    });
+    const monitor = createRoomAgentMonitor({ repository: new InMemoryRoomAgentMonitorRepository(), listRooms: async () => rooms,
+      readActivity, now: () => 1_000_000, log: { warn } });
+    await monitor.tick();
+    expect(warn).not.toHaveBeenCalled();
+    rooms = [];
+    await monitor.tick();
+    // Its schedule went with it: listed again, the room is read at once instead of after the quiet delay.
+    rooms = [room("room:gone")];
+    readActivity.mockRejectedValueOnce(new Error("database down"));
+    await monitor.tick();
+    expect(readActivity).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("records one event per overlap, reads overlaps at most once a minute and resolves an overlap that is gone", async () => {

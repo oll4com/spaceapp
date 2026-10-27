@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { RotateCcw } from "../ui-theme/app-icons.js";
 import { Clock3 } from "../ui-theme/app-icons.js";
 import {
+  allTimeZones,
+  browserTimeZone,
   defaultDateTimeSettings,
+  formatUserTime,
   DATE_FORMAT_OPTIONS,
   TIME_ZONE_GROUPS,
   useDateTimeSettings,
@@ -19,6 +22,11 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  const presets = new Set(TIME_ZONE_GROUPS.flatMap((group) => group.options.map((option) => option.value)));
+  const others = allTimeZones().filter((zone) => !presets.has(zone));
+  if (!presets.has(settings.timeZone) && !others.includes(settings.timeZone)) others.unshift(settings.timeZone);
+  const detected = browserTimeZone();
 
   const preview = formatDateTime(now, {
     includeSeconds: true,
@@ -49,13 +57,22 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
         </div>
       </div>
 
-      <label className="settings-flat-row">
+      <div className="settings-flat-row">
         <span className="settings-flat-row-copy">
-          <strong>Time zone</strong>
-          <small>Every time in Space is shown in this zone.</small>
+          <strong>Working time zone</strong>
+          <small>Every time in Space is shown in this zone, and new scheduled tasks run in it. Now: {formatUserTime(now, {}, settings)}</small>
         </span>
+        <button
+          type="button"
+          className="date-time-detect-btn"
+          title={`Use this browser's time zone (${detected})`}
+          onClick={() => updateSettings({ timeZone: detected })}
+          disabled={settings.timeZone === detected}
+        >
+          Detect
+        </button>
         <select
-          aria-label="Time zone"
+          aria-label="Working time zone"
           name="space-date-time-timezone"
           value={settings.timeZone}
           onChange={(event) => updateSettings({ timeZone: event.target.value })}
@@ -69,8 +86,13 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
               ))}
             </optgroup>
           ))}
+          {others.length ? (
+            <optgroup label="All time zones">
+              {others.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}
+            </optgroup>
+          ) : null}
         </select>
-      </label>
+      </div>
 
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">

@@ -3319,7 +3319,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
     grid-template-columns: 1fr;
   }
 }
-.resources-unified .system-analytics-workspace { position:static; inset:auto; width:auto; height:auto; max-height:none; min-width:0; overflow:visible; border:0; box-shadow:none; }
+.resources-unified .system-analytics-workspace { position:static; inset:auto; width:auto; height:auto; max-height:none; min-width:0; overflow:visible; border:0; box-shadow:none; background:transparent; }
 .resources-unified .system-analytics-body,.resources-unified .system-analytics-content{overflow:visible;max-height:none}
 .resources-unified .health-window-footer>span:nth-child(2){display:none}.resources-unified .toolbar-metric-list{max-height:none;overflow:visible}.resources-unified .toolbar-metric-provider-tabs{display:flex;flex-wrap:wrap}.resources-unified .toolbar-metric-tab-btn{flex:1 1 auto;padding-inline:0.4rem;white-space:nowrap}
 .resources-quota-window { display:flex; gap:6px; margin:12px 0 8px; }.resources-quota-window button{padding:6px 14px;font-size:12px;color:inherit;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:6px;cursor:pointer;transition:all 0.15s ease}.resources-quota-window button:hover{background:rgba(255,255,255,0.09);border-color:rgba(255,255,255,0.28)}.resources-quota-window button[aria-pressed=true],.resources-quota-window button.is-active{border:1.5px solid #53cbb5;box-shadow:0 0 0 1.5px #53cbb5;background:rgba(83,203,181,0.16);color:#53cbb5;font-weight:600}
@@ -3330,7 +3330,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-window button.is-active,
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-filters button[aria-pressed="true"],
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-filters button.is-active { background:rgba(8,127,116,0.12); border-color:#087f74; box-shadow:0 0 0 1.5px #087f74; color:#087f74; }
-@media (max-width: 768px), (pointer: coarse) {
+@media (max-width: 767px), (pointer: coarse) {
   .health-modal-backdrop:not(.is-workspace-embedded):has(.resources-unified),
   .health-modal-backdrop:not(.is-workspace-embedded) {
     padding: 0 !important;
@@ -3434,7 +3434,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
   overflow-y: auto;
 }
 
-@media (max-width: 768px), (pointer: coarse) {
+@media (max-width: 767px), (pointer: coarse) {
   :is(body, .space-shell, html):has(:focus:is(input, textarea, [contenteditable="true"], .xterm-helper-textarea)) .health-indicator-rail .health-rail-expander {
     display: inline-grid !important;
   }

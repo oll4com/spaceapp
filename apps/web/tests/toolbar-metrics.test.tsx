@@ -833,6 +833,65 @@ describe("model stats MDL badge", () => {
     expect(titles()).toEqual(["lab"]);
   });
 
+  it("shows Anthropic's bill and the last sync on the Claude API key's card", async () => {
+    const client = createClient();
+    client.claudeAccounts = vi.fn(async () => ({
+      data: [{ id: "api", label: "api", email: null, plan: null, status: "API_KEY" as const, fiveHourRemainingPercent: null, fiveHourResetAt: null,
+        weeklyRemainingPercent: null, weeklyResetAt: null, weeklyScope: null, sampledAt: null, apiKeyVerified: true, gatewayFallback: "ON" as const,
+        apiKeyUsage: { requests: 2542, costUsd: 215.08, lastUsedAt: new Date(Date.now() - 8 * 3_600_000).toISOString() } }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }, source: "space-claude-profiles", isStale: false, error: null, checkedAt: sampledAt,
+    }));
+    const day = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+    const row = (daysAgo: number, reported: boolean, organizationUsd: number, gatewayEstimateUsd: number) =>
+      ({ day: day(daysAgo), reported, organizationUsd, workspaceUsd: organizationUsd, gatewayEstimateUsd, gatewayBilledUsd: gatewayEstimateUsd, models: [] });
+    client.anthropicBilling = vi.fn(async () => ({
+      status: { configured: true, keyHint: "…pgAA", savedAt: sampledAt, lastSyncAt: new Date().toISOString(), lastError: "anthropic_http_429", upstream: [] },
+      days: [row(0, false, 0, 1.6864), row(1, true, 128.61, 130.65), row(20, true, 58.42, 0)],
+    }));
+
+    render(<ToolbarMetrics environment={environment} client={client} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    await waitFor(() => expect(client.anthropicBilling).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(panel).getByRole("tab", { name: "Claude" }));
+    const card = (await within(panel).findByText("api", { selector: ".account-quota-title" })).closest("li") as HTMLElement;
+    // The existing line stays; the bill and the sync follow it.
+    expect(within(card).getByText(/Used 2542 times through Space Gateway \(\$215\.08\), last 8h ago\./)).toBeTruthy();
+    await waitFor(() => expect(within(card).getByText(/^Anthropic bill: today \$1\.69 \(estimate\) · 7 days \$130\.30 · this month \$\d+\.\d\d · 31 days \$188\.72\.$/)).toBeTruthy());
+    expect(within(card).getByText(/^Synced \d\d:\d\d /)).toBeTruthy();
+    expect(within(card).getByText("The last sync failed (anthropic_http_429).")).toBeTruthy();
+  });
+
+  it("lists the Claude API's spend and every provider's balance, credit meter and details on the API tab", async () => {
+    const client = createClient();
+    client.apiProviderAccounts = vi.fn(async () => ({
+      data: [
+        { id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", status: "CONNECTED" as const, balance: null, currency: "USD",
+          usage: "$363.10", limit: null, remainingPercent: null, detail: "Today $61.18 (estimate) · 7 days $93.27 · 31 days $363.10", sampledAt },
+        { id: "openrouter", providerId: "openrouter", label: "OpenRouter", status: "CONNECTED" as const, balance: "$0.00", currency: "USD",
+          usage: "$15.23", limit: "$15.00", remainingPercent: 0, detail: "Credits: $15.00 · Used: $15.23", sampledAt },
+        { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "UNCONFIGURED" as const, balance: null, currency: null, detail: "No DEEPSEEK_API_KEY found", sampledAt: null },
+      ],
+      pagination: { page: 1, pageSize: 3, totalItems: 3, totalPages: 1 }, isStale: false, error: null, source: "mock" as const, checkedAt: sampledAt,
+    }));
+
+    render(<ToolbarMetrics environment={environment} client={client} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "API Providers" }));
+    const claude = (await within(panel).findByText("Claude API (Anthropic)")).closest("li") as HTMLElement;
+    expect(claude.className).toContain("is-available");
+    expect(within(claude).getByText("$363.10")).toBeTruthy();
+    expect(within(claude).getByText("Spent this month")).toBeTruthy();
+    expect(within(claude).getByText("Today $61.18 (estimate)")).toBeTruthy();
+    expect(within(claude).queryByRole("meter")).toBeNull();
+    const openRouter = within(panel).getByText("OpenRouter").closest("li") as HTMLElement;
+    expect(within(openRouter).getByText("Balance")).toBeTruthy();
+    expect(within(openRouter).getByRole("meter", { name: "Left of $15.00 remaining" }).getAttribute("aria-valuenow")).toBe("0");
+    expect(within(panel).getByText("DeepSeek").closest("li")!.className).toContain("is-offline");
+    expect(within(panel).getByText("Not set up")).toBeTruthy();
+  });
+
   it("leaves out the 5h cell of an account that has only a weekly limit", () => {
     const entry = (fiveHourRemainingPercent: number | null) => ({
       id: "a", title: "prolite@example.test", details: [], capacity: 100, availability: { state: "available" as const, backAt: null },

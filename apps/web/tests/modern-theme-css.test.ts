@@ -298,3 +298,35 @@ describe("Liquid Glass theme CSS contract", () => {
     }
   });
 });
+
+describe.each([
+  ["jarvis", ["jarvis-hud.svg", "jarvis-core.svg", "jarvis-rings.svg"]],
+  ["aira", ["aira-field.svg", "aira-core.svg", "aira-orbits.svg"]]
+])("%s theme and background CSS contract", (theme, artwork) => {
+  const css = readFileSync(resolve(testDir, `../src/features/ui-theme/${theme}-theme.css`), "utf8");
+  const palette = css.match(new RegExp(`:root\\[data-interface-theme="${theme}"\\] \\[data-ui-theme="modern"\\]\\s*\\{(?<body>[^}]*)\\}`))?.groups?.body ?? "";
+
+  it("defines every Modern palette token at WCAG AA", () => {
+    const modernTokens = [...(modernCss.match(/\[data-ui-theme="modern"\]\s*\{(?<body>[^}]*)\}/)?.groups?.body ?? "").matchAll(/(--modern-[a-z-]+):/g)].map((match) => match[1]!);
+    for (const token of modernTokens) expect(palette).toContain(`${token}:`);
+    expect(contrastRatio(readHexToken(palette, "--modern-accent"), readHexToken(palette, "--modern-surface-raised"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(palette, "--modern-faint"), readHexToken(palette, "--modern-surface-raised"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(readHexToken(palette, "--modern-on-accent"), readHexToken(palette, "--modern-accent"))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("is loaded by the app and both demo entries", () => {
+    expect(mainSource.match(new RegExp(`import\\("\\./features/ui-theme/${theme}-theme\\.css"\\)`, "g"))).toHaveLength(2);
+    for (const entry of ["../src/demo/mock-entry.tsx", "../src/demo/feature-entry.tsx"]) {
+      expect(readFileSync(resolve(testDir, entry), "utf8")).toContain(`import "../features/ui-theme/${theme}-theme.css";`);
+    }
+  });
+
+  it("ships its artwork and turns the background only on the compositor, never under reduced motion", () => {
+    for (const file of artwork) {
+      expect(classicCss).toContain(`/brand/${file}`);
+      expect(readFileSync(resolve(testDir, `../public/brand/${file}`), "utf8")).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    }
+    expect(classicCss).toMatch(/@keyframes space-core-spin\s*\{\s*to \{ rotate: 360deg; \}\s*\}/);
+    expect(classicCss).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*:root:is\(\[data-ui-background="jarvis"\], \[data-ui-background="aira"\]\) \.room-runtime-stack::after \{\s*animation: none;/);
+  });
+});

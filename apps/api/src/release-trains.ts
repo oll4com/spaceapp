@@ -13,7 +13,8 @@ const ACTOR = "space";
 const LIVE = new Set(["OPEN", "PUBLISHING"]);
 const sha = z.string().trim().regex(/^[0-9a-f]{7,40}$/i, "a git commit hash");
 
-export const releaseTrainOps = ["status", "open", "join", "leave", "candidate", "publishing", "published", "cancel"] as const;
+// approve: the operator's yes to the candidate, only through a Nous RELEASE decision (operator decision 2026-10-17).
+export const releaseTrainOps = ["status", "open", "join", "leave", "candidate", "approve", "publishing", "published", "cancel"] as const;
 export const releaseTrainInputSchema = z.object({
   op: z.enum(releaseTrainOps),
   product: z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,59}$/).default("run-spaceapp"),
@@ -32,13 +33,15 @@ export interface ReleaseTrain {
   captain: ReleaseTrainPane;
   roomId: string;
   sourceSha: string | null;
+  /** The candidate the operator approved; publishing needs it to be the current candidate. */
+  approvedSha?: string | null;
   contributors: Array<ReleaseTrainPane & { commit: string; note: string | null; addedAt: string }>;
   openedAt: string;
   updatedAt: string;
 }
 
 /** Who asks: the Room Agent or the operator name any pane; a pane acting for itself may not run the captain's steps. */
-export interface ReleaseTrainActor { roomId: string; pane: ReleaseTrainPane | null; paneSelf: boolean }
+export interface ReleaseTrainActor { roomId: string; pane: ReleaseTrainPane | null; paneSelf: boolean; /** The operator approved it in a Nous decision. */ operatorApproved?: boolean }
 
 export function isLiveTrain(train: ReleaseTrain): boolean {
   return LIVE.has(train.status);
@@ -67,7 +70,7 @@ export async function changeReleaseTrain(repo: ControlRepository, input: Release
       if (input.version && input.version !== live.version) {
         throw new SpaceConflictError(`${product} ${live.version} is the open release, not ${input.version}: join ${live.version} instead of cutting your own version.`);
       }
-      if (["candidate", "publishing", "published", "cancel"].includes(op) && by.paneSelf && by.pane?.paneId !== live.captain.paneId) {
+      if (["candidate", "approve", "publishing", "published", "cancel"].includes(op) && by.paneSelf && by.pane?.paneId !== live.captain.paneId) {
         throw new SpaceConflictError(`Only the captain (${live.captain.name}) can mark ${product} ${live.version} ${op}.`);
       }
       next = { ...live, contributors: [...live.contributors], updatedAt: at };
@@ -75,16 +78,23 @@ export async function changeReleaseTrain(repo: ControlRepository, input: Release
         if (live.status !== "OPEN") throw new SpaceConflictError(`${product} ${live.version} is already publishing: this change goes to the next release.`);
         if (!by.pane || !input.commit) throw new SpaceConflictError("Give the pane and the commit that joins the release.");
         const entry = { ...by.pane, commit: input.commit.toLowerCase(), note: input.note ?? null, addedAt: at };
-        next.contributors = [...next.contributors.filter((item) => item.commit !== entry.commit), entry].slice(-50);
+        next.contributors = [...next.contributors.filter((item) => item.commit !== entry.commit), entry];
       } else if (op === "leave") {
         if (!by.pane) throw new SpaceConflictError("Name the pane that leaves the release.");
         next.contributors = next.contributors.filter((item) => item.paneId !== by.pane!.paneId || (input.commit && item.commit !== input.commit.toLowerCase()));
       } else if (op === "candidate") {
-        if (live.status !== "OPEN") throw new SpaceConflictError(`${product} ${live.version} is already publishing.`);
+        // A train marked publishing before the operator's approval existed (stable 2026-10-17) reopens with its new candidate.
+        if (live.status !== "OPEN" && live.approvedSha === live.sourceSha) throw new SpaceConflictError(`${product} ${live.version} is already publishing.`);
         if (!input.sourceSha) throw new SpaceConflictError("Give the sourceSha the candidate is built from.");
         next.sourceSha = input.sourceSha.toLowerCase();
+        next.status = "OPEN";
+      } else if (op === "approve") {
+        if (!by.operatorApproved) throw new SpaceConflictError("Only the operator approves a release, through Nous (a RELEASE decision in the Nous dock).");
+        if (live.status !== "OPEN" || !live.sourceSha) throw new SpaceConflictError("Record the candidate (op candidate with sourceSha) before the operator approves it.");
+        next.approvedSha = live.sourceSha;
       } else if (op === "publishing") {
         if (!live.sourceSha) throw new SpaceConflictError("Record the candidate (op candidate with sourceSha) before publishing.");
+        if (live.approvedSha !== live.sourceSha) throw new SpaceConflictError(`The operator has not approved ${product} ${live.version} at ${live.sourceSha.slice(0, 10)}: ask Nous to bring the release to the operator.`);
         next.status = "PUBLISHING";
       } else {
         next.status = op === "published" ? "PUBLISHED" : "CANCELLED";
@@ -113,7 +123,8 @@ function yes(value: boolean | null): string {
 export async function releaseTrainLines(trains: ReleaseTrain[], contains: Contains = spaceRepoContains): Promise<string[]> {
   const lines: string[] = [];
   for (const train of trains) {
-    lines.push(`- ${train.product} ${train.version}: ${train.status}, captain ${train.captain.name}, candidate ${train.sourceSha ?? "not built yet"}, ${train.contributors.length} joined change${train.contributors.length === 1 ? "" : "s"}.`);
+    const approval = !train.sourceSha ? "" : train.approvedSha === train.sourceSha ? " (approved by the operator)" : " (not approved by the operator yet)";
+    lines.push(`- ${train.product} ${train.version}: ${train.status}, captain ${train.captain.name}, candidate ${train.sourceSha ?? "not built yet"}${approval}, ${train.contributors.length} joined change${train.contributors.length === 1 ? "" : "s"}.`);
     if (!isLiveTrain(train)) continue;
     for (const item of train.contributors) {
       const [inDev, inMain, inCandidate] = await Promise.all([contains(item.commit, "dev"), contains(item.commit, "main"),

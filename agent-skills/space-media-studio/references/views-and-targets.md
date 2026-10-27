@@ -8,6 +8,7 @@ These lists are the allowlists in `scripts/space-media-capture.mjs`; nothing out
 |---|---|---|---|---|
 | `desktop` | 1440x900 | 2 | 2880x1800 | desktop |
 | `desktop-hd` | 1920x1080 | 1 | 1920x1080 | desktop |
+| `desktop-4k` | 1920x1080 | 2 | 3840x2160 | desktop (stills only: video records about 7 fps) |
 | `laptop` | 1280x800 | 2 | 2560x1600 | desktop |
 | `tablet` | 820x1180 | 2 | 1640x2360 | tablet (touch) |
 | `tablet-landscape` | 1180x820 | 2 | 2360x1640 | tablet (touch) |
@@ -22,7 +23,9 @@ These lists are the allowlists in `scripts/space-media-capture.mjs`; nothing out
 | `ph-gallery` | 1270x760 | 1 | 1270x760 | desktop |
 | `yt-thumb` | 1280x720 | 1 | 1280x720 | desktop |
 
-`space_screenshot` (Space Control) takes the device presets only; `maxWidth`/`maxHeight` lower the scale to fit.
+`space_screenshot` (Space Control) takes the device presets plus `square`, `portrait` and `story`, or an `aspect`:
+`16:9` = `desktop-hd`, `1:1` = `square`, `4:5` = `portrait`, `9:16` = `story` (phone layout), `full` = `desktop`.
+`maxWidth`/`maxHeight` lower the scale to fit.
 
 ## Frames (`--frame`, with `--headline` up to 120 and `--subline` up to 200 characters)
 

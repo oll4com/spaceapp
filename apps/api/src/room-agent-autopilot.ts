@@ -2,7 +2,7 @@ import type { Pane, RoomAgentEvent } from "@space/contracts";
 import type { RoomAgentMonitorRepository } from "@space/db";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
-import { roomApprovalPromptCue } from "./room-terminal-screen.js";
+import { roomApprovalPromptCue, roomComposerEmpty } from "./room-terminal-screen.js";
 
 /**
  * The Room Agent answers its panes' questions and approval prompts by itself (operator decision 2026-10-13:
@@ -28,6 +28,8 @@ export interface RoomAgentAutopilotOptions {
   /** The model's raw reply to a decision prompt, or null when no model answered. */
   complete(systemPrompt: string, content: string): Promise<string | null>;
   onEvent?(event: RoomAgentEvent): Promise<void> | void;
+  /** True leaves the event open for Nous, the mind of SpaceApp, when the owner turned it on (operator decision 2026-10-17). */
+  deferTo?(event: RoomAgentEvent): Promise<boolean>;
   now?: () => number;
   /** Most autonomous answers per room per hour before everything goes to the operator. */
   hourlyLimit?: number;
@@ -61,11 +63,11 @@ export function promptExcerpt(screen: string): string {
 
 /**
  * The CLI is idle at an empty prompt, so typed text starts a new turn. Typing into a draft would send the
- * operator's half-written text, so only an empty prompt is ever typed into.
+ * operator's half-written text, so only an empty prompt is ever typed into; a CLI at its usage limit would only
+ * answer with the limit again (the Design queue retyped its kickoff into such panes, task:L1ThKVBvDOnU).
  */
 export function atEmptyPrompt(observed: RoomPaneObservation): observed is RoomPaneObservation & { sessionId: string; promptFingerprint: string } {
-  const tail = (observed.text ?? "").split("\n").filter((line) => line.trim()).slice(-6).join("\n");
-  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && /^[ \t\u00a0]*[❯›>][ \t\u00a0]*$/m.test(tail));
+  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && !observed.usageLimited && roomComposerEmpty(observed.text ?? ""));
 }
 
 export function parseAutopilotDecision(raw: string | null): AutopilotDecision | null {
@@ -131,7 +133,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
     if (event.kind === "STUCK") return continueStuck(event);
     if (!AUTOPILOT_KINDS.has(event.kind)) {
       const need = event.kind === "SIGN_IN" ? "Sign in to this CLI." : event.kind === "USAGE_LIMIT" ? "Switch the model or account, or wait for the limit to reset."
-        : event.kind === "ERROR" ? "Look at the pane and restart it if needed." : "Look at the pane.";
+        : event.kind === "ERROR" ? "Look at the pane and restart it if needed." : event.kind === "QUESTION" ? "Answer its question in the pane." : "Look at the pane.";
       return settle(event, "ESCALATED", `Needs you: ${need}`);
     }
     if (!event.paneId) return settle(event, "ESCALATED", "Needs you: the pane is gone.");
@@ -184,6 +186,7 @@ export function createRoomAgentAutopilot(options: RoomAgentAutopilotOptions) {
 
   async function handle(event: RoomAgentEvent): Promise<RoomAgentEvent | null> {
     if (event.status !== "OPEN" || event.severity !== "ATTENTION" || inFlight.has(event.eventId)) return null;
+    if (await options.deferTo?.(event).catch(() => false)) return null;
     inFlight.add(event.eventId);
     try {
       return await decide(event);

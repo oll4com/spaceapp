@@ -4,6 +4,7 @@ import type { GatewayAccount, GatewayLanMode, GatewayRoutingStrategy, GatewaySet
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 import { accountName, planLabel, routingStrategyOptions } from "./space-gateway-model.js";
+import { AnthropicBillingSection } from "./GatewayAnthropicSection.js";
 
 type Message = { tone: "ok" | "error"; text: string } | null;
 
@@ -121,7 +122,6 @@ const transportOptions: { value: GatewayStreamTransport; label: string; descript
 ];
 
 function PoliciesSection({ settings, client, onSaved }: { settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void }) {
-  const [retention, setRetention] = useState(String(settings.requestLogRetentionDays));
   const [transport, setTransport] = useState<GatewayStreamTransport>(settings.upstreamStreamTransport);
   const [ttl, setTtl] = useState(String(Math.round(settings.promptCacheTtlSeconds / 60)));
   const [withoutOverwrite, setWithoutOverwrite] = useState(settings.importWithoutOverwrite);
@@ -131,15 +131,11 @@ function PoliciesSection({ settings, client, onSaved }: { settings: GatewaySetti
       event.preventDefault();
       const minutes = Number(ttl);
       if (!Number.isInteger(minutes) || minutes < 1) { setMessage({ tone: "error", text: "The affinity time must be a whole number of minutes." }); return; }
-      void save({ requestLogRetentionDays: Number(retention), promptCacheTtlSeconds: minutes * 60, importWithoutOverwrite: withoutOverwrite,
+      void save({ promptCacheTtlSeconds: minutes * 60, importWithoutOverwrite: withoutOverwrite,
         upstreamStreamTransport: transport });
     }}>
       <header><h3>Policies</h3></header>
       <div className="space-gateway-field-row">
-        <label className="space-gateway-field">Request log retention (days)
-          <input type="number" min={1} max={365} value={retention} onChange={(event) => setRetention(event.target.value)} />
-          <span>Older request logs are deleted every hour. Daily usage totals are kept.</span>
-        </label>
         <label className="space-gateway-field">Prompt-cache affinity (minutes)
           <input type="number" min={1} max={10080} value={ttl} onChange={(event) => setTtl(event.target.value)} />
           <span>How long a conversation stays on the account that served it after its last request, so its prompt cache is reused.</span>
@@ -211,6 +207,7 @@ export function GatewaySettingsTab({ settings, status, client, onSaved }: {
       <WarmupSection settings={settings} client={client} onSaved={onSaved} />
       <PoliciesSection settings={settings} client={client} onSaved={onSaved} />
       <LanSection settings={settings} status={status} client={client} onSaved={onSaved} />
+      <AnthropicBillingSection settings={settings} client={client} onSaved={onSaved} />
       <section className="gw-card" aria-label="Sign-in">
         <header><h3>Sign-in</h3></header>
         <p className="space-gateway-note">Space sign-in replaces a separate dashboard password, session lifetime and TOTP: only Space administrators can open Space Gateway, their sessions follow Space's sign-in rules, and every change here is recorded in the audit log.</p>

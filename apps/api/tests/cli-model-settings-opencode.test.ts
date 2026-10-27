@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { AddressInfo } from "node:net";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -9,14 +9,12 @@ import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession } from "../src/auth.js";
 import { getApiConfig } from "../src/config.js";
-import { switchOpenCodeTuiSettings, OpenCodeNativeInputNotReadyError } from "../src/cli-opencode-model-picker.js";
-import { SpaceConflictError } from "@space/runtime";
-vi.mock("../src/cli-opencode-model-picker.js", async importOriginal => ({ ...await importOriginal<typeof import("../src/cli-opencode-model-picker.js")>(), switchOpenCodeTuiSettings: vi.fn(async () => {}) }));
 import { paneCliModelSettingsStatusSchema } from "@space/contracts";
 
 const sessionSecret = "opencode-model-settings-test-secret";
 const csrfHeaderName = "x-space-csrf-token";
-const username = "space-opencode";
+// OpenCode 2 serves Basic auth with the fixed user "opencode".
+const username = "opencode";
 const password = "test-password";
 
 const apps: FastifyInstance[] = [];
@@ -62,40 +60,38 @@ function startMockOpenCodeServer(state: MockOpenCodeServerState) {
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
-      if (req.url === "/global/health") {
+      if (req.url === "/api/info") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ healthy: true }));
+        res.end(JSON.stringify({ data: { version: "2.0.32" } }));
         return;
       }
-      if (req.url === "/api/model") {
+      if (req.url?.startsWith("/api/model")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           data: state.models.map((model) => ({ ...model }))
         }));
         return;
       }
-      if (req.url === "/session/status") {
+      if (req.url === "/api/session/active") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({
-          ses_mock01: { type: state.turnActive ? "busy" : "idle" }
-        }));
+        res.end(JSON.stringify({ data: state.turnActive ? { ses_mock01: { type: "busy" } } : {} }));
         return;
       }
-      if (req.url?.endsWith("/abort") && req.method === "POST") {
+      if (req.url?.endsWith("/interrupt") && req.method === "POST") {
         if (state.abortDenied) {
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "abort unavailable" }));
           return;
         }
-        const nativeSessionId = decodeURIComponent(req.url.slice("/session/".length, -"/abort".length));
+        const nativeSessionId = decodeURIComponent(req.url.slice("/api/session/".length, -"/interrupt".length));
         state.aborted.push(nativeSessionId);
         state.turnActive = false;
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(true));
+        res.end(JSON.stringify({ interrupted: true }));
         return;
       }
-      if (req.url?.startsWith("/session/") && req.method === "GET") {
-        const nativeSessionId = decodeURIComponent(req.url.slice("/session/".length));
+      if (req.url?.startsWith("/api/session/") && req.method === "GET") {
+        const nativeSessionId = decodeURIComponent(req.url.slice("/api/session/".length));
         const current = state.currentModel
           ? {
               id: state.currentModel.id,
@@ -105,16 +101,16 @@ function startMockOpenCodeServer(state: MockOpenCodeServerState) {
           : null;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
-          JSON.stringify({
-            sessionId: nativeSessionId,
+          JSON.stringify({ data: {
+            id: nativeSessionId,
             model: current,
             title: state.title ?? null,
-            time: { created: "2026-07-09T00:00:00.000Z", updated: "2026-07-09T00:00:00.000Z" }
-          })
+            time: { created: 1783555200000, updated: 1783555200000 }
+          } })
         );
         return;
       }
-      if (req.url?.startsWith("/session/") && req.method === "PATCH") {
+      if (req.url?.startsWith("/api/session/") && req.method === "PATCH" && !req.url.endsWith("/model")) {
         if (state.titleDenied) {
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "title update unavailable" }));
@@ -125,7 +121,7 @@ function startMockOpenCodeServer(state: MockOpenCodeServerState) {
           state.title = payload.title ?? state.title;
           if (payload.title) state.titleUpdates.push(payload.title);
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, title: state.title }));
+          res.end(JSON.stringify({ data: { title: state.title } }));
         } catch {
           res.writeHead(400, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "bad request" }));
@@ -210,7 +206,6 @@ describe("OpenCode live model settings routes", () => {
   let stateRoot: string;
 
   beforeEach(async () => {
-    vi.mocked(switchOpenCodeTuiSettings).mockReset().mockResolvedValue(undefined);
     stateRoot = await mkdtemp(join(tmpdir(), "space-opencode-state-"));
   });
 
@@ -327,7 +322,6 @@ describe("OpenCode live model settings routes", () => {
       }
     });
 
-    expect(switchOpenCodeTuiSettings).toHaveBeenCalledOnce();
     expect(response.statusCode).toBe(200);
     const result = response.json();
     expect(result).toMatchObject({
@@ -347,57 +341,6 @@ describe("OpenCode live model settings routes", () => {
     const persisted = await store.getPaneCliSession(session.sessionId);
     expect(persisted?.modelId).toBe("legacy/kimi-k3");
     expect(persisted?.reasoningEffort).toBe("default");
-
-    await new Promise<void>((resolve) => mock.server.close(() => resolve()));
-  });
-
-  it("applies the OpenCode model server-side when the native screen is unreadable", async () => {
-    const store = new InMemorySpaceStore();
-    const { pane, session } = paneCliSessionFixture(store, "unreadable-screen");
-    const mock = startMockOpenCodeServer({
-      models: [
-        { id: "deepseek-v4-flash-free", providerID: "opencode", name: "DeepSeek V4 Flash Free", status: "active", enabled: true },
-        { id: "kimi-k3", providerID: "legacy", name: "Kimi K3", status: "active", enabled: true }
-      ],
-      currentModel: { id: "deepseek-v4-flash-free", providerID: "opencode" },
-      turnActive: false
-    });
-    const port = await new Promise<number>((resolve) => mock.server.listen(0, "127.0.0.2", () => {
-      resolve((mock.server.address() as AddressInfo).port);
-    }));
-    await writeControlFile(stateRoot, session.sessionId, port);
-
-    const app = await createApp({
-      store,
-      config: getApiConfig({}),
-      auth: { sessionSecret, devLogin: false, secureCookies: false },
-      opencodeStateRoot: stateRoot
-    });
-    apps.push(app);
-    const headers = authHeaders("ADMIN");
-
-    vi.mocked(switchOpenCodeTuiSettings).mockRejectedValueOnce(new OpenCodeNativeInputNotReadyError());
-    const response = await app.inject({
-      method: "PATCH",
-      url: `/api/panes/${encodeURIComponent(pane.id)}/cli/model-settings`,
-      headers,
-      payload: {
-        expectedSessionId: session.sessionId,
-        modelId: "legacy/kimi-k3",
-        reasoningEffort: "default",
-        continueActiveTurn: true
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    const result = response.json();
-    expect(result.settings.current).toEqual({ modelId: "legacy/kimi-k3", reasoningEffort: "default" });
-    expect(typeof result.warning).toBe("string");
-    expect(mock.state.currentModel).toEqual({ id: "kimi-k3", providerID: "legacy", variant: "default" });
-    expect(mock.requests).toContain("POST /api/session/ses_mock01/model");
-
-    const persisted = await store.getPaneCliSession(session.sessionId);
-    expect(persisted?.modelId).toBe("legacy/kimi-k3");
 
     await new Promise<void>((resolve) => mock.server.close(() => resolve()));
   });
@@ -442,52 +385,6 @@ describe("OpenCode live model settings routes", () => {
     await new Promise<void>((resolve) => mock.server.close(() => resolve()));
   });
 
-  it("refuses a blind switch while the OpenCode session is still booting", async () => {
-    const store = new InMemorySpaceStore();
-    const { pane, session } = paneCliSessionFixture(store, "booting");
-    const mock = startMockOpenCodeServer({
-      models: [
-        { id: "deepseek-v4-flash-free", providerID: "opencode", name: "DeepSeek V4 Flash Free", status: "active", enabled: true },
-        { id: "kimi-k3", providerID: "legacy", name: "Kimi K3", status: "active", enabled: true }
-      ],
-      currentModel: null,
-      turnActive: false
-    });
-    const port = await new Promise<number>((resolve) => mock.server.listen(0, "127.0.0.2", () => {
-      resolve((mock.server.address() as AddressInfo).port);
-    }));
-    await writeControlFile(stateRoot, session.sessionId, port);
-
-    const app = await createApp({
-      store,
-      config: getApiConfig({}),
-      auth: { sessionSecret, devLogin: false, secureCookies: false },
-      opencodeStateRoot: stateRoot
-    });
-    apps.push(app);
-    const headers = authHeaders("ADMIN");
-
-    vi.mocked(switchOpenCodeTuiSettings).mockRejectedValueOnce(new OpenCodeNativeInputNotReadyError());
-    const response = await app.inject({
-      method: "PATCH",
-      url: `/api/panes/${encodeURIComponent(pane.id)}/cli/model-settings`,
-      headers,
-      payload: {
-        expectedSessionId: session.sessionId,
-        modelId: "legacy/kimi-k3",
-        reasoningEffort: "default",
-        continueActiveTurn: true
-      }
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(mock.requests).not.toContain("POST /api/session/ses_mock01/model");
-    const persisted = await store.getPaneCliSession(session.sessionId);
-    expect(persisted?.modelId).toBeNull();
-
-    await new Promise<void>((resolve) => mock.server.close(() => resolve()));
-  });
-
   it("aborts a running OpenCode turn through the live server abort endpoint", async () => {
     const store = new InMemorySpaceStore();
     const { pane, session } = paneCliSessionFixture(store, "abort");
@@ -521,7 +418,7 @@ describe("OpenCode live model settings routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true, isTurnActive: false });
     expect(mock.state.aborted).toEqual(["ses_mock01"]);
-    expect(mock.requests).toContain("POST /session/ses_mock01/abort");
+    expect(mock.requests).toContain("POST /api/session/ses_mock01/interrupt");
 
     const status = await app.inject({
       method: "GET",
@@ -619,7 +516,7 @@ describe("OpenCode live model settings routes", () => {
     await new Promise<void>((resolve) => mock.server.close(() => resolve()));
   });
 
-  it.each(["native", "server", "busy"])("rejects an unconfirmed OpenCode switch (%s)", async failure => {
+  it.each(["server", "busy"])("rejects an unconfirmed OpenCode switch (%s)", async failure => {
     const store = new InMemorySpaceStore();
     const { pane, session } = paneCliSessionFixture(store, "denied");
     const mock = startMockOpenCodeServer({
@@ -645,7 +542,6 @@ describe("OpenCode live model settings routes", () => {
     apps.push(app);
     const headers = authHeaders("ADMIN");
 
-    if (failure === "native") vi.mocked(switchOpenCodeTuiSettings).mockRejectedValueOnce(new SpaceConflictError("Native model was not confirmed."));
     const response = await app.inject({
       method: "PATCH",
       url: `/api/panes/${encodeURIComponent(pane.id)}/cli/model-settings`,

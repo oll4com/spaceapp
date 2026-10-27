@@ -136,6 +136,9 @@ export async function registerT3Gateway(app: FastifyInstance, options: T3Gateway
           ? documentHead(request, scope).catch(() => "") : null;
         const headers: Record<string, string> = { ...identityHeaders(scope), "accept-encoding": "identity" };
         for (const name of requestHeaders) if (typeof request.headers[name] === "string") headers[name] = request.headers[name];
+        // T3 0.1.0's orchestration reads require their protocol version; only a small number passes.
+        const protocol = request.headers["x-t3-orchestration-protocol"];
+        if (typeof protocol === "string" && /^[1-9][0-9]?$/.test(protocol)) headers["x-t3-orchestration-protocol"] = protocol;
         const upstream = httpRequest({ socketPath, path: handle ?? upstreamPath, method: request.method, headers });
         let finished = false, responseStarted = false;
         let response: Readable | undefined;

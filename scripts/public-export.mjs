@@ -91,6 +91,11 @@ const publicScripts = new Set([
   "scripts/tests/release-evidence.test.mjs",
   "scripts/build-demo-projects.mjs",
   "scripts/tests/opencode-first-run.test.mjs",
+  // run-spaceapp 1.1.7: the provider install checks, and the release step that pins the published image digests.
+  "scripts/tests/provider-install.test.mjs",
+  "scripts/embed-image-lock.mjs",
+  "scripts/tests/embed-image-lock.test.mjs",
+  "scripts/tests/opencode-standalone.test.mjs",
   "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
   "scripts/portable-backup.mjs",
@@ -104,6 +109,9 @@ const publicScripts = new Set([
   "scripts/space-hygiene-check.mjs",
   "scripts/trivy-report-summary.mjs",
   "scripts/verify-published-containers.mjs",
+  // run-spaceapp 1.1.8: the lab installs of the published package ran its locked images (review IR117-C-F7).
+  "scripts/shipped-image-evidence.mjs",
+  "scripts/tests/shipped-image-evidence.test.mjs",
   "scripts/tests/container-image-size-budget.test.mjs",
   "scripts/tests/mcp-hono-compatibility.test.mjs",
   "scripts/tests/portable-backup-restore.test.mjs",
@@ -293,6 +301,35 @@ export function applyPublicOverlay(path, text) {
   }
 
   if (path === ".gitignore" && !text.includes("run-spaceapp-*.tgz")) return `${text}\nrun-spaceapp-*.tgz\n`;
+  if (path === "apps/api/tests/optional-modules.test.ts") {
+    // 1.1.6 cut from f8803d5d96: the Design pane added a tenth optional module; the source fixes the count in 3f302e9713.
+    return text.replace('import { getApiConfig, parseOptionalModules } from "../src/config.js";', 'import { getApiConfig, optionalModuleIds, parseOptionalModules } from "../src/config.js";')
+      .replace("expect(parseOptionalModules(undefined, false).size).toBe(9);", "expect(parseOptionalModules(undefined, false).size).toBe(optionalModuleIds.length);")
+      .replace('expect(parseOptionalModules("all", true).size).toBe(9);', 'expect(parseOptionalModules("all", true).size).toBe(optionalModuleIds.length);');
+  }
+  if (path === "apps/api/tests/nous-attachments.test.ts") {
+    // 1.1.6 release run 39188998567: GitHub's Ubuntu ffmpeg 6.1 writes the 4x3 test PNG as 4x2, so the test takes fixed PNG bytes.
+    return text.replace(`// A 4x3 red PNG, and a one-second 64x48 MP4 made by the host's ffmpeg.
+const png = execFileSync("/usr/bin/ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=red:s=4x3", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"]);`,
+    `// A 4x3 red PNG (fixed bytes: ffmpeg 6 writes this size as 4x2), and a one-second 64x48 MP4 made by the host's ffmpeg.
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP4w8AARww4OQDyTwvRz8ovMQAAAABJRU5ErkJggg==", "base64");`);
+  }
+  if (path === "apps/api/tests/design-run.test.ts") {
+    // 1.1.6 release run 39188998567: two assets rendered in the same millisecond come back in either order.
+    return text.replace("expect(delivered.assets.map((asset) => [asset.artifactId, asset.width])).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).reverse());",
+      "expect(delivered.assets.map((asset) => [asset.artifactId, asset.width]).sort()).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).sort());");
+  }
+  if (path === "packages/browser-host/package.json") {
+    // MIT from 1.1.7 (operator decision e4498487): the source licence change could not touch packages/browser-host (it ships
+    // only with a guarded Browser Host restart), so the export sets this package's licence field too.
+    return text.replace('"license": "BUSL-1.1"', '"license": "MIT"');
+  }
+  if (path === "apps/api/tests/room-watchdog.test.ts") {
+    // 1.1.7 public suite: the watchdog's background auto-interrupt can record PANE_UPDATED in the same millisecond, so the
+    // latest event is a race (1 of 3 runs); the test means that the alert was stored. Source fix in the dev queue.
+    return text.replace('    expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");',
+      '    expect(store.listEvents(room.id).find((event) => event.id === recorded.id)?.type).toBe("ROOM_WATCHDOG_ALERT");');
+  }
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
   }
@@ -462,6 +499,13 @@ export function contributorGuideProblems(guide, scripts, hasFile) {
   return [...problems, ...documentLinkProblems("CONTRIBUTING.md", guide, hasFile)];
 }
 
+// The operator's own host skills, tracked in the source since 2026-10-19 (3cd14bbd7f): they release, deploy,
+// sync VMs and drive devtest VMs on the operator's hosts only, so they were never public.
+const operatorHostSkills = new Set([
+  "space-clipboard-ops", "space-cli-open-resume", "space-live-ops", "space-release-ops", "space-room-cli-status",
+  "space-sync-to-vm218", "spaceapp-devtest", "run-spaceapp-devtest", "spaceapp-setup-maintenance", "spaceapp-setup-release"
+]);
+
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
@@ -469,6 +513,7 @@ export function isPublicExportPath(path) {
   // HyperFrames' vendored fonts, sound effects and textures carry mixed licences (OFL for some fonts
   // only, Pixabay, none stated); they stay private until the operator clears them. The skill starts off.
   if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
+  if (operatorHostSkills.has(normalized.match(/^agent-skills\/([^/]+)\//)?.[1])) return false;
   if (privateOnlyTests.has(normalized)) return false;
   // Tests named *-postgres* start a disposable PostgreSQL container (--pull=never) that public CI does not have.
   if (/\/(?:tests|__tests__)\/[^/]*-postgres[^/]*$/.test(normalized)) return false;
@@ -483,6 +528,8 @@ export function isPublicExportPath(path) {
     normalized.startsWith("starter-memory/") ||
     normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
+    // Licence texts of third-party code in apps/ and packages/ (Claude review 1.1.7 F5).
+    normalized.startsWith("THIRD_PARTY_LICENSES/") ||
     normalized.startsWith("agent-skills/") ||
     // The quality evidence ships with the code it describes, so a review reads both at one commit.
     normalized.startsWith("docs/quality/") ||

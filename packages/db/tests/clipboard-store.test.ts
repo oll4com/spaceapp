@@ -79,7 +79,9 @@ describe("PostgresSpaceStore clipboard history", () => {
     expect(insert?.sql).toContain("ON CONFLICT (owner_user_id, content_hash)");
     expect(insert?.sql).not.toContain("fallback");
     expect(insert?.values).toContain("fallback");
-    expect(pool.calls.find((call) => call.sql.includes("NOT IN"))?.sql).toContain("LIMIT 100");
+    const prune = pool.calls.find((call) => call.sql.includes("DELETE FROM clipboard_items"))?.sql;
+    expect(prune).toContain("LIMIT 100");
+    expect(prune).toContain("source IN ('COPY', 'PASTE')");
   });
 
   it("scopes list, get, delete, and clear queries to the authenticated owner", async () => {

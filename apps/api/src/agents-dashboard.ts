@@ -1,5 +1,6 @@
 import type { Pane, PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
+import { isCliPane } from "./pane-guards.js";
 
 export type DashboardStatus = "working" | "waiting" | "done" | "idle";
 
@@ -46,7 +47,7 @@ export async function readDashboardActivity(panes: Pane[], store: SpaceStore,
     while (cursor < panes.length) {
       const pane = panes[cursor++]!;
       if (pane.isClosed) continue;
-      if (pane.mode === "TERMINAL" && pane.terminalRuntimeId !== "cli:root") {
+      if (isCliPane(pane) && pane.terminalRuntimeId !== "cli:root") {
         const session = await store.getActivePaneCliSession(pane.id);
         if (!session || session.status === "EXITED") {
           set(pane.id, { status: "idle", reason: "Not running", source: "session" });
@@ -162,13 +163,26 @@ const screenRules: ReadonlyArray<{ id: string; state: ScreenState; lines: number
  * A turn that stopped on the account's quota, plan or balance (Grok's upgrade menu, Cursor's usage limit and
  * free-plan model refusal, Droid without a subscription, DeepSeek's insufficient balance). Qoder's "Credits exhausted" is only a notice: it keeps answering on a fallback model.
  */
-const usageLimitPattern = /\bmonthly quota\b|\byou(?:'ve| have)? (?:hit|reached|exceeded|run out of) (?:your |the )?(?:free |daily |weekly |monthly )?(?:usage|rate|quota|credit)s?(?: limit)?\b|\b(?:usage|quota) limit (?:reached|exceeded)\b|\bquota (?:exceeded|exhausted)\b|\bupgrade (?:your )?plans? to continue\b|\bno active subscription\b|\binsufficient (?:balance|credits?|funds|quota)\b/i;
+const usageLimitPattern = /\bmonthly quota\b|\byou(?:'ve| have)? (?:hit|reached|exceeded|run out of) (?:your |the )?(?:free |daily |weekly |monthly )?(?:usage|rate|quota|credit)s?(?: limit)?\b|\b(?:usage|quota) limit (?:reached|exceeded)\b|\bquota (?:exceeded|exhausted)\b|\bupgrade (?:your )?plans? to continue\b|\bno active subscription\b|\binsufficient (?:balance|credits?|funds|quota)\b|\byou(?:'ve| have)? hit your (?:session |weekly |opus |sonnet )?limit\b|\/rate-limit-options\b/i;
 
 const signInPattern = /\bsign in at\b|\bdevice (?:login|code)\b|\blogin code\b|\b(?:log|sign) in to continue\b/i;
 
 /** The CLI stopped on its account's quota, plan or balance and waits at its composer (the dashboard's "Usage limit"). */
 export function screenShowsAccountLimit(screen: string): boolean {
   return dashboardScreenState(screen).reason === "Usage limit";
+}
+
+/**
+ * The CLI stopped at its account's usage limit. Claude's transcript says it exactly: this session's latest answer is a 429 rate
+ * limit whose reset has not passed, so a limit an earlier session (before a move or restart) hit, or one already reset, no longer
+ * counts while its text is still on screen. Other CLIs, and Claude reads without the field, go by the screen.
+ */
+export function cliUsageLimited(screen: string, native?: { rateLimit?: { at: string | null; resetsAt: string | null } | null } | null,
+  sessionStartedAt?: string | null, now = Date.now()): boolean {
+  if (!native || native.rateLimit === undefined) return screenShowsAccountLimit(screen);
+  const limit = native.rateLimit;
+  return Boolean(limit && !(limit.at && sessionStartedAt && Date.parse(limit.at) < Date.parse(sessionStartedAt))
+    && !(limit.resetsAt && Date.parse(limit.resetsAt) <= now));
 }
 
 /** Classify a bounded room screen for the dashboard; returns the fixed id of the deciding rule. */

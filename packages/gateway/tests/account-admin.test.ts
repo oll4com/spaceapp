@@ -49,7 +49,8 @@ describe("Account admin (gateway)", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     const authJson = JSON.parse(response.json().authJson);
     expect(authJson).toEqual({ auth_mode: "chatgpt", OPENAI_API_KEY: null,
-      tokens: { id_token: idToken, access_token: "at-secret", refresh_token: "rt-secret", account_id: "acct-1" }, last_refresh: "2029-12-30T00:00:00.000Z" });
+      tokens: { id_token: idToken, access_token: "at-secret", refresh_token: "", account_id: "acct-1" }, last_refresh: "2029-12-30T00:00:00.000Z" });
+    expect(response.body).not.toContain("rt-secret");
     const other = await setup("ANTIGRAVITY");
     expect((await other.call(`/__space-gateway/admin/accounts/${other.accountId}/export`)).json().error.code).toBe("export_unsupported");
   });

@@ -15,19 +15,28 @@ import {
   GitBranch,
   Grid2X2,
   Hash,
+  Film,
   Keyboard,
   Mic,
+  Nous,
   Palette,
+  PanelLeft,
   PanelsTopLeft,
   Plug,
   Rocket,
   Handshake,
+  PenTool,
+  TabletSmartphone,
+  ShieldHalf,
   Search,
   ServerCog,
   Sparkles,
-  Users
+  Users,
+  Youtube
 } from "../ui-theme/app-icons.js";
 import { VoiceSettingsCard } from "../voice-input/VoiceSettingsCard.js";
+import { YouTubeSettingsCard } from "../browser-pane/YouTubeSummarySettingsCard.js";
+import { RoomLimitSettingsCard } from "../rooms-dock/RoomLimitSettingsCard.js";
 import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
 import { SettingsDisclosure, SettingsGroup, SettingsSearchable, SettingsSections } from "./SettingsDisclosure.js";
 import type { EnvironmentPresetCard } from "./EnvironmentPresetCard.js";
@@ -51,7 +60,12 @@ import type { JobCopilotSettingsCard } from "../job-apply-pane/JobCopilotSetting
 import type { MailCopilotSettingsCard } from "../mail-copilot-pane/MailCopilotSettingsCard.js";
 import type { MarketingCopilotSettingsCard } from "../marketing-copilot-pane/MarketingCopilotSettingsCard.js";
 import type { FreelanceCopilotSettingsCard } from "../freelance-copilot-pane/FreelanceCopilotSettingsCard.js";
+import type { DesignSettingsCard } from "../design-pane/DesignSettingsCard.js";
+import type { AppStudioSettingsCard } from "../app-studio-pane/AppStudioSettingsCard.js";
+import type { VideoSettingsCard } from "../video-pane/VideoSettingsCard.js";
+import type { SecurityCopilotSettingsCard } from "../security-copilot-pane/SecurityCopilotSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
+import { NousSettingsCard } from "../nous/NousSettingsCard.js";
 
 // The Settings dock (and the Workspace "Advanced settings" page): a search field, then
 // sections grouped by what they change, each with plain-language help.
@@ -79,6 +93,10 @@ export interface AgentSettingsCards {
   MailCopilot: typeof MailCopilotSettingsCard;
   MarketingCopilot: typeof MarketingCopilotSettingsCard;
   FreelanceCopilot: typeof FreelanceCopilotSettingsCard;
+  Design: typeof DesignSettingsCard;
+  AppStudio: typeof AppStudioSettingsCard;
+  Video: typeof VideoSettingsCard;
+  SecurityCopilot: typeof SecurityCopilotSettingsCard;
 }
 
 export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
@@ -183,7 +201,11 @@ export function AgentSettingsDock({
     JobCopilot: LazyJobCopilotSettingsCard,
     MailCopilot: LazyMailCopilotSettingsCard,
     MarketingCopilot: LazyMarketingCopilotSettingsCard,
-    FreelanceCopilot: LazyFreelanceCopilotSettingsCard
+    FreelanceCopilot: LazyFreelanceCopilotSettingsCard,
+    Design: LazyDesignSettingsCard,
+    AppStudio: LazyAppStudioSettingsCard,
+    Video: LazyVideoSettingsCard,
+    SecurityCopilot: LazySecurityCopilotSettingsCard
   } = cards;
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -251,6 +273,12 @@ export function AgentSettingsDock({
             />
           </RecoverableSurface>
         </SettingsSearchable>
+
+        <SettingsDisclosure sectionKey="rooms" title="Rooms" description="How many rooms you can open." scope="Your account" icon={PanelLeft}
+          help="Choose how many rooms you can open (6 unless you change it). Test rooms that agents open for their checks never count, and agents must delete them when their task ends."
+          keywords="rooms room limit maximum how many test rooms agent proof">
+          <RoomLimitSettingsCard />
+        </SettingsDisclosure>
 
         <SettingsDisclosure title="Docks" description="Side panels in your menu and toolbar." scope="Your account" icon={Grid2X2}
           help="Docks are the side panels, such as Files, Clipboard or Source Control. Turn off the ones you never use to keep your menu short. Nothing is deleted, and you can turn them back on at any time."
@@ -331,6 +359,12 @@ export function AgentSettingsDock({
       </SettingsGroup>
 
       <SettingsGroup groupKey="assistants" title="Assistants & AI" description="How your AI helpers and agents work.">
+        {canManageInstallation ? <SettingsDisclosure sectionKey="nous" title="Nous" description="The mind of SpaceApp: work on your behalf, promote and approve Warm changes." scope="Your account" icon={Nous}
+          help="Work on my behalf turns Nous on: it answers panes and copilots in every room and brings you only releases, irreversible actions, third parties and direction. The next two let it promote dev to stable and approve Warm changes without asking you; the last one, on this device, lets it bring you to a pane that needs you. The Nous dock shows the same switches."
+          keywords="nous mind work on my behalf promote dev stable warm approve autonomy focus bring me panes">
+          <NousSettingsCard />
+        </SettingsDisclosure> : null}
+
         <SettingsDisclosure sectionKey="dots" title="Dots" description="Your six assistants: models, permissions and reminders." scope="Your account" icon={Bot}
           help="Dots are your built-in assistants. Choose which one opens first, which AI model it uses, how much it may do without asking you, and whether it may message you first."
           keywords="assistant model permissions email slack reminders">
@@ -359,6 +393,31 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
           help="Freelance Copilot finds clients on freelance platforms with an AI coding agent and the pane's browser. Choose that agent and its account once and every new Freelance Copilot pane, on every device, opens with it; turn on asking to pick each time."
           keywords="freelance copilot upwork contra fiverr toptal clients proposals agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyFreelanceCopilotSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="design" title="Design" description="The designer and account new Design panes open with." scope="Your account" icon={PenTool}
+          help="The Design pane makes graphics with an AI coding agent as its designer. Choose that agent and its account once and every new Design pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="design graphics banner social images studio designer agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDesignSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="app-studio" title="App Studio" description="The app builder and account new App Studio panes open with." scope="Your account" icon={TabletSmartphone}
+          help="App Studio builds mobile apps for Android and iOS with an AI coding agent and shows every screen on the most-used phones. Choose that agent and its account once and every new App Studio pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="app studio mobile app android ios iphone expo react native preview phone agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyAppStudioSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="video" title="Video" description="The editor and account new Video panes open with." scope="Your account" icon={Film}
+          help="The Video pane cuts videos into every social format with an AI coding agent as its editor: clipping, transitions, captions, narration and music. Choose that agent and its account once and every new Video pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="video studio editor clips shorts reels captions narration music agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyVideoSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="security-copilot" title="Security Copilot" description="The security engineer and account new Security Copilot panes open with." scope="Your account" icon={ShieldHalf}
+          help="The Security Copilot keeps every Proxmox host and SpaceApp patched with an AI coding agent: Space watches the vulnerability feeds, the agent inventories the hosts and fixes what they need through Space's gate. Choose that agent and its account once and every new Security Copilot pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="security copilot vulnerabilities cve kev patch updates servers proxmox hosts agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazySecurityCopilotSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="youtube-summary" title="YouTube" description="The AI model that summarizes YouTube videos, and where and at what resolution Download saves them." scope="Your account" icon={Youtube}
+          help="In a YouTube pane, Summarize with AI has this Gemini model watch the video you are on and write a short summary with its key points; Full text writes down everything said in it, from the video's captions when it has them. Download saves the video in the Agent Files folder and resolution chosen here, adds it to the Video library and tells you in Notifications when it is done. The YouTube pane's Settings button opens the same settings."
+          keywords="youtube video summary summarize full text transcript ai gemini model antigravity download folder agent files resolution 4k 1080p">
+          <YouTubeSettingsCard />
         </SettingsDisclosure>
 
         {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="The AI service new chats start with." scope="New sessions" icon={ServerCog}
@@ -425,7 +484,7 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
 
         <SettingsDisclosure title="Account & Google" description="Sign in with your Google account." scope="Your account" icon={Users}
           help="Link your Google account to sign in with one click. Your rooms and settings stay the same. Admins can also turn on Google sign-in for everyone here."
-          keywords="google sign in login sso account email">
+          keywords="google sign in login sso account email devices phone mobile app nous revoke">
           <RecoverableSurface fallback={settingsCardLoadingFallback}>
             <LazyGoogleAccountSettingsCard auth={auth ?? null} onAuthRefresh={onAuthRefresh ?? (async () => {})} />
           </RecoverableSurface>

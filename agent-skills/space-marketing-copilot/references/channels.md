@@ -3,6 +3,13 @@
 Every channel: one post per brief unless the brief asks for more; the published post's own URL is the
 evidence (`space_marketing_publish_done`). Limits and caps come from `space_marketing_state`, never from here.
 
+## Media sizes (`space_screenshot` `aspect`)
+- X: 16:9 or 1:1; a video lasts at most 140 s.
+- LinkedIn: 1:1 or 4:5 (they fill the feed); a video 1:1 or 16:9.
+- YouTube: 16:9; a Short is 9:16.
+- Product Hunt gallery: 16:9. Reddit: 16:9 or 1:1 where the subreddit allows media.
+- Hacker News: text only. GitHub, dev.to and the blog: 16:9 images inside the text.
+
 ## X (x.com) — kinds POST, THREAD
 - 280 characters per post; a THREAD body separates posts with a line holding only `---`.
 - One idea, one link, at most two hashtags (#selfhosted, #AIagents). Lead with what the reader gets.

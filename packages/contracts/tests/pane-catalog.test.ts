@@ -4,8 +4,8 @@ import { CLI_PANE_TYPES, PANE_TYPES, PANE_CATALOG_VERSION, cliTurnInterruptKey, 
 describe("room command catalog", () => {
   it("contains every menu type and separates Harness from DeepSeek CLI", () => {
     expect(CLI_PANE_TYPES).toHaveLength(16);
-    expect(PANE_TYPES).toHaveLength(30);
-    expect(new Set(PANE_TYPES.map(type => type.typeId)).size).toBe(30);
+    expect(PANE_TYPES).toHaveLength(34);
+    expect(new Set(PANE_TYPES.map(type => type.typeId)).size).toBe(34);
     expect(PANE_TYPES.find(type => type.typeId === "deepseek")?.mode).toBe("TERMINAL");
     expect(PANE_TYPES.find(type => type.typeId === "harness")?.mode).toBe("HARNESS");
     expect(PANE_TYPES.find(type => type.typeId === "live")?.mode).toBe("LIVE");
@@ -17,6 +17,7 @@ describe("room command catalog", () => {
     expect(PANE_TYPES.find(type => type.typeId === "mail")?.mode).toBe("MAIL_COPILOT");
     expect(PANE_TYPES.find(type => type.typeId === "marketing")?.mode).toBe("MARKETING_COPILOT");
     expect(PANE_TYPES.find(type => type.typeId === "freelance")?.mode).toBe("FREELANCE_COPILOT");
+    expect(PANE_TYPES.find(type => type.typeId === "design")?.mode).toBe("DESIGN");
   });
   it.each([{}, { codex: 0 }, { codex: -1 }, { codex: 1.5 }, { codex: "2" }, { codex: 17 }, { codex: 8, gemini: 9 }, { root: 1 }, { nope: 1 }])("rejects invalid counts %j", counts => {
     expect(paneCountsSchema.safeParse(counts).success).toBe(false);

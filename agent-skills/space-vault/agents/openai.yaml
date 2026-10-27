@@ -1,0 +1,4 @@
+interface:
+  display_name: "Space Vault"
+  short_description: "Sign in, register or change a password in this pane's browser from the operator's Vault without seeing any credential, and save the logins you create."
+  default_prompt: "Use $space-vault: open the site's page first, then call space_vault_list and space_vault_request_fill with the item handle only; save an account you create with space_vault_save; on BLOCKED with agent access off hand the sign-in to the operator."

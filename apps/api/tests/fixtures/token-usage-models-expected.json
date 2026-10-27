@@ -1,0 +1,3663 @@
+{
+  "24h/all": {
+    "range": "24h",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 3,
+        "activeSessions": 2,
+        "completedTurns": 1,
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null
+      },
+      {
+        "providerId": "codex",
+        "modelCount": 2,
+        "activeSessions": 1,
+        "completedTurns": 6,
+        "tokensIn": 195,
+        "tokensOut": 18,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0011
+      }
+    ],
+    "models": [
+      {
+        "providerId": "codex",
+        "modelId": "gpt-5.6-sol",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 4,
+        "abortedTurns": 0,
+        "tokensIn": 158,
+        "tokensOut": 15,
+        "tokensReasoning": 7,
+        "avgTtftMs": 100,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-14T13:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0011,
+        "unpricedTurns": 3
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 0,
+        "abortedTurns": 0,
+        "tokensIn": 10,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T07:54:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 7,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T06:30:00.000Z",
+        "lastActivityAt": "2027-01-15T06:30:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 1,
+        "completedTurns": 0,
+        "abortedTurns": 0,
+        "tokensIn": 5,
+        "tokensOut": 0,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2026-12-06T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "codex",
+        "modelId": "gpt-6-astra",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 37,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T02:00:00.000Z",
+        "lastActivityAt": "2027-01-15T07:00:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "all",
+    "routes": {
+      "gateway": {
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 217,
+        "tokensOut": 20,
+        "tokensReasoning": 7,
+        "costUsd": 0.0011,
+        "unpricedTurns": 8
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 100,
+        "tokensOut": 10,
+        "tokensReasoning": 7,
+        "costUsd": 0.0008,
+        "unpricedTurns": 1,
+        "accountKey": "cli:codex/main",
+        "label": "main · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 100,
+            "tokensOut": 10,
+            "costUsd": 0.0008
+          }
+        ]
+      },
+      {
+        "tokensIn": 65,
+        "tokensOut": 5,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 4,
+        "accountKey": "cli:codex/codex",
+        "label": "codex · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-6-astra",
+            "tokensIn": 37,
+            "tokensOut": 3,
+            "costUsd": 0
+          },
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 28,
+            "tokensOut": 2,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 30,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "costUsd": 0.0003,
+        "unpricedTurns": 0,
+        "accountKey": "cli:codex/codex-lb",
+        "label": "codex-lb · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex-lb",
+            "modelId": "unknown",
+            "tokensIn": 30,
+            "tokensOut": 3,
+            "costUsd": 0.0003
+          }
+        ]
+      },
+      {
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 3,
+        "accountKey": "cli:claude/anthropic",
+        "label": "anthropic · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 10,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 7,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 5,
+            "tokensOut": 0,
+            "costUsd": 0
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 3600,
+      "points": [
+        {
+          "at": "2027-01-14T09:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T10:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T11:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T13:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 88,
+          "costUsd": 0.0008
+        },
+        {
+          "at": "2027-01-14T14:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T15:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T16:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T17:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T19:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T20:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T21:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T22:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T23:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T01:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T02:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 13,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T03:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 33,
+          "costUsd": 0.0003
+        },
+        {
+          "at": "2027-01-15T04:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 14,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T05:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 22,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 8,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T07:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 54,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "freshInput": 217,
+      "output": 20
+    }
+  },
+  "24h/gateway": {
+    "range": "24h",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [],
+    "models": [],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "gateway",
+    "routes": {
+      "gateway": {
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 217,
+        "tokensOut": 20,
+        "tokensReasoning": 7,
+        "costUsd": 0.0011,
+        "unpricedTurns": 8
+      }
+    },
+    "accounts": [],
+    "timeline": {
+      "bucketSeconds": 3600,
+      "points": [
+        {
+          "at": "2027-01-14T09:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T10:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T11:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T13:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T14:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T15:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T16:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T17:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T19:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T20:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T21:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T22:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T23:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T01:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T02:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T03:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T04:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T05:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T07:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "freshInput": 0,
+      "output": 0
+    }
+  },
+  "24h/direct": {
+    "range": "24h",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 3,
+        "activeSessions": 2,
+        "completedTurns": 1,
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null
+      },
+      {
+        "providerId": "codex",
+        "modelCount": 2,
+        "activeSessions": 1,
+        "completedTurns": 6,
+        "tokensIn": 195,
+        "tokensOut": 18,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0011
+      }
+    ],
+    "models": [
+      {
+        "providerId": "codex",
+        "modelId": "gpt-5.6-sol",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 4,
+        "abortedTurns": 0,
+        "tokensIn": 158,
+        "tokensOut": 15,
+        "tokensReasoning": 7,
+        "avgTtftMs": 100,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-14T13:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0011,
+        "unpricedTurns": 3
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 0,
+        "abortedTurns": 0,
+        "tokensIn": 10,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T07:54:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 7,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T06:30:00.000Z",
+        "lastActivityAt": "2027-01-15T06:30:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 1,
+        "completedTurns": 0,
+        "abortedTurns": 0,
+        "tokensIn": 5,
+        "tokensOut": 0,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2026-12-06T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "codex",
+        "modelId": "gpt-6-astra",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 37,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T02:00:00.000Z",
+        "lastActivityAt": "2027-01-15T07:00:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "direct",
+    "routes": {
+      "gateway": {
+        "tokensIn": 0,
+        "tokensOut": 0,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 217,
+        "tokensOut": 20,
+        "tokensReasoning": 7,
+        "costUsd": 0.0011,
+        "unpricedTurns": 8
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 100,
+        "tokensOut": 10,
+        "tokensReasoning": 7,
+        "costUsd": 0.0008,
+        "unpricedTurns": 1,
+        "accountKey": "cli:codex/main",
+        "label": "main · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 100,
+            "tokensOut": 10,
+            "costUsd": 0.0008
+          }
+        ]
+      },
+      {
+        "tokensIn": 65,
+        "tokensOut": 5,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 4,
+        "accountKey": "cli:codex/codex",
+        "label": "codex · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-6-astra",
+            "tokensIn": 37,
+            "tokensOut": 3,
+            "costUsd": 0
+          },
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 28,
+            "tokensOut": 2,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 30,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "costUsd": 0.0003,
+        "unpricedTurns": 0,
+        "accountKey": "cli:codex/codex-lb",
+        "label": "codex-lb · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex-lb",
+            "modelId": "unknown",
+            "tokensIn": 30,
+            "tokensOut": 3,
+            "costUsd": 0.0003
+          }
+        ]
+      },
+      {
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 3,
+        "accountKey": "cli:claude/anthropic",
+        "label": "anthropic · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 10,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 7,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 5,
+            "tokensOut": 0,
+            "costUsd": 0
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 3600,
+      "points": [
+        {
+          "at": "2027-01-14T09:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T10:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T11:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T13:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 88,
+          "costUsd": 0.0008
+        },
+        {
+          "at": "2027-01-14T14:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T15:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T16:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T17:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T19:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T20:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T21:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T22:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T23:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T01:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T02:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 13,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T03:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 33,
+          "costUsd": 0.0003
+        },
+        {
+          "at": "2027-01-15T04:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 14,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T05:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 22,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 8,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T07:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 54,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "freshInput": 217,
+      "output": 20
+    }
+  },
+  "7d/all": {
+    "range": "7d",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 3,
+        "activeSessions": 2,
+        "completedTurns": 4,
+        "tokensIn": 2922,
+        "tokensOut": 442,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.26
+      },
+      {
+        "providerId": "codex",
+        "modelCount": 2,
+        "activeSessions": 1,
+        "completedTurns": 7,
+        "tokensIn": 285,
+        "tokensOut": 27,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022
+      }
+    ],
+    "models": [
+      {
+        "providerId": "codex",
+        "modelId": "gpt-5.6-sol",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 5,
+        "abortedTurns": 0,
+        "tokensIn": 248,
+        "tokensOut": 24,
+        "tokensReasoning": 7,
+        "avgTtftMs": 150,
+        "avgDurationMs": 1500,
+        "avgTokPerSec": 16,
+        "firstActivityAt": "2027-01-14T03:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022,
+        "unpricedTurns": 3
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "cli:claude",
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 1510,
+        "tokensOut": 301,
+        "tokensReasoning": 0,
+        "avgTtftMs": 900,
+        "avgDurationMs": 4000,
+        "avgTokPerSec": 75.3,
+        "firstActivityAt": "2027-01-13T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.25,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "cli:claude",
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 1007,
+        "tokensOut": 101,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-11T04:00:00.000Z",
+        "lastActivityAt": "2027-01-15T06:30:36.000Z",
+        "costUsd": 0.01,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 1,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 405,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "avgTtftMs": 500,
+        "avgDurationMs": 2000,
+        "avgTokPerSec": 20,
+        "firstActivityAt": "2026-12-06T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      },
+      {
+        "providerId": "codex",
+        "modelId": "gpt-6-astra",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 37,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T02:00:00.000Z",
+        "lastActivityAt": "2027-01-15T07:00:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "all",
+    "routes": {
+      "gateway": {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 707,
+        "tokensOut": 69,
+        "tokensReasoning": 7,
+        "costUsd": 0.0022,
+        "unpricedTurns": 9
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0,
+        "accountKey": "gw_account:1",
+        "label": "Removed gateway account",
+        "route": "GATEWAY",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 1500,
+            "tokensOut": 300,
+            "costUsd": 0.25
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 1000,
+            "tokensOut": 100,
+            "costUsd": 0.01
+          }
+        ]
+      },
+      {
+        "tokensIn": 400,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 1,
+        "accountKey": "cli:claude/main",
+        "label": "main · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 400,
+            "tokensOut": 40,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 190,
+        "tokensOut": 19,
+        "tokensReasoning": 7,
+        "costUsd": 0.0019,
+        "unpricedTurns": 1,
+        "accountKey": "cli:codex/main",
+        "label": "main · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 190,
+            "tokensOut": 19,
+            "costUsd": 0.0019
+          }
+        ]
+      },
+      {
+        "tokensIn": 65,
+        "tokensOut": 5,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 4,
+        "accountKey": "cli:codex/codex",
+        "label": "codex · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-6-astra",
+            "tokensIn": 37,
+            "tokensOut": 3,
+            "costUsd": 0
+          },
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 28,
+            "tokensOut": 2,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 30,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "costUsd": 0.0003,
+        "unpricedTurns": 0,
+        "accountKey": "cli:codex/codex-lb",
+        "label": "codex-lb · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex-lb",
+            "modelId": "unknown",
+            "tokensIn": 30,
+            "tokensOut": 3,
+            "costUsd": 0.0003
+          }
+        ]
+      },
+      {
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 3,
+        "accountKey": "cli:claude/anthropic",
+        "label": "anthropic · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 10,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 7,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 5,
+            "tokensOut": 0,
+            "costUsd": 0
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 21600,
+      "points": [
+        {
+          "at": "2027-01-08T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T00:00:00.000Z",
+          "gatewayTokens": 1100,
+          "directTokens": 0,
+          "costUsd": 0.01
+        },
+        {
+          "at": "2027-01-11T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 440,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T06:00:00.000Z",
+          "gatewayTokens": 1800,
+          "directTokens": 0,
+          "costUsd": 0.25
+        },
+        {
+          "at": "2027-01-13T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 99,
+          "costUsd": 0.0011
+        },
+        {
+          "at": "2027-01-14T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 88,
+          "costUsd": 0.0008
+        },
+        {
+          "at": "2027-01-14T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 82,
+          "costUsd": 0.0003
+        },
+        {
+          "at": "2027-01-15T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 62,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 2200,
+      "cacheWrite": 200,
+      "freshInput": 1007,
+      "output": 469
+    }
+  },
+  "7d/gateway": {
+    "range": "7d",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 2,
+        "activeSessions": 0,
+        "completedTurns": 2,
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "lastActivityAt": "2027-01-13T08:00:36.000Z",
+        "costUsd": 0.26
+      }
+    ],
+    "models": [
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 1000,
+        "tokensOut": 100,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-11T04:00:00.000Z",
+        "lastActivityAt": "2027-01-11T04:00:36.000Z",
+        "costUsd": 0.01,
+        "unpricedTurns": 0
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 1500,
+        "tokensOut": 300,
+        "tokensReasoning": 0,
+        "avgTtftMs": 900,
+        "avgDurationMs": 4000,
+        "avgTokPerSec": 75,
+        "firstActivityAt": "2027-01-13T08:00:00.000Z",
+        "lastActivityAt": "2027-01-13T08:00:36.000Z",
+        "costUsd": 0.25,
+        "unpricedTurns": 0
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "gateway",
+    "routes": {
+      "gateway": {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 707,
+        "tokensOut": 69,
+        "tokensReasoning": 7,
+        "costUsd": 0.0022,
+        "unpricedTurns": 9
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0,
+        "accountKey": "gw_account:1",
+        "label": "Removed gateway account",
+        "route": "GATEWAY",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 1500,
+            "tokensOut": 300,
+            "costUsd": 0.25
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 1000,
+            "tokensOut": 100,
+            "costUsd": 0.01
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 21600,
+      "points": [
+        {
+          "at": "2027-01-08T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T00:00:00.000Z",
+          "gatewayTokens": 1100,
+          "directTokens": 0,
+          "costUsd": 0.01
+        },
+        {
+          "at": "2027-01-11T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T06:00:00.000Z",
+          "gatewayTokens": 1800,
+          "directTokens": 0,
+          "costUsd": 0.25
+        },
+        {
+          "at": "2027-01-13T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 2200,
+      "cacheWrite": 200,
+      "freshInput": 300,
+      "output": 400
+    }
+  },
+  "7d/direct": {
+    "range": "7d",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 3,
+        "activeSessions": 2,
+        "completedTurns": 2,
+        "tokensIn": 422,
+        "tokensOut": 42,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null
+      },
+      {
+        "providerId": "codex",
+        "modelCount": 2,
+        "activeSessions": 1,
+        "completedTurns": 7,
+        "tokensIn": 285,
+        "tokensOut": 27,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022
+      }
+    ],
+    "models": [
+      {
+        "providerId": "codex",
+        "modelId": "gpt-5.6-sol",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 5,
+        "abortedTurns": 0,
+        "tokensIn": 248,
+        "tokensOut": 24,
+        "tokensReasoning": 7,
+        "avgTtftMs": 150,
+        "avgDurationMs": 1500,
+        "avgTokPerSec": 16,
+        "firstActivityAt": "2027-01-14T03:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022,
+        "unpricedTurns": 3
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 0,
+        "abortedTurns": 0,
+        "tokensIn": 10,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T07:54:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 7,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T06:30:00.000Z",
+        "lastActivityAt": "2027-01-15T06:30:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 1,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 405,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "avgTtftMs": 500,
+        "avgDurationMs": 2000,
+        "avgTokPerSec": 20,
+        "firstActivityAt": "2026-12-06T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      },
+      {
+        "providerId": "codex",
+        "modelId": "gpt-6-astra",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 37,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T02:00:00.000Z",
+        "lastActivityAt": "2027-01-15T07:00:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "direct",
+    "routes": {
+      "gateway": {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 707,
+        "tokensOut": 69,
+        "tokensReasoning": 7,
+        "costUsd": 0.0022,
+        "unpricedTurns": 9
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 400,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 1,
+        "accountKey": "cli:claude/main",
+        "label": "main · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 400,
+            "tokensOut": 40,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 190,
+        "tokensOut": 19,
+        "tokensReasoning": 7,
+        "costUsd": 0.0019,
+        "unpricedTurns": 1,
+        "accountKey": "cli:codex/main",
+        "label": "main · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 190,
+            "tokensOut": 19,
+            "costUsd": 0.0019
+          }
+        ]
+      },
+      {
+        "tokensIn": 65,
+        "tokensOut": 5,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 4,
+        "accountKey": "cli:codex/codex",
+        "label": "codex · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-6-astra",
+            "tokensIn": 37,
+            "tokensOut": 3,
+            "costUsd": 0
+          },
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 28,
+            "tokensOut": 2,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 30,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "costUsd": 0.0003,
+        "unpricedTurns": 0,
+        "accountKey": "cli:codex/codex-lb",
+        "label": "codex-lb · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex-lb",
+            "modelId": "unknown",
+            "tokensIn": 30,
+            "tokensOut": 3,
+            "costUsd": 0.0003
+          }
+        ]
+      },
+      {
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 3,
+        "accountKey": "cli:claude/anthropic",
+        "label": "anthropic · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 10,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 7,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 5,
+            "tokensOut": 0,
+            "costUsd": 0
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 21600,
+      "points": [
+        {
+          "at": "2027-01-08T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 440,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 99,
+          "costUsd": 0.0011
+        },
+        {
+          "at": "2027-01-14T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T12:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 88,
+          "costUsd": 0.0008
+        },
+        {
+          "at": "2027-01-14T18:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 82,
+          "costUsd": 0.0003
+        },
+        {
+          "at": "2027-01-15T06:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 62,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "freshInput": 707,
+      "output": 69
+    }
+  },
+  "30d/all": {
+    "range": "30d",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 3,
+        "activeSessions": 2,
+        "completedTurns": 4,
+        "tokensIn": 2922,
+        "tokensOut": 442,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.26
+      },
+      {
+        "providerId": "codex",
+        "modelCount": 2,
+        "activeSessions": 1,
+        "completedTurns": 7,
+        "tokensIn": 285,
+        "tokensOut": 27,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022
+      },
+      {
+        "providerId": "opencode",
+        "modelCount": 1,
+        "activeSessions": 0,
+        "completedTurns": 0,
+        "tokensIn": 700,
+        "tokensOut": 70,
+        "lastActivityAt": "2026-12-26T08:00:36.000Z",
+        "costUsd": 0
+      }
+    ],
+    "models": [
+      {
+        "providerId": "codex",
+        "modelId": "gpt-5.6-sol",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 5,
+        "abortedTurns": 0,
+        "tokensIn": 248,
+        "tokensOut": 24,
+        "tokensReasoning": 7,
+        "avgTtftMs": 150,
+        "avgDurationMs": 1500,
+        "avgTokPerSec": 16,
+        "firstActivityAt": "2027-01-14T03:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022,
+        "unpricedTurns": 3
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "cli:claude",
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 1510,
+        "tokensOut": 301,
+        "tokensReasoning": 0,
+        "avgTtftMs": 900,
+        "avgDurationMs": 4000,
+        "avgTokPerSec": 75.3,
+        "firstActivityAt": "2027-01-13T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.25,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "cli:claude",
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 1007,
+        "tokensOut": 101,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-11T04:00:00.000Z",
+        "lastActivityAt": "2027-01-15T06:30:36.000Z",
+        "costUsd": 0.01,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 1,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 405,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "avgTtftMs": 500,
+        "avgDurationMs": 2000,
+        "avgTokPerSec": 20,
+        "firstActivityAt": "2026-12-06T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      },
+      {
+        "providerId": "codex",
+        "modelId": "gpt-6-astra",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 37,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T02:00:00.000Z",
+        "lastActivityAt": "2027-01-15T07:00:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      },
+      {
+        "providerId": "opencode",
+        "modelId": "big-pickle",
+        "runtimeIds": [
+          "cli:opencode"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 0,
+        "abortedTurns": 2,
+        "tokensIn": 700,
+        "tokensOut": 70,
+        "tokensReasoning": 0,
+        "avgTtftMs": 300,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2026-12-26T08:00:00.000Z",
+        "lastActivityAt": "2026-12-26T08:00:36.000Z",
+        "costUsd": 0,
+        "unpricedTurns": 0
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "all",
+    "routes": {
+      "gateway": {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 1407,
+        "tokensOut": 139,
+        "tokensReasoning": 7,
+        "costUsd": 0.0022,
+        "unpricedTurns": 9
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0,
+        "accountKey": "gw_account:1",
+        "label": "Removed gateway account",
+        "route": "GATEWAY",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 1500,
+            "tokensOut": 300,
+            "costUsd": 0.25
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 1000,
+            "tokensOut": 100,
+            "costUsd": 0.01
+          }
+        ]
+      },
+      {
+        "tokensIn": 700,
+        "tokensOut": 70,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 0,
+        "accountKey": "cli:opencode/main",
+        "label": "main · OpenCode CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "opencode",
+            "modelId": "big-pickle",
+            "tokensIn": 700,
+            "tokensOut": 70,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 400,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 1,
+        "accountKey": "cli:claude/main",
+        "label": "main · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 400,
+            "tokensOut": 40,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 190,
+        "tokensOut": 19,
+        "tokensReasoning": 7,
+        "costUsd": 0.0019,
+        "unpricedTurns": 1,
+        "accountKey": "cli:codex/main",
+        "label": "main · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 190,
+            "tokensOut": 19,
+            "costUsd": 0.0019
+          }
+        ]
+      },
+      {
+        "tokensIn": 65,
+        "tokensOut": 5,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 4,
+        "accountKey": "cli:codex/codex",
+        "label": "codex · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-6-astra",
+            "tokensIn": 37,
+            "tokensOut": 3,
+            "costUsd": 0
+          },
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 28,
+            "tokensOut": 2,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 30,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "costUsd": 0.0003,
+        "unpricedTurns": 0,
+        "accountKey": "cli:codex/codex-lb",
+        "label": "codex-lb · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex-lb",
+            "modelId": "unknown",
+            "tokensIn": 30,
+            "tokensOut": 3,
+            "costUsd": 0.0003
+          }
+        ]
+      },
+      {
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 3,
+        "accountKey": "cli:claude/anthropic",
+        "label": "anthropic · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 10,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 7,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 5,
+            "tokensOut": 0,
+            "costUsd": 0
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 86400,
+      "points": [
+        {
+          "at": "2026-12-16T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-17T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-18T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-19T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-20T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-21T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-22T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-23T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-24T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-25T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-26T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 770,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-27T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-28T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-29T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-30T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-31T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-01T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-02T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-03T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-04T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-05T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-06T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-07T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T00:00:00.000Z",
+          "gatewayTokens": 1100,
+          "directTokens": 0,
+          "costUsd": 0.01
+        },
+        {
+          "at": "2027-01-12T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 440,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T00:00:00.000Z",
+          "gatewayTokens": 1800,
+          "directTokens": 0,
+          "costUsd": 0.25
+        },
+        {
+          "at": "2027-01-14T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 187,
+          "costUsd": 0.0019
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 144,
+          "costUsd": 0.0003
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 2200,
+      "cacheWrite": 200,
+      "freshInput": 1707,
+      "output": 539
+    }
+  },
+  "30d/gateway": {
+    "range": "30d",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 2,
+        "activeSessions": 0,
+        "completedTurns": 2,
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "lastActivityAt": "2027-01-13T08:00:36.000Z",
+        "costUsd": 0.26
+      }
+    ],
+    "models": [
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 1000,
+        "tokensOut": 100,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-11T04:00:00.000Z",
+        "lastActivityAt": "2027-01-11T04:00:36.000Z",
+        "costUsd": 0.01,
+        "unpricedTurns": 0
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "gateway"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 1500,
+        "tokensOut": 300,
+        "tokensReasoning": 0,
+        "avgTtftMs": 900,
+        "avgDurationMs": 4000,
+        "avgTokPerSec": 75,
+        "firstActivityAt": "2027-01-13T08:00:00.000Z",
+        "lastActivityAt": "2027-01-13T08:00:36.000Z",
+        "costUsd": 0.25,
+        "unpricedTurns": 0
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "gateway",
+    "routes": {
+      "gateway": {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 1407,
+        "tokensOut": 139,
+        "tokensReasoning": 7,
+        "costUsd": 0.0022,
+        "unpricedTurns": 9
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0,
+        "accountKey": "gw_account:1",
+        "label": "Removed gateway account",
+        "route": "GATEWAY",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 1500,
+            "tokensOut": 300,
+            "costUsd": 0.25
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 1000,
+            "tokensOut": 100,
+            "costUsd": 0.01
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 86400,
+      "points": [
+        {
+          "at": "2026-12-16T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-17T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-18T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-19T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-20T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-21T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-22T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-23T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-24T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-25T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-26T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-27T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-28T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-29T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-30T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-31T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-01T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-02T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-03T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-04T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-05T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-06T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-07T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T00:00:00.000Z",
+          "gatewayTokens": 1100,
+          "directTokens": 0,
+          "costUsd": 0.01
+        },
+        {
+          "at": "2027-01-12T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T00:00:00.000Z",
+          "gatewayTokens": 1800,
+          "directTokens": 0,
+          "costUsd": 0.25
+        },
+        {
+          "at": "2027-01-14T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 2200,
+      "cacheWrite": 200,
+      "freshInput": 300,
+      "output": 400
+    }
+  },
+  "30d/direct": {
+    "range": "30d",
+    "sampledAt": "2027-01-15T08:00:00.000Z",
+    "providers": [
+      {
+        "providerId": "anthropic",
+        "modelCount": 3,
+        "activeSessions": 2,
+        "completedTurns": 2,
+        "tokensIn": 422,
+        "tokensOut": 42,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null
+      },
+      {
+        "providerId": "codex",
+        "modelCount": 2,
+        "activeSessions": 1,
+        "completedTurns": 7,
+        "tokensIn": 285,
+        "tokensOut": 27,
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022
+      },
+      {
+        "providerId": "opencode",
+        "modelCount": 1,
+        "activeSessions": 0,
+        "completedTurns": 0,
+        "tokensIn": 700,
+        "tokensOut": 70,
+        "lastActivityAt": "2026-12-26T08:00:36.000Z",
+        "costUsd": 0
+      }
+    ],
+    "models": [
+      {
+        "providerId": "codex",
+        "modelId": "gpt-5.6-sol",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 5,
+        "abortedTurns": 0,
+        "tokensIn": 248,
+        "tokensOut": 24,
+        "tokensReasoning": 7,
+        "avgTtftMs": 150,
+        "avgDurationMs": 1500,
+        "avgTokPerSec": 16,
+        "firstActivityAt": "2027-01-14T03:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": 0.0022,
+        "unpricedTurns": 3
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-opus-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 1,
+        "completedTurns": 0,
+        "abortedTurns": 0,
+        "tokensIn": 10,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T07:54:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-haiku-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 1,
+        "activeTurns": 0,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 7,
+        "tokensOut": 1,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T06:30:00.000Z",
+        "lastActivityAt": "2027-01-15T06:30:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 1
+      },
+      {
+        "providerId": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "runtimeIds": [
+          "cli:claude"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 1,
+        "completedTurns": 1,
+        "abortedTurns": 0,
+        "tokensIn": 405,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "avgTtftMs": 500,
+        "avgDurationMs": 2000,
+        "avgTokPerSec": 20,
+        "firstActivityAt": "2026-12-06T08:00:00.000Z",
+        "lastActivityAt": "2027-01-15T08:00:00.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      },
+      {
+        "providerId": "codex",
+        "modelId": "gpt-6-astra",
+        "runtimeIds": [
+          "cli:codex"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 2,
+        "abortedTurns": 0,
+        "tokensIn": 37,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "avgTtftMs": null,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2027-01-15T02:00:00.000Z",
+        "lastActivityAt": "2027-01-15T07:00:36.000Z",
+        "costUsd": null,
+        "unpricedTurns": 2
+      },
+      {
+        "providerId": "opencode",
+        "modelId": "big-pickle",
+        "runtimeIds": [
+          "cli:opencode"
+        ],
+        "coverage": "NATIVE",
+        "activeSessions": 0,
+        "activeTurns": 0,
+        "completedTurns": 0,
+        "abortedTurns": 2,
+        "tokensIn": 700,
+        "tokensOut": 70,
+        "tokensReasoning": 0,
+        "avgTtftMs": 300,
+        "avgDurationMs": null,
+        "avgTokPerSec": null,
+        "firstActivityAt": "2026-12-26T08:00:00.000Z",
+        "lastActivityAt": "2026-12-26T08:00:36.000Z",
+        "costUsd": 0,
+        "unpricedTurns": 0
+      }
+    ],
+    "backfill": {
+      "status": "PENDING",
+      "earliestAt": null,
+      "latestAt": null,
+      "errors": []
+    },
+    "route": "direct",
+    "routes": {
+      "gateway": {
+        "tokensIn": 2500,
+        "tokensOut": 400,
+        "tokensReasoning": 0,
+        "costUsd": 0.26,
+        "unpricedTurns": 0
+      },
+      "direct": {
+        "tokensIn": 1407,
+        "tokensOut": 139,
+        "tokensReasoning": 7,
+        "costUsd": 0.0022,
+        "unpricedTurns": 9
+      }
+    },
+    "accounts": [
+      {
+        "tokensIn": 700,
+        "tokensOut": 70,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 0,
+        "accountKey": "cli:opencode/main",
+        "label": "main · OpenCode CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "opencode",
+            "modelId": "big-pickle",
+            "tokensIn": 700,
+            "tokensOut": 70,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 400,
+        "tokensOut": 40,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 1,
+        "accountKey": "cli:claude/main",
+        "label": "main · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 400,
+            "tokensOut": 40,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 190,
+        "tokensOut": 19,
+        "tokensReasoning": 7,
+        "costUsd": 0.0019,
+        "unpricedTurns": 1,
+        "accountKey": "cli:codex/main",
+        "label": "main · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 190,
+            "tokensOut": 19,
+            "costUsd": 0.0019
+          }
+        ]
+      },
+      {
+        "tokensIn": 65,
+        "tokensOut": 5,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 4,
+        "accountKey": "cli:codex/codex",
+        "label": "codex · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex",
+            "modelId": "gpt-6-astra",
+            "tokensIn": 37,
+            "tokensOut": 3,
+            "costUsd": 0
+          },
+          {
+            "providerId": "codex",
+            "modelId": "gpt-5.6-sol",
+            "tokensIn": 28,
+            "tokensOut": 2,
+            "costUsd": 0
+          }
+        ]
+      },
+      {
+        "tokensIn": 30,
+        "tokensOut": 3,
+        "tokensReasoning": 0,
+        "costUsd": 0.0003,
+        "unpricedTurns": 0,
+        "accountKey": "cli:codex/codex-lb",
+        "label": "codex-lb · Codex CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "codex-lb",
+            "modelId": "unknown",
+            "tokensIn": 30,
+            "tokensOut": 3,
+            "costUsd": 0.0003
+          }
+        ]
+      },
+      {
+        "tokensIn": 22,
+        "tokensOut": 2,
+        "tokensReasoning": 0,
+        "costUsd": 0,
+        "unpricedTurns": 3,
+        "accountKey": "cli:claude/anthropic",
+        "label": "anthropic · Claude Code CLI (direct)",
+        "route": "DIRECT",
+        "models": [
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-opus-5-5",
+            "tokensIn": 10,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-haiku-5-5",
+            "tokensIn": 7,
+            "tokensOut": 1,
+            "costUsd": 0
+          },
+          {
+            "providerId": "anthropic",
+            "modelId": "claude-sonnet-5-5",
+            "tokensIn": 5,
+            "tokensOut": 0,
+            "costUsd": 0
+          }
+        ]
+      }
+    ],
+    "timeline": {
+      "bucketSeconds": 86400,
+      "points": [
+        {
+          "at": "2026-12-16T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-17T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-18T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-19T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-20T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-21T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-22T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-23T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-24T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-25T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-26T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 770,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-27T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-28T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-29T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-30T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2026-12-31T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-01T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-02T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-03T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-04T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-05T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-06T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-07T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-08T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-09T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-10T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-11T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-12T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 440,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-13T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 0,
+          "costUsd": 0
+        },
+        {
+          "at": "2027-01-14T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 187,
+          "costUsd": 0.0019
+        },
+        {
+          "at": "2027-01-15T00:00:00.000Z",
+          "gatewayTokens": 0,
+          "directTokens": 144,
+          "costUsd": 0.0003
+        }
+      ]
+    },
+    "composition": {
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "freshInput": 1407,
+      "output": 139
+    }
+  }
+}

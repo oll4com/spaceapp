@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ControlOperation, Event } from "@space/contracts";
+import { PANE_CATALOG_VERSION, type ControlOperation, type Event } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createRoomAgentService } from "../src/room-agent.js";
@@ -55,7 +55,7 @@ function completedOperation(command: { roomId: string; requestId: string }, deta
 
 const actor = { holderType: "OPERATOR", holderId: "user:operator" } as const;
 
-function fixture(options: { steps?: Step[]; tier?: AdvancedMissionModelSelection["tier"]; textModel?: RoomAgentChatModel; tools?: Partial<RoomAgentToolDeps> } = {}) {
+function fixture(options: { steps?: Step[]; tier?: AdvancedMissionModelSelection["tier"]; textModel?: RoomAgentChatModel; tools?: Partial<RoomAgentToolDeps>; chatAllowed?: (roomId: string) => Promise<boolean> } = {}) {
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "Room Agent chat", initialPaneCount: 2 });
   const [andy, bob] = store.listPanes(room.id);
@@ -88,7 +88,7 @@ function fixture(options: { steps?: Step[]; tier?: AdvancedMissionModelSelection
     missionStopper: { pauseMission: async () => {}, resumeMission: async () => {}, stopMission: async () => {} },
     roomPlanInventoryProvider: { inspect: async () => ({ totalPanes: 2, plannedPanes: 0, pendingPlans: 0, readyPlans: 0, pausedPlans: 0,
       runningPlans: 0, checkedAt: new Date().toISOString(), plans: [] }) },
-    modelSelection: async () => selection(options.tier ?? "CODEX"), chat });
+    modelSelection: async () => selection(options.tier ?? "CODEX"), chat, ...(options.chatAllowed ? { chatAllowed: options.chatAllowed } : {}) });
   const settle = () => vi.waitFor(() => expect(chat.isRunning(room.id)).toBe(false), { timeout: 5_000 });
   const send = async (content: string, clientRequestId: string) => {
     const session = await service.send(room.id, content, clientRequestId, `trace:${clientRequestId}`, actor);
@@ -125,6 +125,15 @@ describe("Room Agent conversation", () => {
     expect(body.messages.at(-1)).toEqual({ role: "user", content: "τι βλέπεις στο δωμάτιο;" });
     expect((body.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name)).toEqual(expect.arrayContaining([
       "room_status", "read_pane", "send_to_pane", "answer_pane_prompt", "open_panes", "close_pane", "space_control", "confirm_action"]));
+  });
+
+  it("refuses the conversation in a room whose model runs would bill someone else (MU-002), before any model call", async () => {
+    const allowed = vi.fn(async () => false);
+    const c = fixture({ steps: [[{ content: "never" }, { finishReason: "stop" }]], chatAllowed: allowed });
+    await expect(c.service.send(c.room.id, "τι βλέπεις;", "chat:refused", "trace:refused", actor)).rejects.toMatchObject({ errorCode: "ROOM_AGENT_CHAT_UNAVAILABLE" });
+    expect(allowed).toHaveBeenCalledWith(c.room.id);
+    expect(c.model.bodies).toHaveLength(0);
+    expect(c.chat.isRunning(c.room.id)).toBe(false);
   });
 
   it("runs tools in a loop and shows each tool before the turn's answer", async () => {
@@ -302,6 +311,29 @@ describe("Room Agent conversation", () => {
       target: { paneNames: ["Andy"], state: "OPEN" }, text: "γράψε ένα haiku", when: "AFTER_TURN" }] }, "chat:mention", "trace:mention", actor);
     expect(c.model.bodies).toHaveLength(0);
     expect(c.chat.isRunning(c.room.id)).toBe(false);
+  });
+
+  it("refuses every request of a USER account (MU-008) before any executor or model; the operator's requests are unchanged", async () => {
+    const c = fixture({ steps: [[{ content: "never" }, { finishReason: "stop" }]] });
+    c.store.upsertUser({ id: "user:member", email: "member@space.test", role: "USER" });
+    const member = { holderType: "OPERATOR", holderId: "user:member" } as const;
+    const executeRoutedCommand = vi.fn(async () => ({ summary: "Completed 1 controls." }));
+    const service = createRoomAgentService({ store: c.store, workflow: { enqueue: c.enqueue, stop: async () => {} },
+      missionStopper: { pauseMission: async () => {}, resumeMission: async () => {}, stopMission: async () => {} },
+      roomPlanInventoryProvider: { inspect: async () => ({ totalPanes: 2, plannedPanes: 0, pendingPlans: 0, readyPlans: 0, pausedPlans: 0,
+        runningPlans: 0, checkedAt: new Date().toISOString(), plans: [] }) }, chat: c.chat, executeRoutedCommand });
+    for (const [content, requestId] of [["@Andy γράψε ένα haiku", "member:mention"], ["Space control: maximize Andy", "member:control"],
+      ["τι βλέπεις στο δωμάτιο;", "member:chat"]] as const) {
+      await expect(service.send(c.room.id, content, requestId, `trace:${requestId}`, member)).rejects.toMatchObject({ errorCode: "ROOM_AGENT_UNAVAILABLE" });
+    }
+    await expect(service.executeCommand(c.room.id, { requestId: "member:typed", catalogVersion: PANE_CATALOG_VERSION,
+      action: { type: "SEARCH", query: "books", engine: "GOOGLE" } }, "trace:typed", member)).rejects.toMatchObject({ errorCode: "ROOM_AGENT_UNAVAILABLE" });
+    expect(executeRoutedCommand).not.toHaveBeenCalled();
+    expect(c.model.bodies).toHaveLength(0);
+    expect(c.chat.isRunning(c.room.id)).toBe(false);
+    const operator = await service.send(c.room.id, "@Andy γράψε ένα haiku", "operator:mention", "trace:operator", actor);
+    expect(operator.directCommand?.status).toBe("COMPLETED");
+    expect(executeRoutedCommand).toHaveBeenCalledOnce();
   });
 });
 

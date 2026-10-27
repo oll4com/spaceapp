@@ -4,6 +4,8 @@ import { InMemoryGatewayRepository, type GatewayRequestLogInsert } from "@space/
 import { CompressionCache } from "../src/compression/engine.js";
 import { registerStatsRoute } from "../src/stats.js";
 
+const headers = { "x-space-internal-token": "internal-test" };
+
 const now = new Date("2030-01-10T12:00:00Z");
 const log = (overrides: Partial<GatewayRequestLogInsert>): GatewayRequestLogInsert => ({
   requestId: `req_${Math.random()}`, requestedAt: "2030-01-10T11:30:00.000Z", provider: "CODEX", accountId: null, apiKeyId: null, model: "gpt-5.5",
@@ -34,8 +36,9 @@ describe("Headroom-compatible /stats", () => {
     cache.get(cache.key("a"));
     cache.get(cache.key("b"));
     const app = Fastify();
-    registerStatsRoute(app, { repository, cache, compressionMode: async () => "ON", now: () => now });
-    const stats = (await app.inject({ method: "GET", url: "/stats" })).json();
+    registerStatsRoute(app, { repository, cache, compressionMode: async () => "ON", now: () => now, internalToken: "internal-test" });
+    expect((await app.inject({ method: "GET", url: "/stats" })).statusCode).toBe(403);
+    const stats = (await app.inject({ method: "GET", url: "/stats", headers })).json();
     expect(stats.requests).toEqual({ total: 3, cached: 2, rate_limited: 1, failed: 1, by_provider: { CODEX: 2, CLAUDE: 1 },
       by_model: { "gpt-5.5": 2, "claude-sonnet-4-5": 1 }, by_stack: {} });
     expect(stats.tokens).toMatchObject({ input: 20_000, output: 200, saved: 3_000, proxy_attempted_tokens: 4_000, active_savings_percent: 75,
@@ -50,7 +53,7 @@ describe("Headroom-compatible /stats", () => {
     expect(stats.summary).toMatchObject({ mode: "on", api_requests: 3, primary_model: "gpt-5.5", compression: { requests_compressed: 1, total_tokens_removed: 3_000 } });
     expect(stats.space_gateway).toMatchObject({ shadow: { requests: 2, tokens_saved: 800, active_savings_percent: 80, tokens_saved_by_strategy: { log_compressor: 800 } },
       timed_out_requests: 1 });
-    expect((await app.inject({ method: "GET", url: "/stats?hours=1000" })).json().window_hours).toBe(720);
+    expect((await app.inject({ method: "GET", url: "/stats?hours=1000", headers })).json().window_hours).toBe(720);
   });
 
   it("reports waste signals, pipeline timing and prompt-cache totals", async () => {
@@ -64,8 +67,8 @@ describe("Headroom-compatible /stats", () => {
       { hour: "2030-01-10T11:20:00.000Z", mode: "ON", provider: "CODEX", kind: "stage", name: "cache_hit", count: 2, value: 0, maxValue: 0 }
     ]);
     const app = Fastify();
-    registerStatsRoute(app, { repository, compressionMode: async () => "ON", now: () => now });
-    const stats = (await app.inject({ method: "GET", url: "/stats?hours=24" })).json();
+    registerStatsRoute(app, { repository, compressionMode: async () => "ON", now: () => now, internalToken: "internal-test" });
+    const stats = (await app.inject({ method: "GET", url: "/stats?hours=24", headers })).json();
     // Every Headroom category is reported, in its order; the ones its detector never sets stay 0.
     expect(stats.waste_signals).toEqual({ json_bloat: 0, html_noise: 150, base64: 0, whitespace: 0, dynamic_date: 0, repetition: 0, reread: 0, reread_compressed: 0 });
     expect(Object.keys(stats.waste_signals)).toEqual(["json_bloat", "html_noise", "base64", "whitespace", "dynamic_date", "repetition", "reread", "reread_compressed"]);

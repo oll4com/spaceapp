@@ -1,4 +1,6 @@
 export * from "./store.js";
+export * from "./setup-execution.js";
+export * from "./setup-action-runner.js";
 export * from "./events.js";
 export * from "./mcp-policy.js";
 export * from "./session-auth.js";

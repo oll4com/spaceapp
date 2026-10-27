@@ -15,6 +15,7 @@
     "@ai-sdk/gateway": "4.0.87",
     "@codemirror/lang-sql": "^6.10.0",
     "@formkit/auto-animate": "^0.10.0",
+    "@noble/hashes": "^2.4.0",
     "@novnc/novnc": "^1.7.0",
     "@space/contracts": "0.2.5",
     "@space/icons": "0.2.5",
@@ -39,8 +40,8 @@
     "@vitejs/plugin-react": "^5.1.2",
     "jsdom": "^27.3.0",
     "typescript": "^5.9.3",
-    "vite": "^7.3.0",
-    "vitest": "^4.1.11"
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

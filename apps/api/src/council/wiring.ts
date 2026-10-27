@@ -13,7 +13,7 @@ import type { NotificationService } from "../notifications/service.js";
 import { buildCouncilPersonalData, type CouncilPersonalSources } from "./personal-data.js";
 import { clip } from "./ranking.js";
 import { registerCouncilRoutes } from "./routes.js";
-import { createCouncilService } from "./service.js";
+import { createCouncilService, type CouncilService } from "./service.js";
 import { searchWebThroughGateway } from "./web-search.js";
 
 const COUNCIL_PROVIDERS = new Set(["codex", "claude", "antigravity", "opencode", "openrouter"]);
@@ -99,7 +99,7 @@ export async function notifyCouncilStatus(notifications: Pick<NotificationServic
 }
 
 /** Builds the Research Council and registers its routes; work runs in this process and stops with it. */
-export function registerCouncil(app: FastifyInstance, options: CouncilWiringOptions): void {
+export function registerCouncil(app: FastifyInstance, options: CouncilWiringOptions): CouncilService {
   const databaseUrl = options.store instanceof PostgresSpaceStore && options.config.databaseUrl ? options.config.databaseUrl : null;
   const repository = options.repository ?? (databaseUrl ? PostgresCouncilRepository.fromConnectionString(databaseUrl) : new InMemoryCouncilRepository());
   // Claude and Gemini run as CLI turns in stable's worker; the dev instance must never use stable's worker socket.
@@ -171,4 +171,5 @@ export function registerCouncil(app: FastifyInstance, options: CouncilWiringOpti
   });
 
   registerCouncilRoutes(app, service, { routeOptions: options.routeOptions, owner: (request) => councilOwner(options, request), parseBody: options.parseBody, parseQuery: options.parseQuery });
+  return service;
 }

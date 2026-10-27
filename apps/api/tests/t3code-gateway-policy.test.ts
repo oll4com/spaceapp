@@ -33,8 +33,24 @@ describe("T3 pane gateway boundaries", () => {
     }
     expect(policy.isAllowedT3Http("POST", "/settings/providers")).toBe(false);
   });
+  it("allows the T3 0.1.0 thread reads and project mutations, never its MCP OAuth or inbound hook routes", () => {
+    for (const path of ["/api/orchestration/threads/thread_1/bounded", "/api/orchestration/threads/thread_1/history?cursor=abc&limit=50",
+      "/api/orchestration/threads/thread_1/transcript", "/api/orchestration/shell", "/api/orchestration/threads/thread_1"]) {
+      expect(policy.isAllowedT3Http("GET", path), path).toBe(true);
+      expect(policy.isAllowedT3Http("POST", path), path).toBe(false);
+    }
+    expect(policy.isAllowedT3Http("POST", "/api/projects/mutate")).toBe(true);
+    expect(policy.isAllowedT3Http("GET", "/api/projects/mutate")).toBe(false);
+    for (const path of ["/api/projects", "/api/orchestration/threads/thread_1/other", "/api/orchestration/threads/a/b/history",
+      "/.well-known/oauth-protected-resource/mcp", "/oauth/mcp/authorize", "/oauth/mcp/approval", "/oauth/mcp/decision",
+      "/oauth/mcp/register", "/oauth/mcp/token", "/v1/environments/env-real/hooks/wake"]) {
+      expect(policy.isAllowedT3Http("GET", path), path).toBe(false);
+      expect(policy.isAllowedT3Http("POST", path), path).toBe(false);
+    }
+  });
   it("serves the pinned upstream SPA routes and public icon files under a pane", () => {
-    for (const path of ["/primary/thread_123", "/projects/project_123", "/pull-requests", "/usage", "/favicon-32x32.png", "/assets/iphone-duo-Cu4Xx1NH.glb"]) {
+    for (const path of ["/primary/thread_123", "/primary/thread:project:9f99c9ff-f72c-4dbe-af75-bc88aaac86a3:c69c5fb7-d17e-486a-9655-188b7d29554b",
+      "/projects/project_123", "/pull-requests", "/usage", "/favicon-32x32.png", "/assets/iphone-duo-Cu4Xx1NH.glb"]) {
       expect(policy.isAllowedT3Http("GET", path), path).toBe(true);
     }
   });

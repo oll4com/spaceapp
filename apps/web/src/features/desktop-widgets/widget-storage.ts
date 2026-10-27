@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WORKSPACE_PROMO_CONTENT } from "@space/contracts";
 import type {
   ClockWidgetConfig,
   CountdownTimerWidgetConfig,
@@ -41,12 +42,7 @@ const DEFAULT_PUSHUP_CONFIG: PushupReminderWidgetConfig = {
   lastActiveDate: new Date().toISOString().slice(0, 10)
 };
 
-const DEFAULT_PROMO_CONFIG: SpaceAppPromoWidgetConfig = {
-  headline: "SpaceApp.dev it's FREE!!!",
-  subheadline: "SOURCE-AVAILABLE",
-  platformText: "FOR ALL PLATFORMS",
-  url: "https://spaceapp.dev"
-};
+const DEFAULT_PROMO_CONFIG: SpaceAppPromoWidgetConfig = { ...WORKSPACE_PROMO_CONTENT };
 
 // alertsEnabled stays unset here so the first load can adopt the former reminder's settings.
 const DEFAULT_AI_QUOTA_CONFIG: AiQuotaWidgetConfig = {

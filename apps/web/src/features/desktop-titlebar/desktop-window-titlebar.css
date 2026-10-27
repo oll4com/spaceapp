@@ -998,6 +998,11 @@ body:has([data-browser-fullscreen="true"]),
   border-color: rgba(63, 185, 80, 0.5);
 }
 
+.desktop-window-update-status-box.failed {
+  background: rgba(248, 81, 73, 0.08);
+  border-color: rgba(248, 81, 73, 0.5);
+}
+
 .desktop-window-update-status-box p {
   margin: 0;
   font-size: 0.76rem;

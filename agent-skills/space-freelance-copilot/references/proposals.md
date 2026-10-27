@@ -19,7 +19,8 @@ come from memory, never from this file alone. Numbers marked [verify] are not cl
 - E-commerce / marketplace integrations (Shopify, WooCommerce, CS-Cart, Amazon/eBay): $800-3,000 fixed.
 - PostgreSQL audit or migration: $500-2,500 fixed.
 - Hourly: $60-75 now, $90-120 after 3-5 reviews; never under the floor in Setup ($35).
-- Always milestones; work starts only when the milestone is funded. No unpaid samples.
+- Always milestones; work starts only when the milestone is funded. No unpaid samples on request; the
+  demo-first sketch below is the only exception, and only your own choice.
 
 ## Qualifying (score 0-100)
 - +30 niche match (AI agents, MCP, LLM, integrations, Node.js/TypeScript, e-commerce APIs, PostgreSQL)
@@ -38,6 +39,17 @@ come from memory, never from this file alone. Numbers marked [verify] are not cl
 5. Close: "Happy to start with a small paid first milestone."
 Answer screening questions directly, from memory. English unless the post is in another language.
 
+## Demo-first (score 70+)
+- Pick by the post: a live site or store with a visible problem (speed, a broken page, checkout, feed, SEO) →
+  `screenshot` with two lines of finding; an integration, automation or agent (API sync, n8n, MCP, ERP) → `flow`,
+  the boxes and arrows of your design with milestone 1 marked; a screen or app to build → `mockup` of the one
+  screen the post describes (desktop, plus phone for an app).
+- One image, two at most. It proves you read the post; it never solves the job. No working code, no client
+  credentials, no copy of their content beyond the public page.
+- Honest: a sketch is "a concept for this post", never shown as something already built or running.
+- The proposal stays under 1,200 characters; line 2 points at the attachment instead of a case study when the
+  demo says more.
+
 ## Follow-ups
 - Day 3: one new useful point (a risk you noticed, a quick idea), one line, no pressure.
 - Day 7: a last short note offering a 15-minute call through the platform. Then let it go.
@@ -45,4 +57,5 @@ Answer screening questions directly, from memory. English unless the post is in 
 ## Conversations
 - Answer within hours, short and specific; ask what you need to estimate (access, volumes, deadline).
 - Scope creep, discounts, retainers, exclusivity, NDAs, IP terms, calls and contracts: client_ready.
-- The operator has a permanent-role search too: no exclusivity, no availability promises beyond 10-20 hours a week.
+- Availability (operator rule 2026-10-19): full-time for freelance clients, 40+ hours a week, long-term contracts welcome,
+  any hours of the day in the client's time zone. Hours or duration are never a reason to skip a post.

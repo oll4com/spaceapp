@@ -39,6 +39,20 @@ describe("Space control",()=>{
   expect(await service.pendingWatches(actor,c.room.id)).toEqual([]);
   expect(c.send).toHaveBeenCalledOnce();
  });
+ it("confirms a stop on a fresh read and reads a scheduled prompt's id as its schedule (stable 2026-10-22)",async()=>{
+  const c=fixture(),pane=c.panes[0]!;
+  const base=await c.controller.inspect(pane);
+  // The 15 s cached read still says RUNNING; only a fresh read sees the stopped turn.
+  c.controller.inspect.mockImplementation(async(_p:any,freshness?:{fresh?:boolean})=>({...base,state:freshness?.fresh?"IDLE":"RUNNING"}) as any);
+  const stopped=await c.execute([{kind:"pane",operation:"stop",target:{paneIds:[pane.id]}}],"stop-one");
+  expect(stopped.results[0]).toMatchObject({status:"COMPLETED",detail:"Native execution stopped successfully."});
+  c.controller.inspect.mockResolvedValue({...base,state:"RUNNING"} as any);
+  const deferred=await c.execute([{kind:"pane",operation:"prompt",target:{paneIds:[pane.id]},text:"After the turn",when:"AFTER_TURN"}],"later-one");
+  const scheduleId=(deferred.results[0]!.evidence as {scheduleId:string}).scheduleId;
+  expect(scheduleId).toMatch(/^control_schedule:/);
+  const read=await c.execute([{kind:"watch",operation:"status",id:scheduleId}],"read-one");
+  expect(read.results[0]).toMatchObject({status:"COMPLETED",evidence:{result:{id:scheduleId,status:"SCHEDULED"}}});
+ });
  it("persists voice completion only after matching client read-back and never repeats on retry",async()=>{
   const c=fixture();
   c.service.registerClient(actor,c.room.id,"voice-tab",[],{});
@@ -396,6 +410,58 @@ describe("Space control",()=>{
   expect(entry.isMinimized).toBe(true);
   expect(entry.isMaximized).toBe(false);
  });
+ it("inspect STATE counts a pane whose prompt has left the transcript tail as used", async () => {
+  const c = fixture();
+  const [fresh, prompted] = c.panes;
+  const append = (pane: { id: string }, sessionId: string, sequence: number, stream: "stdin" | "stdout", content: string) =>
+   c.store.appendPaneCliTranscriptChunk({ sessionId, paneId: pane.id, roomId: c.room.id, sequence, stream, content, byteLength: content.length });
+  for (const pane of [fresh!, prompted!]) {
+   const { sessionId } = c.store.createPaneCliSession({ paneId: pane.id, roomId: c.room.id, runtimeId: "cli:codex", providerId: "openai",
+    agentId: "codex", status: "RUNNING", modelId: "gpt-6-sol", reasoningEffort: "medium" });
+   if (pane !== prompted) continue;
+   // The prompt, then a long turn: retention keeps a session's newest 200 chunks, and the tail holds output only.
+   append(pane, sessionId, 0, "stdin", "Check this pane\r");
+   for (let sequence = 1; sequence <= 12; sequence++) append(pane, sessionId, sequence, "stdout", `step ${sequence}\n`);
+   const now = new Date().toISOString();
+   c.store.updatePane(pane.id, { taskMetadata: { taskKey: `cli:${sessionId}`, version: 1, description: "", steps: [], earlierWork: "",
+    source: "local", generationStatus: "pending", nativeSyncStatus: "unsupported", providerId: null, modelId: null, topics: [], updatedAt: now } });
+  }
+  const state = await c.service.inspect(actor, { roomId: c.room.id, section: "STATE" }) as { panes: Array<{ id: string; hasUserInput: boolean; isUnused: boolean }> };
+  const entry = (id: string) => state.panes.find((p) => p.id === id);
+  expect(entry(prompted!.id)).toMatchObject({ hasUserInput: true, isUnused: false });
+  expect(entry(fresh!.id)).toMatchObject({ hasUserInput: false, isUnused: true });
+ });
+ it("pane start starts a rail-tab CLI pane's CLI through startRailCli; restart and non-CLI panes stay as they were (Felix/Jack gap 4)", async () => {
+  const c = fixture();
+  const startRailCli = vi.fn(async () => ({ sessionId: "cli_session:rail" }));
+  const service = createSpaceControl({ ...c.options, startRailCli });
+  const studio = c.store.createPane({ roomId: c.room.id, title: "App Studio", mode: "APP_STUDIO", terminalRuntimeId: "cli:claude" });
+  const browser = c.store.createPane({ roomId: c.room.id, title: "Browser", mode: "BROWSER" });
+  const run = (operation: string, paneId: string, requestId: string) => service.execute(actor, controlExecuteSchema.parse({ roomId: c.room.id, requestId,
+   actions: [{ kind: "pane", operation, target: { paneIds: [paneId] } }] }));
+  const started = await run("start", studio.id, "rail-start");
+  expect(started.results[0]).toMatchObject({ status: "COMPLETED", evidence: { result: { sessionId: "cli_session:rail" } } });
+  expect(startRailCli).toHaveBeenCalledWith(actor, expect.objectContaining({ id: studio.id }), expect.any(String));
+  await run("restart", studio.id, "rail-restart");
+  await run("start", browser.id, "browser-start");
+  expect(startRailCli).toHaveBeenCalledTimes(1);
+  expect(c.controller.start).not.toHaveBeenCalled();
+ });
+ it("inspect STATE reports the CLI session of rail-tab CLI panes like a terminal's (Felix/Iris 2026-10-23)", async () => {
+  const c = fixture();
+  const modes = ["TERMINAL", "APP_STUDIO", "DESIGN", "VIDEO", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "JOB_APPLY"] as const;
+  const sessions = new Map(modes.map((mode) => {
+   const pane = c.store.createPane({ roomId: c.room.id, title: mode, mode, terminalRuntimeId: "cli:claude" });
+   const session = c.store.createPaneCliSession({ paneId: pane.id, roomId: c.room.id, runtimeId: "cli:claude", providerId: "anthropic",
+    agentId: "claude", purpose: "NORMAL", status: "RUNNING", modelId: "claude-opus-5-5" });
+   return [pane.id, { mode, session }] as const;
+  }));
+  const state = await c.service.inspect(actor, { roomId: c.room.id, section: "STATE" }) as { panes: Array<Record<string, unknown> & { id: string }> };
+  for (const [paneId, { mode, session }] of sessions) {
+   expect({ mode, ...state.panes.find((p) => p.id === paneId) }).toMatchObject({ mode, status: "RUNNING", sessionId: session.sessionId,
+    sessionStartedAt: session.startedAt, runtimeId: "cli:claude", configuredModelId: "claude-opus-5-5" });
+  }
+ });
  it("inspect STATE enriches panes with verified model and account fields", async () => {
   const c = fixture();
   const pane = c.panes[0]!;
@@ -461,5 +527,10 @@ describe("Space control",()=>{
   expect(content[0].paneId).toBe(openPane.id);
   expect(content[0].closed).toBe(false);
   expect(content[0].text).toContain("Five tiny words");
+ });
+ it("space_test_mcp_tools counts the room's open panes from the STATE answer",async()=>{
+  const c=fixture();c.store.updatePane(c.panes[0]!.id,{isClosed:true,status:"CLOSED"});
+  const report=await c.service.testMcpTools(actor,c.room.id,{tools:["space_inspect:STATE"]}) as any;
+  expect(report.results[0]).toMatchObject({status:"PASS",details:{totalOpenPanes:2,paneCap:c.room.paneCap}});
  });
 });

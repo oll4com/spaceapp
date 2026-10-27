@@ -18,6 +18,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import {
+  addUser,
   addWorkspace,
   applyConfigRepairs,
   commitInstallation,
@@ -31,14 +32,18 @@ import {
   planConfigRepairs,
   prepareInstallation,
   removeCredential,
+  removeUser,
   removeWorkspace,
   resolveInstallAccessMode,
   resolveInstallProfile,
   resolveSpaceAppHome,
   saveConfig,
+  readRecordedDigests,
   selectLatestBackupId,
   SPACEAPP_UPGRADE_POLICY,
   upgradePath,
+  userSlug,
+  BACKUP_ID_PATTERN,
   writeCredential,
   writeRuntimeFiles,
   writeSetupToken
@@ -60,6 +65,10 @@ import {
   installFunnelFacts,
   isInstallPingAllowed
 } from "./telemetry.mjs";
+import { PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
+import { IMAGE_VERIFY_OFF_WARNING, imageVerificationOff } from "./image-attestations.mjs";
+// scripts/portable-restore.mjs (in the core image) exits with this code when a restore changed nothing or put everything back.
+export const RESTORE_UNCHANGED_EXIT = 3;
 
 const APPLICATION_READY_WAIT_MINUTES = 10;
 const APPLICATION_READY_WAIT_MS = APPLICATION_READY_WAIT_MINUTES * 60 * 1_000;
@@ -326,6 +335,7 @@ export async function run(argv, {
 
   const [command = "help", ...args] = filteredArgv;
   const root = resolveSpaceAppHome({ env, platform });
+  if (imageVerificationOff(env)) stderr.write(IMAGE_VERIFY_OFF_WARNING);
 
   if (["help", "--help", "-h"].includes(command) || args.includes("--help") || args.includes("-h")) {
     stdout.write(helpText());
@@ -459,10 +469,13 @@ export async function run(argv, {
     return factoryResetCommand({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, runtimeVersion, persistSetupToken });
   }
   if (command === "workspace") {
-    return workspaceCommand(args, { root, config, stdout });
+    return workspaceCommand(args, { root, config, platform, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "credentials") {
     return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
+  }
+  if (command === "user") {
+    return userCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute, request, sleep });
   }
   if (command === "provider") {
     return providerCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
@@ -490,9 +503,14 @@ export async function run(argv, {
     if (!config.previousVersion) {
       throw new Error("No previous SpaceApp version is recorded.");
     }
+    // Pinned when this installation recorded the previous version's digests; otherwise said before the owner agrees.
+    const pinned = PACKAGE_IMAGE_LOCK?.runtimeVersion === config.previousVersion || Boolean((await readRecordedDigests(root))[config.previousVersion]);
     const approved = await requireChangeApproval(stdin, stdout, stderr, [
       `Runtime image version: ${config.version} -> ${config.previousVersion}`,
-      "Rollback restores the previously recorded runtime images and configuration."
+      "Rollback restores the previously recorded runtime images and configuration.",
+      pinned
+        ? `The ${config.previousVersion} images are pulled by the digests recorded when it was installed.`
+        : `No digests were recorded for ${config.previousVersion} (installed before digest pinning): its images are pulled by version tag.`
     ]);
     if (!approved) {
       return 0;
@@ -523,7 +541,12 @@ export async function run(argv, {
   }
   if (command === "backup") {
     assertNoArgs(args, command);
-    return runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    // A paused, consistent backup first (external review 2026-10-16 #3), then the workspace list and CLI settings (pilot F8).
+    const backupCode = await backupWithWritersPaused(runtimeExecute, root, config, { stdin, stdout, stderr });
+    if (backupCode !== 0) return backupCode;
+    await addBackupExtras({ root, config, stdin, stdout, stderr, execute: runtimeExecute })
+      .catch((error) => stderr.write(`The backup was created; its workspace list and CLI settings were not added: ${error.message}\n`));
+    return 0;
   }
   if (command === "restore") {
     assertNoArgs(args, command);
@@ -537,16 +560,33 @@ export async function run(argv, {
       throw new Error("Restore cancelled.");
     }
     const backupId = await selectLatestBackupId(root);
-    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    const backupCode = await backupWithWritersPaused(runtimeExecute, root, config, { stdin, stdout, stderr });
     if (backupCode !== 0) return backupCode;
-    const stopCode = await runtimeExecute(composeCommand("stopForRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    const stopCode = await runtimeExecute(composeCommand("stopForPortableRestore", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
     if (stopCode !== 0) return stopCode;
+    // The backup just made holds the data from before the restore.
+    const safetyBackupId = await selectLatestBackupId(root).catch(() => "the newest backup");
     const restoreCode = await runtimeExecute(
       composeCommand("restore", root, { backupId, profile: config.profile }),
       { stdin, stdout, stderr }
     );
-    if (restoreCode !== 0) return restoreCode;
-    return runtimeExecute(composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    if (restoreCode !== 0) {
+      // Exit 3: the restore changed nothing or put every database and file back, so SpaceApp starts again as it was (1.1.8).
+      if (restoreCode === RESTORE_UNCHANGED_EXIT) {
+        const againCode = await runtimeExecute(composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+        stderr.write(againCode === 0
+          ? `The restore of ${backupId} did not happen; SpaceApp runs again with its data from before the restore (also kept in the backup ${safetyBackupId}).\n`
+          : `The restore of ${backupId} did not happen and SpaceApp could not be started again; run "${UNIVERSAL_COMMAND} up". Its data from before the restore is kept in the backup ${safetyBackupId}.\n`);
+        return restoreCode;
+      }
+      stderr.write(`The restore of ${backupId} failed and SpaceApp stays stopped: the messages above say what is left at the backup's state. To start SpaceApp anyway, run "${UNIVERSAL_COMMAND} up"; to try again, run "${UNIVERSAL_COMMAND} restore". The data from before the restore is kept in the backup ${safetyBackupId}.\n`);
+      return restoreCode;
+    }
+    const upCode = await runtimeExecute(composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    if (upCode !== 0) return upCode;
+    await restoreBackupExtras({ root, config, backupId, stdin, stdout, stderr, execute: runtimeExecute })
+      .catch((error) => stderr.write(`The data was restored; the CLI settings of the backup were not: ${error.message}\n`));
+    return 0;
   }
   if (command === "uninstall") {
     if (args.length === 0) {
@@ -576,7 +616,7 @@ export async function run(argv, {
       return code;
     }
     if (args.length === 1 && args[0] === "--purge-data") {
-      const confirmation = await readSecret(stdin, stdout, "Type DELETE to remove Docker volumes: ", { mask: false });
+      const confirmation = await readSecret(stdin, stdout, "Type DELETE to remove Docker volumes: ", { mask: false, answerKey: "purgeConfirm" });
       if (confirmation !== "DELETE") {
         throw new Error("Purge cancelled.");
       }
@@ -813,7 +853,7 @@ async function installCommand(args, {
   };
   try {
     stage = "pull";
-    await commitInstallation(stagedStateRoot, result.config);
+    await commitInstallation(stagedStateRoot, result.config, { projectRoot: root });
     const stagedComposeCommand = (action, options = {}) =>
       composeCommand(action, root, {
         profile,
@@ -1346,7 +1386,7 @@ async function performUpdate({
   const stagedRoot = await mkdtemp(join(tmpdir(), "spaceapp-update-"));
   let checkpoint = null;
   try {
-    await commitInstallation(stagedRoot, updated);
+    await commitInstallation(stagedRoot, updated, { projectRoot: root });
     const stagedCommand = (action) => composeCommand(action, root, {...updated, stateRoot: stagedRoot});
     const pullCode = await withHeadlessDockerConfig(
       platform, stagedCommand("pull"),
@@ -1432,6 +1472,25 @@ async function collectFiles(directory, logicalDirectory) {
     }
   }
   return files;
+}
+
+// Writers (core, CLI, browser, Temporal) are frozen, not stopped, while the backup runs in a one-off container:
+// the database, files, memory and Temporal histories are one moment and CLI sessions survive (external review
+// 2026-10-16). Compose skips services that are not running.
+async function backupWithWritersPaused(execute, root, config, io) {
+  const options = { profile: config.profile, companionsEnabled: config.companionsEnabled };
+  io.stdout.write("Pausing SpaceApp writers for the backup; the app and CLI sessions resume afterwards...\n");
+  const pauseCode = await execute(composeCommand("pauseWriters", root, options), io);
+  if (pauseCode !== 0) return pauseCode;
+  let backupCode = 1;
+  let resumeCode = 1;
+  try {
+    backupCode = await execute(composeCommand("backup", root, options), io);
+  } finally {
+    resumeCode = await execute(composeCommand("unpauseWriters", root, options), io).catch(() => 1);
+    if (resumeCode !== 0) io.stderr.write(`SpaceApp writers could not be resumed (exit ${resumeCode}). Run "${UNIVERSAL_COMMAND} up".\n`);
+  }
+  return backupCode !== 0 ? backupCode : resumeCode;
 }
 
 async function createQuiescedCheckpoint(root, config, io) {
@@ -1716,19 +1775,44 @@ async function loadExistingInstallation(root) {
   }
 }
 
-async function workspaceCommand(args, { root, config, stdout }) {
+/** Takes "--user <user-id>" out of the arguments (multi-user: the command acts on that user's container). */
+function takeUserOption(args) {
+  const index = args.indexOf("--user");
+  if (index === -1) return { userId: undefined, args };
+  const userId = args[index + 1];
+  if (!userId) throw new Error("--user needs a SpaceApp user id, for example user:Ab12cd34Ef56.");
+  return { userId, args: [...args.slice(0, index), ...args.slice(index + 2)] };
+}
+
+function assertRegisteredUser(config, userId) {
+  if (!(config.users ?? []).some((user) => user.id === userId)) {
+    throw new Error(`User "${userId}" has no CLI container: run "${UNIVERSAL_COMMAND} user add ${userId}" first.`);
+  }
+}
+
+async function workspaceCommand(rawArgs, { root, config, platform, stdin, stdout, stderr, execute }) {
+  const { userId, args } = takeUserOption(rawArgs);
+  if (userId) assertRegisteredUser(config, userId);
   const [action, identity, ...rest] = args;
+  const applyWorkspaces = async (updated) => {
+    // A user's mounts belong to their own container; "up" recreates only the services whose mounts changed.
+    const code = await execute(composeCommand(userId ? "up" : "syncWorkspaces", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
+    if (code !== 0) stderr.write(`The change is saved, but the running services could not pick it up. Run "${UNIVERSAL_COMMAND} up".\n`);
+    return code;
+  };
   if (action === "add") {
     if (!identity || rest.some((arg) => arg !== "--read-only")) {
       throw new Error(
         `Usage: ${UNIVERSAL_COMMAND} workspace add <absolute-path> [--read-only]`
       );
     }
-    const updated = await addWorkspace(config, identity, { readOnly: rest.includes("--read-only") });
+    const readOnly = rest.includes("--read-only");
+    const updated = await addWorkspace(config, identity, { readOnly, userId });
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace registered: ${identity}\n`);
-    return 0;
+    if (platform === "linux" && !readOnly) await writeAccessHint(identity, stdout);
+    return applyWorkspaces(updated);
   }
   if (action === "remove") {
     if (!identity || rest.length > 0) {
@@ -1736,20 +1820,127 @@ async function workspaceCommand(args, { root, config, stdout }) {
         `Usage: ${UNIVERSAL_COMMAND} workspace remove <id-or-absolute-path>`
       );
     }
-    const updated = removeWorkspace(config, identity);
+    const updated = removeWorkspace(config, identity, { userId });
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace removed: ${identity}\n`);
-    return 0;
+    return applyWorkspaces(updated);
   }
   if (action === "list" && args.length === 1) {
-    stdout.write(`${JSON.stringify(config.workspaces, null, 2)}\n`);
+    const workspaces = userId ? config.users.find((user) => user.id === userId).workspaces : config.workspaces;
+    stdout.write(`${JSON.stringify(workspaces, null, 2)}\n`);
     return 0;
   }
-  throw new Error(`Usage: ${UNIVERSAL_COMMAND} workspace <add|remove|list>`);
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} workspace <add|remove|list> [--user <user-id>]`);
 }
 
-async function credentialsCommand(args, { root, config, stdin, stdout, stderr, execute }) {
+// The CLIs run as uid 10001 in Docker; on Linux a bind-mounted folder keeps its host owner, so they cannot write to it.
+const CLI_UID = 10001;
+async function writeAccessHint(hostPath, stdout) {
+  const info = await stat(hostPath);
+  if (info.uid === CLI_UID || (info.mode & 0o002) !== 0) return;
+  const owner = process.getuid?.() ?? info.uid;
+  stdout.write(
+    `The AI CLIs run as uid ${CLI_UID} and cannot write to this folder yet. Give them access without changing its owner:\n` +
+    `  sudo setfacl -R -m u:${CLI_UID}:rwX -m u:${owner}:rwX -m d:u:${CLI_UID}:rwX -m d:u:${owner}:rwX ${JSON.stringify(hostPath)}\n` +
+    "(install the acl package first if setfacl is missing; add --read-only instead if they should only read)\n"
+  );
+}
+
+/** Streams one compose export into a 0600 archive; a failed export leaves no file. */
+async function exportArchive(archive, action, { root, config, service, stdin, stderr, execute }) {
+  const out = createWriteStream(archive, { mode: 0o600 });
+  await once(out, "open");
+  const code = await execute(
+    composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
+    { stdin, stdout: out, stderr }
+  ).catch(() => 1);
+  out.end();
+  await once(out, "close");
+  if (code !== 0) await rm(archive, { force: true });
+  return code === 0;
+}
+
+const userArchive = (directory, userId, kind) => join(directory, "users", `${userSlug(userId)}-${kind}.tar.gz`);
+
+/** Adds the workspace list and the CLIs' own settings to the backup just created; a failure here keeps the backup. */
+async function addBackupExtras({ root, config, stdin, stdout, stderr, execute }) {
+  const directory = join(root, "backups", await selectLatestBackupId(root));
+  await copyFile(join(root, "config.json"), join(directory, "spaceapp-config.json"));
+  const io = { root, config, stdin, stderr, execute };
+  const saved = await exportArchive(join(directory, "cli-config.tar.gz"), "exportCliSettings", io);
+  if (!saved) stderr.write("The backup has no CLI settings (MCP servers, base URLs): the CLI service did not answer or has none.\n");
+  // Each user's CLI settings and Space Memory, from their own container; their logins and keys never (MU-004).
+  const users = config.users ?? [];
+  if (users.length > 0) await mkdir(join(directory, "users"), { recursive: true, mode: 0o700 });
+  let complete = 0;
+  for (const user of users) {
+    const service = `spaceapp-cli-${userSlug(user.id)}`;
+    const settings = await exportArchive(userArchive(directory, user.id, "cli-config"), "exportCliSettings", { ...io, service });
+    const memory = await exportArchive(userArchive(directory, user.id, "memory"), "exportMemory", { ...io, service });
+    if (settings && memory) complete++;
+    else stderr.write(`The backup misses the ${settings ? "Space Memory" : memory ? "CLI settings" : "CLI settings and Space Memory"} of ${user.id}: their container did not answer.\n`);
+  }
+  stdout.write(`Backup includes the workspace list${saved ? " and the CLI settings" : ""}${users.length > 0 ? `, and the CLI settings and Space Memory of ${complete} of ${users.length} user(s)` : ""}.\n`);
+}
+
+/** Puts a user's CLI settings and Space Memory from a backup into their own container. */
+async function restoreUserState({ root, config, directory, userId, stdin, stdout, stderr, execute }) {
+  const service = `spaceapp-cli-${userSlug(userId)}`;
+  const restored = [];
+  for (const [kind, action, label] of [["cli-config", "importCliSettings", "CLI settings"], ["memory", "importMemory", "Space Memory"]]) {
+    const input = await readFile(userArchive(directory, userId, kind)).catch(() => null);
+    if (!input) continue;
+    const code = await execute(
+      composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
+      { stdin, stdout, stderr, input }
+    ).catch(() => 1);
+    if (code === 0) restored.push(label);
+    else stderr.write(`The ${label} of ${userId} could not be restored.\n`);
+  }
+  if (restored.length > 0) stdout.write(`${restored.join(" and ")} of ${userId} restored.\n`);
+  return restored.length;
+}
+
+/** Puts the CLIs' settings back and names what a restore does not bring back. */
+async function restoreBackupExtras({ root, config, backupId, stdin, stdout, stderr, execute }) {
+  const directory = join(root, "backups", backupId);
+  const archive = await readFile(join(directory, "cli-config.tar.gz")).catch(() => null);
+  if (archive) {
+    const code = await execute(
+      composeCommand("importCliSettings", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      { stdin, stdout, stderr, input: archive }
+    ).catch(() => 1);
+    stdout.write(code === 0 ? "CLI settings (MCP servers, base URLs) restored.\n" : "The CLI settings in this backup could not be restored.\n");
+  }
+  const saved = await readFile(join(directory, "spaceapp-config.json"), "utf8").then(JSON.parse).catch(() => null);
+  const missing = (saved?.workspaces ?? []).filter((workspace) => !config.workspaces.some((current) => current.hostPath === workspace.hostPath));
+  for (const workspace of missing) {
+    stdout.write(`Workspace of the backup to add again: ${UNIVERSAL_COMMAND} workspace add "${workspace.hostPath}"${workspace.readOnly ? " --read-only" : ""}\n`);
+  }
+  // Multi-user: the accounts come back with the database; each user's CLI container and workspaces are added again.
+  if (saved?.users !== undefined && config.users === undefined) stdout.write(`SpaceApp accounts were on: ${UNIVERSAL_COMMAND} user enable\n`);
+  for (const user of saved?.users ?? []) {
+    if ((config.users ?? []).some((current) => current.id === user.id)) {
+      await restoreUserState({ root, config, directory, userId: user.id, stdin, stdout, stderr, execute });
+    } else {
+      stdout.write(`User of the backup to add again: ${UNIVERSAL_COMMAND} user add ${user.id}${user.memoryLimit ? ` --memory ${user.memoryLimit}` : ""}\n`);
+      if (await stat(userArchive(directory, user.id, "memory")).then(() => true, () => false)) {
+        stdout.write(`Then their CLI settings and Space Memory: ${UNIVERSAL_COMMAND} user restore ${user.id}\n`);
+      }
+    }
+    for (const workspace of user.workspaces ?? []) {
+      stdout.write(`Their workspace to add again: ${UNIVERSAL_COMMAND} workspace add "${workspace.hostPath}"${workspace.readOnly ? " --read-only" : ""} --user ${user.id}\n`);
+    }
+  }
+  stdout.write(`API keys and CLI logins are never in backups: enter them again with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`);
+}
+
+async function credentialsCommand(rawArgs, { root, config, stdin, stdout, stderr, execute }) {
+  const { userId, args } = takeUserOption(rawArgs);
+  if (userId) assertRegisteredUser(config, userId);
+  // A user's keys reach only their own container.
+  const service = userId ? `spaceapp-cli-${userSlug(userId)}` : undefined;
   const [action, provider, ...rest] = args;
   if (action === "list" && args.length === 1) {
     stdout.write(`${JSON.stringify(credentialProviders(), null, 2)}\n`);
@@ -1762,9 +1953,9 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
       );
     }
     const value = await readSecret(stdin, stdout, `Enter ${provider} credential: `);
-    await writeCredential(root, provider, value);
+    await writeCredential(root, provider, value, { userId });
     const syncCode = await execute(
-      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
       { stdin, stdout, stderr }
     );
     if (syncCode !== 0) {
@@ -1778,9 +1969,9 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     if (!provider || rest.length > 0) {
       throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials remove <provider>`);
     }
-    const removed = await removeCredential(root, provider);
+    const removed = await removeCredential(root, provider, { userId });
     const syncCode = await execute(
-      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
       { stdin, stdout, stderr }
     );
     if (syncCode !== 0) {
@@ -1790,18 +1981,96 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     stdout.write(removed ? `Credential removed and applied for ${provider}.\n` : `No credential stored for ${provider}.\n`);
     return syncCode;
   }
-  throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials <set|remove|list>`);
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials <set|remove|list> [--user <user-id>]`);
 }
 
-async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
-  if (args.length !== 2 || args[0] !== "install") {
-    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install <provider>`);
+// Multi-user: "user enable" turns SpaceApp accounts on (invites); each invited user gets their own CLI container with
+// "user add <user-id>" (the id is in Settings -> Users). Until then that user's CLIs do not start.
+const USER_CLI_READY_ATTEMPTS = 30;
+
+/** After "user add": the core is ready again with the new host map, and the user's own CLI host answers. */
+async function waitForUserCli({ root, config, userId, stdin, stdout, stderr, execute, request, sleep }) {
+  if (!await waitForApplicationReady({ url: `http://${config.bindHost}:${config.port}`, request, sleep })) {
+    stderr.write(`SpaceApp did not become ready after adding ${userId}. Run "${UNIVERSAL_COMMAND} status".\n`);
+    return 1;
   }
+  const service = `spaceapp-cli-${userSlug(userId)}`;
+  for (let attempt = 0; attempt < USER_CLI_READY_ATTEMPTS; attempt++) {
+    const code = await execute(
+      composeCommand("cliHostReady", root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
+      { stdin, stdout: null, stderr: null }
+    ).catch(() => 1);
+    if (code === 0) {
+      stdout.write(`The CLI container of ${userId} is ready.\n`);
+      return 0;
+    }
+    await sleep(2_000);
+  }
+  stderr.write(`The CLI container of ${userId} does not answer yet. Run "${UNIVERSAL_COMMAND} logs" and look at ${service}.\n`);
+  return 1;
+}
+
+async function userCommand(args, { root, config, stdin, stdout, stderr, execute, request, sleep }) {
+  const [action, userId, ...rest] = args;
+  const apply = async (updated, message) => {
+    await saveConfig(root, updated);
+    await writeRuntimeFiles(root, updated);
+    stdout.write(message);
+    const code = await execute(composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
+    if (code !== 0) stderr.write(`The change is saved, but the running services could not pick it up. Run "${UNIVERSAL_COMMAND} up".\n`);
+    return code;
+  };
+  if (action === "list" && args.length === 1) {
+    stdout.write(`${JSON.stringify({ enabled: config.users !== undefined, users: (config.users ?? []).map((user) => ({ ...user, container: `spaceapp-cli-${userSlug(user.id)}` })) }, null, 2)}\n`);
+    return 0;
+  }
+  if (action === "enable" && args.length === 1) {
+    if (config.accessMode !== "isolated") throw new Error("SpaceApp accounts need isolated access: host-root lets every agent read the whole host.");
+    if (config.users !== undefined) {
+      stdout.write("SpaceApp accounts are already on.\n");
+      return 0;
+    }
+    return apply({ ...structuredClone(config), users: [] }, "SpaceApp accounts are on: invite people in Settings -> Users, then add each one here.\n");
+  }
+  if (action === "add" && userId && (rest.length === 0 || (rest.length === 2 && rest[0] === "--memory"))) {
+    if (config.users === undefined) throw new Error(`SpaceApp accounts are off: run "${UNIVERSAL_COMMAND} user enable" first.`);
+    const updated = addUser(config, userId, { memoryLimit: rest[1] });
+    const code = await apply(updated, `User ${userId} gets the CLI container spaceapp-cli-${userSlug(userId)}. Add their keys with "${UNIVERSAL_COMMAND} credentials set <provider> --user ${userId}".\n`);
+    return code === 0 ? waitForUserCli({ root, config: updated, userId, stdin, stdout, stderr, execute, request, sleep }) : code;
+  }
+  if (action === "restore" && userId && rest.length === 0) {
+    assertRegisteredUser(config, userId);
+    // "restore" first saves a backup of the install it replaces, so the newest backup with this user's state is the
+    // one to use, not simply the newest backup (lab recheck 2026-10-18).
+    const backups = (await readdir(join(root, "backups")).catch(() => [])).filter((id) => BACKUP_ID_PATTERN.test(id)).sort().reverse();
+    for (const id of backups) {
+      const directory = join(root, "backups", id);
+      if (!await stat(userArchive(directory, userId, "memory")).then(() => true, () => false)) continue;
+      if (await restoreUserState({ root, config, directory, userId, stdin, stdout, stderr, execute }) === 0) break;
+      return 0;
+    }
+    throw new Error(`No backup has the CLI settings or Space Memory of ${userId}.`);
+  }
+  if (action === "remove" && userId && rest.length === 0) {
+    // The container goes; its volumes (the user's CLI logins, memory and files) stay until uninstall --purge-data.
+    return apply(removeUser(config, userId), `User ${userId} no longer has a CLI container. Their volumes are kept.\n`);
+  }
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} user <enable|add <user-id> [--memory <2g>]|restore <user-id>|remove <user-id>|list>`);
+}
+
+async function providerCommand(rawArgs, { root, config, stdin, stdout, stderr, execute }) {
+  const { userId, args } = takeUserOption(rawArgs);
+  if (args.length !== 2 || args[0] !== "install") {
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install <provider> [--user <user-id>]`);
+  }
+  if (userId) assertRegisteredUser(config, userId);
   const provider=args[1];
-  stdout.write(`Installing optional provider ${provider} into this installation's private provider volume.\n`);
+  // A user's CLIs run in their own container, so an optional CLI goes into that container's volume.
+  const service = userId ? `spaceapp-cli-${userSlug(userId)}` : undefined;
+  stdout.write(`Installing optional provider ${provider} into ${userId ? `the private provider volume of ${userId}` : "this installation's private provider volume"}.\n`);
   // Keep the existing Claude path compatible with older runtime images.
   const action=provider === "claude" ? "installClaude" : "installProvider";
-  return execute(composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, provider }), { stdin, stdout, stderr });
+  return execute(composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, provider, service }), { stdin, stdout, stderr });
 }
 
 async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
@@ -1970,10 +2239,7 @@ async function factoryResetCommand({
   let backupCode;
   try {
     stdout.write("Creating safety backup before factory reset...\n");
-    backupCode = await execute(
-      composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
-      { stdin, stdout, stderr }
-    );
+    backupCode = await backupWithWritersPaused(execute, root, config, { stdin, stdout, stderr });
   } catch (err) {
     stdout.write(`Safety backup error: ${err.message}.\n`);
     backupCode = 1;
@@ -2512,7 +2778,12 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   credentials set <provider>        Read a credential from masked stdin
   credentials remove <provider>
   credentials list
-  provider install <provider>       Install an optional CLI in its persistent volume
+                                    credentials and workspace take --user <user-id>
+  user enable                       Turn SpaceApp accounts on (invites in Settings -> Users)
+  user add <user-id> [--memory 2g]  Give an invited user their own CLI container
+  user restore <user-id>            Put a user's CLI settings and Space Memory back from the latest backup
+  user remove <user-id> | user list
+  provider install <provider> [--user <id>]  Install an optional CLI in its persistent volume (or a user's)
                                     codex, gemini, qwen, kimi, grok, claude, deepseek,
                                     autohand, cursor, copilot (also installed on first use)
   owner reset-password              Read the new password from masked stdin

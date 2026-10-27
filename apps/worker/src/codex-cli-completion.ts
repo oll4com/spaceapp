@@ -418,9 +418,12 @@ export async function sweepCodexCliCompletions(
         await finish("IGNORED", "CODEX_CLI_RUNTIME_EXCLUDED");
         continue;
       }
+      // The session is read before the rollout, so an exited CLI's rollout is final: a turn still pending never completes.
+      const ended = session.status === "EXITED" || session.status === "ERROR";
+      const wait = (input: Parameters<typeof defer>[0]) => ended ? finish("IGNORED", "CODEX_CLI_SESSION_ENDED") : defer(input);
       const codexThreadId = marker.codexThreadId ?? session.codexThreadId;
       if (!codexThreadId) {
-        await defer({
+        await wait({
           safeErrorCode: "CODEX_CLI_THREAD_PENDING",
           terminalCode: "CODEX_CLI_THREAD_UNAVAILABLE"
         });
@@ -442,7 +445,7 @@ export async function sweepCodexCliCompletions(
         continue;
       }
       if (resolution.status === "PENDING") {
-        await defer({ safeErrorCode: resolution.safeErrorCode, codexThreadId });
+        await wait({ safeErrorCode: resolution.safeErrorCode, codexThreadId });
         continue;
       }
 
@@ -450,7 +453,7 @@ export async function sweepCodexCliCompletions(
       try {
         content = await readRollout(resolution.rolloutPath);
       } catch {
-        await defer({
+        await wait({
           safeErrorCode: "CODEX_CLI_ROLLOUT_READ_PENDING",
           codexThreadId,
           rolloutPath: resolution.rolloutPath,
@@ -467,7 +470,7 @@ export async function sweepCodexCliCompletions(
       }
       if (completion.status === "PENDING") {
         const missingFinal = completion.safeErrorCode === "CODEX_CLI_FINAL_RESPONSE_PENDING";
-        await defer({
+        await wait({
           safeErrorCode: completion.safeErrorCode ?? "CODEX_CLI_COMPLETION_PENDING",
           codexThreadId,
           rolloutPath: resolution.rolloutPath,

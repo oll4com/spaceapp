@@ -195,7 +195,7 @@
   display: none !important;
 }
 
-@media (max-width: 768px), (max-height: 600px) {
+@media (max-width: 767px), (max-height: 600px) {
   .fm-sidebar-disk-section {
     display: none !important;
   }

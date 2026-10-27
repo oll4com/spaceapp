@@ -47,3 +47,16 @@ it("does not allocate a Chat session while inspecting an unprepared pane", async
   expect(observation.sessionId).toBeNull();
   expect(loadSession).not.toHaveBeenCalled();
 });
+
+it("controls a copilot pane's CLI as a CLI, so its model can be set (Nous, 2026-10-17)", async () => {
+  const store = new InMemorySpaceStore();
+  const room = store.createRoom({ name: "Freelance", initialPaneCount: 0 });
+  const pane = store.createPane({ roomId: room.id, title: "Freelance", mode: "FREELANCE_COPILOT", terminalRuntimeId: "cli:claude" } as never);
+  const inspectCli = vi.fn(async () => ({ sessionId: "cli-session:1", state: "IDLE", tasks: [] }));
+  const configureCli = vi.fn(async () => ({ modelId: "claude-opus-5-5" }));
+  const controller = createRoomPaneController({ store, inspectCli, configureCli } as never);
+  expect((await controller.inspect(pane)).sessionId).toBe("cli-session:1");
+  const action = { type: "configure_pane", paneId: pane.id, expectedSessionId: "cli-session:1", modelId: "claude-opus-5-5", when: "NOW" } as never;
+  await controller.configure(pane, action, "trace:1");
+  expect(configureCli).toHaveBeenCalledWith(pane, action, "trace:1");
+});

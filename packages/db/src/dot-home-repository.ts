@@ -35,7 +35,7 @@ export interface DotHomeRepository {
   claimProactive(owner: string, observed: string | null, next: string): Promise<boolean>;
   proactiveState(owner: string): Promise<DotProactiveState>;
   saveProactiveState(owner: string, state: Omit<DotProactiveState, "nextCheckAt">): Promise<void>;
-  /** Records one model call of a proactive check; calls older than 90 days are removed. */
+  /** Records one model call of a proactive check; usage rows are never deleted (Record Retention Invariant 2026-10-20). */
   addProactiveUsage(owner: string, entry: DotProactiveUsageEntry): Promise<void>;
   /** Totals of the owner's proactive model calls in the last `days` days. */
   proactiveUsage(owner: string, days: number, now?: string): Promise<DotProactiveUsage>;
@@ -253,7 +253,6 @@ export class PostgresDotHomeRepository implements DotHomeRepository {
       VALUES ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::jsonb, $10::jsonb)`, [`dot_proactive_usage:${randomUUID().replace(/-/g, "")}`, owner, entry.dotId,
       entry.calledAt, entry.model.slice(0, 200), entry.status, entry.candidates, entry.notices, JSON.stringify(agentRunUsageSchema.parse(entry.usage)),
       JSON.stringify(agentRunCostSchema.parse(entry.cost))]);
-    await this.pool.query(`DELETE FROM dot_proactive_usage WHERE owner_user_id=$1 AND called_at < now() - interval '90 days'`, [owner]);
   }
   async proactiveUsage(owner: string, days: number, now = new Date().toISOString()) {
     const window = Math.max(1, Math.min(30, Math.floor(days)));

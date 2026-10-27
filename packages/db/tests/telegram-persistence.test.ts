@@ -116,6 +116,15 @@ describe("Postgres Telegram persistence", () => {
     expect(client.calls[0]?.sql.match(/is_active = true/g)).toHaveLength(2);
   });
 
+  it("moves the connected chat's polling offset forward only (Nous two-way, 2026-10-24)", async () => {
+    const client = new RecordingClient(() => []);
+    const persistence = new PostgresTelegramPersistence(new RecordingPool(client));
+    await persistence.updateIntegrationOffset(42.9, "2026-10-24T10:00:00.000Z");
+    const call = client.calls.find((entry) => entry.sql.includes("UPDATE telegram_integrations SET polling_offset"));
+    expect(call?.sql).toContain("GREATEST(polling_offset, $1)");
+    expect(call?.values).toEqual([42, "2026-10-24T10:00:00.000Z"]);
+  });
+
   it("starts pairing transactionally while returning staged credentials that must be removed", async () => {
     const client = new RecordingClient((sql) => {
       if (sql.includes("FROM telegram_integrations")) return [integrationRow()];

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { notificationIdSchema, notificationListQuerySchema } from "@space/contracts";
+import { notificationIdSchema, notificationListQuerySchema, pushDeviceRegistrationSchema, pushDeviceRemovalSchema } from "@space/contracts";
 import { SpaceNotFoundError } from "@space/runtime";
 import type { NotificationService } from "./service.js";
 
@@ -41,6 +41,17 @@ export function registerNotificationRoutes(app: FastifyInstance, service: Notifi
     return { notification };
   });
 
+  // The Android app's FCM token: registered while "Push notifications on this device" is on; `available` says whether this server can push.
+  app.post("/api/notifications/push-devices", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    await service.registerPushDevice(owner, parseBody(pushDeviceRegistrationSchema, request.body));
+    return { registered: true, available: service.pushAvailable() };
+  });
+  app.delete("/api/notifications/push-devices", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    return { removed: await service.removePushDevice(owner, parseBody(pushDeviceRemovalSchema, request.body).token) };
+  });
+
   // One record by id: what a native notification tap carries back into the app.
   app.get("/api/notifications/:id", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
@@ -58,5 +69,4 @@ export function registerNotificationRoutes(app: FastifyInstance, service: Notifi
       return { notification };
     });
   }
-  void parseBody;
 }

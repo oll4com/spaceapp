@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {mkdir,mkdtemp,rm,utimes,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {parseCatalog,preferDefault,toolCycleSucceeded,selectWorkingFreeModel,withBootstrap,scratchDirectory,externalDirectoryDefault,configureFirstRun} from '../../deploy/docker/opencode-first-run.mjs';
+import {parseCatalog,preferDefault,toolCycleSucceeded,selectWorkingFreeModel,withBootstrap,scratchDirectory,externalDirectoryDefault,configureFirstRun,MODEL_RECHECK_MS} from '../../deploy/docker/opencode-first-run.mjs';
 // The 2026-10-11 macOS first-agent run stopped at "Access external directory
 // /tmp" because nobody answered the prompt. The wrapper's private TMPDIR is
 // the only scratch directory authorized in advance; /tmp still asks.
@@ -16,13 +16,22 @@ const decide=(rules,path)=>{
 };
 const line=e=>JSON.stringify(e);
 const toolRun=token=>[line({type:'step_start'}),line({type:'tool_use',part:{type:'tool',tool:'read',state:{status:'completed'}}}),line({type:'step_finish'}),line({type:'step_start'}),line({type:'text',part:{text:token}}),line({type:'step_finish'})].join('\n');
-const entry=(id,cost=0)=>`opencode/${id}\n${JSON.stringify({id,providerID:'opencode',name:id,status:'active',cost:{input:cost,output:cost},capabilities:{toolcall:true},release_date:'2026-09-01'},null,2)}`;
+// OpenCode 2 /api/model entries (shape recorded from 2.0.31/2.0.32 on 2026-10-16/17).
+const entry=(id,cost=0,released=1788000000000)=>({id,providerID:'opencode',name:id,status:'active',enabled:true,
+ cost:[{input:cost,output:cost,cache:{read:0,write:0}}],capabilities:{tools:true},time:{released}});
+const catalog=(...models)=>JSON.stringify({data:models});
 test('only native explicitly zero-priced tool models are eligible',()=>{
- assert.deepEqual(parseCatalog(entry('free')+'\n'+entry('paid',1)).map(x=>x.id),['opencode/free']);
+ assert.deepEqual(parseCatalog(catalog(entry('free'),entry('paid',1))).map(x=>x.id),['opencode/free']);
+ // A paid tier, a disabled model or another provider is never a free candidate; newest release first.
+ const tiered={...entry('tiered'),cost:[{input:0,output:0},{input:1,output:2}]};
+ assert.deepEqual(parseCatalog(catalog(entry('older',0,1),tiered,{...entry('off'),enabled:false},{...entry('other'),providerID:'yunwu'},entry('newer',0,2))).map(x=>x.id),
+  ['opencode/newer','opencode/older']);
 });
 test('only a completed read tool call followed by the file token counts as working',()=>{
  const token='SPACEAPP-0123456789ab';
  assert.equal(toolCycleSucceeded({code:0,stdout:toolRun(token)},token),true);
+ // OpenCode 2 standalone runs exit right after the answer without the last step_finish.
+ assert.equal(toolCycleSucceeded({code:0,stdout:toolRun(token).split('\n').slice(0,-1).join('\n')},token),true);
  assert.equal(toolCycleSucceeded({code:0,stdout:''},token),false);
  // A plain completion without the tool call is not enough.
  assert.equal(toolCycleSucceeded({code:0,stdout:[line({type:'text',part:{text:token}}),line({type:'step_finish'})].join('\n')},token),false);
@@ -35,14 +44,16 @@ test('only a completed read tool call followed by the file token counts as worki
 test('a model that fails the tool cycle falls through to another free model without provider override',async()=>{
  const calls=[];
  const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
- calls.push(args); assert.equal(env.OPENCODE_API_KEY,undefined);
- if(args[0]==='models')return {code:0,stdout:entry('unavailable')+'\n'+entry('working')};
+ calls.push(args); assert.equal(env.OPENCODE_API_KEY,undefined); assert.equal(env.OPENCODE_DISABLE_AUTOUPDATE,'true');
+ if(args[0]==='api')return {code:0,stdout:catalog(entry('unavailable'),entry('working'))};
  const token=readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim();
  assert.match(token,/^SPACEAPP-[0-9a-f]{12}$/);
  if(args.includes('opencode/unavailable'))return {code:0,stdout:[line({type:'tool_use',part:{tool:'read',state:{status:'completed'}}}),line({type:'error'})].join('\n')};
  return {code:0,stdout:toolRun(token)};
  }});
  assert.equal(selected.id,'opencode/working');assert.equal(selected.verification,'tool-call');assert.equal(calls.length,3);
+ // OpenCode 2 would start its per-user background service without --standalone.
+ assert.deepEqual(calls[0],['api','GET','/api/model','--standalone']);assert.deepEqual(calls[1].slice(0,2),['run','--standalone']);
 });
 
 test('bootstrap loads installation memory and authorizes only its external directory',()=>{
@@ -96,6 +107,15 @@ test('the unchanged 1.1.x default is upgraded once; the result is stable',()=>{
  const owned={external_directory:{...earlier.external_directory,'/srv/*':'allow'}};
  assert.deepEqual(withBootstrap({permission:owned},{tmpdir:PROVIDER_TMP}).permission,owned);
 });
+// 1.1.7 rc2 macOS lab: the model searched /var/lib/spaceapp for its model record and stopped at OpenCode's "Access external
+// directory" prompt; the instructions name the exact file instead.
+test('bootstrap instructions name the model record by its exact path, never a search of /var/lib/spaceapp',()=>{
+ for(const file of ['starter-memory/AGENTS.md','starter-memory/installation-guide.md']){
+  const text=readFileSync(join(import.meta.dirname,'../..',file),'utf8');
+  assert.match(text,/`\/var\/lib\/spaceapp\/memory\/installation-model\.json`/,file);
+  assert.match(text,/search(ing)?\s+`\/var\/lib\/spaceapp`/,file);
+ }
+});
 test('bootstrap instructions send temporary files to TMPDIR instead of /tmp',()=>{
  for(const file of ['starter-memory/AGENTS.md','starter-memory/installation-guide.md']){
   const text=readFileSync(join(import.meta.dirname,'../..',file),'utf8');
@@ -134,7 +154,7 @@ test('Big Pickle is tried first, then the newest free models',async()=>{
  assert.deepEqual(preferDefault([{id:'opencode/new-free'},{id:'opencode/big-pickle'}]).map(x=>x.id),['opencode/big-pickle','opencode/new-free']);
  const tried=[];
  const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
-  if(args[0]==='models')return {code:0,stdout:entry('new-free')+'\n'+entry('big-pickle')};
+  if(args[0]==='api')return {code:0,stdout:catalog(entry('new-free'),entry('big-pickle'))};
   tried.push(args[args.indexOf('--model')+1]);
   if(args.includes('opencode/big-pickle'))return {code:0,stdout:line({type:'error'})};
   return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
@@ -154,5 +174,71 @@ test('a lock left by a killed first run is broken instead of making every start 
   await configureFirstRun({XDG_CONFIG_HOME:config,TMPDIR:PROVIDER_TMP});
   assert.ok(Date.now()-started<5000);
   assert.equal(JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8')).model,'owner/model');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+// Windows lab, 2026-10-20: right after the owner claim several OpenCode starts overlap in the CLI container and the catalog answers 503.
+test('the catalog call is retried after a 503 from overlapping starts, then the selection goes on as before',async()=>{
+ const listings=[];
+ const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
+  if(args[0]==='api'){listings.push(Date.now());return listings.length===1?{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable\n'}:{code:0,stdout:catalog(entry('big-pickle'))};}
+  return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
+ }});
+ assert.equal(selected.id,'opencode/big-pickle');assert.equal(listings.length,2);
+ assert.ok(listings[1]-listings[0]>=2900,'3 s apart');
+});
+
+test('three failed catalog calls (503, timeout, connection) fail as before, within the budget',async()=>{
+ const answers=[{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable'},{code:124,stdout:'',stderr:''},{code:1,stdout:'',stderr:'Error: connect ECONNREFUSED 127.0.0.1:4096'}];
+ let listings=0;const started=Date.now();
+ await assert.rejects(selectWorkingFreeModel({executeNative:async(args)=>{if(args[0]==='api')return answers[listings++];throw new Error('no model run');}}),/catalog could not be refreshed/);
+ assert.equal(listings,3);assert.ok(Date.now()-started<100000);
+});
+
+test('a 4xx catalog answer is not retried',async()=>{
+ let listings=0;
+ await assert.rejects(selectWorkingFreeModel({executeNative:async(args)=>{if(args[0]==='api'){listings++;return {code:1,stdout:'',stderr:'HTTP 401 Unauthorized'};}throw new Error('no model run');}}),/catalog could not be refreshed/);
+ assert.equal(listings,1);
+});
+
+// 1.1.7 review (Claude T3): a free model the first run saved is checked again once a day; when OpenCode Zen retired it, the
+// next working free model takes its place. A model the owner chose is never checked or replaced.
+test('the first run\'s saved model is re-checked once a day and replaced only when Zen retired it',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'spaceapp-first-run-recheck-'));
+ const now=Date.parse('2026-10-22T10:00:00Z');
+ const setup=async({model,record,checkedAt})=>{
+  const dir=await mkdtemp(join(root,'case-'));const config=join(dir,'config');const memory=join(dir,'memory');
+  await mkdir(join(config,'opencode'),{recursive:true});await mkdir(memory);
+  await writeFile(join(config,'opencode','opencode.json'),JSON.stringify({model}));
+  if(record)await writeFile(join(memory,'installation-model.json'),JSON.stringify({id:record,verifiedAt:checkedAt}));
+  return {env:{XDG_CONFIG_HOME:config,TMPDIR:PROVIDER_TMP},memory,config,
+   read:()=>JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8')),
+   record:()=>JSON.parse(readFileSync(join(memory,'installation-model.json'),'utf8'))};
+ };
+ const native=(listed,calls)=>async(args,env,cwd)=>{
+  calls.push(args[0]);
+  if(args[0]==='api')return listed===null?{code:1,stdout:'',stderr:'offline'}:{code:0,stdout:catalog(...listed.map(id=>entry(id)))};
+  return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
+ };
+ const dayOld=new Date(now-MODEL_RECHECK_MS-1).toISOString();
+ try{
+  // Still listed: kept, and not checked again for a day.
+  let c=await setup({model:'opencode/big-pickle',record:'opencode/big-pickle',checkedAt:dayOld});let calls=[];
+  await configureFirstRun(c.env,{memoryDirectory:c.memory,executeNative:native(['big-pickle','other-free'],calls),now:()=>now});
+  assert.deepEqual(calls,['api']);assert.equal(c.read().model,'opencode/big-pickle');assert.equal(c.record().checkedAt,new Date(now).toISOString());
+  calls=[];await configureFirstRun(c.env,{memoryDirectory:c.memory,executeNative:native(['other-free'],calls),now:()=>now+1000});
+  assert.deepEqual(calls,[]);
+  // Retired: the next free model that passes the tool call replaces it, in the config and the record.
+  c=await setup({model:'opencode/retired-free',record:'opencode/retired-free',checkedAt:dayOld});calls=[];
+  await configureFirstRun(c.env,{memoryDirectory:c.memory,executeNative:native(['newer-free'],calls),now:()=>now});
+  assert.deepEqual(calls,['api','api','run']);assert.equal(c.read().model,'opencode/newer-free');assert.equal(c.record().id,'opencode/newer-free');
+  // The catalog cannot be read: the model is kept and checked again the next day.
+  c=await setup({model:'opencode/big-pickle',record:'opencode/big-pickle',checkedAt:dayOld});calls=[];
+  await configureFirstRun(c.env,{memoryDirectory:c.memory,executeNative:native(null,calls),now:()=>now});
+  assert.deepEqual(calls,['api']);assert.equal(c.read().model,'opencode/big-pickle');assert.equal(c.record().checkedAt,new Date(now).toISOString());
+  // The owner's own model (not the one the first run saved) is never checked.
+  c=await setup({model:'anthropic/claude-sonnet-5-5',record:'opencode/big-pickle',checkedAt:dayOld});calls=[];
+  await configureFirstRun(c.env,{memoryDirectory:c.memory,executeNative:native([],calls),now:()=>now});
+  assert.deepEqual(calls,[]);assert.equal(c.read().model,'anthropic/claude-sonnet-5-5');
  }finally{await rm(root,{recursive:true,force:true});}
 });

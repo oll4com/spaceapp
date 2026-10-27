@@ -36,7 +36,7 @@ export function antigravityModelGroup(modelId: string | null | undefined): Antig
 
 // ready: usable now; blocked: not usable right now (limit, expired, signed out);
 // neutral: signed in without quota data; pending: nothing known yet;
-// off: works, but kept out of use (a pay-per-token API key) and only used when picked by hand.
+// off: kept out of Auto (a pay-per-token API key); can serve an explicitly enabled gateway fallback.
 export type CliAccountTone = "ready" | "blocked" | "neutral" | "pending" | "off";
 
 export interface CliAccountQuotaWindow {
@@ -55,6 +55,8 @@ export interface CliAccountAvailability {
   description: string;
   // Short line under the name for accounts without an email or login; the description is too long for a narrow menu.
   detail?: string;
+  // Recent successful API traffic while the gateway's subscription pool is unavailable.
+  gatewayInUse?: boolean;
   windows: CliAccountQuotaWindow[];
 }
 
@@ -83,6 +85,8 @@ export function cliAccountAvailabilityColor(percent: number): string {
 function percentText(value: number): string {
   return `${Math.round(value)}%`;
 }
+
+const usdText = (value: number) => `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 function tightest(...values: Array<number | null | undefined>): number | null {
   const known = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
@@ -141,17 +145,70 @@ function fromQuota(
   }
 }
 
-function claudeAvailability(account: ClaudeUsageAccount, clock: number): CliAccountAvailability {
+const recentApiUseMs = 5 * 60_000;
+
+function claudeApiFallback(quota: SharedQuotaCache | null, clock: number): { api: ClaudeUsageAccount; inUse: boolean } | null {
+  const sample = quota?.claude;
+  const api = sample?.data.find((account) => account.status === "API_KEY" && account.gatewayFallback === "ON" && account.apiKeyVerified === true);
+  const gateway = sample?.data.find((account) => account.status === "GATEWAY");
+  if (!sample || !api || !gateway?.pool) return null;
+  const remainingAfterReset = (percent: number | null, reset: string | null) => reset && Date.parse(reset) <= clock ? 100 : percent;
+  const poolMayServe = gateway.pool.some((member) => {
+    if (member.signInRequired) return false;
+    const state = classifyQuota({
+      ...member,
+      fiveHourRemainingPercent: remainingAfterReset(member.fiveHourRemainingPercent, member.fiveHourResetAt),
+      weeklyRemainingPercent: remainingAfterReset(member.weeklyRemainingPercent, member.weeklyResetAt),
+    }, clock).state;
+    return state === "available" || state === "unknown";
+  });
+  if (poolMayServe) return null;
+  const lastRequest = api.apiKeyUsage?.lastRequest;
+  const lastUseAge = clock - Date.parse(lastRequest?.at ?? "");
+  const sampleAge = clock - Date.parse(sample.checkedAt);
+  // A configured fallback is not proof of traffic. Old samples and a free model-list check never light up "In use".
+  const inUse = !sample.isStale && sampleAge >= 0 && sampleAge <= recentApiUseMs
+    && lastRequest?.succeeded === true && lastUseAge >= 0 && lastUseAge <= recentApiUseMs;
+  return { api, inUse };
+}
+
+function claudeAvailability(account: ClaudeUsageAccount, clock: number, fallback: ReturnType<typeof claudeApiFallback>): CliAccountAvailability {
   if (account.status === "API_KEY") {
     const label = account.apiKeyVerified === false ? "Key rejected" : account.apiKeyVerified ? "Paid · ready" : "Paid · not used";
-    const fallback = account.gatewayFallback === "ON" ? " · Space Gateway fallback on" : account.gatewayFallback === "OFF" ? " · Space Gateway fallback off" : "";
-    return { tone: "off", percent: null, color: CLI_ACCOUNT_OFF_COLOR, label, description: `Paid per token · never chosen automatically${fallback}`,
-      detail: account.gatewayFallback === "ON" ? "Per token · Space Gateway fallback on" : "Per token · only when picked by hand", windows: [] };
+    const fallbackText = account.gatewayFallback === "ON" ? " · Space Gateway fallback on" : account.gatewayFallback === "OFF" ? " · Space Gateway fallback off" : "";
+    const gatewayInUse = fallback?.inUse === true && fallback.api.id === account.id;
+    const activity = gatewayInUse ? " · Used by Space Gateway in the last 5 minutes; subscription accounts unavailable" : "";
+    const use = account.gatewayFallback === "ON" ? "Space Gateway fallback on" : "only when picked by hand";
+    const { spentUsd = null, budgetUsd = null } = account.apiKeyMonth ?? {};
+    // Share of the operator's monthly budget still free after this month's Anthropic bill; still "off", so Auto never picks it.
+    if (spentUsd !== null && budgetUsd && account.apiKeyVerified !== false) {
+      const percent = Math.max(0, 100 - (spentUsd / budgetUsd) * 100);
+      const month = `${usdText(spentUsd)} of ${usdText(budgetUsd)} this month`;
+      return { tone: "off", percent, color: percent >= 1 ? cliAccountAvailabilityColor(percent) : CLI_ACCOUNT_BLOCKED_COLOR,
+        label: `${usdText(Math.max(0, budgetUsd - spentUsd))} left`,
+        description: `${percentText(percent)} of the monthly API budget left · ${month} (Anthropic bill, including estimates until posted; not a credit balance) · Paid per token · never chosen by Auto${fallbackText}${activity}`,
+        detail: `${month} · budget`, gatewayInUse, windows: [] };
+    }
+    const spent = spentUsd === null ? null : `${usdText(spentUsd)} this month`;
+    return { tone: "off", percent: null, color: CLI_ACCOUNT_OFF_COLOR, label,
+      description: `Paid per token · never chosen by Auto${fallbackText}${spent ? ` · ${spent} (Anthropic bill)` : ""}${activity}`,
+      detail: `${spent ?? "Per token"} · ${use}`, gatewayInUse, windows: [] };
   }
   if (account.status === "GATEWAY" && account.pool) {
     const entry = claudeAccountEntries([account], clock)[0]!;
     const usable = account.pool.filter((member) => !member.signInRequired);
     const detail = account.pool.length ? poolDetail(usable.map((member) => classifyQuota(member, clock)), account.pool.length) : "No pooled accounts";
+    if (fallback) {
+      const api = claudeAvailability(fallback.api, clock, fallback);
+      const { spentUsd, budgetUsd } = fallback.api.apiKeyMonth ?? {};
+      const budget = spentUsd != null && budgetUsd != null
+        ? `${usdText(Math.max(0, budgetUsd - spentUsd))} of ${usdText(budgetUsd)} budget left`
+        : budgetUsd == null ? "Monthly API budget not set" : "Monthly API spend unavailable";
+      return { tone: fallback.inUse ? "ready" : "neutral", percent: api.percent, color: api.percent === null ? CLI_ACCOUNT_NEUTRAL_COLOR : api.color,
+        label: fallback.inUse ? "Using API" : "API fallback",
+        description: `${fallback.inUse ? "API fallback used in the last 5 minutes" : "API fallback enabled; no recent successful use confirmed"} · ${detail} · ${api.description}`,
+        detail: budget, windows: [] };
+    }
     return { ...fromQuota(entry, [], clock, detail), detail };
   }
   if (account.status === "GATEWAY") {
@@ -312,7 +369,7 @@ export function cliAccountAvailability(input: {
   if (runtimeId === "cli:codex") return codexGatewayAvailability(quota?.codex ?? null, clock);
   if (runtimeId === "cli:claude") {
     const account = quota?.claude?.data.find((candidate) => candidate.id === profileId);
-    if (account) return claudeAvailability(account, clock);
+    if (account) return claudeAvailability(account, clock, claudeApiFallback(quota, clock));
   }
   if (runtimeId === "cli:gemini") {
     if (profileId === GATEWAY_PROFILE_ID && quota?.agy) return antigravityGatewayAvailability(quota.agy.data, clock, input.modelGroup ?? null);

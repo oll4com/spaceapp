@@ -12,6 +12,7 @@ import { ensureJobApplyLabels, gmailErrorMessage, labelGmailMessages, unlabelGma
 import { classifyApplicationMail, digestQuery, isApplicationMail, isJobDigest, triageQuery } from "../src/job-apply/mail-triage.js";
 import type { JobApplyGoogleAccess } from "../src/job-apply/service.js";
 import { htmlToText } from "../src/mail-html-text.js";
+import { createGmailClient } from "../src/mail-copilot/gmail-client.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
@@ -163,6 +164,15 @@ describe("gmail organize client", () => {
       .rejects.toThrow(/gmail\.modify permission .*insufficientPermissions: Request had insufficient authentication scopes/);
     expect(gmailErrorMessage(400, { error: { message: "Invalid id value", errors: [{ reason: "invalidArgument" }] } })).toBe("Gmail request failed (400): invalidArgument: Invalid id value.");
     expect(gmailErrorMessage(403, {})).toMatch(/gmail\.modify permission/);
+    // Job Copilot's mail search (the Google connector) and Mail Copilot's client tell a rate limit apart from a missing grant too.
+    const rateLimit = { message: "User-rate limit exceeded.", errors: [{ reason: "userRateLimitExceeded" }] };
+    await expect(createGoogleConnector({ clientId: "c", fetchImpl: failing(403, rateLimit) }).searchMail("t", "", 3))
+      .rejects.toThrow("Gmail search failed (403): User-rate limit exceeded.");
+    const limited = failing(403, rateLimit);
+    await expect(createGmailClient({ accessToken: "t", fetchImpl: limited, retryDelayMs: 0 }).profile()).rejects.toThrow(/rate limit reached/);
+    expect(limited).toHaveBeenCalledTimes(4);
+    await expect(createGmailClient({ accessToken: "t", fetchImpl: failing(403, { message: "Request had insufficient authentication scopes.", errors: [{ reason: "insufficientPermissions" }] }) }).profile())
+      .rejects.toThrow(/needs full Gmail access/);
   });
 
   it("maps gmail.modify to MAIL_ORGANIZE and accepts it in consent requests", () => {

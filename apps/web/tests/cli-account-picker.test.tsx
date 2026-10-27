@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CliAccountProfile } from "@space/contracts";
+import type { ClaudeUsageAccount, CliAccountProfile } from "@space/contracts";
 
 const mocks = vi.hoisted(() => ({
   codex: vi.fn(),
@@ -73,6 +73,17 @@ const profile = (profileId: string): CliAccountProfile => ({
   updatedBy: null,
 });
 const hue = (color: string) => Number(/^hsl\((\d+)/.exec(color)?.[1]);
+
+function apiFallbackSample(): SharedQuotaCache {
+  const accounts: ClaudeUsageAccount[] = [
+    { ...claudeAccount("api", null, null), email: null, plan: null, status: "API_KEY", apiKeyVerified: true, gatewayFallback: "ON",
+      apiKeyUsage: { requests: 20, costUsd: 40, lastUsedAt: at(-1), lastRequest: { at: at(-1), succeeded: true } }, apiKeyMonth: { spentUsd: 301.93, budgetUsd: 500 } },
+    { ...claudeAccount("space-gateway", null, null), email: null, plan: null, status: "GATEWAY", pool: [
+      { label: "ops", signInRequired: false, fiveHourRemainingPercent: 0, fiveHourResetAt: at(40), weeklyRemainingPercent: 70, weeklyResetAt: at(300) },
+    ] },
+  ];
+  return { codex: null, agy: null, claude: page(accounts, "space-claude-profiles"), api: null, fetchedAt: NOW };
+}
 
 function quotaSample(claude: ReturnType<typeof claudeAccount>[]): SharedQuotaCache {
   return { codex: null, agy: null, claude: page(claude, "space-claude-profiles"), api: null, fetchedAt: Date.now() };
@@ -355,6 +366,78 @@ describe("CliAccountPicker", () => {
     expect(within(menu).getByText("1 of 2 available now")).toBeTruthy();
     fireEvent.click(api!);
     expect(onSelect).toHaveBeenCalledWith("api");
+  });
+
+  it("shows the API key's share of the monthly budget left after this month's Anthropic bill", () => {
+    const api = (apiKeyMonth: { spentUsd: number | null; budgetUsd: number | null }) => cliAccountAvailability({
+      runtimeId: "cli:claude", profileId: "api", identity: null, clock: Date.now(),
+      quota: { codex: null, agy: null, api: null, fetchedAt: Date.now(), claude: page([
+        { ...claudeAccount("api", null, null), email: null, plan: null, status: "API_KEY" as never, apiKeyVerified: true, apiKeyMonth },
+      ], "space-claude-profiles") as never },
+    });
+    expect(api({ spentUsd: 125, budgetUsd: 500 })).toMatchObject({ tone: "off", percent: 75, label: "$375.00 left", detail: "$125.00 of $500.00 this month · budget",
+      color: cliAccountAvailabilityColor(75) });
+    expect(api({ spentUsd: 640, budgetUsd: 500 })).toMatchObject({ percent: 0, label: "$0.00 left", color: CLI_ACCOUNT_BLOCKED_COLOR });
+    // Without a budget the row keeps its paid-key look and names what this month cost.
+    expect(api({ spentUsd: 12.5, budgetUsd: null })).toMatchObject({ percent: null, label: "Paid · ready", detail: "$12.50 this month · only when picked by hand",
+      color: CLI_ACCOUNT_OFF_COLOR });
+    expect(api({ spentUsd: null, budgetUsd: 500 })).toMatchObject({ percent: null, label: "Paid · ready" });
+  });
+
+  it("shows the API actually used by the selected gateway and its remaining monthly budget without selecting another profile", async () => {
+    mocks.claude.mockResolvedValue(apiFallbackSample().claude);
+    mocks.identities.mockResolvedValue({ accounts: [], checkedAt: sampledAt });
+    const onSelect = vi.fn();
+    const props = { runtimeId: "cli:claude" as const, providerLabel: "Claude", icon: <span />, paneTitle: "Emma",
+      profiles: [profile("api"), { ...profile("space-gateway"), displayName: "Space Gateway (pooled)" }], onSelect };
+    const { rerender } = render(<CliAccountPicker {...props} selectedProfileId="space-gateway" />);
+    fireEvent.click(screen.getByRole("button", { name: "Claude account for Emma" }));
+    const menu = await screen.findByRole("menu");
+    const [api, gateway] = within(menu).getAllByRole("menuitemradio");
+    await waitFor(() => expect(within(api!).getByText("In use")).toBeTruthy());
+    expect(within(api!).getByText("$198.07 left")).toBeTruthy();
+    expect(api!.getAttribute("aria-checked")).toBe("false");
+    expect(api!.getAttribute("data-tone")).toBe("off"); // Auto still cannot pick the paid profile.
+    expect(gateway!.getAttribute("aria-checked")).toBe("true");
+    expect(gateway!.getAttribute("data-tone")).toBe("ready");
+    expect(within(gateway!).getByText("Using API")).toBeTruthy();
+    expect(within(gateway!).getByText("$198.07 of $500.00 budget left")).toBeTruthy();
+    expect(within(menu).getByText("1 of 2 available now")).toBeTruthy();
+    expect(onSelect).not.toHaveBeenCalled();
+    // Other direct profiles must not appear to be using the gateway's API key.
+    rerender(<CliAccountPicker {...props} selectedProfileId="api" />);
+    expect(within(api!).queryByText("In use")).toBeNull();
+  });
+
+  it.each(["no requests", "failed request", "old use", "stale sample", "old sample", "future use", "legacy sample"])("does not claim current API use with %s", (reason) => {
+    const quota = apiFallbackSample();
+    const api = quota.claude!.data[0]!;
+    if (reason === "no requests") api.apiKeyUsage = { requests: 0, costUsd: 0, lastUsedAt: null };
+    if (reason === "failed request") api.apiKeyUsage!.lastRequest!.succeeded = false;
+    if (reason === "old use") api.apiKeyUsage!.lastRequest!.at = at(-6);
+    if (reason === "stale sample") quota.claude!.isStale = true;
+    if (reason === "old sample") quota.claude!.checkedAt = at(-6);
+    if (reason === "future use") api.apiKeyUsage!.lastRequest!.at = at(6);
+    if (reason === "legacy sample") delete api.apiKeyUsage!.lastRequest;
+    expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "api", quota, identity: null, clock: NOW }).gatewayInUse).toBe(false);
+    expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "space-gateway", quota, identity: null, clock: NOW }))
+      .toMatchObject({ tone: "neutral", label: "API fallback", detail: "$198.07 of $500.00 budget left" });
+  });
+
+  it.each(["subscription recovered", "reset passed", "unknown pool", "fallback off", "key rejected"])("stops showing API fallback when %s", (reason) => {
+    const quota = apiFallbackSample();
+    const [api, gateway] = quota.claude!.data;
+    if (reason === "subscription recovered") gateway!.pool![0]!.fiveHourRemainingPercent = 80;
+    if (reason === "reset passed") gateway!.pool![0]!.fiveHourResetAt = at(-1);
+    if (reason === "unknown pool") {
+      gateway!.pool![0]!.fiveHourRemainingPercent = null;
+      gateway!.pool![0]!.weeklyRemainingPercent = null;
+    }
+    if (reason === "fallback off") api!.gatewayFallback = "OFF";
+    if (reason === "key rejected") api!.apiKeyVerified = false;
+    const available = (profileId: string) => cliAccountAvailability({ runtimeId: "cli:claude", profileId, quota, identity: null, clock: NOW });
+    expect(available("api").gatewayInUse).toBe(false);
+    expect(available("space-gateway").label).not.toMatch(/API/);
   });
 
   it("names Space Gateway once and shows its pool in a short line instead of the long description", async () => {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useOptionalVoiceInput, useVoiceInput } from "./VoiceInputProvider.js";
+import { useOptionalVoiceInput } from "./VoiceInputProvider.js";
 import { readVoiceComposerSettings, writeVoiceComposerSettings, type VoiceComposerSettings } from "../../voice-settings.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { CliShortcutVisibilitySettings } from "../terminal-pane/CliShortcutVisibilitySettings.js";
@@ -18,19 +18,8 @@ const buttons: Array<{ key: ButtonSetting; name: string; label: string; detail: 
 
 /** The buttons and menus shown over CLI panes; saved with the voice preferences they share. */
 export function CliPaneControlsSettingsCard() {
-  let voice: ReturnType<typeof useOptionalVoiceInput> = null;
-  try {
-    voice = useOptionalVoiceInput?.() ?? null;
-  } catch {
-    voice = null;
-  }
-  if (!voice) {
-    try {
-      voice = useVoiceInput?.() ?? null;
-    } catch {
-      voice = null;
-    }
-  }
+  // Outside the voice provider the card keeps its own copy of the saved settings.
+  const voice = useOptionalVoiceInput();
   const [localSettings, setLocalSettings] = useState(() => readVoiceComposerSettings());
   const settings = voice?.settings ?? localSettings;
 
@@ -49,6 +38,14 @@ export function CliPaneControlsSettingsCard() {
         detail="Copy, paste and other actions when you right-click inside a pane."
         checked={Boolean(settings.terminalContextMenu ?? true)}
         onChange={(terminalContextMenu) => update({ terminalContextMenu })}
+      />
+      <SpaceToggle
+        className="settings-flat-row settings-flat-toggle-row voice-toggle"
+        name="terminal-local-draft"
+        label="Local draft open by default"
+        detail="CLI panes open with the local draft under them. A pane where you opened or closed the draft keeps that choice."
+        checked={Boolean(settings.terminalLocalDraft)}
+        onChange={(terminalLocalDraft) => update({ terminalLocalDraft })}
       />
       <div className="settings-flat-subheading">
         <strong>Buttons</strong>

@@ -1,4 +1,4 @@
-import { planStepSchema, type ClipboardItem, type ManagedPlanExecution } from "@space/contracts";
+import { planStepSchema, sameStageCriterion, type ClipboardItem, type ManagedPlanExecution } from "@space/contracts";
 import { PlanExecutionConflictError } from "./plan-execution-repository.js";
 /** Projection accepts only repository state, never a public progress payload. */
 export function managedPlanProjection(execution: ManagedPlanExecution): Pick<ClipboardItem, 'steps' | 'isCompleted' | 'executionStatus' | 'progressPercentage' | 'activeAgent' | 'lastProgressAt'> {
@@ -11,7 +11,7 @@ export function managedPlanProjection(execution: ManagedPlanExecution): Pick<Cli
         if (!execution.attempts.some(a => a.stageId === id && a.turnId && a.status === 'COMPLETED' && a.actualSelection &&
             a.actualSelection.source === 'NATIVE_ACCEPTED_TURN_CONFIGURATION' && a.actualSelection.threadId===execution.threadId &&
             a.actualSelection.turnId===a.turnId && a.actualSelection.commandId===a.commandId &&
-            a.actualSelection.modelId===a.modelId && a.actualSelection.reasoningEffort===a.reasoningEffort && a.result?.outcome === 'COMPLETED'  && stage.completionCriteria.every(c => a.result!.evidence.some(e => e.criterion === c && e.result.trim()))))
+            a.actualSelection.modelId===a.modelId && a.actualSelection.reasoningEffort===a.reasoningEffort && a.result?.outcome === 'COMPLETED'  && stage.completionCriteria.every(c => a.result!.evidence.some(e => sameStageCriterion(e.criterion, c) && e.result.trim()))))
             throw new PlanExecutionConflictError("Stage completion requires native selection and criterion evidence.");
     }
     const done = execution.completedStageIds.length === stages.length;

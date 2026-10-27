@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +78,17 @@ const worktreePath = git(["rev-parse", "--show-toplevel"]);
 // which integrates on live main. Only the live checkout itself must stay on main.
 const liveRoot = process.env.SPACE_HYGIENE_LIVE_ROOT || "/opt/spaceapp";
 const liveCheckout = Boolean(worktreePath) && resolve(worktreePath) === resolve(liveRoot);
+// Worktrees inside the live checkout (Claude Code's .claude/worktrees) hide work from git status and the queue
+// (cleanup plan clipboard:mJxMBg0sQ8hi step 6): space-worktree creates them under var/worktrees/space/ instead.
+const strayWorktreeRoot = resolve(liveRoot, ".claude", "worktrees");
+if (worktreePath && resolve(worktreePath).startsWith(`${strayWorktreeRoot}${sep}`)) {
+  fail(`This worktree is inside the live checkout (${strayWorktreeRoot}); create one with /opt/spaceapp/bin/space-worktree create.`);
+}
+const strayWorktrees = existsSync(strayWorktreeRoot) ? readdirSync(strayWorktreeRoot) : [];
+if (strayWorktrees.length) {
+  fail(`Worktrees inside the live checkout (${strayWorktreeRoot}) are not allowed; create one with /opt/spaceapp/bin/space-worktree create.`, strayWorktrees);
+}
+
 if (preflight && liveCheckout && branch !== "main") {
   fail("The live checkout must stay on main; deliver from your own worktree through the merge queue (space-queue submit).");
 }

@@ -30,7 +30,7 @@ describe("single-owner setup", () => {
         role: "ADMIN"
       },
       onboarding: {
-        onboardingVersion: 1,
+        onboardingVersion: 2,
         isComplete: false,
         completedAt: null
       }

@@ -19,6 +19,7 @@ import type {
   AntigravityUsageAccountList,
   ApiProviderAccountList,
   ClaudeUsageAccountList,
+  GatewayAnthropicBillingReport,
   GatewayClaudeApiKeyUse,
   CliSessionReapResponse,
   CliSessionStats,
@@ -44,8 +45,10 @@ import { Activity, X } from "../ui-theme/app-icons.js";
 import { ResourcesDrawer } from "./ResourcesDrawer.js";
 import {
   AccountQuotaCard,
+  ApiProviderCard,
   AvailabilityCountChips,
   AvailabilityFilterBar,
+  countApiProviders,
   countAvailability,
   type AccountQuotaEntry,
 } from "./AccountQuotaCards.js";
@@ -54,7 +57,7 @@ import {
   matchesAvailabilityFilter,
   type AccountAvailabilityFilter,
 } from "./account-availability.js";
-import { antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "./account-entries.js";
+import { anthropicBillLines, antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "./account-entries.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import {
   QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
@@ -123,6 +126,8 @@ export interface ToolbarMetricsClient {
   claudeAccounts?(): Promise<ClaudeUsageAccountList>;
   /** Space Gateway's Claude API key account and what went through it (ADMIN rail alert on first use). */
   claudeApiKeyUse?(): Promise<GatewayClaudeApiKeyUse>;
+  /** Anthropic's bill for the last 31 days (ADMIN), shown on the Claude API key's card. */
+  anthropicBilling?(): Promise<GatewayAnthropicBillingReport | null>;
   apiProviderAccounts?(): Promise<ApiProviderAccountList>;
   reopenPane?(roomId: string, paneId: string): Promise<void>;
   reopenAllDetached?(): Promise<void>;
@@ -137,6 +142,7 @@ const defaultClient: ToolbarMetricsClient = {
   antigravityAccounts: () => api.toolbarAntigravityUsageAccounts(),
   claudeAccounts: () => api.toolbarClaudeUsageAccounts(),
   claudeApiKeyUse: () => api.gatewayClaudeApiKeyUse(),
+  anthropicBilling: () => api.gatewayAnthropicBilling(31),
   apiProviderAccounts: () => api.toolbarApiProviderAccounts(),
   resetCredits: () => api.toolbarResetCredits(),
   redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
@@ -434,6 +440,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     () => client.claudeAccounts ? client.claudeAccounts() : api.toolbarClaudeUsageAccounts(),
     60_000, sharedTelemetry?.claudeAccounts
   );
+  const anthropicBilling = useLazyResource(() => client.anthropicBilling ? client.anthropicBilling() : Promise.resolve(null), 60_000);
   const apiProviderAccounts = useLazyResource(
     () => {
       if (client.apiProviderAccounts) return client.apiProviderAccounts();
@@ -650,6 +657,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         void resetCredits.load();
         void antigravityAccounts.load();
         void claudeAccounts.load();
+        if (canManage) void anthropicBilling.load();
         void apiProviderAccounts.load();
         return accounts.load();
       case "cli": return Promise.all([cli.load(), analyticsSessions.load()]);
@@ -944,7 +952,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           >{reset.label}</button>
         );
       });
-      const claudeEntries = claudeAccountEntries(claudeAccounts.data?.data ?? [], clock);
+      const claudeEntries = claudeAccountEntries(claudeAccounts.data?.data ?? [], clock, anthropicBillLines(anthropicBilling.data, clock, dateTimeSettings));
       const scopedEntries = accountProviderFilter === "all"
         ? [...antigravityEntries, ...codexEntries, ...claudeEntries]
         : accountProviderFilter === "antigravity"
@@ -1080,29 +1088,20 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         })}
 
         {(accountProviderFilter === "all" || accountProviderFilter === "api") && (
-          <div className="toolbar-metric-provider-section">
+          <div className="toolbar-metric-provider-section" data-provider="api">
             <header>
               <strong>API Providers &amp; Balances</strong>
-              <small>{apiProviderAccounts.data?.isStale ? "Stale sample" : "DeepSeek, OpenRouter, Vercel, Google & API keys"}</small>
+              {apiProviderAccounts.data?.data.length ? (
+                <AvailabilityCountChips counts={countApiProviders(apiProviderAccounts.data.data)} />
+              ) : null}
+              <small>{apiProviderAccounts.data?.isStale ? "Stale sample" : "Claude, DeepSeek, OpenRouter, Vercel, Google & API keys"}</small>
             </header>
-            {apiProviderAccounts.loading ? <p className="toolbar-metric-note">Loading API provider details…</p> : null}
+            {apiProviderAccounts.loading && !apiProviderAccounts.data ? <p className="toolbar-metric-note">Loading API provider details…</p> : null}
             {apiProviderAccounts.error ? <p className="toolbar-metric-error" role="alert">{apiProviderAccounts.error}</p> : null}
             {apiProviderAccounts.data?.error ? <p className="toolbar-metric-error">{apiProviderAccounts.data.error}</p> : null}
             {apiProviderAccounts.data ? (
               <ul className="toolbar-metric-list">
-                {apiProviderAccounts.data.data.map((account) => (
-                  <li key={account.id} className="toolbar-metric-account-card">
-                    <div className="toolbar-metric-account-heading">
-                      <strong>{account.label}</strong>
-                      <span className={`toolbar-metric-badge ${account.status === "CONNECTED" ? "is-active" : account.status === "EXHAUSTED" ? "is-warning" : "is-critical"}`}>
-                        {account.balance ? `BAL ${account.balance}` : account.status.toLowerCase() === "critical" ? "Unavailable" : account.status}
-                      </span>
-                    </div>
-                    {account.detail ? (
-                      <small className="toolbar-metric-subtext">{account.detail}</small>
-                    ) : null}
-                  </li>
-                ))}
+                {apiProviderAccounts.data.data.map((account) => <ApiProviderCard key={account.id} account={account} />)}
                 {!apiProviderAccounts.data.data.length ? (
                   <li><span>No API providers configured.</span></li>
                 ) : null}

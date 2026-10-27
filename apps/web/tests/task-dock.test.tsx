@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../src/api.js", () => ({ api: mocks }));
 
 import { SPACE_TASK_ITEM_MIME } from "../src/features/task-dock/task-events.js";
-import { TaskDock } from "../src/features/task-dock/TaskDock.js";
+import { TaskDock, taskOccurrences } from "../src/features/task-dock/TaskDock.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
@@ -104,7 +104,8 @@ describe("TaskDock", () => {
       data: [
         { ...item, id: "task:watch", title: "Hetzner VAT watch", source: "AGENT", paneTitle: "Claude", schedule: schedule({ kind: "INTERVAL", minutes: 120 }, "2026-10-15T12:47:00.000Z", "Sent to the CLI at 10:47.") },
         { ...item, id: "task:late", title: "Pay invoice", paneTitle: null, schedule: schedule({ kind: "ONCE", at: "2026-10-14T09:00:00.000Z" }, null) },
-        { ...item, id: "task:tomorrow", title: "Backup report", schedule: schedule({ kind: "DAILY", time: "18:00" }, "2026-10-16T18:00:00.000Z") },
+        { ...item, id: "task:tomorrow", title: "Backup report", schedule: schedule({ kind: "DAILY", time: "18:00" }, "2026-10-16T18:00:00.000Z",
+          "Skipped 2026-10-15T18:00:00.000Z: its pane is closed; rebind the task to an open pane.") },
         { ...item, id: "task:plain", title: "Plain note" },
         { ...item, id: "task:done", title: "Old task", status: "DONE" }
       ],
@@ -117,16 +118,101 @@ describe("TaskDock", () => {
     const today = within(screen.getByRole("list", { name: "Today" }));
     expect(today.getByText("Hetzner VAT watch")).toBeTruthy();
     const chip = today.getByText(/every 2 h/);
-    expect(chip.textContent).toMatch(/12:47 · every 2 h/);
+    expect(chip.textContent).toMatch(/12:47 UTC · every 2 h/);
     expect(chip.getAttribute("title")).toBe("Sent to the CLI at 10:47.");
     expect(today.getByText("Claude")).toBeTruthy();
     expect(within(screen.getByRole("list", { name: "Overdue" })).getByText("Pay invoice")).toBeTruthy();
-    expect(within(screen.getByRole("list", { name: "Tomorrow" })).getByText(/18:00 · daily/)).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Tomorrow" })).getByText(/18:00 UTC · daily/)).toBeTruthy();
+    // The scheduler skips a task whose pane is closed; the row says so (daily review 2026-10-21).
+    expect(within(screen.getByRole("list", { name: "Tomorrow" })).getByText("Pane closed · rebind").getAttribute("title")).toContain("its pane is closed");
+    expect(today.queryByText("Pane closed · rebind")).toBeNull();
     expect(screen.queryByText("Old task")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
     expect(within(screen.getByRole("list", { name: "Completed" })).getByText("Old task")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: 'Mark "Old task" as not done' }));
     await waitFor(() => expect(mocks.updateTaskItem).toHaveBeenCalledWith("task:done", { status: "OPEN" }));
+  });
+
+  it("tells your tasks from agents' and filters by who added them", async () => {
+    mocks.taskItems.mockResolvedValue({
+      data: [item, { ...item, id: "task:agent", title: "Agent reminder", source: "AGENT", paneTitle: "Claude" }],
+      pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
+    });
+    render(<TaskDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    const agentRow = (await screen.findByText("Agent reminder")).closest("article")!;
+    expect(agentRow.className).toContain("is-agent");
+    expect(within(agentRow).getByTitle("Added by an agent").textContent).toBe("Claude");
+    const yourRow = screen.getByText("Verify fallback").closest("article")!;
+    expect(yourRow.className).toContain("is-you");
+    expect(within(yourRow).getByTitle("Added by you").textContent).toBe("You → Model Task");
+    // "Hide sensitive data" and masked captures hide the task's own text, never the time or who added it (Nous 2026-10-23).
+    expect(yourRow.querySelector(".task-row-title")?.getAttribute("data-sensitive-masked")).toBe("manual");
+    expect(yourRow.querySelector(".dock-kit-task-details")?.getAttribute("data-sensitive-masked")).toBe("manual");
+    expect(within(yourRow).getByTitle("Added by you").closest("[data-sensitive-masked]")).toBeNull();
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Who added the task" })).getByRole("button", { name: "Agents" }));
+    await waitFor(() => expect(mocks.taskItems).toHaveBeenLastCalledWith({ source: "AGENT", page: 1, pageSize: 100 }));
+    expect(screen.getByText(/from agents/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("group", { name: "Who added the task" })).getByRole("button", { name: "You" }));
+    await waitFor(() => expect(mocks.taskItems).toHaveBeenLastCalledWith({ source: "MANUAL", page: 1, pageSize: 100 }));
+  });
+
+  it("shows a Google Calendar month with the chosen day's agenda, repeats on every day", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-15T09:00:00.000Z"));
+    const schedule = (recurrence: NonNullable<TaskItem["schedule"]>["recurrence"], nextRunAt: string | null) =>
+      ({ recurrence, timeZone: "UTC", nextRunAt, lastRunAt: null, lastOutcome: null });
+    mocks.taskItems.mockResolvedValue({
+      data: [
+        { ...item, id: "task:daily", title: "Backup report", source: "AGENT", schedule: schedule({ kind: "DAILY", time: "18:00" }, "2026-10-15T18:00:00.000Z") },
+        { ...item, id: "task:late", title: "Pay invoice", schedule: schedule({ kind: "ONCE", at: "2026-10-14T09:00:00.000Z" }, null) },
+        { ...item, id: "task:plain", title: "Plain note" }
+      ],
+      pagination: { page: 1, pageSize: 100, totalItems: 3, totalPages: 1 }
+    });
+    localStorage.setItem("space.dateTime.settings", JSON.stringify({ timeZone: "UTC", timeFormat: "24h" }));
+    render(<TaskDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+    await screen.findByText("Backup report");
+    fireEvent.click(screen.getByRole("button", { name: "Calendar view" }));
+
+    expect(screen.getByRole("heading", { name: "October 2026" })).toBeTruthy();
+    const today = screen.getByRole("button", { name: "Thursday, October 15: 1 task" });
+    expect(today.getAttribute("aria-pressed")).toBe("true");
+    expect(today.className).toContain("is-today");
+    expect(screen.getByRole("button", { name: "Friday, October 16: 1 task" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Wednesday, October 14: 1 task" }).querySelector(".is-overdue")).toBeTruthy();
+    const agenda = within(screen.getByRole("list", { name: "Day agenda" }));
+    expect(agenda.getByText("Backup report")).toBeTruthy();
+    expect(agenda.getByText("18:00")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 task without a date is in the list" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Wednesday, October 14: 1 task" }));
+    expect(within(screen.getByRole("list", { name: "Day agenda" })).getByText("Pay invoice")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next month" }));
+    expect(screen.getByRole("heading", { name: "November 2026" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Monday, November 30: 1 task" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    expect(screen.getByRole("heading", { name: "October 2026" })).toBeTruthy();
+
+    // Adding from the calendar starts on the chosen day.
+    fireEvent.click(screen.getByRole("button", { name: "Saturday, October 17: 1 task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add a task" }));
+    expect((screen.getByRole("combobox", { name: "Repeat" }) as HTMLSelectElement).value).toBe("ONCE");
+    expect((screen.getByLabelText("Date") as HTMLInputElement).value).toBe("2026-10-17");
+  });
+
+  it("places repeats on calendar days in their own zone, across a DST change, an interval once a day", () => {
+    const at = (recurrence: NonNullable<TaskItem["schedule"]>["recurrence"], nextRunAt: string, timeZone = "Europe/Athens"): TaskItem =>
+      ({ ...item, schedule: { recurrence, timeZone, nextRunAt, lastRunAt: null, lastOutcome: null } });
+    // Athens leaves summer time on 2026-10-25: 09:00 local is 06:00 UTC before, 07:00 UTC after.
+    const daily = taskOccurrences(at({ kind: "DAILY", time: "09:00" }, "2026-10-24T06:00:00.000Z"), "2026-10-23", "2026-10-26", "Europe/Athens");
+    expect(daily.map(({ day, at: when }) => `${day} ${new Date(when).toISOString().slice(11, 16)}`)).toEqual(["2026-10-24 06:00", "2026-10-25 07:00", "2026-10-26 07:00"]);
+    const weekly = taskOccurrences(at({ kind: "WEEKLY", days: [1, 3], time: "09:00" }, "2026-10-26T07:00:00.000Z"), "2026-10-01", "2026-11-04", "Europe/Athens");
+    expect(weekly.map(({ day }) => day)).toEqual(["2026-10-26", "2026-10-28", "2026-11-02", "2026-11-04"]);
+    const interval = taskOccurrences(at({ kind: "INTERVAL", minutes: 15 }, "2026-10-20T10:07:00.000Z", "UTC"), "2026-11-01", "2026-11-03", "UTC");
+    expect(interval.map(({ day, at: when }) => `${day} ${new Date(when).toISOString().slice(11, 16)}`)).toEqual(["2026-11-01 00:07", "2026-11-02 00:07", "2026-11-03 00:07"]);
+    expect(taskOccurrences(at({ kind: "ONCE", at: "2026-10-24T06:00:00.000Z" }, "2026-10-24T06:00:00.000Z"), "2026-10-25", "2026-10-30", "UTC")).toEqual([]);
+    expect(taskOccurrences(item, "2026-10-01", "2026-10-31", "UTC")).toEqual([]);
   });
 
   it("adds a timed task that runs in the active CLI", async () => {
@@ -142,6 +228,7 @@ describe("TaskDock", () => {
     fireEvent.change(screen.getByLabelText("Time"), { target: { value: "18:30" } });
     expect((screen.getByRole("combobox", { name: "Run in" }) as HTMLSelectElement).value).toBe("pane:cli");
     expect(screen.getByText(/Times in Europe\/Athens/)).toBeTruthy();
+    expect(screen.getByText(/does not track whether the CLI finishes it/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save task" }));
     await waitFor(() => expect(mocks.createTaskItem).toHaveBeenCalledWith({
       title: "Backups",

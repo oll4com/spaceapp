@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRuntimeRegistry, BrowserHandoffRequest, FreelanceCopilotPaneMetadata, FreelanceEvent, FreelanceFunnel, FreelanceLead, FreelanceRunView, Pane } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
+import { withRefreshTimeout } from "../copilot-kit/refresh-timeout.js";
 import { subscribeFreelanceCopilotLiveEvents } from "./live-events.js";
 
 export interface FreelanceCopilotData {
@@ -39,14 +40,14 @@ export function useFreelanceCopilotData(pane: Pane, enabled: boolean): Freelance
     if (inFlight.current) return inFlight.current;
     inFlight.current = (async () => {
       try {
-        const [settingsResponse, runResponse, eventsResponse, leadsResponse, funnelResponse, handoffResponse] = await Promise.all([
+        const [settingsResponse, runResponse, eventsResponse, leadsResponse, funnelResponse, handoffResponse] = await withRefreshTimeout(Promise.all([
           api.freelanceCopilotSettings(pane.id),
           api.freelanceCopilotRun(pane.id).catch(() => null),
           api.freelanceEvents(pane.id).catch(() => null),
           api.freelanceLeads().catch(() => null),
           api.freelanceFunnel().catch(() => null),
           api.browserHandoff(pane.id).catch(() => null)
-        ]);
+        ]), "Freelance Copilot");
         setSettings(settingsResponse.metadata);
         if (runResponse) setRun(runResponse);
         if (eventsResponse) setEvents(eventsResponse.events);

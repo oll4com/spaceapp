@@ -16,8 +16,11 @@ const publicTestModules = [
   "mcp-hono-compatibility.test.mjs",
   "portable-backup-restore.test.mjs",
   "published-container-verification.test.mjs",
+  "shipped-image-evidence.test.mjs",
   "public-compose-config.test.mjs",
   "public-credential-install.test.mjs",
+  "embed-image-lock.test.mjs",
+  "provider-install.test.mjs",
   "public-docker-distribution.test.mjs",
   "public-export.test.mjs",
   "public-package-metadata.test.mjs",
@@ -126,13 +129,13 @@ test("public repository preserves application and launcher licenses with only th
   ];
 
   assert.equal(rootPackage.private, true);
-  assert.equal(rootPackage.license, "BUSL-1.1");
+  assert.equal(rootPackage.license, "MIT");
   assert.equal(rootPackage.repository.url, "git+https://github.com/oll4com/spaceapp.git");
 
   const publishable = [];
   for (const file of workspaceFiles) {
     const manifest = JSON.parse(await readFile(file, "utf8"));
-    assert.equal(manifest.license, manifest.name === "run-spaceapp" ? "Apache-2.0" : "BUSL-1.1", `${file} must preserve its declared license`);
+    assert.equal(manifest.license, "MIT", `${file} must declare the MIT License`);
     if (manifest.private !== true) {
       publishable.push({
         name: manifest.name,
@@ -235,20 +238,11 @@ test("temporary vulnerability ignores are narrow, documented, and expiring", asy
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
 
-  assert.deepEqual(activeEntries, [
-    "GHSA-4w2j-m93h-cj5j exp:2026-10-25",
-    "GHSA-2mjx-qc3c-rqvc exp:2026-11-10",
-    "CVE-2026-39244 exp:2026-10-25",
-    "CVE-2026-55388 exp:2026-10-25",
-    "CVE-2026-41907 exp:2026-10-25",
-    "CVE-2026-16732 exp:2026-10-25",
-    "CVE-2026-18504 exp:2026-10-25"
-  ]);
-  assert.match(ignoreFile, /unused Cargo\.lock entry/i);
-  assert.match(ignoreFile, /no dependency path/i);
-  assert.match(ignoreFile, /cursor-agent/i);
-  assert.match(ignoreFile, /trustProxy/i);
+  // An ignore that no longer matches is removed, not renewed (1.1.7, review INT5-C-F16): on 2026-10-19 Trivy 0.70.0 with
+  // that day's database found only this rustls advisory in the 1.1.6 core, CLI and browser images and nothing in the source.
+  assert.deepEqual(activeEntries, ["GHSA-2mjx-qc3c-rqvc exp:2026-11-10"]);
   assert.match(ignoreFile, /without TLS/i);
+  assert.doesNotMatch(ignoreFile, /trustProxy/i);
 });
 
 test("public policy files are present and point security reports to a private channel", async () => {
@@ -258,13 +252,36 @@ test("public policy files are present and point security reports to a private ch
     await readFile(join(root, "packages", "run-spaceapp", "package.json"), "utf8")
   );
 
-  assert.match(license, /Business Source License 1\.1/);
+  assert.match(license, /^MIT License$/m);
   assert.match(security, /security\/advisories\/new/);
   assert.match(security, /Do not open a public issue for a suspected vulnerability/i);
   for (const file of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]) {
     assert.ok(packageManifest.files.includes(file), `${file} must be included in the npm package`);
     await readFile(join(root, "packages", "run-spaceapp", file), "utf8");
   }
+});
+
+test("every THIRD_PARTY_LICENSES file the code names ships in the tree, the images and the notices (Claude review 1.1.7 F5)", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const shipped = new Set(await readdir(join(root, "THIRD_PARTY_LICENSES")));
+  const named = new Set();
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:ts|tsx|mjs|js|md)$/.test(entry.name)) {
+        for (const match of (await readFile(path, "utf8")).matchAll(/THIRD_PARTY_LICENSES\/([\w.-]+\.txt)/g)) named.add(match[1]);
+      }
+    }
+  };
+  for (const dir of ["apps", "packages"]) await walk(join(root, dir));
+  assert.ok(named.size >= 3, [...named].join(", "));
+  for (const name of named) assert.ok(shipped.has(name), `THIRD_PARTY_LICENSES/${name} is named in the code but missing`);
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  assert.match(dockerfile, /^COPY --from=build --chown=spaceapp:spaceapp \/app\/THIRD_PARTY_LICENSES \.\/THIRD_PARTY_LICENSES$/m);
+  const notices = await readFile(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
+  for (const name of shipped) assert.match(notices, new RegExp(`THIRD_PARTY_LICENSES/${name.replace(".", "\\.")}`), name);
 });
 
 test("public docs provide one-command installation for Linux, macOS, and Windows", async () => {
@@ -425,7 +442,7 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
   const packages = [
     "@openai/codex@0.145.0",
     "@google/gemini-cli@0.52.0",
-    "opencode-ai@1.18.4",
+    "@opencode/cli@2.0.32",
     "@qwen-code/qwen-code@0.20.1",
     "@moonshot-ai/kimi-code@0.29.0",
     "@xai-official/grok@0.2.111",
@@ -435,7 +452,7 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
   ];
 
   for (const packageSpec of packages) {
-    assert.match(packageSpec.startsWith("opencode-ai") ? dockerfile : optionalProviders, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(packageSpec.startsWith("@opencode/cli") ? dockerfile : optionalProviders, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(notices, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(optionalProviders, /downloads\.cursor\.com\/lab\/2026\.07\.23-e383d2b\/linux\/\$\{process\.arch\}\/agent-cli-package\.tar\.gz/);

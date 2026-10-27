@@ -184,7 +184,7 @@
 .level-0 {
   background: #070e17 !important;
   border-color: #121f2d !important;
-  color: #3b5062 !important;
+  color: #6f879b !important; /* AA (5.2:1) on #070e17: Calendar is the only mobile view */
 }
 
 .level-1 {

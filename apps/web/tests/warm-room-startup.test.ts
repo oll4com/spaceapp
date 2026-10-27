@@ -77,6 +77,33 @@ describe("warm room startup", () => {
     ).toEqual(["room:f", "room:e", "room:d", "room:c", "room:b"]);
   });
 
+  it("fills the five background slots from the catalog when a fresh tab has no MRU", () => {
+    expect(selectWarmHydrationRoomIds({
+      roomIds: ["room:a", "room:b", "room:c", "room:d", "room:e", "room:f", "room:g", "room:h"],
+      activeRoomId: "room:d",
+      mruRoomIds: [],
+      maxWarmRooms: 6
+    })).toEqual(["room:e", "room:c", "room:a", "room:b", "room:f"]);
+  });
+
+  it("deduplicates recent and adjacent rooms before filling from the catalog", () => {
+    expect(selectWarmHydrationRoomIds({
+      roomIds: ["room:a", "room:b", "room:c", "room:d", "room:e", "room:f", "room:g", "room:h"],
+      activeRoomId: "room:d",
+      mruRoomIds: ["room:d", "room:g", "room:e", "room:g", "room:deleted"],
+      maxWarmRooms: 20
+    })).toEqual(["room:g", "room:e", "room:c", "room:a", "room:b"]);
+  });
+
+  it("leaves no background work when the active room uses the whole room budget", () => {
+    expect(selectWarmHydrationRoomIds({
+      roomIds: ["room:a", "room:b", "room:c"],
+      activeRoomId: "room:a",
+      mruRoomIds: ["room:c"],
+      maxWarmRooms: 1
+    })).toEqual([]);
+  });
+
   it("hydrates rooms with bounded concurrency inside the shared two-second window", async () => {
     vi.useFakeTimers();
     const started: string[] = [];

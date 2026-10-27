@@ -6,12 +6,16 @@ import { isAbsolute, join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+// OpenCode 2's model API (`opencode api GET /api/model`): free (every cost tier zero), tool-capable, active Zen
+// models, newest first.
 export function parseCatalog(text) {
-  const candidates=[];
-  for(const match of text.matchAll(/^opencode\/([^\r\n]+)\r?\n(\{[\s\S]*?^\})/gm)){
-    try{const model=JSON.parse(match[2]);if(model.providerID==='opencode'&&model.cost?.input===0&&model.cost?.output===0&&model.capabilities?.toolcall===true&&model.status==='active')candidates.push({id:`opencode/${model.id}`,name:model.name,api:model.api,cost:model.cost,release:model.release_date??''});}catch{}
-  }
-  return candidates.sort((a,b)=>b.release.localeCompare(a.release));
+  let models=[];
+  try{models=JSON.parse(text)?.data??[];}catch{}
+  return (Array.isArray(models)?models:[])
+    .filter(model=>model?.providerID==='opencode'&&Array.isArray(model.cost)&&model.cost.length>0&&
+      model.cost.every(tier=>tier?.input===0&&tier?.output===0)&&model.capabilities?.tools===true&&model.status==='active'&&model.enabled!==false)
+    .map(model=>({id:`opencode/${model.id}`,name:model.name,api:{url:model.settings?.baseURL,npm:model.package},cost:model.cost[0],release:model.time?.released??0}))
+    .sort((a,b)=>b.release-a.release);
 }
 function execute(args,env,cwd,timeout=60000){return new Promise(resolve=>{
   const child=spawn('opencode',args,{env,cwd,stdio:['ignore','pipe','pipe']});let stdout='';let stderr='';let timedOut=false;
@@ -25,7 +29,8 @@ const CHECK_PROMPT=`Use the read tool to read the file ${CHECK_FILE} in the curr
 const events=stdout=>stdout.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
 // A model counts as working only after a full tool cycle: it calls the read
 // tool, receives the result and answers with the random token from the file.
-// A plain completion is not enough; some free models fail on tool follow-ups.
+// A plain completion is not enough; some free models fail on tool follow-ups. An OpenCode 2 standalone run ends
+// right after the answer without printing its last step_finish (2.0.31, 2.0.32), so the clean exit closes the turn.
 export function toolCycleSucceeded(result,token) {
   if(result.code!==0||!token)return false;
   const list=events(result.stdout);
@@ -33,7 +38,7 @@ export function toolCycleSucceeded(result,token) {
   const tool=list.findIndex(e=>e.type==='tool_use'&&e.part?.tool==='read'&&e.part?.state?.status==='completed');
   if(tool<0)return false;
   const answer=list.findIndex((e,i)=>i>tool&&e.type==='text'&&e.part?.text?.includes(token));
-  return answer>tool&&list.some((e,i)=>i>answer&&e.type==='step_finish');
+  return answer>tool;
 }
 const MEMORY_DIRECTORY='/var/lib/spaceapp/memory';
 // The 1.1.x default. Configs that still carry exactly this value get the new
@@ -85,21 +90,36 @@ export function preferDefault(candidates){
 }
 // Catalog (20 s) plus selection stays under the 130 s OpenCode credential-smoke timeout in the API.
 const SELECTION_BUDGET_MS=100000;
+// OpenCode runs here with a throwaway home: never the owner's keys or configuration.
+const isolatedEnvironment=(env,directory)=>({PATH:env.PATH,LANG:env.LANG,USER:env.USER,OPENCODE_DISABLE_AUTOUPDATE:'true',HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')});
+// The free models in the native catalog, or null when the catalog cannot be read. Overlapping OpenCode starts after the
+// owner claim answer 503 (Windows lab, 2026-10-20): up to `attempts` tries, 3 s apart; never a 4xx.
+async function listFreeModels(isolated,directory,executeNative,deadline,attempts=3,timeout=20000){
+  let listed;
+  // --standalone everywhere: without it OpenCode 2 starts its per-user background service.
+  for(let attempt=1;;attempt++){
+    listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,timeout);
+    const transient=listed.code===124||/\bHTTP 503\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(listed.stderr??'');
+    if(listed.code===0||!transient||attempt===attempts||deadline-Date.now()<3000+timeout)break;
+    await delay(3000);
+  }
+  return listed.code===0?parseCatalog(listed.stdout):null;
+}
 export async function selectWorkingFreeModel({env=process.env,executeNative=execute}={}) {
   const directory=await mkdtemp(join(tmpdir(),'spaceapp-free-model-'));
-  const isolated={PATH:env.PATH,LANG:env.LANG,USER:env.USER,HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')};
+  const isolated=isolatedEnvironment(env,directory);
   try {
     const deadline=Date.now()+SELECTION_BUDGET_MS;
-    const listed=await executeNative(['models','opencode','--refresh','--verbose'],isolated,directory,20000);
-    if(listed.code!==0)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
-    const candidates=preferDefault(parseCatalog(listed.stdout));
+    const listedModels=await listFreeModels(isolated,directory,executeNative,deadline);
+    if(listedModels===null)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
+    const candidates=preferDefault(listedModels);
     const work=join(directory,'work');await mkdir(work);
     for(const candidate of candidates.slice(0,5)) {
       const remaining=deadline-Date.now(); if(remaining<10000)break;
       process.stderr.write(`Checking free OpenCode model: ${candidate.name}\n`);
       const token=`SPACEAPP-${randomBytes(6).toString('hex')}`;
       await writeFile(join(work,CHECK_FILE),token+'\n');
-      const res=await executeNative(['run','--format','json','--model',candidate.id,CHECK_PROMPT],isolated,work,Math.min(40000,remaining));
+      const res=await executeNative(['run','--standalone','--format','json','--model',candidate.id,CHECK_PROMPT],isolated,work,Math.min(40000,remaining));
       if(toolCycleSucceeded(res,token)){
         return {...candidate,verification:'tool-call',verifiedAt:new Date().toISOString(),nativeSessionId:events(res.stdout).find(e=>e.sessionID)?.sessionID ?? null};
       }
@@ -107,7 +127,18 @@ export async function selectWorkingFreeModel({env=process.env,executeNative=exec
     throw new Error('No free OpenCode model completed a tool call. The app remains available; retry OpenCode later or choose a provider in Settings.');
   } finally {await rm(directory,{recursive:true,force:true});}
 }
-export async function configureFirstRun(env=process.env) {
+// The model the first run saved is checked against the catalog at most once a day. Only that model is replaced, and only when
+// OpenCode Zen no longer lists it as a free tool model: a model the owner chose is never touched (1.1.7 review, Claude T3).
+export const MODEL_RECHECK_MS=24*60*60*1000;
+// true: retired; false: still listed; null: the catalog could not be read (the model is kept).
+export async function firstRunModelRetired({model,env=process.env,executeNative=execute}) {
+  const directory=await mkdtemp(join(tmpdir(),'spaceapp-free-model-'));
+  try {
+    const listed=await listFreeModels(isolatedEnvironment(env,directory),directory,executeNative,Date.now()+10000,1,10000);
+    return listed===null?null:!listed.some(candidate=>candidate.id===model);
+  } finally {await rm(directory,{recursive:true,force:true});}
+}
+export async function configureFirstRun(env=process.env,{memoryDirectory=MEMORY_DIRECTORY,executeNative=execute,now=Date.now}={}) {
   const configDir=env.XDG_CONFIG_HOME;
   if(!configDir)throw new Error('OpenCode config directory is required');
   const directory=join(configDir,'opencode');
@@ -132,15 +163,26 @@ export async function configureFirstRun(env=process.env) {
     // starts OpenCode anyway, and without them the first task stops at "Access external directory".
     // No model is saved, so the next launch checks again.
     let model=null,failure=null;
-    if(!config.model)try{model=await selectWorkingFreeModel({env});}catch(error){failure=error;}
+    const recordPath=join(memoryDirectory,'installation-model.json');
+    if(!config.model)try{model=await selectWorkingFreeModel({env,executeNative});}catch(error){failure=error;}
+    else {
+      const record=JSON.parse(await readFile(recordPath,'utf8').catch(()=>'null'));
+      const checked=Date.parse(record?.checkedAt??record?.verifiedAt??'');
+      if(record?.id===config.model&&!(now()-checked<MODEL_RECHECK_MS)){
+        const retired=await firstRunModelRetired({model:config.model,env,executeNative});
+        if(retired)try{model=await selectWorkingFreeModel({env,executeNative});}catch(error){failure=error;}
+        // A retired model with no working replacement is checked again at the next launch, like a first run.
+        else await writeFile(recordPath,JSON.stringify({...record,checkedAt:new Date(now()).toISOString()},null,2),{mode:0o600}).catch(()=>{});
+      }
+    }
     const next=withBootstrap(model?{...config,model:model.id}:config,{tmpdir:env.TMPDIR});
     if(JSON.stringify(next)!==JSON.stringify(config)) {
       const current=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
       if(current!==previous)throw new Error('OpenCode configuration changed during discovery. Retry to preserve your settings.');
       await writeFile(path,JSON.stringify(next,null,2),{mode:0o600,flag:previous===null?'wx':'w'});
       if(model) {
-        const memory='/var/lib/spaceapp/memory';await mkdir(memory,{recursive:true});
-        await writeFile(join(memory,'installation-model.json'),JSON.stringify(model,null,2),{mode:0o600});
+        await mkdir(memoryDirectory,{recursive:true});
+        await writeFile(recordPath,JSON.stringify(model,null,2),{mode:0o600});
       }
     }
     if(failure)throw failure;

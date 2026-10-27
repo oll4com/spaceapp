@@ -94,7 +94,7 @@ export function evaluatePublicRelease({
   const claudePolicy = distributionPolicy?.packages?.["@anthropic-ai/claude-code"];
   if (
     distributionPolicy?.schemaVersion !== 1 ||
-    claudePolicy?.version !== "2.1.206" ||
+    claudePolicy?.version !== "2.1.301" ||
     claudePolicy?.distribution !== "owner-installed-only" ||
     claudePolicy?.imageBundled !== false
   ) {
@@ -103,7 +103,7 @@ export function evaluatePublicRelease({
   if (/@anthropic-ai\/claude-code/i.test(dockerfile)) {
     blockers.push("The distributed Dockerfile must not install @anthropic-ai/claude-code.");
   }
-  if (!/@anthropic-ai\/claude-code@2\.1\.206/i.test(notices)) {
+  if (!/@anthropic-ai\/claude-code@2\.1\.301/i.test(notices)) {
     blockers.push("Third-party notices must identify the reviewed Claude Code package.");
   }
   if (!/not included in published SpaceApp images/i.test(notices)) {

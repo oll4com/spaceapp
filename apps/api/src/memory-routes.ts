@@ -8,7 +8,10 @@ import {
 import {
   type CanonicalMemoryBridge, type SpaceEventBus, SpaceFeatureDisabledError, type SpaceStore
 } from "@space/runtime";
+import type { DotMemoryEmbeddings } from "@space/db";
 import type { CanonicalMemorySearch } from "./canonical-memory-search.js";
+import { sendApiError } from "./http-errors.js";
+import type { MemoryEmbeddingBackfill } from "./memory-embedding-backfill.js";
 import type { SpaceApiConfig } from "./config.js";
 import type { MemoryGraphApiService } from "./memory-graph-service.js";
 import { buildMemorySearchStatus, isSemanticMemoryReady } from "./memory-search.js";
@@ -23,14 +26,31 @@ export function registerMemoryRoutes(app: FastifyInstance, options: {
   config: SpaceApiConfig;
   store: SpaceStore;
   eventBus: SpaceEventBus;
-  memoryEmbeddingGenerator: (input: string) => Promise<number[]>;
+  memoryEmbeddingGenerator: (input: string, purpose?: "document" | "query") => Promise<number[]>;
   canonicalMemory: CanonicalMemoryBridge;
   canonicalSearch: CanonicalMemorySearch | null;
   memoryGraphService: MemoryGraphApiService;
+  memoryEmbeddingBackfill?: MemoryEmbeddingBackfill | null;
+  dotMemoryEmbeddings?: DotMemoryEmbeddings | null;
   routeOptions: Pick<RouteShorthandOptions, "config">;
 }) {
   const { config, store, eventBus, memoryEmbeddingGenerator, canonicalMemory, canonicalSearch, memoryGraphService,
     routeOptions: defaultRouteRateLimitOptions } = options;
+  // Space Memory embeddings at a glance (counts and model names only, never memory text): what the backfill still has to do.
+  app.get("/api/admin/memory/embedding-status", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Memory embedding status requires the ADMIN role.");
+    const [smoke, records, dotMemories, canonical] = await Promise.all([
+      store.getLatestMemoryEmbeddingSmoke(),
+      store.countMemoryRecordEmbeddings(),
+      options.dotMemoryEmbeddings?.countEmbeddings() ?? null,
+      canonicalSearch?.coverage().catch(() => null) ?? null
+    ]);
+    return {
+      provider: config.memoryEmbeddingProvider, model: config.memoryEmbeddingModel, dimensions: config.memoryEmbeddingDimensions,
+      smoke: smoke ? { status: smoke.status, code: smoke.code, checkedAt: smoke.checkedAt } : null,
+      memoryRecords: records, dotMemories, canonical, backfill: options.memoryEmbeddingBackfill?.state() ?? null
+    };
+  });
   app.get("/api/skills", defaultRouteRateLimitOptions, async () => {
     const skills = await store.listSkills();
     return { data: skills, pagination: { page: 1, pageSize: 100, totalItems: skills.length, totalPages: skills.length ? 1 : 0 } };
@@ -129,7 +149,7 @@ export function registerMemoryRoutes(app: FastifyInstance, options: {
         );
       }
       try {
-        queryEmbedding = await memoryEmbeddingGenerator(page.q ?? "");
+        queryEmbedding = await memoryEmbeddingGenerator(page.q ?? "", "query");
       } catch {
         throw new SpaceFeatureDisabledError(
           "MEMORY_SEMANTIC_UNAVAILABLE",
@@ -146,7 +166,7 @@ export function registerMemoryRoutes(app: FastifyInstance, options: {
     const entries = page.searchMode === "semantic"
       ? canonicalSearch
         ? await canonicalSearch.search(page, queryEmbedding!)
-        : await store.listMemoryEntries(page, { semanticReady, queryEmbedding })
+        : await store.listMemoryEntries(page, { semanticReady, queryEmbedding, embeddingModel: config.memoryEmbeddingModel ?? undefined })
       : await canonicalMemory.list(page);
     const geminiEntries: MemoryEntry[] = [];
     const entriesById = new Map<string, MemoryEntry>();
@@ -186,10 +206,11 @@ export function registerMemoryRoutes(app: FastifyInstance, options: {
     ]);
     let cacheEntry: MemoryEntry | null = null;
     try {
+      // A rate-limited or failing provider never costs the save: the row is kept without a vector and the backfill embeds it later.
       const embedding = isSemanticMemoryReady(latestEmbeddingSmoke, vectorReadiness)
-        ? await memoryEmbeddingGenerator(`${input.title}\n${input.body}`)
+        ? await memoryEmbeddingGenerator(`${input.title}\n${input.body}`, "document").catch(() => undefined)
         : undefined;
-      const cached = await store.createMemoryEntry(input, request.requestIdForSpace, { embedding });
+      const cached = await store.createMemoryEntry(input, request.requestIdForSpace, { embedding, embeddingModel: config.memoryEmbeddingModel ?? undefined });
       await store.linkMemoryCacheRecord({
         memoryRecordId: cached.entry.id,
         canonicalMemoryId: entry.id,

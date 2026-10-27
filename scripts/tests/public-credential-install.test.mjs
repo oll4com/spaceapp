@@ -84,19 +84,33 @@ const ask = (socketPath, body) => new Promise((resolve, reject) => {
 test('the credential agent runs only a wrapper\'s fixed credential actions, input on stdin', async () => {
   // Short path: Unix socket paths are limited to about 100 bytes.
   const root = await mkdtemp('/tmp/spaceapp-agent-');
-  await writeFile(join(root, 'codex-vscode-parity'), '#!/bin/sh\nprintf "%s %s\\n" "$1" "$(wc -c)"\n');
-  await chmod(join(root, 'codex-vscode-parity'), 0o755);
+  for (const name of ['codex-vscode-parity', 'opencode-vscode-parity']) {
+    await writeFile(join(root, name), '#!/bin/sh\nprintf "%s %s\\n" "$1" "$(wc -c)"\n');
+    await chmod(join(root, name), 0o755);
+  }
   const socketPath = join(root, 'credentials.sock');
   const server = await startCredentialAgent({ socketPath, commandPath: root });
   try {
     assert.equal((await stat(socketPath)).mode & 0o777, 0o660);
     assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' }), { exitCode: 0, stdout: 'credential-status 0\n' });
     assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-install', input: '{"files":{}}' }), { exitCode: 0, stdout: 'credential-install 12\n' });
+    // 1.1.7 (decision B): the core image has no CLIs, so the smoke and the API's OpenCode calls run here too.
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-smoke' }), { exitCode: 0, stdout: 'credential-smoke 0\n' });
+    assert.deepEqual(await ask(socketPath, { command: 'opencode-vscode-parity', action: 'credential-observation' }), { exitCode: 0, stdout: 'credential-observation 0\n' });
+    assert.deepEqual(await ask(socketPath, { command: 'opencode-vscode-parity', action: 'opencode-text', input: '{"prompt":"hi"}' }), { exitCode: 0, stdout: 'opencode-text 15\n' });
+    assert.deepEqual(await ask(socketPath, { command: 'opencode-vscode-parity', action: 'opencode-models', input: '{"provider":"opencode"}' }), { exitCode: 0, stdout: 'opencode-models 23\n' });
     for (const body of [
       { command: '../codex-vscode-parity', action: 'credential-status' },
       { command: 'codex', action: 'credential-status' },
       { command: 'codex-vscode-parity', action: 'login' },
       { command: 'codex-vscode-parity', action: 'credential-status', input: 'unexpected' },
+      { command: 'codex-vscode-parity', action: 'credential-smoke', input: 'unexpected' },
+      { command: 'opencode-vscode-parity', action: 'credential-observation', input: 'unexpected' },
+      { command: 'codex-vscode-parity', action: 'credential-status', extra: 'field' },
+      { command: 'codex-vscode-parity', action: 'opencode-text', input: '{}' },
+      { command: 'opencode-vscode-parity', action: 'opencode-text', input: 'x'.repeat(128 * 1024 + 1) },
+      { command: 'opencode-vscode-parity', action: 'opencode-models', input: 'x'.repeat(257) },
+      { command: 'opencode-vscode-parity', action: 'toString' },
       'not json'
     ]) {
       assert.deepEqual(await ask(socketPath, body), { exitCode: 64, stdout: 'FAILED bad-request\n' });
@@ -108,8 +122,35 @@ test('the credential agent runs only a wrapper\'s fixed credential actions, inpu
   await assert.rejects(() => startCredentialAgent({ socketPath, commandPath: root }), /Refusing to replace non-socket path/);
 });
 
+test('the credential agent answers busy beyond its concurrent actions instead of piling up processes (1.1.8)', async () => {
+  const root = await mkdtemp('/tmp/spaceapp-agent-');
+  await writeFile(join(root, 'codex-vscode-parity'), '#!/bin/sh\nsleep 1\nprintf "%s\\n" "$1"\n');
+  await chmod(join(root, 'codex-vscode-parity'), 0o755);
+  const socketPath = join(root, 'credentials.sock');
+  const server = await startCredentialAgent({ socketPath, commandPath: root, maxConcurrent: 1 });
+  try {
+    const slow = ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' }), { exitCode: 75, stdout: 'FAILED busy\n' });
+    assert.deepEqual(await slow, { exitCode: 0, stdout: 'credential-status\n' });
+    // The slot is free again once the first action ended.
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' }), { exitCode: 0, stdout: 'credential-status\n' });
+  } finally {
+    server.close();
+  }
+});
+
+test('the public wrapper runs the API\'s OpenCode calls only for OpenCode, through the standalone helper', () => {
+  const wrapper = readFileSync(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8');
+  const branch = wrapper.match(/\n  opencode-text\|opencode-models\)\n[\s\S]*?\n    ;;\n/)?.[0] ?? '';
+  assert.match(branch, /if \[ "\$runtime_name" != "opencode" \]; then\n[^\n]*\n      exit 64\n    fi/);
+  assert.match(branch, /exec node \/app\/deploy\/docker\/opencode-standalone\.mjs "\$\{1#opencode-\}"/);
+  // Before the generic launch, which would start OpenCode's TUI.
+  assert.ok(wrapper.indexOf(branch) < wrapper.indexOf('ensure_runtime_dirs\nensure_optional_provider'));
+});
+
 test('the CLI container starts the credential agent as the CLI user next to the pane host', () => {
   const entrypoint = readFileSync(new URL('../../deploy/docker/cli-entrypoint.sh', import.meta.url), 'utf8');
-  assert.match(entrypoint, /credential_agent_user=spaceapp\nif \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\n  credential_agent_user=root:spaceapp\nfi\ngosu "\$credential_agent_user" node \/app\/deploy\/docker\/credential-agent\.mjs &\n/);
+  assert.match(entrypoint, /credential_agent_user=spaceapp\nif \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\n  credential_agent_user=root:spaceapp\nfi\n(?:#[^\n]*\n)*\(\ while :; do gosu "\$credential_agent_user" node \/app\/deploy\/docker\/credential-agent\.mjs; sleep 2; done \) &\n/);
   assert.equal(entrypoint.match(/credential-agent\.mjs/g).length, 1);
 });

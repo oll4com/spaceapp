@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { GatewayAccount, GatewayAccountDetail, GatewaySettings } from "@space/contracts";
+import type { GatewayAccount, GatewayAccountDetail, GatewayAnthropicBillingReport, GatewaySettings } from "@space/contracts";
 import { matchesAvailabilityFilter, type AccountAvailabilityFilter } from "../toolbar-metrics/account-availability.js";
 import { AvailabilityFilterBar, countAvailability } from "../toolbar-metrics/AccountQuotaCards.js";
+import { anthropicBillLines } from "../toolbar-metrics/account-entries.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { AddAccount, CopyButton, SignInAgain } from "./gateway-add-account.js";
 import { RemainingBar, TrendChart } from "./gateway-charts.js";
@@ -77,7 +78,15 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
   const [confirm, setConfirm] = useState<"remove" | "reset" | "export" | null>(null);
   const [exported, setExported] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  const [bill, setBill] = useState<GatewayAnthropicBillingReport | null>(null);
   const timeFormat = settings?.displayTimeFormat ?? "24H";
+  const apiKeyAccount = account.provider === "CLAUDE" && account.planType === "api";
+  useEffect(() => {
+    let active = true;
+    setBill(null);
+    if (apiKeyAccount && client.anthropicBilling) void client.anthropicBilling(31).then((next) => { if (active) setBill(next); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [apiKeyAccount, client, account.id]);
   const signInNeeded = needsSignIn(account);
   useEffect(() => { if (openSignIn && signInNeeded) setSigningIn(true); }, [openSignIn, signInNeeded]);
 
@@ -147,7 +156,7 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
             : `${name} is signed in again.`);
         }} />
       ) : null}
-      {account.provider === "CLAUDE" && account.planType === "api" ? (
+      {apiKeyAccount ? (
         <p className="space-gateway-note" data-testid="claude-api-key-role">
           {settings?.claudeApiKeyFallback
             ? "Fallback: serves Claude requests only while every pooled Claude account is out of quota; the accounts take over again at their next reset."
@@ -158,6 +167,7 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
             : account.lastUsedAt ? `Last used ${formatAgo(account.lastUsedAt, now, timeFormat)}.` : "Never used."}</strong>
         </p>
       ) : null}
+      {apiKeyAccount ? anthropicBillLines(bill, now).map((line) => <p key={line} className="space-gateway-note" data-testid="claude-api-key-bill">{line}</p>) : null}
 
       <form className="gw-inline-form" onSubmit={(event) => {
         event.preventDefault();
@@ -240,7 +250,7 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
           : <button type="button" className="space-gateway-button" disabled={pending} onClick={() => setConfirm("remove")}>Remove</button>}
       </div>
       {confirm === "export" && !exported ? (
-        <p className="space-gateway-note" role="status">The export contains a working sign-in. Whoever holds it can use this account, and a program that refreshes it signs Space Gateway out. Every export is recorded in the audit log.</p>
+        <p className="space-gateway-note" role="status">The export contains this account's current access token but no refresh token, so it works only until that token expires. Whoever holds it can use this account until then. Every export is recorded in the audit log.</p>
       ) : null}
       {exported ? (
         <div className="space-gateway-created" role="status">

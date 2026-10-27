@@ -73,8 +73,11 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
   };
   const validateAndPublish = async (scope: T3PaneScope, selection: T3CodeSelection) =>
     publishAgentTokens(scope, (await validateSelection(scope, selection)).workspace);
+  // A room's default folder is not a T3 workspace: /opt/spaceapp for workspace rooms, /etc for Agent Proof rooms (5627772ffc).
+  const roomDefaultFolder = (room: T3PaneScope["room"]) =>
+    room.projectPath === "/opt/spaceapp" || (room.kind === "AGENT_PROOF" && room.projectPath === "/etc");
   const workspaceCandidates = (scope: T3PaneScope) =>
-    [scope.pane.cwd, scope.room.projectPath === "/opt/spaceapp" ? null : scope.room.projectPath].filter((v): v is string => Boolean(v?.trim()));
+    [scope.pane.cwd, roomDefaultFolder(scope.room) ? null : scope.room.projectPath].filter((v): v is string => Boolean(v?.trim()));
   // Same rule as initialSelection, without creating anything upstream.
   const unboundWorkspaceAllowed = async (scope: T3PaneScope) => {
     const candidates = workspaceCandidates(scope);

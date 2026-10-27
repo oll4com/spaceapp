@@ -82,6 +82,8 @@ export function installMockStorage(): void {
     "space.uiTheme.v1": "modern", "space.modern.appearance.mode.v1": "dark",
     "space.room.theme": "graphite", "space.roomFocusMode": "false", "space.roomsRailHidden": "false",
     "space.roomToolbar.hidden.v1": "true",
+    // Nous runs only on the maker's own instance; its dock starts hidden in the public demo.
+    "space:docks-hidden:v1": JSON.stringify(["nous"]),
     "space.dateTime.settings": JSON.stringify({ timeZone: "UTC", timeFormat: "24h", dateFormat: "DD/MM/YYYY" })
   };
   if (new URLSearchParams(location.search).get("showcase") === "1") { defaults["space.room.theme"] = "motion"; defaults["space.uiTheme.v1"] = "motion"; }

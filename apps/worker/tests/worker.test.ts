@@ -2570,7 +2570,7 @@ describe("Space Temporal worker foundation", () => {
                   roomId: "room:test-1",
                   actionType: "extract_text",
                   viewport: "desktop",
-                  currentUrl: `https://www.example.invalid/?${redactionQueryKey}=%5BREDACTED%5D`,
+                  currentUrl: `https://www.google.com/?${redactionQueryKey}=%5BREDACTED%5D`,
                   title: "Olla",
                   text: "Observed page text",
                   capturedAt: "2026-07-05T00:00:00.000Z"
@@ -3193,7 +3193,7 @@ describe("Space Temporal worker foundation", () => {
                   roomId: room.id,
                   actionType: "extract_text",
                   viewport: "desktop",
-                  currentUrl: "https://www.example.invalid/",
+                  currentUrl: "https://www.google.com/",
                   title: "Olla",
                   text: "Observed Olla catalog text " + "x".repeat(3000),
                   capturedAt: "2026-07-05T00:00:00.000Z"
@@ -3384,7 +3384,7 @@ describe("Space Temporal worker foundation", () => {
                   roomId: room.id,
                   actionType: "extract_text",
                   viewport: "desktop",
-                  currentUrl: "https://www.example.invalid/?token=raw-secret-value",
+                  currentUrl: "https://www.google.com/?token=raw-secret-value",
                   title: "Olla token:raw-secret-value",
                   text: "Observed Olla catalog text with token:raw-secret-value",
                   capturedAt: "2026-07-05T00:00:00.000Z"

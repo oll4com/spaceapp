@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
-import { executeCommand, run } from "../src/cli.mjs";
+import { executeCommand, RESTORE_UNCHANGED_EXIT, run } from "../src/cli.mjs";
 import { ensureDockerAvailable } from "../src/prerequisites.mjs";
 import {
   addWorkspace,
@@ -1639,12 +1639,18 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
   await run(["init"], options);
 
   assert.equal(await run(["provider", "install", "claude"], options), 0);
-  assert.deepEqual(calls[0].slice(-14), [
+  assert.deepEqual(calls[0].slice(-12, -2), [
     "run", "--rm", "--no-deps", "--user", "10001:10001",
-    "--entrypoint", "npm", "spaceapp-cli", "install",
-    "--prefix", "/var/lib/spaceapp-cli/vendor/claude",
-    "--no-audit", "--no-fund", "@anthropic-ai/claude-code@2.1.206"
+    "--entrypoint", "sh", "spaceapp-cli", "-c", calls[0].at(-3)
   ]);
+  assert.deepEqual(calls[0].slice(-2), ["sh", "@anthropic-ai/claude-code@2.1.301"]);
+  // npm 11 warns about (and will block) install scripts not approved in package.json allowScripts; Claude Code's
+  // postinstall puts its native binary in place, so the vendor project approves exactly the pinned version first.
+  const script = calls[0].at(-3);
+  assert.match(script, /^\[ ! -f \/app\/deploy\/docker\/provider-locks\/claude\.json \] \|\| exec node \/app\/deploy\/docker\/provider-install\.mjs claude --reinstall; /);
+  assert.match(script, /manifest\.allowScripts=\{\.\.\.manifest\.allowScripts,\[process\.argv\[1\]\]:true\}/);
+  assert.match(script, /" && exec npm install --prefix \/var\/lib\/spaceapp-cli\/vendor\/claude --no-audit --no-fund "\$1"$/);
+  assert.doesNotMatch(script, /--allow-scripts|--ignore-scripts/);
   assert.match(stdout.value(), /Installing optional provider claude/);
   assert.equal(await run(["provider", "install", "gemini"], options), 0);
   await assert.rejects(() => run(["provider", "install", "../escape"], options), /provider/i);
@@ -1881,14 +1887,14 @@ test("restore creates a safety backup, stops app writers, restores offline, and 
     stdin: Readable.from(["RESTORE\n"])
   }), 0);
 
-  assert.equal(calls.length, 4);
-  assert.deepEqual(calls[0].slice(-7), [
-    "exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"
+  assert.equal(calls.length, 6);
+  assert.deepEqual(calls[0].slice(-5), ["pause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"]);
+  assert.deepEqual(calls[1].slice(-4), ["--entrypoint", "node", "spaceapp-core", "scripts/portable-backup.mjs"]);
+  assert.deepEqual(calls[2].slice(-5), ["unpause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"]);
+  assert.deepEqual(calls[3].slice(-5), [
+    "stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"
   ]);
-  assert.deepEqual(calls[1].slice(-4), [
-    "stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"
-  ]);
-  assert.deepEqual(calls[2].slice(-17), [
+  assert.deepEqual(calls[4].slice(-17), [
     "run", "--rm", "--no-deps", "--user", "0:0",
     "--env", "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
     "--entrypoint", "node", "spaceapp-core", "scripts/portable-restore.mjs",
@@ -1896,7 +1902,7 @@ test("restore creates a safety backup, stops app writers, restores offline, and 
     "--backup-id", "spaceapp-backup-20260723T130000000Z",
     "--confirm", "RESTORE"
   ]);
-  assert.deepEqual(calls[3].slice(-3), ["up", "-d", "--remove-orphans"]);
+  assert.deepEqual(calls[5].slice(-3), ["up", "-d", "--remove-orphans"]);
 });
 
 test("restore leaves app writers stopped when the data restore fails", async () => {
@@ -1912,7 +1918,7 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     execute: async (spec, io) => {
       if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args);
-      return calls.length === 3 ? 47 : 0;
+      return calls.length === 5 ? 47 : 0;
     }
   };
   await run(["init"], { ...options, stdin: ttyStdin("y") });
@@ -1922,13 +1928,42 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     ...options,
     stdin: Readable.from(["RESTORE\n"])
   }), 47);
-  assert.equal(calls.length, 3);
-  assert.deepEqual(calls[2].slice(-7), [
+  assert.equal(calls.length, 5);
+  assert.deepEqual(calls[4].slice(-7), [
     "scripts/portable-restore.mjs",
     "--input", "/backups",
     "--backup-id", "spaceapp-backup-20260723T140000000Z",
     "--confirm", "RESTORE"
   ]);
+  // A restore that may be partial keeps SpaceApp stopped and says how to go on (1.1.8, 1.1.7 known issue restore-left-stopped).
+  assert.match(stderr.value(), /failed and SpaceApp stays stopped/);
+  assert.match(stderr.value(), /run "npx --yes run-spaceapp@[a-z]+ up"/);
+  assert.match(stderr.value(), /kept in the backup spaceapp-backup-/);
+});
+
+test("restore starts SpaceApp again when the restore changed nothing or put everything back (1.1.8)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-cli-restore-unchanged-"));
+  const stdout = capture();
+  const stderr = capture();
+  const calls = [];
+  const options = {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec, io) => {
+      if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      calls.push(spec.args);
+      return calls.length === 5 ? RESTORE_UNCHANGED_EXIT : 0;
+    }
+  };
+  await run(["init"], { ...options, stdin: ttyStdin("y") });
+  await mkdir(join(root, "backups", "spaceapp-backup-20260723T150000000Z"));
+
+  assert.equal(await run(["restore"], { ...options, stdin: Readable.from(["RESTORE\n"]) }), RESTORE_UNCHANGED_EXIT);
+  assert.equal(calls.length, 6);
+  assert.deepEqual(calls[5].slice(-3), ["up", "-d", "--remove-orphans"]);
+  assert.match(stderr.value(), /did not happen; SpaceApp runs again with its data from before the restore/);
 });
 
 test("install succeeds on 8 GiB disk for light profile and automatically starts inactive Docker", async () => {

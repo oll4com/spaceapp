@@ -15,7 +15,8 @@ describe("freelance copilot kickoff", () => {
     const terminal = {
       ensurePaneControlReady: vi.fn(async () => started),
       runSerializedTerminalMutation: vi.fn(async (_id: string, task: () => Promise<unknown>) => task()),
-      sendInput: vi.fn(async () => ({ turnMarker: null, markerAtMs: 0 }))
+      sendInput: vi.fn(async () => ({ turnMarker: null, markerAtMs: 0 })),
+      observeRoomScreenUndimmed: vi.fn(async () => "❯ ")
     };
     const service = registerFreelanceCopilot(app, {
       store, eventBus: new SpaceEventBus(), databaseUrl: null, repository: new InMemoryFreelanceCopilotRepository(),
@@ -33,7 +34,10 @@ describe("freelance copilot kickoff", () => {
       const [kickoff] = terminal.sendInput.mock.calls;
       expect(kickoff?.[0]).toBe("cli_session:started1");
       expect(String(kickoff?.[1])).toContain("space_freelance_next");
+      // A bracketed paste, then Enter on its own: text and Enter in one chunk stayed a draft in Bruno/Cody (2026-10-20).
+      expect(String(kickoff?.[1])).toMatch(/^\u001b\[200~[\s\S]*\u001b\[201~$/);
       expect(kickoff?.[5]).toBe(true);
+      expect(terminal.sendInput.mock.calls.map((call) => call[1])).toEqual([kickoff?.[1], "\r"]);
     } finally {
       await app.close();
     }

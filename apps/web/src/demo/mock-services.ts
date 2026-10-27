@@ -1,6 +1,7 @@
 import { SpaceApiError } from "../runtime/SpaceRuntime.js";
 import type { DemoFixture } from "./demo-fixture.js";
 import { mockProjectCatalog } from "./mock-project-catalog.js";
+import { MockCopilots } from "./mock-copilots.js";
 
 const now = () => new Date().toISOString();
 const base = import.meta.env.BASE_URL;
@@ -33,6 +34,7 @@ export class MockServices {
   private bookmarks = new Map<string, any[]>();
   private roomMessages = new Map<string, any[]>();
   private playback = new Map<string, any>();
+  private copilots = new MockCopilots();
 
   constructor(private readonly fixture: () => DemoFixture) {
     if (fixture().rooms.some(room => room.id === "room:showcase-remote")) {
@@ -86,6 +88,8 @@ export class MockServices {
   }
   private pagePayload(paneId: string) { const { session } = this.browser(paneId); return { sessionId: session.sessionId, pages: session.pages, activePageId: session.activePageId }; }
   invoke(method: string, args: unknown[]): { handled: boolean; value?: unknown } {
+    const copilot = this.copilots.invoke(method, args);
+    if (copilot.handled) return copilot;
     const input = (args[0] ?? {}) as any;
     let value: unknown;
     switch (method) {

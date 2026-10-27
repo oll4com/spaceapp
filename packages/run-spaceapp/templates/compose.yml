@@ -1,6 +1,6 @@
 services:
   spaceapp-core:
-    image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CORE_IMAGE_DIGEST:-}
     restart: unless-stopped
     init: true
     security_opt:
@@ -30,9 +30,9 @@ services:
       SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory
       SPACE_STARTER_MEMORY_ROOT: /opt/spaceapp/starter-memory
       SPACE_MEMORY_GRAPH_ROOT: /var/lib/spaceapp/memory-graph
-      SPACE_GEMINI_MEMORY_INDEX_PATH: /var/lib/spaceapp/memory/gemini_history.md
-      SPACE_GEMINI_MEMORY_MONTHLY_PATH: /var/lib/spaceapp/memory/gemini_history_monthly.md
-      SPACE_GEMINI_MEMORY_LOCK_PATH: /var/lib/spaceapp/memory/.memory.lock
+      SPACE_MEMORY_INDEX_PATH: /var/lib/spaceapp/memory/space_memory.md
+      SPACE_MEMORY_MONTHLY_PATH: /var/lib/spaceapp/memory/space_memory_monthly.md
+      SPACE_MEMORY_LOCK_PATH: /var/lib/spaceapp/memory/.memory.lock
       SPACE_ARTIFACT_ROOT: /var/lib/spaceapp/artifacts
       SPACE_CLI_HOST_SOCKET: /run/spaceapp-cli/host.sock
       SPACE_CLI_ENABLED: "true"
@@ -58,6 +58,8 @@ services:
       - spaceapp-cli-socket:/run/spaceapp-cli
       - spaceapp-browser-socket:/run/spaceapp-browser
       - spaceapp-workspaces:/workspaces
+      # Only Codex's session logs, read-only, to see a Codex pane's turns; never the Codex home or its credentials.
+      - spaceapp-codex-sessions:/var/lib/spaceapp-cli/providers/codex/sessions:ro
       - ./backups:/backups
     secrets:
       - setup-token
@@ -71,13 +73,16 @@ services:
         required: false
       spaceapp-cli:
         condition: service_started
+      codex-sessions-init:
+        condition: service_completed_successfully
     networks:
       - spaceapp
 
   spaceapp-cli:
-    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}
     restart: unless-stopped
     init: true
+    # compose.workspaces.yml adds the user-namespace profile where the host allows user namespaces (F17).
     security_opt:
       - no-new-privileges:true
     mem_limit: "${SPACEAPP_CLI_MEMORY_LIMIT}"
@@ -88,15 +93,40 @@ services:
       SPACE_CLI_HOST_SOCKET: /run/spaceapp-cli/host.sock
     volumes:
       - spaceapp-cli-state:/var/lib/spaceapp-cli
+      - spaceapp-codex-sessions:/var/lib/spaceapp-cli/providers/codex/sessions
       - spaceapp-memory:/var/lib/spaceapp/memory
       - spaceapp-cli-socket:/run/spaceapp-cli
       - spaceapp-workspaces:/workspaces
       - ./secrets/providers:/run/spaceapp-secrets/providers:ro
+    depends_on:
+      codex-sessions-init:
+        condition: service_completed_successfully
     networks:
       - spaceapp
 
+  # One-shot: Codex's session logs live in their own volume so the API can mount them alone. It gives the volume to the
+  # CLI user and, while it is still empty, copies the sessions an earlier installation kept in spaceapp-cli-state.
+  codex-sessions-init:
+    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        set -eu;
+        old=/cli-state/providers/codex/sessions;
+        if [ -d "$$old" ] && [ -z "$$(ls -A /sessions)" ]; then cp -a "$$old/." /sessions/; fi;
+        chown 10001:10001 /sessions; chmod 0700 /sessions
+    volumes:
+      - spaceapp-cli-state:/cli-state:ro
+      - spaceapp-codex-sessions:/sessions
+
   spaceapp-browser:
-    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}${SPACEAPP_BROWSER_IMAGE_DIGEST:-}
     profiles: ["standard"]
     restart: unless-stopped
     init: true
@@ -219,6 +249,7 @@ secrets:
 volumes:
   spaceapp-data:
   spaceapp-cli-state:
+  spaceapp-codex-sessions:
   spaceapp-cli-socket:
   spaceapp-browser-socket:
   spaceapp-memory:

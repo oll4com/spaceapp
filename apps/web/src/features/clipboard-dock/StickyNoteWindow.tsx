@@ -200,8 +200,8 @@ export function StickyNoteWindow({
     }
   }, [initialColor]);
 
-  // One clipboard item holds the note: each save stores the new text and
-  // removes the item that held the previous version.
+  // One clipboard item holds the note: each save changes that item's text in place, so an agent note stays an agent note
+  // with its room, pane and created time. A note deleted meanwhile is saved again as a new manual note.
   const itemIdRef = useRef(itemId);
   const latestTextRef = useRef(text);
   latestTextRef.current = text;
@@ -209,14 +209,16 @@ export function StickyNoteWindow({
   persistRef.current = async (value: string) => {
     setSaving(true);
     try {
-      const saved = await api.createClipboardItem({ text: value, source: "MANUAL_NOTE" });
-      initialTextRef.current = value;
       const previousId = itemIdRef.current;
+      const saved = previousId
+        ? await api.updateClipboardNoteText(previousId, value).catch((err: unknown) => {
+            if ((err as { status?: number }).status === 404) return api.createClipboardItem({ text: value, source: "MANUAL_NOTE" });
+            throw err;
+          })
+        : await api.createClipboardItem({ text: value, source: "MANUAL_NOTE" });
+      initialTextRef.current = value;
       itemIdRef.current = saved.id;
-      if (saved.id !== previousId) {
-        onUpdateItemId?.(saved.id);
-        if (previousId) await api.deleteClipboardItem(previousId).catch(() => undefined);
-      }
+      if (saved.id !== previousId) onUpdateItemId?.(saved.id);
       notifyClipboardUpdated();
       setSaved(true);
       onSaved?.();

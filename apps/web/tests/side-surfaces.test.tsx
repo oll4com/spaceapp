@@ -97,8 +97,8 @@ describe("useSideSurfaces", () => {
     const { result, rerender } = renderHook((props: Props) => useHarness(props), {
       initialProps: { ...base, isDockHidden: (surface) => hidden.has(surface) }
     });
-    expect(result.current.availableDocks).toEqual(["rooms",
-      "notifications", "room-agent", "shared-chat", "agent-files", "clipboard", "tasks", "links", "settings", "cli", "agent-sessions"]);
+    expect(result.current.availableDocks).toEqual(["rooms", "nous",
+      "notifications", "room-agent", "shared-chat", "agent-files", "clipboard", "tasks", "vault", "links", "settings", "cli", "agent-sessions"]);
     act(() => result.current.navigateDock("prev"));
     expect(result.current.activeSideSurface).toBe("agent-sessions");
     act(() => result.current.navigateDock("next"));
@@ -110,11 +110,11 @@ describe("useSideSurfaces", () => {
     act(() => result.current.navigateDock("next", launcherActions));
     expect(result.current.activeSideSurface).toBe("rooms");
     act(() => result.current.navigateDock("next", launcherActions));
-    expect(result.current.activeSideSurface).toBe("notifications");
+    expect(result.current.activeSideSurface).toBe("nous");
 
     rerender({ ...base, role: "ADMIN", runtimeKind: "live", isDockHidden: (surface) => hidden.has(surface) });
     expect(result.current.sourceControlAvailable).toBe(true);
-    expect(result.current.availableDocks).toEqual(["rooms", "notifications", "room-agent", "shared-chat", "streaming", "agent-files", "clipboard", "tasks", "links", "source-control", "settings", "cli", "agent-sessions"]);
+    expect(result.current.availableDocks).toEqual(["rooms", "nous", "notifications", "room-agent", "shared-chat", "streaming", "agent-files", "clipboard", "tasks", "vault", "links", "source-control", "settings", "cli", "agent-sessions"]);
   });
 
   it("sends admins from the Health dock to System Health", () => {

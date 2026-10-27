@@ -253,6 +253,8 @@ const apiKeyProviders = {
     note: "OpenRouter keys form a key pool at /pools/openrouter/v1: each request uses one key and moves to another when a key is out of credit, rate limited or rejected. The key is checked with a free request and stored encrypted." },
   DEEPSEEK: { title: "Add a DeepSeek API key", placeholder: "sk-…",
     note: "DeepSeek keys form a key pool at /pools/deepseek/v1, rotated per request with failover. The key is checked with a free balance request and stored encrypted." },
+  GOOGLE_AI: { title: "Add a Google AI API key", placeholder: "AIza…",
+    note: "Google AI (Gemini API) keys serve Space Memory embeddings (gemini-embedding-001) and nothing else. A free-tier key has low per-minute and per-day limits: memories are embedded gradually and the rest wait for the next day. The key is checked with a free request and stored encrypted; it is never shown again." },
   CLAUDE: { title: "Add a Claude API key", placeholder: "sk-ant-…",
     note: "Paid per token. Space Gateway uses the key only while Claude API key fallback (Settings › Routing) is on and every pooled Claude account is out of quota; the accounts take over again at their next reset. The key is checked with a free request and stored encrypted; it is never shown again." }
 } as const;
@@ -303,7 +305,7 @@ function AddOpenAiApiKey({ client, onConnected, provider = "OPENAI_API", title, 
   );
 }
 
-type AddProvider = "CODEX" | "CLAUDE" | "ANTIGRAVITY" | "OPENAI_API" | "OPENROUTER" | "DEEPSEEK";
+type AddProvider = "CODEX" | "CLAUDE" | "ANTIGRAVITY" | "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "GOOGLE_AI";
 
 export function AddAccount({ client, onConnected, initialProvider = "CODEX", initialClaudeMethod }: {
   client: SpaceGatewayClient; onConnected: OnConnected; initialProvider?: AddProvider; initialClaudeMethod?: "sign-in" | "api-key";
@@ -313,7 +315,7 @@ export function AddAccount({ client, onConnected, initialProvider = "CODEX", ini
     <>
       <div className="filter-tabs" role="tablist" aria-label="Provider to add">
         {([["CODEX", "ChatGPT (Codex)"], ["CLAUDE", "Claude"], ["ANTIGRAVITY", "Antigravity"], ["OPENAI_API", "OpenAI API"], ["OPENROUTER", "OpenRouter"],
-          ["DEEPSEEK", "DeepSeek"]] as const).map(([id, label]) => (
+          ["DEEPSEEK", "DeepSeek"], ["GOOGLE_AI", "Google AI"]] as const).map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={provider === id} className={`filter-tab${provider === id ? " active" : ""}`}
             onClick={() => setProvider(id)}>{label}</button>
         ))}

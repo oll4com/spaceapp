@@ -5,12 +5,25 @@ import { z } from "zod";
  * delivered through the channels the user turned on (in-app badges and toasts, sound, browser desktop
  * notifications, Telegram) and kept in the Notification Center until read or acknowledged.
  */
-export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "ROOM_AGENT", "COUNCIL", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM"] as const;
+export const NOTIFICATION_SOURCES = ["MAIL_COPILOT", "JOB_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "ROOM_AGENT", "COUNCIL", "NOUS", "BROWSER_HANDOFF", "ROOM_WATCHDOG", "SYSTEM", "AGENT"] as const;
 export const notificationSourceSchema = z.enum(NOTIFICATION_SOURCES);
 export type NotificationSource = z.infer<typeof notificationSourceSchema>;
+/**
+ * What only the operator's own hands can do: a CAPTCHA or browser handoff, a sign-in, a copilot's NEEDS_USER click. It reaches
+ * them at once in the app, on the desktop and on Telegram and never waits for Nous (operator rule 2026-10-17, plan clipboard:xEQOrVRQgeAn).
+ */
+export const needsOperatorHands = (source: NotificationSource, kind: string) => source === "BROWSER_HANDOFF" || /SIGN_IN|LOGIN|CAPTCHA|HANDOFF|NEEDS_USER|NEEDS_YOU/i.test(kind);
 export const NOTIFICATION_SOURCE_LABELS: Record<NotificationSource, string> = {
-  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", ROOM_AGENT: "Room Agent", COUNCIL: "Council", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space"
+  MAIL_COPILOT: "Mail Copilot", JOB_COPILOT: "Job Copilot", MARKETING_COPILOT: "Marketing Copilot", FREELANCE_COPILOT: "Freelance Copilot", DESIGN: "Design", APP_STUDIO: "App Studio", VIDEO: "Video", SECURITY_COPILOT: "Security Copilot", ROOM_AGENT: "Room Agent", COUNCIL: "Council", NOUS: "Nous", BROWSER_HANDOFF: "Browser", ROOM_WATCHDOG: "Room watchdog", SYSTEM: "Space", AGENT: "Agent"
 };
+/**
+ * Needs you (operator request 2026-10-24): a notification on a pane whose kind needs the operator there (hands, a question, a review or
+ * approval, a CLI prompt waiting for them, a CLI's explicit needs-you, Nous's card). The web brings them to the pane for it instead of
+ * showing a toast, and takes them back when it resolves. Never INFO; failures, "posts due" and finished work stay toasts.
+ */
+export const NEEDS_YOU_KINDS = /^(NEEDS_HANDS|NEEDS_YOU|NEEDS_USER|QUESTION|REVIEW_REQUESTED|RULE_PROPOSED|CAMPAIGN_PROPOSED|CLIENT_READY|HANDOFF_REQUESTED|BROWSER_HANDOFF_REQUESTED|WAITING|SIGN_IN|STUCK|USAGE_LIMIT|OVERLAP|(?:DESIGN|VIDEO)_(?:APPROVAL|QUESTION)|APP_STUDIO_QUESTION|SECURITY_(?:QUESTION|REVIEW))$/;
+export const needsYou = (notification: { source: NotificationSource; kind: string; severity: NotificationSeverity; paneId: string | null; roomId: string | null }) =>
+  Boolean(notification.paneId && notification.roomId) && notification.severity !== "INFO" && NEEDS_YOU_KINDS.test(notification.kind);
 
 export const notificationSeveritySchema = z.enum(["INFO", "ATTENTION", "URGENT"]);
 export type NotificationSeverity = z.infer<typeof notificationSeveritySchema>;
@@ -93,7 +106,8 @@ export const notificationsPendingSchema = z.object({
 export type NotificationsPending = z.infer<typeof notificationsPendingSchema>;
 
 export const notificationListQuerySchema = z.object({
-  status: z.enum(["OPEN", "ALL"]).default("ALL"),
+  /** NEEDS_YOU: the needs-you requests still waiting (open or read, not resolved or acknowledged) on panes that are still open. */
+  status: z.enum(["OPEN", "ALL", "NEEDS_YOU"]).default("ALL"),
   source: notificationSourceSchema.optional(),
   limit: z.number().int().min(1).max(200).default(50),
   before: isoDateTime.optional()
@@ -104,8 +118,15 @@ export type NotificationListQuery = z.infer<typeof notificationListQuerySchema>;
 export const notificationChannelOverridesSchema = z.object({
   inApp: z.boolean().optional(),
   desktop: z.boolean().optional(),
-  telegram: z.boolean().optional()
+  telegram: z.boolean().optional(),
+  push: z.boolean().optional()
 }).strict();
+const clockTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM (24 hours).");
+export const quietHoursSchema = z.object({ enabled: z.boolean().default(true), start: clockTimeSchema.default("23:00"), end: clockTimeSchema.default("09:00") }).strict();
+export type QuietHours = z.infer<typeof quietHoursSchema>;
+export const defaultQuietHours: QuietHours = { enabled: true, start: "23:00", end: "09:00" };
+/** A hand request: only the operator's hands can do it (a handoff, sign-in, CAPTCHA, needs-you, or Nous's per-pane card). */
+export const isHandRequest = (source: NotificationSource, kind: string) => needsOperatorHands(source, kind) || (source === "NOUS" && kind === "NEEDS_HANDS");
 export const notificationSettingsSchema = z.object({
   channels: z.object({
     /** Badges and the Notification Center. Off keeps the record but shows no badge. */
@@ -115,9 +136,16 @@ export const notificationSettingsSchema = z.object({
     /** Browser desktop notifications while Space is in the background (needs the browser's permission). */
     desktop: z.boolean().default(true),
     /** Telegram through the paired bot, for ATTENTION and URGENT notifications. */
-    telegram: z.boolean().default(true)
-  }).strict().default({ inApp: true, toast: true, sound: true, desktop: true, telegram: true }),
-  perSource: z.partialRecord(notificationSourceSchema, notificationChannelOverridesSchema).default({})
+    telegram: z.boolean().default(true),
+    /** Push (FCM) to the user's registered Android devices, for ATTENTION and URGENT notifications, also with the app closed. */
+    push: z.boolean().default(true)
+  }).strict().default({ inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true }),
+  perSource: z.partialRecord(notificationSourceSchema, notificationChannelOverridesSchema).default({}),
+  /**
+   * The operator's night (operator request 2026-10-20, plan clipboard:9XSwTPyxXP1W), in their working time zone: what needs their hands
+   * (handoffs, sign-ins, CAPTCHAs, needs-you, Nous's cards) is recorded without alerts and comes as one morning batch. URGENT never waits.
+   */
+  quietHours: quietHoursSchema.default(defaultQuietHours)
 }).strict();
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export const defaultNotificationSettings: NotificationSettings = notificationSettingsSchema.parse({});
@@ -127,7 +155,17 @@ export function resolveNotificationSettings(settings: NotificationSettings | nul
 }
 
 /** Whether one channel is on for a notification: the channel switch, then the source's own override. */
-export function notificationChannelEnabled(settings: NotificationSettings, source: NotificationSource, channel: "inApp" | "desktop" | "telegram"): boolean {
+export function notificationChannelEnabled(settings: NotificationSettings, source: NotificationSource, channel: "inApp" | "desktop" | "telegram" | "push"): boolean {
   const override = settings.perSource[source]?.[channel];
   return override ?? settings.channels[channel];
 }
+
+/** An Android device of the user that receives Space notifications as FCM pushes (registered by the app's page). */
+export const pushDeviceTokenSchema = z.string().regex(/^[A-Za-z0-9:_.-]{20,4096}$/);
+export const pushDeviceRegistrationSchema = z.object({
+  token: pushDeviceTokenSchema,
+  platform: z.literal("ANDROID").default("ANDROID"),
+  appVersion: z.string().trim().min(1).max(40).nullable().default(null)
+}).strict();
+export type PushDeviceRegistration = z.infer<typeof pushDeviceRegistrationSchema>;
+export const pushDeviceRemovalSchema = z.object({ token: pushDeviceTokenSchema }).strict();

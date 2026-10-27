@@ -1,4 +1,4 @@
-import type { DeployQueueReport, ReleasesReport } from "@space/contracts";
+import type { DeployQueueReport, DeployQueueTicket, ReleasesReport } from "@space/contracts";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReleasesSettingsCard, type ReleasesClient } from "../src/features/releases/ReleasesSettingsCard.js";
@@ -36,6 +36,9 @@ function client(initial: ReleasesReport): ReleasesClient & { promoteRelease: Ret
 
 afterEach(() => cleanup());
 
+// A promotion of an older dev commit than the verified one ("2…").
+const promotion: DeployQueueTicket = { id: "q-20261012-120000-cccc", status: "DEPLOYING", branch: "dev", summary: "Promote dev 1111111111 to stable", sha: "1".repeat(40), submittedAt: "", updatedAt: "", note: null, deployedCommit: null, conflictFiles: [], autoResolvedFiles: [], remotes: null };
+
 describe("ReleasesSettingsCard", () => {
   it("lists dev changes and promotes only after confirmation", async () => {
     const fake = client(report());
@@ -51,10 +54,10 @@ describe("ReleasesSettingsCard", () => {
     expect(await screen.findByText("Promotion queued.")).toBeTruthy();
   });
 
-  it("disables promotion when nothing is waiting, a promotion runs, or this is the dev instance", async () => {
+  it("disables promotion when nothing is waiting, the running promotion ships dev already, or this is the dev instance", async () => {
     for (const [overrides, reason] of [
       [{ pending: [], pendingCount: 0 }, "Stable already runs everything that is on dev."],
-      [{ promotion: { id: "q-20261012-120000-cccc", status: "DEPLOYING", branch: "dev", summary: "Promote dev 2222222222 to stable", sha: "2".repeat(40), submittedAt: "", updatedAt: "", note: null, deployedCommit: null, conflictFiles: [], autoResolvedFiles: [], remotes: null } }, "A promotion is already in progress."],
+      [{ promotion: { ...promotion, sha: "2".repeat(40) } }, "The promotion in progress already ships everything that is on dev."],
       [{ managedHere: false }, "You are on the test copy (dev). Promote from your everyday Space (stable)."]
     ] as const) {
       render(<ReleasesSettingsCard client={client(report(overrides as Partial<ReleasesReport>))} />);
@@ -62,6 +65,13 @@ describe("ReleasesSettingsCard", () => {
       expect((screen.getByRole("button", { name: "Promote dev to stable" }) as HTMLButtonElement).disabled).toBe(true);
       cleanup();
     }
+  });
+
+  it("promotes while dev deploys or an older promotion runs (operator 2026-10-21)", async () => {
+    const busyDev: DeployQueueReport = { ...idleQueue, current: { batchId: "b-1", phase: "DEPLOYING", ticketIds: [], candidate: "9".repeat(40) } };
+    render(<ReleasesSettingsCard client={client(report({ promotion, devQueue: busyDev }))} />);
+    expect(await screen.findByText("Promoting")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Promote dev to stable" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("approves a stable hotfix", async () => {

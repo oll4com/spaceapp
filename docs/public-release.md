@@ -57,7 +57,9 @@ The workflow then:
    the archived sanitized source;
 2. includes `linux/amd64`, `linux/arm64`, BuildKit SBOM, and maximum
    provenance attestations for every image;
-3. verifies both architectures and both attestation classes;
+3. verifies both architectures and, for every platform image, an SBOM and a
+   provenance statement about that image built by this run's commit (the
+   check the launcher repeats at install time);
 4. verifies the checksum of the npm tarball produced by the candidate job;
 5. publishes that tarball as `run-spaceapp@<version>` with the explicitly
    selected `next` or `personal` tag and `--provenance`.

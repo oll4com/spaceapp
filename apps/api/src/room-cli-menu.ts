@@ -38,3 +38,17 @@ export async function selectRoomCliMenuRow(input: {
   if (input.command?.startsWith("/")) await input.send("\u001b", "selection:escape").catch(() => {});
   throw new SpaceConflictError("The requested menu selection could not be verified; inspect the pane's current menu.");
 }
+
+/**
+ * Resumes `source` through the CLI's native /resume menu. A task already running in the pane's live session needs
+ * no menu: Hermes even leaves the current session out of its numbered /resume list.
+ */
+export async function resumeRoomCliFromMenu(input: {
+  paneId: string;
+  ready: { sessionId: string; status: string };
+  source: { title: string; session: { sessionId: string } } | null;
+  command: (selection: string | undefined) => Promise<Record<string, unknown>>;
+}): Promise<Record<string, unknown>> {
+  if (input.source?.session.sessionId === input.ready.sessionId) return { paneId: input.paneId, sessionId: input.ready.sessionId, state: input.ready.status };
+  return { ...await input.command(input.source?.title), phase: "NATIVE_RESUME_MENU", verification: "Inspect the selected native task before reporting resume complete." };
+}

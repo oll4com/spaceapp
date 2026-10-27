@@ -949,7 +949,7 @@ function HealthDetailAnalysis({
 
         {showApi && (
           <>
-            <strong className="health-analysis-subtitle">API Providers (DeepSeek, OpenRouter, Vercel, Google, etc.)</strong>
+            <strong className="health-analysis-subtitle">API Providers (Claude, DeepSeek, OpenRouter, Vercel, Google, etc.)</strong>
             {(telemetry.apiProviderAccounts?.data?.length ?? 0) > 0 ? (
               <ul className="health-analysis-list is-grid-2">
                 {telemetry.apiProviderAccounts?.data.map((acc) => (
@@ -2008,7 +2008,7 @@ export function SystemHealth({
     let wasKeyboardOpen = false;
 
     const checkState = () => {
-      const isMobile = window.innerWidth <= 768 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
+      const isMobile = window.innerWidth <= 767 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
       if (!isMobile) {
         wasKeyboardOpen = false;
         document.documentElement.removeAttribute("data-virtual-keyboard-open");
@@ -2028,7 +2028,7 @@ export function SystemHealth({
     };
 
     const handleFocus = (e: FocusEvent) => {
-      const isMobile = window.innerWidth <= 768 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
+      const isMobile = window.innerWidth <= 767 || document.querySelector(".space-shell")?.getAttribute("data-shell-mode") === "mobile";
       if (!isMobile) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable || target.classList.contains("xterm-helper-textarea"))) {
@@ -2140,20 +2140,20 @@ export function SystemHealth({
     } else {
       const activeLbPct = telemetry.environment?.lbUsage?.activeAccountsRemainingPercent;
       const allLbPct = telemetry.environment?.lbUsage?.allAccountsRemainingPercent;
-      const computedPct = aggregates.codex.percent5h || aggregates.codex.percentWeekly;
-      const rawVal = activeLbPct != null ? activeLbPct : (computedPct || allLbPct || 0);
-      const codexVal = Math.round(rawVal);
+      const computedPct = aggregates.codex.percent5h ?? aggregates.codex.percentWeekly;
+      const rawVal = activeLbPct ?? computedPct ?? allLbPct ?? null;
+      const codexVal = rawVal === null ? null : Math.round(rawVal);
       const codexTone: HealthTone =
-        codexVal <= 5 ? "critical" : codexVal <= 20 ? "warning" : "healthy";
-      const activeCount = aggregates.codex.activeAccounts || (activeLbPct != null ? 3 : 0);
-      const totalCount = aggregates.codex.totalAccounts || (telemetry.environment?.lbUsage ? 4 : 0);
+        codexVal === null ? "unavailable" : codexVal <= 5 ? "critical" : codexVal <= 20 ? "warning" : "healthy";
+      const activeCount = aggregates.codex.activeAccounts;
+      const totalCount = aggregates.codex.totalAccounts;
       list.push({
         id: "codex",
         tag: "CODEX",
         label: "Codex",
-        value: `${codexVal}%`,
+        value: codexVal === null ? "Unavailable" : `${codexVal}%`,
         tone: codexTone,
-        detail: `Codex active capacity: ${codexVal}% · ${activeCount}/${totalCount} accounts active`,
+        detail: codexVal === null ? "No current Codex quota report" : `Codex active capacity: ${codexVal}% · ${activeCount}/${totalCount} accounts active`,
         icon: Wallet,
       });
     }
@@ -2163,18 +2163,18 @@ export function SystemHealth({
       aggregates.antigravityCombined.totalAccounts > 0 ||
       Boolean(telemetry.antigravityAccounts?.data && telemetry.antigravityAccounts.data.length > 0);
     if (hasAgyAccounts) {
-      const agy5h = Math.round(aggregates.antigravityCombined.percent5h);
-      const agyWk = Math.round(aggregates.antigravityCombined.percentWeekly);
+      const agy5h = aggregates.antigravityCombined.percent5h === null ? null : Math.round(aggregates.antigravityCombined.percent5h);
+      const agyWk = aggregates.antigravityCombined.percentWeekly === null ? null : Math.round(aggregates.antigravityCombined.percentWeekly);
       const agyVal = agy5h;
       const agyTone: HealthTone =
-        agyVal <= 5 ? "critical" : agyVal <= 20 ? "warning" : "healthy";
+        agyVal === null ? "unavailable" : agyVal <= 5 ? "critical" : agyVal <= 20 ? "warning" : "healthy";
       list.push({
         id: "antigravity",
         tag: "AGY",
         label: "Antigravity",
-        value: `${agyVal}%`,
+        value: agyVal === null ? "Unavailable" : `${agyVal}%`,
         tone: agyTone,
-        detail: `Antigravity capacity: ${agy5h}% (5h) · ${agyWk}% (weekly) · ${aggregates.antigravityCombined.activeAccounts}/${aggregates.antigravityCombined.totalAccounts} accounts active`,
+        detail: `Antigravity capacity: ${agy5h === null ? "Unavailable" : `${agy5h}%`} (5h) · ${agyWk === null ? "Unavailable" : `${agyWk}%`} (weekly) · ${aggregates.antigravityCombined.activeAccounts}/${aggregates.antigravityCombined.totalAccounts} accounts active`,
         icon: Sparkles,
       });
     }

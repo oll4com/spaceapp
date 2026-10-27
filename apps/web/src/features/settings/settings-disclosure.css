@@ -87,10 +87,10 @@
 }
 .agent-settings-dock .settings-disclosure[data-open="true"] > .settings-disclosure-content { padding-top: .75rem; }
 
-/* Fullscreen: the dock covers the window; the groups list sits beside one wide column of sections.
+/* Fullscreen: the dock covers the window below the desktop title bar; the groups list sits beside one wide column of sections.
    .space-shell .dock-panel outranks the Modern dock padding rule. */
 .space-shell .dock-panel.agent-settings-dock.is-fullscreen {
-  position: fixed; inset: 0; z-index: 90;
+  position: fixed; inset: max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) 0 0 0; z-index: 90;
   width: auto; height: auto; max-height: none;
   overflow-y: auto;
   padding: 0 max(1.25rem, calc((100% - 64rem) / 2)) 2.5rem;

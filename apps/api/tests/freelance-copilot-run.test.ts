@@ -29,8 +29,10 @@ async function fixture() {
   await chmod(wrapper, 0o755);
   const config = getApiConfig({
     SPACE_CLI_ENABLED: "true", SPACE_CLI_COMMAND_PATH: root, SPACE_CLI_HOST_SOCKET: join(root, "pane-host.sock"), SPACE_CLI_CODEX_CREDENTIAL_SMOKE: "true",
-    SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-freelance-copilot-tests", SPACE_ARTIFACT_ROOT: root
+    SPACE_CLI_WORKSPACE_ROOT: join(root, "workspaces"), SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "internal-token-for-freelance-copilot-tests", SPACE_ARTIFACT_ROOT: root,
+    SPACE_CONNECTOR_KEY_FILE: join(root, "connector.key")
   });
+  await writeFile(join(root, "connector.key"), "synthetic-connector-key-with-enough-length-0123456789\n");
   const store = new InMemorySpaceStore();
   const eventBus = new SpaceEventBus();
   const roomEvents: Event[] = [];
@@ -80,7 +82,8 @@ describe("freelance copilot run loop", () => {
       expect(started.json()).toMatchObject({ status: "RUNNING", kickoffSent: true, backlog: 1 });
       expect(kickoffs).toEqual([{ paneId: pane.id, runId: started.json().run.id }]);
       const state = (await app.inject({ method: "GET", url: `${cli}/state`, headers: agent })).json();
-      expect(state.channels.UPWORK).toMatchObject({ effectiveAutonomy: "FULL", alias: "upwork@example.invalid" });
+      expect(state.channels.UPWORK).toMatchObject({ effectiveAutonomy: "FULL", signIn: "GOOGLE", alias: null });
+      expect(state.channels.CONTRA).toMatchObject({ signIn: "EMAIL", alias: "contra@example.invalid" });
       expect(state.accounts.map((account: { channel: string }) => account.channel)).toEqual(["UPWORK", "CONTRA", "FIVERR", "TOPTAL", "ARC", "BRAINTRUST"]);
 
       const brief = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json();
@@ -117,6 +120,24 @@ describe("freelance copilot run loop", () => {
     }
   });
 
+  it("shares the operator's bookmarks with the agent, saved in the pane's own account", async () => {
+    const { app, pane, headers, agent, outsider } = await fixture();
+    try {
+      const saved = await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: agent, payload: { url: "https://www.upwork.com/freelancers/~01", title: "Upwork profile" } });
+      expect(saved.json().bookmark, saved.body).toMatchObject({ title: "Upwork profile", profileId: null, accountLabel: null });
+      // One list per owner: the Marketing Copilot's Bookmarks tab shows the same bookmark.
+      expect((await app.inject({ method: "GET", url: "/api/marketing-copilot/bookmarks", headers })).json().bookmarks).toEqual([expect.objectContaining({ id: saved.json().bookmark.id })]);
+      expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: agent })).json().bookmarks).toHaveLength(1);
+      expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: outsider })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `${cli}/bookmarks/mktbm:missing000/open`, headers: agent, payload: {} })).statusCode).toBe(404);
+      // The operator's Bookmarks tab opens it in a Freelance pane too: past the pane check, this runtime has no browser session.
+      const opened = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/marketing-copilot/bookmarks/${encodeURIComponent(saved.json().bookmark.id)}/open`, headers, payload: {} });
+      expect(opened.json().error.message, opened.body).toContain("Active browser session");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("skips session authentication only for the bridge routes, and gives the agent its persona and skill", async () => {
     expect(isCliBridgeRoutePath("/api/cli/freelance-copilot/send/begin")).toBe(true);
     expect(isCliBridgeRoutePath("/api/cli/freelance-copilotx/state")).toBe(false);
@@ -129,6 +150,8 @@ describe("freelance copilot run loop", () => {
     expect(bootstrap).toContain("space_freelance_client_ready");
     const skill = await readFile(new URL("../../../agent-skills/space-freelance-copilot/SKILL.md", import.meta.url), "utf8");
     expect(skill).toContain("name: space-freelance-copilot");
+    expect(skill).toContain("## Demo-first proposals (score 70+)");
+    expect(persona).toContain("demo-first proposal");
     await expect(readFile(new URL("../../../agent-skills/space-freelance-copilot/references/channels.md", import.meta.url), "utf8")).resolves.toContain("## Upwork");
   });
 });

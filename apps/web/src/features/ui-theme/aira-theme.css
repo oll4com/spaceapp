@@ -1,0 +1,147 @@
+/* Aira: violet-magenta neural glow, soft rounded glass and a luminous focus pane. Shares the Modern layout. */
+:root[data-interface-theme="aira"] {
+  --room-accent: #e879f9;
+  --aira-gradient: linear-gradient(90deg, #a78bfa 0%, #e879f9 52%, #fb7185 100%);
+  scrollbar-color: #46356f transparent;
+}
+
+:root[data-interface-theme="aira"] [data-ui-theme="modern"] {
+  --modern-bg: #07040f;
+  --modern-surface: #0f0a1c;
+  --modern-surface-raised: #161027;
+  --modern-surface-soft: #1d1533;
+  --modern-border: #2b2048;
+  --modern-border-strong: #46356f;
+  --modern-text: #f7f0ff;
+  --modern-muted: #c3b2e4;
+  --modern-faint: #a493cc;
+  --modern-accent: #e879f9;
+  --modern-accent-strong: #f5b8ff;
+  --modern-accent-soft: rgba(232, 121, 249, 0.14);
+  --modern-on-accent: #1f0629;
+  --modern-terminal: #0a0616;
+  --modern-terminal-text: #f3eaff;
+  --modern-terminal-muted: #b3a3d6;
+  --modern-danger: #fb7185;
+  --modern-danger-soft: rgba(251, 113, 133, 0.14);
+  --modern-warning: #fcd34d;
+  --modern-warning-soft: rgba(252, 211, 77, 0.13);
+  --modern-success: #6ee7b7;
+  --modern-success-soft: rgba(110, 231, 183, 0.13);
+  --modern-shadow: 0 18px 54px rgba(0, 0, 0, 0.6);
+  --modern-card-shadow: 0 10px 34px rgba(0, 0, 0, 0.42);
+  --room-accent: var(--modern-accent);
+  color-scheme: dark;
+}
+
+:root[data-interface-theme="aira"] ::selection {
+  background: rgba(232, 121, 249, 0.36);
+}
+
+/* Static nebula behind the chrome; the core and its orbits live in the Aira background. */
+:root[data-interface-theme="aira"] .space-shell[data-ui-theme="modern"],
+.modern-theme-page.aira-theme-page {
+  background-color: #07040f;
+  background-image:
+    radial-gradient(ellipse 50% 40% at 10% 0%, rgba(124, 58, 237, 0.3), transparent 70%),
+    radial-gradient(ellipse 45% 40% at 92% 10%, rgba(217, 70, 239, 0.22), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 78% 108%, rgba(251, 113, 133, 0.16), transparent 70%),
+    radial-gradient(ellipse 55% 40% at 12% 105%, rgba(99, 102, 241, 0.18), transparent 70%);
+  background-attachment: fixed;
+}
+
+:root[data-interface-theme="aira"] .space-shell .board {
+  background: transparent;
+}
+
+/* Soft glass chrome with an iridescent hairline along its lower edge. */
+:root[data-interface-theme="aira"] .space-shell :is(.topbar, .board-toolbar) {
+  border-bottom-color: transparent;
+  background:
+    var(--aira-gradient) left bottom / 100% 1px no-repeat,
+    linear-gradient(180deg, rgba(30, 18, 54, 0.8), rgba(14, 9, 28, 0.62));
+}
+
+:root[data-interface-theme="aira"] .space-shell .side-surface {
+  border-color: rgba(232, 121, 249, 0.16);
+  background: rgba(14, 9, 28, 0.84);
+}
+
+:root[data-interface-theme="aira"] .space-shell .topbar .brand h1 a {
+  background: var(--aira-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.04em;
+  filter: drop-shadow(0 0 6px rgba(232, 121, 249, 0.4));
+}
+
+:root[data-interface-theme="aira"] .space-shell .topbar-meta .topbar-meta-version {
+  border-color: rgba(232, 121, 249, 0.55);
+  box-shadow: 0 0 12px rgba(232, 121, 249, 0.22);
+}
+
+:root[data-interface-theme="aira"] .space-shell .desktop-navigation > button:is(:hover, [aria-expanded="true"], [aria-pressed="true"]) {
+  border-color: rgba(232, 121, 249, 0.45);
+  background: rgba(232, 121, 249, 0.08);
+  box-shadow: 0 0 16px rgba(232, 121, 249, 0.18);
+}
+
+/* Panes: rounded deep-violet cards that let the nebula glow through; the target pane wears the Aira glow.
+   No backdrop-filter, so the moving orbits never re-blur pane content. */
+:root[data-interface-theme="aira"] .space-shell .pane-card {
+  border-color: rgba(196, 162, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(15, 10, 28, 0.85);
+}
+
+:root[data-interface-theme="aira"] .space-shell .pane-card > header {
+  border-bottom-color: rgba(196, 162, 255, 0.16);
+  background: linear-gradient(180deg, #1e1438, #140d29);
+}
+
+:root[data-interface-theme="aira"] .space-shell .pane-card.is-target {
+  border-color: rgba(232, 121, 249, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(232, 121, 249, 0.18),
+    0 0 26px rgba(232, 121, 249, 0.18),
+    0 0 60px rgba(167, 139, 250, 0.16);
+}
+
+:root[data-interface-theme="aira"] .space-shell .pane-card.is-target > header {
+  background:
+    var(--aira-gradient) left top / 100% 2px no-repeat,
+    linear-gradient(180deg, #2a1848, #170e2e);
+}
+
+:root[data-interface-theme="aira"] .space-shell .pane-card.is-completion-pending {
+  border-color: var(--modern-danger);
+}
+
+:root[data-interface-theme="aira"] .space-shell :is(button.primary, .primary-action, .codex-send):not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(120deg, #c4b5fd, #e879f9 55%, #fb7185);
+  color: var(--modern-on-accent);
+}
+
+:root[data-interface-theme="aira"] .space-shell :is(button.primary, .primary-action, .codex-send):hover:not(:disabled) {
+  box-shadow: 0 0 18px rgba(232, 121, 249, 0.45);
+  filter: brightness(1.08);
+}
+
+:root[data-interface-theme="aira"] .space-shell :is(button, a, input, select, textarea):focus-visible {
+  outline-color: #e879f9;
+}
+
+:root[data-interface-theme="aira"] .help-page :is(.help-section, .help-navigation, .help-entry) {
+  border-color: rgba(196, 162, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(15, 10, 28, 0.86);
+}
+
+:root[data-interface-theme="aira"] .help-page .help-header {
+  border-bottom-color: transparent;
+  background:
+    var(--aira-gradient) left bottom / 100% 1px no-repeat,
+    rgba(15, 10, 28, 0.86);
+}

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { ProviderUrlPolicy } from "./providers.js";
+import type { ProviderUrlPolicy } from "./provider-transport.js";
 import { GitControlError } from "./errors.js";
 
 /** Secrets exist only in the child environment/ASKPASS pipe, never argv or Git config. */

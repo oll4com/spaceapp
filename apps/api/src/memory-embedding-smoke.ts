@@ -22,6 +22,8 @@ export interface MemoryEmbeddingSmokeOptions {
 export interface CreateMemoryEmbeddingOptions {
   fetchImpl?: EmbeddingFetchLike;
   readFileImpl?: (path: string) => Promise<string>;
+  /** Space Gateway only: what the vector is for (Gemini embeds documents and queries differently; OpenAI ignores it). */
+  taskType?: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 }
 
 function parseMemoryEmbeddingProvider(provider: string): MemoryEmbeddingProvider | null {
@@ -407,7 +409,8 @@ export async function createMemoryEmbedding(
       body: JSON.stringify({
         model: config.memoryEmbeddingModel,
         input,
-        dimensions: config.memoryEmbeddingDimensions
+        dimensions: config.memoryEmbeddingDimensions,
+        ...(embeddingProvider === "codex-lb" && options.taskType ? { task_type: options.taskType } : {})
       }),
       signal: abort.signal
     });
@@ -453,7 +456,8 @@ export async function createMemoryEmbeddings(
   }
   const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(), config.memoryEmbeddingTimeoutMs);
+  // The local model takes about a second a text on the CPU: each two texts of a batch get the whole timeout.
+  const timeout = setTimeout(() => abort.abort(), config.memoryEmbeddingTimeoutMs * Math.ceil(input.length / 2));
   try {
     const response = await fetchImpl(endpoint, {
       method: "POST",
@@ -464,7 +468,8 @@ export async function createMemoryEmbeddings(
       body: JSON.stringify({
         model: config.memoryEmbeddingModel,
         input,
-        dimensions: config.memoryEmbeddingDimensions
+        dimensions: config.memoryEmbeddingDimensions,
+        ...(embeddingProvider === "codex-lb" && options.taskType ? { task_type: options.taskType } : {})
       }),
       signal: abort.signal
     });

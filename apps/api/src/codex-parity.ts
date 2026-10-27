@@ -1,7 +1,7 @@
 import { execFile, spawn } from "./safe-child-process.js";
 import { createInterface } from "node:readline";
 import { artifactContextClosings, artifactContextOpening } from "./attachment-context.js";
-import { copyFileSync, createReadStream, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -47,7 +47,11 @@ const maxEnvironmentCacheTtlMs = 60_000;
 // The cheaper LB usage HTTP read keeps the short environment cache above.
 const defaultWrapperProbeCacheTtlMs = 5 * 60_000;
 const trustedChatBootstrapContextPattern = /# AGENTS\.md instructions for\s|<environment_context(?:>|\s)/iu;
-const canonicalBootstrapDocPattern = /\/(?:etc\/docs\/gemini(?:_core)?\.md|etc\/AGENTS\.md|srv\/space\/AGENTS\.md)\b/iu;
+// Paths in these patterns are written plainly (not as \/ escapes) so the public export's path rewrite reaches them.
+const canonicalBootstrapDocPattern = new RegExp("(?:/opt/spaceapp/docs/gemini(?:_core)?\\.md|/etc/AGENTS\\.md|/opt/spaceapp/AGENTS\\.md)\\b", "iu");
+const artifactImagePath = "/opt/spaceapp/var/artifacts/";
+const chatTransportImagesPattern = new RegExp(`(?:\\n\\n<image name=\\[Image #\\d+\\] path="${artifactImagePath}[^"<>\\r\\n]+">\\s*</image>)+\\s*$`);
+const codexImageFailureLinePattern = new RegExp(`^<image name=\\[Image #\\d+\\] path="${artifactImagePath}[^"\\r\\n]+">$`);
 const bootstrapDocReferencePattern = /\b(?:gemini(?:_core)?\.md|AGENTS\.md)\b/iu;
 
 export interface CodexParityService {
@@ -581,7 +585,7 @@ function isTrustedBootstrapEnvelope(value: string): boolean {
 // Codex can append image references after Space's durable marker. Only remove
 // this exact transport suffix when its trusted marker is present immediately before it.
 function stripChatTransportImages(value: string): string {
-  const candidate = value.replace(/(?:\n\n<image name=\[Image #\d+\] path="\/srv\/space\/var\/artifacts\/[^"<>\r\n]+">\s*<\/image>)+\s*$/, "");
+  const candidate = value.replace(chatTransportImagesPattern, "");
   return candidate !== value && trailingDurableTurnMarker.test(candidate) ? candidate : value;
 }
 
@@ -692,7 +696,7 @@ function trustedImageSeedFromResponseItem(
     .filter((item) => stringValue(item?.type) === "input_text")
     .map((item) => typeof item?.text === "string" ? item.text : "");
   const hasCodexImageFailureEnvelope =
-    inputTexts.some((text) => /^<image name=\[Image #\d+\] path="\/srv\/space\/var\/artifacts\/[^"\r\n]+">$/.test(text)) &&
+    inputTexts.some((text) => codexImageFailureLinePattern.test(text)) &&
     inputTexts.includes("image content omitted because it could not be processed") &&
     inputTexts.includes("</image>");
   if (!turnId || (!hasNativeImage && !hasCodexImageFailureEnvelope)) return null;
@@ -1256,6 +1260,8 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
   }
 
   async function historyRows(input: { whereClause: string; limit?: number; offset?: number }): Promise<CodexHistoryItem[]> {
+    // Codex has not run yet, or its home lives in the public CLI container: no history, not an error.
+    if (!existsSync(stateDbPath)) return [];
     const rows = await runSqliteJson<Record<string, unknown>>(
       stateDbPath,
       [
@@ -1283,6 +1289,7 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
   }
 
   async function historyCounts(): Promise<{ totalItems: number; visibleItems: number }> {
+    if (!existsSync(stateDbPath)) return { totalItems: 0, visibleItems: 0 };
     const rows = await runSqliteJson<{ totalItems?: unknown; visibleItems?: unknown }>(
       stateDbPath,
       "select count(*) as totalItems, coalesce(sum(case when archived = 0 then 1 else 0 end), 0) as visibleItems from threads"

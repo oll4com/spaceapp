@@ -1,44 +1,9 @@
-Business Source License 1.1
+MIT License
 
-Parameters
+Copyright (c) 2026 INTRATRADE SINGLE MEMBER P.C.
 
-Licensor:               oll4.com
-Licensed Work:          The SpaceApp software and associated documentation files (the "Software").
-Additional Use Grant:   You may use the Licensed Work for any purpose, including self-hosting and internal business operations, provided that you may not make the functionality of the Software available to third parties as a hosted or managed service, application service provider (ASP), or software-as-a-service (SaaS) that competes with oll4.com products or services.
-Change Date:            2030-10-01
-Change License:         Apache License, Version 2.0
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-Notice
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-The Licensor hereby grants you the right to copy, modify, create derivative
-works, redistribute, and make non-production use of the Licensed Work. The
-Licensor may make an Additional Use Grant, above, permitting specified kinds of
-production use. The Additional Use Grant is effective only while this License
-remains in force.
-
-Effective on the Change Date, or the date of a License Milestone (if any)
-specified above, the Licensor grants you the right to copy, modify, create
-derivative works, redistribute, and make any use of the Licensed Work, subject
-to the terms of the Change License.
-
-Conditions
-
-This License does not grant you the right to use the Licensor's trademarks, trade
-names, or logos.
-
-You may copy, modify, create derivative works, and redistribute the Licensed Work
-only if you:
-
-1. Retain the Licensor's copyright notice and this License in all copies,
-   modified versions, and derivative works.
-
-2. Do not remove or alter any notice of the Change Date or License Milestones.
-
-Warranty & Liability
-
-THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE LICENSOR OR
-ANY CONTRIBUTOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN
-AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION
-WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE LICENSED WORK.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

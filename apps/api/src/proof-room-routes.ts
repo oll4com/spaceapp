@@ -4,7 +4,7 @@ import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import {
   activeAgentTurnsInputSchema, activeAgentTurnsResponseSchema, type AgentRuntime, cliToggleRuntimeIdSchema,
-  createProofRoomInputSchema, idSchema, type Pane, proofRoomCliIdentitySchema, proofRoomSchema
+  createProofRoomInputSchema, isWarmMixedProofProfile, warmMixedProofManifests, idSchema, type Pane, proofRoomCliIdentitySchema, proofRoomSchema
 } from "@space/contracts";
 import {
   nowIso, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceStore
@@ -15,7 +15,7 @@ import {
 } from "./cli-render-ai-proof.js";
 import {
   cliRenderProofDescription, cliRenderProofRuntimeIds, createCliRenderProofFixture, startCliRenderProofFixture,
-  warmCapacityProofDescription
+  warmCapacityProofDescription, warmMixedProofDescriptions, mixedProofProfileForDescription, mixedProofPanesMatch
 } from "./cli-render-proof-fixture.js";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
 import { type createAgentRuntimeRegistryCache, findRuntime, isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
@@ -98,7 +98,9 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
     const cliInputRuntimeId = cliInputRuntimeCandidate?.success
       ? cliInputRuntimeCandidate.data
       : undefined;
-    const profile = room.description === warmCapacityProofDescription
+    const mixedProfile = mixedProofProfileForDescription(room.description);
+    if (mixedProfile && config.instance !== "dev") throw new SpaceNotFoundError("Mixed fixtures are dev only.");
+    const profile = mixedProfile ?? (room.description === warmCapacityProofDescription
       ? "WARM_CAPACITY" as const
       : room.description === cliRenderAiDescription
       ? "CLI_RENDER_AI" as const
@@ -108,7 +110,7 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
       ? "ACTIVE_AGENT_STRESS" as const
       : cliInputRuntimeId
         ? "CLI_INPUT" as const
-        : "STANDARD" as const;
+        : "STANDARD" as const);
     const renderRuntime = profile === "CLI_RENDER"
       ? panes.length === 3 && panes.every((pane,index)=>pane.terminalRuntimeId===cliRenderProofRuntimeIds[index])
         ? "ALL" as const
@@ -134,6 +136,10 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
   app.post("/api/proof-rooms", { config: { rateLimit: { max: 16, timeWindow: "10 minutes" } } }, async (request, reply) => {
     const input = parseBody(createProofRoomInputSchema, request.body);
     const profile = input.profile ?? "STANDARD";
+    const mixedProfile = isWarmMixedProofProfile(profile) ? profile : null;
+    if (mixedProfile && (config.instance !== "dev" || request.user?.role !== "ADMIN" || request.user.proofScope === "READ_ONLY")) {
+      return sendApiError(reply,403,"ADMIN_REQUIRED","Mixed fixtures require dev and full ADMIN capability.");
+    }
     if (profile === "ACTIVE_AGENT_STRESS" || profile === "CLI_INPUT" || profile === "CLI_RENDER" || profile === "CLI_RENDER_AI" || profile === "WARM_CAPACITY") {
       if (request.user?.role !== "ADMIN" || (["CLI_RENDER","CLI_RENDER_AI","WARM_CAPACITY"].includes(profile)&&request.user.proofScope==="READ_ONLY")) {
         return sendApiError(reply, 403, "ADMIN_REQUIRED", "Specialized proof rooms require the full ADMIN capability.");
@@ -164,13 +170,13 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
         ? [...cliRenderProofRuntimeIds]
         : [`cli:${(input.renderRuntime ?? "CODEX").toLowerCase()}`]
       : [];
-    const roomName = input.roomLabel
+    const roomName = mixedProfile ? `Agent Proof · Mixed switch ${mixedProfile.slice(-1)}` : input.roomLabel
       ? `Agent Proof · ${input.roomLabel}`
       : `Agent Proof · ${nowIso().slice(0, 19).replace("T", " ")}`;
     const room = await store.createRoom(
       {
         name: roomName,
-        description: profile === "WARM_CAPACITY" ? warmCapacityProofDescription : profile === "CLI_RENDER_AI" ? cliRenderAiDescription : profile === "CLI_RENDER" ? cliRenderProofDescription : profile === "ACTIVE_AGENT_STRESS"
+        description: mixedProfile ? warmMixedProofDescriptions[mixedProfile] : profile === "WARM_CAPACITY" ? warmCapacityProofDescription : profile === "CLI_RENDER_AI" ? cliRenderAiDescription : profile === "CLI_RENDER" ? cliRenderProofDescription : profile === "ACTIVE_AGENT_STRESS"
           ? activeAgentStressRoomDescription
           : profile === "CLI_INPUT"
             ? `${cliInputProofRoomDescriptionPrefix}${input.runtimeId}]`
@@ -182,7 +188,7 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
         kind: "AGENT_PROOF"
       },
       request.requestIdForSpace,
-      profile === "STANDARD" && request.user ? (await store.upsertUser(request.user)).id : undefined
+      (profile === "STANDARD" || profile === "CLI_RENDER") && request.user ? (await store.upsertUser(request.user)).id : undefined
     );
     await activityLogService.recordRoomCreate({
       roomId: room.id,
@@ -191,13 +197,48 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
       metadata: { roomName: room.name, profile: input.profile ?? "STANDARD" }
     });
     let panes: Pane[] = [];
+    let creationComplete = false;
+    const cleanupAbortedMixed = async () => {
+      const currentPanes = await store.listPanes(room.id);
+      if (currentPanes.length !== panes.length || currentPanes.some((pane,index)=>pane.id!==panes[index]?.id)) {
+        throw new SpaceConflictError("Mixed creation cleanup identity changed; room retained.");
+      }
+      const sessions = await Promise.all(panes.map(pane=>store.getActivePaneCliSession(pane.id)));
+      const stopped = await Promise.allSettled(sessions.map(session=>session?cliTerminalManager.detachSession(session):undefined));
+      if (stopped.some(result=>result.status==="rejected")) throw new SpaceConflictError("Mixed creation process cleanup failed; room retained.");
+      const stopDeadline = Date.now()+5000;
+      while (true) {
+        const hosts = await Promise.all(sessions.map(session=>session?cliTerminalManager.inspectSessionHost(session):null));
+        if (hosts.every(session=>session?.status!=="RUNNING")) break;
+        if (Date.now()>=stopDeadline) throw new SpaceConflictError("Mixed creation process still running; room retained.");
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      await store.deleteRoom(room.id);
+    };
+    // New-profile-only: do not strand resources if the response connection dies.
+    let abortCleanup: Promise<void> | null = null;
+    let responseFinished = false;
+    const onResponseClose = () => {
+      if (mixedProfile && !responseFinished && creationComplete) {
+        abortCleanup ??= cleanupAbortedMixed();
+        void abortCleanup.catch(() => { request.log.error({roomId:room.id},"Mixed response-close cleanup incomplete; owned room retained for recovery."); });
+      }
+    };
+    if (mixedProfile) {
+      reply.raw.once("finish",()=>{responseFinished=true;});
+      reply.raw.once("close",onResponseClose);
+    }
     try {
       const aiCwd=profile === "CLI_RENDER_AI" ? await createCliRenderAiRepository(config.browserEvidenceArtifactRoot,room.id) : null;
       if (profile === "CLI_RENDER") {
         for (const runtimeId of renderRuntimeIds) await cliRuntimeVisibility.assertEnabled(runtimeId);
       } else if (input.paneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
       panes = await store.createPanes(
-        Array.from({ length: input.paneCount }, (_,index) => ({
+        mixedProfile ? warmMixedProofManifests[mixedProfile].map((mode) => ({
+          roomId:room.id, title:`Mixed ${mixedProfile.slice(-1)}`, mode,
+          terminalRuntimeId:mode === "BROWSER" ? null : "cli:codex",
+          cwd:mode === "BROWSER" ? null : "/tmp"
+        })) : Array.from({ length: input.paneCount }, (_,index) => ({
           roomId: room.id,
           title: profile === "WARM_CAPACITY" ? `Warm capacity ${index + 1}` : profile === "CLI_RENDER" ? `${renderRuntimeIds[index]!.slice(4)} synthetic render fixture` : cliInputRuntime?.displayName ?? "Codex CLI",
           mode: "TERMINAL" as const,
@@ -218,7 +259,9 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
           )
         );
       }
-      const sessionSetup = profile === "CLI_RENDER" || profile === "WARM_CAPACITY"
+      const sessionSetup = mixedProfile
+        ? await Promise.allSettled(panes.filter(pane=>pane.mode!=="BROWSER").map(pane=>createCliRenderProofFixture(store,pane,request.requestIdForSpace,config.cliHostSocketPath,options.cliHostClient)))
+        : profile === "CLI_RENDER" || profile === "WARM_CAPACITY"
         ? await Promise.allSettled(panes.map(pane=>createCliRenderProofFixture(store,pane,request.requestIdForSpace,config.cliHostSocketPath,options.cliHostClient)))
         : profile === "CLI_INPUT"
         ? []
@@ -256,8 +299,19 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
           sessionCount: proofRoom.sessionIds.length
         }
       });
+      creationComplete = true;
+      if (mixedProfile && (request.raw.aborted || reply.raw.destroyed)) {
+        abortCleanup ??= cleanupAbortedMixed();
+        await abortCleanup;
+        throw new SpaceConflictError("Mixed fixture request aborted before handoff.");
+      }
       return reply.code(201).send(proofRoom);
     } catch (error) {
+      if (mixedProfile) {
+        try { abortCleanup ??= cleanupAbortedMixed(); await abortCleanup; }
+        catch { request.log.error({roomId:room.id},"Mixed fixture cleanup incomplete; owned room retained for recovery."); }
+        throw error;
+      }
       await Promise.allSettled(
         panes.map(async (pane) => {
           const session = await store.getActivePaneCliSession(pane.id);
@@ -277,8 +331,10 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
     if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","Render cleanup requires the full protected capability.");
     parseBody(z.object({}).strict(),request.body??{});const params=parseQuery(idParamSchema,request.params);
     const room=await store.getRoom(params.id);
-    if(room.kind!=="AGENT_PROOF"||![cliRenderProofDescription,cliRenderAiDescription,warmCapacityProofDescription].includes(room.description??""))throw new SpaceConflictError("Render cleanup is outside the owned fixture scope.");
-    const panes=await store.listPanes(room.id);if(room.description===warmCapacityProofDescription ? panes.length!==16 : ![1,3].includes(panes.length))throw new SpaceConflictError("Render fixture pane set changed.");
+    const mixedProfile = mixedProofProfileForDescription(room.description);
+    if (mixedProfile && config.instance !== "dev") throw new SpaceNotFoundError("Mixed fixtures are dev only.");
+    if(room.kind!=="AGENT_PROOF"||(!mixedProfile && ![cliRenderProofDescription,cliRenderAiDescription,warmCapacityProofDescription].includes(room.description??"")))throw new SpaceConflictError("Render cleanup is outside the owned fixture scope.");
+    const panes=await store.listPanes(room.id);if(mixedProfile ? !mixedProofPanesMatch(mixedProfile,room.id,panes) : room.description===warmCapacityProofDescription ? panes.length!==16 : ![1,3].includes(panes.length))throw new SpaceConflictError("Render fixture pane set changed.");
     const sessions=await Promise.all(panes.map(pane=>store.getActivePaneCliSession(pane.id)));
     await Promise.all(sessions.map(session=>session?cliTerminalManager.detachSession(session):undefined));
     // Termination acknowledges the signal before the PTY exit event arrives.
@@ -324,12 +380,14 @@ export function registerProofRoomRoutes(app: FastifyInstance, deps: {
   });
   app.post("/api/proof-rooms/:id/cli-render/start", defaultRouteRateLimitOptions, async(request,reply)=>{
     if(request.user?.role!=="ADMIN"||request.user.proofScope==="READ_ONLY")return sendApiError(reply,403,"ADMIN_REQUIRED","Render proof requires the full authenticated proof capability.");
-    parseBody(z.object({}).strict(),request.body??{});
+    const input=parseBody(z.object({mode:z.literal("COMPOSER").optional()}).strict(),request.body??{});
     const params=parseQuery(idParamSchema,request.params);
-    return startCliRenderProofFixture(store,params.id,config.cliHostSocketPath,options.cliHostClient);
+    return startCliRenderProofFixture(store,params.id,config.cliHostSocketPath,options.cliHostClient,input.mode);
   });
   app.get("/api/proof-rooms/:id", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
+    const room = await store.getRoom(params.id);
+    if (mixedProofProfileForDescription(room.description) && (config.instance !== "dev" || request.user?.role !== "ADMIN" || request.user.proofScope === "READ_ONLY")) throw new SpaceNotFoundError("Mixed fixtures require dev and full ADMIN capability.");
     return readProofRoom(params.id);
   });
   app.get(

@@ -90,6 +90,10 @@ export type DotApprovalPayload =
   | { kind: "computer"; tool: "computer.browser"; arguments: Record<string, unknown> }
   | { kind: "memory"; tool: MemoryApprovalTool; arguments: Record<string, unknown> }
   | { kind: "deliverable"; tool: "deliverable.publish"; path: string; sha256: string }
+  /** A design request costs image generation and lands in the owner's Media: it waits for the owner. */
+  | { kind: "design"; tool: "design.request"; arguments: Record<string, unknown> }
+  /** A video request costs minutes of encoding and lands in the owner's Media: it waits for the owner. */
+  | { kind: "video"; tool: "video.request"; arguments: Record<string, unknown> }
   /** Starting another Dot's work always waits for the owner. */
   | { kind: "delegate"; tool: "dot.delegate"; arguments: Record<string, unknown> }
   /** Binding email and calendar actions (send, create event) run only after the owner approves them. */
@@ -121,6 +125,12 @@ export interface DotToolGatewayDeps {
   /** `deliverable.publish` (Stage 5): runs only after the owner approves it. */
   publishDeliverable?(owner: string, dotId: string, input: { path: string; roomId: string; expectedSha256: string }):
     Promise<{ deliverable: { version: number; artifactId: string | null; name: string }; unchanged: boolean }>;
+  /** `design.request`: asks the owner's Design pane for a graphic, after the owner approves it. */
+  designRequest?(session: { sessionId: string; dotId: string; roomId: string }, owner: string, args: Record<string, unknown>):
+    Promise<{ status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string }>;
+  /** `video.request`: asks the owner's Video pane for a finished video, after the owner approves it. */
+  videoRequest?(session: { sessionId: string; dotId: string; roomId: string }, owner: string, args: Record<string, unknown>):
+    Promise<{ status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string }>;
   /** The workspace file's current sha256, pinned in the approval so exactly the approved content is published. */
   deliverableFingerprint?(owner: string, dotId: string, path: string): Promise<string>;
   /** `dot_memory.*` (Stage 5): the Dot's own memory; SHARED memories wait for the owner. */
@@ -254,6 +264,14 @@ export function describeDotApproval(payload: DotApprovalPayload): string {
       : `Run ${payload.tool}`;
   }
   if (payload.kind === "deliverable") return `Publish ${payload.path.slice(0, 300)} from the Dot's workspace to Agent Files`;
+  if (payload.kind === "design") {
+    const formats = Array.isArray(payload.arguments.formatIds) && payload.arguments.formatIds.length ? payload.arguments.formatIds.slice(0, 8).join(", ") : "the Design pane's default format";
+    return `Ask the Design pane for ${String(formats).slice(0, 200)}: “${String(payload.arguments.brief ?? "").slice(0, 300)}”`;
+  }
+  if (payload.kind === "video") {
+    const formats = Array.isArray(payload.arguments.formatIds) && payload.arguments.formatIds.length ? payload.arguments.formatIds.slice(0, 8).join(", ") : "the Video pane's default formats";
+    return `Ask the Video pane for ${String(formats).slice(0, 200)}: “${String(payload.arguments.brief ?? "").slice(0, 300)}”`;
+  }
   if (payload.kind === "memory") {
     const text = `“${String(payload.arguments.text ?? "").slice(0, 300)}”`;
     if (payload.tool === "dot_memory.forget") return `Forget the memory ${String(payload.arguments.memoryId ?? "").slice(0, 60)}`;
@@ -459,6 +477,16 @@ export async function executeDotGatewayCall(deps: DotToolGatewayDeps, request: F
         : blocked(entry.id, outcome.statusReason);
     }
     case "SPACE_COMPUTER": {
+      if (entry.id === "design.request") {
+        if (!deps.designRequest) return blocked(entry.id, "The Design pane is unavailable on this server.");
+        if (typeof args.brief !== "string" || !args.brief.trim()) return blocked(entry.id, "design.request needs a brief.");
+        return parkForApproval(deps, resolved, entry.id, input.invocationId, { kind: "design", tool: "design.request", arguments: args });
+      }
+      if (entry.id === "video.request") {
+        if (!deps.videoRequest) return blocked(entry.id, "The Video pane is unavailable on this server.");
+        if (typeof args.brief !== "string" || !args.brief.trim()) return blocked(entry.id, "video.request needs a brief.");
+        return parkForApproval(deps, resolved, entry.id, input.invocationId, { kind: "video", tool: "video.request", arguments: args });
+      }
       if (entry.id === "deliverable.publish") {
         if (!deps.publishDeliverable || !deps.deliverableFingerprint) return blocked(entry.id, "Deliverables are unavailable.");
         const parsed = dotWorkspaceRelativePathSchema.safeParse(args.path);
@@ -527,7 +555,9 @@ export async function decideDotApproval(deps: DotToolGatewayDeps, request: Fasti
         : payload.kind === "memory" && deps.memoryTool ? await deps.memoryTool(target, input.owner, payload.tool, payload.arguments)
         : payload.kind === "connector" && payload.tool.startsWith("channel.") && deps.channelTool ? await deps.channelTool(target, input.owner, payload.tool, payload.arguments)
         : payload.kind === "connector" && deps.connectorTool ? await deps.connectorTool(input.owner, payload.tool, payload.arguments)
-        : payload.kind === "delegate" && deps.delegate ? await deps.delegate(target, input.owner, payload.arguments) : null;
+        : payload.kind === "delegate" && deps.delegate ? await deps.delegate(target, input.owner, payload.arguments)
+        : payload.kind === "design" && deps.designRequest ? await deps.designRequest(target, input.owner, payload.arguments)
+        : payload.kind === "video" && deps.videoRequest ? await deps.videoRequest(target, input.owner, payload.arguments) : null;
       outcome = opened ? opened.status === "COMPLETED" ? { status: "COMPLETED", statusReason: null, toolId: invocation.toolId, result: bounded(opened.result) }
           : { status: "FAILED", statusReason: opened.statusReason, toolId: invocation.toolId }
         : payload.kind === "browser"
@@ -709,6 +739,8 @@ export function dotDeveloperContext(dot: Pick<DotProfile, "name" | "preferences"
     dotWorkspace ? `Your private workspace: ${dotWorkspace}. Keep drafts, downloads, scratch code and files you produce for the user there${project ? " unless they belong in the project" : ""}.` : null,
     "For web work, call computer.browser to open your own browser (isolated profile, not signed in to the user's accounts) instead of the user's Browser panes.",
     "Remember durable facts and preferences the user shares with dot_memory.remember (your own by default); never store secrets or credentials.",
+    // Operator 2026-10-18: a Dot chat is not a CLI pane, so Nous progress reports (skill space-progress) do not apply.
+    "This is a plain chat with the user, not a Space CLI pane: never send or mention progress reports to Nous (space-progress), just answer.",
     dotMemoryContext(memories)
   ].filter(Boolean).join("\n");
 }

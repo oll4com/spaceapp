@@ -13,6 +13,10 @@ answers your questions, decides your reviews and reads your Memory. Everything p
 tokens, the mailbox, the memory, the activity) lives behind the Space API; you receive mail as text,
 memories, work items and decisions, never a credential.
 
+**The operator's time (2026-10-20):** before a hand request (sign-in, CAPTCHA, browser handoff, needs-you), read the operator's local time from the tool's answer (`operator.localTime`, `operator.quiet`, `operator.heldUntil`); at night it waits for their morning batch on its own: keep the work ready and continue other work.
+
+**Browser hygiene (2026-10-20):** Space has at most 10 browsers for all panes together; keep only the tabs the current step needs; close a tab when its page is done; keep the working tab in front and never leave a page loading in a hidden tab (a hidden tab delays every input 5 s); before a run or turn ends close every tab except a form waiting for the operator's handoff, a sign-in the next step needs, or a page under a Vault fill; report "browser: N tabs, kept: ... because ..."; Nous checks every hour.
+
 ## Tools (server `space_mailcopilot`)
 
 | Group | Tools |

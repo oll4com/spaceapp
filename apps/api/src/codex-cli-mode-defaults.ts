@@ -29,6 +29,14 @@ export interface CodexCliModeDefaultsServiceOptions {
 
 const defaultRefreshIntervalMs = 60_000;
 
+/**
+ * Public installs and the dev instance have no Codex app-server to ask for its defaults (dev's API runs without sudo, and the
+ * app-server launcher must sudo to the CLI user): Codex resolves its configured model and effort itself at launch.
+ */
+export function codexChoosesDefaults(config: { publicDistribution?: boolean; instance?: string }): boolean {
+  return config.publicDistribution === true || config.instance === "dev";
+}
+
 function unresolvedError(): SpaceFeatureDisabledError {
   return new SpaceFeatureDisabledError(
     "CLI_CODEX_DEFAULTS_UNRESOLVED",

@@ -81,14 +81,13 @@ export function ReleasesSettingsCard({ client = api }: { client?: ReleasesClient
   }
 
   const promotion = promotionState(report.promotion);
-  const promoting = Boolean(report.promotion && PROMOTION_BUSY.has(report.promotion.status));
-  const devBusy = Boolean(report.devQueue.current);
+  // A running promotion or dev deploy never blocks the next one (operator 2026-10-21): only one already shipping dev's verified commit does.
+  const shipping = Boolean(report.promotion && PROMOTION_BUSY.has(report.promotion.status) && report.promotion.sha === report.dev.verifiedCommit);
   const upToDate = report.pendingCount === 0;
   const blocked = !report.managedHere ? "You are on the test copy (dev). Promote from your everyday Space (stable)."
-    : promoting ? "A promotion is already in progress."
-      : devBusy ? "Dev is deploying a change; promote when it finishes."
-        : upToDate ? "Stable already runs everything that is on dev."
-          : null;
+    : shipping ? "The promotion in progress already ships everything that is on dev."
+      : upToDate ? "Stable already runs everything that is on dev."
+        : null;
 
   return (
     <section className="releases-card" aria-label="Releases">

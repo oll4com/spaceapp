@@ -33,7 +33,7 @@ import {
   readOpenCodeServerControl,
   fetchOpenCodeSessionTitle,
   updateOpenCodeSessionTitle,
-  openCodeServerBaseUrl,
+  fetchOpenCodeSessionMessages,
 } from "@space/opencode-control";
 import type { CodexParityService } from "./codex-parity.js";
 import {
@@ -307,6 +307,8 @@ export class TaskTitleService {
       } | null>;
       /** Root of `cli-uploads`; without it attached images are not read. */
       artifactRoot?: string;
+      /** False for a pane whose summary would run on someone else's model accounts (MU-002); it keeps its local title. */
+      summaryAllowed?: (paneId: string) => Promise<boolean>;
       now?: () => Date;
       onError?: (error: unknown) => void;
     },
@@ -569,17 +571,9 @@ export class TaskTitleService {
         try {
           nativeTitle =
             (await fetchOpenCodeSessionTitle(control, nativeId))?.title ?? null;
-          const response = await fetch(
-            `${openCodeServerBaseUrl(control.serverPort, control.serverHost)}/session/${encodeURIComponent(nativeId)}/message?limit=30`,
-            {
-              headers: {
-                authorization: `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`,
-              },
-              signal: AbortSignal.timeout(5000),
-            },
-          );
-          if (response.ok) {
-            const messages = ((await response.json()) as any[])
+          const history = await fetchOpenCodeSessionMessages(control, nativeId, 30).catch(() => null);
+          if (history) {
+            const messages = (history as any[])
               .filter((m) => m.info?.role === "user");
             const native = messages.map((m) =>
                 (m.parts ?? [])
@@ -1277,7 +1271,8 @@ export class TaskTitleService {
       const wantsSummary =
         policy.enabled &&
         !state.syncOnly &&
-        state.metadata.generationStatus !== "ready";
+        state.metadata.generationStatus !== "ready" &&
+        (await this.options.summaryAllowed?.(state.paneId) ?? true);
       const scope = this.imageScope(context.pane);
       const images = wantsSummary && scope && state.images?.length
         ? await readableTaskImages(state.images, scope)

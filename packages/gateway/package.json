@@ -21,18 +21,18 @@
     "@fastify/websocket": "11.2.0",
     "@space/contracts": "0.2.5",
     "@space/db": "0.2.5",
-    "fastify": "5.12.5",
+    "fastify": "5.12.6",
     "js-tiktoken": "1.0.21",
     "pg": "^8.22.0",
     "web-tree-sitter": "0.25.10",
     "ws": "8.21.0",
-    "zod": "^4.2.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/ws": "8.18.1",
     "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

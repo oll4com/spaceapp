@@ -31,13 +31,15 @@ import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
 import type { PaneBrowserAccount } from "./pane-browser-account.js";
 import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
-import { BROWSER_CONTROL_IDLE_RELEASE_MS, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
+import { BROWSER_CONTROL_IDLE_RELEASE_MS, browserAgentOf, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 import {
   googleAccountSignInUrl, privatePaneProfileId, selectYouTubeAccountSchema, youtubeAccountSignInUrl,
   type YouTubeAccountStore
 } from "./youtube-accounts.js";
 import { youtubePlaybackSchema, type YouTubePlaybackStore } from "./youtube-playback-state.js";
+import { youtubeCaptions, youtubeVideoText } from "./youtube-summary.js";
+import type { VideoEngineRun } from "./video/engine.js";
 import { seedYouTubeSignIn } from "./youtube-shared-signin.js";
 
 const browserPageParamSchema = z.object({ id: idSchema, pageId: z.string().min(1).max(200) });
@@ -157,10 +159,14 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   onJobCopilotAccountSelected?: (userId: string, email: string) => Promise<void>;
   /** The Job Copilot pane a new one continues (its tabs and view); null when there is none. */
   previousCopilotPane?: (pane: Pane) => Promise<Pane | null>;
+  /** The Video engine Full text reads the video's captions with (tests pass a fake; default the real one). */
+  videoEngine?: VideoEngineRun;
   /** Drops CLI automation sockets of a pane when an operator takes control. */
-  cliBrowserCdpProxy?: { closeForPane(paneId: string, refusal: "BROWSER_CONTROL_HELD", reason: string): number };
+  cliBrowserCdpProxy?: { closeForPane(paneId: string, refusal: "BROWSER_CONTROL_HELD" | "ACTIVE_TAB_MOVED", reason: string): number; connectionCount(paneId: string): number };
   /** Operator input per control lease, shared with the stream socket and the CLI bridge (idle release, agent reclaim). */
   controlActivity?: BrowserControlActivity;
+  /** The operator gave a pane's browser back: the handoff's notification settles at once (Needs you, operator request 2026-10-24). */
+  onControlReleased?: (paneId: string) => void;
 }) {
   const controlActivity = options.controlActivity ?? createBrowserControlActivity();
   // An idle operator lease goes back to the agent even when no heartbeat or agent call comes (operator 2026-10-15).
@@ -223,11 +229,23 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         accountTab: { pageId, profileId, label: email, ...(signIn && profileId !== null ? { url: googleAccountSignInUrl(email) } : url ? { url } : {}) },
         traceId
       }, actor));
+      // Agent automation (space_playwright_pane) reconnects to the Chrome the tab now lives in on its next command.
+      options.cliBrowserCdpProxy?.closeForPane(pane.id, "ACTIVE_TAB_MOVED", "The tab moved into another Google account's browser.");
       return browserSessionManager.listPages(pane);
     },
     async openTab(userId, pane, url, profileId, traceId, actor) {
       if (!browserSessionManager.createPage) throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
       if (profileId === null || profileId === await effectivePaneProfileId(userId, pane)) return browserSessionManager.createPage(pane, url, true, traceId, actor);
+      // Freelance Copilot: a tab moved into another account's Chrome would leave without the platform routes the Browser Host
+      // starts a Freelance pane's Chrome with, so the whole pane reopens in that account with the address.
+      if (pane.mode === "FREELANCE_COPILOT") {
+        if (!browserSessionManager.listPages) throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
+        const current = await store.getActivePaneBrowserSession(pane.id);
+        await accountControl.select(userId, pane, profileId, false, traceId, actor);
+        await accountControl.start(userId, pane, { viewport: current?.viewport ?? "desktop", targetUrl: url, streamMode: current?.streamMode ?? "AUTO",
+          includeInitialFrame: false, ownerAgentId: actor.holderType === "AGENT" ? actor.holderId : null }, traceId, actor);
+        return browserSessionManager.listPages(pane);
+      }
       // The host opens the URL straight in the other account's Chrome and closes the blank tab, so it never loads in the pane's account.
       const blank = (await browserSessionManager.createPage(pane, undefined, true, traceId, actor)).activePageId;
       if (!blank) throw new SpaceConflictError("The browser did not open a new tab.");
@@ -415,6 +433,16 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     await youtubePlaybackStore.save((await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? `${request.user!.id}:proof:${pane.roomId}` : request.user!.id, pane.id, playback);
     return { ok: true };
   });
+  app.post("/api/panes/:id/youtube/summary", defaultRouteRateLimitOptions, async (request) => {
+    const { id } = parseQuery(idParamSchema, request.params);
+    const { videoId, kind } = parseBody(z.object({ videoId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), kind: z.enum(["summary", "transcript"]).default("summary") }).strict(),
+      request.body);
+    const pane = await getPaneById(store, id);
+    if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("A video summary or full text requires a YouTube pane.");
+    const { youtubeSummaryModel } = await store.getUserSettings(request.user!.id);
+    return youtubeVideoText({ gatewayUrl: config.gatewayUrl, keyFile: config.codexLbKeyFile, model: youtubeSummaryModel, videoId, kind,
+      captions: (id) => youtubeCaptions({ workRoot: config.videoWorkRoot, toolsDir: config.videoToolsDir, videoId: id, engine: options.videoEngine }) });
+  });
   app.post("/api/panes/:id/youtube/watch", defaultRouteRateLimitOptions, async (request) => {
     const { id } = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, id);
@@ -449,13 +477,15 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
-    const session = await getActiveBrowserSessionForPane(store, pane);
+    // Copilot panes poll this: no browser or no handoff is their normal state, so it answers null instead of a logged 404.
+    const session = await getActiveBrowserSessionForPane(store, pane).catch((error: unknown) => {
+      if (error instanceof SpaceNotFoundError) return null;
+      throw error;
+    });
+    if (!session) return browserHandoffRequestResponseSchema.parse({ handoff: null });
     const active = await store.getActiveBrowserHandoffRequest(session.sessionId);
     const handoff = active ?? (await store.listBrowserHandoffRequests(pane.roomId)).find((candidate) => candidate.sessionId === session.sessionId);
-    if (!handoff) {
-      throw new SpaceNotFoundError(`Browser handoff request for pane ${pane.id} was not found.`);
-    }
-    return browserHandoffRequestResponseSchema.parse({ handoff });
+    return browserHandoffRequestResponseSchema.parse({ handoff: handoff ?? null });
   });
   app.post("/api/panes/:id/browser/session", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -533,7 +563,9 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!browserSessionManager.listPages) {
       throw new SpaceFeatureDisabledError("BROWSER_PAGES_UNAVAILABLE", "Browser page management is unavailable on this runtime.");
     }
-    return browserSessionManager.listPages(pane);
+    const pages = await browserSessionManager.listPages(pane);
+    // The frame's corner label names the CLI pane driving this browser and its room (operator request 2026-10-20).
+    return { ...pages, agent: await browserAgentOf(store, controlActivity, pane.id, (options.cliBrowserCdpProxy?.connectionCount(pane.id) ?? 0) > 0) };
   });
   app.post("/api/panes/:id/browser/pages", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -620,23 +652,12 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!browserSessionManager.releaseControl) {
       throw new SpaceFeatureDisabledError("BROWSER_CONTROL_UNAVAILABLE", "Browser control handoff is unavailable on this runtime.");
     }
-    const lease = await browserSessionManager.releaseControl(
-      pane,
-      input,
-      request.requestIdForSpace,
-      operatorBrowserActor(request)
-    );
-    controlActivity.forget(lease.leaseId);
-    const handoff = await store.getActiveBrowserHandoffRequest(lease.sessionId);
-    if (handoff?.status === "ACCEPTED" && handoff.controlLeaseId === lease.leaseId) {
-      await store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
-    }
-    await recordAudit(store, request, {
-      action: "pane.browser.control.release",
-      targetType: "pane",
-      targetId: pane.id,
-      metadata: { sessionId: lease.sessionId, leaseId: lease.leaseId }
-    });
+    const current = await store.getBrowserControlLease(input.leaseId);
+    if (!current || current.paneId !== pane.id) throw new SpaceNotFoundError("Browser control lease was not found.");
+    // The same path as the idle release and the agent's reclaim: the completed handoff fences the page before the agent gets the browser back.
+    const lease = await releaseBrowserControlLease({ store, browserSessionManager, activity: controlActivity },
+      { pane, lease: current, request, auditAction: "pane.browser.control.release" });
+    options.onControlReleased?.(pane.id);
     return browserControlLeaseResponseSchema.parse({ lease });
   });
   app.post("/api/panes/:id/browser/input", defaultRouteRateLimitOptions, async (request) => {

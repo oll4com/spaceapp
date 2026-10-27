@@ -112,11 +112,6 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
-async function showAllSetupTools() {
-  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Show all tools" }));
-}
-
 describe("Setup & connections App integration", () => {
   it("auto-opens for an existing owner only after rooms have loaded when onboarding is incomplete", async () => {
     const calls: string[] = [];
@@ -134,7 +129,7 @@ describe("Setup & connections App integration", () => {
       })
     }));
 
-    expect(await screen.findByRole("heading", { name: "Setup & connections" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Your Space" })).toBeTruthy();
     expect(calls.indexOf("rooms")).toBeGreaterThanOrEqual(0);
     expect(calls.indexOf("overview")).toBeGreaterThan(calls.indexOf("rooms"));
   });
@@ -215,9 +210,9 @@ describe("Setup & connections App integration", () => {
       })
     }));
 
-    // The auto-opened wizard is guided on every screen size: OpenCode first,
-    // other tools behind "Show all tools" on the Tools step.
-    await showAllSetupTools();
+    await screen.findByRole("heading", { name: "Your Space" });
+    fireEvent.click(screen.getByRole("button", { name: "Save and close setup" }));
+    window.dispatchEvent(new CustomEvent("space:manage", { detail: { action: "setup-connections" } }));
     fireEvent.click(await screen.findByRole("button", { name: "Connect Codex CLI" }));
 
     await waitFor(() => expect(setupStarterRoom).toHaveBeenCalledTimes(1));
@@ -249,16 +244,13 @@ describe("Setup & connections App integration", () => {
       })
     }));
 
-    if (embedded) {
-      fireEvent.click(await screen.findByRole("button", { name: "Admin mode" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Workspace" }));
-      fireEvent.click(await screen.findByRole("tab", { name: "Utilities" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Manage" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Connections" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Setup & connections" }));
+    if (!embedded) {
+      await screen.findByRole("heading", { name: "Your Space" });
+      fireEvent.click(screen.getByRole("button", { name: "Save and close setup" }));
     } else {
-      await showAllSetupTools();
+      await screen.findByRole("button", { name: "Admin mode" });
     }
+    window.dispatchEvent(new CustomEvent("space:manage", { detail: { action: "setup-connections" } }));
     const connectButton = await screen.findByRole("button", { name: "Connect Codex CLI" });
     vi.useFakeTimers();
     await act(async () => {

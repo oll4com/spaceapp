@@ -189,6 +189,19 @@ describe("Space static asset compression", () => {
     expect(imageResponse.body).toHaveLength(2_048);
   });
 
+  it("serves no inline script on a page the operator's script policy covers (security addendum step 7)", async () => {
+    // Every HTML document except the public homepage and the demo workspace gets script-src 'self': an inline script there is dead.
+    const web = fileURLToPath(new URL("..", import.meta.url));
+    const pages = ["index.html", ...(await import("node:fs/promises").then((fs) => fs.readdir(path.join(web, "public"))))
+      .filter((name) => name.endsWith(".html")).map((name) => path.join("public", name))];
+    for (const page of pages) {
+      const html = await readFile(path.join(web, page), "utf8");
+      expect([page, /<script(?![^>]*\bsrc=)[^>]*>\s*\S/i.test(html)]).toEqual([page, false]);
+      expect([page, /\son[a-z]+\s*=\s*["']/i.test(html)]).toEqual([page, false]);
+    }
+    expect(pages).toEqual(expect.arrayContaining([path.join("public", "privacy.html"), path.join("public", "terms.html")]));
+  });
+
   it("hardens the public homepage document without changing the operator document policy", async () => {
     const dist = await createDist();
     const port = await startServer(dist);
@@ -199,8 +212,18 @@ describe("Space static asset compression", () => {
     const legacyAppAlias = await request(port, "/app", "identity");
 
     expect(operatorRoot.status).toBe(200);
-    expect(operatorRoot.headers["content-security-policy"]).toBe("frame-ancestors 'self'; object-src 'none'; base-uri 'self'");
+    // The script policy is enforced since 2026-10-22 (security addendum step 7); violations are still reported.
+    expect(operatorRoot.headers["content-security-policy"]).toBe("frame-ancestors 'self'; script-src 'self' https://www.youtube.com; object-src 'none'; base-uri 'self'; report-uri /csp-report");
+    expect(operatorRoot.headers["content-security-policy-report-only"]).toBeUndefined();
     expect(operatorRoot.headers["x-frame-options"]).toBe("SAMEORIGIN");
+    expect(operatorRoot.headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+    const report = await new Promise<number>((resolve, reject) => {
+      const sent = http.request({ host: "127.0.0.1", port, path: "/csp-report", method: "POST", headers: { "content-type": "application/csp-report" } },
+        (response) => { response.resume(); resolve(response.statusCode ?? 0); });
+      sent.on("error", reject);
+      sent.end(JSON.stringify({ "csp-report": { "violated-directive": "script-src", "blocked-uri": "https://evil.example/x.js?token=1" } }));
+    });
+    expect(report).toBe(204);
     expect(homepageAlias.headers["content-security-policy"]).toContain("default-src 'self'");
     expect(homepageAlias.headers["content-security-policy"]).toContain("frame-src 'self'");
     expect(homepageAlias.headers["content-security-policy"]).toContain("frame-ancestors 'none'");

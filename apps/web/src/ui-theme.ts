@@ -1,10 +1,10 @@
 import { DEFAULT_ICON_PACK, type ModernIconPack } from "@space/icons";
 
 export type { ModernIconPack };
-export type UiTheme = "classic" | "modern" | "codex" | "motion" | "aurora" | "liquid-glass";
+export type UiTheme = "classic" | "modern" | "codex" | "motion" | "aurora" | "liquid-glass" | "jarvis" | "aira";
 export type ModernAppearance = "system" | "dark" | "light";
 export type ModernColorMode = "dark" | "light";
-export type UiBackground = "spaceapp" | "aurora" | "liquid-glass" | "none";
+export type UiBackground = "spaceapp" | "aurora" | "liquid-glass" | "jarvis" | "aira" | "none";
 
 export const UI_THEME_STORAGE_KEY = "space.uiTheme.v1";
 export const MODERN_APPEARANCE_STORAGE_KEY = "space.modern.appearance.mode.v1";
@@ -50,7 +50,7 @@ export function migrateModernToolbarPreference(storage: Storage, classicKey: str
 
 export function readUiTheme(storage: Storage): UiTheme {
   const theme = storage.getItem(UI_THEME_STORAGE_KEY);
-  return theme === "classic" || theme === "codex" || theme === "motion" || theme === "aurora" || theme === "liquid-glass" ? theme : "modern";
+  return theme === "classic" || theme === "codex" || theme === "motion" || theme === "aurora" || theme === "liquid-glass" || theme === "jarvis" || theme === "aira" ? theme : "modern";
 }
 
 export function writeUiTheme(storage: Storage, theme: UiTheme): UiTheme {
@@ -82,7 +82,7 @@ export function writeModernIconPack(storage: Storage, iconPack: ModernIconPack):
 
 export function readUiBackground(storage: Storage): UiBackground {
   const stored = storage.getItem(UI_BACKGROUND_STORAGE_KEY);
-  return stored === "none" || stored === "aurora" || stored === "liquid-glass" ? stored : "spaceapp";
+  return stored === "none" || stored === "aurora" || stored === "liquid-glass" || stored === "jarvis" || stored === "aira" ? stored : "spaceapp";
 }
 
 export function writeUiBackground(storage: Storage, background: UiBackground): UiBackground {

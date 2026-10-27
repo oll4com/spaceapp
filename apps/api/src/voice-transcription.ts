@@ -17,6 +17,7 @@ import {
   LIVE_AUDIO_PROVIDERS
 } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
+import { FISH_ASR_URL, FISH_AUDIO_KEY_FILE } from "./fish-voice-bridge.js";
 import { configuredDelegateModel, estimateLiveCost } from "./live-model-policy.js";
 import { isGptLiveModel, resolveDelegatedModel, voiceForModel, voiceModelCandidates, voiceModelUnavailable, type LiveModelFallback } from "./live-openai-model-fallback.js";
 
@@ -56,6 +57,7 @@ export async function createLocalVoiceSession(config: SpaceApiConfig, input: Rec
   if (!config.localVoiceProviderToken) throw new Error("Local voice provider token is not configured on Space.");
   const response = await fetch(`${config.localVoiceProviderUrl.replace(/\/+$/, "")}/api/voice/local/sessions`, {
     method: "POST",
+    redirect: "error",
     headers: { "X-Local-Voice-Token": config.localVoiceProviderToken, "Content-Type": "application/json" },
     body: JSON.stringify(input),
     signal: AbortSignal.timeout(10000)
@@ -529,6 +531,17 @@ export async function resolveLiveAudioCredentials(
     };
   }
 
+  if (provider === "fish") {
+    try {
+      const key = (await readFile(FISH_AUDIO_KEY_FILE, "utf8")).trim();
+      if (key) return { configured: true, apiKey: key };
+    } catch {}
+    return {
+      configured: false,
+      missingReason: `Fish Audio key not configured on Space. Save it in ${FISH_AUDIO_KEY_FILE}.`
+    };
+  }
+
   return { configured: false, missingReason: `Unknown provider: ${provider}` };
 }
 
@@ -556,13 +569,14 @@ export async function getLiveAudioProvidersStatus(config: SpaceApiConfig) {
 
 export async function createVoiceRealtimeCall(
   config: SpaceApiConfig,
-  input: VoiceRealtimeCallInput
+  input: VoiceRealtimeCallInput,
+  ownerCredential?: { apiKey: string; region?: string }
 ): Promise<VoiceRealtimeSessionResponse> {
   const provider: LiveAudioProviderId = input.provider || inferProviderFromModel(input.model);
 
   // 1. Google Gemini Live provider flow
   if (provider === "google") {
-    const cred = await resolveLiveAudioCredentials(config, "google");
+    const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, "google");
     if (!cred.configured || !cred.apiKey) {
       throw new Error(cred.missingReason || "Google Gemini Live credentials not configured on Space.");
     }
@@ -580,12 +594,12 @@ export async function createVoiceRealtimeCall(
 
   // 2. Amazon Nova 2 Sonic provider flow
   if (provider === "amazon") {
-    const cred = await resolveLiveAudioCredentials(config, "amazon");
+    const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, "amazon");
     if (!cred.configured || !cred.apiKey) {
       throw new Error(cred.missingReason || "Amazon Nova 2 Sonic credentials not configured on Space.");
     }
     const targetModel = input.model?.trim() || "amazon.nova-2-sonic-v1:0";
-    const region = config.awsRegion || "us-east-1";
+    const region = ownerCredential?.region || config.awsRegion || "us-east-1";
     const websocketUrl = `wss://bedrock-runtime.${region}.amazonaws.com/model/${targetModel}/invoke-with-bidirectional-stream`;
     return voiceRealtimeSessionResponseSchema.parse({
       provider: "amazon",
@@ -597,7 +611,7 @@ export async function createVoiceRealtimeCall(
 
   // 3. Local provider flow
   if (provider === "local" || input.model === "local-qwen3-greek") {
-    const localSession = await createLocalVoiceSession(config, {
+    const localSession = await createLocalVoiceSession(ownerCredential ? { ...config, localVoiceProviderToken: ownerCredential.apiKey } : config, {
       language: input.language,
       opening: input.opening,
       prompt: input.prompt
@@ -619,7 +633,7 @@ export async function createVoiceRealtimeCall(
 
   // 4. Vercel AI Gateway Live flow (WebSocket with client secret token)
   if (provider === "vercel") {
-    const cred = await resolveLiveAudioCredentials(config, "vercel");
+    const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, "vercel");
     if (!cred.configured || !cred.apiKey) {
       throw new Error(cred.missingReason || "Vercel AI Gateway credentials not configured on Space.");
     }
@@ -634,7 +648,7 @@ export async function createVoiceRealtimeCall(
       const gateway = createGateway({
         apiKey: cred.apiKey,
         baseURL: `${baseUrl}/v4/ai`,
-        fetch: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(config.voiceTranscriptionTimeoutMs) })
+        fetch: (url, init) => fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(config.voiceTranscriptionTimeoutMs) })
       });
       const secret = await gateway.experimental_realtime.getToken({ model: targetModel });
       return voiceRealtimeSessionResponseSchema.parse({
@@ -653,6 +667,7 @@ export async function createVoiceRealtimeCall(
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ model: targetModel, routeKind: "live" }),
+      redirect: "error",
       signal: AbortSignal.timeout(config.voiceTranscriptionTimeoutMs)
     });
     if (!clientSecretRes.ok) {
@@ -674,8 +689,22 @@ export async function createVoiceRealtimeCall(
     });
   }
 
-  // 5. OpenAI Live flow (WebRTC)
-  const cred = await resolveLiveAudioCredentials(config, "openai");
+  // 5. Fish Audio: the browser speaks to Space's Fish bridge (voice-routes), which holds the key.
+  if (provider === "fish") {
+    const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, "fish");
+    if (!cred.configured || !cred.apiKey) throw new Error(cred.missingReason || "Fish Audio key not configured on Space.");
+    return voiceRealtimeSessionResponseSchema.parse({
+      provider: "fish",
+      protocol: "fish-cascade",
+      model: "drama-3",
+      websocketUrl: FISH_ASR_URL,
+      token: cred.apiKey,
+      sessionId: `fish_live_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    });
+  }
+
+  // 6. OpenAI Live flow (WebRTC)
+  const cred = ownerCredential ? { configured: true, apiKey: ownerCredential.apiKey, missingReason: undefined } : await resolveLiveAudioCredentials(config, "openai");
   if (!cred.configured || !cred.apiKey) {
     throw new Error(cred.missingReason || "Voice transcription is disabled or key file missing.");
   }

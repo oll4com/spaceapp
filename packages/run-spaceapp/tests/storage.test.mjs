@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { calculateStoragePlan, estimateMissingLayers, inspectStoragePlan, storageChecks } from "../src/storage.mjs";
-import { composeCommand, initializeInstallation, installResourceChecks, renderRuntimeEnv } from "../src/index.mjs";
+import { composeCommand, createDefaultConfig, initializeInstallation, installResourceChecks, renderRuntimeEnv } from "../src/index.mjs";
 import { run } from "../src/cli.mjs";
 const GiB = 1024 ** 3;
 const imageId = "sha256:" + "a".repeat(64);
@@ -94,4 +94,30 @@ test("Docker CPU and memory allocations constrain the host's resources",async(t)
   assert.equal(plan.resources.engineMemoryBytes,8*GiB);
   assert.equal(plan.resources.totalMemoryBytes,resources.totalMemoryBytes);
   assert.equal(installResourceChecks({...plan.resources,engineMemoryBytes:2*GiB},"small").find(x=>x.name==="Docker memory").ok,false);
+});
+
+test("an installation that pulled its images by digest is inspected by digest, since it has no local version tags", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-storage-digest-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const digest = "sha256:" + "b".repeat(64);
+  await writeFile(join(root, "runtime.env"), `SPACEAPP_IMAGE_TAG=1.1.7\nSPACEAPP_CORE_IMAGE_DIGEST=@${digest}\nSPACEAPP_CLI_IMAGE_DIGEST=\nSPACEAPP_BROWSER_IMAGE_DIGEST=\n`);
+  const inspected = [];
+  const execute = async (spec, io) => {
+    if (spec.args[0] === "info") { io.stdout.write(JSON.stringify({ NCPU: 8, MemTotal: 16 * GiB })); return 0; }
+    if (spec.args[0] === "image" && spec.args[1] === "inspect") {
+      const ref = spec.args.at(-1);
+      inspected.push(ref);
+      if (ref !== `ghcr.io/oll4com/spaceapp-core@${digest}`) return 1;
+      io.stdout.write(spec.args.includes("{{json .RootFS.Layers}}") ? JSON.stringify(["sha256:" + "c".repeat(64)]) : imageId);
+      return 0;
+    }
+    return 0;
+  };
+  await inspectStoragePlan({
+    root, config: createDefaultConfig({ version: "1.1.8" }), existingConfig: createDefaultConfig({ version: "1.1.7" }),
+    resources, execute, operation: "upgrade", fetch: null
+  });
+  assert.ok(inspected.includes(`ghcr.io/oll4com/spaceapp-core@${digest}`));
+  assert.ok(!inspected.includes("ghcr.io/oll4com/spaceapp-core:1.1.7"), "the pinned digest answered, the tag was not needed");
+  assert.ok(inspected.includes("ghcr.io/oll4com/spaceapp-cli:1.1.7"), "an unpinned image is still found by its tag");
 });

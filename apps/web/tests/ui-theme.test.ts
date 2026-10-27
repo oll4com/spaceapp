@@ -70,6 +70,10 @@ describe("Space UI theme preferences", () => {
     expect(readUiTheme(storage)).toBe("aurora");
     expect(writeUiTheme(storage, "liquid-glass")).toBe("liquid-glass");
     expect(readUiTheme(storage)).toBe("liquid-glass");
+    expect(writeUiTheme(storage, "jarvis")).toBe("jarvis");
+    expect(readUiTheme(storage)).toBe("jarvis");
+    expect(writeUiTheme(storage, "aira")).toBe("aira");
+    expect(readUiTheme(storage)).toBe("aira");
   });
 
   it("stores the opt-in Modern selection without touching Classic theme keys", () => {
@@ -188,6 +192,10 @@ describe("Space UI theme preferences", () => {
     expect(readUiBackground(storage)).toBe("aurora");
     expect(writeUiBackground(storage, "liquid-glass")).toBe("liquid-glass");
     expect(readUiBackground(storage)).toBe("liquid-glass");
+    expect(writeUiBackground(storage, "jarvis")).toBe("jarvis");
+    expect(readUiBackground(storage)).toBe("jarvis");
+    expect(writeUiBackground(storage, "aira")).toBe("aira");
+    expect(readUiBackground(storage)).toBe("aira");
     expect(writeUiBackground(storage, "spaceapp")).toBe("spaceapp");
     expect(storage.getItem(UI_BACKGROUND_STORAGE_KEY)).toBe("spaceapp");
     expect(readUiBackground(storage)).toBe("spaceapp");

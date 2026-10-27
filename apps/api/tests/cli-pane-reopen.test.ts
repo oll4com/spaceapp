@@ -35,6 +35,8 @@ async function setup(store: InMemorySpaceStore) {
   await chmod(commandPath, 0o755);
   // An owned pane host; the operator's live host is never contacted.
   const socketPath = join(root, "pane-host.sock");
+  // Unix socket paths hold about 104-107 bytes: a long TMPDIR fails here, not later as ENOENT or EADDRINUSE (1.1.7 review).
+  if (socketPath.length > 103) throw new Error(`TMPDIR is too long for a Unix socket path (${socketPath.length} bytes); use a short TMPDIR such as /tmp/s.`);
   const cliHostServer = await createCliHostServer({ socketPath, registry: new CliHostSessionRegistry({ spawn: spawnNodePty }) });
   const app = await createApp({
     cliHostClient: new CliHostClient({ socketPath }),

@@ -35,7 +35,7 @@ export interface JobApplyRouteDependencies {
   store: Pick<SpaceStore, "getPane" | "updateJobApplyMetadata">;
   routeOptions: Record<string, unknown>;
   /** Sends the run's kickoff prompt into the pane's CLI (the existing pane CLI input path). */
-  kickoff(pane: Pane, run: JobApplyRun): Promise<void>;
+  kickoff(pane: Pane, run: JobApplyRun, discover: boolean): Promise<void>;
   /** Resolves the signed-in owner; throws the API's 401 error when absent. */
   authenticatedOwner(request: FastifyRequest): Promise<string>;
   assertPaneAccess(request: FastifyRequest, pane: Pane): Promise<void>;
@@ -75,6 +75,14 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
     const result = await service.importCv(owner, input.artifactId);
     await deps.audit(request, "job_apply.profile.cv_import", owner, { artifactId: input.artifactId, coverage: result.coverage });
     return result;
+  });
+
+  // Operator rule 2026-10-17: photo upload fields get the CV's photo (copied into the copilot's own files).
+  app.post("/api/job-apply/profile/photo-from-cv", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const { path: _path, ...photo } = await service.savePhotoFromCv(owner);
+    await deps.audit(request, "job_apply.profile.photo_from_cv", owner, { width: photo.width, height: photo.height, bytes: photo.bytes });
+    return { photo };
   });
 
   app.put("/api/job-apply/mailbox", routeOptions, async (request) => {
@@ -264,7 +272,7 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
     const started = await service.startRun(owner, pane.id);
     let kickoffSent = false;
     if (started.kickoff) {
-      await deps.kickoff(pane, started.run);
+      await deps.kickoff(pane, started.run, started.discover);
       await service.markKickoff(owner, started.run.id);
       kickoffSent = true;
     }

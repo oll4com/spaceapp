@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { advanceWorkspaceMovementReminder } from "@space/contracts";
 import { Bell, BellOff, BellRing, Check, Dumbbell, Pause, Play, RotateCcw, Volume2 } from "../ui-theme/app-icons.js";
 import type { DesktopWidgetState, PushupReminderWidgetConfig } from "./types.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
@@ -120,13 +121,10 @@ export function PushupReminderWidget({
       if (deadline === null) return;
       const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setConfig((prev) => {
-        if (!prev.isRunning || prev.isAlertActive) return prev;
-        if (remaining <= 0) {
-          // Time is up! Trigger pushup workout alert
-          deadlineRef.current = null;
-          return { ...prev, remainingSeconds: prev.intervalMinutes * 60, isAlertActive: true, alertReason: "pushups" as const };
-        }
-        return prev.remainingSeconds === remaining ? prev : { ...prev, remainingSeconds: remaining };
+        const next = advanceWorkspaceMovementReminder(prev, remaining);
+        // Time is up: the shared reminder function raised the pushup workout alert and reset the interval.
+        if (next.isAlertActive && !prev.isAlertActive) deadlineRef.current = null;
+        return next.remainingSeconds === prev.remainingSeconds && next.isAlertActive === prev.isAlertActive ? prev : next;
       });
     }, 1000);
     return () => {

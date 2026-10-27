@@ -42,6 +42,11 @@ export interface FileListViewProps {
   onNavigateUp: () => void;
 }
 
+// localeCompare with options builds a collator per call, which froze the tab on large folders.
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+// Mounting every row of a huge folder freezes the app; more rows render on request.
+const ROW_PAGE = 500;
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
@@ -118,6 +123,9 @@ export function FileListView({
     entry: FileItem;
   } | null>(null);
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
+  const [rowLimit, setRowLimit] = useState(ROW_PAGE);
+
+  useEffect(() => setRowLimit(ROW_PAGE), [currentPath]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -202,7 +210,7 @@ export function FileListView({
       }
       let cmp = 0;
       if (sortField === "name") {
-        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        cmp = nameCollator.compare(a.name, b.name);
       } else if (sortField === "size") {
         cmp = a.size - b.size;
       } else if (sortField === "permissions") {
@@ -218,6 +226,13 @@ export function FileListView({
     });
     return list;
   }, [entries, sortField, sortDirection]);
+  const visibleEntries = sortedEntries.slice(0, rowLimit);
+  const hiddenCount = sortedEntries.length - visibleEntries.length;
+  const showMore = hiddenCount > 0 && (
+    <button type="button" className="fm-action-btn" style={{ padding: "4px 12px" }} onClick={() => setRowLimit((n) => n + ROW_PAGE)}>
+      Show {Math.min(ROW_PAGE, hiddenCount)} more ({hiddenCount} hidden, search to filter)
+    </button>
+  );
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
@@ -317,7 +332,7 @@ export function FileListView({
                 </tr>
               )}
 
-              {sortedEntries.map((entry) => {
+              {visibleEntries.map((entry) => {
                 const isSelected = selectedPath === entry.path;
                 return (
                   <tr
@@ -436,6 +451,11 @@ export function FileListView({
                   </tr>
                 );
               })}
+              {showMore && (
+                <tr>
+                  <td colSpan={6} style={{ textAlign: "center" }}>{showMore}</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -449,7 +469,7 @@ export function FileListView({
             </div>
           )}
 
-          {sortedEntries.map((entry) => (
+          {visibleEntries.map((entry) => (
             <div
               key={entry.path}
               className="fm-grid-card"
@@ -476,6 +496,8 @@ export function FileListView({
               </div>
             </div>
           ))}
+
+          {showMore && <div style={{ gridColumn: "1 / -1", textAlign: "center" }}>{showMore}</div>}
 
           {sortedEntries.length === 0 && (
             <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "32px", color: "var(--modern-muted)" }}>

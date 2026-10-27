@@ -8,7 +8,7 @@ import { layoutForWidth, STACKED_LAYOUT_MAX_WIDTH, type CopilotLayout } from "..
 export type JobCopilotLayout = CopilotLayout;
 export { layoutForWidth, STACKED_LAYOUT_MAX_WIDTH };
 
-export const RAIL_TABS: readonly CopilotRailTab[] = ["activity", "queue", "fields", "memory", "setup", "terminal"];
+export const RAIL_TABS: readonly CopilotRailTab[] = ["activity", "queue", "fields", "memory", "bookmarks", "setup", "terminal"];
 
 /** The tabs a layout offers, in strip order: the browser leads only when it is a tab of its own. */
 export function tabsForLayout(layout: JobCopilotLayout): CopilotRailTab[] {

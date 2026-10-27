@@ -1,10 +1,12 @@
 import { registerRoomPlaybackTarget } from "../room-agent/room-playback-control.js";
-import { Check, ChevronLeft, ChevronRight, Home, Maximize2, Music2, Pause, PictureInPicture2, Play, Plus, Users, Youtube } from "../ui-theme/app-icons.js";
+import { Captions, Check, ChevronLeft, ChevronRight, Download, Home, Music2, Pause, Play, Plus, Settings, Sparkles, Users, X, Youtube } from "../ui-theme/app-icons.js";
+import { YouTubeSettingsCard } from "./YouTubeSummarySettingsCard.js";
+import { ChatCopyButton } from "../agent-pane/ChatMarkdown.js";
 import { googleSignInTarget, type YouTubeAccounts } from "./youtube-accounts.js";
 import { GoogleAccountMenuItems, selectedAccountSummary } from "./GoogleAccountMenuItems.js";
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { Pane, UserLink } from '@space/contracts';
+import { agentFilesFolderLabel, type Pane, type UserLink, type VideoAsset } from '@space/contracts';
 import { api } from '../../api.js';
 import type { UiTheme } from '../../ui-theme.js';
 import { takeYouTubeBrowseIntent } from "./youtube-browse-intent.js";
@@ -20,12 +22,13 @@ interface YouTubePaneProps {
   uiTheme?: UiTheme;
   toolbarHidden?: boolean;
   onVideoTitleChange?: (title: string) => void;
+  // Float and restore live in the pane's titlebar; PaneCard still passes these.
   isFloating?: boolean;
   onToggleFloat?: () => void;
 }
 
 export function YouTubePane(props: YouTubePaneProps) {
-  const { pane, observerOnly = false, toolbarHidden = false, onVideoTitleChange, isFloating = false, onToggleFloat } = props;
+  const { pane, observerOnly = false, toolbarHidden = false, onVideoTitleChange } = props;
   const [accounts, setAccounts] = useState<YouTubeAccounts | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [accountSwitching, setAccountSwitching] = useState(false);
@@ -108,6 +111,17 @@ export function YouTubePane(props: YouTubePaneProps) {
   const [addingToPlaylist, setAddingToPlaylist] = useState(false);
   const addingToPlaylistRef = useRef(false);
   const [addedVideoId, setAddedVideoId] = useState<string | null>(null);
+  type AiKind = 'summary' | 'transcript';
+  const [aiText, setAiText] = useState<{ kind: AiKind; title: string; text: string; model: string } | null>(null);
+  const [aiBusy, setAiBusy] = useState<AiKind | null>(null);
+  /** The Download into the Video library: running, then the saved source. */
+  const [download, setDownload] = useState<{ title: string; asset: VideoAsset | null; folder?: string | null } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const [toolbarCompact, setToolbarCompact] = useState(false);
+  const labelledToolbarWidth = useRef(0);
+  /** The video the player showed when Browse YouTube opened its page: that page does not switch straight back. */
+  const browseFromVideoId = useRef<string | null>(null);
 
   useEffect(() => {
     onVideoTitleChange?.(mode === 'player' ? currentVideo?.title ?? '' : '');
@@ -147,6 +161,60 @@ export function YouTubePane(props: YouTubePaneProps) {
       if (mounted.current) setAddingToPlaylist(false);
     }
   }
+
+  async function askAi(kind: AiKind) {
+    if (observerOnly || aiBusy || mode !== 'player') return;
+    // Read the player at click time: autoplay may have moved on.
+    const video = playerRef.current?.currentVideo() ?? currentVideo;
+    if (!video?.videoId) return;
+    setAiBusy(kind); setAiText(null); setError(null);
+    try {
+      const result = await api.youtubeVideoText(pane.id, video.videoId, kind);
+      if (mounted.current) setAiText({ kind, title: video.title.trim() || `YouTube ${video.videoId}`, text: result.text, model: result.model });
+    } catch (cause) {
+      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Gemini could not read the video. Try again.');
+    } finally {
+      if (mounted.current) setAiBusy(null);
+    }
+  }
+
+  async function downloadVideo() {
+    if (observerOnly || mode !== 'player' || (download && !download.asset)) return;
+    // Read the player at click time: autoplay may have moved on.
+    const video = playerRef.current?.currentVideo() ?? currentVideo;
+    if (!video?.videoId) return;
+    const title = video.title.trim() || `YouTube ${video.videoId}`;
+    setDownload({ title, asset: null }); setError(null);
+    try {
+      let { job } = await api.youtubeDownload(pane.id, video.videoId, title);
+      while (job.status === 'QUEUED' || job.status === 'RUNNING') {
+        if (!mounted.current) return;
+        ({ job } = await api.youtubeDownloadJob(pane.id, job.id));
+      }
+      const { asset, folder = null } = (job.result ?? {}) as { asset?: VideoAsset; folder?: string | null };
+      if (job.status !== 'DONE' || !asset) throw new Error(job.error ?? 'The video could not be downloaded.');
+      if (mounted.current) setDownload({ title, asset, folder });
+    } catch (cause) {
+      if (mounted.current) { setDownload(null); setError(cause instanceof Error ? cause.message : 'The video could not be downloaded. Try again.'); }
+    }
+  }
+
+  // Labels hide when the toolbar overflows with them and come back once it is as wide as it was with them.
+  function fitToolbar() {
+    const bar = toolbarRef.current;
+    if (!bar) return;
+    if (bar.dataset.compact !== 'true') {
+      if (bar.scrollWidth > bar.clientWidth + 1) { labelledToolbarWidth.current = bar.scrollWidth; setToolbarCompact(true); }
+    } else if (bar.clientWidth >= labelledToolbarWidth.current) setToolbarCompact(false);
+  }
+  useLayoutEffect(fitToolbar);
+  useEffect(() => {
+    const bar = toolbarRef.current;
+    if (!bar || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitToolbar());
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [observerOnly, toolbarHidden]);
 
   // Loaded with the pane and again whenever the menu opens, so sign-in states stay current.
   // A selection made meanwhile wins over an older answer.
@@ -337,23 +405,40 @@ export function YouTubePane(props: YouTubePaneProps) {
     ?? playlists.find(p => p.url === url || (Boolean(url) && Boolean(parseYouTubePlayback(p.url)?.playlistId) && parseYouTubePlayback(p.url)?.playlistId === parseYouTubePlayback(url)?.playlistId))?.id
     ?? '';
 
-  async function watchCurrent() {
+  async function watchCurrent(pageUrl: string) {
     setPending(true); setError(null);
     try {
-      const pages = await api.browserPages(pane.id);
-      const current = pages.pages.find((page) => page.isActive);
-      if (!current?.url || !parseYouTubePlayback(current.url)) {
-        setError('Select a video in YouTube first, then choose Play current video.'); return;
-      }
       const stopped = await api.watchYouTube(pane.id);
-      const parsed = parseYouTubePlayback(stopped.currentUrl ?? current.url);
+      const parsed = parseYouTubePlayback(stopped.currentUrl ?? pageUrl);
       if (!parsed) throw new Error('The selected video could not be opened.');
       latest.current = parsed; setInitial(parsed); setAutoPlay(true); setIsPlaying(true); setPlayerRevision(r => r + 1); setUrl(youtubePlaybackUrl(parsed)); setMode('player'); save(parsed);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'The selected video could not be opened.'); }
     finally { setPending(false); }
   }
 
+  // A video opened in the YouTube browser moves straight to the player, where it keeps playing from the same second.
+  const watchCurrentRef = useRef(watchCurrent);
+  watchCurrentRef.current = watchCurrent;
+  useEffect(() => {
+    if (observerOnly || mode !== 'browse' || pending || pane.isMinimized || typeof api.browserPages !== 'function') return;
+    let checking = false;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      if (checking || document.hidden) return;
+      checking = true;
+      void api.browserPages(pane.id).then((pages) => {
+        const page = pages.pages.find((item) => item.isActive);
+        const videoId = page?.url ? parseYouTubePlayback(page.url)?.videoId : null;
+        if (stopped || !page?.url) return;
+        if (!videoId || videoId !== browseFromVideoId.current) browseFromVideoId.current = null;
+        if (videoId && !browseFromVideoId.current) { stopped = true; void watchCurrentRef.current(page.url); }
+      }).catch(() => undefined).finally(() => { checking = false; });
+    }, 1500);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [pane.id, observerOnly, mode, pending, pane.isMinimized]);
+
   function browse() {
+    browseFromVideoId.current = latest.current?.videoId ?? null;
     if (latest.current) setTargetUrl(youtubePlaybackUrl(latest.current));
     setIsPlaying(false);
     setMode('browse'); setError(null);
@@ -472,7 +557,7 @@ export function YouTubePane(props: YouTubePaneProps) {
   }
 
   return <section className="youtube-experience" aria-label={`${pane.title} YouTube`} data-youtube-mode={mode}>
-    {!observerOnly && !toolbarHidden ? <div className="youtube-toolbar">
+    {!observerOnly && !toolbarHidden ? <div ref={toolbarRef} className="youtube-toolbar" data-compact={toolbarCompact ? 'true' : undefined}>
       {accounts ? <div className="youtube-account-picker">
         <button ref={accountButton} type="button" className="youtube-account-trigger youtube-tool-btn" aria-label={`Google account for ${pane.title}`}
           title={`Browser account: ${[accountSummary.name, accountSummary.status].filter(Boolean).join(' · ')}`} data-account-status={accountSummary.tone}
@@ -486,36 +571,36 @@ export function YouTubePane(props: YouTubePaneProps) {
         <Home aria-hidden="true" />
         <span className="youtube-btn-label">Home</span>
       </button>
-      <div className="youtube-playlist-picker">
+      {playlists.length > 0 ? <div className="youtube-playlist-picker">
         <Music2 aria-hidden="true" className="youtube-playlist-icon" />
         <select
           className="youtube-playlist-select"
           aria-label="YouTube playlist"
-          title={playlists.length === 0 ? "No playlists" : "Select a playlist"}
+          title="Select a playlist"
           value={currentPlaylistId}
-          disabled={pending || mode === 'loading' || playlists.length === 0}
+          disabled={pending || mode === 'loading'}
           onChange={(event) => void selectPlaylist(event.target.value)}
         >
-          <option value="">{playlists.length === 0 ? 'No playlists' : 'Playlists…'}</option>
+          <option value="">Playlists…</option>
           {playlists.map((link) => (
             <option key={link.id} value={link.id}>{link.title}</option>
           ))}
         </select>
-      </div>
+      </div> : null}
       <form className="youtube-link-form" onSubmit={(event) => { event.preventDefault(); void playLink(); }}>
         <input aria-label="YouTube video or playlist link" placeholder="Paste a YouTube link" value={url} onChange={(event) => setUrl(event.target.value)} />
       </form>
-      <button
+      {canNavigate ? <button
         type="button"
         className="youtube-tool-btn youtube-nav-btn"
         title="Previous track"
         aria-label="Previous track"
-        disabled={pending || mode === 'loading' || !canNavigate}
+        disabled={pending || mode === 'loading'}
         onClick={handlePrevious}
       >
         <ChevronLeft aria-hidden="true" />
-      </button>
-      <button
+      </button> : null}
+      {mode === 'player' || url.trim() ? <button
         type="button"
         className="youtube-tool-btn youtube-play-btn"
         title={isPlayerPlaying ? "Pause" : "Play"}
@@ -525,52 +610,77 @@ export function YouTubePane(props: YouTubePaneProps) {
       >
         {isPlayerPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
         <span className="youtube-btn-label">{isPlayerPlaying ? 'Pause' : 'Play'}</span>
-      </button>
-      <button
+      </button> : null}
+      {canNavigate ? <button
         type="button"
         className="youtube-tool-btn youtube-nav-btn"
         title="Next track"
         aria-label="Next track"
-        disabled={pending || mode === 'loading' || !canNavigate}
+        disabled={pending || mode === 'loading'}
         onClick={handleNext}
       >
         <ChevronRight aria-hidden="true" />
-      </button>
+      </button> : null}
+      {mode === 'player' ? <>
       <button type="button" className="youtube-tool-btn" title="Add current video to Space playlist"
         aria-label={addedVideoId === currentVideo?.videoId ? 'Added to Playlist' : 'Add to Playlist'}
-        disabled={pending || mode !== 'player' || !currentVideo?.videoId || addingToPlaylist || addedVideoId === currentVideo?.videoId}
+        disabled={pending || !currentVideo?.videoId || addingToPlaylist || addedVideoId === currentVideo?.videoId}
         onClick={() => void addToPlaylist()}>
         {addedVideoId === currentVideo?.videoId ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />}
         <span className="youtube-btn-label">{addingToPlaylist ? 'Adding…' : addedVideoId === currentVideo?.videoId ? 'Added to Playlist' : 'Add to Playlist'}</span>
       </button>
-      {mode === 'browse' ? (
-        <button type="button" className="youtube-tool-btn" title="Play current video" aria-label="Play current video" disabled={pending} onClick={() => void watchCurrent()}>
-          <Play aria-hidden="true" />
-          <span className="youtube-btn-label">Play current</span>
-        </button>
-      ) : (
-        <button type="button" className="youtube-tool-btn" title="Browse YouTube" aria-label="Browse YouTube" disabled={pending || mode === 'loading'} onClick={browse}>
-          <Youtube aria-hidden="true" />
-          <span className="youtube-btn-label">Browse YouTube</span>
-        </button>
-      )}
-      {onToggleFloat ? (
-        <button
-          type="button"
-          className="youtube-tool-btn youtube-float-btn"
-          title={isFloating ? "Restore pane to grid" : "Float mini player"}
-          aria-label={isFloating ? "Restore pane to grid" : "Float mini player"}
-          disabled={pending || mode === 'loading'}
-          onClick={onToggleFloat}
-        >
-          {isFloating ? <Maximize2 aria-hidden="true" /> : <PictureInPicture2 aria-hidden="true" />}
-          <span className="youtube-btn-label">{isFloating ? "Restore" : "Float"}</span>
-        </button>
-      ) : null}
+      <button type="button" className="youtube-tool-btn" title="Summarize this video with the AI model chosen in Settings → Assistants & AI → YouTube summary"
+        aria-label={aiBusy === 'summary' ? 'Summarizing video' : 'Summarize with AI'} disabled={pending || aiBusy !== null} onClick={() => void askAi('summary')}>
+        <Sparkles aria-hidden="true" />
+        <span className="youtube-btn-label">{aiBusy === 'summary' ? 'Summarizing…' : 'Summarize with AI'}</span>
+      </button>
+      <button type="button" className="youtube-tool-btn" title="Everything said in this video, as text, from the AI model chosen in Settings"
+        aria-label={aiBusy === 'transcript' ? 'Getting the full text' : 'Full text'} disabled={pending || aiBusy !== null} onClick={() => void askAi('transcript')}>
+        <Captions aria-hidden="true" />
+        <span className="youtube-btn-label">{aiBusy === 'transcript' ? 'Getting text…' : 'Full text'}</span>
+      </button>
+      <button type="button" className="youtube-tool-btn" title="Download this video into Agent Files and the Video library, at the folder and resolution of this pane's Settings, to cut clips from in a Video pane. Only for videos you have the rights to use."
+        aria-label={download && !download.asset ? 'Downloading video' : 'Download video'} disabled={pending || Boolean(download && !download.asset)} onClick={() => void downloadVideo()}>
+        <Download aria-hidden="true" />
+        <span className="youtube-btn-label">{download && !download.asset ? 'Downloading…' : 'Download'}</span>
+      </button>
+      <button type="button" className="youtube-tool-btn" title="Browse YouTube" aria-label="Browse YouTube" disabled={pending} onClick={browse}>
+        <Youtube aria-hidden="true" />
+        <span className="youtube-btn-label">Browse YouTube</span>
+      </button>
+      </> : null}
+      <button type="button" className="youtube-tool-btn" title="YouTube settings: summary model, download folder and resolution" aria-label="YouTube settings"
+        aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}>
+        <Settings aria-hidden="true" />
+      </button>
     </div> : null}
+    {settingsOpen ? <section className="youtube-summary" aria-label="YouTube pane settings">
+      <header><strong>Settings</strong><small>Your account, every YouTube pane</small>
+        <button type="button" className="youtube-tool-btn" aria-label="Close settings" title="Close" onClick={() => setSettingsOpen(false)}><X aria-hidden="true" /></button>
+      </header>
+      <YouTubeSettingsCard />
+    </section> : null}
     {error ? <div className="youtube-player-message" role="alert"><span>{error}</span>
       <button type="button" onClick={() => { setError(null); if (mode === 'loading') setReload((value) => value + 1); }}> {mode === 'loading' ? 'Retry' : 'Dismiss'} </button>
     </div> : null}
+    {aiBusy ? <p className="youtube-summary" role="status">{aiBusy === 'transcript' ? "Reading the video's captions; a video without them Gemini listens to, about a minute for every 10 minutes of video" : 'Gemini is watching the video'}…</p> : null}
+    {download && !download.asset ? <p className="youtube-summary" role="status">Downloading “{download.title}”; long or 4K videos take several minutes, and Notifications tell you when it is done…</p> : null}
+    {download?.asset ? <section className="youtube-summary" aria-label="Downloaded video">
+      <header><strong title={download.title}>{download.title}</strong>
+        <small>{download.folder ? `Agent Files › ${agentFilesFolderLabel(download.folder)} and the Video library` : 'In the Video library'}{download.asset.width && download.asset.height ? ` · ${download.asset.width}×${download.asset.height}` : ''}</small>
+        <a className="youtube-tool-btn" href={api.artifactFileUrl(download.asset.artifactId)} download={`${download.title.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'video'}.mp4`}
+          title="Save the file to this device" aria-label="Save file"><Download aria-hidden="true" /></a>
+        <button type="button" className="youtube-tool-btn" aria-label="Close" title="Close" onClick={() => setDownload(null)}><X aria-hidden="true" /></button>
+      </header>
+      <p>Open a Video pane to cut clips from it: it is one of the Studio's sources.</p>
+    </section> : null}
+    {aiText ? <section className="youtube-summary" aria-label={aiText.kind === 'summary' ? 'AI summary' : 'Full text'}>
+      <header><strong title={aiText.title}>{aiText.title}</strong><small>{aiText.kind === 'summary' ? 'Summary' : 'Full text'} · {aiText.model}</small>
+        <ChatCopyButton text={aiText.text} label="Copy" />
+        <button type="button" className="youtube-tool-btn" aria-label="Close" title="Close" onClick={() => setAiText(null)}><X aria-hidden="true" /></button>
+      </header>
+      <p>{aiText.text}</p>
+    </section> : null}
     <div className="youtube-content">
       {mode === 'loading' ? <p role="status">{accountSwitching ? 'Switching Google account…' : 'Restoring YouTube…'}</p> : null}
       {mode === 'browse' ? <ManagedYouTubeBrowser key={accountRevision} {...props} targetUrl={targetUrl} /> : null}

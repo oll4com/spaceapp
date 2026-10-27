@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "SPACE_DEV_LOGIN=true SPACE_SESSION_SECRET=dev-only-change-me tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "build:vault-broker": "esbuild src/vault-broker-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/space-vault-broker.mjs \"--banner:js=// space-vault-broker $(git rev-parse --short=10 HEAD) built $(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
     "build": "tsc -p tsconfig.json && cp src/databases/sqlite-worker.py dist/databases/sqlite-worker.py && chmod +x dist/databases/sqlite-worker.py",
     "check": "tsc -p tsconfig.json --noEmit",
     "config:reference": "tsx src/config-reference.ts",
@@ -17,7 +18,6 @@
     "@ai-sdk/gateway": "4.0.87",
     "@fastify/compress": "^9.1.0",
     "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^11.2.0",
     "@fastify/helmet": "^13.0.2",
     "@fastify/multipart": "^10.0.0",
     "@fastify/rate-limit": "^10.3.0",
@@ -36,7 +36,7 @@
     "@temporalio/client": "1.24.0",
     "@xmldom/xmldom": "^0.8.15",
     "@xterm/headless": "^5.5.0",
-    "fastify": "5.12.5",
+    "fastify": "5.12.6",
     "imapflow": "^1.6.6",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
@@ -44,8 +44,8 @@
     "nanoid": "^5.1.6",
     "node-pty": "^1.1.0",
     "pdfjs-dist": "6.3.289",
-    "sanitize-html": "^2.17.7",
-    "zod": "^4.2.1"
+    "sanitize-html": "^2.18.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
@@ -53,7 +53,7 @@
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
-  "license": "BUSL-1.1"
+  "license": "MIT"
 }

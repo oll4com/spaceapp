@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { reloadAfterLocalCliDraftsSaved } from "../terminal-pane/local-cli-draft.js";
 import { DesktopDisplayControls } from "../desktop-screens/DesktopDisplayControls.js";
 import {
   Maximize2,
@@ -7,6 +8,7 @@ import {
   X,
   Download,
   Check,
+  CircleAlert,
   Sparkles,
   Monitor,
   Play,
@@ -23,6 +25,7 @@ import { toggleBrowserFullscreen } from "./fullscreen.js";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import {
   desktopReleaseDownloadUrl,
+  desktopUpdateIsDownloadOnly,
   isDesktopVersionNewer,
   parseDesktopRelease,
   type DesktopReleaseInfo
@@ -116,7 +119,9 @@ export function DesktopWindowTitlebar({
   const [isAboutDialogOpen, setIsAboutDialogOpen] = useState(false);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<"idle" | "in-progress" | "fallback-downloaded" | "installer-ready">("idle");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "in-progress" | "fallback-downloaded" | "installer-ready" | "failed">("idle");
+  const [savedUpdatePath, setSavedUpdatePath] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [activeAspectRatio, setActiveAspectRatio] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -219,6 +224,7 @@ export function DesktopWindowTitlebar({
     ? decodeURIComponent(releaseDownloadUrl.slice(releaseDownloadUrl.lastIndexOf("/") + 1))
     : null;
   const hasUpdate = Boolean(latestRelease && releaseDownloadUrl && isDesktopVersionNewer(latestRelease.version, systemInfo?.version));
+  const isLinuxDesktop = systemInfo?.platform === "linux";
 
   const platformLabel = systemInfo?.platform === "win32"
     ? `Windows (${systemInfo?.arch || "x64"})`
@@ -233,7 +239,7 @@ export function DesktopWindowTitlebar({
 
   const handleReloadWindow = () => {
     setIsAppMenuOpen(false);
-    window.location.reload();
+    void reloadAfterLocalCliDraftsSaved(() => window.location.reload());
   };
 
   const formatDuration = (totalSeconds: number): string => {
@@ -484,45 +490,65 @@ export function DesktopWindowTitlebar({
     }
   };
 
+  const installerFailure = (res: any) =>
+    res?.error ?? (res?.reason === "file-not-found" ? "Setup was not downloaded." : "Setup did not start.");
+
   const handleRunInstaller = async () => {
+    let failure = "Setup did not start.";
     try {
       if ((desktopBridge as any)?.runInstaller) {
         const res = await (desktopBridge as any).runInstaller({ version: targetVersion });
         if (res?.success) return;
+        failure = installerFailure(res);
       }
-      if (desktopBridge?.installUpdate) {
-        await desktopBridge.installUpdate({ version: targetVersion });
-      }
+      if (desktopBridge?.installUpdate && await desktopBridge.installUpdate({ version: targetVersion })) return;
     } catch (err) {
       console.warn("Could not run installer:", err);
     }
+    setUpdateError(failure);
+    setUpdateStatus("failed");
   };
 
   const handleOneClickUpdate = async () => {
     setIsUpdating(true);
     setUpdateStatus("in-progress");
+    setSavedUpdatePath(null);
+    setUpdateError(null);
+    let failure: string | null = null;
 
     try {
-      if (desktopBridge?.installUpdate) {
+      if (desktopBridge?.installUpdate && !desktopUpdateIsDownloadOnly(systemInfo?.platform, systemInfo?.version)) {
         const res = await desktopBridge.installUpdate({
           version: targetVersion,
           url: typeof window !== "undefined" ? window.location.origin : undefined
         });
         if (res) {
-          // Success: update script is executing and the app will close and restart automatically
+          // A package saved for the user to install; otherwise the app replaces itself (or runs Setup) and restarts.
+          if (typeof res === "object" && typeof res.savedTo === "string") {
+            setSavedUpdatePath(res.savedTo);
+            setUpdateStatus("fallback-downloaded");
+            setIsUpdating(false);
+          }
           return;
         }
       }
-      if ((desktopBridge as any)?.runInstaller) {
+      // Linux apps before 0.1.25 started the new AppImage while still holding the single-instance lock, so it quit.
+      if (!isLinuxDesktop && (desktopBridge as any)?.runInstaller) {
         const res = await (desktopBridge as any).runInstaller({ version: targetVersion });
         if (res?.success) return;
+        if (systemInfo?.platform === "win32") failure = installerFailure(res);
       }
     } catch (err) {
       console.warn("One-click update execution notice:", err);
     }
 
-    // Fallback only if no desktop bridge was available (e.g. running in standard browser)
-    setUpdateStatus(handleDownloadSetup() ? "fallback-downloaded" : "idle");
+    // Windows could not start Setup: the app stays open and says why, instead of downloading the same Setup again.
+    if (failure) {
+      setUpdateError(failure);
+      setUpdateStatus("failed");
+    } else {
+      setUpdateStatus(handleDownloadSetup() ? "fallback-downloaded" : "idle");
+    }
     setIsUpdating(false);
   };
 
@@ -956,17 +982,23 @@ export function DesktopWindowTitlebar({
                   </div>
                 )}
 
-                {(updateStatus === "fallback-downloaded" || updateStatus === "installer-ready") && (
-                  <div className="desktop-window-update-status-box success">
+                {(updateStatus === "fallback-downloaded" || updateStatus === "installer-ready" || updateStatus === "failed") && (
+                  <div className={`desktop-window-update-status-box ${updateStatus === "failed" ? "failed" : "success"}`} role={updateStatus === "failed" ? "alert" : undefined}>
                     <div className="desktop-window-update-status-header">
-                      <Check aria-hidden="true" style={{ width: 16, height: 16, color: "#3fb950" }} />
-                      <strong>Setup Installer Ready in Downloads</strong>
+                      {updateStatus === "failed"
+                        ? <CircleAlert aria-hidden="true" style={{ width: 16, height: 16, color: "#f85149" }} />
+                        : <Check aria-hidden="true" style={{ width: 16, height: 16, color: "#3fb950" }} />}
+                      <strong>{updateStatus === "failed" ? "Update did not start" : isLinuxDesktop ? `SpaceApp ${targetVersion} downloaded` : "Setup Installer Ready in Downloads"}</strong>
                     </div>
                     <p>
-                      {`${releaseDownloadName ?? `SpaceApp ${targetVersion}`} was saved to your Downloads folder.`}
+                      {updateStatus === "failed"
+                        ? `${updateError ?? "Setup did not start."} SpaceApp stays open: run ${releaseDownloadName ?? `SpaceApp-Setup-${targetVersion}.exe`} from your Downloads folder. Each step is in SpaceApp's logs\\main.log.`
+                        : isLinuxDesktop
+                        ? `${savedUpdatePath ? `Saved to ${savedUpdatePath}.` : `Save ${releaseDownloadName ?? `SpaceApp ${targetVersion}`} when asked.`} Then close SpaceApp, put the new file in place of your current AppImage (or install the .deb), make it executable and start it.`
+                        : `${releaseDownloadName ?? `SpaceApp ${targetVersion}`} was saved to your Downloads folder.`}
                     </p>
                     <div style={{ display: "flex", gap: "8px", marginTop: "10px", flexWrap: "wrap" }}>
-                      <button
+                      {!isLinuxDesktop && <button
                         type="button"
                         className="desktop-window-update-run-btn"
                         onClick={handleRunInstaller}
@@ -986,7 +1018,7 @@ export function DesktopWindowTitlebar({
                       >
                         <Play aria-hidden="true" style={{ width: 13, height: 13 }} />
                         <span>Run Installer Now</span>
-                      </button>
+                      </button>}
                       <button
                         type="button"
                         className="desktop-window-update-open-btn"
@@ -1009,9 +1041,9 @@ export function DesktopWindowTitlebar({
                         <span>Open Downloads Folder</span>
                       </button>
                     </div>
-                    <small style={{ display: "block", marginTop: "8px", color: "#8b949e", fontSize: "11px" }}>
+                    {!isLinuxDesktop && <small style={{ display: "block", marginTop: "8px", color: "#8b949e", fontSize: "11px" }}>
                       Running the installer will automatically close SpaceApp, install v{targetVersion}, and reopen.
-                    </small>
+                    </small>}
                   </div>
                 )}
 

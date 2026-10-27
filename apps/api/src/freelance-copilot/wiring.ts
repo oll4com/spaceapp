@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eventSchema, type FreelanceEvent, type FreelanceRun, type Pane } from "@space/contracts";
 import { InMemoryFreelanceCopilotRepository, PostgresFreelanceCopilotRepository, type FreelanceCopilotRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
+import { submitCliPrompt } from "../cli-prompt-submit.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import type { ConnectorCrypto } from "../dot-connectors.js";
 import type { MailboxFactory } from "../job-apply/mailbox.js";
@@ -20,7 +21,7 @@ export interface FreelanceCopilotWiring extends Omit<FreelanceCopilotRouteDepend
   repository?: FreelanceCopilotRepository;
   /** Tests replace the CLI kickoff of a run. */
   kickoff?: (pane: Pane, run: FreelanceRun) => Promise<void>;
-  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "ensurePaneControlReady">;
+  terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput" | "observeRoomScreenUndimmed" | "ensurePaneControlReady">;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
   /** The instance job `freelance-copilot-scheduler` (stable; dev opts in). */
@@ -108,9 +109,7 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
     const session = await activeSession(pane) ?? await terminal.ensurePaneControlReady(pane, traceId);
     if (!session) throw new SpaceConflictError("The copilot's CLI could not start.");
     await terminal.runSerializedTerminalMutation(session.sessionId, async () => {
-      await terminal.sendInput(session.sessionId, KICKOFF(run.id), traceId, null, `${traceId}:kickoff`, true);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      await terminal.sendInput(session.sessionId, "\r", traceId, null, `${traceId}:kickoff-submit`);
+      await submitCliPrompt(terminal, session.sessionId, KICKOFF(run.id), traceId, `${traceId}:kickoff`, { waitForComposer: true });
     });
   });
   registerFreelanceCopilotRoutes(app, service, { ...deps, kickoff });

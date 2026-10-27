@@ -4,9 +4,11 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const KEY_VERSION = 2;
 
+// Data at rest shares the connectors' secret (security addendum step 9), so rotating the session secret, once
+// SPACE_CONNECTOR_SECRET is pinned to its old value, leaves stored passwords readable. Unset, it is the session secret.
 function sessionSecret(): string {
-  const secret = process.env.SPACE_SESSION_SECRET;
-  if (!secret) throw new Error("Stored database passwords need SPACE_SESSION_SECRET, which is not set.");
+  const secret = process.env.SPACE_CONNECTOR_SECRET || process.env.SPACE_SESSION_SECRET;
+  if (!secret) throw new Error("Stored database passwords need SPACE_CONNECTOR_SECRET or SPACE_SESSION_SECRET, which is not set.");
   return secret;
 }
 
@@ -43,7 +45,8 @@ export function decryptSecret(encryptedPayload: string | null | undefined): stri
   try {
     const parsed = JSON.parse(encryptedPayload) as { v?: number; iv: string; ciphertext: string; tag: string };
     const key = parsed.v === KEY_VERSION ? getEncryptionKey() : legacyEncryptionKey();
-    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"));
+    // A full 16-byte tag is required: GCM would otherwise accept a truncated one (external review 2026-10-16).
+    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"), { authTagLength: 16 });
     decipher.setAuthTag(Buffer.from(parsed.tag, "base64"));
     return decipher.update(Buffer.from(parsed.ciphertext, "base64")) + decipher.final("utf8");
   } catch {

@@ -5,13 +5,13 @@
 <p align="center">
   <a href="https://github.com/oll4com/spaceapp/releases"><img src="https://img.shields.io/github/v/release/oll4com/spaceapp?color=00d2b4&label=release" alt="GitHub Release"></a>
   <a href="https://www.npmjs.com/package/run-spaceapp"><img src="https://img.shields.io/npm/v/run-spaceapp?color=00d2b4&label=npm%20run-spaceapp" alt="npm package"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%2011-orange.svg" alt="Platform Support">
   <img src="https://img.shields.io/badge/docker-self--hosted-2496ed.svg" alt="Docker Self-Hosted">
   <img src="https://img.shields.io/badge/first%20CLI-OpenCode-success.svg" alt="OpenCode first CLI">
 </p>
 
-<h3 align="center">The Source-Available, Self-Hosted Multi-Agent AI Coding Workspace</h3>
+<h3 align="center">The Open-Source, Self-Hosted Multi-Agent AI Coding Workspace</h3>
 
 <p align="center">
   Run <b>OpenCode</b>, <b>OpenAI Codex</b>, <b>Claude Code</b>, <b>Google Gemini</b>, <b>Qwen</b>, <b>Kimi</b>, <b>Grok</b>, and <b>DeepSeek</b> concurrently in persistent rooms on your own machine. Rooms organize sessions; they are not a security boundary between mutually untrusted users.
@@ -43,7 +43,7 @@ Run up to 16 AI coding assistants, terminals, or workspace monitors simultaneous
   <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-16-pane-matrix.png" alt="SpaceApp 16-Pane Multi-Agent Workspace" width="950" />
 </p>
 
-*Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot, Hermes, Droid, and terminal tools in a live 16-pane room grid.*
+*Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot and terminal tools in a live 16-pane room grid (screenshot of the maintainers' instance; Hermes and Droid there are not available in the public installer).*
 
 ### 2. Live Agent Execution & Streaming Telemetry
 Watch agent output, shell commands and test runs as they stream from each pane. Token usage appears where the runtime reports it (for example Codex rollouts); otherwise it is shown as unavailable:
@@ -106,7 +106,7 @@ npx --yes run-spaceapp@latest install
 
 ### What Happens Next (Step-by-Step Onboarding):
 1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
-2. **Container Initialization**: Pulls SpaceApp's images by exact version tag (published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
+2. **Container Initialization**: Pulls SpaceApp's images by the digest the npm package pins (from run-spaceapp 1.1.7; earlier packages by exact version tag; published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.
 5. **Start Coding with OpenCode**: Open the Getting Started room, verify the available provider/model and complete its authentication if required. Submit a small task and check its actual result.
@@ -156,7 +156,7 @@ By default, the SpaceApp containers get no bind mount of your host filesystem: a
 | `workspace list` | Lists all currently registered workspaces and their mount IDs. | `npx --yes run-spaceapp@latest workspace list` |
 | `workspace remove <path>` | Unregisters a workspace from the SpaceApp environment. | `npx --yes run-spaceapp@latest workspace remove /home/user/my-project` |
 
-> *Note: After adding or removing workspaces, run `npx --yes run-spaceapp@latest up` to apply the updated mounts to the running stack.*
+> *Note: `workspace add` and `workspace remove` apply at once: they recreate the core and CLI services with the new mounts.*
 
 ### 🤖 AI Providers & Credentials
 
@@ -334,12 +334,11 @@ npx.cmd --yes run-spaceapp@latest install
 
 ## 📄 License
 
-SpaceApp is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE).
+SpaceApp is licensed under the [MIT License](LICENSE). The copyright holder is INTRATRADE SINGLE MEMBER P.C. (Greek: INTRATRADE ΜΟΝΟΠΡΟΣΩΠΗ Ι.Κ.Ε.), the company that develops SpaceApp. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
 
-SpaceApp is source-available, not open source, until its Change Date. The licensor is oll4.com. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
-
-- **Permitted use**: The license lets you copy, modify, create derivative works, redistribute and make non-production use of SpaceApp. Its Additional Use Grant also permits production use, including self-hosting and internal business operations.
-- **Use limitation**: You may not make SpaceApp's functionality available to third parties as a hosted or managed service, application service provider (ASP) or software-as-a-service (SaaS) offering that competes with oll4.com products or services.
-- **Change Date**: On **2030-10-01** (October 1, 2030), the licensed version becomes available under the **Apache License, Version 2.0**.
+- **Use**: You may use, copy, modify, merge, publish, distribute, sublicense and sell SpaceApp, including self-hosting and internal business operations, as long as the copyright and permission notice stay with every copy.
+- **Contributions**: Contributions are accepted under the MIT License (inbound = outbound) with a Developer Certificate of Origin 1.1 sign-off; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Earlier releases**: Every published version keeps the license it was released under: v0.1.3 to v1.0.2 under the Apache License, Version 2.0, and v1.0.31 to 1.1.6 under the Business Source License 1.1. SpaceApp is MIT from 1.1.7. The `run-spaceapp` launcher was Apache-2.0 up to 1.1.6 and is MIT from 1.1.7. <!-- claims:historical -->
+- **Third-party code**: Parts taken from other projects keep their own license and notices, for example the Apache-2.0 code listed in `THIRD_PARTY_LICENSES`.
 
 *Integrated AI provider CLIs (Claude, Codex, Gemini, etc.) remain subject to their respective third-party licenses and terms. See [Third-Party Notices](https://github.com/oll4com/spaceapp/blob/main/THIRD_PARTY_NOTICES.md).*

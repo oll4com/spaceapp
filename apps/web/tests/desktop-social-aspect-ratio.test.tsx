@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DesktopWindowTitlebar } from "../src/features/desktop-titlebar/DesktopWindowTitlebar.js";
+import { registerLocalCliDraftReloadGuard } from "../src/features/terminal-pane/local-cli-draft.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -94,6 +95,35 @@ describe("DesktopWindowTitlebar Social Aspect Ratio & Window Recording", () => {
     await waitFor(() => {
       expect(mockBridge.capturePage).toHaveBeenCalled();
     });
+  });
+
+  it("checks unsaved drafts before the desktop Reload Window action", async () => {
+    const guard = vi.fn(() => false);
+    const unregister = registerLocalCliDraftReloadGuard(guard);
+    try {
+      render(<DesktopWindowTitlebar activeRoomName="Room 1" />);
+      fireEvent.click(await screen.findByRole("button", { name: /SpaceApp/i }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /Reload Window/i }));
+      await waitFor(() => expect(guard).toHaveBeenCalledOnce());
+    } finally { unregister(); }
+  });
+
+  it("keeps the app open and shows why when Windows did not start Setup", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: "0.1.19", installerUrl: "/api/desktop/download/SpaceApp-Setup-0.1.19.exe" })
+    }));
+    mockBridge.installUpdate = vi.fn().mockResolvedValue(false);
+    mockBridge.runInstaller = vi.fn().mockResolvedValue({ success: false, reason: "launch-failed", error: "spawn UNKNOWN" });
+    try {
+      render(<DesktopWindowTitlebar activeRoomName="Room 1" />);
+      fireEvent.click(await screen.findByText("Update v0.1.19!"));
+      fireEvent.click(await screen.findByRole("button", { name: /Update & Restart SpaceApp/i }));
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain("Update did not start");
+      expect(alert.textContent).toContain("spawn UNKNOWN");
+      expect(mockBridge.runInstaller).toHaveBeenCalledWith({ version: "0.1.19" });
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("enforces titlebar button height constraints to prevent overflow past titlebar or adjacent buttons", async () => {

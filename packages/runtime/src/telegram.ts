@@ -69,7 +69,15 @@ const telegramUpdateSchema = z.object({
   update_id: z.number().int().nonnegative(),
   message: z.object({
     text: z.string().max(4096).optional(),
-    chat: telegramChatSchema
+    chat: telegramChatSchema,
+    /** The message this one replies to (Nous two-way, 2026-10-24: a reply to a decision card answers that decision). */
+    reply_to_message: z.object({ text: z.string().max(4096).optional() }).optional()
+  }).optional(),
+  /** An inline keyboard button pressed (Nous two-way: Approve/Decline on a decision card). */
+  callback_query: z.object({
+    id: z.string().max(64),
+    data: z.string().max(64).optional(),
+    message: z.object({ chat: telegramChatSchema }).optional()
   }).optional()
 });
 
@@ -105,6 +113,8 @@ export interface TelegramUpdate {
   updateId: number;
   message?: {
     text?: string;
+    /** The text of the message this one replies to, when it is a reply. */
+    replyToText?: string;
     chat: {
       id: string;
       type: "private" | "group" | "supergroup" | "channel";
@@ -114,6 +124,17 @@ export interface TelegramUpdate {
       title?: string;
     };
   };
+  /** An inline keyboard button pressed: its query id (to acknowledge), its data and the chat it was pressed in. */
+  callbackQuery?: { id: string; data?: string; chatId?: string };
+}
+
+/** Telegram's inline keyboard: rows of buttons whose press comes back as a callback_query with the button's data (≤ 64 bytes). */
+export interface TelegramInlineKeyboard { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }
+export interface TelegramGetUpdatesOptions {
+  /** The update kinds to receive (Telegram remembers the last list); "message" alone by default, as the pairing needs. */
+  allowed?: Array<"message" | "callback_query">;
+  /** Long polling: Telegram holds the request this long when nothing is new (0 answers at once); the client's timeout must exceed it. */
+  timeoutSeconds?: number;
 }
 
 export interface TelegramBotClient {
@@ -195,18 +216,21 @@ export class TelegramBotApiClient implements TelegramBotClient {
     return this.request("getWebhookInfo", telegramWebhookInfoSchema);
   }
 
-  async getUpdates(offset: number): Promise<TelegramUpdate[]> {
+  async getUpdates(offset: number, options: TelegramGetUpdatesOptions = {}): Promise<TelegramUpdate[]> {
     const result = await this.request("getUpdates", z.array(telegramUpdateSchema).max(100), {
       offset: String(Math.max(0, Math.trunc(offset))),
       limit: "100",
-      timeout: "0",
-      allowed_updates: JSON.stringify(["message"])
+      timeout: String(Math.max(0, Math.min(25, Math.trunc(options.timeoutSeconds ?? 0)))),
+      allowed_updates: JSON.stringify(options.allowed ?? ["message"])
     });
     return result.map((update) => ({
       updateId: update.update_id,
+      ...(update.callback_query ? { callbackQuery: { id: update.callback_query.id, ...(update.callback_query.data === undefined ? {} : { data: update.callback_query.data }),
+        ...(update.callback_query.message ? { chatId: String(update.callback_query.message.chat.id) } : {}) } } : {}),
       message: update.message
         ? {
             ...(update.message.text === undefined ? {} : { text: update.message.text }),
+            ...(update.message.reply_to_message?.text === undefined ? {} : { replyToText: update.message.reply_to_message.text }),
             chat: {
               id: String(update.message.chat.id),
               type: update.message.chat.type,
@@ -220,13 +244,18 @@ export class TelegramBotApiClient implements TelegramBotClient {
     }));
   }
 
-  async sendMessage(chatId: string, text: string): Promise<{ messageId: string }> {
+  async sendMessage(chatId: string, text: string, options: { replyMarkup?: TelegramInlineKeyboard } = {}): Promise<{ messageId: string }> {
     if (!/^-?\d{1,24}$/.test(chatId)) throw new TelegramApiError("TELEGRAM_CHAT_INVALID", 400, null, true);
     if (!text || Array.from(text).length > 4096) {
       throw new TelegramApiError("TELEGRAM_MESSAGE_INVALID", 400, null, true);
     }
-    const result = await this.request("sendMessage", telegramMessageSchema, { chat_id: chatId, text });
+    const result = await this.request("sendMessage", telegramMessageSchema, { chat_id: chatId, text, ...(options.replyMarkup ? { reply_markup: JSON.stringify(options.replyMarkup) } : {}) });
     return { messageId: String(result.message_id) };
+  }
+
+  /** Acknowledges a pressed inline button (Telegram shows `text` to the operator; without the call the button keeps spinning). */
+  async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+    await this.request("answerCallbackQuery", z.boolean(), { callback_query_id: callbackQueryId.slice(0, 64), ...(text ? { text: text.slice(0, 200) } : {}) });
   }
 }
 
@@ -355,6 +384,8 @@ export interface TelegramPersistence {
   recordTested(now: string): Promise<TelegramIntegrationRecord>;
   disconnect(now: string): Promise<{ integration: TelegramIntegrationRecord; secretVersions: string[] }>;
   markError(code: string, now: string): Promise<TelegramIntegrationRecord>;
+  /** The connected chat's polling offset after Nous read its updates (never moves backwards); the pairing keeps its own. */
+  updateIntegrationOffset(pollingOffset: number, now: string): Promise<void>;
 }
 
 function copyIntegration(value: TelegramIntegrationRecord): TelegramIntegrationRecord {
@@ -452,6 +483,10 @@ export class InMemoryTelegramPersistence implements TelegramPersistence {
     if (!pairing || pairing.status !== "PENDING") return;
     this.pairings.set(pairingId, { ...pairing, pollingOffset: Math.max(pairing.pollingOffset, pollingOffset) });
     this.integration = { ...this.integration, updatedAt: now };
+  }
+
+  async updateIntegrationOffset(pollingOffset: number, now: string): Promise<void> {
+    this.integration = { ...this.integration, pollingOffset: Math.max(this.integration.pollingOffset, Math.max(0, Math.trunc(pollingOffset))), updatedAt: now };
   }
 
   async expirePairing(pairingId: string, now: string): Promise<void> {
