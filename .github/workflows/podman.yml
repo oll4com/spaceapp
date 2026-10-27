@@ -32,13 +32,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # ubuntu-latest currently includes Podman 4.9; use the Linux Homebrew bottle for >=5.
+          # Install the supported engine/provider independently of the runner's bundled version.
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           brew install podman docker-compose
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
           echo "PODMAN_COMPOSE_PROVIDER=$(brew --prefix)/bin/docker-compose" >> "$GITHUB_ENV"
           sudo apt-get update
           sudo apt-get install -y uidmap
+          # Keep the new engine separate from bundled rootful storage/configuration.
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/spaceapp-podman-config"
+          export XDG_DATA_HOME="$RUNNER_TEMP/spaceapp-podman-data"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export CONTAINERS_STORAGE_CONF="$XDG_CONFIG_HOME/containers/storage.conf"
+          export CONTAINERS_CONF="$XDG_CONFIG_HOME/containers/containers.conf"
+          mkdir -p "$XDG_CONFIG_HOME/containers" "$XDG_DATA_HOME/containers/storage" "$XDG_RUNTIME_DIR/containers"
+          cat > "$CONTAINERS_STORAGE_CONF" <<EOF
+          [storage]
+          driver = "overlay"
+          runroot = "$XDG_RUNTIME_DIR/containers"
+          graphroot = "$XDG_DATA_HOME/containers/storage"
+          rootless_storage_path = "$XDG_DATA_HOME/containers/storage"
+          EOF
+          cat > "$CONTAINERS_CONF" <<EOF
+          [engine]
+          static_dir = "$XDG_DATA_HOME/containers/storage/libpod"
+          volume_path = "$XDG_DATA_HOME/containers/storage/volumes"
+          tmp_dir = "$XDG_RUNTIME_DIR/libpod/tmp"
+          cgroup_manager = "systemd"
+          events_logger = "file"
+          EOF
+          printf '%s\n' "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" "XDG_DATA_HOME=$XDG_DATA_HOME" \
+            "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "CONTAINERS_STORAGE_CONF=$CONTAINERS_STORAGE_CONF" \
+            "CONTAINERS_CONF=$CONTAINERS_CONF" >> "$GITHUB_ENV"
           # Grant user namespaces to this engine binary on Ubuntu's restricted-userns hosts.
           # This leaves the system restriction and other applications' profiles in place.
           if command -v apparmor_parser >/dev/null; then
