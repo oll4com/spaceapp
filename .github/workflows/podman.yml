@@ -51,7 +51,6 @@ jobs:
           driver = "overlay"
           runroot = "$XDG_RUNTIME_DIR/containers"
           graphroot = "$XDG_DATA_HOME/containers/storage"
-          rootless_storage_path = "$XDG_DATA_HOME/containers/storage"
           EOF
           cat > "$CONTAINERS_CONF" <<EOF
           [engine]
@@ -72,6 +71,14 @@ jobs:
           fi
           test "$(id -u)" != 0
           podman info --format json
+          # Exercise the same UID mapping before the full application build.
+          probe=$(mktemp -d "$RUNNER_TEMP/podman-ownership.XXXXXX")
+          trap 'rm -rf -- "$probe"' EXIT
+          podman run --rm --network none --userns keep-id:uid=10001,gid=10001 --user 10001:10001 \
+            -v "$probe:/probe" \
+            docker.io/library/node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 \
+            node -e 'if (process.getuid() !== 10001) process.exit(1); require("node:fs").writeFileSync("/probe/owned", "ok")'
+          test "$(stat -c '%u' "$probe/owned")" = "$(id -u)"
       - name: Unit tests and runtime images
         shell: bash
         run: |
