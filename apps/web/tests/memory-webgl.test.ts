@@ -8,9 +8,11 @@ import {
 import { MemoryPickIndex } from "../src/features/memory-workspace/memory-3d-picking.js";
 import {
   memoryLabelCandidates,
+  createMemoryLabelIndex,
   selectMemoryLabels,
   LABEL_CANDIDATES,
   LABEL_LIMIT,
+  LABEL_PROJECTIONS,
 } from "../src/features/memory-workspace/memory-3d-labels.js";
 import { syntheticMemoryGraph } from "../src/demo/synthetic-memory-graph.js";
 
@@ -29,10 +31,7 @@ describe("large memory graph primitives", () => {
     expect(stepper.snapshot()).not.toEqual(first);
   });
   it("bounds labels at50k while preserving core and focused-node priority", () => {
-    const { nodes } = syntheticMemoryGraph(50000),
-      candidates = memoryLabelCandidates(nodes);
-    expect(candidates.length).toBeLessThanOrEqual(LABEL_CANDIDATES);
-    expect(candidates[0]!.label).toBe("gemini.md");
+    const { nodes } = syntheticMemoryGraph(50000);
     let measured = 0;
     const coords = new Map(
       nodes.map((n, i) => [
@@ -40,6 +39,9 @@ describe("large memory graph primitives", () => {
         { x: (i % 50) - 25, y: (Math.floor(i / 50) % 50) - 25, z: 0 },
       ]),
     );
+    const candidates = memoryLabelCandidates(createMemoryLabelIndex(nodes), coords, DEFAULT_MEMORY_CAMERA, 4, 1000, 700);
+    expect(candidates.length).toBeLessThanOrEqual(LABEL_CANDIDATES);
+    expect(candidates[0]!.label).toBe("gemini.md");
     const result = selectMemoryLabels(
       candidates,
       nodes[49999],
@@ -66,6 +68,30 @@ describe("large memory graph primitives", () => {
             a.x + a.width + 5 > b.x,
         ).toBe(false);
       }
+  });
+  it("selects visible late nodes and nearby memories as the camera changes", () => {
+    const { nodes } = syntheticMemoryGraph(300);
+    nodes.forEach((node, i) => { node.type = i < 200 ? "SOURCE" : "MEMORY"; node.label = `node ${i}`; });
+    const coords = new Map(nodes.map((node, i) => [node.id, i < 150 ? { x: 1000, y: 0, z: 0 } : { x: 0, y: 0, z: 1000 }]));
+    const index = createMemoryLabelIndex(nodes);
+    const first = memoryLabelCandidates(index, coords, { yaw: 0, pitch: 0, zoom: 2 }, 1, 400, 300);
+    expect(first.every(node => nodes.indexOf(node) >= 150)).toBe(true);
+    expect(first.some(node => node.type === "MEMORY")).toBe(true);
+    const rotated = memoryLabelCandidates(index, coords, { yaw: Math.PI / 2, pitch: 0, zoom: 2 }, 1, 400, 300);
+    expect(rotated.length).toBeGreaterThan(0);
+    expect(rotated.every(node => nodes.indexOf(node) < 150)).toBe(true);
+  });
+  it("bounds viewport projection work and reserves memory labels in source-heavy scenes", () => {
+    const { nodes } = syntheticMemoryGraph(50000);
+    nodes.forEach((node, i) => { node.type = i < 25000 ? "SOURCE" : "MEMORY"; });
+    let projections = 0;
+    const coords = new Map(nodes.map(node => [node.id, { x: 0, y: 0, z: 0 }]));
+    const get = coords.get.bind(coords);
+    coords.get = id => { projections++; return get(id); };
+    const candidates = memoryLabelCandidates(createMemoryLabelIndex(nodes), coords, { yaw: 0, pitch: 0, zoom: 2 }, 1, 400, 300);
+    expect(projections).toBeLessThanOrEqual(LABEL_PROJECTIONS);
+    expect(candidates.length).toBeLessThanOrEqual(LABEL_CANDIDATES);
+    expect(candidates.filter(node => node.type === "MEMORY").length).toBeGreaterThanOrEqual(24);
   });
   it("BVH picking matches exhaustive frontmost circles through camera rotation and zoom", () => {
     const xyz = new Float32Array(2000 * 3),

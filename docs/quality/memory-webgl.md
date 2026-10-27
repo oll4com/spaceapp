@@ -7,9 +7,11 @@ query and limit. The 2D view continues using its independent default overview.
 
 Nodes use WebGL2 instanced quads; edges use a batched line buffer. GPU depth
 replaces per-frame node sorting. A median BVH is rebuilt on layout updates;
-pointer and camera moves query it without rebuilding it. Label selection
-measures at most 96 candidates and draws at most 40 labels, prioritizing the
-focused node, core and sources. Titles can still be hidden.
+pointer and camera moves query it without rebuilding it. Label selection samples
+at most 2,048 positions per frame across the full scene, selects visible candidates
+nearest the viewport center and measures at most 96 labels. It draws at most 40,
+prioritizing the focused node, core and sources while reserving candidates for
+nearby memories when zoomed in. Titles can still be hidden.
 
 The existing worker sends a seed and six deterministic layout snapshots.
 Live overview responses above 2,000 nodes transfer their bytes to that worker
@@ -19,8 +21,10 @@ Input messages and GPU scene
 preparation yield between bounded batches; the previous scene stays usable
 until a replacement is ready. A superseded search or view terminates its
 worker and ignores stale results. Context loss immediately exposes a capped
-Canvas fallback and requests a capped overview; restoration restores WebGL
-and the larger overview. There is no database migration or new render package.
+Canvas fallback while retaining the full graph and layout; restoration restores
+WebGL without another overview request. Unsupported WebGL2 or permanent
+initialization failure requests a capped overview. There is no database migration
+or new render package.
 
 ## Reproduce
 
@@ -48,6 +52,9 @@ synchronous hover handler. It also checks pointer/keyboard selection, titles,
 context loss/recovery and a separate `--disable-webgl` browser. The JSON keeps
 all measured frame and pointer samples, errors, GPU identity and long tasks.
 These are browser frame intervals, not GPU timer-query durations.
+The 3D interval excludes cold fixture construction; a separate fresh-page
+measurement covers the 50,000-node synthetic construction after module loading.
+The harness fails on frame, picking, load-task or recovery-request budget errors.
 
 ## Executed measurement — 27 October 2026
 
@@ -58,21 +65,24 @@ Raw measurements: [memory-webgl-benchmark.json](memory-webgl-benchmark.json).
 
 | Nodes / edges | p95 frame interval | Maximum pointer handler |
 | --- | ---: | ---: |
-| 2,000 / 6,000 | 10.1 ms | 0.50 ms |
+| 2,000 / 6,000 | 10.0 ms | 0.91 ms |
 | 10,000 / 30,000 | 10.1 ms | 0.41 ms |
-| 50,000 / 150,000 | 10.1 ms | 0.70 ms |
+| 50,000 / 150,000 | 9.9 ms | 0.31 ms |
 
 No main-thread task of 50 ms or longer was observed during the measured 3D
 load/layout intervals. All three sizes passed interaction, title, selection,
-and context-loss restoration checks with no page errors. The separate
+and context-loss restoration checks with no page errors or overview reloads. The separate
 WebGL-disabled run showed the capped Canvas renderer.
 
-A separate harness invocation exercised the actual live API response decoder
+The same harness invocation separately exercised the actual live API response decoder
 with a synthetic HTTP response: 50,000 nodes, 150,000 edges, 46,477,893 bytes,
-586.5 ms elapsed including transfer and decoding, and no observed main-thread
+560.4 ms elapsed including transfer and decoding, and no observed main-thread
 task of 50 ms or longer. This runs on an isolated page after module loading,
 so application boot is outside the measurement. Set `MEMORY_BENCH_COUNTS=""`
-to repeat only this decoder check and the WebGL-disabled fallback.
+to repeat the cold construction, decoder and WebGL-disabled fallback checks.
+
+Cold synthetic construction on a fresh page produced 50,000 nodes and 150,000
+edges in 228.6 ms, with no observed main-thread task of 50 ms or longer.
 
 The API test `large overview budgets` uses the real authenticated Fastify route
 with a synthetic 50,000-node/150,000-edge snapshot. Its measured response was
@@ -90,7 +100,7 @@ npm test -w @space/web -- memory
 ## Validation scope
 
 Node 22.23.1: root `npm run check` and `npm run build` passed. The full web
-suite passed 4,128 tests; the final Memory subset passed 54 tests, including
+suite passed 4,132 tests; the final Memory subset passed 58 tests, including
 stream cancellation/error handling and BVH agreement with exhaustive picking
 at rotated/zoomed and perspective-clamped cameras.
 

@@ -7,8 +7,9 @@ import {
 } from "./memory-3d.js";
 export const LABEL_CANDIDATES = 96;
 export const LABEL_LIMIT = 40;
-/** Bound per-frame projection, measurement and collision work independently of graph size. */
-export function memoryLabelCandidates(nodes: MemoryGraphNode[]) {
+export const LABEL_PROJECTIONS = 2048;
+/** Index complete priority groups once per scene for bounded viewport sampling. */
+export function createMemoryLabelIndex(nodes: MemoryGraphNode[]) {
   const core: MemoryGraphNode[] = [],
     source: MemoryGraphNode[] = [],
     rest: MemoryGraphNode[] = [];
@@ -18,10 +19,50 @@ export function memoryLabelCandidates(nodes: MemoryGraphNode[]) {
       : node.type === "SOURCE"
         ? source
         : rest;
-    if (bucket.length < LABEL_CANDIDATES) bucket.push(node);
+    bucket.push(node);
   }
-  return [...core, ...source, ...rest].slice(0, LABEL_CANDIDATES);
+  return { groups: [core, source, rest], count: nodes.length };
 }
+/** Sample the current viewport with bounded projection work, then rank visible candidates. */
+export function memoryLabelCandidates(
+  index: ReturnType<typeof createMemoryLabelIndex>,
+  coordinates: Map<string, MemoryPoint3D>,
+  camera: MemoryCamera3D,
+  scale: number,
+  width: number,
+  height: number,
+) {
+  const groups = camera.zoom >= 1.6 ? index.groups : index.groups.slice(0, 2);
+  const budgets = index.count <= LABEL_PROJECTIONS
+    ? groups.map(group => group.length)
+    : groups.map((group, i) => Math.min(group.length, [64, 512, 1472][i]!));
+  let spare = LABEL_PROJECTIONS - budgets.reduce((sum, count) => sum + count, 0);
+  for (let i = 0; i < groups.length; i++) {
+    const extra = Math.min(spare, groups[i]!.length - budgets[i]!);
+    budgets[i]! += extra;
+    spare -= extra;
+  }
+  const visible = groups.map((group, bucket) => {
+    const count = budgets[bucket]!;
+    const projected: Array<{ node: MemoryGraphNode; distance: number }> = [];
+    for (let i = 0; i < count; i++) {
+      // Include both ends; large groups are sampled evenly, not truncated by insertion order.
+      const node = group[count === 1 ? 0 : Math.floor(i * (group.length - 1) / (count - 1))]!;
+      const point = coordinates.get(node.id);
+      if (!point) continue;
+      const p = projectMemoryPoint(point, camera, scale, width, height);
+      if (p.x < 0 || p.x > width - 9 || p.y < 14 || p.y > height - 5) continue;
+      projected.push({ node, distance: (p.x - width / 2) ** 2 + (p.y - height / 2) ** 2 });
+    }
+    return projected.sort((a, b) => a.distance - b.distance).slice(0, LABEL_CANDIDATES).map(p => p.node);
+  });
+  // Reserve room for nearby memories when zoomed in, even in source-heavy graphs.
+  const memories = visible[2] ?? [];
+  const reserved = Math.min(24, memories.length);
+  const priorities = [...visible[0]!, ...visible[1]!].slice(0, LABEL_CANDIDATES - reserved);
+  return [...priorities, ...memories].slice(0, LABEL_CANDIDATES);
+}
+/** Measure only bounded viewport candidates and reject overlapping label rectangles. */
 export function selectMemoryLabels(
   candidates: MemoryGraphNode[],
   focus: MemoryGraphNode | undefined,
@@ -47,7 +88,7 @@ export function selectMemoryLabels(
   )) {
     if (seen.has(node.id)) continue;
     seen.add(node.id);
-    if (node.type !== "SOURCE" && node !== focus && camera.zoom < 1.6) continue;
+    if (node.type !== "SOURCE" && !isMemoryCoreLabel(node.label) && node !== focus && camera.zoom < 1.6) continue;
     const point = coordinates.get(node.id);
     if (!point) continue;
     const p = projectMemoryPoint(point, camera, scale, width, height),

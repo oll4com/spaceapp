@@ -26,6 +26,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   // Mobile shows the Calendar list only: no graph canvas (ADR-006) and no review panels.
   const workspaceMode = shellMode === "mobile" ? "calendar" : selectedMode;
   const [view3D, setView3D] = useState(false);
+  // Transient context loss swaps the local renderer only; retain the large graph for recovery.
   const [webGLAvailable, setWebGLAvailable] = useState(supportsMemoryWebGL2);
   const [showTitles, setShowTitles] = useState(true);
   const [reset3D, setReset3D] = useState(0);

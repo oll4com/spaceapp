@@ -72,14 +72,29 @@ try {
     await page.waitForSelector(".memory-atlas-detail", { state: "detached" });
     const extension = await canvas.evaluate(c => !!c.getContext("webgl2").getExtension("WEBGL_lose_context"));
     if (!extension) throw new Error("Context loss extension unavailable");
+    await page.evaluate(async () => {
+      const { api } = await import("/src/api.ts");
+      const overview = api.memoryGraphOverview;
+      window.memoryBenchRecoveryRequests = 0;
+      api.memoryGraphOverview = (...args) => {
+        window.memoryBenchRecoveryRequests++;
+        return overview(...args);
+      };
+    });
     await canvas.evaluate(c => { window.memoryBenchLoss = c.getContext("webgl2").getExtension("WEBGL_lose_context"); window.memoryBenchLoss.loseContext(); });
     await page.waitForSelector("canvas[data-renderer=canvas2d]");
-    await page.waitForFunction(() => Number(document.querySelector("[data-visible-node-count]").dataset.visibleNodeCount) <= 2000);
+    await page.waitForFunction(expected => Number(document.querySelector("[data-visible-node-count]").dataset.visibleNodeCount) === expected, count);
+    if (Number(await page.locator("canvas[data-renderer=canvas2d]").getAttribute("data-scene-node-count")) > 2000) throw new Error("Context-loss fallback exceeded node cap");
     await page.evaluate(() => window.memoryBenchLoss.restoreContext());
     await page.waitForSelector(`canvas[data-renderer=webgl2][data-scene-node-count="${count}"]`, { timeout: 60000 });
-    const entry = { count, ...result, firstSceneMs, frameP95Ms: percentile(result.frames, .95), pickP95Ms: percentile(result.picks, .95), pickMaxMs: Math.max(...result.picks), longestLoadLayoutTaskMs: Math.max(0, ...result.tasks.map(t => t.duration)), interactionDuringLayout: true, titleToggle: true, keyboardSelection: true, pointerSelection: true, contextLossFallbackAndRestore: true, errors };
+    const recoveryRequests = await page.evaluate(async () => {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return window.memoryBenchRecoveryRequests;
+    });
+    const entry = { count, ...result, firstSceneMs, frameP95Ms: percentile(result.frames, .95), pickP95Ms: percentile(result.picks, .95), pickMaxMs: Math.max(...result.picks), longestLoadLayoutTaskMs: Math.max(0, ...result.tasks.map(t => t.duration)), interactionDuringLayout: true, titleToggle: true, keyboardSelection: true, pointerSelection: true, contextLossFallbackAndRestore: true, recoveryRequests, errors };
     output.results.push(entry);
     console.log(JSON.stringify({ count, frameP95Ms: entry.frameP95Ms, pickMaxMs: entry.pickMaxMs, longestLoadLayoutTaskMs: entry.longestLoadLayoutTaskMs }));
+    if (entry.frameP95Ms > (count === 2000 ? 16.7 : 33.3) || entry.pickMaxMs > 4 || entry.longestLoadLayoutTaskMs > 100 || errors.length || recoveryRequests) throw new Error(`Rendering or recovery budget failed at ${count} nodes`);
     await page.close();
   }
   // Exercise the actual live HTTP decoder separately from the synthetic demo store.
@@ -97,7 +112,20 @@ try {
     window.$RefreshReg$ = () => {}; window.$RefreshSig$ = () => type => type;
     window.__vite_plugin_react_preamble_installed__ = true;
     window.memoryBenchLiveApi = (await import("/src/live-api.ts")).api;
+    window.memoryBenchSynthetic = (await import("/src/demo/synthetic-memory-graph.ts")).loadSyntheticMemoryGraph;
   });
+  output.coldSyntheticConstruction = await livePage.evaluate(async () => {
+    const tasks = [];
+    const observer = new PerformanceObserver(list => tasks.push(...list.getEntries().map(e => ({ start: e.startTime, duration: e.duration }))));
+    observer.observe({ type: "longtask" });
+    const started = performance.now();
+    const graph = await window.memoryBenchSynthetic(50000);
+    const elapsedMs = performance.now() - started;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    observer.disconnect();
+    return { nodes: graph.nodes.length, edges: graph.edges.length, elapsedMs, tasks, longestTaskMs: Math.max(0, ...tasks.map(t => t.duration)) };
+  });
+  if (output.coldSyntheticConstruction.nodes !== 50000 || output.coldSyntheticConstruction.longestTaskMs > 100) throw new Error("Cold synthetic construction budget failed");
   output.liveResponseDecode = await livePage.evaluate(async () => {
     const tasks = [];
     const observer = new PerformanceObserver(list => tasks.push(...list.getEntries().map(e => ({ start: e.startTime, duration: e.duration }))));

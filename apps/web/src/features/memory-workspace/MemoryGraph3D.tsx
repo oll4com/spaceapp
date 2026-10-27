@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MemoryGraph3DCanvas } from "./MemoryGraph3DCanvas.js";
 import { MemoryWebGLRenderer, supportsMemoryWebGL2 } from "./memory-webgl.js";
 import {
+  createMemoryLabelIndex,
   memoryLabelCandidates,
   selectMemoryLabels,
 } from "./memory-3d-labels.js";
@@ -19,6 +20,7 @@ type Props = Parameters<typeof MemoryGraph3DCanvas>[0] & {
 export function MemoryGraph3D(props: Props) {
   const [supported] = useState(supportsMemoryWebGL2);
   const [available, setAvailable] = useState(supported);
+  const [capable, setCapable] = useState(supported);
   const canvasRef = useRef<HTMLCanvasElement>(null),
     labelsRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef<MemoryCamera3D>({ ...DEFAULT_MEMORY_CAMERA });
@@ -42,8 +44,8 @@ export function MemoryGraph3D(props: Props) {
   }, [props.nodes, props.edges]);
   const { onRendererAvailable } = props;
   useEffect(() => {
-    onRendererAvailable?.(available);
-  }, [available, onRendererAvailable]);
+    onRendererAvailable?.(capable);
+  }, [capable, onRendererAvailable]);
   useEffect(() => {
     cameraRef.current = { ...DEFAULT_MEMORY_CAMERA };
     redrawRef.current();
@@ -55,6 +57,7 @@ export function MemoryGraph3D(props: Props) {
     const context = labels.getContext("2d");
     if (!context) {
       setAvailable(false);
+      setCapable(false);
       return;
     }
     let renderer: MemoryWebGLRenderer | null = null;
@@ -62,7 +65,7 @@ export function MemoryGraph3D(props: Props) {
       width = 1,
       height = 1,
       hover: string | null = null;
-    let candidates = memoryLabelCandidates(current.current.nodes),
+    let labelIndex = createMemoryLabelIndex(current.current.nodes),
       byId = new Map(current.current.nodes.map((n) => [n.id, n]));
     const pointers = new Map<number, { x: number; y: number }>();
     let dragged = false,
@@ -79,7 +82,7 @@ export function MemoryGraph3D(props: Props) {
       context.font = "11px system-ui, sans-serif";
       if (showTitles)
         for (const label of selectMemoryLabels(
-          candidates,
+          memoryLabelCandidates(labelIndex, coordinates, cameraRef.current, scale, width, height),
           focus ? byId.get(focus) : undefined,
           coordinates,
           cameraRef.current,
@@ -110,8 +113,11 @@ export function MemoryGraph3D(props: Props) {
             schedule();
           }
         })
-        .catch(() => setAvailable(false));
-      candidates = memoryLabelCandidates(nodes);
+        .catch(() => {
+          setAvailable(false);
+          if (!renderer?.gl.isContextLost()) setCapable(false);
+        });
+      labelIndex = createMemoryLabelIndex(nodes);
       byId = new Map(nodes.map((n) => [n.id, n]));
       schedule();
     };
@@ -135,10 +141,12 @@ export function MemoryGraph3D(props: Props) {
         resize();
         refresh();
         setAvailable(true);
+        setCapable(true);
       } catch {
         renderer?.destroy();
         renderer = null;
         setAvailable(false);
+        setCapable(false);
       }
     };
     const lost = (event: Event) => {
