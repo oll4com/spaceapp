@@ -119,7 +119,7 @@ support `--access host-root`; use `--access isolated` or Docker instead.
 > **Windows 11 Tip**: Use **Command Prompt** (`cmd.exe`) or the Command Prompt profile in Windows Terminal. If PowerShell has a restricted execution policy, run `npx.cmd --yes run-spaceapp@latest install`.
 
 ### What Happens Next (Step-by-Step Onboarding):
-1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
+1. **System & Engine Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts the selected container engine (Docker by default) if needed.
 2. **Container Initialization**: Pulls SpaceApp's images by the digest the npm package pins (from run-spaceapp 1.1.7; earlier packages by exact version tag; published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.

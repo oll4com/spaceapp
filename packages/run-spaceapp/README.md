@@ -41,10 +41,10 @@ work: during image pulls the launcher switches Docker to a temporary
 credential-free config so Docker Desktop's graphical credential helper is never
 invoked outside an interactive logon.
 
-### Container engine selection
+## Container engine selection
 
 Docker is the default engine. To use Podman instead, install Podman 5.0.0 or newer
-and a Compose v2 provider such as `docker-compose-plugin`, then run:
+and a Podman-discoverable Compose v2 provider such as `podman-compose`, then run:
 
 ```bash
 npx --yes run-spaceapp@latest install --engine podman
@@ -187,7 +187,7 @@ npx --yes run-spaceapp@latest owner rotate-setup-token
 ```bash
 npx --yes run-spaceapp@latest status         # Check container health and port bindings
 npx --yes run-spaceapp@latest logs           # Show recent container log lines
-npx --yes run-spaceapp@latest doctor         # Verify system prerequisites and diagnose Docker
+npx --yes run-spaceapp@latest doctor         # Verify system prerequisites and diagnose the selected engine
 npx --yes run-spaceapp@latest up             # Start containers in background
 npx --yes run-spaceapp@latest down           # Stop containers cleanly
 npx --yes run-spaceapp@latest open           # Open web app in default browser

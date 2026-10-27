@@ -165,7 +165,7 @@ export async function ensureDockerAvailable({
       return { code: 1, reexecuted: false };
     }
     stderr.write(
-      "Podman was selected but is not available. Install Podman (>= 4.9) and the docker-compose v2 provider, " +
+      "Podman was selected but is not available. Install Podman 5.0.0 or newer and a Compose v2 provider, " +
       "or rerun with --engine docker.\n"
     );
     return { code: 1, reexecuted: false };

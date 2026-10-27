@@ -354,7 +354,7 @@ export async function run(argv, {
   if (globalFlags.localImages) {
     const originalExecute = execute;
     execute = async (spec, io) => {
-      if (spec.command === "docker" && spec.args?.includes("compose")) {
+      if ((spec.command === "docker" || spec.command === "podman") && spec.args?.includes("compose")) {
         if (spec.args.at(-1) === "pull") {
           stdout.write("Local images only: skipping registry downloads; missing images will fail startup.\n");
           return 0;
@@ -1314,7 +1314,7 @@ function hasRequestedConfigChange(rawExisting, parsed) {
   }
   if (
     parsed.requestedEngine !== undefined &&
-    rawExisting.engine !== parsed.requestedEngine
+    (rawExisting.engine ?? defaultEngine()) !== parsed.requestedEngine
   ) {
     return true;
   }
@@ -2488,7 +2488,7 @@ async function doctor({
   engine: requestedEngine,
   dockerReady = false
 }) {
-  const engine = requestedEngine ?? await loadConfig(root).then((cfg) => cfg.engine).catch(() => defaultEngine());
+  const engine = requestedEngine ?? await loadConfig(root).then((cfg) => cfg.engine ?? defaultEngine()).catch(() => defaultEngine());
   const configuration = profile ? { ok: true, detail: "Prepared installation configuration" } : await loadConfig(root).then(() => ({ ok: true, detail: root })).catch((error) => ({ ok: false, detail: `${error.message}. Run install for a new setup, or doctor --fix for an existing setup.` }));
   const detectedResources = resources ?? await inspectResources(root);
   let resolvedProfile = profile;

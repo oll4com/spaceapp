@@ -701,7 +701,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     `        target: ${JSON.stringify(workspace.containerPath)}`,
     `        read_only: ${workspace.readOnly}`,
     "        bind:",
-    '          selinux: "Z"'
+    '          selinux: "z"'
   ]);
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]

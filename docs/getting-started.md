@@ -45,15 +45,17 @@ Install Node.js 20.11 or newer, then run as a normal non-root user:
 npx --yes run-spaceapp@latest install
 ```
 
-Linux runs the containers directly through the host Docker Engine; SpaceApp
-does not create a second guest VM. The launcher runs as the current non-root
+With the default Docker engine, Linux runs the containers directly through the
+host Docker Engine; SpaceApp does not create a second guest VM. The launcher
+runs as the current non-root
 user so the installation remains in that user's config directory. If Docker is
 missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
 official repository. On Arch-family systems, including CachyOS, it installs
 the native `docker` and `docker-compose` packages through `pacman`. It then
 starts the service. Before adding the current user to the `docker` group, it
 explains that the group grants root-level privileges, adds the user
-automatically, and continues in the same command.
+automatically, and continues in the same command. To use Podman instead, see
+[Alternative container engine](#alternative-container-engine) above.
 
 ## macOS
 

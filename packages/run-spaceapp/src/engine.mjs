@@ -220,8 +220,9 @@ async function captureProbe(execute, spec) {
 export function podmanMachineResizeGuidance(name) {
   const target = name ? ` ${name}` : "";
   return [
-    `Resize the Podman machine with: podman machine set${target} --cpus 4 --memory 8192 --disk 65536`,
+    `Resize the Podman machine with: podman machine set${target} --cpus 4 --memory 8192 --disk-size 100`,
     "Stop the machine first if the command reports it is running: podman machine stop" + target,
-    "Units are MiB for --memory and --disk. Start the machine afterwards: podman machine start" + target
+    "Units are MiB for --memory and GiB for --disk-size. Note: --disk-size can only increase the disk and only QEMU machines support it; on the default applehv machine, recreate a larger machine with podman machine init --cpus 4 --memory 8192 --disk-size 100 instead.",
+    "Start the machine afterwards: podman machine start" + target
   ].join("\n");
 }
