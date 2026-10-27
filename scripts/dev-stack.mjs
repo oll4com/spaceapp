@@ -779,10 +779,11 @@ exec opencode "$@"
     const viteCli = resolve(this.repoRoot, "node_modules/vite/bin/vite.js");
 
     process.stdout.write("Starting Temporal worker from source...\n");
+    const workerDist = resolve(this.repoRoot, "apps/worker/dist/worker.js");
     this.spawnService(
       "worker",
       process.execPath,
-      [tsxCli, "watch", "apps/worker/src/worker.ts"],
+      [workerDist],
       {
         SPACE_DATABASE_URL: databaseUrl,
         SPACE_TEMPORAL_ADDRESS: `127.0.0.1:${this.temporalPort}`,
