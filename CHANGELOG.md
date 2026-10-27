@@ -5,6 +5,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- The Memory 3D view can load up to 50,000 nodes with WebGL2 rendering, bounded labels and interactive streamed layout. Browsers without WebGL2 retain the 2,000-node Canvas view.
+
 ## [1.1.8] - 2026-10-25
 
 Source: sanitized Space app @ 8d5bf21b32 (4948 files). Verifies SpaceApp's image attestations before an

@@ -391,7 +391,7 @@ describe("Memory graph API", () => {
       headers: { cookie }
     });
     expect(overview.statusCode).toBe(200);
-    expect(overview.headers.etag).toBe(`"${"d".repeat(64)}"`);
+    expect(overview.headers.etag).toMatch(/^"[a-f0-9]{64}"$/);
     const overviewBody = overview.json();
     expect(overviewBody).toMatchObject({
       data: {
@@ -498,7 +498,7 @@ describe("Memory graph API", () => {
       headers: { cookie }
     });
     expect(june.statusCode).toBe(200);
-    expect(june.headers.etag).toBe(`"${"e".repeat(64)}"`);
+    expect(june.headers.etag).toMatch(/^"[a-f0-9]{64}"$/);
     expect(june.json()).toMatchObject({
       data: {
         months: ["2026-06", "2026-07"],
@@ -1545,4 +1545,56 @@ describe("Memory graph API", () => {
     ]));
     await app.close();
   });
+});
+
+
+describe("large overview budgets", () => {
+  it("caps large responses, preserves default sampling/redaction and varies cache identity", async () => {
+    const graphSnapshot = snapshot() as MemoryGraphSnapshot;
+    graphSnapshot.nodes = Array.from({ length: 50000 }, (_, i) => ({
+      id: `memory:${i}`, type: "MEMORY" as const,
+      label: `Synthetic token=raw-secret-${i}`, sourcePath: null, recordId: null
+    }));
+    graphSnapshot.edges = graphSnapshot.nodes.flatMap((node, i) => [1, 2, 3].map(k => ({
+      id: `edge:${i}:${k}`, type: "SEMANTICALLY_RELATED" as const,
+      origin: "DETERMINISTIC_TFIDF" as const, confidence: 0.8,
+      source: node.id, target: graphSnapshot.nodes[(i + k) % 50000]!.id,
+      evidence: "token=raw-edge-secret"
+    })));
+    graphSnapshot.summary = { ...graphSnapshot.summary, nodeCount: 50000, edgeCount: 150000 };
+    const app = await memoryGraphApp(true, new InMemorySpaceStore(), false, undefined, { graphSnapshot });
+    try {
+      const base = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview", headers: { cookie } });
+      expect(base.statusCode).toBe(200);
+      expect(base.json().data.nodes).toHaveLength(2000);
+      const start = performance.now();
+      const large = await app.inject({
+        method: "GET", url: "/api/admin/memory/graph/overview?limit=50000",
+        headers: { cookie, "if-none-match": base.headers.etag }
+      });
+      const elapsed = performance.now() - start;
+      expect(large.statusCode).toBe(200);
+      expect(large.json().data.nodes).toHaveLength(50000);
+      expect(large.json().data.edges).toHaveLength(150000);
+      expect(large.json().data.truncated).toBe(false);
+      expect(large.body).not.toContain("raw-secret-");
+      expect(large.body).not.toContain("raw-edge-secret");
+      process.stdout.write(JSON.stringify({
+        benchmark: "50k-overview", server_time_ms: elapsed, uncompressed_bytes: Buffer.byteLength(large.body)
+      }) + "\n");
+      const unchanged = await app.inject({
+        method: "GET", url: "/api/admin/memory/graph/overview?limit=50000",
+        headers: { cookie, "if-none-match": large.headers.etag }
+      });
+      expect(unchanged.statusCode).toBe(304);
+      for (const value of [0, 50001, 1.5]) {
+        const bad = await app.inject({ method: "GET", url: `/api/admin/memory/graph/overview?limit=${value}`, headers: { cookie } });
+        expect(bad.statusCode).toBe(422);
+      }
+      const anonymous = await app.inject({ method: "GET", url: "/api/admin/memory/graph/overview?limit=50000" });
+      expect([401, 403]).toContain(anonymous.statusCode);
+    } finally {
+      await app.close();
+    }
+  }, 20000);
 });

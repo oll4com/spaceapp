@@ -1,3 +1,4 @@
+import { loadSyntheticMemoryGraph, syntheticMemoryNode } from "./synthetic-memory-graph.js";
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, taskScheduleNextRunAt, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName, roomLimitReached, SETUP_CATALOG, SETUP_CATALOG_VERSION, buildSetupSelection } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
 import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
@@ -1513,6 +1514,20 @@ export class DemoStore {
         });
       }
       case "memoryGraphOverview": {
+        const requested = typeof window !== "undefined" ? Number(new URLSearchParams(window.location.search).get("memoryNodes")) : 0;
+        if ([2000, 10000, 50000].includes(requested)) {
+          const query = (args[0] ?? {}) as { limit?: number; q?: string };
+          return loadSyntheticMemoryGraph(requested).then(async synthetic => {
+            const needle = query.q?.toLowerCase();
+            const matching = needle ? synthetic.nodes.filter(n => n.label.toLowerCase().includes(needle)) : synthetic.nodes;
+            const limit = Math.max(1, Math.min(50000, query.limit ?? 2000));
+            const nodes = matching.slice(0, limit), ids = new Set(nodes.map(n => n.id));
+            const allEdges = synthetic.edges.filter(e => ids.has(e.source) && ids.has(e.target));
+            const edges = allEdges.slice(0, limit * 3), base = this.fixture.memoryWorkspace.graph;
+            await new Promise(resolve => setTimeout(resolve, 0));
+            return { data: { ...base, nodes, edges, summary: { ...base.summary, nodeCount: requested, edgeCount: synthetic.edges.length, recordCount: requested - Math.ceil(requested / 50) }, totalMatchingNodes: matching.length, totalMatchingEdges: allEdges.length, truncated: matching.length !== nodes.length || allEdges.length !== edges.length } };
+          });
+        }
         const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
@@ -1591,6 +1606,14 @@ export class DemoStore {
       }
       case "memoryConsolidation": return Promise.resolve(structuredClone(this.fixture.memoryWorkspace.maintenanceDetail));
       case "memoryGraphNode": {
+        const syntheticId = String(args[0]);
+        if (syntheticId.startsWith("synthetic-memory-") && typeof window !== "undefined") {
+          const size = Number(new URLSearchParams(window.location.search).get("memoryNodes"));
+          const index = Number(syntheticId.slice("synthetic-memory-".length));
+          if ([2000, 10000, 50000].includes(size) && Number.isInteger(index) && index >= 0 && index < size) {
+            return Promise.resolve({ node: syntheticMemoryNode(index), record: null, relatedNodes: [], relatedEdges: [], issues: [] });
+          }
+        }
         const detail = this.fixture.memoryWorkspace.nodeDetails[roomId ?? ""];
         if (!detail) throw new SpaceApiError("Memory node not found.", { status: 404, code: "NOT_FOUND" });
         return Promise.resolve(structuredClone(detail));

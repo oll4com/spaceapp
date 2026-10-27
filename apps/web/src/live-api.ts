@@ -1,3 +1,4 @@
+import { readMemoryOverviewResponse } from "./memory-overview-response.js";
 import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionControlRequest, PlanStageOverrideRequest } from "@space/contracts";
 import type { AppDeviceSession } from "@space/contracts";
 import type { ClientErrorReport } from "./client-error-reporter.js";
@@ -966,7 +967,7 @@ export interface VaultStateResponse {
   vault: { vaultId: string; epoch: number; delegationGeneration: number; kdf: VaultKdfParams; unlockKeyVersion: number; hasRecovery: boolean; auditSeq: number } | null;
 }
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, init?: RequestInit, readSuccessPayload = readResponsePayload): Promise<T> {
   const headers: Record<string, string> = {
     ...((init?.headers as Record<string, string> | undefined) ?? {})
   };
@@ -991,7 +992,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw upstreamTransportError(error);
   }
 
-  const payload = await readResponsePayload(response);
+  const payload = await (response.ok ? readSuccessPayload(response) : readResponsePayload(response));
   reportCoreApiResponse(response, payload, requestStartedAt);
   if (response.status === 401 || response.status === 403) {
     csrfToken = null;
@@ -3222,7 +3223,9 @@ export const api = {
     return request<MemoryGraphResponse>(`/api/admin/memory/graph${suffix ? `?${suffix}` : ""}`);
   },
   memoryGraphOverview: (query: {
+    signal?: AbortSignal;
     q?: string;
+    limit?: number;
     nodeType?: MemoryGraphNodeType;
     scope?: MemoryEntry["scope"];
     roomId?: string;
@@ -3240,8 +3243,15 @@ export const api = {
     if (query.lifecycleStatus) params.set("lifecycleStatus", query.lifecycleStatus);
     if (query.month) params.set("month", query.month);
     if (query.relationMode) params.set("relationMode", query.relationMode);
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
     const suffix = params.toString();
-    return request<MemoryGraphOverviewResponse>(`/api/admin/memory/graph/overview${suffix ? `?${suffix}` : ""}`);
+    return request<MemoryGraphOverviewResponse>(
+      `/api/admin/memory/graph/overview${suffix ? `?${suffix}` : ""}`,
+      { signal: query.signal },
+      (query.limit ?? 2000) > 2000 && typeof Worker !== "undefined"
+        ? (response) => readMemoryOverviewResponse(response, query.signal)
+        : readResponsePayload,
+    );
   },
   memoryCalendar: (query: MemoryCalendarQuery = {}) => {
     const params = new URLSearchParams();
