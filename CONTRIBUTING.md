@@ -106,6 +106,17 @@ Keep changes reviewable and include the exact commands and limitations of your
 verification. Never include credentials, private transcripts or local runtime
 state in a contribution.
 
+## Temporal Workflow Replay & Determinism Verification
+
+Worker test suites include workflow sandbox and history replay tests that verify determinism across workflow revisions:
+- **Sandbox and replay tests**: Ensure workflow definitions remain backward-compatible and deterministic. In-flight workflow executions must be replayable against updated workflow code without triggering non-determinism errors.
+- **Re-recording histories**: When intentionally updating or adding workflow execution traces, histories can be re-recorded via:
+  ```sh
+  npm run temporal:record-histories -w @space/worker
+  ```
+- **Strict invariant**: Re-record histories ONLY together with a `patched()` change that preserves replay compatibility for currently running executions. NEVER re-record histories simply to make a failing replay test pass; fixing non-determinism requires proper version patching (`patched(...)`) to handle existing histories safely.
+
+
 ## License of contributions
 
 SpaceApp is licensed under the [MIT License](LICENSE). Contributions are
