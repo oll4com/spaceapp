@@ -3,11 +3,13 @@ import { constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import { Writable } from "node:stream";
 
+/** Normalize an omitted engine to Docker and reject names outside the supported pair. */
 export function containerEngine(value = "docker") {
   if (value !== "docker" && value !== "podman") throw new Error("Container engine must be docker or podman.");
   return value;
 }
 
+/** Reject engine migrations, unsupported Podman hosts and host-root access before installation writes. */
 export function assertEngineSelection(engine, existing, accessMode, platform) {
   containerEngine(engine);
   if (existing && containerEngine(existing.engine) !== engine) {
@@ -21,11 +23,13 @@ export function assertEngineSelection(engine, existing, accessMode, platform) {
   }
 }
 
+/** Probe a command without interactive input or output; a failure or thrown error means unavailable. */
 async function available(execute, command, args) {
   try { return await execute({ command, args, timeoutMs: 15000 }, { stdin: null, stdout: null, stderr: null }) === 0; }
   catch { return false; }
 }
 
+/** Check executable candidates on the supplied PATH without launching them. */
 async function commandOnPath(command, env) {
   for (const directory of (env.PATH ?? "").split(delimiter)) {
     if (directory && await access(join(directory, command), constants.X_OK).then(() => true, () => false)) return true;
@@ -33,6 +37,7 @@ async function commandOnPath(command, env) {
   return false;
 }
 
+/** Honor explicit and saved choices first; otherwise prefer a working Docker engine, then identified Podman. */
 export async function selectContainerEngine({ requested, existing, execute, platform, env = process.env, hasPodman = commandOnPath }) {
   if (requested !== undefined) return containerEngine(requested);
   if (existing) return containerEngine(existing.engine);
@@ -61,6 +66,7 @@ export function engineExecutor(execute, engine, platform = process.platform, env
   return run;
 }
 
+/** Capture bounded diagnostic output; failed or timed-out probes return null instead of leaking stderr. */
 async function capture(execute, command, args) {
   let text = "";
   const stdout = new Writable({ write(chunk, _encoding, done) { if (text.length < 1024 * 1024) text += chunk.toString(); done(); } });
@@ -69,7 +75,9 @@ async function capture(execute, command, args) {
   } catch { return null; }
 }
 
+/** Decode optional probe output, returning null for unavailable or malformed JSON. */
 function json(text) { try { return JSON.parse(text); } catch { return null; } }
+/** Compare the leading major/minor version components; missing or malformed versions fail closed. */
 function versionAtLeast(version, major, minor = 0) {
   const match = /^(?:v)?(\d+)\.(\d+)(?:\.|$)/.exec(version ?? "");
   return Boolean(match && (Number(match[1]) > major || Number(match[1]) === major && Number(match[2]) >= minor));
@@ -114,6 +122,7 @@ export async function inspectContainerEngine(execute, engine, platform = process
   };
 }
 
+/** Build operator-facing checks for the supported provider, rootless mode, capacity and delegated cgroups. */
 export function podmanChecks(info, platform = process.platform) {
   const checks = [
     { name: "Podman", ok: versionAtLeast(info.version, 5), detail: info.version ?? "not running or inaccessible; start Podman first" },
@@ -129,6 +138,7 @@ export function podmanChecks(info, platform = process.platform) {
   return checks;
 }
 
+/** Report prerequisite checks to the appropriate stream and return their aggregate exit status without installation. */
 export async function ensurePodmanAvailable({ execute, platform, stdout, stderr }) {
   const info = await inspectContainerEngine(execute, "podman", platform);
   const checks = podmanChecks(info, platform);

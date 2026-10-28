@@ -13,6 +13,7 @@ const info = { version: { Version: "5.8.1" }, host: { security: { rootless: true
   cgroupVersion: "v2", cgroupControllers: ["cpu", "memory", "pids"], cpus: 8, memTotal: 16 * 1024 ** 3 },
   registries: { auth: "must-not-appear" }, store: { graphRoot: "/private/storage" } };
 const sink = () => new Writable({ write(_chunk, _encoding, done) { done(); } });
+/** Create an isolated Podman installation fixture with recorded command probes and automatic directory cleanup. */
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-"));
   t.after(() => rm(root, { recursive: true, force: true }));

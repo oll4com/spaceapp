@@ -272,6 +272,7 @@ async function writeRunOnceContinuation(root, { runtimeVersion, actions }) {
   await writeFile(runOnceContinuationPath(root), `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
 }
 
+/** Dispatch launcher commands with injected I/O and host probes. Bind runtime operations to the saved engine before writes. */
 export async function run(argv, {
   env = process.env,
   platform = process.platform,
@@ -679,6 +680,7 @@ export async function run(argv, {
   throw new Error(`Unknown command "${command}". Run "${UNIVERSAL_COMMAND} help".`);
 }
 
+/** Plan and confirm installation, enforce engine and capacity constraints, then commit and start the selected runtime. */
 async function installCommand(args, {
   root,
   launcherVersion,
@@ -1099,6 +1101,7 @@ async function removeInactiveProfileServices({root, config, stateRoot = root, ex
   return 0;
 }
 
+/** Collect approved setup choices and a reviewable plan while preserving existing installation data. */
 async function planInteractiveSetup({
   args,
   root,
@@ -1343,6 +1346,7 @@ async function offerUnattendedContinuation(root, runtimeVersion, stdin, stdout, 
   }
 }
 
+/** Repair approved configuration and runtime files after prerequisite/storage checks; dry runs make no changes. */
 async function repairRuntime({ root, config, platform, stdin, stdout, stderr, execute, request, sleep, dryRun = false, ensureDocker = ensureDockerAvailable, env = process.env, arch = process.arch, inspectResources = inspectSystemResources }) {
   const raw = await readRawConfig(root);
   const plan = planConfigRepairs(raw);
@@ -1515,6 +1519,7 @@ async function collectFiles(directory, logicalDirectory) {
 // Writers (core, CLI, browser, Temporal) are frozen, not stopped, while the backup runs in a one-off container:
 // the database, files, memory and Temporal histories are one moment and CLI sessions survive (external review
 // 2026-10-16). Compose skips services that are not running.
+/** Run the backup while application writers are paused, then resume them even when the backup fails. */
 async function backupWithWritersPaused(execute, root, config, io) {
   const options = { profile: config.profile, companionsEnabled: config.companionsEnabled };
   io.stdout.write("Pausing SpaceApp writers for the backup; the app and CLI sessions resume afterwards...\n");
@@ -1753,6 +1758,7 @@ async function restoreRuntimeAfterFailedInstall({
   }
 }
 
+/** Parse installation-specific options after global flags are removed; reject unknown options and profile names. */
 function parseInstallArgs(args) {
   let requestedProfile = "auto";
   let requestedAccessMode;
@@ -1830,6 +1836,7 @@ function assertRegisteredUser(config, userId) {
   }
 }
 
+/** List or update registered workspace binds and apply their Compose configuration through the selected engine. */
 async function workspaceCommand(rawArgs, { root, config, platform, stdin, stdout, stderr, execute }) {
   const { userId, args } = takeUserOption(rawArgs);
   if (userId) assertRegisteredUser(config, userId);
@@ -2098,6 +2105,7 @@ async function userCommand(args, { root, config, stdin, stdout, stderr, execute,
   throw new Error(`Usage: ${UNIVERSAL_COMMAND} user <enable|add <user-id> [--memory <2g>]|restore <user-id>|remove <user-id>|list>`);
 }
 
+/** Install an optional provider in the selected user container, or verify an already bundled provider. */
 async function providerCommand(rawArgs, { root, config, stdin, stdout, stderr, execute }) {
   const { userId, args } = takeUserOption(rawArgs);
   if (args.length !== 2 || args[0] !== "install") {
@@ -2199,6 +2207,7 @@ async function reinstallCommand({
   return 0;
 }
 
+/** Write allowlisted configuration, engine capacity and service diagnostics without copying credentials or raw engine metadata. */
 async function supportBundleCommand({
   root,
   config,
@@ -2272,6 +2281,7 @@ async function supportBundleCommand({
   return 0;
 }
 
+/** Require explicit destructive confirmation, remove installation state and initialize a clean config using the saved engine. */
 async function factoryResetCommand({
   root,
   config,
@@ -2446,6 +2456,7 @@ async function verifyStorage({ root, config, existingConfig, operation, inspectR
   return 0;
 }
 
+/** Combine host, storage and selected-engine probes into diagnostics; return failure when a required capability is absent. */
 async function doctor({
   root,
   platform,
@@ -2709,6 +2720,7 @@ export function executeCommand(spec, { stdin, stdout, stderr, input } = {}) {
   });
 }
 
+/** Launch only the enumerated executables, preserving literal arguments and the caller-supplied spawn options. */
 function spawnTrustedCommand(spec, options) {
   const args = spec.args;
   switch (spec.command) {
@@ -2813,6 +2825,7 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/** Describe supported launcher commands and installation choices for the CLI help response. */
 function helpText() {
   return `SpaceApp self-hosted launcher
 

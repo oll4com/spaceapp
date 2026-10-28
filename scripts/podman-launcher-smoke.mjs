@@ -25,6 +25,7 @@ const stopping = new AbortController();
 const activeCommands = new Set();
 
 // Keep each acceptance command and its descendants in one cancellable process group.
+/** Start an acceptance command in a cancellable process group and track its close event for awaited cleanup. */
 function startCommand(command, args, options) {
   stopping.signal.throwIfAborted();
   const child = spawn(command, args, { ...options, detached: true });
@@ -44,6 +45,7 @@ function startCommand(command, args, options) {
   return child;
 }
 
+/** Run Podman and collect stdout; cleanup commands bypass cancellation so resource removal can finish after failure. */
 function podman(args, input, cleanup = false) {
   return new Promise((resolve, reject) => {
     const child = (cleanup ? spawn : startCommand)("podman", args, { env, stdio: ["pipe", "pipe", "inherit"], shell: false });
@@ -54,6 +56,7 @@ function podman(args, input, cleanup = false) {
     child.stdin.end(input);
   });
 }
+/** Exercise the real launcher with acceptance answers and optional source-version images; require a successful exit. */
 async function launch(args, { input, version } = {}) {
   console.log(`ACCEPT ${profile}: ${args.join(" ")}`);
   const flags = input === undefined ? ["--non-interactive", "--answers", JSON.stringify(answers)] : [];
@@ -69,11 +72,13 @@ async function launch(args, { input, version } = {}) {
   });
   assert.equal(code, 0, args.join(" "));
 }
+/** Derive this installation's Compose arguments from its saved configuration and run the requested action. */
 async function compose(args) {
   const config = await loadConfig(root);
   const spec = composeCommand("status", root, config);
   return podman([...spec.args.slice(0, -1), ...args]);
 }
+/** Wait for both application readiness and the web entry point within bounded requests; abort with the smoke run. */
 async function ready() {
   for (let attempt = 0; attempt < 90; attempt++) {
     stopping.signal.throwIfAborted();
@@ -90,11 +95,13 @@ async function ready() {
 }
 let cleaned = false;
 let cleanupPromise;
+/** Record a cleanup failure without replacing an earlier failure or signal exit status, and allow subsequent removals. */
 function cleanupError(error) {
   console.error("Podman smoke cleanup failed:", error);
   process.exitCode ||= 1;
   return "";
 }
+/** Share one cleanup promise: stop child groups, remove only project-labelled resources, and always remove the fixture. */
 function cleanup() {
   return cleanupPromise ??= (async () => {
     stopping.abort();

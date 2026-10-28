@@ -96,6 +96,7 @@ async function installedImageDigests(root, version) {
   return digests;
 }
 
+/** Estimate additional image/checkpoint space and inspect both host and selected-engine storage before cutover. */
 export async function inspectStoragePlan({ root, config, existingConfig, resources, execute, operation, fetch = globalThis.fetch }) {
   const dockerInfo = await captureProbe(execute, { command: "docker", args: ["info", "--format", "{{json .}}"] });
   let engine = null;
@@ -176,6 +177,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     } };
 }
 
+/** Compare available space with the operation reserve; require measurable Podman storage instead of assuming host capacity. */
 export function storageChecks(plan, resources) {
   const checks = [{ name: "Free disk", ok: resources.freeDiskBytes >= plan.requiredDiskBytes,
     detail: `${gib(resources.freeDiskBytes)} GiB available; ${gib(plan.requiredDiskBytes)} GiB required additionally for ${plan.operation} (images ${gib(plan.missingImageBytes)}, checkpoint ${gib(plan.checkpointBytes)}, reserve 0.5)` }];

@@ -276,6 +276,7 @@ export async function inspectSystemResources(root) {
   };
 }
 
+/** Compare host and engine allocations with the chosen profile, including additional operation-specific disk requirements. */
 export function installResourceChecks(resources, profile = "small", { requiredDiskBytes, operation = "fresh" } = {}) {
   const cpuCount = Number(resources?.cpuCount);
   const totalMemoryBytes = Number(resources?.totalMemoryBytes);
@@ -312,6 +313,7 @@ export function installResourceChecks(resources, profile = "small", { requiredDi
   ];
 }
 
+/** Create a versioned installation configuration; omit the engine field for legacy-compatible Docker defaults. */
 export function createDefaultConfig({
   version,
   profile = "light",
@@ -340,6 +342,7 @@ export function createDefaultConfig({
   };
 }
 
+/** Validate persisted installation settings and reject incompatible engine, access, profile and user/workspace values. */
 export function validateConfig(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw new Error("SpaceApp config must be an object.");
@@ -682,6 +685,7 @@ export async function userNamespacesUsable(platform = process.platform, read = (
 // mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
 const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
 
+/** Render configured workspace mounts for each runtime service, preserving read-only access and engine-specific isolation. */
 export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
   // Podman uses its native default seccomp/AppArmor policy. Docker Compose sends
@@ -798,6 +802,7 @@ export function renderHostAccessCompose(config) {
   ].join("\n");
 }
 
+/** Build a literal Compose command for one installation and action, defaulting legacy configs to Docker. */
 export function composeCommand(action, root, options = {}) {
   validateHome(root);
   const stateRoot = options.stateRoot ?? root;
@@ -995,6 +1000,7 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
 }
 
+/** Prepare validated settings and required secrets without committing config or switching the runtime. */
 export async function prepareInstallation(root, {
   version,
   profile,
@@ -1104,6 +1110,7 @@ export async function prepareInstallation(root, {
   return { config, setupToken };
 }
 
+/** Write validated runtime files to the installation root and optionally persist the prepared configuration. */
 export async function commitInstallation(root, config, {
   templateDir = defaultTemplateDir(),
   persistConfig = true,
