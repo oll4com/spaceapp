@@ -88,9 +88,7 @@ async function fixture() {
   });
   const store = new InMemorySpaceStore();
   const gmail = fakeGmail("token-me");
-  // Keep successive fixture events distinct when requests finish in one millisecond.
-  let eventTime = Date.now();
-  const repository = new InMemoryMailCopilotRepository(() => new Date(eventTime = Math.max(Date.now(), eventTime + 1)).toISOString());
+  const repository = new InMemoryMailCopilotRepository();
   const kickoffs: string[] = [];
   const app = await createApp({ store, config, mailCopilotGoogle: google, mailCopilotGmailFetch: gmail.fetchImpl, jobApplyMailTriage: false, mailCopilotSync: false, mailCopilotRepository: repository,
     mailCopilotKickoff: async (_pane, run) => { await new Promise((resolve) => setTimeout(resolve, 50)); kickoffs.push(run.id); }, auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });

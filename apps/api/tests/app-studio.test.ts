@@ -34,10 +34,7 @@ async function fixture() {
   const roomEvents: Event[] = [];
   eventBus.subscribe((event) => { if (event.type === "APP_STUDIO_UPDATED" || event.type === "ARTIFACT_CREATED") roomEvents.push(event); });
   const kickoffs: string[] = [];
-  // These route sequences test successive events, not equal-timestamp ID ordering.
-  let eventTime = Date.now();
-  const repository = new InMemoryAppStudioRepository(() => new Date(eventTime = Math.max(Date.now(), eventTime + 1)).toISOString());
-  const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false, appStudioRepository: repository, appStudioKickoff: async (pane) => { kickoffs.push(pane.id); },
+  const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false, appStudioKickoff: async (pane) => { kickoffs.push(pane.id); },
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
