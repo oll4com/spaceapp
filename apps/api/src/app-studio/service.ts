@@ -4,7 +4,8 @@ import { dirname } from "node:path";
 import {
   APP_STUDIO_MAX_ROUTES, APP_STUDIO_TEXT_MAX, appStudioDevice, appStudioPaneMetadataSchema, appStudioRouteSchema, resolveAppStudioPaneMetadata,
   type AppStudioEvent, type AppStudioEventType, type AppStudioPaneMetadata, type AppStudioPaneSettings, type AppStudioPreview, type AppStudioRunStatus,
-  type Artifact, type CreateArtifactInput, type Event as SpaceEvent, type Pane
+  type Artifact, type CreateArtifactInput, type Event as SpaceEvent, type Pane,
+  makeNeedsYouAsk
 } from "@space/contracts";
 import type { AppStudioRepository } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError, type MaybePromise } from "@space/runtime";
@@ -85,7 +86,8 @@ export function createAppStudioService(options: AppStudioServiceOptions) {
     await options.notifications.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "APP_STUDIO", kind: `APP_STUDIO_${kind.toUpperCase()}`,
       severity: info ? "INFO" : "ATTENTION", title: trimmed(title, 200), body: trimmed(body),
       link: { roomId: pane.roomId, paneId: pane.id, target }, dedupeKey: `app-studio:${kind}:${event.id}`,
-      payload: { eventId: event.id }, telegram: settings.telegram ? true : null }).catch(() => undefined);
+      payload: { eventId: event.id, ...(kind === "question" ? { ask: makeNeedsYouAsk(body, { kind: "COPILOT_QUESTION", copilot: "APP_STUDIO", questionId: event.id },
+        Array.isArray(event.payload.options) ? event.payload.options.map(String) : []) } : {}) }, telegram: settings.telegram ? true : null }).catch(() => undefined);
   }
 
   async function eventOf(owner: string, pane: Pane, id: string, type: "BRIEF" | "QUESTION"): Promise<AppStudioEvent> {
@@ -262,7 +264,8 @@ export function createAppStudioService(options: AppStudioServiceOptions) {
 
     // ---- APKs (scripts/space-app-studio-build.mjs builds them inside the agent's CLI)
     /** Stores a built APK as a pinned EXPORT of the pane's room (the previous APK of the pane expires a day later) and tells the operator. */
-    async saveApk(owner: string, pane: Pane, input: { upload: StagedFile; packageName: string; versionName: string; versionCode: number; buildMs: number | null }) {
+    async saveApk(owner: string, pane: Pane, input: { upload: StagedFile; packageName: string; versionName: string; versionCode: number; buildMs: number | null;
+      signedWith?: "android-debug-keystore" | "release" }) {
       assertPane(pane);
       if (input.upload.sample[0] !== 0x50 || input.upload.sample[1] !== 0x4b) throw new SpaceConflictError("An APK is a zip archive (it starts with PK).");
       const filename = `${input.packageName}-${input.versionName}.apk`.replace(/[^A-Za-z0-9._-]+/g, "_");
@@ -271,13 +274,14 @@ export function createAppStudioService(options: AppStudioServiceOptions) {
       const created = await withPersistedUpload(options.artifactRoot, input.upload, storage.filePath, () => store.createArtifact({ roomId: pane.roomId, paneId: pane.id, kind: "EXPORT",
         mimeType: APK_MIME, storageUri: storage.storageUri, sha256: input.upload.sha256, byteSize: input.upload.byteSize, pinnedAt: iso(), expiresAt: null,
         metadata: { source: "APP_STUDIO", originalFilename: filename, storedFilename: storage.storedFilename, packageName: input.packageName, versionName: input.versionName,
-          versionCode: input.versionCode, buildMs: input.buildMs, signedWith: "android-debug-keystore" } }), 0o640);
+          versionCode: input.versionCode, buildMs: input.buildMs, signedWith: input.signedWith ?? "android-debug-keystore" } }), 0o640);
       options.onArtifact?.(created.event);
       const previous = (await repository.listEvents(owner, pane.id, { types: ["NOTE"], limit: 50 })).find((event) => typeof event.payload.apkArtifactId === "string");
       const megabytes = (input.upload.byteSize / 1024 / 1024).toFixed(1);
       const downloadPath = `/api/artifacts/${encodeURIComponent(created.artifact.id)}/file`;
       const event = await record(owner, pane, { type: "NOTE", message: `APK ${input.packageName} ${input.versionName} (${megabytes} MB) is ready to download`,
-        payload: { apkArtifactId: created.artifact.id, packageName: input.packageName, versionName: input.versionName, versionCode: input.versionCode, byteSize: input.upload.byteSize, buildMs: input.buildMs, downloadPath } });
+        payload: { apkArtifactId: created.artifact.id, packageName: input.packageName, versionName: input.versionName, versionCode: input.versionCode, byteSize: input.upload.byteSize, buildMs: input.buildMs,
+          signedWith: input.signedWith ?? "android-debug-keystore", downloadPath } });
       if (previous) await release(String(previous.payload.apkArtifactId));
       await notice(owner, pane, "apk", event, "App Studio built an APK", `${input.packageName} ${input.versionName}, ${megabytes} MB. Open it on your Android phone signed in to SpaceApp: ${downloadPath}`);
       return { artifactId: created.artifact.id, downloadPath, byteSize: input.upload.byteSize, packageName: input.packageName, versionName: input.versionName, versionCode: input.versionCode };

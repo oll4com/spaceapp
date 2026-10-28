@@ -24,15 +24,18 @@ import {
   jobApplyReviewDecideSchema,
   jobApplyStatsQuerySchema,
   jobApplyStatsSchema,
+  jobApplicationQueueHolds,
   resolveJobApplyPaneMetadata,
   type JobApplyRun,
   type Pane
 } from "@space/contracts";
+import { createCopilotRunKick } from "../copilot-run-kick.js";
+import type { RoomPaneObservation } from "../room-pane-control.js";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { JobApplyService } from "./service.js";
 
 export interface JobApplyRouteDependencies {
-  store: Pick<SpaceStore, "getPane" | "updateJobApplyMetadata">;
+  store: Pick<SpaceStore, "getPane" | "updateJobApplyMetadata" | "listRooms" | "listPanes">;
   routeOptions: Record<string, unknown>;
   /** Sends the run's kickoff prompt into the pane's CLI (the existing pane CLI input path). */
   kickoff(pane: Pane, run: JobApplyRun, discover: boolean): Promise<void>;
@@ -42,6 +45,36 @@ export interface JobApplyRouteDependencies {
   parseBody<TSchema extends z.ZodTypeAny>(schema: TSchema, body: unknown): z.infer<TSchema>;
   parseQuery<TSchema extends z.ZodTypeAny>(schema: TSchema, query: unknown): z.infer<TSchema>;
   audit(request: FastifyRequest, action: string, targetId: string | null, metadata?: Record<string, unknown>): Promise<void>;
+  /** The pane's CLI as the Room Agent sees it; with it, a stalled RUNNING run is kicked again (app.ts passes it with stable's job-apply-mail-triage job). */
+  inspect?(pane: Pane): Promise<RoomPaneObservation>;
+  log?: { warn(details: unknown, message: string): void };
+}
+
+/** A RUNNING run with no activity this long, whose CLI sits at an empty prompt with postings queued, lost its loop. */
+const RUN_IDLE_MS = 10 * 60_000;
+
+/** The stalled-run kick of Job Copilot panes (see registerJobApplyRoutes); `now` for tests. */
+export function createJobApplyRunKick(service: Pick<JobApplyService, "runView" | "markKickoff" | "pacing">, deps: Pick<JobApplyRouteDependencies, "store" | "kickoff">
+  & { inspect(pane: Pane): Promise<RoomPaneObservation>; log: { warn(details: unknown, message: string): void }; now?: () => number }) {
+  const now = deps.now ?? Date.now;
+  return createCopilotRunKick<JobApplyRun>({ mode: "JOB_APPLY", store: deps.store, log: deps.log, inspect: deps.inspect, now,
+    paused: (pane) => resolveJobApplyPaneMetadata(pane.jobApplyMetadata).settings.paused,
+    runView: async (owner, pane) => {
+      const { run, queue } = await service.runView(owner, pane.id);
+      if (run === null || now() - Date.parse(run.lastActivityAt) < RUN_IDLE_MS) return { run, backlog: 0 };
+      // 27/10 (queue item 22): with every site at its daily cap the kick re-typed all night and the agent answered PACING; a capped
+      // site's postings wait for 00:00 UTC, when the count changes and the kick fires again.
+      const eligible = jobApplicationQueueHolds(queue, new Date(now()).toISOString()).eligible;
+      const capped = new Set<string>();
+      for (const site of new Set(eligible.map((row) => row.ats))) {
+        if ((await service.pacing(owner, site, pane.jobApplyMetadata)).nextAllowedAt === "tomorrow") capped.add(site);
+      }
+      return { run, backlog: eligible.filter((row) => !capped.has(row.ats)).length };
+    },
+    kickoff: async (pane, run) => {
+      await deps.kickoff(pane, run, false);
+      await service.markKickoff(run.ownerUserId, run.id);
+    } });
 }
 
 const artifactIdBodySchema = z.object({ artifactId: z.string().regex(/^artifact:[A-Za-z0-9_-]{6,80}$/) }).strict();
@@ -55,6 +88,14 @@ const eventsQuerySchema = jobApplyEventListQuerySchema.extend({ paneId: z.string
 /** Operator-facing routes of the Job Applications pane. Profiles are per signed-in owner; settings are per pane. */
 export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplyService, deps: JobApplyRouteDependencies): void {
   const { routeOptions, parseBody, parseQuery } = deps;
+  // A side prompt typed into the copilot's CLI ends its space_job_next loop and nothing restarted it (27/10: jobrun:Oi8f4FqqNQUo idled
+  // 06:47-14:46 UTC): an unpaused pane whose RUNNING run idled 10 minutes with postings it can take gets its kickoff again, only at an
+  // empty prompt (no draft, no usage limit), at most once a minute, the same run state at most every 10 minutes (Mail Copilot's rule).
+  if (deps.inspect && deps.log) {
+    const kick = createJobApplyRunKick(service, { ...deps, inspect: deps.inspect, log: deps.log });
+    kick.start();
+    app.addHook("onClose", async () => kick.stop());
+  }
 
   app.get("/api/job-apply/profile", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);

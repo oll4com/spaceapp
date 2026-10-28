@@ -11,9 +11,12 @@ export function candidateDigest(root=process.cwd()) {
 // OpenCode Zen refused every free model from the lab's address, so a platform's free-model first answer may be missing
 // only for these versions and only when release/acceptance.json names that version's decision for it:
 // - 1.1.6: operator decision efc30984 (2026-10-18).
+// - 1.1.9: operator decision 54b65a84 (2026-10-28), Windows only: OpenCode launched on Windows and reached Zen, which refused
+//   every free model with provider.quota "Free usage limit reached" for the lab's address at 08:01 UTC on 2026-10-28; the
+//   Linux and macOS first answers passed on the same candidate.
 // Every other version, platform and check stays as strict as before. (1.1.7's unused entry zen-refusal-1.1.7 was removed in
 // 1.1.8: every 1.1.7 first-agent check passed on a free Zen model.)
-const zenFirstAnswerExceptions=Object.freeze({'1.1.6':'efc30984'});
+const zenFirstAnswerExceptions=Object.freeze({'1.1.6':'efc30984','1.1.9':'54b65a84'});
 function zenExceptionApplies(evidence,version,platform){
   const decision=Object.hasOwn(zenFirstAnswerExceptions,version)?zenFirstAnswerExceptions[version]:null;
   return Boolean(decision)&&evidence?.launcherVersion===version&&Array.isArray(evidence?.knownExceptions)&&

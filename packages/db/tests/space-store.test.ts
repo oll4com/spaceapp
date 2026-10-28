@@ -3592,10 +3592,10 @@ describe("PostgresSpaceStore", () => {
     });
     const sessionInsert = pool.txClient.calls.find((call) => call.sql.includes("INSERT INTO pane_cli_sessions"));
     expect(sessionInsert?.sql).toContain(
-      "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL)"
+      "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL, $20)"
     );
-    expect(sessionInsert?.values).toHaveLength(19);
-    expect(sessionInsert?.values.slice(10, 19)).toEqual([
+    expect(sessionInsert?.values).toHaveLength(20);
+    expect(sessionInsert?.values.slice(10, 20)).toEqual([
       "/opt/spaceapp",
       codexThreadId,
       session.sessionId,
@@ -3604,7 +3604,8 @@ describe("PostgresSpaceStore", () => {
       "IDLE",
       null,
       true,
-      expect.any(String)
+      expect.any(String),
+      null
     ]);
     await store.appendPaneCliTranscriptChunk({
       chunkId: "cli_chunk:test-1",

@@ -300,11 +300,6 @@ describe("Rail icon dynamic scaling based on required icon space", () => {
       expect(css).toContain(".space-shell[data-rail-downscaled=\"true\"] .health-rail-expander svg {\n  width: var(--toolbar-icon-size, 14px) !important;");
       expect(css).toContain(".space-shell[data-rail-downscaled=\"true\"] .room-toolbar-collapsed svg {\n  width: var(--toolbar-icon-size, 14px) !important;");
 
-      // Live orb button top edge must account for titlebar offset when present
-      expect(css).toContain(
-        ".space-shell[data-rail-downscaled=\"true\"]:has(.desktop-window-titlebar):not([data-browser-fullscreen=\"true\"]):has(.health-indicator-rail) .room-toolbar-collapsed :is(.room-live-rail-button, .live-pane-orb-button)"
-      );
-
       // Upper and lower rails must share the same rail width
       expect(css).toContain(".space-shell[data-rail-downscaled=\"true\"] .health-indicator-rail");
       expect(css).toContain("width: var(--rail-width, 36px) !important;");

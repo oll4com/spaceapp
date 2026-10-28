@@ -43,6 +43,14 @@ describe("Space API config", () => {
     expect(config.mcpConfigError).toContain("SPACE_MCP_SERVERS_JSON");
   });
 
+  it("reads where a public CLI container reaches the API (Nous's MCP server), only as an http(s) origin", () => {
+    expect(getApiConfig({}).cliApiBaseUrl).toBeNull();
+    expect(getApiConfig({ SPACE_CLI_API_BASE_URL: "http://spaceapp-core:4911" }).cliApiBaseUrl).toBe("http://spaceapp-core:4911");
+    for (const bad of ["file:///run/api", "http://spaceapp-core:4911/api", "http://user:pw@spaceapp-core:4911", "http://spaceapp-core:4911?x=1"]) {
+      expect(() => getApiConfig({ SPACE_CLI_API_BASE_URL: bad })).toThrow("SPACE_CLI_API_BASE_URL must be an http(s) origin.");
+    }
+  });
+
   it("uses bounded Postgres pool defaults and accepts explicit API overrides", () => {
     const defaults = getApiConfig({});
     expect(defaults.databasePoolMax).toBe(10);
@@ -281,6 +289,9 @@ describe("Space API config", () => {
     expect(defaults.browserSessionsProfileRoot).toBe("/opt/spaceapp/var/artifacts/browser-profiles");
     expect(defaults.browserSessionsDefaultUrl).toBe("https://www.google.com/");
     expect(defaults.browserSessionsTokenTtlMs).toBe(60000);
+    expect(defaults.browserStreamHostWatchMs).toBe(5000);
+    expect(getApiConfig({ SPACE_BROWSER_STREAM_HOST_WATCH_MS: "1" }).browserStreamHostWatchMs).toBe(50);
+    expect(getApiConfig({ SPACE_BROWSER_STREAM_HOST_WATCH_MS: "999999" }).browserStreamHostWatchMs).toBe(60000);
     expect(defaults.browserToolBridgeEnabled).toBe(false);
     expect(defaults.browserHostTransport).toBe("in-process");
     expect(defaults.browserHostSocketPath).toBe("/run/space-browser-host/browser-host.sock");

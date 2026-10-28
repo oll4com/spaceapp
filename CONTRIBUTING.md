@@ -219,3 +219,11 @@ inspection and moving aside; ownership cannot safely be inferred. New state is
 published only after initialization completes. A forced kill during initialization
 may leave an ignored `.dev-stack-init-*` staging directory; it does not block
 startup and can be removed after confirming no command is initializing it.
+
+## Reviews and payment
+
+Pull requests are reviewed and merged by the maintainers named in the public repository's `MAINTAINERS`
+file. A merged pull request stays in every later release with its author.
+
+Contributions are voluntary; payment applies only to issues labelled 💎 Bounty, under the terms posted on
+that issue.

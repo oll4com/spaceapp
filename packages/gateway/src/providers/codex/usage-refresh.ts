@@ -9,6 +9,8 @@ const minutes = (seconds: number | null) => (seconds ? Math.round(seconds / 60) 
 /** Stores the provider-reported 5h/weekly usage of one Codex account and its current plan. */
 export async function storeCodexUsage(repository: GatewayRepository, account: GatewayAccountRecord, usage: CodexUsage): Promise<void> {
   await repository.saveUsageWindows(account.id, [
+    // No 5-hour window (a weekly-only plan): blank the slot an older parse filled with the week.
+    ...(!usage.primary && usage.secondary ? [{ window: "PRIMARY" as const, usedPercent: null, resetAt: null, windowMinutes: null }] : []),
     ...(usage.primary ? [{ window: "PRIMARY" as const, usedPercent: usage.primary.usedPercent, resetAt: iso(usage.primary.resetAt), windowMinutes: minutes(usage.primary.limitWindowSeconds) }] : []),
     ...(usage.secondary ? [{ window: "SECONDARY" as const, usedPercent: usage.secondary.usedPercent, resetAt: iso(usage.secondary.resetAt), windowMinutes: minutes(usage.secondary.limitWindowSeconds) }] : [])
   ]);

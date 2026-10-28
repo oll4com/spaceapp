@@ -123,12 +123,12 @@ describe("Nous Away mode: the grant", () => {
         ["delete", { category: "DESTRUCTIVE", title: "Delete the old room", body: "", recommendation: "Delete.", action: { type: "SPACE_CONTROL", roomId: f.room.id, actions: [{ kind: "room", operation: "delete" }] } }],
         ["payment", { category: "EXTERNAL", title: "Pay the invoice", body: "", recommendation: "Pay.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "pay the invoice with the card", mode: "PROMPT" } }],
         ["third-party send", { category: "EXTERNAL", title: "Send the proposal", body: "", recommendation: "Send.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "send the proposal email to the client", mode: "PROMPT" } }],
-        ["Warm code", { category: "DIRECTION", title: "Approve the Warm change", body: "", recommendation: "Approve.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "approve the Warm cache change", mode: "PROMPT" } }],
+        ["Warm code", { category: "DIRECTION", title: "Approve the Warm change", body: "", recommendation: "Approve.", checked: ["AGENTS.md: Warm changes need the operator's approval"], action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "approve the Warm cache change", mode: "PROMPT" } }],
         ["pane-host restart", { ...promote(f.room.id, f.andy.id, "sudo systemctl restart codex-pane-host.service"), title: "Restart the pane host" }]
       ];
       const results = await f.say("Going to sleep, I give you full control until morning",
         [["space_nous_away", start], ["space_ask_operator", promote(f.room.id, f.andy.id)], ...never.map(([, args]) => ["space_ask_operator", args] as [string, Record<string, unknown>]),
-          ["space_ask_operator", { category: "DESTRUCTIVE", title: "Data loss risk on the backup", body: "", recommendation: "Stop the job.", urgent: true }]]);
+          ["space_ask_operator", { category: "DESTRUCTIVE", title: "Data loss risk on the backup", body: "", recommendation: "Stop the job.", urgent: true, checked: ["backup log: the job deletes old snapshots"] }]]);
       const [, approved, ...asked] = results;
       expect(approved).toMatchObject({ ok: true, display: expect.stringMatching(/^Approved by the away grant/) });
       expect(f.execute).toHaveBeenCalledWith("send_to_pane", { panes: [f.andy.id], text: VERIFIED_PROMOTE }, expect.anything());

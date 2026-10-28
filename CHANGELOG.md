@@ -5,11 +5,70 @@ Semantic Versioning.
 
 ## [Unreleased]
 
-## [1.1.8] - 2026-10-25
+## [1.1.9] - 2026-10-25
 
-Source: sanitized Space app @ 8d5bf21b32 (4948 files). Verifies SpaceApp's image attestations before an
-installation first uses a version, restores backups more safely, and ships the remaining fixes from the 1.1.7
-reviews; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
+Source: sanitized Space app @ 4be1c81f55 (5029 files). 1.1.8 was prepared but never published; its changes are part of
+1.1.9 and are listed below. Verifies SpaceApp's image attestations before an installation first uses a version, restores
+backups more safely, and ships the remaining fixes from the 1.1.7 reviews; open items are listed in
+`docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Since the first 1.1.9 candidate
+
+- Monitoring Copilot pane (optional module, off by default in public installs): reads alerts from an Alertmanager,
+  Prometheus and Loki collector on a private network, turns them into notifications and runs approved fixes through a
+  server gate. In public installs it cannot reach a real collector yet (known limitation MON-001).
+- Needs-you cards ask their question with options and send the answer back; copilot questions, reviews and proposed rules
+  do the same.
+- Mail Copilot: replies go out from the Send-mail-as address the mail was sent to and keep the thread; a daily inbox
+  archive run; the copilot may delete mail and its own unchanged drafts.
+- Job Copilot: test and interview requests become reminder tasks with their deadline; triage finds receipts from the
+  companies' own domains; salary research answers a posting's range in its own currency.
+- Snip Tool: snips are held in clipboard mode, and one Ctrl+V into a CLI pane pastes them all in the order taken.
+- Browser panes: the live view shows an open native dropdown and picks its option; agents can clear fields and pick
+  dropdown options; a bounded Cloudflare check helper for copilots.
+- Settings → CLI pane controls can hide a pane's account picker and local draft button.
+- Vault: kept passwords and keys (server, VM and admin passwords) that agents find and save.
+- Agent Files whose names hold Greek letters, spaces or @ open again; the desktop app no longer hangs for tens of seconds.
+- CONTRIBUTING.md now says that contributions are voluntary and that payment applies only to issues labelled 💎 Bounty.
+- ws 8.21.3.
+- Marketing Copilot: a post approved without a schedule starts its run within a minute; an approval older than 24 hours,
+  or one whose post changed since, goes back to review instead of publishing. Its metrics count npm downloads per posted
+  day, and a day npm has not posted reads as unknown instead of 0.
+- Job, Freelance and Marketing Copilot runs left waiting at an empty prompt with work queued get their kickoff again.
+- Browser panes: a sign-in, code or CAPTCHA handoff stays with you while you remain on the pane; live views whose stream
+  ended with a restarted Browser Host close instead of hanging.
+- Closing a pane works for every CLI runtime, including a terminal whose CLI was started by hand.
+- Claude Code panes: the "Switch model?" question after a session-only model pick is answered and checked.
+- Space Gateway: retired Codex models run on their successors, new work goes to the account furthest under its weekly
+  pace, and the Token usage page shows each account's weekly pace.
+- Diagnostics: a request's trace links to the CLI session, task and revision it started (migration 0258).
+- Container images: Node 22.23.4, the Node security release with the fix for CVE-2026-111497 in its bundled Brotli decoder.
+- Known limitation: on Windows, the release lab did not observe OpenCode's first answer. OpenCode launched and reached
+  OpenCode Zen, which refused every free model because the lab's address had reached Zen's free usage limit. The Windows
+  fresh install, upgrade, the large machine profile and the OpenCode launch passed, as did the first answer on Linux and macOS.
+- Known limitation: right after a fresh install, the first OpenCode launch may show "No free OpenCode model…"; launch it
+  again. Fixed in 1.1.10.
+- New CLI panes start their CLI on time even when the browser's clock differs from the server's (known limitation UX-004
+  fixed).
+- A detached pane's room screen keeps its terminal's own width.
+- Scheduled tasks: a task's title and objective can be changed in place.
+- Marketing Copilot: open GitHub issues left a day without a label or answer are named once, and a held approved post keeps
+  its approval with a new time.
+- App Studio: release-signed APKs with the app's own signing key from the Vault.
+
+### Since the 1.1.8 candidate
+
+- Plans: each plan can name the plans it depends on, a due date and what it waits on; the Nous dock's Plans tab shows the
+  plan map (what to unblock first, dates, a dependency diagram on the desktop).
+- Needs-you requests: no false or stale banners, the request's text under its title, the banner below the desktop title bar.
+- CLI panes no longer start on the account of the last pane viewed.
+- Job Copilot: salary research for a position (what it pays, and the figure to answer below the market).
+- Security Copilot: Windows and macOS inventory, end-of-support findings, and container image scans with pinned Trivy.
+- Temporal (medium and large installs): `temporalio/auto-setup` 1.29.7 instead of 1.29.1, pinned by digest (Trivy: 22 -> 3
+  critical in the image).
+- npm's bundled undici 6.29.1 in the images; the browser image budget is 1765 MiB.
+- PostgreSQL: `pgvector/pgvector` 0.8.7-pg17-trixie instead of 0.8.3, pinned by digest (Trivy: 4 -> 1 critical in the image);
+  an update moves the database container to it.
 
 ### Backup and restore
 

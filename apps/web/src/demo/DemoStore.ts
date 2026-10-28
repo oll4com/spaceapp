@@ -2112,7 +2112,7 @@ export class DemoStore {
           roomId: input.roomId ?? null,
           paneId: input.paneId ?? null,
           paneTitle: input.paneTitle ?? null,
-          occurrenceCount: 1,
+          dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
           characterCount: Array.from(input.text).length,
           createdAt: DEMO_FIXED_AT,
           lastUsedAt: DEMO_FIXED_AT

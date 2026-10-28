@@ -145,7 +145,7 @@ interface NativeTurnLike { status: string; aborted?: boolean; timing: { startedA
  * agent in Working.
  */
 const screenRules: ReadonlyArray<{ id: string; state: ScreenState; lines: number; pattern: RegExp }> = [
-  { id: "approval", state: "WAITING_FOR_INPUT", lines: 24, pattern: /select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to (?:proceed|allow|run|make this edit|create|apply)|\byes,? (?:allow|and don't ask|proceed)\b|waiting for (?:your )?(?:approval|confirmation|permission)|\((?:y\/n|y\/n\/a)\)|\[y\/n\]|\bpermission (?:required|request)\b/i },
+  { id: "approval", state: "WAITING_FOR_INPUT", lines: 24, pattern: /select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|switch model\?[\s\S]{0,800}?\b1\.\s+yes,?\s+switch\b|do you want to (?:proceed|allow|run|make this edit|create|apply)|\byes,? (?:allow|and don't ask|proceed)\b|waiting for (?:your )?(?:approval|confirmation|permission)|\((?:y\/n|y\/n\/a)\)|\[y\/n\]|\bpermission (?:required|request)\b/i },
   // A menu waiting for a pick, e.g. Grok's plan upgrade question.
   { id: "choice", state: "WAITING_FOR_INPUT", lines: 6, pattern: /↑\s*\/\s*↓\s*(?:to\s+)?navigate[^\n]*\benter\s*:?\s*(?:to\s+)?(?:submit|select|confirm)\b/i },
   // Grok shows "Ctrl+c:cancel"; Gemini "esc to cancel"; Droid "Press ESC to stop"; OpenCode "esc interrupt".

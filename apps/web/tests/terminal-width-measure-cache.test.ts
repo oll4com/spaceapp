@@ -156,6 +156,36 @@ describe("memoizeTerminalWidthMeasurements", () => {
     expect(Object.prototype.hasOwnProperty.call(first.cache, "_measure")).toBe(true);
   });
 
+  it("measures a hidden terminal once per render pass, still answering 0, and measures again after the pass", async () => {
+    const ownerDocument = document.implementation.createHTMLDocument();
+    const shared = widthCachePrototype();
+    const hidden = widthCache(shared.prototype, 12, 0, ownerDocument);
+    let rendered = false;
+    hidden.cache._container = Object.assign(hidden.cache._container, { getClientRects: () => ({ length: rendered ? 1 : 0 }) });
+    memoizeTerminalWidthMeasurements(terminalWithWidthCache(hidden.cache), ownerDocument);
+
+    expect(["W", "λ", "─", "W"].map((glyph) => hidden.cache._measure(glyph, 0))).toEqual([0, 0, 0, 0]);
+    expect(shared.measure).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    rendered = true;
+    hidden.cache.measuredWidth = 7.5;
+    expect(hidden.cache._measure("W", 0)).toBe(7.5);
+    expect(shared.measure).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps measuring a zero-width glyph in a rendered terminal", () => {
+    const ownerDocument = document.implementation.createHTMLDocument();
+    const shared = widthCachePrototype();
+    const visible = widthCache(shared.prototype, 12, 0, ownerDocument);
+    visible.cache._container = Object.assign(visible.cache._container, { getClientRects: () => ({ length: 1 }) });
+    memoizeTerminalWidthMeasurements(terminalWithWidthCache(visible.cache), ownerDocument);
+
+    expect(visible.cache._measure("​", 0)).toBe(0);
+    visible.cache.measuredWidth = 7.5;
+    expect(visible.cache._measure("W", 0)).toBe(7.5);
+    expect(shared.measure).toHaveBeenCalledTimes(2);
+  });
+
   it("does not share measurements between terminals or seed from xterm's private flat cache", () => {
     const ownerDocument = document.implementation.createHTMLDocument();
     const shared = widthCachePrototype();

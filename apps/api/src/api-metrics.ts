@@ -41,7 +41,7 @@ export function recordWorkflowStart(workflowType: string, outcome: WorkflowStart
   workflowStarts.inc({ workflow_type: workflowType, outcome, category });
 }
 
-export type RecoveryKind = "plan_model_retry";
+export type RecoveryKind = "plan_model_retry" | "browser_stream_host";
 export type RecoveryOutcome = "SCHEDULED" | "SUCCEEDED" | "FAILED";
 
 export function recordRecoveryEvent(kind: RecoveryKind, outcome: RecoveryOutcome): void {

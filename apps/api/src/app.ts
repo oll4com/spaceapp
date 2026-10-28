@@ -57,7 +57,7 @@ import { createCliBrowserCdpProxy } from "./cli-browser-cdp.js";
 import { InMemoryJobApplyRepository } from "./job-apply/memory-repository.js";
 import { createImapMailboxFactory, type MailboxFactory } from "./job-apply/mailbox.js";
 import { scheduleJobApplyMailTriage } from "./job-apply/mail-triage-timer.js";
-import { createJobApplyService, type JobApplyGoogleAccess, type JobApplyService } from "./job-apply/service.js";
+import { createJobApplyService, jobApplyNeedsYouAsk, type JobApplyGoogleAccess, type JobApplyService } from "./job-apply/service.js";
 import { registerJobApplyRoutes } from "./job-apply/routes.js";
 import { registerMailCopilotRoutes } from "./mail-copilot/routes.js";
 import { createMailCopilotService, type MailCopilotGoogleAccess } from "./mail-copilot/service.js";
@@ -69,7 +69,7 @@ import { registerFreelanceCopilot, type FreelanceCopilotWiring } from "./freelan
 import { dotDesignRequest, registerDesign, type DesignWiring } from "./design/wiring.js";
 import { dotVideoRequest, registerVideo, type VideoWiring } from "./video/wiring.js";
 import { registerAppStudio, type AppStudioWiring } from "./app-studio/wiring.js";
-import { registerSecurityCopilot, type SecurityCopilotWiring } from "./security-copilot/wiring.js";
+import { registerSecurityCopilot, type SecurityCopilotWiring } from "./security-copilot/wiring.js"; import { registerMonitoringCopilot, type MonitoringCopilotWiring } from "./monitoring-copilot/wiring.js";
 import { collectStorageReadiness } from "./storage-readiness.js";
 import { resumeRoomCliFromMenu, selectRoomCliMenuRow } from "./room-cli-menu.js";
 import { createGatewayCliAccounts } from "./gateway/gateway-cli-accounts.js";
@@ -586,7 +586,7 @@ import { registerAdminIntegrationRoutes, registerAdminOperationsRoutes } from ".
 import { collectDefaultSpaceCapabilityInventory, type SpaceCapabilityInventoryCollector } from "./space-capability-inventory.js";
 export { type SpaceCapabilityInventoryCollector } from "./space-capability-inventory.js";
 import { registerProofRoomRoutes } from "./proof-room-routes.js";
-import { observeMemoryWorkers } from "./host-metrics.js";
+import { observeMemoryWorkers } from "./host-metrics.js"; import { registerMetricsScrape } from "./metrics-scrape.js";
 import { type DashboardAgentsSample, registerRoomListRoutes, registerRoomManagementRoutes } from "./room-routes.js";
 import { createOwnedResourceGuard } from "./owned-resource-access.js";
 import { createRoomShareAccess, registerRoomShareRoutes } from "./room-shares.js";
@@ -752,7 +752,7 @@ export interface CreateAppOptions extends FirstSetupAppOptions {
   mailCopilotRepository?: MailCopilotRepository;
   vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
   /** Tests replace the Design pane's repository, gateway client, template renderer and CLI kickoff. */
-  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"]; securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"]; videoKickoff?: VideoWiring["kickoff"];
+  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"]; appStudioRepository?: AppStudioWiring["repository"]; appStudioKickoff?: AppStudioWiring["kickoff"]; securityCopilotRepository?: SecurityCopilotWiring["repository"]; securityCopilotFeeds?: SecurityCopilotWiring["feeds"]; securityCopilotKickoff?: SecurityCopilotWiring["kickoff"]; securityCopilotWatch?: boolean; monitoringCopilotRepository?: MonitoringCopilotWiring["repository"]; monitoringCopilotCollector?: MonitoringCopilotWiring["collector"]; monitoringCopilotKickoff?: MonitoringCopilotWiring["kickoff"]; monitoringCopilotWatch?: boolean; videoRepository?: VideoWiring["repository"]; videoEngine?: VideoWiring["engine"]; videoKickoff?: VideoWiring["kickoff"];
   /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
   mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
   /** false: no Gmail history polling (tests call the sync themselves). */
@@ -810,7 +810,7 @@ export interface CreateAppOptions extends FirstSetupAppOptions {
 const publicWaitlistBodyLimitBytes = 2 * 1024;
 const publicPaths = new Set([
   "/healthz",
-  "/metrics",
+  "/metrics", "/api/metrics/scrape",
   "/readyz",
   "/version",
   "/api/auth/login",
@@ -4966,7 +4966,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const nousRef: { current: NousWiring | null } = { current: null };
   const notificationService = createNotificationService({
     repository: notificationsRepository, eventBus,
-    nous: { held: async (owner) => Boolean(await nousRef.current?.active(owner)), raised: (notification) => nousRef.current?.notification(notification) },
+    nous: { held: async (owner) => Boolean(await nousRef.current?.active(owner)), raised: (notification) => nousRef.current?.notification(notification), holdsCopilotQuestions: async (owner) => Boolean(await nousRef.current?.holdsCopilotQuestions(owner)), autoAnswer: async (record) => await nousRef.current?.autoAnswer(record) ?? null },
     userSettings: (userId) => Promise.resolve(store.getUserSettings(userId)),
     recordRoomEvent: (input) => Promise.resolve(store.recordRoomEvent(input)),
     push: options.notificationPush !== undefined ? options.notificationPush : await loadFcmServiceAccount(config.fcmServiceAccountFile).then((account) => account && createFcmSender(account)),
@@ -5647,7 +5647,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return sendApiError(reply, 409, "CONFLICT", error.message);
     }
     if (error instanceof SpaceFeatureDisabledError) {
-      request.log.info({ err: error, requestId: request.requestIdForSpace }, "request blocked by feature gate");
+      request.log.info({ err: error, requestId: request.requestIdForSpace, ...(error.errorCode === "BROWSER_HOST_UNAVAILABLE" ? { hostError: error.details } : {}) }, "request blocked by feature gate");
       const statusCode =
         error.errorCode === "SPACE_AGENT_PERMISSION_FIXED_FULL_ACCESS" ||
         error.errorCode === "SPACE_AGENT_MODEL_CONFIG_NOT_ADVERTISED" ||
@@ -5673,7 +5673,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     apiStartedAt, config, appVersionReader, store, appDiagnosticsService, browserSessionManager,
     workerReadinessChecker, cliTerminalManager, routeOptions: defaultRouteRateLimitOptions
   });
-  if (config.optionalModules.has("desktop-updates")) registerDesktopReleaseRoutes(app, { routeOptions: defaultRouteRateLimitOptions });
+  if (config.optionalModules.has("desktop-updates")) registerDesktopReleaseRoutes(app, { routeOptions: defaultRouteRateLimitOptions }); registerMetricsScrape(app, { tokenFile: config.metricsTokenFile, routeOptions: defaultRouteRateLimitOptions, render: () => { observeMemoryWorkers(); return observability.renderPrometheus(); } });
   // Aggregate metrics only (route templates, codes, categories, process and
   // queue gauges). Served to local/private-network scrapers and signed-in
   // administrators; clients that reach the API from the public internet
@@ -5976,7 +5976,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   registerTaskItemRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions, recordAudit: (request, input) => recordAudit(store, request, input),
     schedules: config.instanceJobs["task-schedules"] ? { inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }),
-      answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, makeSpaceId("trace")), reopen: async (pane, owner) => spaceControl.execute(await controlUser(owner), controlExecuteSchema.parse({ roomId: pane.roomId, requestId: makeSpaceId("task_reopen"), actions: [{ kind: "pane", operation: pane.mode === "TERMINAL" ? "reopen" : "start", target: { paneIds: [pane.id], state: "ALL" }, when: "NOW" }] })) } : null });
+      answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, makeSpaceId("trace")), reopen: async (pane, owner) => spaceControl.execute(await controlUser(owner), controlExecuteSchema.parse({ roomId: pane.roomId, requestId: makeSpaceId("task_reopen"), actions: [{ kind: "pane", operation: pane.mode === "TERMINAL" ? "reopen" : "start", target: { paneIds: [pane.id], state: "ALL" }, when: "NOW" }] })), notice: async (owner, key, line) => { await nousRef.current?.service.notice(owner, key, line); } } : null });
 
   registerLinkInspectRoutes(app, { routeOptions: defaultRouteRateLimitOptions });
 
@@ -6586,7 +6586,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     mailboxes: options.jobApplyMailboxes ?? createImapMailboxFactory(),
     // Gmail and Calendar of the Google account chosen in the pane, through the owner's Google connector.
     google: () => options.jobApplyGoogle ?? connectorServiceRef.current,
-    gmailFetch: options.jobApplyGmailFetch,
+    gmailFetch: options.jobApplyGmailFetch, notifications: () => notificationService,
     // Every activity event reaches the pane's room over the event stream; "needs you" moments and run
     // summaries also go to Telegram when the pane settings ask for it.
     onEvent: (event) => {
@@ -6615,7 +6615,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
         // Mail triage reaches Telegram only when an application email asks for something.
         const mailNeedsYou = event.type === "MAIL" && event.payload.category === "ACTION_NEEDED";
-        if (!mailNeedsYou && !["HANDOFF_REQUESTED", "QUESTION", "REVIEW_REQUESTED", "RUN_FINISHED", "RUN_STOPPED"].includes(event.type)) return;
+        // A posting parked as NEEDS_USER logs a QUESTION without a questionId: nothing to answer, nothing resolves it (its real question notifies).
+        if (!mailNeedsYou && (!["HANDOFF_REQUESTED", "QUESTION", "REVIEW_REQUESTED", "RUN_FINISHED", "RUN_STOPPED"].includes(event.type) || (event.type === "QUESTION" && typeof event.payload.questionId !== "string"))) return;
         pane ??= await Promise.resolve(store.getPane(event.paneId)).catch(() => null);
         if (!pane || pane.mode !== "JOB_APPLY") return;
         // "Needs you" moments and run summaries are notifications; the pane's own toggles decide in-app and Telegram.
@@ -6624,12 +6625,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         const owner = await roomOwner(roomId);
         if (!owner) return;
         const needsYou = mailNeedsYou || event.type === "HANDOFF_REQUESTED" || event.type === "QUESTION" || event.type === "REVIEW_REQUESTED";
-        await notificationService.raise({ ownerUserId: owner, roomId, paneId: event.paneId, source: "JOB_COPILOT", kind: event.type, severity: needsYou ? "ATTENTION" : "INFO",
+        const raised = await notificationService.raise({ ownerUserId: owner, roomId, paneId: event.paneId, source: "JOB_COPILOT", kind: event.type, severity: needsYou ? "ATTENTION" : "INFO",
           title: needsYou ? `${pane.title} needs you` : `${pane.title}: ${event.type === "RUN_FINISHED" ? "run finished" : "run stopped"}`,
           body: event.message.slice(0, 2000), link: { roomId, paneId: event.paneId, target: `job-apply-event:${event.id}` },
           dedupeKey: !needsYou ? null : event.type === "QUESTION" ? needsYouKey("question", event.payload.questionId) : event.type === "REVIEW_REQUESTED" ? needsYouKey("review", event.payload.reviewId)
-            : event.type === "HANDOFF_REQUESTED" ? needsYouKey("handoff", event.paneId) : `job-apply:${event.type}:${event.id}`, payload: { eventId: event.id }, telegram: false });
-        if (!notifications.telegram) return;
+            : event.type === "HANDOFF_REQUESTED" ? needsYouKey("handoff", event.paneId) : `job-apply:${event.type}:${event.id}`, payload: { eventId: event.id, ...jobApplyNeedsYouAsk(event) }, telegram: false });
+        if (!notifications.telegram || raised.payload.heldForNous) return; // a question held for Nous reaches Telegram only through its release (Ask Last step 7)
         await telegramIntegrationManager.notify(`Job Copilot (${pane.title}): ${event.message}`).catch((error: unknown) => {
           app.log.warn({ err: error, paneId: event.paneId }, "Job Copilot Telegram notification failed");
         });
@@ -6639,7 +6640,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   // Job Copilot mail triage every 15 minutes (stable only; a dev copy would act on real Gmail).
   scheduleJobApplyMailTriage(app, { enabled: config.instanceJobs["job-apply-mail-triage"] && options.jobApplyMailTriage !== false && config.optionalModules.has("job-copilot"), triage: (onError) => jobApplyService.triageMailForAllOwners(onError) });
   if (config.optionalModules.has("job-copilot")) registerJobApplyRoutes(app, jobApplyService, {
-    store,
+    store, ...(config.instanceJobs["job-apply-mail-triage"] ? { inspect: (pane: Pane) => roomPaneController.inspect(pane, { fresh: true }), log: app.log } : {}),
     routeOptions: defaultRouteRateLimitOptions,
     // The run's kickoff goes through the pane CLI input path Room Agent uses (typed line + Enter).
     kickoff: options.jobApplyKickoff ?? (async (pane, run, discover) => {
@@ -6670,12 +6671,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const mailCopilotRepository = options.mailCopilotRepository ?? (config.databaseUrl ? PostgresMailCopilotRepository.fromConnectionString(config.databaseUrl) : new InMemoryMailCopilotRepository());
   app.addHook("onClose", () => mailCopilotRepository.dispose());
   const mailCopilotPaneRooms = new Map<string, string>();
-  const mailCopilotKickoff = createMailCopilotKickoff({ store, terminal: cliTerminalManager, send: options.mailCopilotKickoff });
+  const mailCopilotKickoff = createMailCopilotKickoff({ store, terminal: cliTerminalManager, send: options.mailCopilotKickoff, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: (pane) => roomPaneController.start(pane, makeSpaceId("trace")) });
   const mailCopilotService = createMailCopilotService({
     kickoff: mailCopilotKickoff,
     google: () => options.mailCopilotGoogle ?? connectorServiceRef.current,
     gmailFetch: options.mailCopilotGmailFetch,
-    repository: mailCopilotRepository,
+    repository: mailCopilotRepository, resolveNotice: (owner, key) => notificationService.resolve(owner, key),
     onEvent: (event) => {
       void (async () => {
         if (!event.paneId) return;
@@ -6739,8 +6740,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const paneModuleAuth = (targetType: string, product: string) => ({ assertPaneAccess: async (request: FastifyRequest, pane: Pane) => { await assertRoomAccess(pane.roomId, request.user); },
     audit: (request: FastifyRequest, action: string, targetId: string | null, metadata?: Record<string, unknown>) => recordAudit(store, request, { action, targetType, targetId, metadata }),
     authenticatedOwner: async (request: FastifyRequest) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", `Sign in to use ${product}.`, 401); return (await store.upsertUser(request.user)).id; } });
-  const marketingCopilotService = !config.optionalModules.has("marketing-copilot") ? undefined : registerMarketingCopilot(app, { store, eventBus, paneBrowserAccounts, artifactRoot: config.browserEvidenceArtifactRoot, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.marketingCopilotRepository, kickoff: options.marketingCopilotKickoff, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["marketing-copilot-scheduler"] && options.marketingCopilotScheduler !== false, metrics: config.instanceJobs["marketing-copilot-metrics"] && options.marketingCopilotMetrics !== false, ...paneModuleAuth("marketing_copilot", "Marketing Copilot") });
-  const freelanceCopilotService = !config.optionalModules.has("freelance-copilot") ? undefined : registerFreelanceCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.freelanceCopilotRepository, kickoff: options.freelanceCopilotKickoff, crypto: connectorCrypto, mailboxes: options.freelanceCopilotMailboxes ?? createImapMailboxFactory(), routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["freelance-copilot-scheduler"] && options.freelanceCopilotScheduler !== false, ...paneModuleAuth("freelance_copilot", "Freelance Copilot") });
+  const marketingCopilotService = !config.optionalModules.has("marketing-copilot") ? undefined : registerMarketingCopilot(app, { store, eventBus, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), paneBrowserAccounts, artifactRoot: config.browserEvidenceArtifactRoot, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.marketingCopilotRepository, kickoff: options.marketingCopilotKickoff, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["marketing-copilot-scheduler"] && options.marketingCopilotScheduler !== false, metrics: config.instanceJobs["marketing-copilot-metrics"] && options.marketingCopilotMetrics !== false, notice: (owner, key, line) => nousRef.current?.service.notice(owner, key, line), ...paneModuleAuth("marketing_copilot", "Marketing Copilot") });
+  const freelanceCopilotService = !config.optionalModules.has("freelance-copilot") ? undefined : registerFreelanceCopilot(app, { store, eventBus, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.freelanceCopilotRepository, kickoff: options.freelanceCopilotKickoff, crypto: connectorCrypto, mailboxes: options.freelanceCopilotMailboxes ?? createImapMailboxFactory(), routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, notifications: notificationService, roomOwner, scheduler: config.instanceJobs["freelance-copilot-scheduler"] && options.freelanceCopilotScheduler !== false, ...paneModuleAuth("freelance_copilot", "Freelance Copilot") });
 
   const designService = !config.optionalModules.has("design") ? undefined : registerDesign(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.designRepository,
     generate: options.designGenerate, render: options.designRender, kickoff: options.designKickoff, notifications: notificationService, roomOwner, artifactRoot: config.browserEvidenceArtifactRoot,
@@ -6750,7 +6751,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     attachToMarketingPost: marketingCopilotService ? async (owner, postId, assets) => { await marketingCopilotService.attachAssets(owner, postId, assets); } : undefined,
     invoke: controlInvoke, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), start: (pane) => roomPaneController.start(pane, makeSpaceId("trace")), ...paneModuleAuth("design", "the Design pane") });
   const appStudioService = !config.optionalModules.has("app-studio") ? undefined : registerAppStudio(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.appStudioRepository, kickoff: options.appStudioKickoff, notifications: notificationService, artifactRoot: config.browserEvidenceArtifactRoot, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("app_studio", "App Studio") });
-  const securityCopilotService = !config.optionalModules.has("security-copilot") ? undefined : registerSecurityCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.securityCopilotRepository, feeds: options.securityCopilotFeeds, kickoff: options.securityCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["security-copilot-watch"] && options.securityCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("security_copilot", "the Security Copilot") });
+  const securityCopilotService = !config.optionalModules.has("security-copilot") ? undefined : registerSecurityCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.securityCopilotRepository, feeds: options.securityCopilotFeeds, kickoff: options.securityCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["security-copilot-watch"] && options.securityCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("security_copilot", "the Security Copilot") }); const monitoringCopilotService = !config.optionalModules.has("monitoring-copilot") ? undefined : registerMonitoringCopilot(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.monitoringCopilotRepository, collector: options.monitoringCopilotCollector, kickoff: options.monitoringCopilotKickoff, notifications: notificationService, watch: config.instanceJobs["monitoring-copilot-watch"] && options.monitoringCopilotWatch !== false, routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log, inspect: (pane) => roomPaneController.inspect(pane, { fresh: true }), ...paneModuleAuth("monitoring_copilot", "the Monitoring Copilot") });
 
   const videoService = !config.optionalModules.has("video") ? undefined : registerVideo(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.videoRepository,
     engine: options.videoEngine, kickoff: options.videoKickoff, notifications: notificationService, roomOwner, artifactRoot: config.browserEvidenceArtifactRoot, workRoot: config.videoWorkRoot, toolsDir: config.videoToolsDir,
@@ -6761,7 +6762,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     documentDirty: (paneId, targetId, document) => cliBrowserCdpProxy.documentDirty(paneId, targetId, document) });
   registerCliBrowserBridgeRoutes(app, {
     options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity, vault, nous: nousRef,
-    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, videoService, appStudioService, securityCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
+    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, videoService, appStudioService, securityCopilotService, monitoringCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
   });
 
   async function withYouTubeAccountLock<T>(paneId: string, operation: () => Promise<T>): Promise<T> {
@@ -7644,10 +7645,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const { livePersonalMemory, liveHistory } = registerLiveRoutes(app, { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, readDashboardAgents });
   const councilService = registerCouncil(app, { config, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, claudeUsageProvider, jobApplyRepository, jobApplyService, livePersonalMemory, canonicalMemory, notifications: notificationService });
-  nousRef.current = registerNous(app, { config, vault, browser: browserSessionManager, ...(options.telegramIntegrationManager ? {} : { telegram: { persistence: telegramPersistence, secrets: telegramSecrets } }), autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents, railCli,
+  nousRef.current = registerNous(app, { config, vault, browser: browserSessionManager, ...(options.telegramIntegrationManager ? {} : { telegram: { persistence: telegramPersistence, secrets: telegramSecrets } }), autonomous: config.instanceJobs.nous, planControllerRunning: config.instanceJobs["managed-plan-controller"], auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents, railCli, youtubePlayback: (paneId) => youtubePlaybackStore.getByPaneId(paneId),
     roomTools: roomAgentTools, inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }), releaseTrain: roomCoordination.releaseTrain, notifications: notificationService, runner: options.nousRunner, vaultBrokerReinstall: options.vaultBrokerReinstall, monitorEvents: roomAgentMonitorRepository,
     answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId), pressKeys: (sessionId, keys, traceId) => cliTerminalManager.runSerializedTerminalMutation(sessionId, () => cliTerminalManager.sendInput(sessionId, keys, traceId, null, `${traceId}:keys:${randomUUID()}`)), activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), ops: { health: healthMonitor, services: systemServicesProvider, tokenUsage: (range) => systemAnalyticsService.models(range, "all"), gateway: () => gatewayAdminService!.status(), ...(gatewayAdminService ? { gatewayAdmin: gatewayAdminService } : {}) },
-    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService, design: designService, appStudio: appStudioService, video: videoService, security: securityCopilotService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider, paneBoardJob: config.instanceJobs["nous-pane-board"], paneBoardRunner: options.paneBoardRunner, council: councilService, liveHistory });
+    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService, design: designService, appStudio: appStudioService, video: videoService, security: securityCopilotService, monitoring: monitoringCopilotService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider, paneBoardJob: config.instanceJobs["nous-pane-board"], paneBoardRunner: options.paneBoardRunner, council: councilService, liveHistory });
 
   registerVoiceAttachmentRoutes(app, { config, store, routeOptions: defaultRouteRateLimitOptions });
 

@@ -6,6 +6,7 @@ import { taskAcceptanceSchema } from "./task-acceptance.js";
 import { cliAdapterContractSchema } from "./cli-adapter.js";
 import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
+import { planWaitsOnSchema } from "./plan-map.js";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
 import { nousSettingsSchema } from "./nous.js";
 import { brokerScopeSchema } from "./broker-scopes.js";
@@ -21,10 +22,12 @@ import { freelanceCopilotPaneMetadataSchema } from "./freelance-copilot.js";
 import { DESIGN_COLOR_PRESETS_MAX, designColorPresetSchema, designPaneMetadataSchema } from "./design.js";
 import { appStudioPaneMetadataSchema } from "./app-studio.js";
 import { securityCopilotPaneMetadataSchema } from "./security-copilot.js";
+import { monitoringCopilotPaneMetadataSchema } from "./monitoring-copilot.js";
 import { videoPaneMetadataSchema } from "./video.js";
 import { notificationSettingsSchema } from "./notifications.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
+import { atLeastOneField } from "./update-rules.js";
 
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
 export const idSchema = z.string().min(8).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
@@ -122,7 +125,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -190,6 +193,7 @@ export const eventTypeSchema = z.enum([
   "APP_STUDIO_UPDATED",
   "VIDEO_UPDATED",
   "SECURITY_COPILOT_UPDATED",
+  "MONITORING_COPILOT_UPDATED",
   "NOTIFICATION_CREATED",
   "NOTIFICATION_UPDATED",
   "NOUS_PANE_BOARD_UPDATED"
@@ -477,6 +481,7 @@ export const paneSchema = z.object({
   appStudioMetadata: appStudioPaneMetadataSchema.nullable().optional(),
   videoMetadata: videoPaneMetadataSchema.nullable().optional(),
   securityCopilotMetadata: securityCopilotPaneMetadataSchema.nullable().optional(),
+  monitoringCopilotMetadata: monitoringCopilotPaneMetadataSchema.nullable().optional(),
   paneName: z.string().min(1).max(60).nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
@@ -580,11 +585,11 @@ export const createPaneInputSchema = z
   })
   .superRefine((input, context) => {
     // Copilot panes (Job, Mail, Marketing, Freelance), Design, App Studio and Video panes run their agent in a CLI session, so they carry a runtime too.
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN" && input.mode !== "APP_STUDIO" && input.mode !== "VIDEO" && input.mode !== "SECURITY_COPILOT") {
+    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN" && input.mode !== "APP_STUDIO" && input.mode !== "VIDEO" && input.mode !== "SECURITY_COPILOT" && input.mode !== "MONITORING_COPILOT") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO or SECURITY_COPILOT mode."
+        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT mode."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -700,6 +705,14 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("SECURITY_COPILOT"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
+      /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
+      accountProfileId: jobCopilotAccountProfileIdSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("MONITORING_COPILOT"),
       terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
       /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
       accountProfileId: jobCopilotAccountProfileIdSchema.optional()
@@ -935,7 +948,7 @@ export const updateAgentPaneBindingInputSchema = z
     selectedToolIds: z.array(z.string().trim().min(1).max(160)).max(50).nullable().optional(),
     lastSyncedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Agent pane binding update must include at least one field.");
+  .refine(...atLeastOneField("Agent pane binding update must include at least one field."));
 
 export const agentPaneMessageSchema = z.object({
   id: z.string().min(1).max(200),
@@ -1016,7 +1029,7 @@ export const updateRoomAgentMissionInputSchema = z
     // Safe machine code of a failed mission (trace lookup); the first one recorded is kept.
     errorCode: z.string().trim().min(1).max(96).optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Room agent mission update must include at least one field.");
+  .refine(...atLeastOneField("Room agent mission update must include at least one field."));
 
 export const roomAgentActionTypeSchema = z.enum([
   "CONTROL",
@@ -1063,7 +1076,7 @@ export const updateRoomAgentActionInputSchema = z
     statusReason: z.string().trim().min(1).max(1000).optional(),
     completedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Room agent action update must include at least one field.");
+  .refine(...atLeastOneField("Room agent action update must include at least one field."));
 
 export const roomAgentPlanStatusSchema = z.enum(["READY", "PAUSED_BY_ROOM_AGENT", "RUNNING", "COMPLETED"]);
 export const roomAgentRoomPlanSchema = z.object({
@@ -2470,7 +2483,7 @@ export const updatePaneCliSessionInputSchema = z
     cliTaskRevisionId: idSchema.nullable().optional(),
     accountProfileId: cliAccountProfileIdSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "CLI session update must include at least one field.");
+  .refine(...atLeastOneField("CLI session update must include at least one field."));
 
 export const paneCliTerminalControlLeaseSchema = z.object({
   leaseId: idSchema,
@@ -3206,7 +3219,7 @@ export const updatePaneBrowserSessionInputSchema = z
     isActive: z.boolean().optional(),
     endedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Browser session update must include at least one field.");
+  .refine(...atLeastOneField("Browser session update must include at least one field."));
 
 export const createPaneBrowserSessionRequestSchema = z.object({
   viewport: browserSessionViewportSchema.default("desktop"),
@@ -3222,7 +3235,7 @@ export const updatePaneBrowserSessionRequestSchema = z
     targetUrl: z.string().trim().url().optional(),
     streamMode: browserStreamModeSchema.optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Browser session update must include at least one field.");
+  .refine(...atLeastOneField("Browser session update must include at least one field."));
 
 export const updateBrowserStreamModeInputSchema = z.object({
   streamMode: browserStreamModeSchema
@@ -3288,7 +3301,7 @@ export const updateBrowserControlLeaseInputSchema = z
     reason: z.string().trim().min(1).max(500).nullable().optional(),
     ttlSeconds: z.number().int().min(5).max(300).optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Browser control lease update must include at least one field.");
+  .refine(...atLeastOneField("Browser control lease update must include at least one field."));
 
 export const acquireBrowserControlInputSchema = z.object({
   holderType: browserControlHolderTypeSchema,
@@ -3299,11 +3312,15 @@ export const acquireBrowserControlInputSchema = z.object({
 
 export const browserControlLeaseActionInputSchema = z.object({
   leaseId: idSchema,
-  ttlSeconds: z.number().int().min(5).max(300).optional()
+  ttlSeconds: z.number().int().min(5).max(300).optional(),
+  /** Heartbeat: the operator is on the pane (tab shown, pane in view and focused or maximized). The API never passes it to the host. */
+  present: z.boolean().optional()
 });
 
 export const browserControlLeaseResponseSchema = z.object({
-  lease: browserControlLeaseSchema
+  lease: browserControlLeaseSchema,
+  /** The lease serves a sign-in, code or CAPTCHA handoff: while the operator is on the pane it is not idle (operator 2026-10-27). */
+  presenceHold: z.boolean().optional()
 });
 
 export const browserCaptureJobStatusSchema = z.enum(["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]);
@@ -3371,7 +3388,7 @@ export const updateBrowserCaptureJobInputSchema = z
     startedAt: isoDateTimeSchema.nullable().optional(),
     completedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Browser capture job update must include at least one field.");
+  .refine(...atLeastOneField("Browser capture job update must include at least one field."));
 
 export const browserCaptureJobResponseSchema = z.object({ job: browserCaptureJobSchema });
 
@@ -3446,7 +3463,7 @@ export const updateBrowserCaptureSegmentInputSchema = z
     statusReason: z.string().trim().min(1).max(500).nullable().optional(),
     finalizedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Browser capture segment update must include at least one field.");
+  .refine(...atLeastOneField("Browser capture segment update must include at least one field."));
 
 export const browserCaptureSegmentListResponseSchema = z.object({
   jobId: idSchema,
@@ -3743,10 +3760,11 @@ export const browserToolActionInputSchema = z.discriminatedUnion("type", [
     type: z.literal("set_viewport"),
     viewport: browserSessionViewportSchema
   }),
-  // A key press: submit a form (Enter) or move to the next or previous control (Tab, Shift+Tab); returns no page content.
+  // A key press: submit a form (Enter), move between controls (Tab, Shift+Tab), clear a field (Control+A, Backspace) or pick a
+  // native dropdown option (arrows, Enter: the open list is not in any frame, so clicks cannot reach it); returns no page content.
   browserActionBaseSchema.extend({
     type: z.literal("press"),
-    key: z.enum(["Enter", "Tab", "Shift+Tab"])
+    key: z.enum(["Enter", "Tab", "Shift+Tab", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Space", "Control+A"])
   }),
   // A screenshot with every form field, text area and editable area drawn as dots (the pane that filled a Vault page sees it).
   browserActionBaseSchema.extend({
@@ -3762,8 +3780,26 @@ export const browserToolActionInputSchema = z.discriminatedUnion("type", [
     durationMs: z.number().int().min(250).max(1_800_000).default(3_000),
     intervalMs: z.number().int().min(40).max(4_000).default(500),
     format: z.enum(["frames", "gif", "webm", "both"]).default("both")
+  }),
+  // The operator's live view only (option D, plan clipboard:gHaiX_8yanVA): Chrome draws an open native dropdown in a popup
+  // no frame shows, so the view asks for it (`browserSelectStateSchema` as text) and draws its own list; the pick goes as keys.
+  browserActionBaseSchema.extend({
+    type: z.literal("select_state")
+  }),
+  browserActionBaseSchema.extend({
+    type: z.literal("select_choose"),
+    index: z.number().int().min(0).max(499)
   })
 ]);
+
+/** An open native dropdown: its box in viewport pixels, option labels, disabled indexes, and whether labels were left out. */
+export const browserSelectStateSchema = z.object({
+  selectedIndex: z.number().int().min(-1),
+  box: z.object({ x: z.number(), y: z.number(), width: z.number().min(0), height: z.number().min(0) }),
+  labels: z.array(z.string().max(80)).max(500),
+  disabled: z.array(z.number().int().min(0)).max(500),
+  truncated: z.boolean()
+});
 
 export const browserToolActionTypeSchema = z.enum([
   "navigate",
@@ -3776,7 +3812,9 @@ export const browserToolActionTypeSchema = z.enum([
   "press",
   "masked_screenshot",
   "diagnostics",
-  "record"
+  "record",
+  "select_state",
+  "select_choose"
 ]);
 
 export const browserToolActionResultSchema = z.object({
@@ -3799,7 +3837,7 @@ export const spaceBrowserToolIdSchema = z.enum([
   "browser:record"
 ]);
 
-function expectedBrowserToolIdForAction(type: z.infer<typeof browserToolActionTypeSchema>): z.infer<typeof spaceBrowserToolIdSchema> {
+function expectedBrowserToolIdForAction(type: z.infer<typeof browserToolActionTypeSchema>): z.infer<typeof spaceBrowserToolIdSchema> | null {
   switch (type) {
     case "navigate":
       return "browser:navigate";
@@ -3823,6 +3861,10 @@ function expectedBrowserToolIdForAction(type: z.infer<typeof browserToolActionTy
       return "browser:diagnostics";
     case "record":
       return "browser:record";
+    // The live view's own dropdown list: no agent tool.
+    case "select_state":
+    case "select_choose":
+      return null;
   }
 }
 
@@ -3838,7 +3880,9 @@ export const spaceAgentBrowserActionRequestSchema = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["toolId"],
-        message: `toolId ${input.toolId} does not match browser action type ${input.action.type}.`
+        message: expected
+          ? `toolId ${input.toolId} does not match browser action type ${input.action.type}.`
+          : `Browser action type ${input.action.type} belongs to the operator's live view.`
       });
     }
   });
@@ -4061,7 +4105,7 @@ export const updateSpaceAgentSessionInputSchema = z
     isActive: z.boolean().optional(),
     lastSyncedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Space agent session update must include at least one field.");
+  .refine(...atLeastOneField("Space agent session update must include at least one field."));
 
 export const spaceAgentMessageRecordSchema = z.object({
   dotId: dotIdSchema.nullable().optional(),
@@ -4094,7 +4138,7 @@ export const updateSpaceAgentMessageInputSchema = z
     content: z.string().max(50000).optional(),
     status: agentPaneMessageStatusSchema.optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Space agent message update must include at least one field.");
+  .refine(...atLeastOneField("Space agent message update must include at least one field."));
 
 export const spaceAgentRunRecordSchema = z.object({
   dotId: dotIdSchema.nullable().optional(),
@@ -4162,7 +4206,7 @@ export const updateSpaceAgentRunInputSchema = z
     errorMessage: z.string().min(1).max(1000).nullable().optional(),
     completedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Space agent run update must include at least one field.");
+  .refine(...atLeastOneField("Space agent run update must include at least one field."));
 
 export const coderAgentProxyResourceSchema = z.enum([
   "chat",
@@ -4218,7 +4262,7 @@ export const updateProviderSettingsInputSchema = z
     titleGenerationModelId: z.string().trim().min(1).max(160).nullable().optional(),
     titleGenerationReasoningEffort: reasoningEffortSchema.optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Provider settings update must include at least one field.");
+  .refine(...atLeastOneField("Provider settings update must include at least one field."));
 
 export const voiceTranscriptionMaxBytes = 25 * 1024 * 1024;
 // Legacy ids remain accepted for a short compatibility window so an already-open
@@ -4409,7 +4453,7 @@ export const updateProviderInputSchema = z
     backingProviderId: z.string().trim().min(1).max(120).nullable().optional(),
     credentialRef: z.string().trim().max(500).nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Provider update must include at least one field.");
+  .refine(...atLeastOneField("Provider update must include at least one field."));
 
 export const modelSchema = z.object({
   id: z.string().min(1).max(160),
@@ -5139,6 +5183,14 @@ export const systemAnalyticsTokenAccountSchema = systemAnalyticsTokenTotalsSchem
     accountKey: z.string().min(1).max(200),
     label: z.string().min(1).max(200),
     route: z.enum(["GATEWAY", "DIRECT"]),
+    /** The account's week (Space Gateway subscription accounts): `gatewayWeekPace`, null without a live 7-day window. */
+    weeklyPace: z.object({
+      usedPercent: z.number().min(0).max(100).nullable(),
+      passedPercent: z.number().min(0).max(100),
+      points: z.number().min(-100).max(100).nullable(),
+      resetAt: z.string().min(1).max(40),
+      pace: z.enum(["AHEAD", "ON", "UNDER"]).nullable()
+    }).strict().nullable().optional(),
     models: z.array(z.object({
       providerId: z.string().min(1).max(120),
       modelId: z.string().min(1).max(160),
@@ -5831,7 +5883,7 @@ export const updateAdminOperationRunInputSchema = z
     finishedAt: isoDateTimeSchema.nullable().optional()
   })
   .strict()
-  .refine((input) => Object.keys(input).length > 0, "An admin operation update must change at least one field.");
+  .refine(...atLeastOneField("An admin operation update must change at least one field."));
 
 export const cliMaintenanceRequestSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("CHECK") }).strict(),
@@ -5956,7 +6008,7 @@ export const updateCliMaintenanceAuthHandoffInputSchema = z
     safeErrorCode: z.string().trim().min(1).max(80).regex(/^[A-Z0-9_]+$/).nullable().optional()
   })
   .strict()
-  .refine((input) => Object.keys(input).length > 0, "A CLI auth handoff update must change at least one field.");
+  .refine(...atLeastOneField("A CLI auth handoff update must change at least one field."));
 export const cliMaintenanceAuthHandoffSchema = z
   .object({
     id: idSchema,
@@ -6840,7 +6892,7 @@ export const updateArtifactRetentionInputSchema = z
     pinnedAt: isoDateTimeSchema.nullable().optional(),
     deletedAt: isoDateTimeSchema.nullable().optional()
   })
-  .refine((input) => Object.keys(input).length > 0, "Artifact retention update must include at least one field.");
+  .refine(...atLeastOneField("Artifact retention update must include at least one field."));
 
 export const dummyTurnInputSchema = z.object({
   roomId: idSchema,
@@ -8790,6 +8842,8 @@ export const voiceComposerSettingsSchema = z.object({
   terminalShortcutsButton: z.boolean().default(true),
   terminalVariablesButton: z.boolean().default(true),
   terminalPlansButton: z.boolean().default(true),
+  terminalAccountPicker: z.boolean().default(true),
+  terminalLocalDraftButton: z.boolean().default(true),
   terminalLocalDraft: z.boolean().default(false),
   // Ids of CLI shortcuts hidden from the shortcuts menu; empty shows them all.
   terminalHiddenShortcuts: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(64).default([])
@@ -8860,6 +8914,7 @@ export type DesignLaunchSettings = z.infer<typeof designLaunchSettingsSchema>;
 export const appStudioLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type AppStudioLaunchSettings = z.infer<typeof appStudioLaunchSettingsSchema>;
 export const securityCopilotLaunchSettingsSchema = copilotLaunchSettingsSchema;
+export const monitoringCopilotLaunchSettingsSchema = copilotLaunchSettingsSchema;
 /** The same for Video panes (Settings → Video); the agent defaults to Claude Code. */
 export const videoLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type VideoLaunchSettings = z.infer<typeof videoLaunchSettingsSchema>;
@@ -8955,6 +9010,7 @@ export const userSettingsSchema = z.object({
   design: designLaunchSettingsSchema.nullable().optional(),
   appStudio: appStudioLaunchSettingsSchema.nullable().optional(),
   securityCopilot: securityCopilotLaunchSettingsSchema.nullable().optional(),
+  monitoringCopilot: monitoringCopilotLaunchSettingsSchema.nullable().optional(),
   video: videoLaunchSettingsSchema.nullable().optional(),
   /** The operator's own colour combinations in the Design Studio (the built-in ones are DESIGN_COLOR_PRESETS). */
   designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
@@ -9036,6 +9092,7 @@ export const updateUserSettingsInputSchema = z.object({
   /** null forgets the default: the next App Studio pane asks again. */
   appStudio: appStudioLaunchSettingsSchema.nullable().optional(),
   securityCopilot: securityCopilotLaunchSettingsSchema.nullable().optional(),
+  monitoringCopilot: monitoringCopilotLaunchSettingsSchema.nullable().optional(),
   video: videoLaunchSettingsSchema.nullable().optional(),
   designColorPresets: z.array(designColorPresetSchema).max(DESIGN_COLOR_PRESETS_MAX).optional(),
   notifications: notificationSettingsSchema.nullable().optional(),
@@ -9320,7 +9377,7 @@ export const updateUserLinkRequestSchema = z.object({
   openMode: userLinkOpenModeSchema.optional(),
   category: userLinkCategorySchema.optional(),
   isQuick: z.boolean().optional()
-}).strict().refine((input) => Object.keys(input).length > 0, "Link update must include at least one field.");
+}).strict().refine(...atLeastOneField("Link update must include at least one field."));
 
 export const listUserLinksQuerySchema = z.object({
   q: z.string().trim().min(1).max(500).optional(),
@@ -9418,6 +9475,9 @@ export function renumberPlanSteps<T extends { id: string; order: number }>(steps
 }
 const planStepsInputSchema = z.array(planStepSchema).max(100).transform(renumberPlanSteps);
 
+// Plan map (operator request 2026-10-25): the wait and dependency schemas live in plan-map.ts, a leaf module nous.ts can import too.
+const planDependsOnSchema = z.array(idSchema).max(30);
+
 
 export const clipboardItemSchema = z
   .object({
@@ -9436,6 +9496,9 @@ export const clipboardItemSchema = z
     roomId: idSchema.nullable().default(null),
     paneId: idSchema.nullable().default(null),
     paneTitle: z.string().min(1).max(160).nullable().default(null),
+    dependsOn: planDependsOnSchema.default([]),
+    dueAt: isoDateTimeSchema.nullable().default(null),
+    waitsOn: planWaitsOnSchema.nullable().default(null),
     occurrenceCount: z.number().int().min(1),
     characterCount: z.number().int().min(1).max(clipboardTextMaxCharacters),
     createdAt: isoDateTimeSchema,
@@ -9453,7 +9516,9 @@ export const createClipboardItemRequestSchema = z
     steps: planStepsInputSchema.optional(),
     roomId: idSchema.nullable().optional(),
     paneId: idSchema.nullable().optional(),
-    paneTitle: z.string().min(1).max(160).nullable().optional()
+    paneTitle: z.string().min(1).max(160).nullable().optional(),
+    dependsOn: planDependsOnSchema.optional(),
+    dueAt: isoDateTimeSchema.nullable().optional()
   })
   .strict()
   .superRefine((input, context) => {
@@ -9463,6 +9528,9 @@ export const createClipboardItemRequestSchema = z
         path: ["title"],
         message: "Clipboard item titles are allowed only for PLAN items."
       });
+    }
+    if (input.source !== "PLAN" && (input.dependsOn != null || input.dueAt != null)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [input.dependsOn != null ? "dependsOn" : "dueAt"], message: "Dependencies and due dates are allowed only for PLAN items." });
     }
     if (input.source === "PLAN" && (!input.minimumModel || input.minimumModel.trim().length === 0)) {
       context.addIssue({
@@ -9501,7 +9569,9 @@ export const saveAgentClipboardPlanInputSchema = z
     steps: planStepsInputSchema.optional(),
     roomId: idSchema.nullable().optional(),
     paneId: idSchema.nullable().optional(),
-    paneTitle: z.string().min(1).max(160).nullable().optional()
+    paneTitle: z.string().min(1).max(160).nullable().optional(),
+    dependsOn: planDependsOnSchema.optional(),
+    dueAt: isoDateTimeSchema.nullable().optional()
   })
   .strict();
 
@@ -9516,7 +9586,9 @@ export const upsertClipboardItemInputSchema = z
     steps: planStepsInputSchema.optional(),
     roomId: idSchema.nullable().optional(),
     paneId: idSchema.nullable().optional(),
-    paneTitle: z.string().min(1).max(160).nullable().optional()
+    paneTitle: z.string().min(1).max(160).nullable().optional(),
+    dependsOn: planDependsOnSchema.optional(),
+    dueAt: isoDateTimeSchema.nullable().optional()
   })
   .strict()
   .superRefine((input, context) => {
@@ -9596,7 +9668,14 @@ export const updatePlanProgressRequestSchema = z
     steps: z.array(planStepSchema).transform(renumberPlanSteps).optional(),
     paneId: z.string().trim().nullable().optional(),
     roomId: z.string().trim().nullable().optional(),
-    paneTitle: z.string().trim().nullable().optional()
+    paneTitle: z.string().trim().nullable().optional(),
+    /** The plan map: `dependsOn` replaces the list ([] clears), `dueAt` and `waitsOn` null clear. */
+    dependsOn: planDependsOnSchema.optional(),
+    dueAt: isoDateTimeSchema.nullable().optional(),
+    waitsOn: planWaitsOnSchema.nullable().optional(),
+    /** The plan's own title and text, edited in place (Nous daily upgrade 2026-10-27): the record keeps its id. */
+    title: z.string().trim().min(1).max(clipboardPlanTitleMaxCharacters).optional(),
+    text: nonBlankExactText(clipboardTextMaxCharacters).optional()
   })
   .strict();
 
@@ -10104,6 +10183,7 @@ export type BrowserSetViewportInput = z.infer<typeof browserSetViewportInputSche
 export type BrowserToolActionType = z.infer<typeof browserToolActionTypeSchema>;
 export type BrowserToolActionInput = z.infer<typeof browserToolActionInputSchema>;
 export type BrowserToolActionResult = z.infer<typeof browserToolActionResultSchema>;
+export type BrowserSelectState = z.infer<typeof browserSelectStateSchema>;
 export type SpaceBrowserToolId = z.infer<typeof spaceBrowserToolIdSchema>;
 export type SpaceAgentBrowserActionRequest = z.infer<typeof spaceAgentBrowserActionRequestSchema>;
 export type SpaceAgentBrowserActionEnvelope = z.infer<typeof spaceAgentBrowserActionEnvelopeSchema>;

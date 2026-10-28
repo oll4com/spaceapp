@@ -22,6 +22,7 @@
   "GET /api/desktop/update.ps1",
   "GET /api/internal/streaming/bot/live-metrics",
   "GET /api/internal/streaming/bot/skills/:name",
+  "GET /api/metrics/scrape",
   "GET /api/setup/status",
   "GET /api/t3code/panes/:paneId/app/ws",
   "GET /healthz",

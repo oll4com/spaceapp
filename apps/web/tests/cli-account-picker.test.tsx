@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
   apiProviders: vi.fn(),
   identities: vi.fn(),
   balance: vi.fn(),
+  voiceInput: vi.fn(() => null as unknown),
 }));
+vi.mock("../src/features/voice-input/VoiceInputProvider.js", () => ({ useOptionalVoiceInput: mocks.voiceInput }));
 vi.mock("../src/api.js", () => ({
   api: {
     toolbarUsageAccounts: mocks.codex,
@@ -283,6 +285,7 @@ describe("CliAccountPicker", () => {
     resetCliAccountIdentitiesForTests();
     resetCliAccountBalanceForTests();
     for (const mock of Object.values(mocks)) mock.mockReset();
+    mocks.voiceInput.mockReturnValue(null);
     mocks.codex.mockResolvedValue(page([], "codex"));
     mocks.agy.mockResolvedValue(page([], "agy"));
     mocks.apiProviders.mockResolvedValue(page([], "api"));
@@ -330,6 +333,17 @@ describe("CliAccountPicker", () => {
     fireEvent.click(lab!);
     expect(onSelect).toHaveBeenCalledWith("lab");
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("stays hidden and reads no quota once Settings → CLI pane controls switches the account picker off", () => {
+    mocks.voiceInput.mockReturnValue({ settings: { terminalAccountPicker: false } });
+    const { container } = render(
+      <CliAccountPicker runtimeId="cli:claude" providerLabel="Claude" icon={<span />} paneTitle="Claude pane"
+        profiles={[profile("ops")]} selectedProfileId="ops" onSelect={vi.fn()} />
+    );
+    expect(container.innerHTML).toBe("");
+    expect(mocks.claude).not.toHaveBeenCalled();
+    expect(mocks.identities).not.toHaveBeenCalled();
   });
 
   it("shows the paid API key account greyed out, still selectable by hand, and never counts it as available", async () => {
@@ -384,7 +398,8 @@ describe("CliAccountPicker", () => {
     expect(api({ spentUsd: null, budgetUsd: 500 })).toMatchObject({ percent: null, label: "Paid · ready" });
   });
 
-  it("shows the API actually used by the selected gateway and its remaining monthly budget without selecting another profile", async () => {
+  // Operator rule 2026-10-27: the API key never serves Claude Code, so the gateway row never claims it.
+  it("shows the API key's own use and budget, while the selected gateway shows only its exhausted pool", async () => {
     mocks.claude.mockResolvedValue(apiFallbackSample().claude);
     mocks.identities.mockResolvedValue({ accounts: [], checkedAt: sampledAt });
     const onSelect = vi.fn();
@@ -399,10 +414,10 @@ describe("CliAccountPicker", () => {
     expect(api!.getAttribute("aria-checked")).toBe("false");
     expect(api!.getAttribute("data-tone")).toBe("off"); // Auto still cannot pick the paid profile.
     expect(gateway!.getAttribute("aria-checked")).toBe("true");
-    expect(gateway!.getAttribute("data-tone")).toBe("ready");
-    expect(within(gateway!).getByText("Using API")).toBeTruthy();
-    expect(within(gateway!).getByText("$198.07 of $500.00 budget left")).toBeTruthy();
-    expect(within(menu).getByText("1 of 2 available now")).toBeTruthy();
+    expect(gateway!.getAttribute("data-tone")).not.toBe("ready");
+    expect(within(gateway!).queryByText("Using API")).toBeNull();
+    expect(within(gateway!).queryByText(/budget left/)).toBeNull();
+    expect(within(menu).getByText("0 of 2 available now")).toBeTruthy();
     expect(onSelect).not.toHaveBeenCalled();
     // Other direct profiles must not appear to be using the gateway's API key.
     rerender(<CliAccountPicker {...props} selectedProfileId="api" />);
@@ -420,8 +435,7 @@ describe("CliAccountPicker", () => {
     if (reason === "future use") api.apiKeyUsage!.lastRequest!.at = at(6);
     if (reason === "legacy sample") delete api.apiKeyUsage!.lastRequest;
     expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "api", quota, identity: null, clock: NOW }).gatewayInUse).toBe(false);
-    expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "space-gateway", quota, identity: null, clock: NOW }))
-      .toMatchObject({ tone: "neutral", label: "API fallback", detail: "$198.07 of $500.00 budget left" });
+    expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "space-gateway", quota, identity: null, clock: NOW }).label).not.toMatch(/API/);
   });
 
   it.each(["subscription recovered", "reset passed", "unknown pool", "fallback off", "key rejected"])("stops showing API fallback when %s", (reason) => {

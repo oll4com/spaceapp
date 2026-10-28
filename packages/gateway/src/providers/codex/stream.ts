@@ -4,6 +4,8 @@
  * and to read the token usage the terminal event reports. Ported behavior from codex-lb `app/core/clients/proxy.py`
  * (MIT, Soju06/codex-lb).
  */
+import { codexLoneWeek } from "./usage.js";
+
 export interface ResponseUsage {
   inputTokens: number | null;
   cachedInputTokens: number | null;
@@ -156,8 +158,17 @@ export function readCodexRateLimitEvent(payload: JsonObject, nowSeconds: number)
   };
   const primary = window(limits.primary);
   const secondary = window(limits.secondary);
-  return { primaryUsedPercent: primary.used, secondaryUsedPercent: secondary.used, primaryResetAfterSeconds: primary.resetAfter,
-    secondaryResetAfterSeconds: secondary.resetAfter, primaryWindowMinutes: primary.minutes, secondaryWindowMinutes: secondary.minutes };
+  return inWeeklySlot({ primaryUsedPercent: primary.used, secondaryUsedPercent: secondary.used, primaryResetAfterSeconds: primary.resetAfter,
+    secondaryResetAfterSeconds: secondary.resetAfter, primaryWindowMinutes: primary.minutes, secondaryWindowMinutes: secondary.minutes });
+}
+
+type PassiveWindows = { primaryUsedPercent: number | null; secondaryUsedPercent: number | null; primaryResetAfterSeconds: number | null;
+  secondaryResetAfterSeconds: number | null; primaryWindowMinutes: number | null; secondaryWindowMinutes: number | null };
+/** A weekly-only plan's week, reported as the primary window, moves to the weekly slot (see `codexLoneWeek`). */
+function inWeeklySlot(read: PassiveWindows): PassiveWindows {
+  if (!codexLoneWeek(read.primaryWindowMinutes, read.secondaryUsedPercent !== null)) return read;
+  return { primaryUsedPercent: null, secondaryUsedPercent: read.primaryUsedPercent, primaryResetAfterSeconds: null,
+    secondaryResetAfterSeconds: read.primaryResetAfterSeconds, primaryWindowMinutes: null, secondaryWindowMinutes: read.primaryWindowMinutes };
 }
 
 /**
@@ -174,12 +185,12 @@ export function readCodexRateLimitHeaders(headers: Headers): { primaryUsedPercen
   };
   const windowRead = (window: "primary" | "secondary", name: string) =>
     (read(`x-codex-${window}-window-minutes`) === 0 ? null : read(`x-codex-${window}-${name}`));
-  return {
+  return inWeeklySlot({
     primaryUsedPercent: windowRead("primary", "used-percent"),
     secondaryUsedPercent: windowRead("secondary", "used-percent"),
     primaryResetAfterSeconds: windowRead("primary", "reset-after-seconds"),
     secondaryResetAfterSeconds: windowRead("secondary", "reset-after-seconds"),
     primaryWindowMinutes: windowRead("primary", "window-minutes"),
     secondaryWindowMinutes: windowRead("secondary", "window-minutes")
-  };
+  });
 }

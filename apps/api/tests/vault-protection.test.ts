@@ -96,7 +96,7 @@ describe("Vault protected browser", () => {
     const { protection } = memoryProtection(() => live.current);
     await protection.protect("user:alice", PROTECTED, { targetId: "target-1", origin: LOGIN, document: "doc-1" });
     for (const type of ["navigate", "click", "type", "scroll", "set_viewport", "press"]) await expect(assertVaultBrowserActionAllowed(protection, PROTECTED, type), type).resolves.toBeUndefined();
-    for (const type of ["extract_text", "screenshot", "record", "diagnostics"]) await expect(assertVaultBrowserActionAllowed(protection, PROTECTED, type), type).rejects.toThrow(/holds a Vault fill/);
+    for (const type of ["extract_text", "screenshot", "record", "diagnostics"]) await expect(assertVaultBrowserActionAllowed(protection, PROTECTED, type), type).rejects.toThrow(/locked after a Vault fill or a browser handoff/);
     await expect(assertVaultBrowserActionAllowed(protection, OTHER, "record")).resolves.toBeUndefined();
     // Once the filled page is gone, reads are allowed again.
     live.current = page({ document: "doc-2" });
@@ -120,6 +120,21 @@ describe("Vault protected browser", () => {
     for (const type of ["screenshot", "extract_text", "record", "diagnostics"]) expect((await action(own, type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     expect((await app.inject({ method: "POST", url: "/api/cli/browser/commands", headers: own, payload: { targetPaneId: PROTECTED, command: { type: "START_CAPTURE", kind: "SCREENSHOT" } } })).statusCode).toBe(409);
     expect((await app.inject({ url: "/api/cli/browser/cdp/status", headers: own })).statusCode).toBe(409);
+    await app.close();
+  });
+
+  it("gives the agent that asked for a handoff masked screenshots of the page the operator left, nothing else (2026-10-25)", async () => {
+    const { app, protection } = await fencedApp(null);
+    // A completed handoff fences the page with its requester (fence-hooks.ts); other agents keep no view of it.
+    await protection.protect("user:alice", PROTECTED, { targetId: "target-1", origin: LOGIN, document: "doc-1" }, "cli:cli_session:asker01");
+    const headers = (cliSessionId: string) => ({ [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: "room:vaultroom1", paneId: OTHER, cliSessionId })!,
+      "content-type": "application/json" });
+    const action = (cliSessionId: string, type: string) => app.inject({ method: "POST", url: "/api/cli/browser/actions", headers: headers(cliSessionId),
+      payload: { actions: [{ targetPaneId: PROTECTED, action: { type } }] } });
+    expect(await protection.viewerOf(PROTECTED)).toBe("cli:cli_session:asker01");
+    expect((await action("cli_session:asker01", "masked_screenshot")).statusCode).toBe(200);
+    expect((await action("cli_session:other002", "masked_screenshot")).json().error.code).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
+    for (const type of ["screenshot", "extract_text", "record"]) expect((await action("cli_session:asker01", type)).json().error.code, type).toBe("VAULT_PROTECTED_SESSION_REQUIRED");
     await app.close();
   });
 

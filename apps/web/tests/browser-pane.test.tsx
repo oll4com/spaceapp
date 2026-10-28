@@ -613,7 +613,7 @@ describe("BrowserPane", () => {
       await act(async () => { heartbeat!(); await Promise.resolve(); });
     }
     expect(apiMock.heartbeatBrowserControl).toHaveBeenCalledTimes(6);
-    expect(apiMock.heartbeatBrowserControl).toHaveBeenLastCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator", ttlSeconds: 60 });
+    expect(apiMock.heartbeatBrowserControl).toHaveBeenLastCalledWith("pane:browser-proof", expect.objectContaining({ leaseId: "browser_lease:operator", ttlSeconds: 60 }));
     expect(screen.getByRole("button", { name: "Release browser control Research Browser" })).toBeTruthy();
   });
 
@@ -651,6 +651,73 @@ describe("BrowserPane", () => {
     await waitFor(() => expect(apiMock.releaseBrowserControl).toHaveBeenCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator" }));
     expect(apiMock.heartbeatBrowserControl).not.toHaveBeenCalled();
     await screen.findByRole("button", { name: "Join browser session Research Browser" });
+  });
+
+  it("keeps a sign-in handoff while the operator stays on the pane and gives it back 60 s after they leave (operator 2026-10-27)", async () => {
+    apiMock.browserSession.mockResolvedValue(sessionResponse());
+    const lease = operatorLease();
+    apiMock.acquireBrowserControl.mockResolvedValue(lease);
+    apiMock.releaseBrowserControl.mockResolvedValue({ lease: { ...lease.lease, status: "RELEASED" } });
+    const intervals = vi.spyOn(window, "setInterval");
+    const maximized = { ...browserPane(), isMaximized: true };
+    const view = render(<BrowserPane pane={maximized} agentNumber={4} />);
+    const join = await screen.findByRole("button", { name: "Join browser session Research Browser" });
+    await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(join);
+    await screen.findByRole("button", { name: "Release browser control Research Browser" });
+    const heartbeat = intervals.mock.calls.filter(([, delay]) => delay === 15_000).at(-1)?.[0] as (() => void) | undefined;
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now");
+    const tick = async (at: number) => {
+      now.mockReturnValue(at);
+      apiMock.heartbeatBrowserControl.mockResolvedValueOnce({ lease: { ...lease.lease, expiresAt: new Date(at + 120_000).toISOString() }, presenceHold: true });
+      await act(async () => { heartbeat!(); await Promise.resolve(); });
+    };
+    // Five minutes on the maximized pane without a key (waiting for the SMS): the browser stays theirs.
+    for (let minute = 0; minute <= 5; minute++) await tick(start + 15_000 + minute * 60_000);
+    expect(apiMock.releaseBrowserControl).not.toHaveBeenCalled();
+    expect(apiMock.heartbeatBrowserControl).toHaveBeenLastCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator", ttlSeconds: 60, present: true });
+    // They go to another room: idle counts from then.
+    view.rerender(<BrowserPane pane={maximized} agentNumber={4} isVisible={false} />);
+    await tick(start + 15_000 + 5 * 60_000 + 30_000);
+    expect(apiMock.heartbeatBrowserControl).toHaveBeenLastCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator", ttlSeconds: 60, present: false });
+    expect(apiMock.releaseBrowserControl).not.toHaveBeenCalled();
+    now.mockReturnValue(start + 15_000 + 6 * 60_000 + 1);
+    await act(async () => { heartbeat!(); await Promise.resolve(); });
+    await waitFor(() => expect(apiMock.releaseBrowserControl).toHaveBeenCalledWith("pane:browser-proof", { leaseId: "browser_lease:operator" }));
+  });
+
+  it("draws the page's open native dropdown after a click (never during a held press) and picks an option as keys (option D, plan clipboard:gHaiX_8yanVA)", async () => {
+    const dropdown = { selectedIndex: 0, box: { x: 100, y: 50, width: 200, height: 30 }, labels: ["Choose a country", "Greece", "Thailand"], disabled: [0], truncated: false };
+    apiMock.browserSession.mockResolvedValue(sessionResponse());
+    apiMock.acquireBrowserControl.mockResolvedValue(operatorLease());
+    apiMock.browserAction.mockImplementation(async (_paneId: string, input: { type: string }) =>
+      ({ session: sessionResponse().session, frame: frame(), text: input.type === "select_state" ? JSON.stringify(dropdown) : null }));
+    render(<BrowserPane pane={browserPane()} agentNumber={4} />);
+    const join = await screen.findByRole("button", { name: "Join browser session Research Browser" });
+    await waitFor(() => expect(join.hasAttribute("disabled")).toBe(false));
+    const image = screen.getByRole("img", { name: "Research Browser browser frame" });
+    image.getBoundingClientRect = () => ({ left: 0, top: 0, width: 144, height: 90, right: 144, bottom: 90, x: 0, y: 0, toJSON: () => undefined }) as DOMRect;
+    // A hover asks nothing, nor does a held button (Fiverr's Press & Hold reset under it); the release asks once whether a dropdown opened.
+    fireEvent.pointerMove(image, { pointerId: 1, pointerType: "mouse", clientX: 20, clientY: 10, buttons: 0 });
+    fireEvent.pointerDown(image, { pointerId: 1, pointerType: "mouse", clientX: 20, clientY: 10, button: 0, buttons: 1 });
+    await waitFor(() => expect(apiMock.acquireBrowserControl).toHaveBeenCalled());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(apiMock.browserAction.mock.calls.filter(([, input]) => input.type === "select_state")).toHaveLength(0);
+    fireEvent.pointerUp(image, { pointerId: 1, pointerType: "mouse", clientX: 20, clientY: 10, button: 0, buttons: 0 });
+    await waitFor(() => expect(apiMock.browserAction).toHaveBeenCalledWith("pane:browser-proof", { type: "select_state", sessionId: "browser_session:proof" }));
+    expect(apiMock.browserAction.mock.calls.filter(([, input]) => input.type === "select_state")).toHaveLength(1);
+    await screen.findByRole("listbox", { name: "Dropdown options" });
+    fireEvent.click(screen.getByRole("option", { name: "Thailand" }));
+    await waitFor(() => expect(apiMock.browserAction).toHaveBeenCalledWith("pane:browser-proof", { type: "select_choose", index: 2, sessionId: "browser_session:proof" }));
+    expect(screen.queryByRole("listbox")).toBeNull();
+    // A Browser Host from before select_state answers no text: no list.
+    apiMock.browserAction.mockResolvedValue({ session: sessionResponse().session, frame: frame(), text: null });
+    fireEvent.pointerDown(image, { pointerId: 1, pointerType: "mouse", clientX: 20, clientY: 10, button: 0, buttons: 1 });
+    fireEvent.pointerUp(image, { pointerId: 1, pointerType: "mouse", clientX: 20, clientY: 10, button: 0, buttons: 0 });
+    await waitFor(() => expect(apiMock.browserAction.mock.calls.filter(([, input]) => input.type === "select_state")).toHaveLength(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
   it("drops browser control the server already gave back instead of failing the release", async () => {

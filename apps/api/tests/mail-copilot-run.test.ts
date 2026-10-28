@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
 import { InMemoryMailCopilotRepository } from "@space/db";
-import type { ConnectorCapability, Event, MailCopilotRun, Pane } from "@space/contracts";
+import { defaultMailCopilotPaneMetadata, type ConnectorCapability, type Event, type MailCopilotRun, type Pane } from "@space/contracts";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
-import type { MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { createMailCopilotService, type MailCopilotGoogleAccess } from "../src/mail-copilot/service.js";
+import { createMailCopilotKickoff } from "../src/mail-copilot/kickoff.js";
+import type { RoomPaneObservation } from "../src/room-pane-control.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
@@ -22,6 +24,9 @@ interface FakeMessage { id: string; threadId: string; from: string; subject: str
 /** The smallest Gmail an agent run needs: inbox threads, one thread, modify, send, drafts; records every write. */
 function fakeGmail(token: string, inbox: FakeMessage[]) {
   const writes: Array<{ path: string; body: Record<string, unknown> | null }> = [];
+  // Each draft's current message: Gmail gives an edited draft a new one.
+  const draftMessages = new Map([["draft-1", "draft-msg-1"]]);
+  const deletedDrafts: string[] = [];
   const full = (message: FakeMessage) => ({ id: message.id, threadId: message.threadId, labelIds: message.labelIds, internalDate: String(Date.now() - message.minutesAgo * 60_000), snippet: message.plain.slice(0, 80),
     payload: { mimeType: "multipart/alternative", headers: [{ name: "From", value: message.from }, { name: "To", value: "Me <me@gmail.com>" }, { name: "Subject", value: message.subject }, { name: "Message-ID", value: `<${message.id}@mail.example>` },
       { name: "Date", value: new Date(Date.now() - message.minutesAgo * 60_000).toUTCString() }], parts: [{ mimeType: "text/plain", body: { data: b64(message.plain) } }, { mimeType: "text/html", body: { data: b64(`<p>${message.plain}</p>`) } }] } });
@@ -38,13 +43,18 @@ function fakeGmail(token: string, inbox: FakeMessage[]) {
     const thread = /^\/threads\/([^/]+)$/.exec(path);
     if (thread) return Response.json({ id: thread[1], messages: inbox.filter((message) => message.threadId === thread[1]).map(full) });
     if (/^\/threads\/[^/]+\/(modify|trash)$/.test(path)) return Response.json({ id: path.split("/")[2] });
+    if (path === "/settings/sendAs") return Response.json({ sendAs: [{ sendAsEmail: "me@gmail.com", isPrimary: true, isDefault: true }] });
     if (path === "/messages/send") return Response.json({ id: `sent-${writes.length}`, threadId: (body as { threadId?: string }).threadId ?? "thread-new" });
     const message = /^\/messages\/([^/]+)$/.exec(path);
     if (message) { const row = inbox.find((entry) => entry.id === message[1]); return row ? Response.json(full(row)) : Response.json({ error: { message: "nope" } }, { status: 404 }); }
     if (path === "/drafts") return Response.json({ id: "draft-1", message: { id: "draft-msg-1" } });
+    const draft = /^\/drafts\/([^/]+)$/.exec(path)?.[1];
+    if (/^\/messages\/[^/]+\/trash$/.test(path)) return Response.json({ id: path.split("/")[2] });
+    if (draft && init?.method === "DELETE") { deletedDrafts.push(draft); return new Response(null, { status: 204 }); }
+    if (draft) return Response.json({ id: draft, message: { id: draftMessages.get(draft) ?? "other-msg" } });
     return Response.json({ error: { message: `unexpected ${path}` } }, { status: 500 });
   }) as unknown as typeof fetch;
-  return { fetchImpl, writes };
+  return { fetchImpl, writes, draftMessages, deletedDrafts };
 }
 
 const full: ConnectorCapability[] = ["MAIL_READ", "MAIL_COMPOSE", "CALENDAR", "MAIL_ORGANIZE"];
@@ -116,12 +126,11 @@ describe("mail copilot run loop", () => {
       expect(packet.context.thread.messages[0]).toMatchObject({ text: "Can you resend the invoice?", html: null });
       expect(packet.context.memories).toEqual([]);
 
-      // Assist: sending and archiving are refused, a draft is fine, a review hands the reply to the operator (and raises a notification).
+      // Assist: sending is refused, a draft is fine, a review hands the reply to the operator (and raises a notification).
       const draft = { account: "me@gmail.com", to: ["anna@acme.com"], subject: "Re: Invoice question", text: "Hi Anna, attached again. Best, Me", threadId: "t1", inReplyToMessageId: "m1" };
       const refused = await app.inject({ method: "POST", url: `${cli}/send`, headers: agent, payload: draft });
       expect(refused.statusCode).toBe(409);
       expect(refused.json().error.message).toMatch(/MAIL_NEEDS_REVIEW/);
-      expect((await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: { account: "me@gmail.com", action: "archive" } })).statusCode).toBe(409);
       expect((await app.inject({ method: "POST", url: `${cli}/draft`, headers: agent, payload: draft })).statusCode).toBe(200);
       expect(gmail.writes.map((write) => write.path)).toEqual(["/drafts"]);
       const review = await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: { draft, summary: "Reply resending the invoice", reasoning: "Anna asks for it" } });
@@ -173,6 +182,140 @@ describe("mail copilot run loop", () => {
       const raced = await Promise.all([1, 2].map(() => app.inject({ method: "POST", url: `${paneUrl}/review`, headers, payload: { reviewId: second, decision: "approve" } })));
       expect(raced.map((response) => response.statusCode)).toEqual([200, 200]);
       expect(sends()).toBe(before + 1);
+      // Organizing is the copilot's own job under Assist too (operator 2026-10-27): archive, label, move and trash go through.
+      for (const action of [{ action: "archive" }, { action: "label", labelIds: ["Invoices"] }, { action: "move", labelIds: ["Invoices"] }, { action: "trash" }]) {
+        expect((await app.inject({ method: "POST", url: `${cli}/threads/t2/modify`, headers: agent, payload: { account: "me@gmail.com", ...action } })).statusCode).toBe(200);
+      }
+      expect(gmail.writes.slice(-4).map((write) => write.path)).toEqual(["/threads/t2/modify", "/threads/t2/modify", "/threads/t2/modify", "/threads/t2/trash"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("starts the daily organize run once a day at the pane's hour in the owner's zone, only unpaused with a CLI, over the whole inbox (operator 2026-10-27)", async () => {
+    let clock = "2026-10-27T01:30:00.000Z"; // 08:30 in Bangkok
+    const repository = new InMemoryMailCopilotRepository(() => clock);
+    const gmail = fakeGmail("token-me", [
+      { id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Interview", minutesAgo: 30, labelIds: ["INBOX"], plain: "Tuesday?" },
+      { id: "m2", threadId: "t2", from: "Datadog <no-reply@greenhouse.io>", subject: "Thank you for applying", minutesAgo: 60 * 24 * 5, labelIds: ["INBOX"], plain: "Received" },
+      { id: "m3", threadId: "t3", from: "Shop <news@shop.example>", subject: "Sale", minutesAgo: 60 * 24 * 3, labelIds: ["INBOX"], plain: "50% off" },
+      { id: "m4", threadId: "t4", from: "Bob <bob@acme.com>", subject: "Contract", minutesAgo: 60 * 24 * 2, labelIds: ["INBOX"], plain: "Sign it" }
+    ]);
+    let cliUp = false;
+    const kickoffs: string[] = [];
+    const cliStarts: string[] = [];
+    const service = createMailCopilotService({ google: () => google, gmailFetch: gmail.fetchImpl, repository, now: () => clock,
+      kickoff: { ready: async () => cliUp, cliRunning: async () => cliUp, startCli: async (pane) => { cliStarts.push(pane.id); }, send: async (_pane, run) => { kickoffs.push(run.id); } } });
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Mail", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Mail Copilot", mode: "MAIL_COPILOT", terminalRuntimeId: "cli:claude" });
+    const owner = "user:owner";
+    // t3 was skipped (undecided: offered again), t4 decided already (left for the operator).
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: "t3", messageId: "m3", type: "TRIAGE", status: "DONE", message: "Triage: Sale", payload: {} });
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: "t3", messageId: "m3", type: "SKIPPED", status: null, message: "Skipped", payload: {} });
+    await repository.createEvent({ ownerUserId: owner, paneId: pane.id, runId: null, accountEmail: "me@gmail.com", threadId: "t4", messageId: "m4", type: "NEEDS_USER", status: null, message: "Contract to sign", payload: {} });
+    const zone = "Asia/Bangkok";
+
+    expect(await service.dailyRun(owner, pane, zone)).toBe(false); // before 09:00
+    clock = "2026-10-27T02:30:00.000Z"; // 09:30
+    expect(await service.dailyRun(owner, pane, zone)).toBe(false); // the CLI is down: Space starts it, the pass waits for its prompt
+    expect(cliStarts).toEqual([pane.id]);
+    const paused = { ...pane, mailCopilotMetadata: { version: 1 as const, settings: { ...defaultMailCopilotPaneMetadata().settings, paused: true } } };
+    cliUp = true;
+    expect(await service.dailyRun(owner, paused, zone)).toBe(false);
+    expect(kickoffs).toEqual([]);
+
+    expect(await service.dailyRun(owner, pane, zone)).toBe(true);
+    expect(kickoffs).toHaveLength(1);
+    // Every inbox conversation not decided yet, automated senders and old mail included, once.
+    const items = await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], status: ["PENDING"], limit: 50 });
+    expect(items.map((item) => item.threadId).sort()).toEqual(["t1", "t2", "t3"]);
+    expect(await service.dailyRun(owner, pane, zone)).toBe(false); // once a day
+    clock = "2026-10-27T10:00:00.000Z";
+    expect(await service.dailyRun(owner, pane, zone)).toBe(false);
+    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(4);
+
+    clock = "2026-10-28T02:30:00.000Z"; // the next day; waiting items are not made twice; the run idle since yesterday gets its kickoff again
+    expect(await service.dailyRun(owner, pane, zone)).toBe(true);
+    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["TRIAGE"], limit: 50 })).length).toBe(4);
+    expect(kickoffs).toHaveLength(2);
+    // New mail with work items starts the run on its own; a run kicked a minute ago is not kicked again; nothing pending starts nothing.
+    expect(await service.startForNewMail(owner, pane)).toBe(true);
+    expect(kickoffs).toHaveLength(2);
+    expect(await service.startForNewMail("user:nobody", pane)).toBe(false);
+    expect((await repository.listEvents(owner, { paneId: pane.id, types: ["NOTE"], limit: 50 })).map((event) => event.payload.dailyRun).sort()).toEqual(["2026-10-27", "2026-10-28"]);
+  });
+
+  it("types a kickoff only into a running CLI at an empty prompt, and starts a stopped CLI at most once in 10 minutes", async () => {
+    let session: unknown = null;
+    let screen: Partial<RoomPaneObservation> = { state: "WORKING" };
+    const starts: string[] = [];
+    const kickoff = createMailCopilotKickoff({ store: { getActivePaneCliSession: async () => session } as never, terminal: {} as never,
+      inspect: async () => ({ sessionId: "cli_session:mail1", promptFingerprint: "fp", text: "────\n❯ \n────", ...screen }) as RoomPaneObservation,
+      start: async (pane) => { starts.push(pane.id); } });
+    const pane = { id: "pane:mail0001" } as Pane;
+    expect(await kickoff.cliRunning!(pane)).toBe(false);
+    await kickoff.startCli!(pane);
+    await kickoff.startCli!(pane);
+    expect(starts).toEqual([pane.id]);
+    session = { sessionId: "cli_session:mail1", purpose: "NORMAL", isActive: true, status: "RUNNING" };
+    expect(await kickoff.cliRunning!(pane)).toBe(true);
+    expect(await kickoff.ready(pane)).toBe(false); // the agent is working
+    screen = { state: "IDLE" };
+    expect(await kickoff.ready(pane)).toBe(true);
+    screen = { state: "IDLE", text: "────\n❯ half-written draft\n────" };
+    expect(await kickoff.ready(pane)).toBe(false);
+  });
+
+  it("asks what to do with a mail left to the operator, and stops asking once they handled the thread (plan clipboard:5AQvaoSR-IZa)", async () => {
+    const { app, pane, headers, agent, paneUrl } = await fixture([
+      { id: "m1", threadId: "t1", from: "Anna Client <anna@acme.com>", subject: "Sign the form", minutesAgo: 30, labelIds: ["INBOX"], plain: "Please sign the attached form." }
+    ]);
+    const open = async () => ((await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ kind: string; payload: Record<string, unknown> }>)
+      .filter((entry) => entry.kind === "NEEDS_USER");
+    try {
+      await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
+      const item = (await app.inject({ method: "POST", url: `${cli}/next`, headers: agent, payload: { waitMs: 0 } })).json().item;
+      await app.inject({ method: "POST", url: `${cli}/report`, headers: agent, payload: { eventId: item.id, outcome: "needs_user", summary: "Only you can sign this form." } });
+      const [asked] = await open();
+      expect(asked!.payload.ask).toEqual({ question: "What should Mail Copilot do with this mail?", options: ["I handled it", "Ignore it"], answer: { kind: "MAIL_FIX", account: "me@gmail.com", threadId: "t1" } });
+      expect((await app.inject({ method: "POST", url: "/api/mail-copilot/threads/t1/modify", headers, payload: { account: "me@gmail.com", action: "archive", paneId: pane.id } })).statusCode).toBe(200);
+      expect(await open()).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("deletes only a draft the copilot saved itself and nobody changed since", async () => {
+    const { app, agent, gmail } = await fixture([]);
+    try {
+      const remove = (draftId: string) => app.inject({ method: "POST", url: `${cli}/draft/delete`, headers: agent, payload: { account: "me@gmail.com", draftId } });
+      expect((await app.inject({ method: "POST", url: `${cli}/draft`, headers: agent, payload: { account: "me@gmail.com", to: ["anna@acme.com"], subject: "Test", text: "Test draft" } })).json())
+        .toEqual({ draftId: "draft-1", messageId: "draft-msg-1" });
+      expect((await remove("draft-op")).json().error.message).toMatch(/did not save that draft/);
+      gmail.draftMessages.set("draft-1", "draft-msg-edited");
+      expect((await remove("draft-1")).json().error.message).toMatch(/changed after the copilot saved it/);
+      gmail.draftMessages.set("draft-1", "draft-msg-1");
+      expect((await remove("draft-1")).json()).toEqual({ ok: true });
+      expect(gmail.deletedDrafts).toEqual(["draft-1"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("deletes any mail or draft at every autonomy: a message to the Trash, a draft discarded", async () => {
+    const { app, agent, gmail, pane, headers } = await fixture([{ id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Invoice", minutesAgo: 5, labelIds: ["INBOX"], plain: "Hi" }]);
+    try {
+      const remove = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: `${cli}/delete`, headers: agent, payload: { account: "me@gmail.com", ...payload } });
+      // The pane is on Assist, where space_mail_trash asks for a review; delete does not.
+      expect((await remove({ messageId: "m1" })).json()).toEqual({ ok: true, trashed: "m1" });
+      expect(gmail.writes.map((write) => write.path)).toContain("/messages/m1/trash");
+      expect((await remove({ draftId: "draft-op" })).json()).toEqual({ ok: true, discarded: "draft-op" });
+      expect(gmail.deletedDrafts).toEqual(["draft-op"]);
+      expect((await remove({ messageId: "m1", draftId: "draft-op" })).statusCode).toBe(422);
+      expect((await remove({})).statusCode).toBe(422);
+      const events = (await app.inject({ method: "GET", url: `/api/mail-copilot/events?paneId=${encodeURIComponent(pane.id)}&limit=10`, headers })).json().events as Array<{ type: string; message: string }>;
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "TRASHED", message: "The copilot deleted: Invoice from Anna <anna@acme.com>" }), expect.objectContaining({ type: "NOTE", message: "The copilot discarded a draft" })]));
     } finally {
       await app.close();
     }
@@ -322,7 +465,6 @@ describe("mail copilot run loop", () => {
       expect(invoices).toMatchObject({ condition: { fromAddress: "billing@acme.com" }, action: { type: "MOVE", labels: ["Label_1"] }, name: 'Move to Invoices mail from billing@acme.com about "Invoice 3"' });
       expect(invoices!.condition.subjectPattern).toMatch(/invoice\\s\+\\d\+$/);
       expect((await app.inject({ method: "POST", url: `${cli}/threads/i5/modify`, headers: agent, payload: { account: "me@gmail.com", action: "move", labelIds: ["Invoices"], ruleId: invoices!.id } })).statusCode).toBe(200);
-      expect((await app.inject({ method: "POST", url: `${cli}/threads/i4/modify`, headers: agent, payload: { account: "me@gmail.com", action: "move", labelIds: ["Invoices"], ruleId: invoices!.id } })).statusCode).toBe(409);
 
       // The Memory tab lists each sender's habit per account; Forget drops the sender's rows and retires the rules learned from them.
       const listed = (await app.inject({ method: "GET", url: `/api/mail-copilot/habits?paneId=${encodeURIComponent(pane.id)}`, headers })).json().habits as Array<{ account: string; sender: string; summary: string }>;
@@ -337,7 +479,7 @@ describe("mail copilot run loop", () => {
     }
   });
 
-  it("under Rules the agent acts alone only with an approved matching rule, the operator's own actions become learn items, and proposals wait for the operator", async () => {
+  it("under Rules the agent organizes alone and replies only under an approved rule, the operator's own actions become learn items, and proposals wait for the operator", async () => {
     const { app, store, pane, headers, agent, gmail, paneUrl, repository } = await fixture([
       { id: "m1", threadId: "t1", from: "Acme Billing <billing@acme.com>", subject: "Invoice 42", minutesAgo: 5, labelIds: ["INBOX"], plain: "Please pay" },
       { id: "m2", threadId: "t2", from: "Anna <anna@other.org>", subject: "Lunch?", minutesAgo: 3, labelIds: ["INBOX"], plain: "Friday?" }
@@ -345,10 +487,11 @@ describe("mail copilot run loop", () => {
     try {
       await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: { version: 1, settings: { autonomy: "RULES" } } });
       const archive = { account: "me@gmail.com", action: "archive" };
-      // No rule named: review needed.
-      const bare = await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: archive });
-      expect(bare.statusCode).toBe(409);
-      expect(bare.json().error.message).toMatch(/ruleId/);
+      // Organizing needs no rule (operator 2026-10-27); a reply does.
+      expect((await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: archive })).statusCode).toBe(200);
+      expect(gmail.writes.at(-1)).toMatchObject({ path: "/threads/t1/modify", body: { removeLabelIds: ["INBOX"] } });
+      const reply = { account: "me@gmail.com", to: ["billing@acme.com"], subject: "Re: Invoice 42", text: "Paid", threadId: "t1", inReplyToMessageId: "m1" };
+      expect((await app.inject({ method: "POST", url: `${cli}/send`, headers: agent, payload: reply })).json().error.message).toMatch(/ruleId/);
       // The agent proposes a rule; the operator gets a notification and decides in the rail.
       const proposed = await app.inject({ method: "POST", url: `${cli}/rules/propose`, headers: agent, payload: { name: "Archive Acme invoices", accountEmail: "me@gmail.com", condition: { domain: "acme.com", subjectPattern: "invoice" }, action: { type: "ARCHIVE" }, confidence: 0.8, evidence: ["You archived Invoice 41 on Monday", "You archived Invoice 40 last week"] } });
       expect(proposed.statusCode).toBe(200);
@@ -356,29 +499,17 @@ describe("mail copilot run loop", () => {
       expect(proposed.json().rule).toMatchObject({ status: "PROPOSED", proposedBy: "AGENT", appliedCount: 0 });
       expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json()).toMatchObject({ total: 1, bySource: { MAIL_COPILOT: 1 } });
       // A proposed rule grants nothing.
-      expect((await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: { ...archive, ruleId } })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `${cli}/send`, headers: agent, payload: { ...reply, ruleId } })).json().error.message).toMatch(/not an approved rule/);
       const approved = await app.inject({ method: "POST", url: `/api/mail-copilot/rules/${encodeURIComponent(ruleId)}/decide`, headers, payload: { decision: "approve" } });
       expect(approved.json().rule).toMatchObject({ status: "APPROVED" });
       expect(approved.json().rule.decidedAt).not.toBeNull();
       expect((await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().total).toBe(0);
       expect((await app.inject({ method: "GET", url: `${cli}/rules?status=APPROVED`, headers: agent })).json().rules.map((rule: { id: string }) => rule.id)).toEqual([ruleId]);
-      // The rule matches the invoice thread (archive goes through, the use is counted) but not Anna's lunch mail.
-      expect((await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: { ...archive, ruleId } })).statusCode).toBe(200);
-      expect(gmail.writes.at(-1)).toMatchObject({ path: "/threads/t1/modify", body: { removeLabelIds: ["INBOX"] } });
-      expect((await app.inject({ method: "GET", url: "/api/mail-copilot/rules", headers })).json().rules[0]).toMatchObject({ id: ruleId, appliedCount: 1 });
-      const mismatch = await app.inject({ method: "POST", url: `${cli}/threads/t2/modify`, headers: agent, payload: { ...archive, ruleId } });
-      expect(mismatch.statusCode).toBe(409);
-      expect(mismatch.json().error.message).toMatch(/does not match/);
       // A rule for another action never covers a send.
-      expect((await app.inject({ method: "POST", url: `${cli}/send`, headers: agent, payload: { account: "me@gmail.com", to: ["billing@acme.com"], subject: "Re: Invoice 42", text: "Paid", threadId: "t1", inReplyToMessageId: "m1", ruleId } })).json().error.message).toMatch(/allows ARCHIVE, not send/);
-      // Retired: the rule stops working.
-      await app.inject({ method: "POST", url: `/api/mail-copilot/rules/${encodeURIComponent(ruleId)}/decide`, headers, payload: { decision: "retire" } });
-      expect((await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: { ...archive, ruleId } })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `${cli}/send`, headers: agent, payload: { ...reply, ruleId } })).json().error.message).toMatch(/allows ARCHIVE, not send/);
 
-      // A LABEL rule lets the copilot add only its own labels; a label's name resolves to the account's label id.
+      // A rule the copilot organizes under is logged with the action; a label's name resolves to the account's label id.
       const labelRule = (await app.inject({ method: "POST", url: "/api/mail-copilot/rules", headers, payload: { name: "Acme to Invoices", accountEmail: "me@gmail.com", condition: { fromAddress: "billing@acme.com" }, action: { type: "LABEL", labels: ["Label_1"] } } })).json().rule.id as string;
-      const otherLabel = await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: { account: "me@gmail.com", action: "label", labelIds: ["Friends"], ruleId: labelRule } });
-      expect(otherLabel.json().error.message).toMatch(/allows only the labels Label_1/);
       expect((await app.inject({ method: "POST", url: `${cli}/threads/t1/modify`, headers: agent, payload: { account: "me@gmail.com", action: "label", labelIds: ["Invoices"], ruleId: labelRule } })).statusCode).toBe(200);
       expect(gmail.writes.at(-1)).toMatchObject({ path: "/threads/t1/modify", body: { addLabelIds: ["Label_1"] } });
 

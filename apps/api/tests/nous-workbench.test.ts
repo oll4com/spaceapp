@@ -282,6 +282,13 @@ describe("Nous's Space reads and limits", () => {
     expect(limiter.take(owner, "space_world")).toBeNull();
     at = 3_600_001;
     expect(limiter.take(owner, "space_web_read")).toBeNull();
+    // Operator rule 2026-10-27: the read tools have no hourly cap; new Agent Files and draft clears keep theirs.
+    const defaults = createNousLimiter(undefined, () => at);
+    for (const tool of ["space_web_search", "space_web_read", "space_net_check", "space_git", "space_db_query", "space_queue_status", "space_nous_decisions",
+      "space_nous_turn_costs", "space_look", "space_files_write"]) {
+      expect(Array.from({ length: 300 }, () => defaults.take(owner, tool)).every((refused) => refused === null)).toBe(true);
+    }
+    expect(Array.from({ length: 31 }, () => defaults.take(owner, "space_clear_pane_draft")).at(-1)).toContain("ran 30 times in the last hour");
     const add = vi.fn(async () => ({ id: "artifact:x", byteSize: 1 }));
     const nous = tools({ agentFiles: { add } });
     await nous.execute("space_files_write", { path: "share.md", text: "x" }, ctx);
@@ -386,7 +393,7 @@ describe("Nous reliability fixes (workbench review 2026-10-21)", () => {
     expect((await nousFor({ files: { read } as never }).execute("space_files_read", { artifactId: "MDhGXmj67XBw" }, ctx)).result).toBe("read artifact:MDhGXmj67XBw");
     const notify = vi.fn(async () => ({ ok: true, display: "Card", result: "Card" }));
     expect((await nousFor({ paneNotices: { notify } as never }).execute("space_notify_operator", { room: "Cleo", pane: "Andy", title: "Sign in",
-      items: [{ text: "x".repeat(260) }, { text: "Solve the CAPTCHA" }] }, ctx)).ok).toBe(true);
+      items: [{ text: "x".repeat(260) }, { text: "Solve the CAPTCHA" }], checked: ["Vault: no login for this site"] }, ctx)).ok).toBe(true);
     expect((notify.mock.calls[0] as unknown[])[3]).toMatchObject({ items: [{ text: `${"x".repeat(199)}…` }, { text: "Solve the CAPTCHA" }] });
     const roomTool = vi.fn(async () => ({ ok: false, display: "Could not change Andy's model",
       result: JSON.stringify({ status: "FAILED", results: [{ paneId: andy.id, status: "FAILED", detail: "Send or clear the current CLI draft before changing model settings." }] }) }));

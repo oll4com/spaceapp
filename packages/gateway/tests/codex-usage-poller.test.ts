@@ -36,6 +36,23 @@ describe("Codex usage poller", () => {
     expect(first).toMatchObject({ planType: "pro", primaryWindow: { usedPercent: 33, windowMinutes: 300 }, secondaryWindow: { usedPercent: 7 } });
   });
 
+  it("files a weekly-only plan's week in the weekly slot and blanks the 5-hour slot an older parse filled (niggmopai, 2026-10-27)", async () => {
+    const repository = new InMemoryGatewayRepository();
+    const id = `gw_account:${"7".repeat(32)}`;
+    const credentials: StoredCredentials = { accessToken: "at-7", refreshToken: null, idToken: null, upstreamAccountId: "acct-7", accessExpiresAtMs: null };
+    await repository.upsertAccount({ accountId: id, provider: "CODEX", label: "niggmopai", email: null, externalAccountId: "acct-7", planType: "prolite",
+      credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), id), credentialsExpiresAt: null, source: "OAUTH", sourceRef: null, lastRefreshAt: null });
+    await repository.saveUsageWindows(id, [{ window: "PRIMARY", usedPercent: 8, resetAt: "2030-01-12T00:00:00.000Z", windowMinutes: 10080 }]);
+    const pool = new AccountPool({ provider: "CODEX", repository, cipher: () => cipher, refresher: { needsRefresh: () => false, refresh: vi.fn() } });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 9, reset_at: 1_894_406_400, limit_window_seconds: 604_800 } } })));
+    const poller = startCodexUsagePoller({ repository, pool, intervalMs: 60_000, fetchImpl: fetchImpl as unknown as typeof fetch });
+    try { await poller.runOnce(); } finally { poller.stop(); }
+    const [account] = await repository.listAccounts();
+    expect(account).toMatchObject({ primaryWindow: { usedPercent: null, resetAt: null }, secondaryWindow: { usedPercent: 9, windowMinutes: 10080 } });
+    expect(pool.toBalancerState(account!)).toMatchObject({ usedPercent: null, secondaryUsedPercent: 9 });
+  });
+
   it("checks each account: a rejected sign-in leaves rotation and waits for a new one, a limit that is over shows active again", async () => {
     const nowMs = Date.parse("2030-01-10T00:00:00Z");
     const repository = new InMemoryGatewayRepository();

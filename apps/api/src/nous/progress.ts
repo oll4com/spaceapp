@@ -1,4 +1,5 @@
 import type { NousDecision, NousTurnFacts, RoomAgentEvent } from "@space/contracts";
+import { predictionText } from "./predictions.js";
 
 /**
  * Nous's scorecard v1 (plan clipboard:L7RgHsveHbcR, frozen 2026-10-17): six dimensions over the last 7 days against the
@@ -51,6 +52,8 @@ export interface NousScorecard {
   enoughData: boolean;
   overall: number; baselineOverall: number; changePoints: number; changePercent: number;
   dimensions: Record<NousDimension, NousDimensionScore>;
+  /** Goal 7365014c-a: answers as Nous predicted over the window (its own dimension, outside the frozen v1 weights). */
+  predictions?: { decisions: { matched: number; total: number }; cards: { matched: number; total: number } };
   /** What the weekly review reads (nous-failures). */
   failures: { tools: Array<{ name: string; failed: number }>; missing: string[]; corrections: string[]; staleDecisions: string[]; couldHaveDecided: string[] };
 }
@@ -100,7 +103,9 @@ export function nousScorecard(input: NousScorecardInput): NousScorecard {
   const end = (event: RoomAgentEvent) => ["HANDLED", "RESOLVED", "ACKED"].includes(event.status) ? Date.parse(event.updatedAt) : now;
   const operatorsWait = (event: RoomAgentEvent) => event.status === "ESCALATED" || (event.kind !== "OVERLAP" && input.decisions.some((decision) =>
     decision.refs.paneId === event.paneId && Date.parse(decision.createdAt) <= end(event) + 5 * 60_000 && (decision.answeredAt ? Date.parse(decision.answeredAt) : now) >= Date.parse(event.createdAt)));
-  const waits = input.events.filter((event) => ["WAITING", "STUCK", "OVERLAP"].includes(event.kind) && Date.parse(event.createdAt) >= from && !operatorsWait(event));
+  // Item 29a: a wait the pane left by itself within 30 s is a detector flicker, not a wait anyone could answer (4 of 11 in 20-27/10).
+  const flicker = (event: RoomAgentEvent) => event.status === "RESOLVED" && end(event) - Date.parse(event.createdAt) < 30_000;
+  const waits = input.events.filter((event) => ["WAITING", "STUCK", "OVERLAP"].includes(event.kind) && Date.parse(event.createdAt) >= from && !operatorsWait(event) && !flicker(event));
   if (waits.length) {
     const minutes = median(waits.map((event) => (end(event) - Date.parse(event.createdAt)) / 60_000));
     const speed = Math.max(0, 1 - minutes / 30);
@@ -173,6 +178,7 @@ export function nousProgressText(card: NousScorecard): string {
     ...(Object.entries(card.dimensions) as Array<[NousDimension, NousDimensionScore]>).map(([key, value]) =>
       `- ${key} ${value.score} (${signed(value.change)} vs ${value.baseline}; weight ${NOUS_WEIGHTS[key] * 100}%): ${value.note}`)
   ];
+  if (card.predictions) lines.push(`- prediction (own dimension, not in the v1 score): decisions ${predictionText(card.predictions.decisions)}, cards ${predictionText(card.predictions.cards)}`);
   if (card.failures.missing.length) lines.push(`Missing tools you reported: ${card.failures.missing.join("; ")}`);
   if (card.failures.tools.length) lines.push(`Failed tools: ${card.failures.tools.map((tool) => `${tool.name} ${tool.failed}`).join(", ")}`);
   return lines.join("\n");

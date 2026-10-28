@@ -1,4 +1,4 @@
-import { NOTIFICATION_SOURCE_LABELS, needsYou, notificationChannelEnabled, resolveNotificationSettings, type NotificationSettings, type SpaceNotification } from "@space/contracts";
+import { NOTIFICATION_SOURCE_LABELS, heldForNous, needsYou, notificationChannelEnabled, resolveNotificationSettings, type NotificationSettings, type SpaceNotification } from "@space/contracts";
 import { playChime } from "../desktop-widgets/audio-chime.js";
 import { readNousFocusEnabled, requestNousFocus } from "../nous-focus/nous-focus-events.js";
 import { showDesktopNotification } from "./desktop-notifications.js";
@@ -19,6 +19,8 @@ export function deliverNotifications(notifications: SpaceNotification[], setting
     if (!notificationChannelEnabled(channels, notification.source, "inApp")) continue;
     // Held for the operator's morning (quiet hours): listed in the Notification Center, no pop-up, chime or desktop alert.
     if (typeof notification.payload?.heldUntil === "string" && Date.parse(notification.payload.heldUntil) > Date.now()) continue;
+    // A copilot's question held for Nous (Ask Last step 7): no banner, toast or pop-up until Nous lets it through (its release re-alerts it).
+    if (heldForNous(notification)) continue;
     // Newest first: only the newest record of a pane in this batch is shown.
     if (shown.has(notificationToastKey(notification))) continue;
     shown.add(notificationToastKey(notification));

@@ -27,6 +27,7 @@ import {
   Handshake,
   PenTool,
   TabletSmartphone,
+  Radar,
   ShieldHalf,
   Search,
   ServerCog,
@@ -64,6 +65,7 @@ import type { DesignSettingsCard } from "../design-pane/DesignSettingsCard.js";
 import type { AppStudioSettingsCard } from "../app-studio-pane/AppStudioSettingsCard.js";
 import type { VideoSettingsCard } from "../video-pane/VideoSettingsCard.js";
 import type { SecurityCopilotSettingsCard } from "../security-copilot-pane/SecurityCopilotSettingsCard.js";
+import type { MonitoringCopilotSettingsCard } from "../monitoring-copilot-pane/MonitoringCopilotSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
 import { NousSettingsCard } from "../nous/NousSettingsCard.js";
 
@@ -97,6 +99,7 @@ export interface AgentSettingsCards {
   AppStudio: typeof AppStudioSettingsCard;
   Video: typeof VideoSettingsCard;
   SecurityCopilot: typeof SecurityCopilotSettingsCard;
+  MonitoringCopilot: typeof MonitoringCopilotSettingsCard;
 }
 
 export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
@@ -205,7 +208,8 @@ export function AgentSettingsDock({
     Design: LazyDesignSettingsCard,
     AppStudio: LazyAppStudioSettingsCard,
     Video: LazyVideoSettingsCard,
-    SecurityCopilot: LazySecurityCopilotSettingsCard
+    SecurityCopilot: LazySecurityCopilotSettingsCard,
+    MonitoringCopilot: LazyMonitoringCopilotSettingsCard
   } = cards;
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -413,6 +417,11 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
           help="The Security Copilot keeps every Proxmox host and SpaceApp patched with an AI coding agent: Space watches the vulnerability feeds, the agent inventories the hosts and fixes what they need through Space's gate. Choose that agent and its account once and every new Security Copilot pane, on every device, opens with it; turn on asking to pick each time."
           keywords="security copilot vulnerabilities cve kev patch updates servers proxmox hosts agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazySecurityCopilotSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="monitoring-copilot" title="Monitoring Copilot" description="The watch officer and account new Monitoring Copilot panes open with." scope="Your account" icon={Radar}
+          help="The Monitoring Copilot explains what the monitoring collector reports (critical alerts, failing probes, AI Guardian messages) with an AI coding agent and answers your and Nous's questions about the fleet. Choose that agent and its account once and every new Monitoring Copilot pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="monitoring copilot alerts prometheus alertmanager loki probes uptime guardian servers sites agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyMonitoringCopilotSettingsCard /></RecoverableSurface>
         </SettingsDisclosure>
         <SettingsDisclosure sectionKey="youtube-summary" title="YouTube" description="The AI model that summarizes YouTube videos, and where and at what resolution Download saves them." scope="Your account" icon={Youtube}
           help="In a YouTube pane, Summarize with AI has this Gemini model watch the video you are on and write a short summary with its key points; Full text writes down everything said in it, from the video's captions when it has them. Download saves the video in the Agent Files folder and resolution chosen here, adds it to the Video library and tells you in Notifications when it is done. The YouTube pane's Settings button opens the same settings."

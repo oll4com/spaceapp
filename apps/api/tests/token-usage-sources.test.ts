@@ -144,7 +144,10 @@ describe("token usage sources", () => {
       readProcStat: async () => "cpu  100 0 100 800 0 0 0 0 0 0\n",
       tokenUsage: {
         gateway: () => gateway,
-        gatewayAccounts: async () => [{ id: pooled, provider: "CLAUDE", email: "crew@spaceapp.dev", label: "crew" },
+        gatewayAccounts: async () => [{ id: pooled, provider: "CLAUDE", email: "crew@spaceapp.dev", label: "crew",
+          // Two days of the week left: 71% passed (plan clipboard:nUloPOH3blDT).
+          primaryWindow: { usedPercent: 40, resetAt: null, windowMinutes: 300 },
+          secondaryWindow: { usedPercent: 54, resetAt: new Date(now.getTime() + 2 * 86_400_000).toISOString(), windowMinutes: 10080 } },
           { id: lab, provider: "CLAUDE", email: "lab@spaceapp.dev", label: "lab" }],
         readClaude: async () => ({ schema: 2, generatedAt: now.toISOString(), profiles: [{ profileId: "lab", email: "lab@spaceapp.dev" }],
           messages: [message("via_id"), message("direct", { requestId: "req_direct", outputTokens: 20 })] })
@@ -185,6 +188,9 @@ describe("token usage sources", () => {
     expect(all.accounts?.map((account) => [account.label, account.route, account.tokensIn + account.tokensOut])).toEqual([
       ["codex · Codex CLI (direct)", "DIRECT", 1100], ["lab · Claude", "DIRECT", 150], ["crew · Claude", "GATEWAY", 137]
     ]);
+    // Each subscription account's week: used % minus the share passed; no windows, no pace.
+    expect(all.accounts?.find((account) => account.label === "crew · Claude")?.weeklyPace).toMatchObject({ usedPercent: 54, passedPercent: 71, points: -17, pace: "UNDER" });
+    expect(all.accounts?.find((account) => account.label === "lab · Claude")?.weeklyPace).toBeNull();
 
     const direct = await service.models("24h", "direct");
     expect(direct.models.map((model) => [model.modelId, model.tokensOut])).toEqual(expect.arrayContaining([["claude-opus-5-5", 20], ["gpt-6-astra", 100]]));

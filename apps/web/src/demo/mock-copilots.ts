@@ -20,7 +20,7 @@ const owner = "user:demo-user";
 const mailbox = "avery@example.com";
 
 export function copilotsRoom(template: Room): Room {
-  return { ...structuredClone(template), id: COPILOTS_ROOM_ID, name: "Copilots (coming next)", description: "Mail, Job and Marketing Copilot with invented demo data. Coming next: the public release does not include the copilot agents yet.",
+  return { ...structuredClone(template), id: COPILOTS_ROOM_ID, name: "Copilots", description: "Mail, Job and Marketing Copilot with invented demo data.",
     order: 3, paneLayoutColumns: 2, paneLayoutHeight: 1, traceId: "demo-fixture-copilots" };
 }
 
@@ -96,7 +96,7 @@ const jobProfile = {
   ownerUserId: owner, campaignStartedAt: null,
   candidate: { fullName: "Avery Example", email: mailbox, phone: null, address: null, location: "Remote", country: null, linkedinUrl: null, githubUrl: null,
     websiteUrl: null, headline: "Platform engineer", summary: null, workAuthorization: null, needsSponsorship: false, willingToRelocate: null,
-    salaryExpectation: null, noticePeriod: null, yearsOfExperience: 6, skills: ["TypeScript", "PostgreSQL", "Kubernetes"], languages: ["English"],
+    salaryExpectation: null, salaryBelowMarketPercent: 10, noticePeriod: null, yearsOfExperience: 6, skills: ["TypeScript", "PostgreSQL", "Kubernetes"], languages: ["English"],
     experience: [], education: [], extra: {} },
   qaBank: [], cvArtifactId: "artifact:demo-cv-avery", coverLetterArtifactId: null, cvTextChars: 3800, mailbox: null, mailboxVerifiedAt: null,
   google: null, googleAccounts: [], googleAvailable: false, updatedAt: at

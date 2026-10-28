@@ -1,5 +1,5 @@
 import type { MailAttachment, MailParticipant } from "@space/contracts";
-import { decodeHtmlEntities, htmlToText } from "../mail-html-text.js";
+import { decodeHtmlEntities, htmlToText, looksLikeHtml } from "../mail-html-text.js";
 
 // Gmail's `format=full` payload (parts already base64url, charset handled by Gmail) in and an RFC 2822
 // message out. Nothing here touches the network.
@@ -44,7 +44,8 @@ export function parsePayload(payload: Record<string, unknown> | undefined, maxTe
   };
   walk(payload);
   const joinedHtml = html.length ? html.join("\n") : null;
-  const text = plain.some((part) => part.trim()) || !joinedHtml ? plain.join("\n") : htmlToText(joinedHtml);
+  const plainText = plain.join("\n");
+  const text = plain.some((part) => part.trim()) || !joinedHtml ? (looksLikeHtml(plainText) ? htmlToText(plainText) : plainText) : htmlToText(joinedHtml);
   return { text: text.slice(0, maxText), html: joinedHtml, attachments: attachments.slice(0, 100) };
 }
 
@@ -54,6 +55,10 @@ function encodeHeader(value: string): string {
 }
 function addresses(list: readonly string[]): string {
   return list.map((address) => address.replace(/[\r\n,]+/g, " ").trim()).filter(Boolean).join(", ");
+}
+function mailbox(name: string | undefined, address: string): string {
+  const clean = (name ?? "").replace(/[\r\n"\\]+/g, " ").trim();
+  return clean ? `${/^[\x20-\x7e]*$/.test(clean) ? `"${clean}"` : encodeHeader(clean)} <${addresses([address])}>` : addresses([address]);
 }
 /** Plain text as minimal HTML, so clients that prefer HTML show the same message. */
 function textToHtml(text: string): string {
@@ -65,11 +70,11 @@ function textToHtml(text: string): string {
  * An RFC 2822 message (base64url for Gmail): text and HTML alternatives, Cc/Bcc, and the threading headers of a
  * reply (`In-Reply-To`, `References`) when the replied message is known.
  */
-export function buildMime(input: { from: string; to: string[]; cc?: string[]; bcc?: string[]; subject: string; text: string;
+export function buildMime(input: { from: string; fromName?: string; to: string[]; cc?: string[]; bcc?: string[]; subject: string; text: string;
   inReplyTo?: string | null; references?: string | null }): string {
   const boundary = `space-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const lines = [
-    `From: ${addresses([input.from])}`, `To: ${addresses(input.to)}`,
+    `From: ${mailbox(input.fromName, input.from)}`, `To: ${addresses(input.to)}`,
     ...(input.cc?.length ? [`Cc: ${addresses(input.cc)}`] : []), ...(input.bcc?.length ? [`Bcc: ${addresses(input.bcc)}`] : []),
     `Subject: ${encodeHeader(input.subject)}`, `Message-ID: <${boundary}@space.local>`,
     ...(input.inReplyTo ? [`In-Reply-To: ${input.inReplyTo}`, `References: ${[input.references, input.inReplyTo].filter(Boolean).join(" ")}`] : []),

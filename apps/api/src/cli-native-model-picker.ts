@@ -639,6 +639,15 @@ export function claudeModelMenu(screen: string): {
 }
 
 /**
+ * Claude Code's question after a pick in a conversation cached for another model: "Switch model? This conversation
+ * is cached for the current model … ❯ 1. Yes, switch to Opus 5.5 / 2. No, go back" (27/10: a pane hung on it).
+ */
+export function claudeSwitchModelQuestion(screen: string): boolean {
+  const at = screen.lastIndexOf("Switch model?");
+  return at >= 0 && at > screen.lastIndexOf("Select model") && /^\s*(?:❯\s*)?1\.\s+Yes,?\s+switch\b/imu.test(screen.slice(at));
+}
+
+/**
  * `/model <name>` in Claude Code saves the pick as the default of every session sharing its config,
  * and sessions without their own pick follow that default. A pane therefore selects its model in
  * the native menu with "s" (this session only), adjusting the effort in the same menu.
@@ -669,7 +678,7 @@ async function applyClaudeSessionModel(input: {
   let seekDown = true;
   // A pane too small for the menu box never shows its rows together with its key hints.
   const tooSmall = () => new SpaceConflictError("The Claude model menu does not fit this pane. Enlarge the pane, then choose the model again.");
-  let chosen: { withEffort: boolean } | null = null;
+  let chosen: { withEffort: boolean; answers: number } | null = null;
   for (let attempt = 0; attempt < 60; attempt++) {
     await wait(250);
     await input.assertCurrent();
@@ -677,6 +686,13 @@ async function applyClaudeSessionModel(input: {
     if (after.revision === before.revision || after.revision === actedOn) continue;
     if (chosen) {
       if (applied(after.text, chosen.withEffort)) return;
+      // "1" answers Yes; a question still drawn after it gets Enter on the highlighted Yes, then Esc below.
+      if (claudeSwitchModelQuestion(after.text)) {
+        if (chosen.answers >= 2) break;
+        actedOn = after.revision;
+        await input.assertCurrent();
+        await input.write(chosen.answers++ === 0 ? "1" : "\r");
+      }
       continue;
     }
     if (/unknown command|unrecognized command/i.test(after.text)) throw new SpaceConflictError("The CLI rejected the model selection. Check its model menu.");
@@ -711,12 +727,17 @@ async function applyClaudeSessionModel(input: {
       key = levels.indexOf(effort) > levels.indexOf(menu.effort!) ? "\u001b[C" : "\u001b[D";
     } else {
       key = "s";
-      chosen = { withEffort: menu.effortSupported };
+      chosen = { withEffort: menu.effortSupported, answers: 0 };
     }
     if (++steps > 24) throw new SpaceConflictError("The Claude model menu did not follow the selection. Check its terminal.");
     actedOn = after.revision;
     await input.assertCurrent();
     await input.write(key);
+  }
+  if (chosen && claudeSwitchModelQuestion((await input.read()).text)) {
+    await input.assertCurrent();
+    await input.write("\u001b");
+    throw new SpaceConflictError("Claude Code asked \"Switch model?\" and did not take the answer, so the switch was cancelled. Choose the model again.");
   }
   throw new SpaceConflictError("Claude Code has not confirmed the model change. Check its terminal for the model menu.");
 }

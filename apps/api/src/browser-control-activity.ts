@@ -14,6 +14,11 @@ import { fenceCompletedHandoff } from "./vault/fence-hooks.js";
  * heartbeat both release it. Same value as the web client's BROWSER_CONTROL_IDLE_RELEASE_MS.
  */
 export const BROWSER_CONTROL_IDLE_RELEASE_MS = 60_000;
+/**
+ * A handoff for a sign-in, a code or a CAPTCHA: the operator may wait on the pane (an SMS) without touching it, so its idle
+ * time counts only while they are not on the pane (operator 2026-10-27: the NBG sign-in closed while they waited for the SMS).
+ */
+export const SIGN_IN_HANDOFF_REASON = /\b(?:sign[ -]?in|log[ -]?in|login|2fa|mfa|two[- ]factor|verif\w*|one[- ]time|otp|sms|codes?|captcha|password|passcode|human check)\b/i;
 /** A CLI agent of the room may take the browser back (space_browser_reclaim_control) after this much operator inactivity. */
 export const BROWSER_CONTROL_AGENT_RECLAIM_IDLE_MS = 60_000;
 /** How often the API checks the operator leases it watches. */
@@ -120,7 +125,7 @@ export async function settleEndedOperatorLease(store: LeaseStore, sessionId: str
   const lease = await store.getBrowserControlLease(handoff.controlLeaseId);
   if (lease?.status === "ACTIVE" && Date.parse(lease.expiresAt) > Date.now()) return;
   if (lease?.status === "ACTIVE") await store.updateBrowserControlLease(lease.leaseId, { status: "EXPIRED" });
-  await fenceCompletedHandoff(store, handoff.paneId);
+  await fenceCompletedHandoff(store, handoff.paneId, handoff.requestedByType === "AGENT" ? handoff.requestedById : undefined);
   await store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
 }
 
@@ -144,7 +149,9 @@ export async function releaseBrowserControlLease(deps: {
   const holder: BrowserHostActorContext = { holderType: input.lease.holderType, holderId: input.lease.holderId };
   // The fence is up before the agent gets the browser back.
   const accepted = await deps.store.getActiveBrowserHandoffRequest(input.lease.sessionId);
-  if (accepted?.status === "ACCEPTED" && accepted.controlLeaseId === input.lease.leaseId) await fenceCompletedHandoff(deps.store, input.pane.id);
+  if (accepted?.status === "ACCEPTED" && accepted.controlLeaseId === input.lease.leaseId) {
+    await fenceCompletedHandoff(deps.store, input.pane.id, accepted.requestedByType === "AGENT" ? accepted.requestedById : undefined);
+  }
   const released = await deps.browserSessionManager.releaseControl(input.pane, { leaseId: input.lease.leaseId }, traceId, holder);
   const handoff = await deps.store.getActiveBrowserHandoffRequest(released.sessionId);
   if (handoff?.status === "ACCEPTED" && handoff.controlLeaseId === released.leaseId) {

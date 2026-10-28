@@ -5,7 +5,7 @@ import { z } from "zod";
 import {
   effectiveMarketingAutonomy, MARKETING_CHANNELS, marketingBookmarkCreateSchema, marketingBookmarkIdSchema, marketingCampaignCreateSchema, marketingCampaignIdSchema, marketingChannelSchema, marketingEventIdSchema, marketingMemoryCreateSchema,
   marketingMemoryIdSchema, marketingMemoryQuerySchema, marketingPostCreateSchema, marketingPostIdSchema, marketingPostStatusSchema, marketingPostUpdateSchema, marketingPublishBeginSchema,
-  marketingPostMetricsRecordSchema, marketingPublishDoneSchema, marketingPublishFailedSchema, marketingQuestionAskSchema, marketingQuestionIdSchema, marketingRuleProposalSchema, type Pane
+  marketingPostMetricsRecordSchema, marketingPublishDoneSchema, marketingPublishFailedSchema, marketingPublishDeferSchema, marketingQuestionAskSchema, marketingQuestionIdSchema, marketingRuleProposalSchema, type Pane
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { PUBLIC_SPACEAPP_KNOWLEDGE, searchPublicSpaceappKnowledge } from "@space/streaming";
@@ -33,8 +33,8 @@ type BookmarkBridge = { owner: string; pane: Pane; cliSessionId: string };
 
 /** The operator's bookmarks (one list per owner), each opened in a new tab of the pane browser with its Google account; the Freelance Copilot's bridge registers the same routes. */
 export function registerBookmarkAgentRoutes(
-  handle: (method: "get" | "post", path: string, handler: (bridge: BookmarkBridge, request: FastifyRequest) => Promise<unknown>) => void,
-  service: Pick<MarketingCopilotService, "listBookmarks" | "createBookmark" | "openBookmark">,
+  handle: (method: "get" | "post" | "delete", path: string, handler: (bridge: BookmarkBridge, request: FastifyRequest) => Promise<unknown>) => void,
+  service: Pick<MarketingCopilotService, "listBookmarks" | "createBookmark" | "openBookmark" | "deleteBookmark">,
   deps: Pick<MarketingCopilotAgentRouteDependencies, "store" | "parseBody" | "parseQuery" | "audit">,
   auditPrefix: string
 ): void {
@@ -53,6 +53,12 @@ export function registerBookmarkAgentRoutes(
     await deps.audit(request, `${auditPrefix}.bookmark.open`, id, { paneId: pane.id, profileId: opened.bookmark.profileId });
     return opened;
   });
+  handle("delete", "bookmarks/:id", async ({ owner, pane }, request) => {
+    const { id } = deps.parseQuery(z.object({ id: marketingBookmarkIdSchema }).strict(), request.params);
+    const deleted = await service.deleteBookmark(owner, id);
+    if (deleted) await deps.audit(request, `${auditPrefix}.bookmark.delete`, id, { paneId: pane.id });
+    return { deleted };
+  });
 }
 
 export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, service: MarketingCopilotService, deps: MarketingCopilotAgentRouteDependencies): void {
@@ -69,7 +75,7 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
     return { owner: room.ownerUserId, pane, cliSessionId: bridge.claims.cliSessionId };
   }
   /** Registers an agent route: resolves the bridge, then hands the owner, the pane and the request to the handler. */
-  function handle(method: "get" | "post" | "patch", path: string, handler: (bridge: { owner: string; pane: Pane; cliSessionId: string }, request: FastifyRequest) => Promise<unknown>) {
+  function handle(method: "get" | "post" | "patch" | "delete", path: string, handler: (bridge: { owner: string; pane: Pane; cliSessionId: string }, request: FastifyRequest) => Promise<unknown>) {
     app[method](route(path), routeOptions, async (request, reply) => {
       const bridge = await context(request, reply);
       if (!bridge) return reply;
@@ -122,6 +128,7 @@ export function registerMarketingCopilotAgentRoutes(app: FastifyInstance, servic
     return { post };
   });
   handle("post", "publish/failed", async ({ owner, pane }, request) => ({ post: await service.failPublish(owner, pane, parseBody(marketingPublishFailedSchema, request.body ?? {})) }));
+  handle("post", "publish/defer", async ({ owner, pane }, request) => service.deferPublish(owner, pane, parseBody(marketingPublishDeferSchema, request.body ?? {})));
 
   handle("post", "metrics", async ({ owner, pane }, request) => ({ post: await service.recordPostMetrics(owner, pane, parseBody(marketingPostMetricsRecordSchema, request.body ?? {})) }));
   handle("post", "question", async ({ owner, pane }, request) => service.askQuestion(owner, pane, parseBody(marketingQuestionAskSchema, request.body ?? {})));

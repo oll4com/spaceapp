@@ -4,8 +4,8 @@
 // Vault registers its hooks under that object; tests and other apps use their own stores and get no hooks.
 
 export interface VaultFenceHooks {
-  /** Fences the pane's current page after an operator handoff, like a Vault fill. */
-  fenceHandoff(paneId: string): Promise<void>;
+  /** Fences the pane's current page after an operator handoff, like a Vault fill; `viewer` asked for the handoff. */
+  fenceHandoff(paneId: string, viewer?: string): Promise<void>;
   /** The tabs (target ids) a pane's fence still covers. */
   fencedTargets(paneId: string): Promise<string[]>;
 }
@@ -17,8 +17,8 @@ export function registerVaultFenceHooks(store: object, value: VaultFenceHooks): 
 }
 
 /** Best effort: a handoff completes even when the fence cannot be set (no Browser Host, no web page). */
-export async function fenceCompletedHandoff(store: object, paneId: string): Promise<void> {
-  await hooks.get(store)?.fenceHandoff(paneId).catch(() => undefined);
+export async function fenceCompletedHandoff(store: object, paneId: string, viewer?: string): Promise<void> {
+  await hooks.get(store)?.fenceHandoff(paneId, viewer).catch(() => undefined);
 }
 
 export async function vaultFencedTargets(store: object, paneId: string): Promise<string[]> {

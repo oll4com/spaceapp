@@ -70,14 +70,26 @@ describe("Nous pane board", () => {
     expect(within(screen.getByRole("listitem", { name: "Andy in Alpha" })).getByText("Pane board · 40%")).toBeTruthy();
     expect(screen.getByRole("listitem", { name: "Mia in Beta" })).toBeTruthy();
 
-    fireEvent.click(within(screen.getByRole("group", { name: "Waits on" })).getByRole("button", { name: /^Needs me/ }));
-    expect(screen.queryByRole("listitem", { name: "Andy in Alpha" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Room Beta" })).toBeNull();
-    expect(screen.getByRole("listitem", { name: "Bob in Alpha" })).toBeTruthy();
-    fireEvent.click(within(screen.getByRole("group", { name: "Waits on" })).getByRole("button", { name: /^Promote/ }));
+    expect(within(alpha).getByText("2 panes")).toBeTruthy();
+    expect(within(alpha).getByText("1 needs you")).toBeTruthy();
+
+    // Two dropdowns (operator 2026-10-27); what waits for the operator is the Needs you tab, so it is no filter here.
+    const options = (name: string) => [...(screen.getByRole("combobox", { name }) as HTMLSelectElement).options].map((option) => option.textContent);
+    expect(options("Room")).toEqual(["All rooms · 3", "Alpha · 2", "Beta · 1"]);
+    expect(options("Waits on")).toEqual(["Any wait · 3", "Waits on a promote · 1", "Waits on nothing · 1"]);
+    expect(screen.queryByRole("button", { name: "Clear the filters" })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "Room" }), { target: { value: "room:beta00001" } });
+    expect(screen.queryByRole("region", { name: "Room Alpha" })).toBeNull();
+    expect(screen.getByRole("listitem", { name: "Mia in Beta" })).toBeTruthy();
+    expect(options("Waits on")).toEqual(["Any wait · 1", "Waits on a promote · 1"]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear the filters" }));
+    expect(screen.getByRole("region", { name: "Room Alpha" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Waits on" }), { target: { value: "PROMOTE" } });
     expect(screen.getByRole("listitem", { name: "Mia in Beta" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Room Alpha" })).toBeNull();
-    fireEvent.click(within(screen.getByRole("group", { name: "Waits on" })).getByRole("button", { name: /^All/ }));
+    expect(options("Room")).toEqual(["All rooms · 1", "Beta · 1"]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear the filters" }));
+    expect(screen.queryByRole("button", { name: "Clear the filters" })).toBeNull();
     // A room folds away.
     fireEvent.click(within(screen.getByRole("region", { name: "Room Alpha" })).getByRole("button", { name: /Alpha/ }));
     expect(screen.queryByRole("listitem", { name: "Bob in Alpha" })).toBeNull();
