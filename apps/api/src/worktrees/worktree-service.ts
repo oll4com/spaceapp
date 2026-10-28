@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync } from "node:fs";
+import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   CreateWorktreeInput,
@@ -152,6 +152,29 @@ function changesNothing({ reg, updated, normPath, wtId }: ReturnType<typeof reco
     && JSON.stringify(Object.entries(value).filter(([key, field]) => key !== "updatedAt" && field !== undefined).sort(([a], [b]) => a.localeCompare(b)));
   const next = comparable(updated);
   return comparable(reg.worktrees[normPath]) === next && comparable(reg.worktrees[wtId]) === next;
+}
+
+/** The first directory (the tree's parent included) whose entries this user may not delete; null when all of it can go. */
+async function firstUndeletableDirectory(dir: string, top = true): Promise<string | null> {
+  for (const path of top ? [dirname(dir), dir] : [dir]) {
+    try {
+      await access(path, fsConstants.W_OK | fsConstants.X_OK);
+    } catch {
+      return path;
+    }
+  }
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return dir;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const blocked = await firstUndeletableDirectory(join(dir, entry.name), false);
+    if (blocked) return blocked;
+  }
+  return null;
 }
 
 export class WorktreeService {
@@ -901,7 +924,12 @@ export class WorktreeService {
   async removeWorktree(worktreePath: string, force = false): Promise<void> {
     // Defense in depth: the service deletes recursively, so it applies the route's guard
     // itself (also with force) instead of trusting every caller to have done so.
-    await assertRemovableWorktreePath(worktreePath, WORKTREES_ROOT);
+    const target = await assertRemovableWorktreePath(worktreePath, WORKTREES_ROOT);
+    // Fail closed before anything goes: a tree this user cannot fully delete (another user's) would be left half-deleted.
+    const blocked = target.kind === "MISSING" ? null : await firstUndeletableDirectory(target.path);
+    if (blocked) {
+      throw new WorktreeError("REMOVE_FAILED", `Cannot remove ${target.path}: this user may not delete entries of ${blocked}. Nothing was removed.`);
+    }
     const existing = await this.getRecordedWorktree(worktreePath);
     if (!existing || existing.status !== "MERGED") {
       await this.recordWorktree({
@@ -926,7 +954,9 @@ export class WorktreeService {
 
       if (repoRoot && repoRoot !== realPath) {
         const removeArgs = force ? ["worktree", "remove", "--force", realPath] : ["worktree", "remove", realPath];
-        await execGit(repoRoot, removeArgs);
+        const removed = await execGit(repoRoot, removeArgs);
+        // git refuses changes without --force; deleting anyway would lose them.
+        if (removed.code !== 0) throw new Error(removed.stderr.trim() || `git worktree remove exited ${removed.code}`);
         await execGit(repoRoot, ["worktree", "prune"]);
       }
 

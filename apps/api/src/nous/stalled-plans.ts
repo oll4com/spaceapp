@@ -29,6 +29,8 @@ export interface NousPlanActivity {
   stalled: boolean;
   /** Why it is stalled, null when it is not. */
   reason: string | null;
+  /** What it waits on when that is not Nous's to nudge (plan-map.ts `stalledHold`: a date, another plan, the server); never stalled then. */
+  hold: string | null;
 }
 
 /** The plan's status and step statuses as one string: a change counts as movement like a percentage change. */
@@ -45,6 +47,7 @@ export async function nousPlanActivity(input: {
   /** The newest report of each pane (pane-reports.ts). */
   reports?: PaneReport[];
   executions?: Array<Pick<ManagedPlanExecution, "planId" | "paneId">>;
+  held?: (planId: string) => string | null;
   stalledHours?: number; now?: Date;
 }): Promise<NousPlanActivity[]> {
   const now = input.now ?? new Date();
@@ -65,7 +68,8 @@ export async function nousPlanActivity(input: {
     const report = open ? reports.get(open.id) ?? null : null;
     const waited = pane?.state === "waiting" ? hoursSince(pane.since) : 0;
     const silent = pane?.state === "working" ? Math.min(hoursSince(pane.since), hoursSince(report?.at ?? pane.since)) : 0;
-    const reason = unknown ? null
+    const hold = input.held?.(plan.id) ?? null;
+    const reason = unknown || hold ? null
       : hours >= stalledHours ? `unchanged ${hoursText(hours)}`
       : !pane ? "no open pane"
       : waited >= NOUS_STALLED_WAITING_HOURS ? `pane waiting ${hoursText(waited)}`
@@ -73,7 +77,7 @@ export async function nousPlanActivity(input: {
     return { planId: plan.id, title: plan.title ?? plan.text.slice(0, 80), status: plan.executionStatus ?? "IN_PROGRESS", percent: plan.progressPercentage,
       nextStep: nextPlanStep(plan), changedAt, hours, pane,
       lastReport: report ? `${report.at.slice(11, 16)} UTC ${report.status.toLowerCase().replace(/_/g, " ")}: "${oneLine(report.summary, 160)}"` : null,
-      managed: managedPlans.has(plan.id), lastNudgedAt: mark?.lastNudgedAt ?? null, stalled: reason !== null, reason };
+      managed: managedPlans.has(plan.id), lastNudgedAt: mark?.lastNudgedAt ?? null, stalled: reason !== null, reason, hold };
   });
 }
 
@@ -85,7 +89,7 @@ export function renderNousPlanActivity(items: NousPlanActivity[]): string {
   if (!items.length) return "";
   return ["## Plan activity (when each open plan last moved, and its pane; STALLED plans come to you in Standing orders turns)",
     ...items.map((item) => `- "${oneLine(item.title, 100)}" ${item.percent}%: unchanged ${hoursText(item.hours)} (since ${minute(item.changedAt)}); ${paneText(item)}`
-      + (item.stalled ? ` — STALLED (${item.reason})` : "") + (item.managed ? " · managed by plan execution" : ""))].join("\n");
+      + (item.stalled ? ` — STALLED (${item.reason})` : "") + (item.hold ? ` — ${item.hold}` : "") + (item.managed ? " · managed by plan execution" : ""))].join("\n");
 }
 
 /** The stalled plans of a STANDING turn, in full (the turn is its own: no world cut or inbox clip touches it). */

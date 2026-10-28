@@ -7,6 +7,10 @@ metadata:
 
 # App Studio pane (mobile apps)
 
+**Browser checks (2026-10-27):** Cloudflare: for a full-page "Verify you are human" or "Just a moment" check, call space_browser_cloudflare on space_browser once with targetPaneId from space_browser_context (your managed browser pane) and optionally its active pageId. It uses the existing browser and is free. CLEARED means the challenge was observed and the page loaded; NO_CHALLENGE means no solve was needed. Re-snapshot and verify the original task. On needsOperator, an error or an unavailable tool, request browser handoff; do not loop, reload or change accounts/proxies. HUMAN Press & Hold uses its separate shared rule. Embedded Turnstile, other CAPTCHAs, identity checks, login/MFA and Vault-protected pages keep their existing handoff rules. This does not authorize a submission, message, payment or account change.
+
+Press & Hold: for a HUMAN/PerimeterX full-page check such as Fiverr "It needs a human touch" or "Before we continue", call space_browser_press_hold on space_browser once with targetPaneId from space_browser_context and optionally its active pageId. It holds only the challenge button once, for at most 15 seconds in a 40-second attempt, in the existing browser and network route, for free. CLEARED means the challenge was observed and the real page loaded; NO_CHALLENGE means no solve was needed. Re-snapshot and verify the original task. On needsOperator, an error or an unavailable tool, request browser handoff; do not retry, reload or change accounts/proxies. Other CAPTCHAs, identity checks, login/MFA and Vault protection keep their handoff rules. This does not authorize a submission, message, payment or account change.
+
 The CLI agent of an **App Studio pane** (pane mode `APP_STUDIO`) builds one mobile app per pane for Android and iOS
 from one Expo codebase. The operator and Nous give briefs in the pane's rail; the pane shows the app in phone frames
 from the previews you capture. Other panes never call these tools.
@@ -86,8 +90,13 @@ Expo setup, the web export and the preview checklist: `references/expo.md`.
   `node /opt/spaceapp/scripts/space-app-studio-build.mjs start <app dir>`, then
   `node /opt/spaceapp/scripts/space-app-studio-build.mjs status <jobId> --wait 50` until `DONE`.
 - What it builds: `expo prebuild --platform android`, then Gradle's release variant signed with the project's debug
-  keystore (never a release key, never a store upload), the JS bundle inside (it runs without a Metro server), arm64
-  only, with the pinned toolchain (Expo SDK 58). One build at a time; refused while the server is OVERLOADED (try again
+  keystore (never a store upload), the JS bundle inside (it runs without a Metro server), arm64 only, with the pinned
+  toolchain (Expo SDK 58).
+- Release signing (2026-10-27): `signing: "release"` (shell: `start <app dir> --release`) re-signs the APK with the app's
+  own kept key from the operator's Vault, only for an app id App Studio lists (today `com.oll4.spaceapp.nous`); any other
+  app is refused before a key is touched. The key is installed for apksigner and deleted right after; you never see it.
+  A phone with the debug build installed must uninstall it once before the first release-signed APK (Android refuses
+  another signer over it); say so in the brief's summary. One build at a time; refused while the server is OVERLOADED (try again
   later). The log is in `<pane folder>/builds/<jobId>.log`; `FAILED` answers carry its last lines.
 - `DONE` gives the package, version, size and the `downloadPath`; the pane's room Media keeps the newest APK (the one
   before expires a day later) and the operator gets a notification. Bump `expo.version` (and `android.versionCode`) when

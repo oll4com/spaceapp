@@ -28,7 +28,7 @@ export interface FreelanceCopilotAgentRouteDependencies {
   /** The operator's Job Copilot profile (name, languages, experience) when Job Copilot is on. */
   candidate?(owner: string): Promise<JobApplyCandidate | null>;
   /** The operator's bookmarks (Marketing Copilot's store, one list per owner) when Marketing Copilot is on. */
-  bookmarks?: Pick<MarketingCopilotService, "listBookmarks" | "createBookmark" | "openBookmark">;
+  bookmarks?: Pick<MarketingCopilotService, "listBookmarks" | "createBookmark" | "openBookmark" | "deleteBookmark">;
 }
 
 const waitMs = z.number().int().min(0).max(120_000).default(60_000);
@@ -50,7 +50,7 @@ export function registerFreelanceCopilotAgentRoutes(app: FastifyInstance, servic
     return { owner: room.ownerUserId, pane, cliSessionId: bridge.claims.cliSessionId };
   }
   /** Registers an agent route: resolves the bridge, then hands the owner, the pane and the request to the handler. */
-  function handle(method: "get" | "post" | "patch", path: string, handler: (bridge: { owner: string; pane: Pane; cliSessionId: string }, request: FastifyRequest) => Promise<unknown>) {
+  function handle(method: "get" | "post" | "patch" | "delete", path: string, handler: (bridge: { owner: string; pane: Pane; cliSessionId: string }, request: FastifyRequest) => Promise<unknown>) {
     app[method](route(path), routeOptions, async (request, reply) => {
       const bridge = await context(request, reply);
       if (!bridge) return reply;

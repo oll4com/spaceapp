@@ -77,8 +77,18 @@ function fakeGmail(token: string, inbox: FakeMessage[]) {
       return Response.json({ id: modifyThread[1] });
     }
     if (path === "/messages/send") return Response.json({ id: "sent-1", threadId: (body as { threadId?: string }).threadId ?? "thread-new" });
+    if (path === "/settings/sendAs") return Response.json({ sendAs: [{ sendAsEmail: "me@gmail.com", displayName: "", isPrimary: true, isDefault: true },
+      { sendAsEmail: "Lab@team.com", displayName: "Lab Team", verificationStatus: "accepted" }, { sendAsEmail: "pending@team.com", verificationStatus: "pending" }] });
     const message = /^\/messages\/([^/]+)$/.exec(path);
-    if (message) { const row = messages.get(message[1]!); return row ? Response.json(full(row, url.searchParams.get("format") ?? "full")) : Response.json({ error: { message: "nope" } }, { status: 404 }); }
+    if (message) {
+      const row = messages.get(message[1]!);
+      if (!row) return Response.json({ error: { message: "nope" } }, { status: 404 });
+      const body = full(row, url.searchParams.get("format") ?? "full");
+      // Like Gmail, metadata answers only the headers named.
+      const named = url.searchParams.getAll("metadataHeaders").map((name) => name.toLowerCase());
+      if (named.length) body.payload.headers = body.payload.headers.filter((entry) => named.includes(entry.name.toLowerCase()));
+      return Response.json(body);
+    }
     const attachment = /^\/messages\/([^/]+)\/attachments\/([^/]+)$/.exec(path);
     if (attachment) { const row = messages.get(attachment[1]!); return row?.attachment?.id === attachment[2] ? Response.json({ data: b64(row.attachment.data) }) : Response.json({}, { status: 404 }); }
     if (path === "/drafts") return Response.json({ id: "draft-1", message: { id: "draft-msg-1" } });
@@ -221,7 +231,8 @@ describe("mail copilot mailbox", () => {
   });
 
   it("sends replies with threading headers, forwards and new mail from the account, and saves drafts", async () => {
-    const me = fakeGmail("token-me", [{ id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Invoice", minutesAgo: 30, labelIds: ["INBOX"], plain: "Please find the invoice." }]);
+    const me = fakeGmail("token-me", [{ id: "m1", threadId: "t1", from: "Anna <anna@acme.com>", subject: "Invoice", minutesAgo: 30, labelIds: ["INBOX"], plain: "Please find the invoice." },
+      { id: "m2", threadId: "t2", from: "Piotr <piotr@acme.com>", to: "pending@team.com, LAB@team.com", subject: "PRs", minutesAgo: 20, labelIds: ["INBOX"], plain: "Status?" }]);
     const { app, pane, headers } = await fixture(googleAccess([{ email: "me@gmail.com", capabilities: full, token: "token-me" }]), me.fetchImpl);
     const reply = await app.inject({ method: "POST", url: "/api/mail-copilot/messages/send", headers,
       payload: { paneId: pane.id, account: "me@gmail.com", to: ["anna@acme.com"], cc: ["carl@acme.com"], bcc: [], subject: "Re: Invoice", text: "Thanks Άννα, received.", threadId: "t1", inReplyToMessageId: "m1" } });
@@ -243,6 +254,12 @@ describe("mail copilot mailbox", () => {
     const replyDraft = me.writes.filter((write) => write.path === "/drafts").at(-1)!.body as { message: { raw: string; threadId: string } };
     expect(replyDraft.message.threadId).toBe("t1");
     expect(Buffer.from(replyDraft.message.raw, "base64url").toString("utf8")).toContain("In-Reply-To: <m1@mail.example>\r\nReferences: <m1@mail.example>\r\n");
+    // A reply to mail sent to a "Send mail as" address goes from that address, as Gmail answers; a pending alias never sends.
+    await app.inject({ method: "POST", url: "/api/mail-copilot/messages/send", headers,
+      payload: { paneId: pane.id, account: "me@gmail.com", to: ["piotr@acme.com"], subject: "Re: PRs", text: "Thanks", threadId: "t2", inReplyToMessageId: "m2" } });
+    const aliasReply = Buffer.from((me.writes.filter((write) => write.path === "/messages/send").at(-1)!.body as { raw: string }).raw, "base64url").toString("utf8");
+    expect(aliasReply).toMatch(/^From: "Lab Team" <lab@team\.com>\r\nTo: piotr@acme\.com\r\n/);
+    expect(aliasReply).toContain("In-Reply-To: <m2@mail.example>\r\n");
     expect((await app.inject({ method: "POST", url: "/api/mail-copilot/messages/send", headers, payload: { paneId: pane.id, account: "me@gmail.com", to: [], subject: "x", text: "y" } })).statusCode).toBe(422);
     expect((await app.inject({ method: "POST", url: "/api/mail-copilot/messages/send", headers, payload: { paneId: pane.id, account: "other@gmail.com", to: ["x@y.com"], subject: "x", text: "y" } })).statusCode).toBe(409);
     await app.close();
@@ -254,6 +271,10 @@ describe("mail copilot mailbox", () => {
     ]);
     const parsed = parsePayload({ mimeType: "multipart/alternative", parts: [{ mimeType: "text/html", body: { data: b64("<p>Only <b>HTML</b> here</p>") } }] });
     expect(parsed).toMatchObject({ text: "Only HTML here", html: "<p>Only <b>HTML</b> here</p>", attachments: [] });
+    // 27/10: a bank sent its HTML document as the text/plain part; the reader gets text, not tags.
+    const bank = parsePayload({ mimeType: "text/plain", body: { data: b64("<!DOCTYPE html><html><body><table><tr><td>Your statement</td></tr><tr><td>is attached.</td></tr></table></body></html>") } });
+    expect(bank.text).toBe("Your statement\nis attached.");
+    expect(parsePayload({ mimeType: "text/plain", body: { data: b64("Use <b>bold</b> in the template.") } }).text).toBe("Use <b>bold</b> in the template.");
     const raw = Buffer.from(buildMime({ from: "me@gmail.com", to: ["a@b.c"], subject: "Καλημέρα", text: "x", inReplyTo: "<1@x>", references: "<0@x>" }), "base64url").toString("utf8");
     expect(raw).toContain("Subject: =?UTF-8?B?");
     expect(raw).toContain("References: <0@x> <1@x>");

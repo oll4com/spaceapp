@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { nousLowSpendSettingsSchema, nousSettingsSchema, type ClaudeUsageAccountList, type GatewayAccount, type NousSpendMode } from "@space/contracts";
+import { gatewayWeekPace, nousLowSpendSettingsSchema, nousSettingsSchema, type ClaudeUsageAccountList, type GatewayAccount, type NousSpendMode } from "@space/contracts";
 import { createClaudeUsageAccountProvider } from "../src/claude-usage-services.js";
 import { computeNousTokens, createNousTokenMonitor, nousTokenModel, readNousTokens, renderNousTokens } from "../src/nous/tokens.js";
 import { createNousSubagents } from "../src/nous/subagents.js";
@@ -27,22 +27,25 @@ describe("Nous automatic low-spend policy", () => {
     expect(compute([account("a"), account("b")], { settings: { ...config, mode: "ON" } })).toMatchObject({ mode: "LOW", resetAt: null });
   });
 
-  it("uses the API budget only for CRITICAL when no Max account has room", () => {
+  // Operator rule 2026-10-27: the API key never serves Claude Code, so CRITICAL is no Max account with room, whatever the budget.
+  it("is CRITICAL when no Max account has room, whatever the API budget", () => {
     const full = [account("a"), account("b")];
-    expect(compute(full, { budget: budget(60) }).mode).toBe("NORMAL");
-    expect(compute(full, { budget: budget(60.01) }).mode).toBe("NORMAL");
-    expect(compute([account("a", 100)], { budget: budget(80) }).mode).toBe("LOW");
-    expect(compute([account("a", 100)], { budget: budget(80.01) })).toMatchObject({ mode: "CRITICAL", resetAt: null });
     expect(compute(full, { budget: budget(99) }).mode).toBe("NORMAL");
+    expect(compute([account("a", 100)], { budget: budget(0) })).toMatchObject({ mode: "CRITICAL", resetAt: null });
+    expect(compute([account("a", 100)]).mode).toBe("CRITICAL");
     const recover = compute([account("a", 100), account("b", 100)], { budget: budget(20) });
-    expect(recover).toMatchObject({ mode: "LOW", resetAt: reset });
+    expect(recover).toMatchObject({ mode: "CRITICAL", resetAt: reset });
     expect(compute(full, { budget: budget(80) }).resetAt).toBeNull();
+    // A used-up week leaves no room even when the 5-hour window has some; an unknown week does not take it away.
+    const week = (usedPercent: number | null) => ({ secondaryWindow: { usedPercent, resetAt: weeklyReset, windowMinutes: 10080 } });
+    expect(compute([account("a", 10, week(95)), account("b", 10, week(100))]).mode).toBe("CRITICAL");
+    expect(compute([account("a", 10, week(null)), account("b", 10, week(90))]).mode).toBe("NORMAL");
   });
 
   it.each([
     { withRoom: 5, spentUsd: 365, mode: "NORMAL", resetAt: null },
     { withRoom: 1, spentUsd: 365, mode: "LOW", resetAt: reset },
-    { withRoom: 0, spentUsd: 425, mode: "CRITICAL", resetAt: reset }
+    { withRoom: 0, spentUsd: 100, mode: "CRITICAL", resetAt: reset }
   ])("returns $mode with $withRoom/5 Max accounts with room and $spentUsd/$500 spent", ({ withRoom, spentUsd, mode, resetAt }) => {
     const accounts = Array.from({ length: 5 }, (_, index) => account(String(index), index < withRoom ? 5 : 100));
     const state = compute(accounts, { budget: { budgetUsd: 500, spentUsd } });
@@ -62,18 +65,48 @@ describe("Nous automatic low-spend policy", () => {
     const accounts = [account("a", 100), account("paused", 0, { status: "PAUSED" }), account("reauth", 0, { status: "REAUTH_REQUIRED" }),
       account("api", 0, { planType: "api" }), account("free", 0, { planType: "free" }), account("pro", 0, { planType: "pro" }),
       account("unknown", 0, { primaryWindow: { usedPercent: null, resetAt: null, windowMinutes: 300 } })];
-    expect(compute(accounts)).toMatchObject({ mode: "LOW", max: { total: 2, withRoom: 0 } });
+    expect(compute(accounts)).toMatchObject({ mode: "CRITICAL", max: { total: 2, withRoom: 0 } });
     expect(compute(null)).toMatchObject({ mode: "NORMAL", max: null });
     expect(compute(null, { budget: budget(90) }).mode).toBe("NORMAL");
     expect(compute([], { budget: budget(90) }).mode).toBe("CRITICAL");
     expect(compute([account("a", 95), account("b", 95)], { settings: { ...config, minMaxAccountsWithRoom: 1, roomRemainingPercent: 5 } }).mode).toBe("NORMAL");
   });
 
+  // Operator goal 2026-10-27 (plan clipboard:nUloPOH3blDT step 2): every account's tokens used without running out before the weekly reset.
+  it("shows each Max and Codex account's weekly pace, and a Codex week reported first as its 7-day window, never as its 5-hour", () => {
+    const inTwoDays = new Date(now + 2 * 86_400_000).toISOString();
+    const week = (usedPercent: number | null) => ({ secondaryWindow: { usedPercent, resetAt: inTwoDays, windowMinutes: 10080 } });
+    // 2 of 7 days left: 71% of the week passed.
+    expect(gatewayWeekPace(account("a", 10, week(54)), now)).toEqual({ usedPercent: 54, passedPercent: 71, points: -17, resetAt: inTwoDays, pace: "UNDER" });
+    expect(gatewayWeekPace(account("a", 10, week(75)), now)).toMatchObject({ points: 4, pace: "ON" });
+    expect(gatewayWeekPace(account("a", 10, week(80)), now)).toMatchObject({ points: 9, pace: "AHEAD" });
+    expect(gatewayWeekPace(account("a", 10, week(null)), now)).toMatchObject({ points: null, pace: null });
+    expect(gatewayWeekPace(account("a", 10, { secondaryWindow: { usedPercent: 50, resetAt: new Date(now - 1).toISOString(), windowMinutes: 10080 } }), now)).toBeNull();
+    // niggmopai (prolite): Gateway reports only the weekly window, as the primary one.
+    const prolite = account("niggmopai", 8, { provider: "CODEX", planType: "prolite", primaryWindow: { usedPercent: 8, resetAt: inTwoDays, windowMinutes: 10080 },
+      secondaryWindow: { usedPercent: null, resetAt: null, windowMinutes: null } });
+    const plus = account("ntheogr", 49, { provider: "CODEX", planType: "plus", ...week(80) });
+    const paused = account("free", 0, { provider: "CODEX", planType: "free", status: "PAUSED" });
+    const state = compute([account("ntheo", 10, week(54)), prolite, plus, paused]);
+    const text = renderNousTokens(state, "Asia/Bangkok", now);
+    expect(text).toContain("Codex 5-hour niggmopai none, ntheogr 49%;");
+    expect(text).toContain("weekly pace (7-day used/week passed, points, reset in Asia/Bangkok): Claude ntheo 54%/71% -17 UNDER 26 Oct, 16:00; Codex niggmopai 8%/71% -63 UNDER 26 Oct, 16:00, ntheogr 80%/71% +9 AHEAD 26 Oct, 16:00;");
+    expect(text).toContain("- CODEX niggmopai · ACTIVE: 7-day: 8% used; reset 26 Oct 2026, 16:00 Asia/Bangkok; week passed 71%, pace -63 UNDER");
+    expect(text).not.toContain("niggmopai · ACTIVE: 5-hour");
+    expect(text).toContain("- CLAUDE ntheo · ACTIVE: 5-hour: 10% used; reset 24 Oct 2026, 17:00 Asia/Bangkok; 7-day: 54% used; reset 26 Oct 2026, 16:00 Asia/Bangkok; week passed 71%, pace -17 UNDER");
+    // After Gateway moved niggmopai's week to the weekly slot, PostgreSQL keeps the blanked 5-hour slot's length: it is no window.
+    const moved = account("niggmopai", 8, { provider: "CODEX", planType: "prolite", primaryWindow: { usedPercent: null, resetAt: null, windowMinutes: 10080 },
+      secondaryWindow: { usedPercent: 8, resetAt: inTwoDays, windowMinutes: 10080 } });
+    expect(gatewayWeekPace(moved, now)).toMatchObject({ usedPercent: 8, points: -63 });
+    expect(renderNousTokens(compute([moved]), "Asia/Bangkok", now)).toContain("- CODEX niggmopai · ACTIVE: 7-day: 8% used; reset 26 Oct 2026, 16:00 Asia/Bangkok; week passed 71%, pace -63 UNDER");
+    expect(text).not.toMatch(/free · PAUSED[^\n]*pace/);
+  });
+
   it("shows account windows, local resets, API spend/budget and last-hour cost", () => {
     const state = compute([account("main", 100), account("other", 100), account("codex", 42, { provider: "CODEX" })],
       { budget: budget(28.5), lastHour: { costUsd: 12.3, turns: 7, unpricedTurns: 1 } });
     const text = renderNousTokens(state, "Europe/Athens", now);
-    expect(text).toMatch(/^Low-spend mode: LOW since/);
+    expect(text).toMatch(/^Low-spend mode: CRITICAL since/);
     expect(text).toContain("normal again at about 24 Oct 2026, 13:00 Europe/Athens");
     expect(text).toContain("Tokens: Claude Max 0/2 with room");
     expect(text).toContain("serves Nous: 5-hour: 100% used");
@@ -192,7 +225,7 @@ describe("Nous automatic low-spend policy", () => {
     expect(provider.peek()).toBeNull(); await provider();
     const listAccounts = vi.fn(async () => ({ data: [account("main", 100)] }));
     const state = await readNousTokens({ admin: { listAccounts }, profiles: provider.peek(), settings: config, now: now + 20 * 60_000 });
-    expect(state.mode).toBe("LOW");
+    expect(state.mode).toBe("CRITICAL");
     expect(readUsage).toHaveBeenCalledTimes(1);
     expect(listAccounts).toHaveBeenCalledTimes(1);
     expect((await readNousTokens({ settings: config, now })).accounts).toBeNull();

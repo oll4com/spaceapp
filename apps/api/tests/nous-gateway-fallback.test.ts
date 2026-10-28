@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Stable 2026-10-24: Nous paused on exhausted direct accounts while Gateway's enabled API fallback served Claude Code panes.
+// Stable 2026-10-24: Nous paused on exhausted direct accounts. Every turn and helper goes to Space Gateway, which serves Claude Code
+// from the Claude Max pool only: the API key never serves Claude Code (operator rule 2026-10-27, packages/gateway/tests/claude-api-key.test.ts).
 const post = vi.hoisted(() => vi.fn());
 vi.mock("../src/nous/mcp.js", async (original) => ({ ...(await original<typeof import("../src/nous/mcp.js")>()), postToWorkerWhenUp: post }));
 const { runOnWorker } = await import("../src/nous/wiring.js");
@@ -11,7 +12,7 @@ const profiles = () => post.mock.calls.map((call) => (call[2] as { claudeProfile
 describe("Nous turns and helpers through Space Gateway", () => {
   beforeEach(() => post.mockReset());
 
-  it("starts on Gateway without checking subscription availability, so its API fallback can serve Nous", async () => {
+  it("starts on Gateway without checking subscription availability; the gateway picks the Max account", async () => {
     post.mockResolvedValue({ text: "Done.", isError: false });
     // Both a turn and a helper take this route, even if an old caller supplies a direct account.
     for (const body of [{ prompt: "Turn", maxTurns: 80, stream: true }, { prompt: "Helper", maxTurns: 40, claudeProfile: "crew" }]) {

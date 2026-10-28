@@ -92,7 +92,7 @@ describe("Security Copilot matching", () => {
   });
 });
 
-function serviceFixture() {
+function serviceFixture(feedOverrides: Partial<SecurityFeeds> = {}) {
   const store = new InMemorySpaceStore();
   const room = store.createRoom({ name: "Security", initialPaneCount: 0 });
   const ownerUserId = "user:operator";
@@ -101,22 +101,23 @@ function serviceFixture() {
   let clock = Date.parse("2026-10-24T08:00:00Z");
   const repository = new InMemorySecurityCopilotRepository(() => new Date(clock).toISOString());
   const raised: NotificationRaiseInput[] = [];
+  const resolved: string[] = [];
   const kickoffs: string[] = [];
   const feeds = {
     state: () => ({}), kev: async () => new Map(), nvdModified: async () => [], nvdCve: async () => null, osvLibraries: async () => [], debianCves: async () => new Map(),
-    internetDb: async () => ({ ports: [], vulns: [] }), news: async () => []
+    internetDb: async () => ({ ports: [], vulns: [] }), news: async () => [], ...feedOverrides
   } as unknown as SecurityFeeds;
   const service = createSecurityCopilotService({
-    repository, store: { updateSecurityCopilotMetadata: (paneId, metadata) => store.updateSecurityCopilotMetadata(paneId, metadata), listRooms: () => [{ id: room.id, ownerUserId }], listPanes: (roomId) => store.listPanes(roomId) },
-    feeds, notifications: { raise: async (input) => { raised.push(input as NotificationRaiseInput); return {} as never; }, resolve: async () => 1 },
+    repository, store: { updateSecurityCopilotMetadata: (paneId, metadata) => store.updateSecurityCopilotMetadata(paneId, metadata), listRooms: () => [{ id: room.id, ownerUserId }], listPanes: (roomId, includeClosed) => store.listPanes(roomId, includeClosed) },
+    feeds, notifications: { raise: async (input) => { raised.push(input as NotificationRaiseInput); return {} as never; }, resolve: async (_owner, key) => { resolved.push(key); return 1; } },
     kickoff: { ready: async () => true, send: async (target) => { kickoffs.push(target.id); } }, fetchPage: async () => "<html><body>Fixed CVE-2026-109618 in PHP 8.4.27</body></html>", now: () => clock
   });
-  return { store, room, pane, repository, service, raised, kickoffs, owner: ownerUserId, tick: (ms: number) => { clock += ms; } };
+  return { store, room, pane, repository, service, raised, resolved, kickoffs, owner: ownerUserId, tick: (ms: number) => { clock += ms; } };
 }
 
 describe("Security Copilot service", () => {
   it("ingests an inventory, announces new findings and closes them when the next inventory no longer has them", async () => {
-    const { service, pane, owner, raised, repository } = serviceFixture();
+    const { service, pane, owner, raised, resolved, repository } = serviceFixture();
     const ingested = await service.ingestInventory(owner, pane, inventory());
     expect(ingested).toMatchObject({ packages: 2, pendingSecurity: 2, newFindings: 1 });
     const [finding] = await service.findings(owner, {});
@@ -126,6 +127,68 @@ describe("Security Copilot service", () => {
     await service.ingestInventory(owner, pane, inventory({ pendingSecurity: [] }));
     expect(await service.findings(owner, {})).toEqual([]);
     expect((await repository.listFindings(owner, { hostId: host.id, limit: 5 }))[0]).toMatchObject({ status: "FIXED" });
+    // A closed finding no longer asks anyone: its notification is resolved (stable 24/10 kept "P1 NVD:php on vm500" after the fix).
+    expect(resolved).toEqual([`security:finding:${finding!.id}`]);
+    await service.ingestInventory(owner, pane, inventory());
+    const [reopened] = await service.findings(owner, {});
+    await service.updateFinding(owner, reopened!.id, { status: "NOT_AFFECTED", note: "Backported" }, "AGENT");
+    await service.updateFinding(owner, reopened!.id, { status: "TRIAGING", note: "Looking again" }, "AGENT");
+    expect(resolved).toEqual([`security:finding:${finding!.id}`, `security:finding:${reopened!.id}`]);
+  });
+
+  it("keeps watching with no Security pane open: new CVEs still become findings and alerts, only the kickoff waits for a pane", async () => {
+    const cve = await php2shell();
+    const { service, store, pane, owner, raised, kickoffs } = serviceFixture({ nvdModified: async (product: string) => product === "php" ? [cve] : [] } as Partial<SecurityFeeds>);
+    await service.ingestInventory(owner, pane, inventory({ pendingSecurity: [] }));
+    store.updatePane(pane.id, { isClosed: true });
+    expect(await service.watch()).toEqual({ owners: 1, newFindings: 2, kicked: 0 });
+    expect((await service.findings(owner, {})).map((finding) => finding.package)).toEqual(["php:/opt/plesk/php/7.4/bin/php", "php:/opt/plesk/php/8.4/bin/php"]);
+    expect(raised.at(-1)).toMatchObject({ severity: "ATTENTION", roomId: null, paneId: null, body: expect.stringContaining("Open a Security Copilot pane") });
+    expect(kickoffs).toEqual([]);
+  });
+
+  it("asks for a scan of each container image, groups an image's fixable vulnerabilities into one finding and closes it when the image changes", async () => {
+    const { service, pane, owner, repository, tick } = serviceFixture();
+    const pg = `sha256:${"a".repeat(64)}`, pgNew = `sha256:${"b".repeat(64)}`;
+    await service.ingestInventory(owner, pane, inventory({ alias: "local", reach: "LOCAL", pendingSecurity: [], images: [{ ref: "pgvector/pgvector:0.8.3", id: pg }] }));
+    expect(await service.next(owner, pane)).toMatchObject({ type: "DISCOVER" });
+    expect(await service.next(owner, pane)).toMatchObject({ type: "SCAN_IMAGES", hosts: [{ alias: "local", images: 1 }] });
+    expect(await service.imageScanDue(owner, "local")).toMatchObject({ images: [{ ref: "pgvector/pgvector:0.8.3", id: pg }] });
+    const vulns = [{ id: "CVE-2026-53612", pkg: "bsdutils", installed: "1:2.41-5", fixed: "2.41.5-0+deb13u1", severity: "HIGH" as const },
+      { id: "CVE-2026-1001", pkg: "libssl3t64", installed: "3.5.1-1", fixed: "3.5.6-1", severity: "CRITICAL" as const }];
+    expect(await service.recordImageScan(owner, pane, { alias: "local", images: [{ id: pg, vulns }] })).toMatchObject({ scanned: 1, remaining: 0, newFindings: 1 });
+    const [finding] = await service.findings(owner, {});
+    expect(finding).toMatchObject({ advisoryId: "IMAGE", package: "image:pgvector/pgvector:0.8.3", installedVersion: "aaaaaaaaaaaa", priority: "P1", sources: ["IMAGE"],
+      title: "pgvector/pgvector:0.8.3: 2 fixable (1 critical, 1 high); worst CVE-2026-1001 in libssl3t64 3.5.1-1, fixed in 3.5.6-1" });
+    // A re-inventory keeps the scan of an unchanged image; a new image id is not scanned yet, so the old finding stays open.
+    await service.ingestInventory(owner, pane, inventory({ alias: "local", reach: "LOCAL", pendingSecurity: [], images: [{ ref: "pgvector/pgvector:0.8.3", id: pg }] }));
+    expect(await service.imageScanDue(owner, "local")).toMatchObject({ images: [] });
+    await service.ingestInventory(owner, pane, inventory({ alias: "local", reach: "LOCAL", pendingSecurity: [], images: [{ ref: "pgvector/pgvector:0.8.4", id: pgNew }] }));
+    expect(await service.findings(owner, {})).toHaveLength(1);
+    // A failed scan waits a day instead of looping; the clean scan of the new image closes the old finding.
+    expect(await service.recordImageScan(owner, pane, { alias: "local", images: [], failed: [{ id: pgNew }] })).toMatchObject({ failed: 1, remaining: 0 });
+    tick(25 * 3_600_000);
+    expect(await service.recordImageScan(owner, pane, { alias: "local", images: [{ id: pgNew, vulns: [] }] })).toMatchObject({ scanned: 1, remaining: 0 });
+    expect(await service.findings(owner, {})).toEqual([]);
+    const host = (await repository.listHosts(owner)).find((entry) => entry.alias === "local")!;
+    expect((await repository.listFindings(owner, { hostId: host.id, limit: 5 }))[0]).toMatchObject({ status: "FIXED" });
+    await expect(service.recordImageScan(owner, pane, { alias: "local", images: [{ id: pg, vulns: [{ ...vulns[0], pkg: "x; rm -rf /" }] }] })).rejects.toThrow();
+  });
+
+  it("flags a Windows build past Microsoft's end of support and matches pending Windows security updates by KB", async () => {
+    const { service, pane, owner } = serviceFixture();
+    const windows = (build: string, version: string, product: "windows" | "windows_server") => inventory({ alias: "qm:105", label: "public-host ora2008-migrated", reach: "QM_GUEST_EXEC",
+      os: { family: "WINDOWS", version, kernel: build }, products: [{ product, version }], packages: [{ name: "KB4534310", version: "installed" }],
+      pendingSecurity: [{ package: "KB5034122", advisory: "MSKB-5034122", cves: [], severity: "HIGH" }], rebootRequired: false });
+    await service.ingestInventory(owner, pane, windows("7601", "6.1.7601", "windows_server"));
+    const findings = await service.findings(owner, {});
+    expect(findings.map((finding) => [finding.advisoryId, finding.priority, finding.title])).toEqual([
+      ["EOL:windows_server-7601", "P1", "Windows Server 2008 R2 (6.1.7601) has had no security updates since 2020-01-14, the end of Microsoft's support"],
+      ["MSKB-5034122", "P2", "Windows security update for KB5034122"]
+    ]);
+    // A supported build closes the lifecycle finding at the next inventory.
+    await service.ingestInventory(owner, pane, windows("20348", "10.0.20348", "windows_server"));
+    expect((await service.findings(owner, {})).map((finding) => finding.advisoryId)).toEqual(["MSKB-5034122"]);
   });
 
   it("lets a fully autonomous pane run a backed-up fix and holds reboots, free-form commands and news-only leads for a person", async () => {

@@ -2,7 +2,7 @@ import { execFile } from "./safe-child-process.js";
 import { createConnection } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { AgentRuntime, ImportConfigResult } from "@space/contracts";
+import { createNousTurnReader, type AgentRuntime, type ImportConfigResult, type NousTurnEvent, type NousTurnResult } from "@space/contracts";
 import type { CliAuthCapture } from "@space/runtime";
 import { parseCredentialStatus, type CliCredentialCommandExecutor, type CliCredentialStatusReader } from "./cli-runtimes.js";
 import type { SpaceApiConfig } from "./config.js";
@@ -13,12 +13,29 @@ const maxFileBytes = 64 * 1024;
 
 // inspect-env lists a wrapper's operations; select-free-model applies an owner's free OpenCode model pick (1.1.8).
 type CredentialAction = "credential-status" | "credential-install" | "credential-smoke" | "credential-observation" | "opencode-text" | "opencode-models" |
-  "inspect-env" | "select-free-model" | "check-free-model";
+  "inspect-env" | "select-free-model" | "check-free-model" | "agent-tools" | "agent-chat";
 interface CredentialActionResult { exitCode: number; stdout: string }
 // argument: the one checked value of select-free-model (the agent refuses it on every other action).
 interface CredentialRequestOptions { timeoutMs?: number; signal?: AbortSignal; argument?: string }
 // The public core image has no OpenCode (decision B, 1.1.7): these run the CLI container's `opencode --standalone`.
 const openCodeWrapper = "opencode-vscode-parity";
+// Nor Claude Code: Nous's turns run the CLI container's, on the owner's own login (operator decision 2026-10-27, B+C3).
+export const CLAUDE_CLI_WRAPPER = "claude-vscode-parity";
+const NOUS_AGENT_TURN_MS = 21 * 60_000;
+
+/** One Nous turn for the CLI container's Claude Code (deploy/docker/claude-agent.mjs checks it again). */
+export interface NousAgentRequest {
+  model: string;
+  effort: string;
+  system: string;
+  prompt: string;
+  mcpUrl: string;
+  mcpToken: string;
+  maxTurns: number;
+  shell: boolean;
+  stream: boolean;
+  fallbackModel?: string | null;
+}
 
 /** Runs a wrapper's fixed credential action where the CLIs and their logins live. */
 export interface CredentialHost {
@@ -31,6 +48,10 @@ export interface CredentialHost {
   openCodeText(modelId: string, prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null>;
   /** OpenCode 2's `/api/model` answer for one provider, read in the CLI container. */
   openCodeModels(provider: string): Promise<string>;
+  /** One Nous turn: headless Claude Code with Nous's tools only, its draft streamed to `onEvent` (the wrapper's `agent-tools`). */
+  claudeAgentTools(request: NousAgentRequest, signal: AbortSignal, onEvent?: (event: NousTurnEvent) => void): Promise<NousTurnResult>;
+  /** One answer with no tool (the pane board; the wrapper's `agent-chat`). */
+  claudeAgentChat(input: { model: string; effort: string; prompt: string }, signal?: AbortSignal): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -58,6 +79,49 @@ function credentialAgentRequest(socketPath: string, body: Record<string, string>
         else reject(new Error("The CLI credential agent answer is invalid."));
       } catch (error) {
         reject(error);
+      }
+    });
+  });
+}
+
+/**
+ * A streamed action: the request line goes out and our side stays open (ending it stops the action); the wrapper's stdout comes
+ * back as it is written, then RS (\x1e) and the end record {exitCode, stderr}. `onChunk` returns an error that ends the action.
+ */
+function credentialAgentStream(socketPath: string, body: Record<string, string>, options: { timeoutMs: number; signal: AbortSignal },
+  onChunk: (chunk: string) => string | null): Promise<{ exitCode: number; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let trailer: string | null = null;
+    let head = "";
+    let failure: Error | null = null;
+    const socket = createConnection(socketPath, () => socket.write(`${JSON.stringify(body)}\n`));
+    const fail = (error: Error) => { failure ??= error; socket.destroy(); };
+    const onAbort = () => fail(new Error("The turn was stopped."));
+    if (options.signal.aborted) onAbort();
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    socket.setEncoding("utf8");
+    socket.setTimeout(options.timeoutMs, () => fail(new Error("The CLI container gave no answer in time.")));
+    socket.on("data", (chunk: string) => {
+      if (trailer !== null) { trailer += chunk; return; }
+      if (head.length < 512) head += chunk.slice(0, 512 - head.length);
+      // The wrapper's stdout is JSON lines: a raw RS starts the end record.
+      const end = chunk.indexOf("\x1e");
+      const error = onChunk(end < 0 ? chunk : chunk.slice(0, end));
+      if (error) fail(new Error(error));
+      else if (end >= 0) trailer = chunk.slice(end + 1);
+    });
+    socket.on("error", (error) => { failure ??= error; });
+    socket.on("close", () => {
+      options.signal.removeEventListener("abort", onAbort);
+      if (failure) { reject(failure); return; }
+      try {
+        const record = JSON.parse(trailer ?? head) as { exitCode?: unknown; stderr?: unknown; stdout?: unknown };
+        if (typeof record.exitCode !== "number") throw new Error("invalid");
+        // No end record: the agent refused the request (busy, bad request) before it started.
+        if (trailer === null) reject(new Error(`The CLI container could not start the turn (${String(record.stdout ?? "").trim() || `exit ${record.exitCode}`}).`));
+        else resolve({ exitCode: record.exitCode, stderr: typeof record.stderr === "string" ? record.stderr : "" });
+      } catch {
+        reject(new Error("The CLI credential agent answer is invalid."));
       }
     });
   });
@@ -96,6 +160,18 @@ export function createPublicCredentialHost(config: Pick<SpaceApiConfig, "publicD
       const answer = await run(openCodeWrapper, "opencode-models", JSON.stringify({ provider }));
       if (answer.exitCode !== 0) throw new Error("The CLI container could not list OpenCode models.");
       return answer.stdout;
+    },
+    claudeAgentTools: async (request, signal, onEvent) => {
+      const reader = createNousTurnReader(request.stream, onEvent);
+      const { fallbackModel, ...rest } = request;
+      const input = JSON.stringify({ ...rest, ...(fallbackModel ? { fallbackModel } : {}) });
+      const end = await credentialAgentStream(socketPath, { command: CLAUDE_CLI_WRAPPER, action: "agent-tools", input }, { timeoutMs: NOUS_AGENT_TURN_MS + 30_000, signal }, (chunk) => reader.push(chunk));
+      return reader.finish(end.exitCode, end.stderr);
+    },
+    claudeAgentChat: async (input, signal) => {
+      const answer = await run(CLAUDE_CLI_WRAPPER, "agent-chat", JSON.stringify(input), { timeoutMs: 620_000, signal });
+      if (answer.exitCode !== 0 || !answer.stdout.trim()) throw new Error("Claude Code in the CLI container gave no answer.");
+      return answer.stdout.trim();
     },
     close: async () => undefined
   };

@@ -1,6 +1,8 @@
 import { execFile } from "./safe-child-process.js";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -85,6 +87,21 @@ export async function readAttachment(input: AttachmentReadInput, options: Attach
     await writeFile(sidecar, JSON.stringify({ coverage: result.coverage, outputPath: result.outputPath }), { mode: 0o640 }).catch(() => undefined);
   }
   return { artifactId: input.artifactId, ...result };
+}
+
+/** One file held in memory (a mail attachment), read in a throwaway folder that is removed afterwards. */
+export async function readBufferText(data: Buffer, filename: string, mimeType: string, options: Omit<AttachmentReaderOptions, "outputDir" | "cacheDir"> = {}):
+  Promise<{ status: AttachmentCoverage["status"]; reason: string | null; text: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "space-read-"));
+  try {
+    const source = join(dir, safeName(filename));
+    await writeFile(source, data, { mode: 0o600 });
+    const read = await readAttachment({ artifactId: "buffer", sourcePath: source, filename, mimeType, byteSize: data.length,
+      sha256: createHash("sha256").update(data).digest("hex") }, { ...options, outputDir: join(dir, "out"), cacheDir: join(dir, "cache") });
+    return { status: read.coverage.status, reason: read.coverage.reason, text: read.outputPath ? await readFile(read.outputPath, "utf8") : "" };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 async function readUncached(kind: AttachmentReaderKind, input: AttachmentReadInput, base: string, options: AttachmentReaderOptions): Promise<ReadOutcome> {

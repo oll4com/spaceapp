@@ -2052,7 +2052,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT" && pane.mode !== "MONITORING_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -2143,8 +2143,12 @@ export class CliTerminalManager {
 
   async observeRoomScreen(sessionId: string, unwrap = false): Promise<{ text: string; revision: number }> {
     const managed = this.sessions.get(sessionId);
+    // A detached session's DB tail is drawn at the PTY's own stored size: at 100 columns a wider Claude screen read as two columns
+    // (cursor moves past column 100 clamp there; round 4, 00:50 item b).
+    let stored: PaneCliSession["terminalGeometry"] | undefined;
     if (!managed) {
       const session = await this.options.store.getPaneCliSession(sessionId);
+      stored = session?.terminalGeometry;
       if (session && (detachedHostReplayRoomScreenRuntimes.has(session.runtimeId) || codexHostReplayRoomScreen(session.runtimeId, this.options.config)) && session.purpose === "NORMAL") {
         const geometry = session.terminalGeometry;
         // A closed observer WebSocket need not leave an API-managed transport.
@@ -2160,7 +2164,7 @@ export class CliTerminalManager {
     if (managed) await this.flushHostOutput(managed);
     const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
     const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
-    const cols = managed?.roomScreenCols ?? 100, rows = managed?.roomScreenRows ?? 30;
+    const cols = managed?.roomScreenCols ?? stored?.cols ?? 100, rows = managed?.roomScreenRows ?? stored?.rows ?? 30;
     const revision = managed?.controlOutputRevision ?? chunks.at(-1)?.sequence ?? 0;
     const cached = managed?.roomScreenSnapshot;
     if (cached && cached.generationId === managed?.generationId && cached.revision === revision && cached.cols === cols && cached.rows === rows && cached.unwrap === unwrap) return { text: cached.text, revision };
@@ -2199,10 +2203,11 @@ export class CliTerminalManager {
   /** The room screen with faint cells blanked, read on demand for draft checks; never cached. */
   async observeRoomScreenUndimmed(sessionId: string): Promise<string> {
     const managed = this.sessions.get(sessionId);
+    let stored: PaneCliSession["terminalGeometry"] | undefined;
     if (!managed) {
       // A detached session's DB tail stopped when its last browser left: read its host, as observeRoomScreen does.
       const session = await this.options.store.getPaneCliSession(sessionId);
-      const geometry = session?.terminalGeometry;
+      const geometry = stored = session?.terminalGeometry;
       if (session && geometry && detachedHostReplayRoomScreenRuntimes.has(session.runtimeId) && session.purpose === "NORMAL") {
         const snapshot = await this.readDetachedRoomHostScreen(session, true, true);
         if (snapshot) return snapshot.text;
@@ -2211,7 +2216,7 @@ export class CliTerminalManager {
     if (managed) await this.flushHostOutput(managed);
     const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
     const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
-    return projectRoomTerminalScreen(output.map(chunk => chunk.content), managed?.roomScreenCols ?? 100, managed?.roomScreenRows ?? 30, true, true);
+    return projectRoomTerminalScreen(output.map(chunk => chunk.content), managed?.roomScreenCols ?? stored?.cols ?? 100, managed?.roomScreenRows ?? stored?.rows ?? 30, true, true);
   }
 
   /**

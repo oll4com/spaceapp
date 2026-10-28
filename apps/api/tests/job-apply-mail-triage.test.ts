@@ -9,7 +9,7 @@ import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/
 import { getApiConfig } from "../src/config.js";
 import { createGoogleConnector, messageText } from "../src/dot-connectors.js";
 import { ensureJobApplyLabels, gmailErrorMessage, labelGmailMessages, unlabelGmailMessages } from "../src/job-apply/gmail-organize.js";
-import { classifyApplicationMail, digestQuery, isApplicationMail, isJobDigest, triageQuery } from "../src/job-apply/mail-triage.js";
+import { classifyApplicationMail, digestQuery, hasReceiptSubject, isApplicationMail, isJobDigest, isJobReceipt, triageQueries } from "../src/job-apply/mail-triage.js";
 import type { JobApplyGoogleAccess } from "../src/job-apply/service.js";
 import { htmlToText } from "../src/mail-html-text.js";
 import { createGmailClient } from "../src/mail-copilot/gmail-client.js";
@@ -63,7 +63,16 @@ describe("mail triage rules", () => {
     ["interview invite", "no-reply@ashbyhq.com", "Interview with Acme", "We'd love to talk. Please select a time for your first interview.", 30, "ACTION_NEEDED"],
     ["assessment platform", "no-reply@codesignal.com", "Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal", "", 30, "ACTION_NEEDED"],
     ["receipt asking for a take-home", "no-reply@ashbyhq.com", "Thank you for applying", "Thank you for applying. Please complete the take-home exercise within 5 days.", 30, "ACTION_NEEDED"],
-    ["unknown", "talent@acme.com", "Quick question", "Could you tell us your current notice period?", 30, "ACTION_NEEDED"],
+    ["unknown", "talent@acme.com", "Quick question", "Could you tell us your current notice period?", 30, "OTHER"],
+    // Seen 2026-10-27 in Job Applications/Action needed (operator: only tests and interviews belong there).
+    ["receipt promising an interview if there is a fit (Primer)", "Primer <no-reply@ashbyhq.com>", "Thank you for your application for Senior Software Engineer, Full Stack", "We will review your application promptly and let you know whether there is a good fit for both of us here. If we think there's an overlap in what we're looking for in the role and your skillset, we'll reach out to schedule an interview.", 30, "CONFIRMATION"],
+    ["receipt listing next steps (Lambda)", "Lambda <no-reply@ashbyhq.com>", "Thank you for applying to Lambda!", "Thanks for applying to Lambda! We've received your application and appreciate your interest in joining our team! Next steps: - Our team will review your application - We'll contact you if we need any additional information or to schedule an interview - We strive to keep every candidate informed throughout the process.", 30, "CONFIRMATION"],
+    ["candidate experience survey (Neo4j)", "Neo4j <feedback@invites.starred.com>", "Your experience at Neo4j", "At Neo4j we aim at providing a great candidate experience. As you recently applied to the Full-Stack Software Engineer - Aura, Instances role, we'd appreciate you letting us know how it went.", 30, "OTHER"],
+    ["receipt promising an initial interview (Alloy)", "Alloy <no-reply@ashbyhq.com>", "Thank you for applying to Alloy", "Your application has been received and someone from our team will review it soon - we will reach out to set up an initial interview if your background is a match.", 30, "CONFIRMATION"],
+    ["assessment invitation (Agoda)", "Agoda <careers@agoda.com>", "[Due 7 days] Your HackerRank Agoda's Technical Assessment (Back End) - Software Engineering Invitation", "Hi Nikolaos, You have been invited to attend the challenge. Please complete it within 7 days.", 30, "ACTION_NEEDED"],
+    ["take-home interview (Ewa)", "Ewa <hiring@ewa.example>", "Next round", "Thanks for your interest. This round is a voice-to-voice, take-home interview.", 30, "ACTION_NEEDED"],
+    ["conditional ask that is a real invite", "talent@acme.com", "Thanks for your interest in Acme", "Thank you for your interest in Acme. If you're still interested, please pick a time for a 30-minute interview below.", 30, "ACTION_NEEDED"],
+    ["asks that are neither a test nor an interview", "talent@acme.com", "Your offer", "Please reply with your start date. The offer letter expires on Friday; a background check follows.", 30, "OTHER"],
     // Seen 2026-10-13 (Browserbase, Replit, Figma receipts): a conditional "not selected" is not a rejection.
     ["receipt with a conditional rejection line", "no-reply@ashbyhq.com", "Thank you for your application to Browserbase", "We received your application for our Software Engineer (Agent Platform) role. Our team will review your application and will be in touch to let you know if your qualifications match our needs.\nIf you're not selected for this position, keep an eye on our jobs page as we're growing and adding openings!", 30, "CONFIRMATION"],
     ["rejection after a conditional line", "no-reply@ashbyhq.com", "Update on your application", "If you have questions, reply to this email. Unfortunately, you have not been selected for the role.", 30, "REJECTION"],
@@ -93,7 +102,38 @@ describe("mail triage rules", () => {
     // A recruiter's LinkedIn message about a tracked company still counts, as before.
     expect(isApplicationMail({ from: "Jane via LinkedIn <messages-noreply@linkedin.com>", subject: "Jane from Xero sent you a message" }, trackedLinkedIn)).toBe(true);
     expect(isApplicationMail({ from: "deals@shop.example", subject: "Sale" }, tracked)).toBe(false);
-    expect(triageQuery(["Acme Robotics"])).toMatch(/^in:inbox newer_than:14d \{.*from:codesignal\.com.*from:acme\}$/);
+    expect(triageQueries(["Acme Robotics"])).toEqual([expect.stringMatching(/^in:inbox newer_than:14d \{.*from:codesignal\.com.*subject:"thank you for applying".*\}$/),
+      "in:inbox newer_than:14d {from:acme}"]);
+  });
+
+  // Seen 2026-10-27: ntheogr's inbox kept ~90 receipts since 21/10 because only ATS senders and the 60 newest companies were searched.
+  it("searches receipt subjects and every tracked company, split within the query length", () => {
+    const companies = Array.from({ length: 400 }, (_, index) => `Company${index} Inc`);
+    const queries = triageQueries(companies);
+    expect(queries[0]).toContain('subject:"we\'ve got it"');
+    expect(queries.length).toBeGreaterThan(2);
+    for (const query of queries) expect(query.length).toBeLessThan(1450);
+    for (const company of companies) expect(queries.some((query) => query.includes(`from:${company.split(" ")[0]!.toLowerCase()} `) || query.includes(`from:${company.split(" ")[0]!.toLowerCase()}}`))).toBe(true);
+  });
+
+  it.each([
+    ["Datadog <no-reply@datadoghq.com>", "Thank you for applying to Datadog", "Thanks for applying for the Software Engineer role. We will review your application.", "CONFIRMATION"],
+    ["xAI <careers@x.ai>", "Thank you for applying to SpaceXAI", "We have received your application for the Backend Engineer position.", "CONFIRMATION"],
+    ["IMC <noreply@imc.com>", "We've got it! Your application for Software Engineer", "Our recruiting team will look at your application.", "CONFIRMATION"],
+    ["Constructor <jobs@constructor.io>", "We've Received Your Application", "Thank you for your interest in the Frontend Engineer role.", "CONFIRMATION"],
+    ["Zscaler <talent@zscaler.com>", "Thank you for your application to Zscaler!", "Your application for the Staff Engineer position has been received.", "CONFIRMATION"],
+    ["Justworks <careers@justworks.com>", "Job Application Status", "Thank you for applying. We have decided to move forward with other candidates.", "REJECTION"],
+    ["Riot Games <noreply@riotgames.com>", "Important information about your application", "Your candidacy for the Software Engineer role is under review.", "OTHER"]
+  ] as const)("finds and files a receipt from the company's own domain: %s", (from, subject, text, expected) => {
+    expect(isApplicationMail({ from, subject }, [])).toBe(false);
+    expect(hasReceiptSubject({ from, subject })).toBe(true);
+    expect(isJobReceipt({ from, subject, text })).toBe(true);
+    expect(classifyApplicationMail({ from, subject, text, receivedAt: null }, Date.now())).toBe(expected);
+  });
+
+  it("leaves receipt-like mail that is not about a job alone", () => {
+    expect(isJobReceipt({ from: "Bank <noreply@bank.example>", subject: "Your application is approved", text: "Your credit card application is approved. Your card arrives in 5 days." })).toBe(false);
+    expect(hasReceiptSubject({ from: "Shop <deals@shop.example>", subject: "Big sale" })).toBe(false);
   });
 
   it("tells job-alert digests from application and unrelated mail", () => {
@@ -123,9 +163,9 @@ describe("gmail organize client", () => {
       return new Response(null, { status: 204 });
     }) as unknown as typeof fetch;
     const labels = await ensureJobApplyLabels({ accessToken: "t", fetchImpl });
-    expect(labels).toEqual({ CONFIRMATION: "L-Job Applications/Confirmations", REJECTION: "L-Job Applications/Rejections", ACTION_NEEDED: "L-Job Applications/Action needed" });
+    expect(labels).toEqual({ CONFIRMATION: "L-Job Applications/Confirmations", REJECTION: "L-Job Applications/Rejections", ACTION_NEEDED: "L-Job Applications/Action needed", OTHER: "L-Job Applications/Other" });
     expect(calls.filter((call) => call.method === "POST").map((call) => (call.body as { name: string }).name))
-      .toEqual(["Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed"]);
+      .toEqual(["Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed", "Job Applications/Other"]);
     await labelGmailMessages({ accessToken: "t", fetchImpl, messageIds: ["m1", "m2"], labelId: "L-c", archive: true });
     await labelGmailMessages({ accessToken: "t", fetchImpl, messageIds: ["m3"], labelId: "L-a", archive: false });
     await labelGmailMessages({ accessToken: "t", fetchImpl, messageIds: [], labelId: "L-a", archive: false });
@@ -186,7 +226,7 @@ describe("gmail organize client", () => {
 });
 
 // A small Gmail: labels, messages with labelIds, metadata, full payloads and batchModify.
-function fakeGmail(messages: Array<{ id: string; from: string; subject: string; minutesAgo: number; plain?: string; html?: string }>) {
+function fakeGmail(messages: Array<{ id: string; from: string; subject: string; minutesAgo: number; plain?: string; html?: string; threadId?: string }>) {
   const labels = [{ id: "INBOX", name: "INBOX" }];
   const state = new Map(messages.map((message) => [message.id, { ...message, labelIds: ["INBOX"] }]));
   const modifies: Array<{ ids: string[]; addLabelIds: string[]; removeLabelIds: string[] }> = [];
@@ -211,7 +251,7 @@ function fakeGmail(messages: Array<{ id: string; from: string; subject: string; 
     const message = state.get(decodeURIComponent(path.replace("/messages/", "")))!;
     const headers = [{ name: "From", value: message.from }, { name: "Subject", value: message.subject }];
     const internalDate = String(Date.now() - message.minutesAgo * 60_000);
-    if (url.searchParams.get("format") === "metadata") return Response.json({ id: message.id, labelIds: message.labelIds, internalDate, snippet: (message.plain ?? "").slice(0, 100), payload: { headers } });
+    if (url.searchParams.get("format") === "metadata") return Response.json({ id: message.id, threadId: message.threadId ?? message.id, labelIds: message.labelIds, internalDate, snippet: (message.plain ?? "").slice(0, 100), payload: { headers } });
     const parts = message.html ? [{ mimeType: "text/html", body: { data: b64(message.html) } }] : [{ mimeType: "text/plain", body: { data: b64(message.plain ?? "") } }];
     return Response.json({ id: message.id, internalDate, payload: { mimeType: "multipart/alternative", headers, parts } });
   }) as unknown as typeof fetch;
@@ -240,18 +280,78 @@ async function fixture(google: JobApplyGoogleAccess, gmailFetch: typeof fetch) {
   const pane = store.createPane({ roomId: room.id, title: "Job Applications", mode: "JOB_APPLY", terminalRuntimeId: "cli:codex" });
   const cliSession = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING", purpose: "NORMAL" });
   const token = issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: cliSession.sessionId })!;
-  return { app, pane, headers, agent: { [cliBrowserBridgeTokenHeader]: token, "content-type": "application/json" } };
+  return { app, store, pane, owner: room.ownerUserId as string, headers, agent: { [cliBrowserBridgeTokenHeader]: token, "content-type": "application/json" } };
 }
 
 describe("job copilot mail triage", () => {
-  it("files application mail once: receipts, stale codes and rejections archived, anything asking for something kept and announced", async () => {
+  it("gives a test invitation without a deadline the one its recruiter's mail of the same minute states", async () => {
+    const gmail = fakeGmail([
+      { id: "m-recruiter", from: "Sam <sam@acme-recruiting.example>", subject: "Your Acme interview journey starts here", minutesAgo: 30, plain: "Look for an email from HackerRank Chakra, please complete it within: 7 days" },
+      { id: "m-invite", from: "Acme Hiring Team <support@hackerrankforwork.com>", subject: "Acme Frontend Engineer - React Assessment", minutesAgo: 30, plain: "You have been invited to take the test. Interview Duration: 65 minutes" }]);
+    const capabilities: ConnectorCapability[] = ["MAIL_READ", "MAIL_ORGANIZE"];
+    const google: JobApplyGoogleAccess = {
+      googleConfigured: true,
+      async googleAccounts() { return [{ email: "me@gmail.com", capabilities }]; },
+      async googleCapabilities() { return capabilities; },
+      async googleAccessToken() { return "gmail-token"; },
+      async tool() { return { status: "COMPLETED", result: {} }; }
+    };
+    const { app, store, owner, headers, agent } = await fixture(google, gmail.fetchImpl);
+    try {
+      expect((await app.inject({ method: "PUT", url: "/api/job-apply/google", headers, payload: { email: "me@gmail.com" } })).statusCode).toBe(200);
+      const tracked = (await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent, payload: { company: "Acme", role: "Engineer", ats: "greenhouse", url: "https://job-boards.greenhouse.io/acme/jobs/1" } })).json().application as { id: string };
+      await app.inject({ method: "PATCH", url: `/api/cli/job-apply/applications/${encodeURIComponent(tracked.id)}`, headers: agent, payload: { status: "FILLING" } });
+      const pass = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} });
+      expect(pass.json()).toMatchObject({ scanned: 2, actionNeeded: 1, other: 1 });
+      const [task, ...others] = (await store.listTaskItems(owner, { page: 1, pageSize: 25 })).items;
+      expect(others).toEqual([]);
+      expect(task!.objective).toContain("Gmail thread: m-invite (me@gmail.com)");
+      expect(task!.objective).toContain("Deadline stated in: Sam <sam@acme-recruiting.example> (thread m-recruiter)");
+      const due = Date.parse(/^Deadline: (\S+)/m.exec(task!.objective)![1]!);
+      expect(Math.abs(due - (Date.now() - 30 * 60_000 + 7 * 86_400_000))).toBeLessThan(60_000);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("clears a backlog of receipts from companies' own domains in one pass and leaves mail that is not about a job", async () => {
+    const receipts = Array.from({ length: 40 }, (_, index) => ({ id: `m-r${index}`, from: `Company${index} <careers@company${index}.example>`, subject: `Thank you for applying to Company${index}`,
+      minutesAgo: 60 + index, plain: `We received your application for the Software Engineer role at Company${index}.` }));
+    const gmail = fakeGmail([...receipts,
+      { id: "m-code", from: "no-reply@us.greenhouse-mail.io", subject: "Security code for your application to Acme", minutesAgo: 180, plain: "Paste this code: AB12cd34" },
+      { id: "m-bank", from: "Bank <noreply@bank.example>", subject: "Your application is approved", minutesAgo: 30, plain: "Your credit card application is approved." }]);
+    const capabilities: ConnectorCapability[] = ["MAIL_READ", "MAIL_ORGANIZE"];
+    const google: JobApplyGoogleAccess = {
+      googleConfigured: true,
+      async googleAccounts() { return [{ email: "me@gmail.com", capabilities }]; },
+      async googleCapabilities() { return capabilities; },
+      async googleAccessToken() { return "gmail-token"; },
+      async tool() { return { status: "COMPLETED", result: {} }; }
+    };
+    const { app, headers, agent } = await fixture(google, gmail.fetchImpl);
+    try {
+      expect((await app.inject({ method: "PUT", url: "/api/job-apply/google", headers, payload: { email: "me@gmail.com" } })).statusCode).toBe(200);
+      const pass = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} });
+      expect(pass.json()).toEqual({ accounts: ["me@gmail.com"], scanned: 41, confirmations: 41, rejections: 0, actionNeeded: 0, other: 0, skipped: 0, digests: 0 });
+      const confirmations = gmail.labels.find((entry) => entry.name === "Job Applications/Confirmations")!.id;
+      for (const id of [...receipts.map((receipt) => receipt.id), "m-code"]) expect(gmail.state.get(id)!.labelIds).toEqual([confirmations]);
+      expect(gmail.state.get("m-bank")!.labelIds).toEqual(["INBOX"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("files application mail once: receipts, stale codes and rejections archived, test and interview requests kept and announced, other mail kept quietly", async () => {
     const gmail = fakeGmail([
       { id: "m-receipt", from: "Greenhouse <no-reply@us.greenhouse-mail.io>", subject: "Thank you for applying to Acme", minutesAgo: 90, plain: "Your application has been received." },
       { id: "m-old-code", from: "no-reply@us.greenhouse-mail.io", subject: "Security code for your application to Acme", minutesAgo: 180, plain: "Paste this code: AB12cd34" },
       { id: "m-new-code", from: "no-reply@us.greenhouse-mail.io", subject: "Security code for your application to Acme", minutesAgo: 5, plain: "Paste this code: ZZ12cd34" },
       { id: "m-reject", from: "Acme Recruiting <recruiting@acme.com>", subject: "Your application to Acme", minutesAgo: 60, plain: "Unfortunately, we will not be moving forward." },
-      { id: "m-codesignal", from: "CodeSignal <no-reply@codesignal.com>", subject: "Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal", minutesAgo: 40, html: codeSignalHtml },
+      // Newest first, as Gmail lists them: the "completed" mail closes the thread's test task the invitation opens.
+      { id: "m-done", threadId: "t-ramp", from: "CodeSignal <no-reply@codesignal.com>", subject: "Ramp Frontend Challenge completed", minutesAgo: 15, plain: "Thank you for completing the Ramp Frontend Challenge assessment." },
+      { id: "m-codesignal", threadId: "t-ramp", from: "CodeSignal <no-reply@codesignal.com>", subject: "Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal", minutesAgo: 40, html: codeSignalHtml },
       { id: "m-interview", from: "Acme <no-reply@ashbyhq.com>", subject: "Interview with Acme", minutesAgo: 20, plain: "Please select a time for your interview." },
+      { id: "m-survey", from: "Acme Talent <talent@acme.com>", subject: "Your experience at Acme", minutesAgo: 25, plain: "As you recently applied to the Engineer role, we'd appreciate you letting us know how it went." },
       { id: "m-other", from: "deals@shop.example", subject: "Big sale", minutesAgo: 10, plain: "50% off" },
       { id: "m-alert", from: "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>", subject: "New jobs similar to Software Engineer at Acme", minutesAgo: 30 },
       { id: "m-hiring", from: "LinkedIn <jobs-noreply@linkedin.com>", subject: "Xero is hiring in Gen AI", minutesAgo: 35 },
@@ -266,16 +366,21 @@ describe("job copilot mail triage", () => {
       async googleAccessToken(_owner, _email, capability) { if (!capabilities.includes(capability)) throw new Error("not allowed"); return "gmail-token"; },
       async tool() { return { status: "COMPLETED", result: {} }; }
     };
-    const { app, pane, headers, agent } = await fixture(google, gmail.fetchImpl);
+    const { app, store, pane, owner, headers, agent } = await fixture(google, gmail.fetchImpl);
+    const tasks = async () => (await store.listTaskItems(owner, { page: 1, pageSize: 25 })).items.map((task) => `${task.status} ${task.title}`).sort();
     try {
       expect((await app.inject({ method: "PUT", url: "/api/job-apply/google", headers, payload: { email: "me@gmail.com" } })).statusCode).toBe(200);
+      // An older application of the same company: mail links to the newest one (the oldest won before 2026-10-27).
+      const older = (await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent, payload: { company: "Acme", role: "Old role", ats: "greenhouse", url: "https://job-boards.greenhouse.io/acme/jobs/0" } })).json().application as { id: string };
+      await app.inject({ method: "PATCH", url: `/api/cli/job-apply/applications/${encodeURIComponent(older.id)}`, headers: agent, payload: { status: "FILLING" } });
+      await new Promise((resolve) => setTimeout(resolve, 5));
       const started = await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent, payload: { company: "Acme", role: "Engineer", ats: "greenhouse", url: "https://job-boards.greenhouse.io/acme/jobs/1" } });
       const application = started.json().application as { id: string };
       await app.inject({ method: "PATCH", url: `/api/cli/job-apply/applications/${encodeURIComponent(application.id)}`, headers: agent, payload: { status: "FILLING" } });
 
       // Without the organize grant nothing is touched.
       const before = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} });
-      expect(before.json()).toEqual({ accounts: [], scanned: 0, confirmations: 0, rejections: 0, actionNeeded: 0, skipped: 0, digests: 0 });
+      expect(before.json()).toEqual({ accounts: [], scanned: 0, confirmations: 0, rejections: 0, actionNeeded: 0, other: 0, skipped: 0, digests: 0 });
       expect(gmail.modifies).toEqual([]);
       const refused = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "CONFIRMATION" } });
       expect(refused.statusCode).toBe(409);
@@ -284,14 +389,16 @@ describe("job copilot mail triage", () => {
       capabilities.push("MAIL_ORGANIZE");
       const first = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} });
       expect(first.statusCode, first.body).toBe(200);
-      expect(first.json()).toEqual({ accounts: ["me@gmail.com"], scanned: 6, confirmations: 2, rejections: 1, actionNeeded: 2, skipped: 1, digests: 3 });
+      expect(first.json()).toEqual({ accounts: ["me@gmail.com"], scanned: 8, confirmations: 3, rejections: 1, actionNeeded: 2, other: 1, skipped: 1, digests: 3 });
       const label = (name: string) => gmail.labels.find((entry) => entry.name === name)!.id;
-      expect(gmail.labels.map((entry) => entry.name)).toEqual(["INBOX", "Job Applications", "Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed"]);
+      expect(gmail.labels.map((entry) => entry.name)).toEqual(["INBOX", "Job Applications", "Job Applications/Confirmations", "Job Applications/Rejections", "Job Applications/Action needed", "Job Applications/Other"]);
       expect(gmail.state.get("m-receipt")!.labelIds).toEqual([label("Job Applications/Confirmations")]);
       expect(gmail.state.get("m-old-code")!.labelIds).toEqual([label("Job Applications/Confirmations")]);
+      expect(gmail.state.get("m-done")!.labelIds).toEqual([label("Job Applications/Confirmations")]);
       expect(gmail.state.get("m-reject")!.labelIds).toEqual([label("Job Applications/Rejections")]);
       expect(gmail.state.get("m-codesignal")!.labelIds).toEqual(["INBOX", label("Job Applications/Action needed")]);
       expect(gmail.state.get("m-interview")!.labelIds).toEqual(["INBOX", label("Job Applications/Action needed")]);
+      expect(gmail.state.get("m-survey")!.labelIds).toEqual(["INBOX", label("Job Applications/Other")]);
       expect(gmail.state.get("m-new-code")!.labelIds).toEqual(["INBOX"]);
       expect(gmail.state.get("m-other")!.labelIds).toEqual(["INBOX"]);
       // Job-alert digests leave the inbox without a label; LinkedIn News and the shop mail stay.
@@ -301,20 +408,23 @@ describe("job copilot mail triage", () => {
       const events = (await app.inject({ method: "GET", url: `/api/job-apply/events?paneId=${encodeURIComponent(pane.id)}&limit=50`, headers })).json().events as Array<{ type: string; message: string; applicationId: string | null; payload: Record<string, unknown> }>;
       const mail = events.filter((event) => event.type === "MAIL");
       expect(mail.map((event) => event.message).sort()).toEqual([
-        "Action needed: Interview with Acme from Acme",
-        "Action needed: Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal from CodeSignal",
-        "Archived 2 confirmations and 1 rejection and 3 job alerts from me@gmail.com under Job Applications",
+        "Action needed: Interview with Acme from Acme. Task: Interview: Interview with Acme, deadline not stated (find the deadline in the mail and record it)",
+        // The invitation's October 20 deadline is older than the fake mail's date, so it does not count.
+        "Action needed: Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal from CodeSignal. Task: Test: Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal, deadline not stated (find the deadline in the mail and record it)",
+        "Archived 3 confirmations and 1 rejection and 3 job alerts from me@gmail.com under Job Applications",
         "Rejection email from Acme Recruiting: Your application to Acme"
       ]);
       expect(mail.find((event) => event.message.startsWith("Rejection"))!.applicationId).toBe(application.id);
       expect(mail.find((event) => event.message.startsWith("Action needed: Interview"))!.payload).toMatchObject({ category: "ACTION_NEEDED", from: "no-reply@ashbyhq.com", messageId: "m-interview" });
+      // One reminder task per test or interview thread, none for the Other mail; the completed test's task is done.
+      expect(await tasks()).toEqual(["DONE Test: Ramp invited you to take Ramp Frontend Challenge Assessment on CodeSignal, deadline not stated", "OPEN Interview: Interview with Acme, deadline not stated"]);
       // No mail body is stored in an event.
       expect(JSON.stringify(mail)).not.toContain("Please select a time");
 
       // A second pass finds nothing new: labelled mail is skipped and the fresh code is still left alone.
       const modifiesBefore = gmail.modifies.length;
       const second = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} });
-      expect(second.json()).toEqual({ accounts: ["me@gmail.com"], scanned: 1, confirmations: 0, rejections: 0, actionNeeded: 0, skipped: 1, digests: 0 });
+      expect(second.json()).toEqual({ accounts: ["me@gmail.com"], scanned: 1, confirmations: 0, rejections: 0, actionNeeded: 0, other: 0, skipped: 1, digests: 0 });
       expect(gmail.modifies.length).toBe(modifiesBefore);
       const eventsAfter = (await app.inject({ method: "GET", url: `/api/job-apply/events?paneId=${encodeURIComponent(pane.id)}&limit=50`, headers })).json().events as Array<{ type: string }>;
       expect(eventsAfter.filter((event) => event.type === "MAIL")).toHaveLength(4);
@@ -323,21 +433,29 @@ describe("job copilot mail triage", () => {
       const organized = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "ACTION_NEEDED" } });
       expect(organized.json()).toEqual({ account: "me@gmail.com", category: "ACTION_NEEDED", label: "Job Applications/Action needed", organized: 1, archived: false });
       expect(gmail.state.get("m-other")!.labelIds).toEqual(["INBOX", label("Job Applications/Action needed")]);
+      // The next pass backfills a task for mail filed as Action needed outside the triage.
+      expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/triage", headers: agent, payload: {} })).statusCode).toBe(200);
+      expect(await tasks()).toContain("OPEN Interview: Big sale, deadline not stated");
+      expect((await store.listTaskItems(owner, { page: 1, pageSize: 25 })).items).toHaveLength(3);
+      // The copilot records the deadline it read; an unknown thread is a 404.
+      const deadline = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/deadline", headers: agent, payload: { threadId: "m-interview", dueAt: "2026-11-03T10:00:00+07:00" } });
+      expect(deadline.json()).toMatchObject({ title: "Interview: Interview with Acme, Tue 3 Nov 10:00 GMT+7" });
+      expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/deadline", headers: agent, payload: { threadId: "nope", dueAt: "2026-11-03T10:00:00+07:00" } })).statusCode).toBe(404);
       // Mail filed by mistake loses the Job Applications labels only; the inbox stays as it is.
       const unfiled = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "NONE" } });
       expect(unfiled.json()).toEqual({ account: "me@gmail.com", category: "NONE", label: null, organized: 1, archived: false });
       expect(gmail.state.get("m-other")!.labelIds).toEqual(["INBOX"]);
       expect(gmail.modifies.at(-1)).toEqual({ ids: ["m-other"], removeLabelIds: Object.values({
-        c: label("Job Applications/Confirmations"), r: label("Job Applications/Rejections"), a: label("Job Applications/Action needed") }) });
+        c: label("Job Applications/Confirmations"), r: label("Job Applications/Rejections"), a: label("Job Applications/Action needed"), o: label("Job Applications/Other") }) });
       // NONE + archive: plain archive, the Job Applications labels go too.
       const archivedNone = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "NONE", archive: true } });
       expect(archivedNone.json()).toEqual({ account: "me@gmail.com", category: "NONE", label: null, organized: 1, archived: true });
-      expect(gmail.modifies.at(-1)).toEqual({ ids: ["m-other"], removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Action needed")] });
+      expect(gmail.modifies.at(-1)).toEqual({ ids: ["m-other"], removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Action needed"), label("Job Applications/Other")] });
       expect(gmail.state.get("m-other")!.labelIds).toEqual([]);
       // ACTION_NEEDED + archive: the label stays, the inbox goes.
       const archivedAction = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-new-code"], category: "ACTION_NEEDED", archive: true } });
       expect(archivedAction.json()).toEqual({ account: "me@gmail.com", category: "ACTION_NEEDED", label: "Job Applications/Action needed", organized: 1, archived: true });
-      expect(gmail.modifies.at(-1)).toEqual({ ids: ["m-new-code"], addLabelIds: [label("Job Applications/Action needed")], removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections")] });
+      expect(gmail.modifies.at(-1)).toEqual({ ids: ["m-new-code"], addLabelIds: [label("Job Applications/Action needed")], removeLabelIds: ["INBOX", label("Job Applications/Confirmations"), label("Job Applications/Rejections"), label("Job Applications/Other")] });
       expect(gmail.state.get("m-new-code")!.labelIds).toEqual([label("Job Applications/Action needed")]);
       const invalid = await app.inject({ method: "POST", url: "/api/cli/job-apply/mail/organize", headers: agent, payload: { messageIds: ["m-other"], category: "SPAM" } });
       expect(invalid.statusCode).toBe(422);

@@ -10,7 +10,7 @@ afterEach(cleanup);
 describe("Live rail orb", () => {
   it("stays round under the Liquid Glass theme and draws no frame on hover", () => {
     const css = readFileSync(resolve(__dirname, "../src/features/ui-theme/workspace-chrome.css"), "utf8");
-    expect(css).toMatch(/\.room-toolbar-collapsed \.live-pane-orb-button \{[^}]*border-radius: 50% !important;/);
+    expect(css).toMatch(/\.room-toolbar-collapsed \.room-live-rail-button \{[^}]*border-radius: 50% !important;/);
     expect(css).toMatch(/\.room-toolbar-collapsed \.room-live-rail-button:hover \{\s*filter: brightness\(1\.12\);\s*\}/);
     // The room theme paints hovered buttons' borders with its accent; the orb is excluded.
     const styles = readFileSync(resolve(__dirname, "../src/styles.css"), "utf8");

@@ -55,7 +55,7 @@ export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
   { toolId: "mcp:space_summary_tools", category: "OPERATOR_OPT_IN", capability: "summary" },
   { toolId: "mcp:space_capturelab", category: "NATIVE_PREFERRED", capability: "capture" },
   { toolId: "mcp:context7", category: "EXTERNAL_SERVICE" },
-  ...["space-control", "space_ops", "space_browser", "space_progress", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_freelancecopilot", "space_design", "space_appstudio", "space_video", "space_securitycopilot", "space_vault", "space_services", "olla", "mission_control"].map((id) => ({
+  ...["space-control", "space_ops", "space_browser", "space_progress", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_freelancecopilot", "space_design", "space_appstudio", "space_video", "space_securitycopilot", "space_monitoringcopilot", "space_vault", "space_services", "olla", "mission_control"].map((id) => ({
     toolId: `mcp:${id}`, category: "SPACE_EXCLUSIVE" as const
   }))
 ];
@@ -94,6 +94,7 @@ const nativeAgentDenialReasons: Readonly<Record<string, string>> = {
   space_design: "Design requests and the Design pane's tools belong to CLI sessions; Dots use design.request.",
   space_appstudio: "App Studio tools belong to the CLI session of an App Studio pane.",
   space_securitycopilot: "Security Copilot tools belong to the CLI session of a Security Copilot pane.",
+  space_monitoringcopilot: "Monitoring Copilot tools belong to the CLI session of a Monitoring Copilot pane.",
   space_video: "Video requests and the Video pane's tools belong to CLI sessions; Dots use video.request.",
   space_vault: "Vault fills belong to the CLI session of the pane whose browser they fill.",
   space_services: "Service restarts are operator operations.",

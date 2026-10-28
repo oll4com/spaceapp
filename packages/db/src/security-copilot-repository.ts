@@ -31,6 +31,8 @@ export interface SecurityCopilotRepository {
   upsertHost(input: SecurityHostRecord, inventory?: SecurityInventory): Promise<SecurityHost>;
   getHost(owner: string, id: string): Promise<SecurityHost | null>;
   listHosts(owner: string): Promise<SecurityHost[]>;
+  /** Every owner with a host, so the watch keeps matching while no Security pane is open. */
+  listOwners(): Promise<string[]>;
   /**
    * Inserts the finding or refreshes it (last seen, advisory, fixed version, the higher priority). A FIXED finding seen again
    * reopens as NEW; MITIGATED, NOT_AFFECTED and ACCEPTED stay as the agent or operator decided.
@@ -90,6 +92,7 @@ export class InMemorySecurityCopilotRepository implements SecurityCopilotReposit
   }
   async getHost(owner: string, id: string) { const row = this.hosts.get(id); return row && row.ownerUserId === owner ? copy(row) : null; }
   async listHosts(owner: string) { return [...this.hosts.values()].filter((row) => row.ownerUserId === owner).sort((a, b) => a.alias.localeCompare(b.alias)).map(copy); }
+  async listOwners() { return [...new Set([...this.hosts.values()].map((row) => row.ownerUserId))]; }
 
   async upsertFinding(input: SecurityFindingRecord) {
     const at = this.now();
@@ -265,6 +268,7 @@ export class PostgresSecurityCopilotRepository implements SecurityCopilotReposit
   }
   getHost(owner: string, id: string) { return this.one(`SELECT ${HOST_COLUMNS} FROM security_copilot_hosts WHERE owner_user_id=$1 AND id=$2`, [owner, id], hostRow); }
   listHosts(owner: string) { return this.many(`SELECT ${HOST_COLUMNS} FROM security_copilot_hosts WHERE owner_user_id=$1 ORDER BY alias`, [owner], hostRow); }
+  listOwners() { return this.many("SELECT DISTINCT owner_user_id FROM security_copilot_hosts", [], (raw) => String(raw.owner_user_id)); }
 
   async upsertFinding(input: SecurityFindingRecord) {
     // xmax = 0 marks a fresh insert; the CTE reads the status the row had before the update.

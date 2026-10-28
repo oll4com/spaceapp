@@ -118,6 +118,7 @@ export async function browserCensus(deps: {
       tabs: session.pages.map((page) => fencedTabs.has(page.pageId)
         ? { fenced: true, isActive: page.isActive }
         : {
+            pageId: page.pageId,
             title: page.title ? redactMemoryText(page.title).slice(0, 120) : null,
             url: origin(page.url),
             isActive: page.isActive,

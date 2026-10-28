@@ -431,6 +431,14 @@ function oldestDueProbingAccount(probing: AccountState[], current: number): Acco
   return minBy(due, (state) => [state.lastSelectedAt ?? Number.NEGATIVE_INFINITY, state.accountId]);
 }
 
+/** 7-day used % minus the share of the week passed, in points; 0 (on pace) when unknown or the week has reset. */
+export function weeklyPacePoints(state: AccountState, current: number): number {
+  const used = state.secondaryUsedPercent;
+  const reset = state.secondaryResetAt;
+  if (used === null || used === undefined || !reset || reset <= current) return 0;
+  return used - 100 * (1 - Math.min(7 * SECONDS_PER_DAY, reset - current) / (7 * SECONDS_PER_DAY));
+}
+
 /** Normalizes plan names for plan-priority tiers ("Pro Lite" -> "prolite"). */
 export function normalizePlanPriorityType(value: string | null | undefined): string {
   const cleaned = (value ?? "").trim().toLowerCase();
@@ -499,6 +507,11 @@ export interface SelectAccountOptions {
   routingStrategy?: RoutingStrategy;
   /** Strict plan tiers (Space fork): the first tier with an eligible account is drained, least-used 5h first. */
   planPriority?: readonly string[];
+  /**
+   * Weekly pace first (operator rule 2026-10-27: every account's week used, none run out before its reset): the account
+   * furthest under its pace serves new work, accounts ahead of pace last; plan tiers only break ties.
+   */
+  weeklyPace?: boolean;
   allowBackoffFallback?: boolean;
   deterministicProbe?: boolean;
   recoveryProbeOnly?: boolean;
@@ -616,7 +629,7 @@ export function selectAccount(states: Iterable<AccountState>, options: SelectAcc
     }
   }
 
-  if (options.planPriority && options.planPriority.length > 0) {
+  if (options.planPriority && options.planPriority.length > 0 && !options.weeklyPace) {
     // Strict exhaustion order: inside the first available plan tier, always use the least-used 5h account;
     // weekly usage only breaks ties. Health tiers and weights never move traffic to a busier account here.
     const tier = selectPlanTier(available, options.planPriority);
@@ -647,6 +660,12 @@ export function selectAccount(states: Iterable<AccountState>, options: SelectAcc
   const preservePool = byPolicy("preserve");
   const effectivePool = burnFirst.length ? burnFirst : normalPool.length ? normalPool : preservePool.length ? preservePool : healthPool;
   const preferEarlierReset = Boolean(options.preferEarlierReset) && strategy !== "RELATIVE_AVAILABILITY";
+  if (options.weeklyPace) {
+    const tiers = (options.planPriority ?? []).map(normalizePlanPriorityType);
+    const tier = (state: AccountState) => { const index = tiers.indexOf(normalizePlanPriorityType(state.planType)); return index < 0 ? tiers.length : index; };
+    return { account: minBy(effectivePool, (state) => [Math.round(weeklyPacePoints(state, current)), tier(state), state.usedPercent ?? 0, state.accountId]),
+      errorMessage: null };
+  }
 
   let selected: AccountState;
   if (strategy === "ROUND_ROBIN") {

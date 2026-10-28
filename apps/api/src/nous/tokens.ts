@@ -1,4 +1,4 @@
-import { isGatewayFreePlan, NOUS_EFFORTS, nousLowSpendSettingsSchema, nousModelFor, nousTurnKindOf,
+import { GATEWAY_PACE_BAND, gatewayWeekPace, isGatewayFreePlan, NOUS_EFFORTS, nousLowSpendSettingsSchema, nousModelFor, nousTurnKindOf,
   type ClaudeUsageAccountList, type GatewayAccount, type NousLowSpendSettings, type NousModelChoice, type NousSettings, type NousSpendMode, type NousTurnReason } from "@space/contracts";
 import { pickClaudeProfile } from "../chess/chess-players.js";
 import { anthropicMonthSpendUsd } from "../claude-usage-services.js";
@@ -27,10 +27,23 @@ const windows = (account: GatewayAccount) => [account.primaryWindow, account.sec
 const subscription = (account: GatewayAccount) => account.provider === "CLAUDE" && account.planType !== "api" && !isGatewayFreePlan(account.planType);
 const eligible = (account: GatewayAccount) => subscription(account) && ["ACTIVE", "RATE_LIMITED", "QUOTA_EXCEEDED"].includes(account.status);
 const isMax = (account: GatewayAccount) => /max/i.test(account.planType ?? "");
+// Room in the 5-hour window, and a week not used up (unknown weekly samples do not take room away).
 const hasRoom = (account: GatewayAccount, at: number, minimum: number) => {
   const value = nousWindowUsed(account.primaryWindow, at);
-  return value !== null && 100 - value >= minimum;
+  const week = nousWindowUsed(account.secondaryWindow, at);
+  return value !== null && 100 - value >= minimum && (week === null || 100 - week >= minimum);
 };
+
+const windowLabel = (minutes: number) => minutes === 300 ? "5-hour" : minutes === 10_080 ? "7-day" : minutes % 1440 === 0 ? `${minutes / 1440}-day` : `${minutes}-minute`;
+/** A window with a figure or a reset: Gateway keeps a slot's length when it blanks it (a weekly-only Codex plan's old 5-hour slot). */
+const sampled = (window: Window) => window.windowMinutes !== null && (window.usedPercent !== null || window.resetAt !== null);
+/** The account's sampled window of that length: Codex prolite and free plans report no 5-hour window. */
+const windowOf = (account: GatewayAccount, minutes: number): Window | null => windows(account).find((window) => window.windowMinutes === minutes && sampled(window)) ?? null;
+/** Pace points with their sign: +26, -17, 0. */
+const points = (value: number | null) => value === null ? "?" : value > 0 ? `+${value}` : String(value);
+/** Max accounts Nous can use, and every Codex account in the pool. */
+const paced = (account: GatewayAccount) => (eligible(account) && isMax(account)) || (account.provider === "CODEX" && !["PAUSED", "DEACTIVATED"].includes(account.status));
+
 
 export function computeNousTokens(input: NousTokenInput): NousTokens {
   const config = input.settings;
@@ -40,13 +53,11 @@ export function computeNousTokens(input: NousTokenInput): NousTokens {
   const profile = profiles.find((entry) => entry.id === profileId);
   const serving = profile?.status === "CONNECTED" && profile.email
     ? (input.accounts ?? []).find((entry) => subscription(entry) && entry.email?.toLowerCase() === profile.email!.toLowerCase()) : null;
-  const budgetLeft = input.budget?.budgetUsd != null && input.budget.spentUsd != null
-    ? 100 * (input.budget.budgetUsd - input.budget.spentUsd) / input.budget.budgetUsd : null;
   const modeAt = (at: number): NousSpendMode => {
     if (config.mode === "OFF") return "NORMAL";
     const room = input.accounts === null ? null : pool.filter((account) => hasRoom(account, at, config.roomRemainingPercent)).length;
-    if (room === 0 && budgetLeft !== null && budgetLeft < config.criticalBudgetRemainingPercent) return "CRITICAL";
-    // The API key is Gateway's last fallback; its budget must not hold healthy subscriptions in LOW.
+    // Operator rule 2026-10-27: the API key never serves Claude Code, so its budget no longer counts for Nous's mode.
+    if (room === 0) return "CRITICAL";
     return config.mode === "ON" || (room !== null && room < config.minMaxAccountsWithRoom) ? "LOW" : "NORMAL";
   };
   const mode = modeAt(input.now);
@@ -103,6 +114,8 @@ export function nousTokenModel(settings: NousSettings, reason: NousTurnReason | 
   const choice = nousModelFor(settings.models, reason);
   if (mode === "NORMAL") return choice;
   const kind = nousTurnKindOf(reason);
+  // Goal turns are never downgraded (operator order 2026-10-27: the month's tokens go to the goals); CRITICAL runs none at all (service.ts).
+  if (kind === "goal") return choice;
   if (kind === "operator" || kind === "decision") return { ...choice, effort: NOUS_EFFORTS.indexOf(choice.effort) > NOUS_EFFORTS.indexOf("high") ? "high" : choice.effort };
   const low = settings.lowSpend ?? nousLowSpendSettingsSchema.parse({});
   if (!low.cheaperModel) return choice;
@@ -120,20 +133,35 @@ export function renderNousTokenSummary(tokens: NousTokens, zone: string, now = D
   const time = (value: string | null) => value ? new Intl.DateTimeFormat("en-GB", { timeZone: zone, dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) + ` ${zone}` : "unknown";
   const budget = tokens.budget;
   const api = budget?.budgetUsd != null && budget.spentUsd != null ? `$${budget.spentUsd.toFixed(2)} / $${budget.budgetUsd.toFixed(2)} spent, $${Math.max(0, budget.budgetUsd - budget.spentUsd).toFixed(2)} left` : "unknown";
-  const codex = (tokens.accounts ?? []).filter((account) => account.provider === "CODEX").map((account) => `${account.alias ?? account.label} ${nousWindowUsed(account.primaryWindow, now) ?? "?"}%/${nousWindowUsed(account.secondaryWindow, now) ?? "?"}% used`).join(", ") || "unknown";
+  const codex = (tokens.accounts ?? []).filter((account) => account.provider === "CODEX" && paced(account)).map((account) => {
+    const fiveHour = windowOf(account, 300);
+    return `${account.alias ?? account.label} ${fiveHour ? `${nousWindowUsed(fiveHour, now) ?? "?"}%` : "none"}`;
+  }).join(", ") || "unknown";
+  const short = (value: string) => new Intl.DateTimeFormat("en-GB", { timeZone: zone, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
+  const pace = (provider: string) => (tokens.accounts ?? []).filter((account) => account.provider === provider && paced(account)).map((account) => {
+    const week = gatewayWeekPace(account, now);
+    return `${account.alias ?? account.label} ${week ? `${week.usedPercent ?? "?"}%/${week.passedPercent}% ${points(week.points)} ${week.pace ?? "unknown"} ${short(week.resetAt)}` : "unknown"}`;
+  }).join(", ") || "none";
   const hour = tokens.lastHour ? `$${tokens.lastHour.costUsd.toFixed(2)} API value (${tokens.lastHour.turns} turns, ${tokens.lastHour.unpricedTurns} unpriced)` : "unknown";
   const model = context ? context.reason ? `; model: ${modelLabel(context.choice ?? nousTokenModel(context.settings, context.reason, tokens.mode))} for ${context.reason}`
     : `; automatic models — ${automaticModelLabel(context.settings, tokens.mode)}` : "";
   return `Low-spend mode: ${tokens.mode} since ${time(tokens.since)}${tokens.mode !== "NORMAL" ? `; normal again ${tokens.control === "ON" ? "when Auto or Off is selected" : `at about ${time(tokens.resetAt)}`}` : ""} (${tokens.control})${model}.\n`
-    + `Tokens: Claude Max ${tokens.max ? `${tokens.max.withRoom}/${tokens.max.total} with room` : "unknown"}; next reset ${time(tokens.nextResetAt)}; API month ${api}; Codex 5-hour/7-day ${codex}; Nous last hour ${hour}; serves Nous: ${tokens.serving}. Detail: space_token_state.`;
+    + `Tokens: Claude Max ${tokens.max ? `${tokens.max.withRoom}/${tokens.max.total} with room` : "unknown"}; next reset ${time(tokens.nextResetAt)}; API month ${api}; Codex 5-hour ${codex}; weekly pace (7-day used/week passed, points, reset in ${zone}): Claude ${pace("CLAUDE")}; Codex ${pace("CODEX")}; Nous last hour ${hour}; serves Nous: ${tokens.serving}. Detail: space_token_state.`;
 }
 
 export function renderNousTokens(tokens: NousTokens, zone: string, now = Date.now(), context?: TokenModelContext): string {
   const time = (value: string | null) => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat("en-GB", { timeZone: zone, dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) + ` ${zone}` : "unknown";
   const window = (value: Window) => `${nousWindowUsed(value, now) ?? "unknown"}% used; reset ${time(value.resetAt)}${value.resetAt && Date.parse(value.resetAt) <= now ? " (expired sample)" : ""}`;
+  const accountWindows = (account: GatewayAccount) => {
+    const shown = windows(account).filter(sampled).sort((a, b) => a.windowMinutes! - b.windowMinutes!);
+    const week = paced(account) ? gatewayWeekPace(account, now) : null;
+    return (shown.map((entry) => `${windowLabel(entry.windowMinutes!)}: ${window(entry)}`).join("; ") || "no quota windows sampled")
+      + (week ? `; week passed ${week.passedPercent}%, pace ${points(week.points)} ${week.pace ?? "unknown"}` : "");
+  };
   return [renderNousTokenSummary(tokens, zone, now, context), `Sample read ${time(tokens.sampledAt)}; percentages are cached Gateway samples.`,
+    `Weekly pace: points = 7-day used % minus the share of the week passed; AHEAD (above +${GATEWAY_PACE_BAND}) runs out before the reset, UNDER (below -${GATEWAY_PACE_BAND}) leaves tokens unused, ON is within ${GATEWAY_PACE_BAND}.`,
     ...(context ? [`Cheaper model in low-spend mode: ${context.settings.lowSpend.cheaperModel ? "on" : "off"}. Automatic selections: ${automaticModelLabel(context.settings, tokens.mode)}.`] : []),
     ...(tokens.accounts === null ? ["Gateway account windows unavailable."] : tokens.accounts.filter((entry) => ["CLAUDE", "CODEX"].includes(entry.provider)).map((account) =>
       `- ${account.provider} ${account.alias ?? account.label} · ${account.status}${account.id === tokens.servingAccountId ? " · serves Nous" : ""}: `
-      + (account.planType === "api" ? "API account (no subscription windows)" : `5-hour: ${window(account.primaryWindow)}; 7-day: ${window(account.secondaryWindow)}`)))].join("\n");
+      + (account.planType === "api" ? "API account (no subscription windows)" : accountWindows(account))))].join("\n");
 }

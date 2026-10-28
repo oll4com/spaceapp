@@ -8,7 +8,7 @@ const store = () => new DemoStore(createCurrentMockFixture());
 describe('current public Space mock', () => {
  it('starts with the operator screenshot layouts and an empty Operations room', async () => {
   const s=store();const rooms=(await s.api.rooms()).data;
-  expect(rooms.map(r=>r.name)).toEqual(['Room 1','Research Lab','Operations','Copilots (coming next)']);
+  expect(rooms.map(r=>r.name)).toEqual(['Room 1','Research Lab','Operations','Copilots']);
   for(const r of rooms)expect(r).toMatchObject({paneLayoutColumns:2,paneLayoutHeight:1});
   const first=(await s.api.panes(rooms[0]!.id)).data.sort((a,b)=>a.order-b.order);
   expect(first.map(p=>p.terminalRuntimeId)).toEqual(['cli:codex','cli:opencode','cli:gemini','cli:claude']);

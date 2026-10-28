@@ -1,3 +1,4 @@
+import { Writable } from "node:stream";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -5293,14 +5294,24 @@ describe("Space API", () => {
     const failingManager = Object.assign(fakeBrowserSessionManager({ enabled: true }), {
       stopPane: async (): Promise<void> => {
         throw new SpaceFeatureDisabledError("BROWSER_HOST_UNAVAILABLE", "The Browser Host is unavailable.");
+      },
+      startOrRestore: async (): Promise<never> => {
+        throw new SpaceFeatureDisabledError("BROWSER_HOST_UNAVAILABLE", "The Browser Host is unavailable.", { hostCode: "BROWSER_HOST_UNAVAILABLE", hostDetails: { causeCode: "EAGAIN" } });
       }
     });
+    const logs: string[] = [];
     const { app, cookie, csrfToken } = await authedApp({
       store,
       config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }),
-      browserSessionManager: failingManager
+      browserSessionManager: failingManager,
+      logStream: new Writable({ write(chunk, _encoding, callback) { logs.push(String(chunk)); callback(); } })
     });
     const headers = { cookie, [csrfHeaderName]: csrfToken };
+
+    // Stable 2026-10-27: five minutes of fast 503s left no trace of the host's code; the log line now carries it.
+    const started = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(browserPane.id)}/browser/session`, headers, payload: {} });
+    expect(started.statusCode).toBe(503);
+    expect(logs.find((line) => line.includes("request blocked by feature gate"))).toContain('"hostError":{"hostCode":"BROWSER_HOST_UNAVAILABLE","hostDetails":{"causeCode":"EAGAIN"}}');
 
     const closedYouTube = await app.inject({
       method: "DELETE",
@@ -5757,6 +5768,78 @@ describe("Space API", () => {
       expect(store.listAuditEvents().filter((event) => event.action === "pane.browser.control.idle_release")).toEqual([
         expect.objectContaining({ targetId: pane.id, metadata: { sessionId, leaseId, idleSeconds: 121 } })
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a sign-in handoff with the operator while they stay on the pane, and lets it go 60 s after they leave (operator 2026-10-27)", async () => {
+    const start = Date.parse("2026-10-27T09:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: start });
+    try {
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: "Bank", initialPaneCount: 0 });
+      const pane = store.createPane({ roomId: room.id, title: "Bank", mode: "BROWSER" });
+      const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      store.createPaneBrowserSession({
+        sessionId, paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: `profile:${pane.id}`,
+        profilePath: `/tmp/${pane.id}`, viewport: "desktop", targetUrl: "https://www.google.com/", currentUrl: "https://www.google.com/",
+        title: "Bank", status: "READY", isActive: true
+      });
+      const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }), browserSessionManager: fakeBrowserSessionManager({ enabled: true }) });
+      const headers = { cookie, [csrfHeaderName]: csrfToken };
+      store.createBrowserControlLease({ leaseId: "browser_lease:test", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
+        holderId: "user:dev-operator", reason: "Direct browser interaction", ttlSeconds: 300 });
+      const handoff = store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
+        reason: "Sign in to NBG: enter the SMS code", ttlSeconds: 1800 });
+      const acquired = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/acquire`, headers,
+        payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 } });
+      const leaseId = acquired.json().lease.leaseId as string;
+      const heartbeat = (present?: boolean) => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/heartbeat`, headers,
+        payload: { leaseId, ttlSeconds: 60, ...(present === undefined ? {} : { present }) } });
+      expect((await heartbeat(true)).json()).toMatchObject({ lease: { status: "ACTIVE" }, presenceHold: true });
+      // Five minutes without a key while they wait on the pane for the SMS: still theirs.
+      for (let minute = 1; minute <= 5; minute += 1) {
+        vi.setSystemTime(start + minute * 60_000);
+        expect((await heartbeat(true)).json().lease.status).toBe("ACTIVE");
+      }
+      // They leave the pane: idle counts from then, and 60 s later the browser goes back to the agent.
+      vi.setSystemTime(start + 5 * 60_000 + 30_000);
+      expect((await heartbeat(false)).json().lease.status).toBe("ACTIVE");
+      vi.setSystemTime(start + 6 * 60_000 + 1_000);
+      expect((await heartbeat(false)).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
+      expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the 60 s rule for control without a sign-in handoff even while the operator is on the pane (operator 2026-10-24)", async () => {
+    const start = Date.parse("2026-10-27T09:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: start });
+    try {
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: "Shop", initialPaneCount: 0 });
+      const pane = store.createPane({ roomId: room.id, title: "Shop", mode: "BROWSER" });
+      const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      store.createPaneBrowserSession({
+        sessionId, paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: `profile:${pane.id}`,
+        profilePath: `/tmp/${pane.id}`, viewport: "desktop", targetUrl: "https://www.google.com/", currentUrl: "https://www.google.com/",
+        title: "Shop", status: "READY", isActive: true
+      });
+      const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }), browserSessionManager: fakeBrowserSessionManager({ enabled: true }) });
+      const headers = { cookie, [csrfHeaderName]: csrfToken };
+      store.createBrowserControlLease({ leaseId: "browser_lease:test", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
+        holderId: "user:dev-operator", reason: "Direct browser interaction", ttlSeconds: 300 });
+      store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
+        reason: "Choose the shipping option you prefer", ttlSeconds: 1800 });
+      const acquired = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/acquire`, headers,
+        payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 } });
+      const leaseId = acquired.json().lease.leaseId as string;
+      const heartbeat = () => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/heartbeat`, headers, payload: { leaseId, ttlSeconds: 60, present: true } });
+      expect((await heartbeat()).json()).not.toHaveProperty("presenceHold");
+      vi.setSystemTime(start + 61_000);
+      expect((await heartbeat()).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
     } finally {
       vi.useRealTimers();
     }
@@ -6859,6 +6942,28 @@ describe("Space API", () => {
       data: [{ id: otherCreated.json().id, text: "other owner item" }],
       pagination: { totalItems: 1 }
     });
+  });
+
+  it("keeps a plan's dependencies, due date and wait through the progress route and refuses loops (plan map, 2026-10-25)", async () => {
+    const sessionSecret = "test-secret-with-enough-length";
+    const store = new InMemorySpaceStore();
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: false, operatorEmail: "space@space.local", operatorPasswordHash: "unused", secureCookies: false } });
+    const token = signSession({ id: "user:planner", email: "planner@space.local", role: "OPERATOR" }, sessionSecret);
+    const headers = { cookie: `space_session=${token}`, [csrfHeaderName]: createCsrfToken(token, sessionSecret)! };
+    const plan = async (text: string) => (await app.inject({ method: "POST", url: "/api/clipboard-items", headers, payload: { text, source: "PLAN", minimumModel: "claude-opus-5-5" } })).json().id as string;
+    const mail = await plan("Fix the mail server");
+    const site = await plan("Launch the site");
+    const patch = (id: string, payload: unknown) => app.inject({ method: "PATCH", url: `/api/clipboard-items/${encodeURIComponent(id)}/progress`, headers, payload });
+
+    expect((await patch(site, { dependsOn: [site] })).statusCode).toBe(409);
+    const linked = await patch(site, { dependsOn: [mail], dueAt: "2026-10-30T09:00:00.000Z", waitsOn: { kind: "THIRD_PARTY", what: "the hosting company" } });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json()).toMatchObject({ dependsOn: [mail], dueAt: "2026-10-30T09:00:00.000Z", waitsOn: { kind: "THIRD_PARTY", what: "the hosting company", until: null }, executionStatus: "PLANNED" });
+    expect((await patch(mail, { dependsOn: [site] })).statusCode).toBe(409);
+    expect((await patch(site, { dependsOn: ["clipboard:nowhere0001"] })).statusCode).toBe(409);
+    const cleared = await patch(site, { dueAt: null, waitsOn: null, progressPercentage: 20 });
+    expect(cleared.json()).toMatchObject({ dependsOn: [mail], dueAt: null, waitsOn: null, progressPercentage: 20 });
+    expect((await app.inject({ method: "GET", url: "/api/clipboard-items?source=PLAN", headers })).json().data.find((item: { id: string }) => item.id === site)).toMatchObject({ dependsOn: [mail] });
   });
 
   it("stores and mutates task history with a status lifecycle, only for the authenticated owner", async () => {

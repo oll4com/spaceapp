@@ -352,7 +352,7 @@ class CodexWebSocketSession {
 
     // Every attempt failed before any output reached the client.
     const failure = lastFailure ?? { kind: "transient" as const, status: 503, code: "no_accounts", message: gatewayErrors.noAccounts().error.message, error: {}, body: null };
-    options.logs.add({ ...baseLog(), status: "error", errorCode: failure.code, errorMessage: failure.message, latencyMs: now() - startedAt });
+    options.logs.add({ ...baseLog(), accountId: [...tried].at(-1) ?? null, status: "error", errorCode: failure.code, errorMessage: failure.message, latencyMs: now() - startedAt });
     const status = failure.kind === "rate_limit" || failure.kind === "quota" ? 429 : failure.status >= 400 ? failure.status : 502;
     const upstreamError = failure.kind === "surface" && failure.body ? obj(obj(safeJson(failure.body))?.error) : null;
     if (upstreamError) this.send({ type: "error", status, error: upstreamError });

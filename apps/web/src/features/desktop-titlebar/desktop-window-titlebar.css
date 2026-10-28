@@ -2,16 +2,15 @@
   --desktop-titlebar-height: 0px;
 }
 
-/* Portalled overlays share the inset of the visible native title bar. */
-body:has(.desktop-window-titlebar),
-.space-shell:has(.desktop-window-titlebar) {
+/* Portalled overlays share the inset of the visible native title bar. The bar marks body itself: a body:has rule setting this inherited
+   variable restyled the whole page on every DOM change (desktop renderer hangs, 2026-10-26). The bar is gone in browser fullscreen. */
+body[data-desktop-titlebar="true"] {
   --desktop-titlebar-height: 32px;
 }
 
 :fullscreen,
 :-webkit-full-screen,
 [data-browser-fullscreen="true"],
-body:has([data-browser-fullscreen="true"]),
 .space-shell[data-browser-fullscreen="true"] {
   --desktop-titlebar-height: 0px !important;
 }

@@ -27,6 +27,11 @@ export function supportsControlRuntime(pane: Pane, phase: 1 | 2 = 2) {
   if (phase === 1) return pane.terminalRuntimeId === "cli:codex";
   return Boolean(pane.terminalRuntimeId && (cliToggleRuntimeIds as readonly string[]).includes(pane.terminalRuntimeId));
 }
+/**
+ * Pane operations that never touch the CLI's native controls. A close ends the record and its terminal session the way the
+ * UI's close button does, for every runtime (27/10: Nous could not close a pane whose runtime has no native controls).
+ */
+const RUNTIME_FREE_PANE_OPERATIONS = ["rename", "minimize", "maximize", "restore", "unminimize", "focus", "color", "close"];
 function assertControlRuntime(pane: Pane, p: 1 | 2 = 2) {
   if (!supportsControlRuntime(pane, p)) throw new SpaceConflictError("Native controls for this CLI runtime are not supported.");
 }
@@ -584,7 +589,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     if (spec.kind === "pane" || spec.kind === "configure" || spec.kind === "native_command") {
       const panes = await select(roomId, spec.target);
       if (!panes.length) throw new SpaceConflictError("No panes match this selection.");
-      if (spec.kind !== "pane" || !["rename", "minimize", "maximize", "restore", "unminimize", "focus", "color"].includes(spec.operation)) {
+      if (spec.kind !== "pane" || !RUNTIME_FREE_PANE_OPERATIONS.includes(spec.operation)) {
         for (const pane of panes) assertRuntime(pane);
       }
       if (spec.kind === "pane" && ["rename", "prompt"].includes(spec.operation)) required(spec.text, "Pane text is required.");
@@ -870,7 +875,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     const paneId=original.id;
     try{
      let pane=await store.getPane(paneId);
-     if(spec.kind!=="pane" || !["rename","minimize","maximize","restore","unminimize","focus","color"].includes(spec.operation))assertRuntime(pane);
+     if(spec.kind!=="pane" || !RUNTIME_FREE_PANE_OPERATIONS.includes(spec.operation))assertRuntime(pane);
      let evidence:unknown;
      if(spec.kind==="pane"&&["rename","minimize","maximize","restore","unminimize","color"].includes(spec.operation)){
       evidence=await store.updatePane(pane.id,spec.operation==="color"?{categoryColor:(spec as any).color??null}:spec.operation==="rename"?{title:required(spec.text,"Pane title is required.")}:

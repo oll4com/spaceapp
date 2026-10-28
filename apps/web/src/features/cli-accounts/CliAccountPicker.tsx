@@ -13,6 +13,7 @@ import {
 import { accountColorStyle, CliAccountAvatar, CliAccountColorLegend, CliAccountMeter } from "./CliAccountVisuals.js";
 import { useCliAccountBalance } from "./cli-account-balance.js";
 import { useCliAccountSignals } from "./use-cli-account-signals.js";
+import { useOptionalVoiceInput } from "../voice-input/VoiceInputProvider.js";
 
 interface CliAccountPickerProps {
   runtimeId: CliAccountMenuRuntimeId;
@@ -41,9 +42,14 @@ const minimumMenuHeightPx = 150;
 // Space between the menu and the pane's left edge when the pane is narrower than the menu.
 const menuEdgeGapPx = 8;
 
+// Settings → CLI pane controls → Account picker hides the button; hidden, the menu never mounts or polls quota.
+export function CliAccountPicker(props: CliAccountPickerProps) {
+  return useOptionalVoiceInput()?.settings.terminalAccountPicker === false ? null : <AccountPickerMenu {...props} />;
+}
+
 // One click on the trigger lists every account of this CLI with its availability; one
 // more click switches the pane. The active account is marked in the list and named in the tooltip.
-export function CliAccountPicker({
+function AccountPickerMenu({
   runtimeId,
   providerLabel,
   icon,

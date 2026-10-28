@@ -15,6 +15,8 @@ it("persists Mail Copilot settings through ordinary updates and refuses other pa
   store.updatePane(pane.id, { title: "Renamed" });
   expect(store.getPane(pane.id).mailCopilotMetadata).toEqual(metadata);
   expect(store.updatePane(pane.id, { status: "RUNNING" }).terminalRuntimeId).toBe("cli:claude");
+  const { dailyRunHour: _hour, ...storedBefore } = metadata.settings;
+  expect(store.updateMailCopilotMetadata(pane.id, { ...metadata, settings: storedBefore } as never).mailCopilotMetadata?.settings.dailyRunHour).toBe(9);
   expect(() => store.updateMailCopilotMetadata(pane.id, { ...metadata, settings: { ...metadata.settings, sendsPerHour: 999 } })).toThrow();
   const jobs = store.createPane({ roomId: room.id, title: "Job Copilot", mode: "JOB_APPLY", terminalRuntimeId: "cli:claude" });
   expect(() => store.updateMailCopilotMetadata(jobs.id, metadata)).toThrow(/Mail Copilot pane/);

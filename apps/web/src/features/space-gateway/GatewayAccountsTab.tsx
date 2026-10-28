@@ -159,7 +159,7 @@ function AccountDetail({ account, client, settings, hideEmails, now, openSignIn,
       {apiKeyAccount ? (
         <p className="space-gateway-note" data-testid="claude-api-key-role">
           {settings?.claudeApiKeyFallback
-            ? "Fallback: serves Claude requests only while every pooled Claude account is out of quota; the accounts take over again at their next reset."
+            ? "Fallback: serves Claude requests from clients other than Claude Code only while every pooled Claude account is out of quota; the accounts take over again at their next reset. Claude Code never uses it."
             : "Not used: Claude API key fallback is off (Settings › Routing). Turn it on to serve requests while every pooled Claude account is out of quota."}
           {" "}
           <strong>{detail

@@ -28,7 +28,9 @@ const apkFieldsSchema = z.object({
   packageName: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/).max(200),
   versionName: z.string().trim().min(1).max(100),
   versionCode: z.coerce.number().int().min(0).max(2_100_000_000),
-  buildMs: z.coerce.number().int().min(0).max(24 * 3_600_000).nullable().default(null)
+  buildMs: z.coerce.number().int().min(0).max(24 * 3_600_000).nullable().default(null),
+  /** release: re-signed with the app's own kept Vault key (scripts/space-app-studio-build.mjs RELEASE_KEYS, Nous decision 2026-10-27). */
+  signedWith: z.enum(["android-debug-keystore", "release"]).default("android-debug-keystore")
 }).strict();
 
 export function registerAppStudioAgentRoutes(app: FastifyInstance, service: AppStudioService, deps: AppStudioAgentRouteDependencies): void {
@@ -84,7 +86,7 @@ export function registerAppStudioAgentRoutes(app: FastifyInstance, service: AppS
   // The APK the agent built in its CLI (scripts/space-app-studio-build.mjs): its package and version as fields, then the file.
   handle("post", "apk", async ({ owner, pane }, request) => {
     const fields: Record<string, string> = {};
-    const saved = await withStagedUploads(request, deps.uploadRoot, { maxFiles: 1, fileBytes: APP_STUDIO_MAX_APK_BYTES, fields: 4,
+    const saved = await withStagedUploads(request, deps.uploadRoot, { maxFiles: 1, fileBytes: APP_STUDIO_MAX_APK_BYTES, fields: 5,
       onField: (name, value) => { if (typeof value === "string") fields[name] = value; } },
     async ([upload]) => {
       const info = apkFieldsSchema.safeParse(fields);

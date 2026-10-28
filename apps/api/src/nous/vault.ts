@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { vaultAgentFillRequestSchema, vaultAgentSaveRequestSchema, type Pane } from "@space/contracts";
+import { vaultAgentFillRequestSchema, vaultAgentKeyListRequestSchema, vaultAgentKeySaveRequestSchema, vaultAgentSaveRequestSchema, type Pane } from "@space/contracts";
 import type { VaultModule } from "../vault/wiring.js";
 
 /**
@@ -17,6 +17,8 @@ export const nousVaultFillArgsSchema = z.object({
 }).strict();
 export const nousVaultListArgsSchema = z.object({}).strict();
 export const nousVaultSaveArgsSchema = vaultAgentSaveRequestSchema;
+export const nousVaultKeyListArgsSchema = vaultAgentKeyListRequestSchema;
+export const nousVaultKeySaveArgsSchema = vaultAgentKeySaveRequestSchema;
 
 export const NOUS_VAULT_FILL_DESCRIPTION = "Fill a Vault item into a browser pane's open page by handle (open the site's login page first). "
   + "Space types the values itself; you never see or send a value, username, URL or selector. The answer is {status, auditId, reason}: FILLED or SUBMITTED, "
@@ -24,7 +26,12 @@ export const NOUS_VAULT_FILL_DESCRIPTION = "Fill a Vault item into a browser pan
   + "reason FIELD_NOT_FOUND_AFTER_RELOAD: the page was reloaded first (a session had run code in it) and the field was gone; redo the steps that showed it with navigate, click, type and press only, then fill again.";
 export const NOUS_VAULT_LIST_DESCRIPTION = "The Vault items the operator lets agents and you use: handles, labels, exact sites and fields, never a value. BLOCKED while agent access is off.";
 export const NOUS_VAULT_SAVE_DESCRIPTION = "Save a login you created (site, username or email, the password you chose, a label) into the operator's Vault. "
-  + "It is sealed at once and fillable as soon as space_vault_list shows it, without the operator's unlock. Never save a login you did not create.";
+  + "It is sealed at once and fillable as soon as space_vault_list shows it, without the operator's unlock. A login that reached the operator (a site's mail with their credentials) may be saved too; "
+  + "a password that is not a website login goes to space_vault_key_save.";
+export const NOUS_VAULT_KEY_LIST_DESCRIPTION = "The operator's kept passwords and keys for agents (servers, VMs, SSH and admin accounts, API keys): ids and labels, never a value. "
+  + "Look here before asking the operator for one; q narrows by words of the label. A pane writes one where it is needed with its space_vault_key_install {id}. BLOCKED while agent access is off.";
+export const NOUS_VAULT_KEY_SAVE_DESCRIPTION = "Keep a password or key that reached you or the operator (a mail you read, the operator's message, a service) in the Vault, so every agent finds it "
+  + "with space_vault_key_list: label with host, account and purpose (\"vm221 macOS spaceadmin password\"), the value one line. Never put such a value in memory, notes, plans or chat. Answer {status: SAVED, id, auditId}.";
 
 const vaultOff = { status: "BLOCKED", auditId: null } as const;
 
@@ -40,4 +47,12 @@ export function nousVaultList(vault: VaultModule | undefined, owner: string, tra
 
 export function nousVaultSave(vault: VaultModule | undefined, owner: string, args: z.infer<typeof nousVaultSaveArgsSchema>, traceId: string) {
   return vault ? vault.agent.call({ owner, paneId: "nous", roomId: "", path: "save", body: args, traceId }) : Promise.resolve(vaultOff);
+}
+
+export function nousVaultKeyList(vault: VaultModule | undefined, owner: string, args: z.infer<typeof nousVaultKeyListArgsSchema>, traceId: string) {
+  return vault ? vault.agent.call({ owner, paneId: "nous", roomId: "", path: "key-list", body: args, traceId }) : Promise.resolve(vaultOff);
+}
+
+export function nousVaultKeySave(vault: VaultModule | undefined, owner: string, args: z.infer<typeof nousVaultKeySaveArgsSchema>, traceId: string) {
+  return vault ? vault.agent.call({ owner, paneId: "nous", roomId: "", path: "key-save", body: args, traceId }) : Promise.resolve(vaultOff);
 }

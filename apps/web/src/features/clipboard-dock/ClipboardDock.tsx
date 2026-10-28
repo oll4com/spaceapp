@@ -33,7 +33,7 @@ import {
   DATE_TIME_SETTINGS_UPDATED_EVENT
 } from "../date-time-settings/date-time-settings.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
-import { canOpenPlanPane, openPlanPane, planAssignee, useRoomNames } from "./plan-assignee.js";
+import { canOpenPlanPane, openPlanPane, planAssignee, useOpenPaneNames, useRoomNames } from "./plan-assignee.js";
 import { isLikelyModelDescriptor, isSameModel, resolveStepModel } from "../terminal-pane/plan-model-resolver.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
@@ -157,6 +157,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   const isFiltered = Boolean(search.trim()) || sourceFilter !== "ALL";
   const insertTarget = activePaneLabel ?? "active pane";
   const roomNames = useRoomNames(isDockActive);
+  const openPanes = useOpenPaneNames(roomNames);
 
   const handleOpenStickyNote = useCallback((item?: ClipboardItem | null) => {
     if (onOpenStickyNote) {
@@ -402,7 +403,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
             const isNote = item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE";
             const planStatus = item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED");
             const planProgress = item.progressPercentage ?? (item.isCompleted ? 100 : 0);
-            const assignee = isPlan ? planAssignee(item, undefined, roomNames) : null;
+            const assignee = isPlan ? planAssignee(item, undefined, roomNames, openPanes) : null;
             const planModel = item.minimumModel ? `${item.minimumModel}${item.minimumReasoning ? ` · ${item.minimumReasoning}` : ""}` : null;
             const steps = isPlan && item.steps ? orderedSteps(item.steps) : [];
             const visibleSteps = expanded ? steps : steps.slice(0, COLLAPSED_PLAN_STEPS);

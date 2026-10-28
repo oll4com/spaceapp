@@ -1,0 +1,50 @@
+/* Monitoring Copilot pane: alerts, targets and the timeline inside the copilot kit's pane (bar, rail and controls come from copilot-pane.css). */
+.mc-main { overflow: auto; }
+.mc-alerts { display: grid; gap: 10px; align-content: start; padding: 14px; }
+.mc-counts { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+.mc-count { display: grid; gap: 2px; min-width: 88px; padding: 8px 10px; border: 1px solid var(--jc-border); border-radius: 10px; background: transparent; color: var(--jc-text); text-align: left; cursor: pointer; }
+.mc-count strong { font-size: 20px; line-height: 1.1; }
+.mc-count span { font-size: 11px; color: var(--jc-muted); }
+.mc-count.selected { border-color: var(--jc-accent); box-shadow: inset 0 0 0 1px var(--jc-accent); }
+.mc-count.severity-critical strong, .mc-severity.severity-critical { color: var(--danger, #e5484d); }
+.mc-count.severity-warning strong, .mc-severity.severity-warning { color: var(--warning, #f5a524); }
+.mc-collector { margin: 0 0 0 auto; align-self: center; font-size: 12px; color: var(--jc-muted); }
+.mc-collector.down { color: var(--danger, #e5484d); }
+.mc-alert-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mc-alert { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--jc-border); border-left-width: 3px; border-radius: 8px; }
+.mc-alert.severity-critical { border-left-color: var(--danger, #e5484d); }
+.mc-alert.severity-warning { border-left-color: var(--warning, #f5a524); }
+.mc-alert[data-state="resolved"] { opacity: 0.8; }
+.mc-alert-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.mc-alert-name { overflow-wrap: anywhere; }
+.mc-alert-instance { color: var(--jc-muted); font-size: 12px; overflow-wrap: anywhere; }
+.mc-alert-age { margin-left: auto; color: var(--jc-muted); font-size: 12px; }
+.mc-alert-line, .mc-target-error { margin: 0; font-size: 12px; color: var(--jc-muted); overflow-wrap: anywhere; }
+.mc-alert-detail { display: grid; gap: 6px; padding-top: 6px; border-top: 1px solid var(--jc-border); }
+.mc-alert-detail p { margin: 0; overflow-wrap: anywhere; }
+.mc-labels { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+.mc-labels dt { color: var(--jc-muted); }
+.mc-labels dd { margin: 0; overflow-wrap: anywhere; }
+.mc-label { display: contents; }
+
+.mc-activity, .mc-targets, .mc-memory { display: grid; gap: 10px; align-content: start; padding: 12px; overflow: auto; }
+.mc-question { border-color: color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border)); }
+.mc-question p, .mc-feed-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mc-brief textarea { resize: vertical; }
+.mc-feed, .mc-target-list, .mc-memory-list { display: grid; gap: 8px; }
+.mc-feed-item, .mc-target, .mc-memory-item { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--jc-border); }
+.mc-feed-item .jc-row, .mc-target .jc-row, .mc-memory-item .jc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.mc-feed-item .jc-row-meta, .mc-target .jc-row-meta, .mc-memory-item .jc-row-meta { margin-left: auto; font-size: 11px; color: var(--jc-muted); }
+.mc-feed-item[data-level="alert"] strong, .mc-feed-item[data-type="alert"] strong { color: var(--danger, #e5484d); }
+.mc-target-instance { overflow-wrap: anywhere; }
+.mc-target[data-health="down"] .jc-pill { color: var(--danger, #e5484d); border-color: currentColor; }
+.status-pending, .status-taken, .status-open { color: var(--jc-accent); }
+.mc-review { border-color: color-mix(in srgb, var(--warning, #f5a524) 55%, var(--jc-border)); }
+.mc-review-detail { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+.mc-review-detail dt { color: var(--jc-muted); }
+.mc-review-detail dd { margin: 0; overflow-wrap: anywhere; }
+.mc-review-detail pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
+.mc-action { display: grid; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--jc-border); }
+.mc-action .jc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.mc-action .jc-row-meta { margin-left: auto; font-size: 11px; color: var(--jc-muted); }
+.mc-action[data-status="failed"] .jc-pill, .mc-action[data-status="rolled_back"] .jc-pill { color: var(--danger, #e5484d); }

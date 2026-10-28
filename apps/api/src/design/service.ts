@@ -6,7 +6,8 @@ import {
   resolveDesignFormat, resolveDesignPaneMetadata, SPACEAPP_BRAND_KIT,
   type Artifact, type CreateArtifactInput, type DesignAsset, type DesignAssetEngine, type DesignAssetMadeBy, type DesignBrandKit, type DesignBrandKitInput, type DesignEvent, type DesignEventType, type DesignFormat,
   type DesignGeneratingEngine, type DesignNetwork, type DesignPaneMetadata, type DesignPaneSettings, type DesignRequest, type DesignRequestCreate, type DesignRequester, type DesignRequestStatus,
-  type DesignSafeArea, type DesignTemplateId, type DesignView, type Event as SpaceEvent, type Pane, type Room
+  type DesignSafeArea, type DesignTemplateId, type DesignView, type Event as SpaceEvent, type Pane, type Room,
+  makeNeedsYouAsk
 } from "@space/contracts";
 import type { DesignAssetFilter, DesignRepository, DesignRequestFilter } from "@space/db";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type MaybePromise } from "@space/runtime";
@@ -130,7 +131,8 @@ export function createDesignService(options: DesignServiceOptions) {
     await options.notifications.raise({ ownerUserId: owner, roomId: roomId ?? null, paneId: pane?.id ?? null, source: "DESIGN", kind: `DESIGN_${kind.toUpperCase()}`,
       severity: kind === "ready" ? "INFO" : "ATTENTION", title: trimmed(title, 200), body: trimmed(body, 2000),
       link: { ...(roomId ? { roomId } : {}), ...(pane ? { paneId: pane.id, target: `request:${request.id}` } : {}) }, dedupeKey: `design:${kind}:${request.id}`,
-      payload: { requestId: request.id }, telegram: settings.telegram ? true : null }).catch(() => undefined);
+      payload: { requestId: request.id, ...(kind === "question" ? { ask: makeNeedsYouAsk(body, { kind: "COPILOT_QUESTION", copilot: "DESIGN", questionId: request.id }) } : {}) },
+      telegram: settings.telegram ? true : null }).catch(() => undefined);
   }
   const clearNotices = (owner: string, requestId: string, kinds: NoticeKind[]) =>
     Promise.all(kinds.map((kind) => options.notifications?.resolve(owner, `design:${kind}:${requestId}`).catch(() => 0)));

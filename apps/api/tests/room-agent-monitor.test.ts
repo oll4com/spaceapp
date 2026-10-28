@@ -4,7 +4,7 @@ import { InMemoryRoomAgentMonitorRepository } from "@space/db";
 import { SpaceNotFoundError } from "@space/runtime";
 import type { DashboardActivityDetail } from "../src/agents-dashboard.js";
 import {
-  createRoomAgentMonitor, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
+  createRoomAgentMonitor, notePaneReached, ROOM_MONITOR_ACTIVE_MS, ROOM_MONITOR_EMPTY_MS, ROOM_MONITOR_OVERLAP_MS, ROOM_MONITOR_QUIET_MS, roomMonitorEventText, roomMonitorTransition
 } from "../src/room-agent-monitor.js";
 
 const at = "2026-10-13T05:00:00.000Z";
@@ -86,6 +86,29 @@ describe("room agent monitor", () => {
     expect((await c.repository.paneActivity("room:monitor1")).map((record) => [record.paneId, record.activity]).sort()).toEqual([
       ["pane:bob-term", "DONE"], ["pane:dana-term", "WORKING"]
     ]);
+  });
+
+  it("records HANDLED when a text Space typed for Nous reached the pane during the wait or up to 30 s before it (item 29a)", async () => {
+    const c = setup();
+    try {
+      c.set({ "pane:bob-term": { status: "working", source: "native" }, "pane:dana-term": { status: "working", source: "native" } });
+      await c.monitor.tick();
+      // Bob got Nous's answer 10 s before his wait showed; Dana's last text is a minute older than hers.
+      notePaneReached("pane:bob-term", Date.now() - 10_000);
+      notePaneReached("pane:dana-term", Date.now() - 60_000);
+      c.advance(ROOM_MONITOR_ACTIVE_MS);
+      c.set({ "pane:bob-term": { status: "waiting", reason: "Permission prompt", source: "native" }, "pane:dana-term": { status: "waiting", reason: "Permission prompt", source: "native" } });
+      await c.monitor.tick();
+      c.advance(ROOM_MONITOR_ACTIVE_MS);
+      c.set({ "pane:bob-term": { status: "working", source: "native" }, "pane:dana-term": { status: "working", source: "native" } });
+      await c.monitor.tick();
+      const waits = (await c.repository.listEvents("room:monitor1")).filter((event) => event.kind === "WAITING");
+      expect(Object.fromEntries(waits.map((event) => [event.paneName, event.status]))).toEqual({ Bob: "HANDLED", Dana: "RESOLVED" });
+      expect(waits.find((event) => event.paneName === "Bob")?.decision).toMatch(/reached the pane/);
+    } finally {
+      notePaneReached("pane:bob-term", 0);
+      notePaneReached("pane:dana-term", 0);
+    }
   });
 
   it("resolves a stopped pane once it runs again, so Live does not announce it again", async () => {

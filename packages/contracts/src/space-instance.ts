@@ -62,6 +62,8 @@ export const instanceBackgroundJobs = [
   "freelance-copilot-scheduler",
   // Security Copilot reads the public vulnerability feeds and matches them to the fleet's inventory; one instance raises the alerts.
   "security-copilot-watch",
+  // Monitoring Copilot pulls the collector's active alerts and the guardian relay's messages; one instance raises the notifications.
+  "monitoring-copilot-watch",
   // Notifies the admins when an exhausted Codex account is usable again; one instance announces it.
   "codex-quota-reset-notify",
   // Notifies the admins when the daily Space Memory maintenance run failed; only stable runs the memory workers.

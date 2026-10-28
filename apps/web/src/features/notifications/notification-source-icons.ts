@@ -12,6 +12,7 @@ export const notificationSourceIcons: Record<NotificationSource, LucideIcon> = {
   DESIGN: modeIcons.DESIGN,
   APP_STUDIO: modeIcons.APP_STUDIO,
   SECURITY_COPILOT: modeIcons.SECURITY_COPILOT,
+  MONITORING_COPILOT: modeIcons.MONITORING_COPILOT,
   VIDEO: modeIcons.VIDEO,
   ROOM_AGENT: sideSurfaceMeta["room-agent"].icon,
   COUNCIL: sideSurfaceMeta["shared-chat"].icon,

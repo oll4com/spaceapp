@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryNousFollowupsRepository } from "@space/db";
-import { createNousFollowups, NOUS_FOLLOWUP_OPEN_MAX } from "../src/nous/followups.js";
+import { createNousFollowups } from "../src/nous/followups.js";
 
 // Nous's follow-ups (plan clipboard:8s0ZNiO3q5ZT S3).
 const owner = "user:operator";
@@ -66,9 +66,17 @@ describe("Nous's follow-ups", () => {
     expect((await f.repository.list(owner, 10)).map((item) => item.status).sort()).toEqual(["CANCELLED", "FIRED", "FIRED", "FIRED"]);
   });
 
-  it("keeps at most 50 open follow-ups per owner", async () => {
+  it("has no limit on open follow-ups: adds past the old 50, lists every one, fires and cancels past the old windows (operator 2026-10-27)", async () => {
     const f = fixture();
-    for (let index = 0; index < NOUS_FOLLOWUP_OPEN_MAX; index += 1) await f.repository.add({ ownerUserId: owner, note: `n${index}`, trigger: { kind: "TICKET", ticketId: "q-20261017-000000-0000" } });
-    expect((await f.followups.run(owner, { op: "add", note: "one more", inMinutes: 5 }, null)).result).toContain("cancel some first");
+    const first = await f.repository.add({ ownerUserId: owner, note: "n0", trigger: { kind: "TICKET", ticketId: "q-20261017-000000-0000" } });
+    for (let index = 1; index < 250; index += 1) await f.repository.add({ ownerUserId: owner, note: `n${index}`, trigger: { kind: "TICKET", ticketId: "q-20261017-000000-0000" } });
+    expect(await f.followups.run(owner, { op: "add", note: "one more", inMinutes: 5 }, null)).toMatchObject({ ok: true });
+    expect((await f.followups.run(owner, { op: "list" }, null)).result.split("\n")).toHaveLength(251);
+    f.advance(6 * 60_000);
+    expect(await f.followups.tick()).toBe(1);
+    expect(f.notice.mock.calls.map((call) => (call as unknown as [string, string, string])[2])).toEqual([expect.stringContaining("(time came): one more")]);
+    // The oldest one, behind 249 open rows: cancel finds it by id, also once it has ended (the old 200-row window missed it).
+    expect((await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).ok).toBe(true);
+    expect(await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).toMatchObject({ ok: true, result: expect.stringContaining("Already cancelled") });
   });
 });

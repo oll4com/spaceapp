@@ -7,7 +7,8 @@ import {
   resolveVideoFormat, resolveVideoPaneMetadata,
   type Artifact, type CreateArtifactInput, type DesignAssetMadeBy, type DesignFormat, type Event as SpaceEvent, type Pane, type Room, type VideoAsset, type VideoAssetKind, type VideoEvent,
   type VideoEventType, type VideoJob, type VideoJobOp, type VideoPaneMetadata, type VideoPaneSettings, type VideoReframeMode, type VideoRequest, type VideoRequestCreateInput, type VideoRequester,
-  type VideoRequestStatus, type VideoSource, type VideoTechnique, type VideoTimeline, type VideoTtsEngine, type VideoView
+  type VideoRequestStatus, type VideoSource, type VideoTechnique, type VideoTimeline, type VideoTtsEngine, type VideoView,
+  makeNeedsYouAsk
 } from "@space/contracts";
 import type { VideoAssetFilter, VideoRepository, VideoRequestFilter } from "@space/db";
 import { SpaceConflictError, SpaceNotFoundError, type MaybePromise } from "@space/runtime";
@@ -141,7 +142,8 @@ export function createVideoService(options: VideoServiceOptions) {
     await options.notifications.raise({ ownerUserId: owner, roomId: roomId ?? null, paneId: pane?.id ?? null, source: "VIDEO", kind: `VIDEO_${kind.toUpperCase()}`,
       severity: kind === "ready" ? "INFO" : "ATTENTION", title: trimmed(title, 200), body: trimmed(body, 2000),
       link: { ...(roomId ? { roomId } : {}), ...(pane ? { paneId: pane.id, target: `request:${request.id}` } : {}) }, dedupeKey: `video:${kind}:${request.id}`,
-      payload: { requestId: request.id }, telegram: settings.telegram ? true : null }).catch(() => undefined);
+      payload: { requestId: request.id, ...(kind === "question" ? { ask: makeNeedsYouAsk(body, { kind: "COPILOT_QUESTION", copilot: "VIDEO", questionId: request.id }) } : {}) },
+      telegram: settings.telegram ? true : null }).catch(() => undefined);
   }
   const clearNotices = (owner: string, requestId: string, kinds: NoticeKind[]) =>
     Promise.all(kinds.map((kind) => options.notifications?.resolve(owner, `video:${kind}:${requestId}`).catch(() => 0)));

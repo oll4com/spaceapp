@@ -9,18 +9,30 @@ import { vaultAuditIdSchema } from "./vault.js";
 export const vaultHandoffKeyIdSchema = z.string().regex(/^vault_key:[A-Za-z0-9_-]{16,64}$/);
 export const VAULT_HANDOFF_KEY_LIMITS = { valueMax: 4_096, labelMax: 80, defaultHours: 168, maxHours: 720 } as const;
 
-/** What the operator pastes: a label, the key and how long an agent has to take it. */
+const keyLabel = z.string().trim().min(1).max(VAULT_HANDOFF_KEY_LIMITS.labelMax);
+const keyValue = z.string().min(1).max(VAULT_HANDOFF_KEY_LIMITS.valueMax).refine((value) => !/[\r\n]/.test(value), "A key is one line.");
+
+/**
+ * What the operator pastes: a label, the key and how long an agent has to take it (null: never expires). `kept` (operator
+ * request 2026-10-26): the key stays after an agent wrote it, any of the owner's panes may write it again, and agents find it
+ * by label (space_vault_key_list): server, VM and admin passwords live here instead of in memory or chat.
+ */
 export const vaultHandoffKeyCreateRequestSchema = z.object({
-  label: z.string().trim().min(1).max(VAULT_HANDOFF_KEY_LIMITS.labelMax),
-  value: z.string().min(1).max(VAULT_HANDOFF_KEY_LIMITS.valueMax).refine((value) => !/[\r\n]/.test(value), "A key is one line."),
-  expiresInHours: z.number().int().min(1).max(VAULT_HANDOFF_KEY_LIMITS.maxHours).default(VAULT_HANDOFF_KEY_LIMITS.defaultHours)
+  label: keyLabel,
+  value: keyValue,
+  expiresInHours: z.number().int().min(1).max(VAULT_HANDOFF_KEY_LIMITS.maxHours).nullable().default(VAULT_HANDOFF_KEY_LIMITS.defaultHours),
+  kept: z.boolean().default(false)
 }).strict();
 
 /** A key as the dock lists it: never its value. */
 export const vaultHandoffKeySchema = z.object({
-  id: vaultHandoffKeyIdSchema, label: z.string().max(VAULT_HANDOFF_KEY_LIMITS.labelMax), createdAt: z.string().datetime(), expiresAt: z.string().datetime(),
+  id: vaultHandoffKeyIdSchema, label: z.string().max(VAULT_HANDOFF_KEY_LIMITS.labelMax), createdAt: z.string().datetime(), expiresAt: z.string().datetime().nullable(),
   takenAt: z.string().datetime().nullable(), takenByPaneId: z.string().max(200).nullable(), usedAt: z.string().datetime().nullable(), usedByPaneId: z.string().max(200).nullable(),
-  hasValue: z.boolean()
+  hasValue: z.boolean(),
+  /** Stays after use; agents list it. */
+  kept: z.boolean(),
+  /** The pane (or "nous") that saved it; null: the operator. */
+  savedBy: z.string().max(200).nullable()
 }).strict();
 export type VaultHandoffKey = z.infer<typeof vaultHandoffKeySchema>;
 
@@ -31,5 +43,14 @@ export const vaultAgentKeyRequestSchema = z.object({ id: vaultHandoffKeyIdSchema
 export const vaultAgentKeyTakeResultSchema = z.object({
   status: z.literal("TAKEN"), auditId: vaultAuditIdSchema.nullable(), reason: z.null(), value: z.string().min(1).max(VAULT_HANDOFF_KEY_LIMITS.valueMax)
 }).strict();
+/** space_vault_key_list: the kept keys, by words in their label (all must match, any case). */
+export const vaultAgentKeyListRequestSchema = z.object({ q: z.string().trim().min(1).max(200).optional() }).strict();
+export const vaultAgentKeyListResultSchema = z.object({
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(),
+  keys: z.array(z.object({ id: vaultHandoffKeyIdSchema, label: z.string().max(VAULT_HANDOFF_KEY_LIMITS.labelMax), savedBy: z.string().max(200).nullable() }).strict()).max(1_000)
+}).strict();
+/** space_vault_key_save: a password or key that reached the agent (a mail, the operator, a service), kept for agents. */
+export const vaultAgentKeySaveRequestSchema = z.object({ label: keyLabel, value: keyValue }).strict();
+export const vaultAgentKeySaveResultSchema = z.object({ status: z.literal("SAVED"), auditId: vaultAuditIdSchema.nullable(), reason: z.null(), id: vaultHandoffKeyIdSchema }).strict();
 /** The placeholder the relay replaces in the file content the agent composes. */
 export const VAULT_HANDOFF_KEY_PLACEHOLDER = "{{SPACE_VAULT_KEY}}";

@@ -89,7 +89,7 @@ async function waitForFrame(
   throw new Error(`Timed out waiting for terminal frame. Observed: ${JSON.stringify(frames)}`);
 }
 
-async function createHarness(roomKind?: "AGENT_PROOF") {
+async function createHarness(roomKind?: "AGENT_PROOF", options: { beforeCodexDefaults?: () => Promise<void> } = {}) {
   const commandDir = await mkdtemp(join(tmpdir(), "space-cli-control-command-"));
   const workspaceRoot = await mkdtemp(join(tmpdir(), "space-cli-control-workspace-"));
   const commandPath = join(commandDir, "codex-vscode-parity");
@@ -163,7 +163,10 @@ async function createHarness(roomKind?: "AGENT_PROOF") {
       secureCookies: false
     },
     codexCliModeDefaultsService: {
-      build: async () => codexDefaults.build,
+      build: async () => {
+        await options.beforeCodexDefaults?.();
+        return codexDefaults.build;
+      },
       read: async () => ({
         defaults: codexDefaults,
         catalog: {
@@ -814,6 +817,115 @@ describe("CLI terminal protocol-v2 control", () => {
       expect(accepted.statusCode).toBe(200);
       expect(harness.host.terminate).toHaveBeenCalledTimes(1);
       controller.socket.terminate();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("re-checks the control lease before a forced restart interrupts the session, so a takeover during preparation wins", async () => {
+    let gate: ReturnType<typeof deferred> | null = null;
+    let preparing = 0;
+    const harness = await createHarness(undefined, {
+      beforeCodexDefaults: async () => {
+        if (!gate) return;
+        preparing += 1;
+        await gate.promise;
+      }
+    });
+    const auth = authFor("user:forced-restart-race");
+    try {
+      const session = await issueSession(harness, auth);
+      const first = await connect(harness, session, auth, { tabLineageId: firstTabLineageId, pageClientId: firstPageClientId });
+      const firstReady = await waitForFrame(first.frames, (frame) => frame.type === "ready");
+      expect(firstReady.controlState).toBe("CONTROLLER");
+
+      // The controller asks for a restart; it passes the first lease check, then waits while the launch is prepared.
+      gate = deferred();
+      const restart = harness.app.inject({
+        method: "POST",
+        url: `/api/panes/${encodeURIComponent(harness.pane.id)}/cli/session`,
+        headers: {
+          cookie: auth.cookie,
+          [csrfHeaderName]: auth.csrfToken,
+          ...httpControlHeaders(firstReady.leaseId!, { tabLineageId: firstTabLineageId, pageClientId: firstPageClientId })
+        },
+        payload: { runtimeId: "cli:codex", forceRestart: true }
+      });
+      await vi.waitFor(() => expect(preparing).toBe(1));
+
+      // Meanwhile another tab takes control of the session.
+      const second = await connect(harness, await issueSession(harness, auth, "GET"), auth, {
+        tabLineageId: secondTabLineageId,
+        pageClientId: secondPageClientId
+      });
+      await waitForFrame(second.frames, (frame) => frame.type === "ready");
+      second.socket.send(JSON.stringify({
+        type: "control_takeover",
+        expectedLeaseId: firstReady.leaseId,
+        interactionId: "66666666-6666-4666-8666-666666666666"
+      }));
+      const granted = await waitForFrame(second.frames, (frame) => frame.type === "control_granted");
+      gate.resolve();
+      gate = null;
+
+      const refused = await restart;
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ error: { code: "CLI_CONTROL_REQUIRED" } });
+      expect(harness.host.terminate).not.toHaveBeenCalled();
+      expect(await harness.store.getActivePaneCliSession(harness.pane.id)).toMatchObject({ sessionId: session.session.sessionId, status: "RUNNING" });
+
+      // The page that holds the lease now restarts the session.
+      const accepted = await harness.app.inject({
+        method: "POST",
+        url: `/api/panes/${encodeURIComponent(harness.pane.id)}/cli/session`,
+        headers: {
+          cookie: auth.cookie,
+          [csrfHeaderName]: auth.csrfToken,
+          ...httpControlHeaders(granted.leaseId!, { tabLineageId: secondTabLineageId, pageClientId: secondPageClientId })
+        },
+        payload: { runtimeId: "cli:codex", forceRestart: true }
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json().session.sessionId).not.toBe(session.session.sessionId);
+      expect(harness.host.terminate).toHaveBeenCalledTimes(1);
+      first.socket.terminate();
+      second.socket.terminate();
+    } finally {
+      gate?.resolve();
+      await harness.cleanup();
+    }
+  });
+
+  it("links the request that allocated a CLI session to that session, its task and revision in the trace lookup", async () => {
+    const harness = await createHarness();
+    const auth = authFor("user:trace-lookup");
+    try {
+      const response = await harness.app.inject({
+        method: "POST",
+        url: `/api/panes/${encodeURIComponent(harness.pane.id)}/cli/session`,
+        headers: { cookie: auth.cookie, [csrfHeaderName]: auth.csrfToken },
+        payload: { runtimeId: "cli:codex" }
+      });
+      expect(response.statusCode).toBe(200);
+      const session = response.json().session as { sessionId: string; cliTaskId: string; cliTaskRevisionId: string };
+      const requestId = String(response.headers["x-request-id"]);
+      expect(requestId).toMatch(/^req:/);
+      const lookup = await harness.app.inject({ method: "GET", url: `/api/admin/traces/${encodeURIComponent(requestId)}`, headers: { cookie: auth.cookie } });
+      expect(lookup.statusCode).toBe(200);
+      expect(lookup.json().cliSessions).toEqual([expect.objectContaining({
+        sessionId: session.sessionId, paneId: harness.pane.id, runtimeId: "cli:codex",
+        cliTaskId: session.cliTaskId, cliTaskRevisionId: session.cliTaskRevisionId, launchMode: "FRESH"
+      })]);
+      // A later request that only rejoins the running session does not take it over.
+      const rejoin = await harness.app.inject({
+        method: "POST",
+        url: `/api/panes/${encodeURIComponent(harness.pane.id)}/cli/session`,
+        headers: { cookie: auth.cookie, [csrfHeaderName]: auth.csrfToken },
+        payload: { runtimeId: "cli:codex" }
+      });
+      const rejoinLookup = await harness.app.inject({ method: "GET",
+        url: `/api/admin/traces/${encodeURIComponent(String(rejoin.headers["x-request-id"]))}`, headers: { cookie: auth.cookie } });
+      expect(rejoinLookup.json().cliSessions).toEqual([]);
     } finally {
       await harness.cleanup();
     }

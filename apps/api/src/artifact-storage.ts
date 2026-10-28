@@ -1,7 +1,7 @@
 import { join, resolve, sep } from "node:path";
 import type { Artifact } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
-import { agentFileStoragePath } from "./cli-agent-files.js";
+import { agentFileReadPath } from "./cli-agent-files.js";
 import { FilesystemError } from "./filesystem-error.js";
 import { unlinkWorkspaceFile } from "./workspace-filesystem.js";
 
@@ -72,7 +72,7 @@ export function localArtifactFilePath(input: { artifactRoot: string; artifact: A
   }
   if (parsed.hostname === "agent-files" && segments.length === 5) {
     const [roomId, paneId, sessionId, day, filename] = segments as [string, string, string, string, string];
-    candidate = agentFileStoragePath({
+    candidate = agentFileReadPath({
       artifactRoot: input.artifactRoot,
       roomId,
       paneId,
