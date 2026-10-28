@@ -25,6 +25,7 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   FREELANCE_COPILOT: "Freelance Copilot",
   APP_STUDIO: "App Studio",
   SECURITY_COPILOT: "Security Copilot",
+  MONITORING_COPILOT: "Monitoring Copilot",
   VIDEO: "Video"
 };
 

@@ -89,7 +89,8 @@ describe("App Studio routes", () => {
 
       const asked = (await app.inject({ method: "POST", url: `${cli}/ask`, headers: agent, payload: { question: "Light or dark theme?", options: ["Light", "Dark"] } })).json();
       const pending = (await app.inject({ method: "GET", url: "/api/notifications?status=OPEN", headers })).json().notifications as Array<{ source: string; kind: string; severity: string }>;
-      expect(pending).toContainEqual(expect.objectContaining({ source: "APP_STUDIO", kind: "APP_STUDIO_QUESTION", severity: "ATTENTION" }));
+      expect(pending).toContainEqual(expect.objectContaining({ source: "APP_STUDIO", kind: "APP_STUDIO_QUESTION", severity: "ATTENTION",
+        payload: expect.objectContaining({ ask: { question: "Light or dark theme?", options: ["Light", "Dark"], answer: { kind: "COPILOT_QUESTION", copilot: "APP_STUDIO", questionId: asked.question.id } } }) }));
       const answerUrl = `${url}/questions/${encodeURIComponent(asked.question.id)}/answer`;
       expect((await app.inject({ method: "POST", url: answerUrl, headers, payload: { answer: "Dark" } })).json().question).toMatchObject({ status: "ANSWERED", payload: { answer: "Dark", answeredBy: "OPERATOR" } });
       expect((await app.inject({ method: "POST", url: answerUrl, headers, payload: { answer: "Light" } })).statusCode).toBe(409);
@@ -161,6 +162,11 @@ describe("App Studio routes", () => {
       expect(second.statusCode).toBe(200);
       expect(store.getArtifact(artifactId)).toMatchObject({ pinnedAt: null, expiresAt: expect.any(String) });
       expect(store.getArtifact(second.json().artifactId)).toMatchObject({ pinnedAt: expect.any(String) });
+      // A release-signed build (the app's kept Vault key) says so; any other signer name is refused.
+      const third = await upload({ ...fields, versionName: "1.0.2", versionCode: "3", signedWith: "release" }, apk("c"));
+      expect(third.statusCode).toBe(200);
+      expect(store.getArtifact(third.json().artifactId)).toMatchObject({ metadata: expect.objectContaining({ signedWith: "release" }) });
+      expect((await upload({ ...fields, signedWith: "my-own-key" }, apk("d"))).statusCode).toBe(409);
       expect((await upload(fields, Buffer.from("<html></html>"))).statusCode).toBe(409);
       expect((await upload({ ...fields, packageName: "../../x" }, apk("c"))).statusCode).toBe(409);
       const shell = store.createPane({ roomId: room.id, title: "Claude CLI", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });

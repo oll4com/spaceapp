@@ -26,6 +26,8 @@ const NEXT_MAX_WAIT_MS = 120_000;
 /** A brief nobody reported for this long goes back to the queue (a crashed CLI). */
 const TAKEN_STALE_MS = 30 * 60_000;
 const DAY_MS = 86_400_000;
+/** How long an approval stays good for an unscheduled post (sendStaleApprovalBack). */
+const APPROVAL_FRESH_MS = DAY_MS;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface EventInput { paneId?: string | null; runId?: string | null; postId?: string | null; campaignId?: string | null; type: MarketingEventType; status?: "PENDING" | "TAKEN" | "DONE" | null; message: string; payload?: Record<string, unknown> }
@@ -84,6 +86,28 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     return oldest ? new Date(Date.parse(oldest) + channel.perDays * DAY_MS).toISOString() : now();
   }
 
+  /**
+   * An unscheduled approved post publishes at once only on a fresh approval: given in the last 24 hours, the post unchanged since
+   * (27/10: approvals from 26/10, an old licence text and placeholders, would have gone out). An older one goes back to review with
+   * the reason instead of publishing; true when it was sent back.
+   */
+  async function sendStaleApprovalBack(owner: string, pane: Pane | null, post: MarketingPost): Promise<boolean> {
+    if (post.status !== "APPROVED" || post.scheduledAt) return false;
+    const approval = (await repository.listEvents(owner, { postId: post.id, types: ["REVIEW_DECIDED"], limit: 20 }))
+      .find((event) => event.payload.decision === "approve" || event.payload.decision === "edit");
+    const approvedAt = approval ? Date.parse(approval.createdAt) : Number.NaN;
+    const reason = !approval ? "it has no recorded approval"
+      : Date.parse(now()) - approvedAt > APPROVAL_FRESH_MS ? `it was approved ${approval.createdAt.slice(0, 16).replace("T", " ")} UTC, more than 24 hours ago`
+        : Date.parse(post.updatedAt) > approvedAt + 1_000 ? "it changed after the approval" : null;
+    if (!reason) return false;
+    const back = await repository.updatePost(owner, post.id, { status: "IN_REVIEW" }, ["APPROVED"]);
+    if (!back) return false;
+    await record(owner, { paneId: pane?.id ?? back.paneId, postId: back.id, campaignId: back.campaignId, type: "REVIEW_REQUESTED",
+      message: `Review again: the ${MARKETING_CHANNEL_LABELS[back.channel]} post has no schedule and ${reason}; approve it again to publish it`,
+      payload: { wordingIssues: marketingWordingIssues(`${back.title ?? ""}\n${back.body}`), staleApproval: reason } });
+    return true;
+  }
+
   /** The publication gate (see the service comment); records a rule's use. Throws MARKETING_NEEDS_REVIEW / MARKETING_LIMIT. */
   async function authorize(owner: string, pane: Pane | null, post: MarketingPost): Promise<{ ruleId: string | null }> {
     const settings = settingsOf(pane);
@@ -96,6 +120,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
     }
     const slot = await nextSlot(owner, pane, post);
     if (slot) throw new SpaceConflictError(`MARKETING_LIMIT: ${label} allows ${settings.channels[post.channel].posts} post(s) per ${settings.channels[post.channel].perDays} day(s); the next slot opens at ${slot}.`);
+    if (await sendStaleApprovalBack(owner, pane, post)) throw new SpaceConflictError("MARKETING_NEEDS_REVIEW: the approval is older than 24 hours or the post changed since; it went back to review.");
     if (post.status === "APPROVED") return { ruleId: null };
     const issues = marketingWordingIssues(`${post.title ?? ""}\n${post.body}`);
     if (issues.length) throw new SpaceConflictError(`MARKETING_NEEDS_REVIEW: the post makes unqualified claims (${issues.join(", ")}); rephrase it or ask for a review.`);
@@ -158,11 +183,32 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       await record(owner, { paneId: pane?.id ?? null, runId, postId: post.id, campaignId: post.campaignId, type: "POST_DRAFTED", message: `Drafted a ${MARKETING_CHANNEL_LABELS[post.channel]} ${post.kind.toLowerCase().replace("_", " ")}${post.title ? `: ${post.title}` : ""}` });
       return { post, wordingIssues: marketingWordingIssues(`${post.title ?? ""}\n${post.body}`) };
     },
-    /** The agent edits its own drafts (and posts sent back for changes); reviewed or published posts stay as they are. */
+    /**
+     * The agent edits its own drafts (and posts sent back for changes). An approved post not yet published is taken back:
+     * it only goes down, to an unscheduled draft that needs review again. Posts in review or being published stay as they are.
+     */
     async updatePost(owner: string, id: string, patch: MarketingPostUpdate) {
-      const post = await repository.updatePost(owner, id, { ...patch, assets: patch.assets && await resolveAssets(owner, patch.assets) }, ["DRAFT", "FAILED"]);
-      if (!post) throw new SpaceConflictError("Only a draft (or a failed post) can be edited; a post in review waits for the operator.");
+      const current = await postOf(owner, id);
+      const takeBack = current.status === "APPROVED" && !current.publishedAt;
+      const post = await repository.updatePost(owner, id, { ...patch, assets: patch.assets && await resolveAssets(owner, patch.assets), ...(takeBack ? { status: "DRAFT" as const, scheduledAt: null } : {}) },
+        takeBack ? ["APPROVED"] : ["DRAFT", "FAILED"]);
+      if (!post) throw new SpaceConflictError("Only a draft, a failed post or an approved post not yet published can be edited; a post in review waits for the operator.");
+      if (takeBack) await record(owner, { paneId: post.paneId, postId: post.id, campaignId: post.campaignId, type: "NOTE", message: `The copilot took back the approved ${MARKETING_CHANNEL_LABELS[post.channel]} post; it needs review again` });
       return { post, wordingIssues: marketingWordingIssues(`${post.title ?? ""}\n${post.body}`) };
+    },
+    /**
+     * An approved post the copilot's own pacing holds (27/10 15:44 UTC: one Reddit reply held to 28/10 08:10 by the agent's 5-a-day rule
+     * stopped the run at its first item): it keeps its approval with `until` as its schedule, so space_marketing_next serves the next item
+     * and brings it back as a PUBLISH item then. At most 14 days ahead.
+     */
+    async deferPublish(owner: string, pane: Pane | null, input: { postId: string; until: string; reason: string }) {
+      const at = Date.parse(now());
+      if (Date.parse(input.until) <= at || Date.parse(input.until) > at + 14 * DAY_MS) throw new SpaceConflictError("MARKETING_DEFER: until must be in the next 14 days.");
+      const post = await repository.updatePost(owner, input.postId, { scheduledAt: new Date(Date.parse(input.until)).toISOString() }, ["APPROVED"]);
+      if (!post) throw new SpaceConflictError("Only an approved post waiting to be published can be deferred.");
+      await record(owner, { paneId: pane?.id ?? post.paneId, postId: post.id, campaignId: post.campaignId, type: "NOTE",
+        message: `Deferred the ${MARKETING_CHANNEL_LABELS[post.channel]} post to ${post.scheduledAt}: ${input.reason}`, payload: { deferredUntil: post.scheduledAt, reason: input.reason } });
+      return { post };
     },
     /** Graphics the Design pane delivered for a post ("Make graphic"): added to any post that is not published or rejected. */
     async attachAssets(owner: string, postId: string, assets: Array<{ artifactId: string; label: string }>) {
@@ -187,7 +233,9 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
         ? { status: "APPROVED" as const, reviewNote: input.note ?? null, ...(input.decision === "edit" ? { ...(input.body !== undefined ? { body: input.body } : {}), ...(input.title !== undefined ? { title: input.title } : {}) } : {}),
           ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}) }
         : { status: input.decision === "revise" ? "DRAFT" as const : "REJECTED" as const, reviewNote: input.note ?? null };
-      const post = await repository.updatePost(owner, postId, patch, ["DRAFT", "IN_REVIEW", "FAILED"]);
+      // An approved post not yet published can still be rejected (an "Always approve" let one through the operator did not want).
+      const rejectApproved = input.decision === "reject" && current.status === "APPROVED" && !current.publishedAt;
+      const post = await repository.updatePost(owner, postId, patch, rejectApproved ? ["APPROVED"] : ["DRAFT", "IN_REVIEW", "FAILED"]);
       if (!post) throw new SpaceConflictError("This post is no longer waiting for a decision.");
       const label = MARKETING_CHANNEL_LABELS[post.channel];
       if (input.decision === "edit" && (post.body !== current.body || post.title !== current.title)) {
@@ -334,7 +382,7 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       const due = (await repository.listPosts(owner, { status: ["APPROVED"], limit: 200 })).filter((post) => settings.channels[post.channel].enabled && (!post.scheduledAt || post.scheduledAt <= at))
         .sort((left, right) => (left.scheduledAt ?? left.updatedAt).localeCompare(right.scheduledAt ?? right.updatedAt));
       const open: MarketingPost[] = [];
-      for (const post of due) if (!await nextSlot(owner, pane, post)) open.push(post);
+      for (const post of due) if (!await sendStaleApprovalBack(owner, pane, post) && !await nextSlot(owner, pane, post)) open.push(post);
       return open;
     },
     async runView(owner: string, pane: Pane): Promise<MarketingRunView> {

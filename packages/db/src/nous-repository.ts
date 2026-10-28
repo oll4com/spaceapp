@@ -22,7 +22,8 @@ export interface NousRepository {
   clearMessages(owner: string): Promise<number>;
   createDecision(decision: NewNousDecision): Promise<NousDecision>;
   getDecision(owner: string, id: string): Promise<NousDecision | null>;
-  listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit: number }): Promise<NousDecision[]>;
+  /** Newest first; without `limit` every match (the dock lists every OPEN decision, however old). */
+  listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit?: number }): Promise<NousDecision[]>;
   /** Moves an OPEN decision; null when it is no longer open (answered twice, cancelled). */
   answerDecision(owner: string, id: string, patch: { status: Exclude<NousDecisionStatus, "OPEN">; answer: string | null }): Promise<NousDecision | null>;
   setDecisionOutcome(owner: string, id: string, outcome: string): Promise<void>;
@@ -37,8 +38,18 @@ export interface NousRepository {
   addTurnFacts(facts: NousTurnFacts): Promise<void>;
   /** The owner's turns that started at or after `since`, oldest first. */
   listTurnFacts(owner: string, since: string): Promise<NousTurnFacts[]>;
+  /** Goal 7365014c-e: one row per operator answer to a decision or needs-you card; rows older than 180 days go (class B). */
+  appendLedger(row: NewNousLedgerRow): Promise<void>;
+  /** The owner's ledger rows at or after `since`, newest first. */
+  listLedger(owner: string, since: string): Promise<NousLedgerRow[]>;
   dispose(): Promise<void>;
 }
+
+export interface NewNousLedgerRow { ownerUserId: string; source: string; kind: string; title: string; predicted: string | null; answer: string; match: boolean | null; ref: string | null }
+export interface NousLedgerRow extends NewNousLedgerRow { at: string }
+const LEDGER_KEEP_MS = 180 * 86_400_000;
+const ledgerRow = (row: NewNousLedgerRow): NewNousLedgerRow => ({ ...row, source: clip(row.source, 60), kind: clip(row.kind, 2_000), title: clip(row.title.trim() || "(untitled)", 300),
+  predicted: row.predicted === null ? null : clip(row.predicted, 200), answer: clip(row.answer.trim() || "(no text)", 500), ref: row.ref === null ? null : clip(row.ref, 200) });
 
 const newId = (prefix: string) => `${prefix}:${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 const now = () => new Date().toISOString();
@@ -56,6 +67,7 @@ export class InMemoryNousRepository implements NousRepository {
   private readonly decisions = new Map<string, NousDecision>();
   private readonly notes = new Map<string, NousNote>();
   private readonly turns: NousTurnFacts[] = [];
+  private ledger: NousLedgerRow[] = [];
 
   async addMessage(input: NewNousMessage) {
     const at = now();
@@ -86,7 +98,7 @@ export class InMemoryNousRepository implements NousRepository {
     const decision = this.decisions.get(id);
     return decision && decision.ownerUserId === owner ? structuredClone(decision) : null;
   }
-  async listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit: number }) {
+  async listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit?: number }) {
     return structuredClone([...this.decisions.values()]
       .filter((decision) => decision.ownerUserId === owner && (!options.statuses || options.statuses.includes(decision.status)))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, options.limit));
@@ -129,6 +141,13 @@ export class InMemoryNousRepository implements NousRepository {
     return structuredClone(this.turns.filter((turn) => turn.ownerUserId === owner && turn.startedAt >= since)
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt)));
   }
+  async appendLedger(row: NewNousLedgerRow) {
+    const keep = new Date(Date.now() - LEDGER_KEEP_MS).toISOString();
+    this.ledger = [...this.ledger.filter((entry) => entry.at >= keep), { ...ledgerRow(row), at: now() }];
+  }
+  async listLedger(owner: string, since: string) {
+    return structuredClone(this.ledger.filter((entry) => entry.ownerUserId === owner && entry.at >= since).reverse());
+  }
   async dispose() {}
 }
 
@@ -148,7 +167,7 @@ const messageOf = (row: MessageRow) => nousMessageSchema.parse({ ...row, created
 const decisionOf = (row: DecisionRow) => nousDecisionSchema.parse({ ...row, createdAt: iso(row.createdAt), answeredAt: row.answeredAt === null ? null : iso(row.answeredAt) });
 interface TurnFactsRow extends Omit<NousTurnFacts, "startedAt" | "endedAt"> { startedAt: Date | string; endedAt: Date | string }
 const turnFactsColumns = `turn_id AS "turnId", owner_user_id AS "ownerUserId", reason, status, tools, plan_points AS "planPoints", outcomes,
-  started_at AS "startedAt", ended_at AS "endedAt", model, effort, cost_usd::float8 AS "costUsd", tokens`;
+  started_at AS "startedAt", ended_at AS "endedAt", model, effort, cost_usd::float8 AS "costUsd", tokens, goal_id AS "goalId"`;
 const rowCount = (result: unknown) => (result as { rowCount?: number | null }).rowCount ?? 0;
 
 export class PostgresNousRepository implements NousRepository {
@@ -186,9 +205,9 @@ export class PostgresNousRepository implements NousRepository {
     const result = await this.pool.query<DecisionRow>(`SELECT ${decisionColumns} FROM nous_decisions WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
     return result.rows[0] ? decisionOf(result.rows[0]) : null;
   }
-  async listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit: number }) {
+  async listDecisions(owner: string, options: { statuses?: NousDecisionStatus[]; limit?: number }) {
     const result = await this.pool.query<DecisionRow>(`SELECT ${decisionColumns} FROM nous_decisions WHERE owner_user_id = $1
-      AND ($2::text[] IS NULL OR status = ANY($2::text[])) ORDER BY created_at DESC, id DESC LIMIT $3`, [owner, options.statuses ?? null, options.limit]);
+      AND ($2::text[] IS NULL OR status = ANY($2::text[])) ORDER BY created_at DESC, id DESC LIMIT $3`, [owner, options.statuses ?? null, options.limit ?? null]);
     return result.rows.map(decisionOf);
   }
   async answerDecision(owner: string, id: string, patch: { status: Exclude<NousDecisionStatus, "OPEN">; answer: string | null }) {
@@ -220,15 +239,26 @@ export class PostgresNousRepository implements NousRepository {
   }
   async addTurnFacts(facts: NousTurnFacts) {
     const turn = nousTurnFactsSchema.parse(facts);
-    await this.pool.query(`INSERT INTO nous_turn_facts (turn_id, owner_user_id, reason, status, tools, plan_points, outcomes, started_at, ended_at, model, effort, cost_usd, tokens)
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb) ON CONFLICT (turn_id) DO NOTHING`,
+    await this.pool.query(`INSERT INTO nous_turn_facts (turn_id, owner_user_id, reason, status, tools, plan_points, outcomes, started_at, ended_at, model, effort, cost_usd, tokens, goal_id)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14) ON CONFLICT (turn_id) DO NOTHING`,
     [turn.turnId, turn.ownerUserId, turn.reason, turn.status, JSON.stringify(turn.tools), turn.planPoints, JSON.stringify(turn.outcomes), turn.startedAt, turn.endedAt,
-      turn.model, turn.effort, turn.costUsd, turn.tokens === null ? null : JSON.stringify(turn.tokens)]);
+      turn.model, turn.effort, turn.costUsd, turn.tokens === null ? null : JSON.stringify(turn.tokens), turn.goalId]);
   }
   async listTurnFacts(owner: string, since: string) {
     const result = await this.pool.query<TurnFactsRow>(`SELECT ${turnFactsColumns} FROM nous_turn_facts WHERE owner_user_id = $1 AND started_at >= $2
       ORDER BY started_at ASC, turn_id ASC`, [owner, since]);
     return result.rows.map((row) => nousTurnFactsSchema.parse({ ...row, startedAt: iso(row.startedAt), endedAt: iso(row.endedAt) }));
+  }
+  async appendLedger(row: NewNousLedgerRow) {
+    const entry = ledgerRow(row);
+    await this.pool.query(`INSERT INTO nous_decision_ledger (owner_user_id, source, kind, title, predicted, answer, match, ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [entry.ownerUserId, entry.source, entry.kind, entry.title, entry.predicted, entry.answer, entry.match, entry.ref]);
+    await this.pool.query("DELETE FROM nous_decision_ledger WHERE owner_user_id = $1 AND at < now() - interval '180 days'", [entry.ownerUserId]);
+  }
+  async listLedger(owner: string, since: string) {
+    const result = await this.pool.query<NousLedgerRow & { at: Date | string }>(`SELECT owner_user_id AS "ownerUserId", at, source, kind, title, predicted, answer, match, ref
+      FROM nous_decision_ledger WHERE owner_user_id = $1 AND at >= $2 ORDER BY at DESC, id DESC LIMIT 500`, [owner, since]);
+    return result.rows.map((row) => ({ ...row, at: iso(row.at) }));
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

@@ -185,6 +185,25 @@ describe("Nous pane board pieces", () => {
     expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.notifications.map((item) => item.id)).toEqual(["notification:review"]);
   });
 
+  it("names a copilot's own waiting work and waits on Nothing for it, unless something waits for the operator (Ask Last step 8)", async () => {
+    // 27/10 22:35 BKK: a Marketing pane said "waiting for approval" 3 hours after its posts were approved (the agent's last report).
+    const f = setup({ answer: (prompt) => JSON.stringify([...prompt.matchAll(/"paneId":"([^"]+)"/g)].map((match) => match[1]).filter((id) => id !== "…")
+      .map((paneId) => ({ paneId, line: "Περιμένει έγκριση για τις αναρτήσεις", waitsOn: "OPERATOR", needsOperator: true }))) });
+    const mia = pane("pane:mia00001", "Mia", "room:beta00001", { mode: "MARKETING_COPILOT", terminalRuntimeId: "cli:claude" });
+    f.snapshot.rooms = [{ room: f.snapshot.rooms[1]!.room, sample: { data: [mia], activity: { [mia.id]: "idle" }, details: {}, sampledAt: "" } }];
+    f.snapshot.reports = [report(mia.id, "9", "2026-10-27T11:50:00.000Z", { status: "WAITING", summary: "Waiting for approval of 4 Reddit replies." })];
+    f.snapshot.copilotWork = { [mia.id]: 4 };
+    await f.board.tick(owner);
+    expect(f.prompts[0]).toContain('"waitingForCopilot":4');
+    const line = (await f.board.board(owner)).rooms[0]!.panes[0]!.summary;
+    expect(line).toEqual(expect.objectContaining({ line: "Περιμένει έγκριση για τις αναρτήσεις (4 waiting for the copilot)", waitsOn: "NONE", needsOperator: false }));
+    // A card for the operator on the pane keeps it theirs.
+    const input = boardPanes(f.snapshot, { showClosed: false })[0]!;
+    const card = { id: "notification:review", paneId: mia.id, source: "MARKETING_COPILOT", severity: "ATTENTION", title: "Review a post", status: "OPEN" } as unknown as SpaceNotification;
+    expect(fallbackSummary({ ...input, notifications: [card] }, 0)).toEqual(expect.objectContaining({ waitsOn: "OPERATOR" }));
+    expect(fallbackSummary({ ...input, report: { ...input.report!, status: "NEEDS_YOU" } }, 0)).toEqual(expect.objectContaining({ line: "Waiting for approval of 4 Reddit replies. (4 waiting for the copilot)".slice(0, 400), waitsOn: "NONE" }));
+  });
+
   it("keeps the prompt within the worker's limit", () => {
     const panes = Array.from({ length: 12 }, (_, index) => ({ paneId: `pane:${index}`, room: "R", pane: "P", kind: "CLI", state: "working", report: { at: "", status: "PROGRESS", text: "x".repeat(260) } }));
     expect(summaryPrompt(panes, "en", "2026-10-19T10:00:00Z").length).toBeLessThan(12_000);

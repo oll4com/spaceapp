@@ -1,5 +1,19 @@
+<h3 align="center">🏅 Accepted into Anthropic’s Claude for Startups program.<br>Enrolled in the OpenAI Partner Network.</h3>
+
+<p align="center"><sub>Through SpaceApp’s maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic or OpenAI.</sub></p>
+
 <p align="center">
   <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
+</p>
+
+<h1 align="center">One goal. Super agents. Your space.</h1>
+
+<p align="center"><b>Your AI coding agents, one mind that runs them, your memory, your logins and your model accounts,<br>in one self-hosted workspace on any device.</b></p>
+
+<p align="center">
+  <a href="#-quick-start-one-command-installation"><img src="https://img.shields.io/badge/Install-one%20command-FFE14D?style=for-the-badge&labelColor=111111" alt="Install SpaceApp with one command"></a>
+  <a href="https://spaceapp.dev/spaceappmock/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Live%20demo-in%20your%20browser-FFFFFF?style=for-the-badge&labelColor=111111" alt="Try the live demo in your browser"></a>
+  <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/badge/Website-spaceapp.dev-FFFFFF?style=for-the-badge&labelColor=111111" alt="Website spaceapp.dev"></a>
 </p>
 
 <p align="center">
@@ -9,15 +23,144 @@
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%2011-orange.svg" alt="Platform Support">
   <img src="https://img.shields.io/badge/docker-self--hosted-2496ed.svg" alt="Docker Self-Hosted">
   <img src="https://img.shields.io/badge/first%20CLI-OpenCode-success.svg" alt="OpenCode first CLI">
+  <a href="https://discord.gg/dUszP7HpmS"><img src="https://img.shields.io/badge/Discord-join-5865F2.svg?logo=discord&logoColor=white" alt="Discord community"></a>
 </p>
-
-<h3 align="center">The Open-Source, Self-Hosted Multi-Agent AI Coding Workspace</h3>
 
 <p align="center">
   Run <b>OpenCode</b>, <b>OpenAI Codex</b>, <b>Claude Code</b>, <b>Google Gemini</b>, <b>Qwen</b>, <b>Kimi</b>, <b>Grok</b>, and <b>DeepSeek</b> concurrently in persistent rooms on your own machine. Rooms organize sessions; they are not a security boundary between mutually untrusted users.
-  <br>
-  <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><b>Explore spaceapp.dev »</b></a> | <a href="https://spaceapp.dev/spaceappmock/?utm_source=github&utm_medium=readme"><b>Try Live Demo »</b></a>
 </p>
+
+Install it on Linux, macOS or Windows 11 with one command. Docker is installed for you if it is missing:
+
+```bash
+npx --yes run-spaceapp@latest install
+```
+
+Free to self-host · MIT License · your own AI accounts. [Full install guide ↓](#-quick-start-one-command-installation)
+
+---
+
+## ✨ Why SpaceApp
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><h3>🧠 Nous, one mind</h3>Talk to one mind instead of to every agent. It does the routine work itself and brings you only the decisions that need you.</td>
+    <td width="33%" valign="top"><h3>🤖 16 AI coding CLIs</h3>OpenCode, Codex, Claude Code, Gemini and twelve more side by side, each on your own account.</td>
+    <td width="33%" valign="top"><h3>🧭 6 copilots</h3>Mail, Job, Marketing, Freelance, Security and Monitoring: the work around the code, with as much autonomy as you choose.</td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top"><h3>🎨 3 studios</h3>Design, Video and App Studio make graphics, videos and mobile apps for any agent that asks.</td>
+    <td width="33%" valign="top"><h3>🔐 Your secrets stay yours</h3>The Vault fills your logins for agents without showing them; Space Gateway uses your subscriptions first and your API key last.</td>
+    <td width="33%" valign="top"><h3>📱 Your host, any device</h3>One install on your own machine, and the same rooms, panes and agents on your computer, phone or tablet.</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="https://spaceapp.dev/product/canonical-scale-devices-v2.gif" alt="SpaceApp rooms filling with AI coding CLI panes side by side: OpenCode, Codex, Gemini, Qwen, Grok, DeepSeek, Cursor, Copilot, Hermes, Oh My Pi, Qoder, Muse and Droid" width="900" />
+</p>
+
+---
+
+## 🧠 Nous: one mind for your whole space
+
+Nous (Greek νους, "mind") sees every room, pane, copilot and plan. You talk to it instead of to every agent: it does the routine work itself and brings you only the decisions that need you.
+
+```mermaid
+flowchart LR
+    rooms["Your rooms<br/>panes · copilots · plans · releases"]
+    nous(("Nous"))
+    you["You<br/>release · delete · third parties · direction"]
+    rooms -- "progress reports" --> nous
+    nous -- "next steps, helpers, memory" --> rooms
+    nous -- "only the decisions that need you" --> you
+    classDef mind fill:#FFE14D,stroke:#111111,color:#111111,font-weight:bold;
+    class nous mind;
+```
+
+- **It knows what every agent does.** It reads each pane's progress reports instead of its screen, so it knows what each agent works on and what it waits for.
+- **It does the routine work.** It opens and closes panes, sends them their next step, runs helpers side by side and saves finished work to memory.
+- **It asks you only four kinds of decisions:** releases, deletes, anything that reaches third parties or money, and the direction of the work.
+- **Goals.** Type `/goal` and your objective in your own words; Nous breaks it into plans, panes and helpers and keeps working on it in turns of its own until it is done.
+- **Needs you.** When an agent needs your hands or an answer, you get one request with a question and options, on screen, on your phone or in Telegram; requests for your hands wait for the morning.
+- **Plan map.** Every open plan, what it waits on, its dates and what to unblock first.
+- **It watches your AI quotas** and spends less while they run low.
+
+Nous starts off on a new install; turn it on with **Work on my behalf** in its dock.
+
+---
+
+## 🧰 Every tool, in one space
+
+**16** AI coding CLIs · **6** copilots · **3** studios · **10** more panes: every kind of work has its pane, side by side in your rooms. The [tools guide](https://spaceapp.dev/docs/tools/?utm_source=github&utm_medium=readme) describes each one.
+
+### Workspace
+
+| Tool | What it does |
+| :--- | :--- |
+| 🗂️ **Rooms and panes** | Up to 16 panes per room, and warm rooms that keep their sessions between switches. |
+| 🤖 **AI coding CLIs** | OpenCode is set up with SpaceApp; more install with one launcher command each. Every CLI runs on your own account and shares the same skills, approved MCP servers and memory. [All supported CLIs ↓](#-supported-ai-coding-agents) |
+| 🛰️ **Room Agent** | Watches every pane in its room and answers the prompts that wait for you. |
+| 🌐 **Managed browsers** | Chrome panes with tabs and device sizes, handed to you for a sign-in (`large` profile). |
+| ⏰ **Scheduled tasks** | A task with a time or a repeat is typed into its CLI pane when the pane is free. |
+| 👥 **Team rooms** | Each person gets a CLI container, and a room can be shared to view or to work in. |
+
+### Mind and memory
+
+| Tool | What it does |
+| :--- | :--- |
+| 🧠 **Nous** | One mind that runs your whole space and asks you only what it cannot decide. |
+| 🙋 **Needs you** | One request when an agent needs your hands or an answer, with a question and options. |
+| 🗺️ **Plan map** | Every open plan, what it waits on and what to unblock first. |
+| 💾 **Space Memory** | Decisions and project knowledge that every agent session reads and writes, shown as a 3D graph. |
+| 🏛️ **Research Council** | Several models answer on their own, score each other and agree a Top 3. |
+| 🎙️ **Live voice** | Talk to your workspace; it opens panes and directs agents. |
+
+### Logins and model accounts
+
+| Tool | What it does |
+| :--- | :--- |
+| 🔐 **Vault** | Your browser encrypts every login. Agents and Nous ask the Vault to fill a login or a one-time code and get back a status, not the value. |
+| 🚪 **Space Gateway** | One door to your model accounts: your subscriptions first and your API key last, a key per tool with its own models and daily limits. |
+| 📊 **Token usage** | Tokens per model, provider and account, with their API value next to your real bill. |
+
+### Copilots
+
+Each copilot is a pane with its own CLI agent, memory and activity feed: you answer its questions and reviews in the rail, and how much it does alone is your choice.
+
+| Copilot | What it does |
+| :--- | :--- |
+| ✉️ **Mail Copilot** | Works through your Gmail, drafts replies and learns how you handle mail. |
+| 💼 **Job Copilot** | Applies to job postings in the pane browser and keeps your tracker. |
+| 📣 **Marketing Copilot** | Drafts posts from your briefs and publishes them on your own accounts after your review. |
+| 🤝 **Freelance Copilot** | Finds client work and writes proposals under daily limits. |
+| 🛡️ **Security Copilot** | Watches new vulnerabilities and patches your hosts through a gate. |
+| 📡 **Monitoring Copilot** | Explains your alerts and repairs what a playbook covers. |
+
+<p align="center">
+  <img src="https://spaceapp.dev/product/v2/demo-copilots.webp" alt="The Copilots room in the interactive demo: Mail Copilot with a reply waiting for review, Job Copilot with its queue and Marketing Copilot with a LinkedIn post in review" width="900" />
+  <br><sub>The Copilots room in the interactive demo, with invented data.</sub>
+</p>
+
+### Studios
+
+| Studio | What it does |
+| :--- | :--- |
+| ✏️ **Design** | Images, templates and brand kits that any agent can ask for. |
+| 🎬 **Video** | Clips, captions, narration and music in every social format. |
+| 📲 **App Studio** | Mobile apps with previews on ten phones and a test APK. |
+| 📸 **Media Studio** | Screenshots and short videos of your own workspace. |
+
+### More panes
+
+| Pane | What it does | Pane | What it does |
+| :--- | :--- | :--- | :--- |
+| 🌐 **Browser** | Managed Chrome, handed to you for a sign-in | 🎤 **Live** | Talk to your workspace |
+| 📁 **Files** | Your project files | 🛢️ **Databases** | Browse and query your databases |
+| ▶️ **YouTube** | Videos, summaries and music | 🖥️ **VNC** | A remote desktop in a pane |
+| 💬 **Chat** | A conversation with an agent | 🧪 **DeepSeek Harness** | The DeepSeek agent harness |
+| 🧑‍💻 **T3 Code** | T3 Code on OpenCode | 🎁 **Demo Projects** | Ready-made projects to try |
+
+> Copilots and studios are optional modules: new installs start with none of them. Turn one on with `optionalModules` in the launcher's `config.json`, then run `npx --yes run-spaceapp@latest repair`. Copilots that use the pane browser need the `large` profile. What a self-hosted install cannot do yet is listed in the [Known Limitations](docs/quality/KNOWN_LIMITATIONS.md).
 
 ---
 

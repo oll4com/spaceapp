@@ -1,4 +1,4 @@
-import { resolveMailCopilotPaneMetadata, type MailCopilotEvent, type Pane } from "@space/contracts";
+import { makeNeedsYouAsk, resolveMailCopilotPaneMetadata, type MailCopilotEvent, type NeedsYouAsk, type Pane } from "@space/contracts";
 import type { NotificationService } from "../notifications/service.js";
 
 const NEEDS_YOU = new Set(["QUESTION", "REVIEW_REQUESTED", "NEEDS_USER", "RULE_PROPOSED"]);
@@ -6,6 +6,9 @@ const RESOLVES = new Set(["ANSWERED", "REVIEW_DECIDED", "RULE_DECIDED"]);
 /** A rule learned (or retired) from the operator's own actions is news, not a request; so is a mail a FIX rule sent to the copilot, and what it fixed. */
 const RULE_NEWS = new Set(["RULE_LEARNED", "RULE_RETIRED"]);
 const FIX_NEWS = new Set(["FIX_REQUESTED", "FIXED"]);
+
+/** The dedupe key of a Mail Copilot needs-you notification (a question, review or rule by its id, anything else by its event). */
+export const mailCopilotNoticeKey = (key: string) => `mail-copilot:${key}`;
 
 /** Whether a Mail Copilot event may raise or resolve a Space notification (checked before any lookup). */
 export function mailCopilotEventNotifies(event: MailCopilotEvent): boolean {
@@ -19,7 +22,7 @@ export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { r
   const key = String(event.payload.questionId ?? event.payload.reviewId ?? event.payload.ruleId ?? event.id);
   const telegram = settings.notifications.telegram ? true : null;
   if (RESOLVES.has(event.type)) {
-    await notifications.resolve(owner, `mail-copilot:${key}`);
+    await notifications.resolve(owner, mailCopilotNoticeKey(key));
     return;
   }
   if (event.type === "MAIL_RECEIVED") {
@@ -53,5 +56,19 @@ export async function notifyMailCopilotEvent(event: MailCopilotEvent, input: { r
   await notifications.raise({ ownerUserId: owner, roomId, paneId: pane.id, source: "MAIL_COPILOT", kind: event.type, severity: "ATTENTION",
     title: `Mail Copilot needs you (${pane.title})`, body: event.message.slice(0, 2000),
     link: { roomId, paneId: pane.id, target: event.threadId && event.accountEmail ? `thread:${event.accountEmail}:${event.threadId}` : `event:${event.id}` },
-    dedupeKey: `mail-copilot:${key}`, payload: { eventId: event.id }, telegram });
+    dedupeKey: mailCopilotNoticeKey(key), payload: { eventId: event.id, ask: mailAsk(event) }, telegram });
+}
+
+/** Needs you as questions (plan clipboard:5AQvaoSR-IZa): what the card asks and where the operator's answer goes. */
+function mailAsk(event: MailCopilotEvent): NeedsYouAsk {
+  const decide = (item: "REVIEW" | "RULE", itemId: unknown) => makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "MAIL", item, itemId: String(itemId) }, ["Approve", "Decline"]);
+  if (event.type === "QUESTION") {
+    return makeNeedsYouAsk(event.message, { kind: "COPILOT_QUESTION", copilot: "MAIL", questionId: String(event.payload.questionId) },
+      Array.isArray(event.payload.options) ? event.payload.options.map(String) : []);
+  }
+  if (event.type === "REVIEW_REQUESTED") return decide("REVIEW", event.payload.reviewId);
+  if (event.type === "RULE_PROPOSED") return decide("RULE", event.payload.ruleId);
+  // NEEDS_USER: a mail only the operator handles; words hand it to the copilot (Send to AI).
+  return makeNeedsYouAsk("What should Mail Copilot do with this mail?", { kind: "MAIL_FIX", ...(event.accountEmail ? { account: event.accountEmail } : {}), ...(event.threadId ? { threadId: event.threadId } : {}) },
+    ["I handled it", "Ignore it"]);
 }

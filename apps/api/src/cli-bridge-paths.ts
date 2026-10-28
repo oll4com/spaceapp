@@ -6,6 +6,7 @@ import { cliDesignPathPrefix } from "./design/agent-routes.js";
 import { cliVideoPathPrefix } from "./video/agent-routes.js";
 import { cliAppStudioPathPrefix } from "./app-studio/agent-routes.js";
 import { cliSecurityCopilotPathPrefix } from "./security-copilot/agent-routes.js";
+import { cliMonitoringCopilotPathPrefix } from "./monitoring-copilot/agent-routes.js";
 import { cliTaskItemsPathPrefix } from "./task-agent-routes.js";
 import { cliNousPathPrefix } from "./nous/mcp.js";
 import { cliVaultPathPrefix } from "./vault/routes.js";
@@ -24,7 +25,7 @@ const cliBrowserBridgePaths = new Set([
   "/api/cli/browser/cdp/status"
 ]);
 // Nous's MCP route checks its own turn token (nous/mcp.ts).
-const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliDesignPathPrefix, cliVideoPathPrefix, cliAppStudioPathPrefix, cliSecurityCopilotPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath, queueOperatorGrantPath];
+const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliDesignPathPrefix, cliVideoPathPrefix, cliAppStudioPathPrefix, cliSecurityCopilotPathPrefix, cliMonitoringCopilotPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath, queueOperatorGrantPath];
 
 /** Whether the matched route path is a CLI bridge route (decide on the router's matched path, never the raw URL). */
 export function isCliBridgeRoutePath(routePath: string): boolean {

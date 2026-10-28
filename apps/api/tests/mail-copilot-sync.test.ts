@@ -114,16 +114,21 @@ describe("mail copilot sync poller", () => {
     const service = {
       async accounts(_owner: string, pane: { id: string }) { return pane.id === "pane:b" ? [{ email: "me@gmail.com", access: "full", inPane: true }, { email: "held@gmail.com", access: "read", inPane: true }, { email: "off@gmail.com", access: "none", inPane: true }] : [{ email: "me@gmail.com", access: "full", inPane: true }]; },
       async syncState(owner: string, email: string) { const state = states[`${owner}|${email}`]; return state ? { ownerUserId: owner, accountEmail: email, historyId: "1", lastSyncedAt: null, lastError: null, ...state } : null; },
-      async syncAccount(owner: string, pane: { id: string }, email: string) { calls.push(`${owner}:${pane.id}:${email}`); if (email === "fails@gmail.com") throw new Error("boom"); return { created: 1, reset: false }; }
+      async syncAccount(owner: string, pane: { id: string }, email: string) { calls.push(`${owner}:${pane.id}:${email}`); if (email === "fails@gmail.com") throw new Error("boom"); return { created: 1, reset: false }; },
+      // The pane always runs (operator 2026-10-27): new mail starts its run, and each pane gets its daily pass in the owner's zone.
+      async startForNewMail(owner: string, pane: { id: string }) { calls.push(`start ${owner}:${pane.id}`); return true; },
+      async dailyRun(owner: string, pane: { id: string }, zone: string) { calls.push(`daily ${owner}:${pane.id}:${zone}`); return false; }
     };
     const store = {
       listRooms: async () => [{ id: "room:1", ownerUserId: "u1" }, { id: "room:2", ownerUserId: null }, { id: "room:3", ownerUserId: "u2" }],
       listPanes: async (roomId: string) => roomId === "room:1" ? [{ id: "pane:a", mode: "MAIL_COPILOT", isClosed: false }, { id: "pane:b", mode: "MAIL_COPILOT", isClosed: false }, { id: "pane:c", mode: "MAIL_COPILOT", isClosed: true }, { id: "pane:d", mode: "TERMINAL", isClosed: false }]
-        : roomId === "room:3" ? [{ id: "pane:e", mode: "MAIL_COPILOT", isClosed: false }] : [{ id: "pane:f", mode: "MAIL_COPILOT", isClosed: false }]
+        : roomId === "room:3" ? [{ id: "pane:e", mode: "MAIL_COPILOT", isClosed: false }] : [{ id: "pane:f", mode: "MAIL_COPILOT", isClosed: false }],
+      getUserSettings: async (owner: string) => owner === "u1" ? { dateTime: { timeZone: "Asia/Bangkok" } } : null
     };
     const sync = createMailCopilotSync({ service: service as never, store: store as never, log: { warn: () => undefined } });
     expect(await sync.tick()).toEqual({ accounts: 3, created: 2 });
-    expect(calls).toEqual(["u1:pane:a:me@gmail.com", "u2:pane:e:me@gmail.com"]);
+    expect(calls).toEqual(["u1:pane:a:me@gmail.com", "start u1:pane:a", "daily u1:pane:a:Asia/Bangkok", "daily u1:pane:b:Asia/Bangkok",
+      "u2:pane:e:me@gmail.com", "start u2:pane:e", "daily u2:pane:e:UTC"]);
   });
 });
 

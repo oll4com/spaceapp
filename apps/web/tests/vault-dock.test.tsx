@@ -308,7 +308,7 @@ describe("VaultDock", () => {
 
   it("hands an API key to agents: the id shows once, the list shows states and never the key, a receipt can be deleted (operator request 2026-10-22)", async () => {
     const key = { id: "vault_key:AAAAAAAAAAAAAAAAAAAAAA", label: "Synthetic service", createdAt: "2026-10-22T05:00:00.000Z", expiresAt: "2026-10-29T05:00:00.000Z",
-      takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true };
+      takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true, kept: false, savedBy: null };
     mocks.vaultState.mockResolvedValue(state({ agentAccess: true, delegatedItems: 1 }));
     mocks.vaultHandoffKeys.mockResolvedValueOnce({ keys: [] }).mockResolvedValue({ keys: [{ ...key, takenAt: "2026-10-22T05:05:00.000Z", takenByPaneId: "pane:agent1", usedAt: "2026-10-22T05:10:00.000Z", usedByPaneId: "pane:agent1", hasValue: false }] });
     mocks.vaultCreateHandoffKey.mockResolvedValue({ key });
@@ -316,12 +316,15 @@ describe("VaultDock", () => {
     render(<VaultDock />);
     fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
-    fireEvent.click(await screen.findByRole("button", { name: "API keys" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Passwords & keys" }));
     const form = await screen.findByRole("form", { name: "New API key for an agent" });
     fireEvent.change(within(form).getByLabelText("Label"), { target: { value: "Synthetic service" } });
     fireEvent.change(within(form).getByLabelText("Key"), { target: { value: "SYNTHETIC-api-key-value" } });
+    // Kept with no expiry by default (operator request 2026-10-26); a one-time key is the unchecked box.
+    fireEvent.click(within(form).getByLabelText("Keep it for every agent"));
+    fireEvent.change(within(form).getByLabelText("Expires in"), { target: { value: "168" } });
     fireEvent.click(within(form).getByRole("button", { name: "Add key" }));
-    await waitFor(() => expect(mocks.vaultCreateHandoffKey).toHaveBeenCalledWith({ label: "Synthetic service", value: "SYNTHETIC-api-key-value", expiresInHours: 168 }));
+    await waitFor(() => expect(mocks.vaultCreateHandoffKey).toHaveBeenCalledWith({ label: "Synthetic service", value: "SYNTHETIC-api-key-value", expiresInHours: 168, kept: false }));
     const issued = await screen.findByRole("status", { name: "Key id for the agent" });
     expect(within(issued).getByText("vault_key:AAAAAAAAAAAAAAAAAAAAAA")).toBeTruthy();
     expect((within(form).getByLabelText("Key") as HTMLInputElement).value).toBe("");
@@ -331,6 +334,28 @@ describe("VaultDock", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete the key Synthetic service" }));
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(mocks.vaultDeleteHandoffKey).toHaveBeenCalledWith(key.id));
+  });
+
+  it("keeps a server password for every agent by default, with no expiry, and shows who saved and last wrote it (operator request 2026-10-26)", async () => {
+    const key = { id: "vault_key:BBBBBBBBBBBBBBBBBBBBBB", label: "vm221 macOS spaceadmin password", createdAt: "2026-10-26T05:00:00.000Z", expiresAt: null,
+      takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true, kept: true, savedBy: null };
+    mocks.vaultState.mockResolvedValue(state({ agentAccess: true, delegatedItems: 1 }));
+    mocks.vaultHandoffKeys.mockResolvedValueOnce({ keys: [] }).mockResolvedValue({ keys: [{ ...key, usedAt: "2026-10-26T05:10:00.000Z", usedByPaneId: "pane:agent1" },
+      { ...key, id: "vault_key:CCCCCCCCCCCCCCCCCCCCCC", label: "Mailed DB password", savedBy: "pane:mail1" }] });
+    mocks.vaultCreateHandoffKey.mockResolvedValue({ key });
+    render(<VaultDock />);
+    fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
+    fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Passwords & keys" }));
+    const form = await screen.findByRole("form", { name: "New API key for an agent" });
+    fireEvent.change(within(form).getByLabelText("Label"), { target: { value: key.label } });
+    fireEvent.change(within(form).getByLabelText("Key"), { target: { value: "SYNTHETIC-mac-password" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Add key" }));
+    await waitFor(() => expect(mocks.vaultCreateHandoffKey).toHaveBeenCalledWith({ label: key.label, value: "SYNTHETIC-mac-password", expiresInHours: null, kept: true }));
+    expect(await screen.findByText(/Agents find/)).toBeTruthy();
+    expect(await screen.findByText(/Kept for agents; last written by pane:agent1/)).toBeTruthy();
+    expect(screen.getByText(/Kept for agents, saved by pane:mail1/)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("SYNTHETIC-mac-password");
   });
 
   it("signs no new sign-up grants; an active one is listed only to revoke it (operator request 2026-10-20)", async () => {

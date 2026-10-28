@@ -157,6 +157,28 @@ describe("Room Agent host screen observer", () => {
     expect(roomTerminalState((await manager.observeRoomScreen(session.sessionId)).text)).toBe("IDLE");
     expect(Date.now() - started).toBeLessThan(3_000);
   });
+  it("draws a detached Claude's DB tail at its stored width when the host read times out, so no line breaks at column 100 (round 4, 00:50 item b)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Claude", initialPaneCount: 0 });
+    const pane = store.createPane({ roomId: room.id, title: "Wide pane", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+    const session = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "anthropic", agentId: "claude", status: "RUNNING" });
+    store.updatePaneCliTerminalGeometry(session.sessionId, { generationId: "claude-host", cols: 160, rows: 30 });
+    // Claude places the status and the footer's right half past column 100 with absolute cursor moves.
+    const frame = "\x1b[2J\x1b[1;1H" + "a".repeat(140) + "\x1b[3;1H❯ \x1b[3;120HCogitated for 18s\x1b[5;130H⏵⏵ bypass permissions on";
+    store.appendPaneCliTranscriptChunkAtNextSequence({ sessionId: session.sessionId, paneId: pane.id, roomId: room.id, stream: "stdout", content: frame });
+    const host = { attach: vi.fn(() => new Promise(() => {})), detach: vi.fn(async () => true), input: vi.fn(), resize: vi.fn(), terminate: vi.fn() };
+    const manager = new CliTerminalManager({ store, config: getApiConfig({}), hostClient: host as never, discoverRuntimes: vi.fn() });
+    for (const lines of [(await manager.observeRoomScreen(session.sessionId)).text.split("\n"), (await manager.observeRoomScreenUndimmed(session.sessionId)).split("\n")]) {
+      expect(lines[0]).toBe("a".repeat(140));
+      expect(lines[2]).toBe(`❯ ${" ".repeat(117)}Cogitated for 18s`);
+      expect(lines[4]?.trim()).toBe("⏵⏵ bypass permissions on");
+      // At 100 columns the old fallback put "a" alone on the next row and clamped the status into column 100.
+      expect(lines.some((line) => /^.{99}\S$/u.test(line) && line.trim().length === 1)).toBe(false);
+    }
+    expect(host.resize).not.toHaveBeenCalled();
+    expect(host.input).not.toHaveBeenCalled();
+  });
+
   it("restores confirmed tall-pane dimensions after API restart and rejects another host generation", async () => {
     const persisted = { generationId: "host-generation", cols: 61, rows: 74 };
     const geometry = restoreRoomTerminalGeometry("host-generation", true, persisted, { cols: 100, rows: 30 })!;

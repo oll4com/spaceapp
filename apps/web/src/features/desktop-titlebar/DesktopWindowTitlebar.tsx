@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { reloadAfterLocalCliDraftsSaved } from "../terminal-pane/local-cli-draft.js";
 import { DesktopDisplayControls } from "../desktop-screens/DesktopDisplayControls.js";
 import {
@@ -213,7 +213,15 @@ export function DesktopWindowTitlebar({
     };
   }, [isAppMenuOpen, isAboutDialogOpen, isUpdateDialogOpen, isRecordingDialogOpen]);
 
-  if (!isDesktop || isFullscreen) {
+  // Gives body --desktop-titlebar-height (desktop-window-titlebar.css) without a body:has(), which restyled the whole page on every DOM change.
+  const shown = isDesktop && !isFullscreen;
+  useLayoutEffect(() => {
+    if (!shown) return;
+    document.body.setAttribute("data-desktop-titlebar", "true");
+    return () => document.body.removeAttribute("data-desktop-titlebar");
+  }, [shown]);
+
+  if (!shown) {
     return null;
   }
 
@@ -675,6 +683,19 @@ export function DesktopWindowTitlebar({
                   </button>
 
                   <div className="desktop-window-app-menu-divider" />
+
+                  {typeof desktopBridge?.openDiagnosticLogs === "function" && (
+                    <button type="button" className="desktop-window-app-menu-item" role="menuitem" onClick={() => {
+                      setIsAppMenuOpen(false);
+                      void desktopBridge.openDiagnosticLogs();
+                    }}>
+                      <FolderOpen aria-hidden="true" style={{ width: 14, height: 14 }} />
+                      <div className="desktop-window-app-menu-item-text">
+                        <span>Open diagnostic logs</span>
+                        <small>Local error and freeze reports</small>
+                      </div>
+                    </button>
+                  )}
 
                   <button
                     type="button"

@@ -44,7 +44,7 @@ import { GoogleGIcon } from "../ui-theme/GoogleGIcon.js";
 import { ClaudeIcon } from "../ui-theme/ClaudeIcon.js";
 import { CliAccountPicker } from "../cli-accounts/CliAccountPicker.js";
 import { CodexAccountPicker } from "../cli-accounts/CodexAccountPicker.js";
-import { cliAccountProfileForPane, isNewCliPane, NEW_PANE_WINDOW_MS } from "../cli-accounts/cli-account-default.js";
+import { cliAccountProfileForPane, lateListAccountProfileId, NEW_PANE_WINDOW_MS } from "../cli-accounts/cli-account-default.js";
 import { hasCliAccountProfiles, readLastCliAccountProfileId, takeNewPaneAccount, writeLastCliAccountProfileId } from "../cli-accounts/cli-account-memory.js";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
@@ -70,6 +70,7 @@ import {
   type PaneCliTurnActivityStatus
 } from "@space/contracts";
 import { SpaceApiError, api } from "../../api.js";
+import { serverNow } from "../../server-clock.js";
 import { readStoredSuppressNotifications } from "../../notifications-settings.js";
 import {
   invalidateTerminalWidthMeasurements,
@@ -2342,6 +2343,8 @@ export const TerminalPane = memo(function TerminalPane({
   const sessionResponseRef = useRef<PaneCliSessionResponse | null>(null);
   const autoAttachAttemptRef = useRef<string | null>(null);
   const pasteShortcutFallbackRef = useRef<number | null>(null);
+  // Clip Tool images upload one after another, so several pasted at once arrive in the order they were taken.
+  const clipImageUploadsRef = useRef<Promise<void>>(Promise.resolve());
   const isTargetRef = useRef(isTarget);
   isTargetRef.current = isTarget;
   const paneMinimizedRef = useRef(pane.isMinimized);
@@ -2428,6 +2431,8 @@ export const TerminalPane = memo(function TerminalPane({
   autoAccountModeRef.current = autoAccountMode;
   const [claudeAccountProfiles, setClaudeAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedClaudeAccountProfileId, setSelectedClaudeAccountProfileId] = useState(() => readLastCliAccountProfileId("cli:claude"));
+  // The operator picked this pane's account by hand: a later account list never replaces the pick.
+  const accountPickedRef = useRef(false);
   // The latest account profile list of this pane's CLI; a new pane waits for it before it starts its CLI.
   const accountProfilesLoadRef = useRef<{ runtimeId: string; result: Promise<ListCliAccountProfilesResponse> } | null>(null);
   const selectedUploadPreviewIndex = useMemo(
@@ -3638,11 +3643,7 @@ export const TerminalPane = memo(function TerminalPane({
       void load.then((result) => {
         if (cancelled) return;
         setGeminiAccountProfiles(result.profiles);
-        setSelectedGeminiAccountProfileId((current) => {
-          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCliAccountProfileId("cli:gemini", profileId);
-          return profileId;
-        });
+        setSelectedGeminiAccountProfileId((current) => cliAccountProfileForPane(result, current, !sessionResponseRef.current && !accountPickedRef.current));
       }).catch(() => {
         if (!cancelled) setGeminiAccountProfiles([]);
       });
@@ -3664,11 +3665,7 @@ export const TerminalPane = memo(function TerminalPane({
       void load.then((result) => {
         if (cancelled) return;
         setCopilotAccountProfiles(result.profiles);
-        setSelectedCopilotAccountProfileId((current) => {
-          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCliAccountProfileId("cli:copilot", profileId);
-          return profileId;
-        });
+        setSelectedCopilotAccountProfileId((current) => cliAccountProfileForPane(result, current, !sessionResponseRef.current && !accountPickedRef.current));
       }).catch(() => {
         if (!cancelled) setCopilotAccountProfiles([]);
       });
@@ -3690,11 +3687,7 @@ export const TerminalPane = memo(function TerminalPane({
       void load.then((result) => {
         if (cancelled) return;
         setCursorAccountProfiles(result.profiles);
-        setSelectedCursorAccountProfileId((current) => {
-          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCliAccountProfileId("cli:cursor", profileId);
-          return profileId;
-        });
+        setSelectedCursorAccountProfileId((current) => cliAccountProfileForPane(result, current, !sessionResponseRef.current && !accountPickedRef.current));
       }).catch(() => {
         if (!cancelled) setCursorAccountProfiles([]);
       });
@@ -3716,11 +3709,7 @@ export const TerminalPane = memo(function TerminalPane({
       void load.then((result) => {
         if (cancelled) return;
         setKimiAccountProfiles(result.profiles);
-        setSelectedKimiAccountProfileId((current) => {
-          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCliAccountProfileId("cli:kimi", profileId);
-          return profileId;
-        });
+        setSelectedKimiAccountProfileId((current) => cliAccountProfileForPane(result, current, !sessionResponseRef.current && !accountPickedRef.current));
       }).catch(() => {
         if (!cancelled) setKimiAccountProfiles([]);
       });
@@ -3742,11 +3731,7 @@ export const TerminalPane = memo(function TerminalPane({
       void load.then((result) => {
         if (cancelled) return;
         setClaudeAccountProfiles(result.profiles);
-        setSelectedClaudeAccountProfileId((current) => {
-          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCliAccountProfileId("cli:claude", profileId);
-          return profileId;
-        });
+        setSelectedClaudeAccountProfileId((current) => cliAccountProfileForPane(result, current, !sessionResponseRef.current && !accountPickedRef.current));
       }).catch(() => {
         if (!cancelled) setClaudeAccountProfiles([]);
       });
@@ -3794,25 +3779,15 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     const session = sessionResponse?.session;
     if (session?.runtimeId === "cli:gemini") {
-      const profileId = session.accountProfileId ?? "main";
-      setSelectedGeminiAccountProfileId(profileId);
-      writeLastCliAccountProfileId("cli:gemini", profileId);
+      setSelectedGeminiAccountProfileId(session.accountProfileId ?? "main");
     } else if (session?.runtimeId === "cli:copilot") {
-      const profileId = session.accountProfileId ?? "main";
-      setSelectedCopilotAccountProfileId(profileId);
-      writeLastCliAccountProfileId("cli:copilot", profileId);
+      setSelectedCopilotAccountProfileId(session.accountProfileId ?? "main");
     } else if (session?.runtimeId === "cli:cursor") {
-      const profileId = session.accountProfileId ?? "main";
-      setSelectedCursorAccountProfileId(profileId);
-      writeLastCliAccountProfileId("cli:cursor", profileId);
+      setSelectedCursorAccountProfileId(session.accountProfileId ?? "main");
     } else if (session?.runtimeId === "cli:kimi") {
-      const profileId = session.accountProfileId ?? "main";
-      setSelectedKimiAccountProfileId(profileId);
-      writeLastCliAccountProfileId("cli:kimi", profileId);
+      setSelectedKimiAccountProfileId(session.accountProfileId ?? "main");
     } else if (session?.runtimeId === "cli:claude") {
-      const profileId = session.accountProfileId ?? "main";
-      setSelectedClaudeAccountProfileId(profileId);
-      writeLastCliAccountProfileId("cli:claude", profileId);
+      setSelectedClaudeAccountProfileId(session.accountProfileId ?? "main");
     }
   }, [sessionResponse?.session.accountProfileId, sessionResponse?.session.runtimeId]);
 
@@ -5869,9 +5844,10 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }
 
-  // Remembers the account for the next pane of this CLI and restarts only this pane on it.
+  // The operator's own pick: the only place the account for the next pane of this CLI is remembered; restarts only this pane on it.
   // Gemini and Claude keep the active model and effort and continue the same conversation.
   function switchCliAccountProfile(runtimeId: "cli:gemini" | "cli:copilot" | "cli:cursor" | "cli:kimi" | "cli:claude", profileId: string) {
+    accountPickedRef.current = true;
     const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
     if (runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") {
       const leavingAuto = autoAccountModeRef.current;
@@ -6089,7 +6065,7 @@ export const TerminalPane = memo(function TerminalPane({
   }
 
   // The account a new pane starts on, the same one its picker selects; undefined keeps the picker's selection
-  // (CLIs without account profiles, or a list that has not loaded within a few seconds).
+  // (CLIs without account profiles, or the operator's own pick). A list later than a few seconds means the gateway.
   async function newPaneAccountProfileId(): Promise<string | undefined> {
     const runtimeId = selectedRuntime?.id;
     const load = accountProfilesLoadRef.current;
@@ -6100,7 +6076,8 @@ export const TerminalPane = memo(function TerminalPane({
       new Promise<null>((resolve) => { timer = window.setTimeout(() => resolve(null), NEW_PANE_ACCOUNT_WAIT_MS); })
     ]);
     window.clearTimeout(timer);
-    if (!result) return undefined;
+    if (accountPickedRef.current) return undefined;
+    if (!result) return (await jobCopilotPaneAccount(runtimeId)) ?? lateListAccountProfileId(runtimeId);
     // A copilot pane (Job, Mail) starts on the account chosen for it (launch dialog, Settings → Job/Mail Copilot).
     const jobCopilotAccount = await jobCopilotPaneAccount(runtimeId);
     if (jobCopilotAccount && result.profiles.some((profile) => profile.profileId === jobCopilotAccount)) return jobCopilotAccount;
@@ -6226,7 +6203,6 @@ export const TerminalPane = memo(function TerminalPane({
         return;
       }
       const nowMs = Date.now();
-      const paneAgeMs = nowMs - new Date(pane.createdAt).getTime();
       const recentlyChecked = nowMs - lastActiveSessionCheckedMsRef.current < 5_000;
       const activeSession = recentlyChecked
         ? null
@@ -6234,7 +6210,8 @@ export const TerminalPane = memo(function TerminalPane({
       if (activeSession && isRecoverableCliSession(activeSession.session) && activeSession.session.paneId === pane.id) {
         restoreActiveSession(activeSession);
       } else {
-        if (paneAgeMs <= NEW_PANE_WINDOW_MS) {
+        // Aged on the server's clock, which wrote createdAt: a browser clock ahead of it must not make a new pane look old (UX-004).
+        if (serverNow() - new Date(pane.createdAt).getTime() <= NEW_PANE_WINDOW_MS) {
           const runtimeId = selectedRuntime?.id ?? "";
           if ((runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") && readLastAutoAccountMode(runtimeId) && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") {
             setAutoAccountMode(true);
@@ -8576,7 +8553,10 @@ export const TerminalPane = memo(function TerminalPane({
         paneMinimizedRef.current = false;
         isVisibleRef.current = true;
         ensureTerminalControl(true);
-        await uploadFiles([event.detail.file], "SCREEN_CAPTURE", "Clip Tool");
+        const file = event.detail.file;
+        const upload = clipImageUploadsRef.current.then(() => uploadFiles([file], "SCREEN_CAPTURE", "Clip Tool"));
+        clipImageUploadsRef.current = upload.catch(() => {});
+        await upload;
         return;
       }
       if (event.detail.action === "reconnect") {
@@ -9210,6 +9190,7 @@ export const TerminalPane = memo(function TerminalPane({
             <div className="terminal-floating-controls">
               {!observerOnly && sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId !== "cli:root" ? (
                 localComposerOpen ? <div ref={setLocalComposerToolbar} className="local-cli-toolbar" data-local-cli-composer="" /> :
+                  voiceInput.settings.terminalLocalDraftButton === false ? null :
                   <button type="button" className="terminal-shortcuts-button" aria-label="Open local draft" title="Local draft"
                     onClick={() => toggleLocalComposer(true)}><NotebookPen aria-hidden="true" /></button>
               ) : null}

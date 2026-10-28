@@ -97,6 +97,7 @@ export * from "./nous-followups-repository.js";
 export * from "./nous-plan-marks-repository.js";
 export * from "./nous-pane-checks-repository.js";
 export * from "./nous-pane-closeouts-repository.js";
+export * from "./nous-goals-repository.js";
 export * from "./nous-pane-summaries-repository.js";
 export * from "./nous-away-repository.js";
 export * from "./pane-reports-repository.js";
@@ -107,6 +108,7 @@ export * from "./design-repository.js";
 export * from "./video-repository.js";
 export * from "./app-studio-repository.js";
 export * from "./security-copilot-repository.js";
+export * from "./monitoring-copilot-repository.js";
 export * from "./freelance-copilot-repository.js";
 export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";
@@ -124,3 +126,5 @@ export {
   type RoomPaneActivityRecord
 } from "./room-agent-monitor-repository.js";
 export * from "./vault-repository.js";
+export * from "./copilot-memory-search.js";
+export * from "./rail-decision-counts.js";

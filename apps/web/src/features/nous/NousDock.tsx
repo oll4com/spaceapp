@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { nousDecisionKind, type ClipboardItem, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousState } from "@space/contracts";
+import { nousDecisionKind, parseNousGoalCommand, type ClipboardItem, type NousAttachment, type NousDecision, type NousMessage, type NousOverview, type NousState } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
 import { AgentFileMentions } from "../terminal-pane/AgentFileLinks.js";
@@ -7,27 +7,30 @@ import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockButton, DockChips, DockFullscreenButton, DockIconButton, DockNotice, DockState, useDockConfirm } from "../dock-kit/DockKit.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
 import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
-import { ArrowDownToLine, Check, ChevronRight, ChevronsUp, CircleStop, Gavel, Maximize2, Minimize2, Nous, Paperclip, Send, Trash2, X } from "../ui-theme/app-icons.js";
+import { Activity, ArrowDownToLine, Check, ChevronRight, ChevronsUp, CircleStop, ClipboardList, Gavel, LayoutGrid, Maximize2, MessageSquare, Minimize2, Nous, Paperclip, Send, Target, Trash2, UserCheck, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
-import { NousLivePlans, NousLiveStats } from "./NousLiveStats.js";
+import { NousLiveStats } from "./NousLiveStats.js";
 import { NousNeedsYou, useNeedsYouRequests } from "./NousNeedsYou.js";
 import { NousPaneBoard } from "./NousPaneBoard.js";
+import { NousPlanMap } from "./NousPlanMap.js";
+import { NousGoals } from "./NousGoals.js";
 import { clipboardFiles, NousMessageFiles, NousPendingFiles, operatorText, usePendingFiles } from "./NousFiles.js";
 import "./nous.css";
 
-type Tab = "conversation" | "needs" | "decisions" | "overview" | "panes" | "plans";
+type Tab = "conversation" | "needs" | "decisions" | "overview" | "panes" | "plans" | "goals";
 const FAST_POLL_MS = 3_000;
 const SLOW_POLL_MS = 20_000;
 /** While Nous writes (a streamed draft exists) the dock reads it more often; back to the thinking cadence otherwise. */
 const DRAFT_POLL_MS = 1_500;
 const STATUS_LABELS: Record<NousState["status"], string> = {
-  OFF: "Off: answers you only", IDLE: "On: watching every room", THINKING: "Thinking…", PAUSED_MODEL: "Paused: its model is not available"
+  OFF: "Off: answers you only", IDLE: "On: watching every room", THINKING: "Thinking…", PAUSED_MODEL: "Paused: its model is not available",
+  UNAVAILABLE: "Unavailable: it cannot run here now"
 };
 const REASON_LABELS: Record<NonNullable<NousState["running"]>["reason"], string> = {
   OPERATOR: "Answering you", INBOX: "Reading news from the rooms", DECISION: "Acting on your answer", HEARTBEAT: "Checking every room", STANDING: "Standing orders: finished panes and stalled plans",
-  REVIEW: "Daily self-review"
+  REVIEW: "Daily self-review", GOAL: "Working on your goals"
 };
-const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", needs: "Needs you", decisions: "Decisions", overview: "Overview", panes: "Pane board", plans: "Plans" };
+const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", needs: "Needs you", decisions: "Decisions", overview: "Overview", panes: "Pane board", plans: "Plans", goals: "Goals" };
 const CATEGORY_LABELS: Record<NousDecision["category"], string> = { RELEASE: "Release", DESTRUCTIVE: "Irreversible", EXTERNAL: "Third parties or money", DIRECTION: "Direction" };
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 const planIdsIn = (text: string) => [...new Set(text.match(/clipboard:[A-Za-z0-9_-]+/g) ?? [])];
@@ -67,8 +70,6 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   const [messageFiles, setMessageFiles] = useState<Record<string, NousAttachment[]>>({});
   const [dragging, setDragging] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
-  // Operator request 2026-10-21: "my messages" walks back from the newest (0) one per press; reaching the end starts it over.
-  const mineRef = useRef(-1);
   /** Where the last jump left the list: its own scroll event is not the operator scrolling. */
   const jumpTopRef = useRef<number | null>(null);
   /** At the end of the conversation it follows new messages; reading further up it stays put. */
@@ -106,7 +107,7 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
 
   useEffect(() => {
     // Maximized, the board shows the overview in every view.
-    if (!isActive || !canRun || (tab !== "overview" && tab !== "panes" && tab !== "plans" && !fullscreen)) return;
+    if (!isActive || !canRun || (tab !== "overview" && tab !== "panes" && tab !== "plans" && tab !== "goals" && !fullscreen)) return;
     let cancelled = false;
     const load = () => api.nousOverview().then((result) => { if (!cancelled) setOverview(result.overview); })
       .catch((err: unknown) => { if (!cancelled) setError(messageOf(err, "The overview could not be loaded.")); });
@@ -152,17 +153,24 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
     if (!list || (jumpTopRef.current !== null && Math.abs(list.scrollTop - jumpTopRef.current) < 2)) return;
     jumpTopRef.current = null;
     stickRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
-    if (stickRef.current) { mineRef.current = -1; list.querySelector("[data-jumped]")?.removeAttribute("data-jumped"); }
+    if (stickRef.current) list.querySelector("[data-jumped]")?.removeAttribute("data-jumped");
   };
+  // Operator request 2026-10-21, fixed 2026-10-27: each press goes one of the operator's messages further back, from where the list is.
   const jumpToMine = () => {
     const list = listRef.current;
-    const mine = [...(list?.querySelectorAll<HTMLElement>(".nous-message.is-operator") ?? [])].reverse();
+    const mine = [...(list?.querySelectorAll<HTMLElement>(".nous-message.is-operator") ?? [])];
     if (!list || !mine.length) return;
-    mineRef.current = Math.min(mineRef.current + 1, mine.length - 1);
-    const target = mine[mineRef.current]!;
-    list.querySelector("[data-jumped]")?.removeAttribute("data-jumped");
+    const jumped = list.querySelector<HTMLElement>("[data-jumped]");
+    const listTop = list.getBoundingClientRect().top;
+    // Not scrolled since the last press: the one before it; at the end: the newest; scrolled by hand: the nearest one above the view.
+    const index = jumped && jumpTopRef.current !== null ? mine.indexOf(jumped) - 1
+      : stickRef.current ? mine.length - 1
+      : mine.findLastIndex((row) => row.getBoundingClientRect().top - listTop < -4);
+    const target = mine[Math.max(index, 0)]!;
+    jumped?.removeAttribute("data-jumped");
     target.setAttribute("data-jumped", "");
-    target.scrollIntoView?.({ block: "start" });
+    // Only the list scrolls: scrollIntoView also moved the dock around it, and the button with it.
+    list.scrollTop += target.getBoundingClientRect().top - listTop;
     jumpTopRef.current = list.scrollTop;
     stickRef.current = false;
   };
@@ -174,6 +182,9 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
     event?.preventDefault();
     const content = draft.trim();
     if (!canSend) return;
+    // /goal alone or /goals opens the Goals view here (operator request 2026-10-27); /goal <text> goes to the server, which records the goal.
+    const command = pending.readyIds.length ? null : parseNousGoalCommand(content);
+    if (command?.kind === "LIST") { setDraft(""); setPlanView(null); setTab("goals"); return; }
     setSending(true);
     setError(null);
     try {
@@ -182,6 +193,7 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
       pending.clear();
       stickRef.current = true;
       await refresh();
+      if (command?.kind === "CREATE") { setPlanView(null); setTab("goals"); }
     } catch (err) {
       setError(messageOf(err, "Your message could not be sent."));
     } finally {
@@ -267,11 +279,16 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
       <span className="nous-power-track" aria-hidden="true"><span className="nous-power-text">{enabled ? "On" : "Off"}</span><span className="nous-power-thumb" /></span>
     </label>
   );
-  const lastError = state?.lastError ? <p className="nous-muted nous-last-error">Last problem: {state.lastError}</p> : null;
-  const views = <DockChips label="Nous views" value={tab} onChange={(next) => { setPlanView(null); setTab(next); }} options={[
-    { id: "conversation", label: "Conversation" }, { id: "needs", label: "Needs you", ...(needs?.length ? { count: needs.length } : {}) }, { id: "decisions", label: "Decisions", ...(open.length ? { count: open.length } : {}) }, { id: "overview", label: "Overview" },
-    { id: "panes", label: "Panes", ...(overview?.panes?.some((pane) => pane.overdue) ? { count: overview.panes.filter((pane) => pane.overdue).length } : {}) },
-    { id: "plans", label: "Plans" }
+  // Why it cannot run (dev, or Claude Code not connected on a self-hosted install) takes the last problem's place.
+  const lastError = state?.unavailable ? <p className="nous-muted nous-last-error">{state.unavailable}</p>
+    : state?.lastError ? <p className="nous-muted nous-last-error">Last problem: {state.lastError}</p> : null;
+  const activeGoals = state?.goals?.active ?? 0;
+  // One line (operator request 2026-10-27): icon tabs; the chosen view shows its name, a wide dock shows every name (nous.css).
+  const views = <DockChips label="Nous views" className="nous-views" value={tab} onChange={(next) => { setPlanView(null); setTab(next); }} options={[
+    { id: "conversation", label: "Conversation", icon: MessageSquare }, { id: "needs", label: "Needs you", icon: UserCheck, ...(needs?.length ? { count: needs.length } : {}) },
+    { id: "decisions", label: "Decisions", icon: Gavel, ...(open.length ? { count: open.length } : {}) }, { id: "overview", label: "Overview", icon: Activity },
+    { id: "panes", label: "Panes", icon: LayoutGrid, ...(overview?.panes?.some((pane) => pane.overdue) ? { count: overview.panes.filter((pane) => pane.overdue).length } : {}) },
+    { id: "plans", label: "Plans", icon: ClipboardList }, { id: "goals", label: "Goals", icon: Target, ...(activeGoals ? { count: activeGoals } : {}) }
   ]} />;
   const actions = (
     <>
@@ -325,6 +342,8 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
     </div>
   ) : tab === "needs" ? (
     <NousNeedsYou requests={needs} />
+  ) : tab === "goals" ? (
+    <NousGoals active={isActive && canRun} overview={overview} onChanged={() => void refresh().catch(() => undefined)} />
   ) : tab === "decisions" ? (
     <div className="nous-decisions">
       {/* Operator request 2026-10-21: only the decisions still waiting for an answer, or all of them. */}
@@ -337,14 +356,10 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
       ))}
     </div>
   ) : tab === "plans" ? (
-    // Operator request 2026-10-19 (plan clipboard:7PiQv4Cnq0C2): Live's plan list in any dock size; a row opens the plan.
-    <div className="nous-overview">
-      <section className="nous-live" aria-label="Plans" data-motion={isActive ? "on" : "off"}>
-        <NousLivePlans overview={overview} active={isActive} onOpen={openPlan} />
-        {!overview ? <DockState kind="loading" title="Loading the plans" />
-          : overview.plans.some((plan) => plan.pane) ? null : <p className="nous-muted">No open plan is on a pane.</p>}
-      </section>
-    </div>
+    // Operator request 2026-10-25: the plan map (holds, unblock first, dates, dependencies) in any dock size; a row opens the plan.
+    <section className="nous-overview" aria-label="Plans">
+      <NousPlanMap overview={overview} onOpen={openPlan} />
+    </section>
   ) : (
     tab === "panes" ? <NousPaneBoard active={isActive} decisions={decisions} overview={overview} onSent={() => void refresh().catch(() => undefined)}
       renderDecision={(decision) => <NousDecisionCard inline decision={decision} onAnswer={answerDecision(decision)} />} />

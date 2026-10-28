@@ -1,5 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, monitoringCopilotPaneMetadataSchema, type MonitoringCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
 import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
@@ -29,6 +29,8 @@ import {
   browserControlLeaseSchema,
   browserHandoffRequestSchema,
   clipboardItemSchema,
+  planDependencyProblem,
+  PLAN_MAP_KEYS,
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceDiagnosticsSchema,
   cliMaintenanceEventSchema,
@@ -1082,6 +1084,7 @@ export interface SpaceStore {
   updateAppStudioMetadata(paneId: string, metadata: AppStudioPaneMetadata): MaybePromise<Pane>;
   updateVideoMetadata(paneId: string, metadata: VideoPaneMetadata): MaybePromise<Pane>;
   updateSecurityCopilotMetadata(paneId: string, metadata: SecurityCopilotPaneMetadata): MaybePromise<Pane>;
+  updateMonitoringCopilotMetadata(paneId: string, metadata: MonitoringCopilotPaneMetadata): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -2497,6 +2500,13 @@ export interface TraceRecords {
   /** Room Agent missions and task runs created under the trace: ids, status and error code only. */
   roomAgentMissions?: TraceRoomAgentMission[];
   roomAgentTaskRuns?: TraceRoomAgentTaskRun[];
+  /** CLI sessions allocated under the trace, with their logical task and revision. */
+  cliSessions?: TraceCliSession[];
+}
+
+export interface TraceCliSession {
+  sessionId: string; paneId: string; roomId: string; runtimeId: string; cliTaskId: string | null; cliTaskRevisionId: string | null;
+  launchMode: string; status: string; startedAt: string; endedAt: string | null;
 }
 
 export interface TraceRoomAgentMission {
@@ -2540,6 +2550,8 @@ export class InMemorySpaceStore implements SpaceStore {
   private roomAgentTaskRuns = new Map<string, RoomAgentTaskRunRecord>();
   /** Trace and error code of missions (by mission id) and task runs (by mission:step), as Postgres stores them. */
   private roomAgentTraces = new Map<string, { traceId: string | null; errorCode: string | null }>();
+  /** Request trace that allocated each CLI session (explicit traces only). */
+  private cliSessionTraces = new Map<string, string>();
   private roomAgentEnqueues = new Map<string, RoomAgentEnqueueRecord>();
   private roomAgentTurnOutcomes = new Map<string, import("@space/contracts").RoomAgentTurnOutcome>();
   private agentPaneBindings = new Map<string, AgentPaneBinding>();
@@ -3287,6 +3299,10 @@ export class InMemorySpaceStore implements SpaceStore {
     );
     const timestamp = nowIso();
     const keepsSource = existing !== undefined && isPrunableClip(parsed.source) && !isPrunableClip(existing.item.source);
+    if (parsed.dependsOn?.length) {
+      const problem = planDependencyProblem(existing?.item.id ?? null, parsed.dependsOn, this.openPlanDependencies(parsed.ownerUserId));
+      if (problem) throw new SpaceConflictError(problem);
+    }
     const item = clipboardItemSchema.parse({
       id: existing?.item.id ?? makeSpaceId("clipboard"),
       text: parsed.text,
@@ -3302,6 +3318,9 @@ export class InMemorySpaceStore implements SpaceStore {
       roomId: parsed.roomId ?? null,
       paneId: parsed.paneId ?? null,
       paneTitle: parsed.paneTitle ?? null,
+      dependsOn: parsed.dependsOn ?? existing?.item.dependsOn ?? [],
+      dueAt: parsed.dueAt ?? existing?.item.dueAt ?? null,
+      waitsOn: existing?.item.waitsOn ?? null,
       occurrenceCount: (existing?.item.occurrenceCount ?? 0) + 1,
       characterCount: Array.from(parsed.text).length,
       createdAt: existing?.item.createdAt ?? timestamp,
@@ -3327,6 +3346,11 @@ export class InMemorySpaceStore implements SpaceStore {
   getClipboardItem(ownerUserId: string, clipboardItemId: string): ClipboardItem | null {
     const record = this.clipboardItems.get(clipboardItemId);
     return record?.ownerUserId === ownerUserId ? record.item : null;
+  }
+
+  private openPlanDependencies(ownerUserId: string): Array<{ id: string; dependsOn: string[] }> {
+    return [...this.clipboardItems.values()].filter((record) => record.ownerUserId === ownerUserId && record.item.source === "PLAN" && !record.item.isCompleted)
+      .map((record) => ({ id: record.item.id, dependsOn: record.item.dependsOn }));
   }
 
   listClipboardItems(
@@ -3535,10 +3559,21 @@ export class InMemorySpaceStore implements SpaceStore {
     clipboardItemId: string,
     input: UpdatePlanProgressRequest
   ): ClipboardItem {
-    if (this.planExecutions.hasManagedPlan(ownerUserId, clipboardItemId)) throw new SpaceConflictError("Managed plan progress is controlled by its execution.");
+    // The plan map (dependencies, date, wait) belongs to the plan, not its execution: a managed plan takes it too (2026-10-25).
+    const mapOnly = Object.keys(input).every((key) => (PLAN_MAP_KEYS as readonly string[]).includes(key));
+    if (!mapOnly && this.planExecutions.hasManagedPlan(ownerUserId, clipboardItemId)) throw new SpaceConflictError("Managed plan progress is controlled by its execution.");
     const record = this.clipboardItems.get(clipboardItemId);
     if (!record || record.ownerUserId !== ownerUserId) {
       throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
+    }
+    if (input.dependsOn) {
+      const problem = planDependencyProblem(clipboardItemId, input.dependsOn, this.openPlanDependencies(ownerUserId));
+      if (problem) throw new SpaceConflictError(problem);
+    }
+    const map = { dependsOn: input.dependsOn ?? record.item.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : record.item.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : record.item.waitsOn };
+    if (mapOnly) {
+      record.item = { ...record.item, ...map, lastUsedAt: nowIso() };
+      return record.item;
     }
     let steps = [...(record.item.steps ?? [])];
     if (input.steps) {
@@ -3592,6 +3627,12 @@ export class InMemorySpaceStore implements SpaceStore {
     }
     const isCompleted = executionStatus === "COMPLETED" || finalPercentage === 100;
     const activeAgent = input.activeAgent !== undefined ? input.activeAgent : record.item.activeAgent;
+    if (input.text !== undefined) {
+      const contentHash = createHash("sha256").update(input.text).digest("hex");
+      const holder = [...this.clipboardItems.values()].find((other) => other.ownerUserId === ownerUserId && other.contentHash === contentHash);
+      if (holder && holder !== record) throw new SpaceConflictError("Another clipboard record already has this exact text.");
+      record.contentHash = contentHash;
+    }
 
     const inputExt = input as UpdatePlanProgressRequest & {
       roomId?: string | null;
@@ -3609,6 +3650,9 @@ export class InMemorySpaceStore implements SpaceStore {
       roomId: inputExt.roomId !== undefined ? inputExt.roomId : record.item.roomId,
       paneId: inputExt.paneId !== undefined ? inputExt.paneId : record.item.paneId,
       paneTitle: inputExt.paneTitle !== undefined ? inputExt.paneTitle : record.item.paneTitle,
+      ...map,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.text !== undefined ? { text: input.text, characterCount: Array.from(input.text).length } : {}),
       lastProgressAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString()
     };
@@ -5118,6 +5162,15 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(updated);
   }
 
+  updateMonitoringCopilotMetadata(paneId: string, metadata: MonitoringCopilotPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "MONITORING_COPILOT" || current.isClosed) throw new SpaceConflictError("An open Monitoring Copilot pane is required.");
+    const parsed = monitoringCopilotPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, monitoringCopilotMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -5159,7 +5212,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
-        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT"].includes(input.mode ?? current.mode)
+        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId
             : input.terminalRuntimeId
@@ -6460,14 +6513,14 @@ export class InMemorySpaceStore implements SpaceStore {
     return ownership;
   }
 
-  createPaneCliSession(input: CreatePaneCliSessionInput, _traceId = makeSpaceId("trace")): PaneCliSession {
+  createPaneCliSession(input: CreatePaneCliSessionInput, traceId?: string): PaneCliSession {
     const parsed = createPaneCliSessionInputSchema.parse(input);
     const pane = this.panes.get(parsed.paneId);
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO or SECURITY_COPILOT panes.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT" && pane.mode !== "MONITORING_COPILOT") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -6518,6 +6571,7 @@ export class InMemorySpaceStore implements SpaceStore {
       this.assertActiveCodexThreadAvailable(session.sessionId, session.codexThreadId);
     }
     this.paneCliSessions.set(session.sessionId, session);
+    if (traceId && !this.cliSessionTraces.has(session.sessionId)) this.cliSessionTraces.set(session.sessionId, traceId);
     if (session.purpose === "NORMAL" && cliTaskId && cliTaskRevisionId) {
       this.hiddenPaneCliTaskIds.delete(cliTaskId);
       let revision = this.cliTaskRevisions.get(cliTaskRevisionId);
@@ -7755,7 +7809,12 @@ export class InMemorySpaceStore implements SpaceStore {
       .sort(([, left], [, right]) => right.queuedAt.localeCompare(left.queuedAt)).slice(0, limit)
       .map(([key, run]) => ({ runId: run.runId, missionId: run.missionId, roomId: run.roomId, status: run.status,
         errorCode: this.roomAgentTraces.get(key)?.errorCode ?? null, queuedAt: run.queuedAt, completedAt: run.completedAt ?? null }));
-    return { ...records, agentRuns, roomAgentMissions, roomAgentTaskRuns };
+    const cliSessions = [...this.paneCliSessions.values()].filter((session) => this.cliSessionTraces.get(session.sessionId) === traceId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt)).slice(0, limit)
+      .map((session) => ({ sessionId: session.sessionId, paneId: session.paneId, roomId: session.roomId, runtimeId: session.runtimeId,
+        cliTaskId: session.cliTaskId ?? null, cliTaskRevisionId: session.cliTaskRevisionId ?? null, launchMode: session.launchMode,
+        status: session.status, startedAt: session.startedAt, endedAt: session.endedAt ?? null }));
+    return { ...records, agentRuns, roomAgentMissions, roomAgentTaskRuns, cliSessions };
   }
 
   listProviders(): Provider[] {

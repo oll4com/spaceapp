@@ -61,10 +61,15 @@ export const securityHostStatusSchema = z.enum(SECURITY_HOST_STATUSES);
 /** An SSH alias, `local`, `pve`, `qm:<vmid>` or `pct:<ctid>`: the key the collector takes. */
 export const securityHostAliasSchema = z.string().regex(/^(local|pve|qm:\d{2,6}|pct:\d{2,6}|[A-Za-z][A-Za-z0-9_.-]{0,62})$/);
 // Strict shapes for everything a guest prints: a compromised guest must not smuggle text into the agent's context.
+export const securityImageIdSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const packageName = z.string().regex(/^[A-Za-z0-9@][A-Za-z0-9@+._:~/-]{0,199}$/);
 const packageVersion = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9+._:~-]{0,119}$/);
 const advisoryRef = z.string().regex(/^[A-Z][A-Z0-9]{1,15}-[A-Za-z0-9:._-]{1,60}$/);
-export const securityProductSchema = z.enum(["php", "node", "openssh", "nginx", "openssl", "linux_kernel", "proxmox_ve", "plesk", "chrome", "postgresql", "docker"]);
+/** One fixable vulnerability Trivy found in a container image (no description text). */
+const securityImageVulnSchema = z.object({ id: advisoryRef, pkg: packageName, installed: packageVersion, fixed: packageVersion,
+  severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]) }).strict();
+export const securityProductSchema = z.enum(["php", "node", "openssh", "nginx", "openssl", "linux_kernel", "proxmox_ve", "plesk", "chrome", "postgresql", "docker",
+  "windows", "windows_server", "macos"]);
 export type SecurityProduct = z.infer<typeof securityProductSchema>;
 
 export const securityInventorySchema = z.object({
@@ -82,9 +87,26 @@ export const securityInventorySchema = z.object({
   pendingSecurity: z.array(z.object({ package: packageName, version: packageVersion.optional(), advisory: advisoryRef.optional(),
     cves: z.array(z.string().regex(/^CVE-\d{4}-\d{4,8}$/)).max(100).default([]), severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]).default("UNKNOWN") }).strict()).max(5000),
   listening: z.array(z.number().int().min(1).max(65535)).max(500),
-  rebootRequired: z.boolean().default(false)
+  rebootRequired: z.boolean().default(false),
+  /**
+   * Images of the host's running containers (absent: Docker could not be listed). `vulns` are Trivy's fixable findings from
+   * scripts/space-security-inventory.mjs scan-images, in the same strict shapes; an image without `vulns` is not scanned yet.
+   */
+  images: z.array(z.object({
+    ref: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,199}$/), id: securityImageIdSchema, scannedAt: isoDateTime.optional(),
+    vulns: z.array(securityImageVulnSchema).max(3000).optional()
+  }).strict()).max(200).optional()
 }).strict();
 export type SecurityInventory = z.infer<typeof securityInventorySchema>;
+/** Image results the collector posts after `scan-images` (one host, up to a few images per call). */
+export const securityImageScanSchema = z.object({
+  alias: securityHostAliasSchema,
+  images: z.array(z.object({ id: securityImageIdSchema, vulns: z.array(securityImageVulnSchema).max(3000) }).strict()).max(20),
+  /** Images the collector could not export or scan: tried again a day later. */
+  failed: z.array(z.object({ id: securityImageIdSchema }).strict()).max(20).default([])
+}).strict().refine((input) => input.images.length + input.failed.length > 0, "Send at least one scanned or failed image.");
+/** A rescan a day picks up new CVEs in an image that did not change. */
+export const SECURITY_IMAGE_SCAN_MAX_AGE_MS = 24 * 3_600_000;
 
 export const securityHostSchema = z.object({
   id: securityHostIdSchema,
@@ -114,7 +136,7 @@ export const SECURITY_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOW
 export const securitySeveritySchema = z.enum(SECURITY_SEVERITIES);
 export type SecuritySeverity = z.infer<typeof securitySeveritySchema>;
 /** NEWS alone is a lead: it needs a structured source or a vendor page the server checked before the gate answers GO. */
-export const SECURITY_ADVISORY_SOURCES = ["KEV", "OSV", "NVD", "DISTRO", "EPSS", "INTERNETDB", "NEWS", "VENDOR"] as const;
+export const SECURITY_ADVISORY_SOURCES = ["KEV", "OSV", "NVD", "DISTRO", "EPSS", "INTERNETDB", "NEWS", "VENDOR", "IMAGE"] as const;
 export const securityAdvisorySourceSchema = z.enum(SECURITY_ADVISORY_SOURCES);
 export type SecurityAdvisorySource = z.infer<typeof securityAdvisorySourceSchema>;
 export const SECURITY_FINDING_STATUSES = ["NEW", "TRIAGING", "FIXING", "FIXED", "MITIGATED", "NOT_AFFECTED", "ACCEPTED", "FAILED"] as const;

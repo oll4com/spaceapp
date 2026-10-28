@@ -45,6 +45,8 @@ describe("Voice composer settings", () => {
       terminalVariablesButton: true,
       terminalPlansButton: true,
       terminalContextMenu: true,
+      terminalAccountPicker: true,
+      terminalLocalDraftButton: true,
       terminalLocalDraft: false,
       terminalHiddenShortcuts: []
     });
@@ -72,6 +74,8 @@ describe("Voice composer settings", () => {
       terminalVariablesButton: true,
       terminalPlansButton: true,
       terminalContextMenu: true,
+      terminalAccountPicker: true,
+      terminalLocalDraftButton: true,
       terminalLocalDraft: false,
       terminalHiddenShortcuts: [],
       terminalControlsVersion: 2
@@ -126,6 +130,8 @@ describe("Voice composer settings", () => {
       terminalVariablesButton: true,
       terminalPlansButton: false,
       terminalContextMenu: true,
+      terminalAccountPicker: true,
+      terminalLocalDraftButton: true,
       terminalLocalDraft: false,
       terminalHiddenShortcuts: ["test", "clear"]
     });

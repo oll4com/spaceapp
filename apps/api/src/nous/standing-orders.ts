@@ -1,10 +1,11 @@
-import { cliToggleRuntimeIds, type ManagedPlanExecution, type NousDecision, type NousSettings, type NousTurnFacts, type Pane, type SpaceNotification, type TaskItem } from "@space/contracts";
-import type { NousPaneCloseout, NousPaneCloseoutsRepository, NousPaneSummaryRow, NousPlanMarksRepository, PaneReport } from "@space/db";
+import { cliToggleRuntimeIds, type ClipboardItem, type ManagedPlanExecution, type NousDecision, type NousSettings, type NousTurnFacts, type Pane, type SpaceNotification, type TaskItem } from "@space/contracts";
+import type { NousLedgerRow, NousPaneCloseout, RailDecisionCount, NousPaneCloseoutsRepository, NousPaneSummaryRow, NousPlanMarksRepository, PaneReport } from "@space/db";
 import { isCliPane } from "../pane-guards.js";
 import { durationText, paneLabel } from "./digest.js";
 import { boardPanes, type BoardPaneInput, type PaneBoardSnapshot } from "./pane-board.js";
 import { NOUS_PANE_NOTICE_PREFIX } from "./pane-notices.js";
 import { nousPlanActivity, renderStandingPlansPrompt } from "./stalled-plans.js";
+import { stalledHold, type PlanMap } from "./plan-map.js";
 
 /**
  * Standing orders (operator orders 2026-10-21): Space itself, every `tickMinutes`, 24/7 and whatever the inbox does, finds
@@ -33,12 +34,25 @@ const OPEN_PLAN = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 /** A pane whose task runs this soon stays open: closing it would only reopen it (operator order 2026-10-24: task panes close too). */
 const TASK_SOON_MS = 60 * MINUTE;
 
-export type CloseoutSkip = "not-cli" | "shell" | "busy" | "unknown" | "fresh" | "operator-test" | "keep-open" | "waiting-operator" | "card-check" | "task" | "managed" | "plan-open" | "board-waits" | "board-check";
+export type CloseoutSkip = "always-on" | "browser-held" | "busy" | "unknown" | "fresh" | "operator-test" | "keep-open" | "waiting-operator" | "card-check" | "task" | "managed" | "plan-open" | "board-waits" | "board-check";
+/** A browser tab count above this shows on the pane's line, so Nous has the finished tabs closed (browser hygiene, operator 27/10). */
+export const NOUS_TABS_SHOWN_ABOVE = 3;
 const isNousCard = (item: SpaceNotification) => item.source === "NOUS" && Boolean(item.dedupeKey?.startsWith(NOUS_PANE_NOTICE_PREFIX));
+
+/**
+ * A pane's live browser as the standing orders read it (the census's own records, no Browser Host call): its tabs, who holds it
+ * (a control lease, a handoff, a Vault fence; "unknown" when a read failed: kept open) and when it last moved (the tab-list polls
+ * of an open browser pane and its frames stamp it every few seconds while it is on screen).
+ */
+export interface CloseoutBrowser { tabs: number; held: "control" | "handoff" | "vault" | "unknown" | null; activeAt: string | null }
 
 export interface CloseoutContext {
   /** When the pane's current state began (agents-dashboard `since`). */
   since(paneId: string): string | null;
+  /** Live pane browsers by pane id; null when they could not be read (then no pane without a CLI is listed). */
+  browsers?: ReadonlyMap<string, CloseoutBrowser> | null;
+  /** Other recorded use by pane id (a YouTube pane's playback). */
+  usedAt?: ReadonlyMap<string, string>;
   tasks: TaskItem[];
   executions: Array<Pick<ManagedPlanExecution, "planId" | "paneId">>;
   summaries: NousPaneSummaryRow[];
@@ -48,14 +62,34 @@ export interface CloseoutContext {
   closeOperatorPanes?: boolean;
 }
 
+/** A pane with an AI CLI saves to memory before it closes; every other pane (a browser, a plain shell, ...) has nothing to save. */
+export function savesToMemory(pane: Pick<Pane, "mode" | "terminalRuntimeId">): boolean {
+  return isCliPane(pane) && (cliToggleRuntimeIds as readonly string[]).includes(pane.terminalRuntimeId ?? "");
+}
+
+/**
+ * When the pane last did or showed anything: an AI CLI's own state; for any other pane the newest of its state, its record, its
+ * browser and its playback, so a browser on screen or a video playing is never finished.
+ */
+export function closeoutSince(input: Pick<BoardPaneInput, "pane">, ctx: CloseoutContext): string | null {
+  const { pane } = input;
+  if (savesToMemory(pane)) return ctx.since(pane.id);
+  const times = [ctx.since(pane.id), pane.updatedAt, ctx.browsers?.get(pane.id)?.activeAt, ctx.usedAt?.get(pane.id)]
+    .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)));
+  return times.length ? times.reduce((newest, value) => Date.parse(value) > Date.parse(newest) ? value : newest) : null;
+}
+
 /** Why a pane is not a finished pane to close, null when it is one. */
 export function closeoutSkipReason(input: BoardPaneInput, ctx: CloseoutContext): CloseoutSkip | null {
   const { pane, state, check } = input;
-  // Copilot, Design, App Studio and Video panes run a CLI too and close the same way (operator order 2026-10-24).
-  if (!isCliPane(pane)) return "not-cli";
-  if (!(cliToggleRuntimeIds as readonly string[]).includes(pane.terminalRuntimeId ?? "")) return "shell";
+  // The Mail Copilot works the mail as it arrives and sorts the inbox daily: it is never a finished pane (operator 2026-10-27).
+  if (pane.mode === "MAIL_COPILOT") return "always-on";
+  // Every pane type closes once finished (operator 27/10 «όλα του τύπου Panes»; copilot, Design, App Studio and Video panes since
+  // 2026-10-24), but a browser someone holds is in use: a control lease, a handoff, a Vault fence.
+  if (ctx.browsers?.get(pane.id)?.held) return "browser-held";
+  if (ctx.browsers === null && !savesToMemory(pane)) return "unknown";
   if (state !== "done" && state !== "idle") return "busy";
-  const since = ctx.since(pane.id);
+  const since = closeoutSince(input, ctx);
   if (!since) return "unknown";
   if (check?.verdict === "OPERATOR_TEST" && ctx.closeOperatorPanes === false) return "operator-test";
   if (check?.verdict && KEEP_VERDICTS.has(check.verdict) && check.nextCheckAt && Date.parse(check.nextCheckAt) > ctx.now) return "keep-open";
@@ -107,9 +141,13 @@ export interface StandingOrdersDeps {
   settings(owner: string): Promise<NousSettings>;
   lowToken?(owner: string): Promise<boolean>;
   owners(): Promise<string[]>;
-  collect(owner: string): Promise<PaneBoardSnapshot & { tasks: TaskItem[]; executions: Array<Pick<ManagedPlanExecution, "planId" | "paneId">>; summaries: NousPaneSummaryRow[] }>;
+  collect(owner: string): Promise<PaneBoardSnapshot & { tasks: TaskItem[]; executions: Array<Pick<ManagedPlanExecution, "planId" | "paneId">>; summaries: NousPaneSummaryRow[];
+    /** Live pane browsers and other recorded use (YouTube playback), by pane id. */
+    browsers?: ReadonlyMap<string, CloseoutBrowser> | null; usedAt?: ReadonlyMap<string, string> }>;
   /** One pane's reports since a time (newest first is fine). */
   reportsSince(owner: string, paneId: string, since: string): Promise<PaneReport[]>;
+  /** The plan map (plan-map.ts): a plan held on a date, another plan or the server is never nudged; the tick also fires its hold alerts. */
+  planMap?(owner: string, plans: ClipboardItem[]): Promise<PlanMap>;
   lastAnswer?(pane: Pane): Promise<string | null>;
   /** Starts the STANDING turn (or the Away HEARTBEAT round, or the daily REVIEW) with this text (service.standing). */
   standing(owner: string, reason: "STANDING" | "HEARTBEAT" | "REVIEW", text: string): Promise<StandingResult>;
@@ -117,6 +155,12 @@ export interface StandingOrdersDeps {
   review?: {
     facts(owner: string, since: string): Promise<NousTurnFacts[]>;
     decisions(owner: string): Promise<NousDecision[]>;
+    /** Nous's NOUS notifications (cards and focus requests), for the review's questions to the operator. */
+    cards?(owner: string): Promise<SpaceNotification[]>;
+    /** The operator's answers in every copilot rail (goal 7365014c-b); absent where Space has no database. */
+    rails?(owner: string, since: string): Promise<RailDecisionCount[]>;
+    /** Goal 7365014c-e: the decision ledger's rows since then. */
+    ledger?(owner: string, since: string): Promise<NousLedgerRow[]>;
     timeZone(owner: string): Promise<string>;
   };
   /** The pane round's inbox line when panes are due (pane-watch.ts), every 30 minutes. */
@@ -132,6 +176,11 @@ export interface StandingOrdersDeps {
 export interface StandingTickResult { paneLines: number; stalledPlans: number; turn: StandingResult | null }
 
 const hhmm = (iso: string) => `${iso.slice(11, 16)} UTC`;
+/** What a pane without an AI CLI is, for its line. */
+const closeKind = (pane: Pane) => pane.mode === "TERMINAL" ? "shell (no AI CLI)" : `${pane.mode.toLowerCase().replace(/_/g, " ")} pane`;
+/** Space records use of browsers, YouTube and chats; a shell or another kind gets a look before the close. */
+const lookFirst = (pane: Pane) => pane.mode === "TERMINAL" ? " after a look (space_read_pane: a command still running keeps it open)"
+  : ["BROWSER", "YOUTUBE", "CHAT"].includes(pane.mode) ? "" : " after a look (space_inspect: Space records no use of this kind)";
 const dayHhmm = (iso: string) => `${iso.slice(0, 10)} ${hhmm(iso)}`;
 const where = (input: BoardPaneInput) => `${input.room.name}/${paneLabel(input.pane)}`;
 
@@ -155,7 +204,9 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     const since = new Date(at - NOUS_REVIEW_WINDOW_MS).toISOString();
     const facts = await deps.review!.facts(owner, since);
     if (facts.some((turn) => turn.reason === "REVIEW" && localDayHour(Date.parse(turn.startedAt), zone).day === local.day)) { reviewed.set(owner, local.day); return null; }
-    const text = renderDailyReview({ facts, decisions: await deps.review!.decisions(owner).catch(() => []), since, day: local.day, hour });
+    const text = renderDailyReview({ facts, decisions: await deps.review!.decisions(owner).catch(() => []),
+      cards: await deps.review!.cards?.(owner).catch(() => []) ?? [], ...(deps.review!.rails ? { rails: await deps.review!.rails(owner, since).catch(() => null) } : {}),
+      ...(deps.review!.ledger ? { ledger: await deps.review!.ledger(owner, since).catch(() => []) } : {}), since, day: local.day, hour });
     const result = await deps.standing(owner, "REVIEW", text);
     if (result === "STARTED" || result === "QUEUED") reviewed.set(owner, local.day);
     return result;
@@ -168,7 +219,13 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     const orders = settings.standingOrders;
     const panes = boardPanes(snapshot, { showClosed: false });
     const since = (paneId: string) => { for (const { sample } of snapshot.rooms) { const detail = sample?.details[paneId]; if (detail) return detail.since ?? null; } return null; };
-    const ctx: CloseoutContext = { since, tasks: snapshot.tasks, executions: snapshot.executions, summaries: snapshot.summaries, now: at, finishedAfterMs: orders.finishedAfterMinutes * MINUTE, closeOperatorPanes: orders.closeOperatorPanes };
+    const ctx: CloseoutContext = { since, tasks: snapshot.tasks, executions: snapshot.executions, summaries: snapshot.summaries, now: at, finishedAfterMs: orders.finishedAfterMinutes * MINUTE, closeOperatorPanes: orders.closeOperatorPanes,
+      ...(snapshot.browsers !== undefined ? { browsers: snapshot.browsers } : {}), ...(snapshot.usedAt ? { usedAt: snapshot.usedAt } : {}) };
+    // A listed pane's browser with many tabs: the finished ones close (browser hygiene); a pane without a CLI closes them with itself.
+    const tabs = (input: BoardPaneInput) => {
+      const count = snapshot.browsers?.get(input.pane.id)?.tabs ?? 0;
+      return count > NOUS_TABS_SHOWN_ABOVE ? ` · browser: ${count} tabs${savesToMemory(input.pane) ? " (kept open: have it close the finished ones, browser hygiene)" : " (they close with it)"}` : "";
+    };
     const rows = new Map((await deps.closeouts.list(owner)).map((row) => [row.paneId, row]));
     const save = async (row: NousPaneCloseout) => { rows.set(row.paneId, row); await deps.closeouts.save(owner, row); };
     const stamp = new Date(at).toISOString();
@@ -203,7 +260,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     for (const input of panes) {
       if (closeoutSkipReason(input, ctx) !== "card-check") continue;
       const cards = input.notifications.map((card) => `"${card.title}" [${card.id}] since ${dayHhmm(card.updatedAt)}`).join(", ");
-      list(input, `card:${input.notifications.map((card) => `${card.id}:${card.updatedAt}`).join(",")}`, `- ${where(input)} · ${input.state} ${durationText(at - Date.parse(since(input.pane.id)!))} · your card ${cards} still open`
+      list(input, `card:${input.notifications.map((card) => `${card.id}:${card.updatedAt}`).join(",")}`, `- ${where(input)} · ${input.state} ${durationText(at - Date.parse(closeoutSince(input, ctx)!))} · your card ${cards} still open`
         + " → read the pane (space_pane_reports); nothing left for the operator: resolve it (space_resolve_notification); still theirs: space_pane_checked WAITING_OPERATOR with nextCheckInMinutes", cardLines);
     }
     if (orders.closeFinishedPanes) {
@@ -213,10 +270,10 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         const task = keptOpenForTask(input.pane.id, snapshot.tasks);
         if (skip === "task") { kept.push(`- ${where(input)} · ${input.state} · its task "${task?.title ?? ""}" runs within the hour: kept open (no action)`); continue; }
         const row = rows.get(input.pane.id);
-        const paneSince = since(input.pane.id);
+        const paneSince = closeoutSince(input, ctx);
         const inFlight = row && row.state !== "CLOSED";
         if (skip && skip !== "fresh" && skip !== "board-check") continue;
-        const idle = `${input.state} ${durationText(at - Date.parse(paneSince!))}`;
+        const idle = `${input.state} ${durationText(at - Date.parse(paneSince!))}${tabs(input)}`;
         if (inFlight) {
           if (row.state === "VERIFIED") list(input, `verified:${row.verifiedMemoryId}`, `- ${where(input)} · ${idle} · save asked ${hhmm(row.requestedAt)}, verified ${row.verifiedMemoryId} → close it now (space_close_pane)`);
           else {
@@ -228,7 +285,11 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
         } else if (skip === "board-check" && (!row || !row.closedAt || row.closedAt < paneSince!)) {
           const board = latestSummary(input.pane.id, snapshot.summaries)!;
           list(input, `board:${board.waitsOn}`, `- ${where(input)} · ${idle} · the board says it waits on ${board.waitsOn.toLowerCase().replace("_", " ")} ("${(board.detail ?? board.line).slice(0, 140)}"), nothing is open for the operator`
-            + ` → read it (space_pane_reports); its task done: send it exactly "${NOUS_SAVE_TEXT}" (space_send_to_pane, when now); still waiting: space_pane_checked WAITING_OPERATOR or WAITING_DATE with nextCheckInMinutes (space_notify_operator when it needs their hands)`);
+            + ` → read it (space_pane_reports); its task done: ${savesToMemory(input.pane) ? `send it exactly "${NOUS_SAVE_TEXT}" (space_send_to_pane, when now)` : "close it (space_close_pane, nothing to save)"}; still waiting: space_pane_checked WAITING_OPERATOR or WAITING_DATE with nextCheckInMinutes (space_notify_operator when it needs their hands)`);
+        } else if (!skip && !savesToMemory(input.pane)) {
+          // Nothing to save (operator 27/10: browsers, plain shells and every other pane type close once nobody uses them).
+          list(input, "close", `- ${where(input)} · ${closeKind(input.pane)} · unused ${durationText(at - Date.parse(paneSince!))}${tabs(input)}${task ? ` · task "${task.title}": Space reopens the pane when it runs` : ""}`
+            + ` · no CLI, nothing to save → close it (space_close_pane)${lookFirst(input.pane)}; still in use: space_pane_checked KEEP_OPEN with the reason and nextCheckInMinutes`);
         } else if (!skip && (!row || !row.closedAt || row.closedAt < paneSince!)) {
           list(input, "ask", `- ${where(input)} · ${idle}${input.pane.mode === "TERMINAL" ? "" : ` · ${input.pane.mode} pane: close it only when its copilot has nothing scheduled`}`
             + `${task ? ` · task "${task.title}": Space reopens the pane when it runs` : ""} · save not asked yet → send it exactly "${NOUS_SAVE_TEXT}" (space_send_to_pane, when now)`);
@@ -237,8 +298,10 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     }
 
     // Stalled plans: one nudge per plan per stalled window; CAPPED, PAUSED or OFF leave the mark, so the next tick tries again.
+    const map = deps.planMap ? await deps.planMap(owner, snapshot.plans).catch((error) => { warn({ err: error, owner }, "Nous plan map failed."); return null; }) : null;
     const activity = conserving ? [] : await nousPlanActivity({ owner, plans: snapshot.plans, samples: snapshot.rooms, marks: deps.marks, reports: snapshot.reports, executions: snapshot.executions,
-      stalledHours: orders.stalledAfterHours, now: new Date(at) }).catch((error) => { warn({ err: error, owner }, "Nous plan activity failed."); return []; });
+      ...(map ? { held: (planId: string) => stalledHold(map, planId) } : {}), stalledHours: orders.stalledAfterHours, now: new Date(at) })
+      .catch((error) => { warn({ err: error, owner }, "Nous plan activity failed."); return []; });
     const due = activity.filter((item) => item.stalled && (!item.lastNudgedAt || at - Date.parse(item.lastNudgedAt) >= orders.stalledAfterHours * 3_600_000));
 
     let turn: StandingResult | null = null;
@@ -249,7 +312,7 @@ export function createStandingOrders(deps: StandingOrdersDeps) {
     }
     if (lines.length || cardLines.length || due.length) {
       const text = ["# Standing orders (from Space, not the operator; they repeat every tick until each line is handled)",
-        lines.length ? ["## Finished panes (operator rule: ask the pane to save to memory, then close it; keep one open only with KEEP_OPEN and a reason)", ...lines, ...kept].join("\n") : "",
+        lines.length ? ["## Finished panes (operator rule: a pane with an AI CLI saves to memory, then closes; every other pane closes at once; keep one open only with KEEP_OPEN and a reason)", ...lines, ...kept].join("\n") : "",
         cardLines.length ? ["## Your cards on finished panes (a card the operator no longer needs keeps their room \"Needs attention\")", ...cardLines].join("\n") : "",
         renderStandingPlansPrompt(due)].filter(Boolean).join("\n\n");
       turn = await deps.standing(owner, "STANDING", text);

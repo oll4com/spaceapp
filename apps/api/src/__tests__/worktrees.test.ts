@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execGit, WorktreeService } from "../worktrees/worktree-service.js";
@@ -121,6 +121,33 @@ describe("WorktreeService", () => {
 
     const exists = await readFile(join(wt.worktreePath, "README.md"), "utf8").catch(() => null);
     expect(exists).toBeNull();
+  });
+
+  it("fails closed: git's refusal and a tree this user cannot fully delete remove nothing", async () => {
+    const wt = await service.createWorktree({
+      repoPath: tempRepo,
+      roomId: "room:test-fail-closed",
+      branchName: "feat/fail-closed",
+      baseBranch: "main",
+      linkModules: false
+    });
+    await writeFile(join(wt.worktreePath, "unsaved.txt"), "work\n");
+    await expect(service.removeWorktree(wt.worktreePath)).rejects.toMatchObject({ code: "REMOVE_FAILED" });
+    expect(await readFile(join(wt.worktreePath, "unsaved.txt"), "utf8")).toBe("work\n");
+    expect(await readFile(join(wt.worktreePath, "README.md"), "utf8")).toContain("Test Project");
+
+    if (process.getuid?.() !== 0) {
+      // Another user's directory: entries this user may not delete.
+      const locked = join(wt.worktreePath, "locked");
+      await mkdir(locked);
+      await writeFile(join(locked, "file.txt"), "x\n");
+      await chmod(locked, 0o555);
+      await expect(service.removeWorktree(wt.worktreePath, true)).rejects.toThrow(/Nothing was removed/);
+      expect(await readFile(join(wt.worktreePath, "README.md"), "utf8")).toContain("Test Project");
+      await chmod(locked, 0o755);
+    }
+    await service.removeWorktree(wt.worktreePath, true);
+    expect(await readFile(join(wt.worktreePath, "README.md"), "utf8").catch(() => null)).toBeNull();
   });
 
   it("exposes working REST API endpoints via Fastify", async () => {

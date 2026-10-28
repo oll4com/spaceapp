@@ -5,7 +5,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { CliShortcutVisibilitySettings } from "../terminal-pane/CliShortcutVisibilitySettings.js";
 
 type ButtonSetting = "terminalShortcutsButton" | "terminalVariablesButton" | "terminalPlansButton"
-  | "terminalVoiceButton" | "terminalModelPicker" | "terminalTurnControl";
+  | "terminalVoiceButton" | "terminalModelPicker" | "terminalTurnControl" | "terminalAccountPicker" | "terminalLocalDraftButton";
 
 const buttons: Array<{ key: ButtonSetting; name: string; label: string; detail: string }> = [
   { key: "terminalShortcutsButton", name: "float-shortcuts-button", label: "Shortcuts", detail: "A menu of quick commands, such as Plan mode, Model or Clear." },
@@ -13,7 +13,9 @@ const buttons: Array<{ key: ButtonSetting; name: string; label: string; detail: 
   { key: "terminalPlansButton", name: "float-plans-button", label: "Plans", detail: "Open your saved plans and send one to the agent." },
   { key: "terminalVoiceButton", name: "float-voice-button", label: "Voice mic", detail: "Speak a prompt instead of typing it." },
   { key: "terminalModelPicker", name: "float-model-picker", label: "Model choice", detail: "Switch the AI model and thinking depth of the pane." },
-  { key: "terminalTurnControl", name: "float-turn-control", label: "Turn control", detail: "A Stop button while the agent is working." }
+  { key: "terminalTurnControl", name: "float-turn-control", label: "Turn control", detail: "A Stop button while the agent is working." },
+  { key: "terminalAccountPicker", name: "float-account-picker", label: "Account picker", detail: "The AI account the pane runs on, with each account's quota." },
+  { key: "terminalLocalDraftButton", name: "float-local-draft-button", label: "Local draft", detail: "Open a draft under the pane to write a prompt before sending it." }
 ];
 
 /** The buttons and menus shown over CLI panes; saved with the voice preferences they share. */
@@ -58,7 +60,7 @@ export function CliPaneControlsSettingsCard() {
           name={name}
           label={label}
           detail={detail}
-          checked={settings[key]}
+          checked={settings[key] ?? true}
           onChange={(checked) => update({ [key]: checked })}
         />
       ))}

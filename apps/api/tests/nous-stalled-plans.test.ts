@@ -62,6 +62,17 @@ describe("stalled plans", () => {
     expect(renderStandingPlansPrompt(items.filter((item) => !item.stalled))).toBe("");
   });
 
+  it("never calls a plan stalled while it waits on a date, another plan or the server (plan map, 2026-10-25), and says so", async () => {
+    const held = new Map([["clipboard:a", "waits on a date: the launch window (until 2026-11-01 00:00)"], ["clipboard:b", "waits on another plan: Alpha"]]);
+    const items = await nousPlanActivity({ owner: "user:operator", now: new Date(at("10:00")), marks: new InMemoryNousPlanMarksRepository(), samples: [{ sample: sample([]) }],
+      held: (planId) => held.get(planId) ?? null, plans: [plan("clipboard:a", "Alpha", 40, null), plan("clipboard:b", "Beta", 10, null), plan("clipboard:c", "Gamma", 10, null, at("09:30"))] });
+    expect(items.map((item) => [item.title, item.stalled, item.reason, item.hold])).toEqual([
+      ["Alpha", false, null, "waits on a date: the launch window (until 2026-11-01 00:00)"], ["Beta", false, null, "waits on another plan: Alpha"], ["Gamma", true, "no open pane", null]
+    ]);
+    expect(renderNousPlanActivity(items).split("\n")[1]).toBe("- \"Alpha\" 40%: unchanged 8 h (since 2026-10-17 02:00 UTC); no open pane — waits on a date: the launch window (until 2026-11-01 00:00)");
+    expect(renderStandingPlansPrompt(items)).not.toContain("Alpha");
+  });
+
   it("never calls a plan stalled when its room could not be read", async () => {
     const items = await nousPlanActivity({ owner: "user:operator", now: new Date(at("10:00")), marks: new InMemoryNousPlanMarksRepository(),
       samples: [{ sample: null }], plans: [plan("clipboard:a", "Alpha", 40, "pane:andy0001")] });

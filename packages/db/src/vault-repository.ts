@@ -495,9 +495,10 @@ export class PostgresVaultRepository {
 
   // API key handoff (operator request 2026-10-22, plan clipboard:-qvpC_Q0rAVg): a key the operator pasted, sealed by the API
   // (ConnectorCrypto, a string here), taken once by one of the owner's panes and deleted once that pane wrote it where it belongs.
-  async addHandoffKey(owner: string, input: { id: string; label: string; valueSealed: string; expiresAt: string }): Promise<boolean> {
-    const result = await this.pool.query(`INSERT INTO vault_handoff_keys (id, owner_user_id, label, value_sealed, expires_at)
-      SELECT $1, $2, $3, $4, $5 FROM users WHERE id = $2 AND disabled_at IS NULL`, [input.id, owner, input.label, input.valueSealed, input.expiresAt]);
+  // Kept keys (migration 0256, operator request 2026-10-26): stay after use, for any of the owner's panes, and may never expire.
+  async addHandoffKey(owner: string, input: { id: string; label: string; valueSealed: string; expiresAt: string | null; kept?: boolean; savedBy?: string | null }): Promise<boolean> {
+    const result = await this.pool.query(`INSERT INTO vault_handoff_keys (id, owner_user_id, label, value_sealed, expires_at, kept, saved_by)
+      SELECT $1, $2, $3, $4, $5, $6, $7 FROM users WHERE id = $2 AND disabled_at IS NULL`, [input.id, owner, input.label, input.valueSealed, input.expiresAt, input.kept ?? false, input.savedBy ?? null]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
   }
   /** The owner's keys, newest first, never a value; a key past its expiry loses its value here. */
@@ -507,18 +508,21 @@ export class PostgresVaultRepository {
       WHERE k.owner_user_id = $1 ORDER BY k.created_at DESC`, [owner])).rows;
     return rows.map(fromHandoffRow);
   }
-  /** The sealed value for one of the owner's panes: once per key until it is used; null when unknown, used, expired or another pane took it. */
+  /**
+   * The sealed value for one of the owner's panes: once per key until it is used (a kept key: every time, for every pane); null
+   * when unknown, used, expired or another pane took it.
+   */
   async takeHandoffKey(owner: string, id: string, paneId: string): Promise<{ label: string; valueSealed: string } | null> {
     const row = (await this.pool.query<{ label: string; valueSealed: string }>(`UPDATE vault_handoff_keys k SET taken_at = now(), taken_by_pane_id = $3 FROM users u
-      WHERE k.id = $2 AND k.owner_user_id = $1 AND u.id = k.owner_user_id AND u.disabled_at IS NULL AND k.used_at IS NULL AND k.value_sealed IS NOT NULL AND k.expires_at > now()
-        AND (k.taken_by_pane_id IS NULL OR k.taken_by_pane_id = $3)
+      WHERE k.id = $2 AND k.owner_user_id = $1 AND u.id = k.owner_user_id AND u.disabled_at IS NULL AND k.value_sealed IS NOT NULL AND (k.expires_at IS NULL OR k.expires_at > now())
+        AND (k.kept OR (k.used_at IS NULL AND (k.taken_by_pane_id IS NULL OR k.taken_by_pane_id = $3)))
       RETURNING k.label, k.value_sealed AS "valueSealed"`, [owner, id, paneId])).rows[0];
     return row ?? null;
   }
-  /** The pane that took the key wrote it where it belongs: the value is deleted, the receipt stays. */
+  /** The pane that took the key wrote it where it belongs: the value is deleted (a kept key keeps it), the receipt stays. */
   async useHandoffKey(owner: string, id: string, paneId: string): Promise<boolean> {
-    const result = await this.pool.query(`UPDATE vault_handoff_keys SET used_at = now(), used_by_pane_id = $3, value_sealed = NULL
-      WHERE id = $2 AND owner_user_id = $1 AND used_at IS NULL AND taken_by_pane_id = $3`, [owner, id, paneId]);
+    const result = await this.pool.query(`UPDATE vault_handoff_keys SET used_at = now(), used_by_pane_id = $3, value_sealed = CASE WHEN kept THEN value_sealed END
+      WHERE id = $2 AND owner_user_id = $1 AND (kept OR (used_at IS NULL AND taken_by_pane_id = $3))`, [owner, id, paneId]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
   }
   async deleteHandoffKey(owner: string, id: string): Promise<boolean> {
@@ -531,14 +535,17 @@ export class PostgresVaultRepository {
 
 /** A key the operator handed to agents, as the dock lists it (never its value). */
 export interface VaultHandoffKey {
-  id: string; label: string; createdAt: string; expiresAt: string; takenAt: string | null; takenByPaneId: string | null; usedAt: string | null; usedByPaneId: string | null;
-  /** False once used or expired: nothing is left to take. */
+  /** expiresAt null: never expires. */
+  id: string; label: string; createdAt: string; expiresAt: string | null; takenAt: string | null; takenByPaneId: string | null; usedAt: string | null; usedByPaneId: string | null;
+  /** False once used (a one-time key) or expired: nothing is left to take. */
   hasValue: boolean;
+  kept: boolean;
+  savedBy: string | null;
 }
-interface HandoffRow { id: string; label: string; createdAt: Date | string; expiresAt: Date | string; takenAt: Date | string | null; takenByPaneId: string | null; usedAt: Date | string | null; usedByPaneId: string | null; hasValue: boolean }
+interface HandoffRow { id: string; label: string; createdAt: Date | string; expiresAt: Date | string | null; takenAt: Date | string | null; takenByPaneId: string | null; usedAt: Date | string | null; usedByPaneId: string | null; hasValue: boolean; kept: boolean; savedBy: string | null }
 const handoffColumns = `k.id, k.label, k.created_at AS "createdAt", k.expires_at AS "expiresAt", k.taken_at AS "takenAt", k.taken_by_pane_id AS "takenByPaneId",
-  k.used_at AS "usedAt", k.used_by_pane_id AS "usedByPaneId", (k.value_sealed IS NOT NULL) AS "hasValue"`;
+  k.used_at AS "usedAt", k.used_by_pane_id AS "usedByPaneId", (k.value_sealed IS NOT NULL) AS "hasValue", k.kept, k.saved_by AS "savedBy"`;
 const fromHandoffRow = (row: HandoffRow): VaultHandoffKey => ({
-  id: row.id, label: row.label, createdAt: iso(row.createdAt), expiresAt: iso(row.expiresAt), takenAt: row.takenAt === null ? null : iso(row.takenAt), takenByPaneId: row.takenByPaneId,
-  usedAt: row.usedAt === null ? null : iso(row.usedAt), usedByPaneId: row.usedByPaneId, hasValue: row.hasValue
+  id: row.id, label: row.label, createdAt: iso(row.createdAt), expiresAt: row.expiresAt === null ? null : iso(row.expiresAt), takenAt: row.takenAt === null ? null : iso(row.takenAt), takenByPaneId: row.takenByPaneId,
+  usedAt: row.usedAt === null ? null : iso(row.usedAt), usedByPaneId: row.usedByPaneId, hasValue: row.hasValue, kept: row.kept, savedBy: row.savedBy
 });

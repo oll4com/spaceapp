@@ -82,6 +82,7 @@ export interface RoomToolbarActionsContext {
     addDesignPane: () => Promise<void>;
     addAppStudioPane: () => Promise<void>;
     addSecurityCopilotPane: () => Promise<void>;
+    addMonitoringCopilotPane: () => Promise<void>;
     addVideoPane: () => Promise<void>;
     addLivePane: () => Promise<unknown>;
   };
@@ -133,7 +134,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
   } = context.popovers;
   const { cliFloatsHidden, toggleCliFloats, maskSensitiveData, toggleMaskSensitiveData, isRoomFocusMode, toggleRoomFocusMode, isRoomToolbarHidden, terminalFontSize } = context.preferences;
   const { activeRoom, selectedRoomId, panes, paneLayoutPending, setPaneLayoutError, activeRoomCategoryFilter, activeRoomCategoryColors, cycleRoomCategoryColor } = context.room;
-  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addDesignPane, addAppStudioPane, addSecurityCopilotPane, addVideoPane, addLivePane } = context.create;
+  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addFreelanceCopilotPane, addDesignPane, addAppStudioPane, addSecurityCopilotPane, addMonitoringCopilotPane, addVideoPane, addLivePane } = context.create;
   const { desktopWidgets, openStickyNote, isBrowserFullscreen, captureRoomScreen, reloadRoomWindow } = context.tools;
   const { isSnipToolOpen, setIsSnipToolOpen } = context.tools.snip;
   const { toolbarVpnRoute, vpnCityPending, rotateVpnCityFromToolbar } = context.tools.vpn;
@@ -668,15 +669,20 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         disabled: !activeRoom || panes.length >= 16
       }]
     : []),
-  // The Vault is a dock, not a pane: Create opens it (never closes it) and adds nothing to the room.
-  {
-    id: "add-vault",
-    label: "Vault",
-    title: "Open the Vault",
-    ariaLabel: "Open the Vault",
-    icon: sideSurfaceMeta.vault.icon,
-    onClick: () => { if (!(isSideSurfaceOpen && activeSideSurface === "vault")) toggleSideSurface("vault"); }
-  },
+  ...(!isPaneHidden("monitoring")
+    ? [{
+        id: "add-monitoring",
+        label: "Monitoring Copilot",
+        title: "Add Monitoring Copilot pane",
+        ariaLabel: "Add Monitoring Copilot pane",
+        icon: modeIcons.MONITORING_COPILOT,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addMonitoringCopilotPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      }]
+    : []),
   ...(!isPaneHidden("t3code")
     ? [{
         id: "add-t3code",

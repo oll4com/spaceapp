@@ -13,6 +13,8 @@ import {
   jobApplicationUpdateSchema,
   jobApplyCandidateSchema,
   jobApplyEventSchema,
+  importedJobPostingUrl,
+  isImportedJobApplication,
   jobApplyMailboxConfigSchema,
   jobApplyMailboxConnected,
   JOB_APPLY_IMPORTED_URL_PREFIX,
@@ -42,9 +44,12 @@ import {
   type JobApplicationStatus,
   type JobApplicationUpdate,
   type JobApplyEvent,
+  type NeedsYouAsk,
+  makeNeedsYouAsk,
   type JobApplyDiscoverRequest,
   type JobApplyDiscoverySite,
   type JobApplyEventInput,
+  type JobApplyMailDeadlineInput,
   type JobApplyEventType,
   type JobApplyGoogleAccount,
   type JobApplyGoogleMailAccount,
@@ -75,9 +80,11 @@ import { localArtifactFilePath } from "../artifact-storage.js";
 import { readAttachment, type AttachmentReaderOptions } from "../attachment-readers.js";
 import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
 import { createDiscovery, type Discovery } from "./discovery.js";
+import { createSalaryResearch, salaryResearchNote, type SalaryResearch, type SalaryResearchRequest, type SalaryResearchResult } from "./salary.js";
 import { CONFIRMATION_SEARCH_TERMS, companyKey, GmailMailboxError, matchConfirmationEmail, openGmailMailbox, searchGmail } from "./gmail-mailbox.js";
 import { ensureJobApplyLabels, gmailMessageText, labelGmailMessages, unlabelGmailMessages, listGmailTriageMessages } from "./gmail-organize.js";
-import { classifyApplicationMail, digestQuery, displaySender, isApplicationMail, isJobDigest, matchApplicationCompany, senderAddress, triageQuery } from "./mail-triage.js";
+import { closeInterviewTask, findThreadTask, recordInterviewTask, remindInterviews, setInterviewDeadline, siblingDeadline, taskDeadline, type InterviewNotifications, type InterviewRequest, type PassMail } from "./interview-tasks.js";
+import { classifyApplicationMail, digestQuery, displaySender, hasReceiptSubject, isApplicationMail, isJobDigest, isJobReceipt, matchApplicationCompany, reportsCompletion, senderAddress, triageQueries } from "./mail-triage.js";
 import { extractCode, extractLinksFromText, type MailboxFactory, type MailboxMessageSummary, type MailboxReader } from "./mailbox.js";
 
 /** The owner's Google connector (Space Dots), used for the one Google account Job Copilot works with. */
@@ -95,7 +102,8 @@ export interface JobApplyGoogleAccess {
 export interface JobApplyServiceOptions {
   repository: JobApplyRepository;
   crypto: ConnectorCrypto;
-  store: Pick<SpaceStore, "getArtifact">;
+  /** Artifacts, and the owner's Tasks for test and interview reminders. */
+  store: Pick<SpaceStore, "getArtifact" | "listTaskItems" | "upsertTaskItem" | "updateTaskItem" | "getUserSettings">;
   artifactRoot: string;
   /** Extracted CV text and read cache live here, outside any agent workspace. */
   jobApplyRoot: string;
@@ -107,10 +115,14 @@ export interface JobApplyServiceOptions {
   onEvent?: (event: JobApplyEvent) => void;
   /** Public ATS board search; tests inject a fake fetch. */
   discovery?: Discovery;
+  /** Salary research from public pages; tests inject a fake fetch. */
+  salary?: SalaryResearch;
   /** Gmail and Calendar of the Google account chosen in the pane; resolved late because connectors start after this service. */
   google?: () => JobApplyGoogleAccess | null;
   /** Gmail API fetch; tests inject a fake. */
   gmailFetch?: typeof fetch;
+  /** Space notifications for the daily test and interview reminder; resolved late like Google. */
+  notifications?: () => InterviewNotifications | null;
 }
 
 export class JobApplyMailboxError extends SpaceConflictError {}
@@ -237,11 +249,23 @@ const PHOTO_META_FILE = "photo.json";
 const PHOTO_RULE = "Operator rule (2026-10-17): every form that asks for a photo gets the photo from the CV. Upload photo.path " +
   "(space_job_profile_get or the task packet) with browser_file_upload; never stop or ask for a photo while photo.path is set.";
 
+/** Needs you as questions (plan clipboard:5AQvaoSR-IZa): the operator answers a Job Copilot question, or decides its review, from the card. */
+export function jobApplyNeedsYouAsk(event: Pick<JobApplyEvent, "type" | "message" | "payload">): { ask?: NeedsYouAsk } {
+  if (event.type === "QUESTION") {
+    return { ask: makeNeedsYouAsk(String(event.payload.question ?? event.message), { kind: "COPILOT_QUESTION", copilot: "JOB", questionId: String(event.payload.questionId) },
+      Array.isArray(event.payload.options) ? event.payload.options.map(String) : []) };
+  }
+  return event.type === "REVIEW_REQUESTED" ? { ask: makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "JOB", item: "REVIEW", itemId: String(event.payload.reviewId) }, ["Approve", "Decline"]) } : {};
+}
+
 export function createJobApplyService(options: JobApplyServiceOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const ownerDirOf = (owner: string) => join(options.jobApplyRoot, owner.replace(/[^A-Za-z0-9_-]/g, "_"));
   const { repository, crypto } = options;
   const discovery = options.discovery ?? createDiscovery();
+  const salary = options.salary ?? createSalaryResearch({ cacheFile: join(options.jobApplyRoot, "salary-research-cache.json") });
+  /** owner|day the test and interview reminder went out. */
+  const remindersSent = new Set<string>();
 
   async function profileRecord(owner: string): Promise<JobApplyProfileRecord> {
     return (await repository.getProfile(owner)) ?? repository.upsertProfile(owner, {});
@@ -629,9 +653,16 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     },
     /**
      * Files messages under a Job Applications label (MAIL_ORGANIZE): confirmations and rejections leave the inbox
-     * unless `archive` is false; action-needed mail and NONE (labels taken off) leave it only with `archive: true`.
+     * unless `archive` is false; action-needed, other and NONE (labels taken off) mail leave it only with `archive: true`.
      * The copilot uses this for mail the rules missed.
      */
+    /** The copilot records a deadline Space did not read from a test or interview mail (the thread's reminder task). */
+    async setMailDeadline(owner: string, input: JobApplyMailDeadlineInput, context: JobApplyEventContext = {}): Promise<{ taskId: string; title: string }> {
+      const task = await setInterviewDeadline(options.store, owner, input.threadId, input.dueAt);
+      if (!task) throw new SpaceNotFoundError(`No test or interview task for Gmail thread ${input.threadId}; it appears after the next mail triage pass.`);
+      await record(owner, { ...context, type: "NOTE", payload: { taskId: task.id, threadId: input.threadId, dueAt: input.dueAt }, message: `Deadline recorded: ${task.title}` });
+      return { taskId: task.id, title: task.title };
+    },
     async organizeMail(owner: string, input: JobApplyMailOrganizeInput, context: JobApplyEventContext = {}): Promise<{ account: string; category: JobApplyMailOrganizeInput["category"]; label: string | null; organized: number; archived: boolean }> {
       const google = options.google?.() ?? null;
       if (!google) throw new SpaceConflictError("Google access is unavailable on this server.");
@@ -660,19 +691,22 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     /**
      * One triage pass over the inbox of every Google account that allowed reading and organizing mail: recent
      * application mail is classified, filed under the Job Applications labels and, for receipts, stale codes and
-     * rejections, archived. Action-needed mail stays in the inbox and becomes a MAIL event that the rail and
-     * Telegram show. Messages already under a Job Applications label are skipped, so passes are idempotent.
+     * rejections, archived. Action-needed mail (a test or an interview) stays in the inbox and becomes a MAIL event
+     * that the rail and Telegram show; other application mail stays in the inbox under its label, unannounced.
+     * Messages already under a Job Applications label are skipped, so passes are idempotent.
      * Job-alert digests leave the inbox without a Job Applications label.
      */
     async triageMail(owner: string, context: JobApplyEventContext = {}): Promise<JobApplyMailTriageResult> {
       const google = options.google?.() ?? null;
       const accounts = (await googleMailAccounts(owner)).filter((account) => account.capabilities.includes("MAIL_READ") && account.capabilities.includes("MAIL_ORGANIZE")).map((account) => account.email);
-      const result: JobApplyMailTriageResult = { accounts: [], scanned: 0, confirmations: 0, rejections: 0, actionNeeded: 0, skipped: 0, digests: 0 };
+      const result: JobApplyMailTriageResult = { accounts: [], scanned: 0, confirmations: 0, rejections: 0, actionNeeded: 0, other: 0, skipped: 0, digests: 0 };
       if (!google || !accounts.length) return result;
       // Recent tracker rows name the companies whose own recruiters may write (imported history included).
       const applications = (await repository.listApplications(owner, { limit: 2000 })).filter((row) => row.status !== "QUEUED")
         .sort((left, right) => (right.appliedAt ?? right.updatedAt).localeCompare(left.appliedAt ?? left.updatedAt));
-      const companies = [...new Map(applications.map((row) => [companyKey(row.company), row])).values()].filter((row) => companyKey(row.company).length >= 4);
+      // The newest row per company (the list is newest first and a Map keeps its last write; before 2026-10-27 the oldest won,
+      // so Agoda's test task named an imported August row "Title not recorded").
+      const companies = [...new Map([...applications].reverse().map((row) => [companyKey(row.company), row])).values()].filter((row) => companyKey(row.company).length >= 4);
       const paneId = context.paneId ?? (await repository.listEvents(owner, { limit: 50 })).find((event) => event.paneId)?.paneId ?? null;
       const nowMs = Date.parse(now());
       for (const email of accounts) {
@@ -680,22 +714,30 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
           const accessToken = await google.googleAccessToken(owner, email, "MAIL_ORGANIZE");
           const labels = await ensureJobApplyLabels({ accessToken, fetchImpl: options.gmailFetch });
           const ours = new Set(Object.values(labels));
-          const messages = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: triageQuery(companies.slice(0, 60).map((row) => row.company)), max: 50 }))
-            .filter((message) => !message.labelIds.some((label) => ours.has(label)) && isApplicationMail(message, companies));
-          const filed: Record<JobApplyMailCategory, string[]> = { CONFIRMATION: [], REJECTION: [], ACTION_NEEDED: [] };
+          const messages = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: triageQueries(companies.map((row) => row.company)), max: 300 }))
+            .filter((message) => !message.labelIds.some((label) => ours.has(label)) && (isApplicationMail(message, companies) || hasReceiptSubject(message)));
+          const filed: Record<JobApplyMailCategory, string[]> = { CONFIRMATION: [], REJECTION: [], ACTION_NEEDED: [], OTHER: [] };
           const notices: Array<JobApplyEventInput & JobApplyEventContext & { type: JobApplyEventType }> = [];
-          for (const message of messages.slice(0, 25)) {
-            result.scanned += 1;
+          // Tests and interviews become reminder tasks per thread; a rejection or a "completed" receipt closes the thread's task.
+          const threadMail: Array<{ threadId: string; messageId: string; ask: InterviewRequest | null }> = [];
+          const passMails: PassMail[] = [];
+          // shortcut: 100 read a pass (with up to 300 listed, about 400 Gmail calls, far under its per-user rate); a larger backlog clears over the next 15-minute passes.
+          for (const message of messages.slice(0, 100)) {
             const text = await gmailMessageText({ accessToken, fetchImpl: options.gmailFetch, messageId: message.messageId, max: 6000 }).catch(() => message.snippet);
+            if (!isApplicationMail(message, companies) && !isJobReceipt({ ...message, text })) continue;
+            result.scanned += 1;
             const category = classifyApplicationMail({ ...message, text }, nowMs);
             if (!category) { result.skipped += 1; continue; }
             filed[category].push(message.messageId);
             const application = matchApplicationCompany(message, companies);
             const sender = displaySender(message.from);
+            passMails.push({ threadId: message.threadId, company: application?.company ?? null, sentAt: message.receivedAt, from: message.from, subject: message.subject, text });
+            if (category === "REJECTION" || (category === "CONFIRMATION" && reportsCompletion(text))) threadMail.push({ threadId: message.threadId, messageId: message.messageId, ask: null });
             if (category === "ACTION_NEEDED") {
+              threadMail.push({ threadId: message.threadId, messageId: message.messageId, ask: { account: email, threadId: message.threadId, subject: message.subject, from: message.from, text, sentAt: message.receivedAt, application } });
               notices.push({ paneId, applicationId: application?.id ?? null, type: "MAIL",
                 message: `Action needed: ${message.subject || "(no subject)"} from ${sender}`.slice(0, 1000),
-                payload: { category, account: email, messageId: message.messageId, from: senderAddress(message.from), subject: message.subject.slice(0, 300), receivedAt: message.receivedAt } });
+                payload: { category, account: email, messageId: message.messageId, threadId: message.threadId, from: senderAddress(message.from), subject: message.subject.slice(0, 300), receivedAt: message.receivedAt } });
             } else if (category === "REJECTION" && application) {
               notices.push({ paneId, applicationId: application.id, type: "MAIL",
                 message: `Rejection email from ${sender}: ${message.subject || "(no subject)"}`.slice(0, 1000),
@@ -704,15 +746,39 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
           }
           // Labels first: a message is announced only once it carries its label, so a failed pass never repeats a notice.
           for (const category of JOB_APPLY_MAIL_CATEGORIES) {
-            await labelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: filed[category], labelId: labels[category], archive: category !== "ACTION_NEEDED" });
+            await labelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: filed[category], labelId: labels[category], archive: category === "CONFIRMATION" || category === "REJECTION" });
+          }
+          // Oldest first (Gmail lists newest first), so a thread ends as its newest mail says. Task writes never cost a notice:
+          // the labels are on, so a lost notice would not come back.
+          for (const mail of threadMail.reverse()) {
+            if (!mail.ask) { await closeInterviewTask(options.store, owner, mail.threadId).catch(() => null); continue; }
+            const task = await recordInterviewTask(options.store, owner, mail.ask, siblingDeadline(mail.ask, passMails)).catch(() => null);
+            // The notice names the task, so Nous reads "deadline not stated" and goes to find it.
+            const notice = notices.find((item) => item.payload?.messageId === mail.messageId && item.payload?.category === "ACTION_NEEDED");
+            if (notice && task) notice.message = `${notice.message}. Task: ${task.title}${taskDeadline(task) ? "" : " (find the deadline in the mail and record it)"}`.slice(0, 1000);
           }
           for (const notice of notices) await record(owner, notice);
           const digests = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: digestQuery(), max: 50 })).filter(isJobDigest).map((message) => message.messageId);
           await unlabelGmailMessages({ accessToken, fetchImpl: options.gmailFetch, messageIds: digests, labelIds: ["INBOX", ...ours] });
           result.digests += digests.length;
+          // Backfill: mail filed as Action needed earlier (or by the copilot) whose thread has no task yet; the next pass retries a failure.
+          await (async () => {
+            const filedEarlier = (await listGmailTriageMessages({ accessToken, fetchImpl: options.gmailFetch, query: "newer_than:60d", labelId: labels.ACTION_NEEDED, max: 25 }))
+              .filter((message) => message.labelIds.includes(labels.ACTION_NEEDED));
+            const threads = new Set(threadMail.map((mail) => mail.threadId));
+            for (const message of filedEarlier) {
+              if (threads.has(message.threadId)) continue;
+              threads.add(message.threadId);
+              if (await findThreadTask(options.store, owner, message.threadId)) continue;
+              const text = await gmailMessageText({ accessToken, fetchImpl: options.gmailFetch, messageId: message.messageId, max: 6000 }).catch(() => message.snippet);
+              await recordInterviewTask(options.store, owner, { account: email, threadId: message.threadId, subject: message.subject, from: message.from, text, sentAt: message.receivedAt,
+                application: matchApplicationCompany(message, companies) });
+            }
+          })().catch(() => undefined);
           result.confirmations += filed.CONFIRMATION.length;
           result.rejections += filed.REJECTION.length;
           result.actionNeeded += filed.ACTION_NEEDED.length;
+          result.other += filed.OTHER.length;
           result.accounts.push(email);
           const archived = filed.CONFIRMATION.length + filed.REJECTION.length + digests.length;
           if (archived) {
@@ -732,6 +798,7 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
     /** The periodic pass: every owner whose Job Copilot works with a Google account. Errors stay per owner. */
     async triageMailForAllOwners(onError?: (owner: string, error: unknown) => void): Promise<number> {
       let owners = 0;
+      const notifications = options.notifications?.() ?? null;
       for (const owner of await repository.listGoogleProfileOwners()) {
         try {
           await this.triageMail(owner);
@@ -739,6 +806,8 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         } catch (error) {
           onError?.(owner, error);
         }
+        // The daily test and interview reminder rides on this timer, whatever the owner's Gmail answered.
+        if (notifications) await remindInterviews({ store: options.store, notifications, sent: remindersSent }, owner, new Date(now())).catch((error) => onError?.(owner, error));
       }
       return owners;
     },
@@ -1317,6 +1386,23 @@ export function createJobApplyService(options: JobApplyServiceOptions) {
         if (Date.now() >= deadline) return { decided: false as const, decision: null, edits: [], note: null };
         await sleep(Math.min(NEXT_JOB_POLL_MS, Math.max(0, deadline - Date.now())));
       }
+    },
+
+    // ---- salary research ----------------------------------------------------
+    /** What the position pays and the figure to answer (below the market, per the profile's percentage); with an application, its Activity records why. */
+    async salaryResearch(owner: string, input: SalaryResearchRequest, context: JobApplyEventContext = {}): Promise<SalaryResearchResult> {
+      const application = input.applicationId ? await repository.getApplication(owner, input.applicationId) : null;
+      if (input.applicationId && !application) throw new SpaceNotFoundError(`Application ${input.applicationId} was not found.`);
+      const postingUrl = input.postingUrl ?? (application ? (isImportedJobApplication(application) ? importedJobPostingUrl(toApplication(application)) : application.url) : null);
+      const { salaryBelowMarketPercent } = jobApplyCandidateSchema.parse((await profileRecord(owner)).candidate ?? {});
+      const result = await salary.research({ ...input, ...(postingUrl ? { postingUrl } : {}) }, salaryBelowMarketPercent);
+      if (application) {
+        await record(owner, { ...context, paneId: context.paneId ?? application.paneId ?? null, applicationId: application.id, type: "NOTE", message: salaryResearchNote(result),
+          payload: { salaryResearch: { recommended: result.recommended, confidence: result.confidence, postingRange: result.postingRange,
+            market: result.market && { ...result.market, sources: result.market.sources.map(({ source, url, scope, matched, yearly }) => ({ source, url, scope, matched, yearly })) },
+            skipped: result.skipped } } });
+      }
+      return result;
     },
 
     // ---- discovery ----------------------------------------------------------

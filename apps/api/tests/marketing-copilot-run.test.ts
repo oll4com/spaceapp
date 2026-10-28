@@ -4,12 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
+import { InMemoryMarketingCopilotRepository } from "@space/db";
 import type { Event, MarketingRun, Pane } from "@space/contracts";
 import { buildMarketingCopilotPersonaMarkdown, buildCliAgentBootstrapMarkdown } from "../src/agent-bootstrap.js";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { isCliBridgeRoutePath } from "../src/cli-bridge-paths.js";
 import { getApiConfig } from "../src/config.js";
+import { createCopilotRunKick } from "../src/copilot-run-kick.js";
+import { createMarketingCopilotService } from "../src/marketing-copilot/service.js";
+import type { RoomPaneObservation } from "../src/room-pane-control.js";
+import { roomTerminalState } from "../src/room-terminal-screen.js";
 import { pngOf } from "./fixtures/design-png.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -114,6 +119,42 @@ describe("marketing copilot run loop", () => {
     }
   });
 
+  it("types the kickoff again into a RUNNING run's idle CLI while a brief waits, never into a draft (daily upgrade 2026-10-27 round 2)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Marketing", initialPaneCount: 0 }, "trace:t", "user:owner");
+    const pane = store.createPane({ roomId: room.id, title: "Marketing Copilot", mode: "MARKETING_COPILOT", terminalRuntimeId: "cli:claude" });
+    const service = createMarketingCopilotService({ repository: new InMemoryMarketingCopilotRepository() });
+    const { run } = await service.startRun("user:owner", pane.id);
+    await service.createBrief("user:owner", pane, { text: "A post about the Nous dock." });
+    let text = "✻ Done.\n────\n❯ draft in progress\n────";
+    const kickoff = vi.fn(async (_pane: Pane, _run: MarketingRun) => undefined);
+    const kick = createCopilotRunKick({ mode: "MARKETING_COPILOT", store, log: { warn: () => undefined }, paused: (candidate) => service.settingsOf(candidate).paused,
+      runView: (owner, candidate) => service.runView(owner, candidate), kickoff,
+      inspect: async () => ({ sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text }) as RoomPaneObservation });
+    expect(await kick.tick()).toBe(0);
+    text = "✻ Done.\n────\n❯ \n────";
+    expect(await kick.tick()).toBe(1);
+    expect(kickoff).toHaveBeenCalledWith(pane, expect.objectContaining({ id: run.id, status: "RUNNING" }));
+  });
+
+  it("kicks a RUNNING run with 3 PENDING briefs and no pending items when the idle prompt row shows the last turn's status (queue item 18, 27/10 15:46 UTC)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Cleo", initialPaneCount: 0 }, "trace:t", "user:owner");
+    const pane = store.createPane({ roomId: room.id, title: "Kate", mode: "MARKETING_COPILOT", terminalRuntimeId: "cli:claude" });
+    const service = createMarketingCopilotService({ repository: new InMemoryMarketingCopilotRepository() });
+    const { run } = await service.startRun("user:owner", pane.id);
+    for (const text of ["Reply on r/selfhosted", "Reply on r/LocalLLaMA", "Reply on r/devops"]) await service.createBrief("user:owner", pane, { text });
+    expect(await service.runView("user:owner", pane)).toMatchObject({ status: "RUNNING", pending: [], backlog: 3 });
+    // Claude Code 2.1 idle: the prompt row carries the finished turn's status; until 28/10 that read as a draft and nothing was typed.
+    const text = ["✻ Cogitated for 18s", "────", "❯ Cogitated for 18s · done 5:49 PM", "────", "  ⏵⏵ bypass permissions on (shift+tab to cycle)"].join("\n");
+    const kickoff = vi.fn(async (_pane: Pane, _run: MarketingRun) => undefined);
+    const kick = createCopilotRunKick({ mode: "MARKETING_COPILOT", store, log: { warn: () => undefined }, paused: (candidate) => service.settingsOf(candidate).paused,
+      runView: (owner, candidate) => service.runView(owner, candidate), kickoff,
+      inspect: async () => ({ sessionId: "cli_session:kate", promptFingerprint: "f", state: roomTerminalState(text), usageLimited: false, text }) as RoomPaneObservation });
+    expect(await kick.tick()).toBe(1);
+    expect(kickoff).toHaveBeenCalledWith(pane, expect.objectContaining({ id: run.id }));
+  });
+
   it("begins an approved post only once its scheduled slot has come (stable 2026-10-19: an X post went out two days early)", async () => {
     const { app, headers, agent, paneUrl } = await fixture();
     try {
@@ -142,7 +183,30 @@ describe("marketing copilot run loop", () => {
     }
   });
 
-  it("shows the agent the operator's bookmarks with their Google accounts and lets it save new ones", async () => {
+  // Stable 2026-10-26: "Always approve" approved mktpost:3rqCI6oxRt7V with a body the operator rejected, and nothing could take it back.
+  it("takes back an approved post not yet published: the agent's edit makes it a draft again, the operator's review route rejects one", async () => {
+    const { app, headers, agent, paneUrl } = await fixture();
+    try {
+      const approved = async (body: string) => {
+        const postId = (await app.inject({ method: "POST", url: `${cli}/posts`, headers: agent,
+          payload: { channel: "X", body, scheduledAt: new Date(Date.now() + 86_400_000).toISOString() } })).json().post.id as string;
+        await app.inject({ method: "POST", url: `${cli}/review`, headers: agent, payload: { postId, summary: body } });
+        expect((await app.inject({ method: "POST", url: `${paneUrl}/posts/${encodeURIComponent(postId)}/review`, headers, payload: { decision: "approve" } })).json().post.status).toBe("APPROVED");
+        return postId;
+      };
+      const first = await approved("Rooms of CLIs you host yourself, one per project.");
+      const edited = await app.inject({ method: "PATCH", url: `${cli}/posts/${encodeURIComponent(first)}`, headers: agent, payload: { body: "Every pane keeps its own CLI session." } });
+      expect(edited.statusCode).toBe(200);
+      expect(edited.json().post).toMatchObject({ status: "DRAFT", body: "Every pane keeps its own CLI session.", scheduledAt: null });
+      const second = await approved("Switch rooms without losing a terminal.");
+      const rejected = await app.inject({ method: "POST", url: `${paneUrl}/posts/${encodeURIComponent(second)}/review`, headers, payload: { decision: "reject", note: "Not this body." } });
+      expect(rejected.json().post.status).toBe("REJECTED");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shows the agent the operator's bookmarks with their Google accounts and lets it save and delete them", async () => {
     const { app, headers, agent, outsider } = await fixture();
     try {
       const saved = await app.inject({ method: "POST", url: "/api/marketing-copilot/bookmarks", headers, payload: { url: "https://x.com/home", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" } });
@@ -160,6 +224,12 @@ describe("marketing copilot run loop", () => {
       expect((await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: agent, payload: { url: "javascript:alert(1)" } })).statusCode).toBe(422);
       expect((await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: outsider, payload: { url: "https://bsky.app" } })).statusCode).toBe(409);
       expect((await app.inject({ method: "GET", url: "/api/marketing-copilot/bookmarks", headers })).json().bookmarks).toHaveLength(3);
+      // The agent deletes one (the operator's own list), but never through another pane's bridge.
+      const remove = `${cli}/bookmarks/${encodeURIComponent(other.json().bookmark.id)}`;
+      expect((await app.inject({ method: "DELETE", url: remove, headers: outsider, payload: {} })).statusCode).toBe(409);
+      expect((await app.inject({ method: "DELETE", url: remove, headers: agent, payload: {} })).json()).toEqual({ deleted: true });
+      expect((await app.inject({ method: "DELETE", url: remove, headers: agent, payload: {} })).json()).toEqual({ deleted: false });
+      expect((await app.inject({ method: "GET", url: "/api/marketing-copilot/bookmarks", headers })).json().bookmarks).toHaveLength(2);
     } finally {
       await app.close();
     }

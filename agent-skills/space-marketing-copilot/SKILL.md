@@ -7,6 +7,10 @@ metadata:
 
 # Marketing Copilot (promoting SpaceApp)
 
+**Browser checks (2026-10-27):** Cloudflare: for a full-page "Verify you are human" or "Just a moment" check, call space_browser_cloudflare on space_browser once with targetPaneId from space_browser_context (your managed browser pane) and optionally its active pageId. It uses the existing browser and is free. CLEARED means the challenge was observed and the page loaded; NO_CHALLENGE means no solve was needed. Re-snapshot and verify the original task. On needsOperator, an error or an unavailable tool, request browser handoff; do not loop, reload or change accounts/proxies. HUMAN Press & Hold uses its separate shared rule. Embedded Turnstile, other CAPTCHAs, identity checks, login/MFA and Vault-protected pages keep their existing handoff rules. This does not authorize a submission, message, payment or account change.
+
+Press & Hold: for a HUMAN/PerimeterX full-page check such as Fiverr "It needs a human touch" or "Before we continue", call space_browser_press_hold on space_browser once with targetPaneId from space_browser_context and optionally its active pageId. It holds only the challenge button once, for at most 15 seconds in a 40-second attempt, in the existing browser and network route, for free. CLEARED means the challenge was observed and the real page loaded; NO_CHALLENGE means no solve was needed. Re-snapshot and verify the original task. On needsOperator, an error or an unavailable tool, request browser handoff; do not retry, reload or change accounts/proxies. Other CAPTCHAs, identity checks, login/MFA and Vault protection keep their handoff rules. This does not authorize a submission, message, payment or account change.
+
 Use this skill inside a **Marketing Copilot pane** (pane mode `MARKETING_COPILOT`). The pane shows its own
 managed browser (the operator's logged-in accounts), this CLI session, and a rail where the operator writes
 briefs, reviews your posts, answers your questions and reads your Memory. Posts, memory, activity and the
@@ -20,7 +24,7 @@ publication gate live behind the Space API.
 
 | Server | Tools |
 |---|---|
-| `space_marketingcopilot` | `space_marketing_state`, `space_marketing_facts`; bookmarks `space_marketing_bookmarks_list`, `space_marketing_bookmark_save`, `space_marketing_bookmark_open`; loop `space_marketing_next`, `space_marketing_report`; posts `space_marketing_posts_list`, `space_marketing_post_read`, `space_marketing_post_create`, `space_marketing_post_update`; operator `space_marketing_review_request`, `space_marketing_review_wait`, `space_marketing_question_ask`, `space_marketing_question_wait`; publishing `space_marketing_publish_begin`, `space_marketing_publish_done`, `space_marketing_publish_failed`; `space_marketing_memory_recall`, `space_marketing_memory_remember`; `space_marketing_metrics_record`; `space_marketing_campaigns_list`, `space_marketing_campaign_propose`; `space_marketing_rules_list`, `space_marketing_rule_propose`; `space_marketing_note`. |
+| `space_marketingcopilot` | `space_marketing_state`, `space_marketing_facts`; bookmarks `space_marketing_bookmarks_list`, `space_marketing_bookmark_save`, `space_marketing_bookmark_open`, `space_marketing_bookmark_delete`; loop `space_marketing_next`, `space_marketing_report`; posts `space_marketing_posts_list`, `space_marketing_post_read`, `space_marketing_post_create`, `space_marketing_post_update`; operator `space_marketing_review_request`, `space_marketing_review_wait`, `space_marketing_question_ask`, `space_marketing_question_wait`; publishing `space_marketing_publish_begin`, `space_marketing_publish_done`, `space_marketing_publish_failed`, `space_marketing_publish_defer`; `space_marketing_memory_recall`, `space_marketing_memory_remember`; `space_marketing_metrics_record`; `space_marketing_campaigns_list`, `space_marketing_campaign_propose`; `space_marketing_rules_list`, `space_marketing_rule_propose`; `space_marketing_note`. |
 | `space_browser` | `space_browser_start` (this pane), `space_browser_navigate`, `space_browser_tabs`, `space_browser_screenshot` (evidence), `space_browser_request_handoff` (kind `LOGIN`, `MFA`, `CAPTCHA`), `space_browser_handoff_status`. |
 | `space_playwright_pane` | Element-level work on the same pane browser: `browser_snapshot`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_file_upload`, `browser_press_key`, `browser_wait_for`. It refuses while the operator holds control. |
 
@@ -106,16 +110,19 @@ Show HN, weekly tip, demo video): `references/campaigns.md`.
    Otherwise navigate to the channel (recipe in `references/channels.md`),
    `browser_snapshot`, fill the composer from the post (title, body, target), attach assets with
    `browser_file_upload`, submit once.
-3. Not logged in, a two-step code, a CAPTCHA or any anti-bot check: `space_browser_request_handoff {kind, reason}`
+3. Not logged in, a two-step code, or a CAPTCHA/anti-bot check that remains after the browser challenge rules: `space_browser_request_handoff {kind, reason}`
    with a one-line reason that names the site, the page and what to click (the request is already the operator's notice: Space
    brings them to the pane for it; do not also post a `needsUser` note for the same handoff), then poll `space_browser_handoff_status`
-   until the operator gives the browser back. Never solve or bypass a CAPTCHA, never type or store a password, a code or
-   a cookie. A challenge page (Cloudflare "Verify you are human" or "Just a moment...", a Turnstile, hCaptcha or reCAPTCHA box, Fiverr "Press & Hold", a Vercel or other security check) is handed off at first sight: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
+   until the operator gives the browser back. Except the single matching browser challenge attempt above, never solve or bypass a CAPTCHA, never type or store a password, a code or
+   a cookie. After the single matching browser challenge attempt above fails, or immediately for other challenge pages (an embedded Turnstile, hCaptcha or reCAPTCHA box, a Vercel or other security check) hand off: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
 4. Open the published post, take `space_browser_screenshot`, and report
    `space_marketing_publish_done {postId, url, screenshotPath}` with the post's own https URL on the channel's
    site. Nothing else counts as published.
 5. When it fails (the site refused, the form changed, the handoff timed out): `space_marketing_publish_failed
    {postId, reason}`; the operator retries it.
+6. When your own pacing or a channel's rule says a due post must wait (a 5-a-day rule, a subreddit's spacing):
+   `space_marketing_publish_defer {postId, until, reason}`. It keeps its approval and comes back as a PUBLISH item
+   then; call `space_marketing_next` for the next item. Never stop the loop for a held post.
 
 ## Hard rules
 

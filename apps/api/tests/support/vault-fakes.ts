@@ -93,18 +93,18 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
       .map(({ certificate }) => ({ id: certificate.claims.grantId, sites: certificate.claims.sites, dailyCap: certificate.claims.dailyCap, createdAt: certificate.claims.issuedAt, expiresAt: certificate.claims.expiresAt, revokedAt: null, certificate })),
     revokeSignupGrant: async (owner: string, id: string) => { const grant = grants.find((entry) => entry.owner === owner && entry.certificate.claims.grantId === id && !entry.revokedAt); if (!grant) return false; grant.revokedAt = new Date().toISOString(); return true; },
     // API keys handed to agents (plan clipboard:-qvpC_Q0rAVg): what the Postgres repository keeps, in memory.
-    addHandoffKey: async (owner: string, input: any) => { handoffs.push({ owner, ...input, createdAt: new Date().toISOString(), takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null }); return true; },
-    listHandoffKeys: async (owner: string) => handoffs.filter((key) => key.owner === owner).map(({ owner: _owner, valueSealed, ...key }) => ({ ...key, hasValue: valueSealed !== null && Date.parse(key.expiresAt) > Date.now() })).reverse(),
+    addHandoffKey: async (owner: string, input: any) => { handoffs.push({ owner, kept: false, savedBy: null, ...input, createdAt: new Date().toISOString(), takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null }); return true; },
+    listHandoffKeys: async (owner: string) => handoffs.filter((key) => key.owner === owner).map(({ owner: _owner, valueSealed, ...key }) => ({ ...key, hasValue: valueSealed !== null && (key.expiresAt === null || Date.parse(key.expiresAt) > Date.now()) })).reverse(),
     takeHandoffKey: async (owner: string, id: string, paneId: string) => {
       const key = handoffs.find((entry) => entry.owner === owner && entry.id === id);
-      if (!key || key.usedAt || !key.valueSealed || Date.parse(key.expiresAt) <= Date.now() || (key.takenByPaneId && key.takenByPaneId !== paneId)) return null;
+      if (!key || !key.valueSealed || (key.expiresAt !== null && Date.parse(key.expiresAt) <= Date.now()) || (!key.kept && (key.usedAt || (key.takenByPaneId && key.takenByPaneId !== paneId)))) return null;
       key.takenAt = new Date().toISOString(); key.takenByPaneId = paneId;
       return { label: key.label, valueSealed: key.valueSealed };
     },
     useHandoffKey: async (owner: string, id: string, paneId: string) => {
       const key = handoffs.find((entry) => entry.owner === owner && entry.id === id);
-      if (!key || key.usedAt || key.takenByPaneId !== paneId) return false;
-      key.usedAt = new Date().toISOString(); key.usedByPaneId = paneId; key.valueSealed = null;
+      if (!key || (!key.kept && (key.usedAt || key.takenByPaneId !== paneId))) return false;
+      key.usedAt = new Date().toISOString(); key.usedByPaneId = paneId; if (!key.kept) key.valueSealed = null;
       return true;
     },
     deleteHandoffKey: async (owner: string, id: string) => { const index = handoffs.findIndex((entry) => entry.owner === owner && entry.id === id); if (index < 0) return false; handoffs.splice(index, 1); return true; },

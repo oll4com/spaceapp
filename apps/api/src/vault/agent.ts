@@ -3,7 +3,8 @@ import type { z } from "zod";
 import {
   newVaultHandle, sealToVaultPublicKey, vaultAgentAuditRequestSchema, vaultAgentAuditResultSchema, vaultAgentEmptyRequestSchema, vaultAgentFillRequestSchema,
   vaultAgentGenerateRequestSchema, vaultAgentListRequestSchema, vaultAgentListResultSchema, vaultAgentResultSchema, vaultAgentSaveRequestSchema, vaultAgentSaveSite, vaultAgentStatusResultSchema,
-  vaultAgentTotpRequestSchema, vaultBase64url, vaultAgentKeyRequestSchema, vaultAgentKeyTakeResultSchema,
+  vaultAgentTotpRequestSchema, vaultBase64url, vaultAgentKeyRequestSchema, vaultAgentKeyTakeResultSchema, vaultAgentKeyListRequestSchema, vaultAgentKeyListResultSchema,
+  vaultAgentKeySaveRequestSchema, vaultAgentKeySaveResultSchema,
   type Pane, type VaultAgentResult, type VaultAuditEvent, type VaultHostFillResult, type VaultHostTarget
 } from "@space/contracts";
 import { connectorSealContext, type ConnectorCrypto } from "../dot-connectors.js";
@@ -20,11 +21,11 @@ import { runVaultSignup } from "./signup.js";
 // the filled page is gone, and every answer is a status, a reason in the audit and, for a list, handles and origins only.
 // Nous calls the same paths as the agents' bridge, so both have identical access.
 
-export const VAULT_AGENT_PATHS = ["status", "list", "audit", "fill", "totp-fill", "generate-fill", "save", "key-take", "key-used"] as const;
+export const VAULT_AGENT_PATHS = ["status", "list", "audit", "fill", "totp-fill", "generate-fill", "save", "key-take", "key-used", "key-list", "key-save"] as const;
 export type VaultAgentPath = (typeof VAULT_AGENT_PATHS)[number];
 const actions: Record<VaultAgentPath, VaultAuditEvent["action"]> = {
   status: "AGENT_LIST", list: "AGENT_LIST", audit: "AGENT_LIST", fill: "FILL", "totp-fill": "FILL", "generate-fill": "GENERATE", save: "ITEM_SAVE",
-  "key-take": "KEY_HANDOFF", "key-used": "KEY_HANDOFF"
+  "key-take": "KEY_HANDOFF", "key-used": "KEY_HANDOFF", "key-list": "KEY_HANDOFF", "key-save": "KEY_HANDOFF"
 };
 
 /**
@@ -205,6 +206,23 @@ export function createVaultAgent(deps: {
     catch { return blocked("KEY_UNREADABLE"); }
   }
 
+  /**
+   * Kept keys (operator request 2026-10-26): agents find server, VM and API passwords by label instead of asking the operator,
+   * and save the ones that reach them (a mail, the operator, a service); the API seals the value, the answer is the new id.
+   */
+  async function keptKeys(repository: VaultStore, call: VaultAgentCall): Promise<Outcome> {
+    if (call.path === "key-save") {
+      const { label, value } = call.body as { label: string; value: string };
+      const id = newVaultHandle("vault_key");
+      const stored = await repository.addHandoffKey(call.owner, { id, label, valueSealed: deps.crypto.seal(value, connectorSealContext("vault-handoff-key", call.owner, id)),
+        expiresAt: null, kept: true, savedBy: call.paneId });
+      return stored ? { status: "SAVED", reason: null, extra: { id } } : blocked("KEY_NOT_STORED");
+    }
+    const words = typeof call.body.q === "string" ? call.body.q.toLowerCase().split(/\s+/) : [];
+    const keys = (await repository.listHandoffKeys(call.owner)).filter((key) => key.kept && key.hasValue && words.every((word) => key.label.toLowerCase().includes(word)));
+    return { status: "LISTED", reason: null, extra: { keys: keys.map((key) => ({ id: key.id, label: key.label, savedBy: key.savedBy })) } };
+  }
+
   async function outcome(repository: VaultStore, call: VaultAgentCall): Promise<Outcome> {
     const vault = await repository.getVault(call.owner);
     if (call.path === "audit") {
@@ -222,6 +240,7 @@ export function createVaultAgent(deps: {
     if (!vault.agentAccess) return blocked("AGENT_ACCESS_OFF");
     if (call.path === "save") return save(repository, call);
     if (call.path === "key-take" || call.path === "key-used") return handoff(repository, call);
+    if (call.path === "key-list" || call.path === "key-save") return keptKeys(repository, call);
     if (call.path === "list") {
       const accounts = new Map((await deps.googleAccounts?.(call.owner).catch(() => []) ?? []).map((account) => [account.id, account.email]));
       const items = [];
@@ -253,6 +272,8 @@ export function createVaultAgent(deps: {
       const answer = { status: result.status, auditId: audited?.id ?? null, ...result.extra };
       // The one answer that carries a value: the relay writes it into the file and never shows it to the agent.
       if (call.path === "key-take" && result.status === "TAKEN") return vaultAgentKeyTakeResultSchema.parse({ ...answer, reason: null });
+      if (call.path === "key-save" && result.status === "SAVED") return vaultAgentKeySaveResultSchema.parse({ ...answer, reason: null });
+      if (call.path === "key-list" && result.status === "LISTED") return vaultAgentKeyListResultSchema.parse(answer);
       // The audit's short code goes with the status (2026-10-22), so a fill answer can be acted on (FIELD_NOT_FOUND_AFTER_RELOAD).
       if (result.status !== "LISTED") return vaultAgentResultSchema.parse({ ...answer, reason: result.reason ?? null });
       return (call.path === "status" ? vaultAgentStatusResultSchema : call.path === "audit" ? vaultAgentAuditResultSchema : vaultAgentListResultSchema).parse(answer);
@@ -280,7 +301,7 @@ export interface VaultAgentRouteDependencies {
 const agentSchemas: Record<VaultAgentPath, z.ZodTypeAny> = {
   status: vaultAgentEmptyRequestSchema, list: vaultAgentListRequestSchema, audit: vaultAgentAuditRequestSchema, fill: vaultAgentFillRequestSchema,
   "totp-fill": vaultAgentTotpRequestSchema, "generate-fill": vaultAgentGenerateRequestSchema, save: vaultAgentSaveRequestSchema,
-  "key-take": vaultAgentKeyRequestSchema, "key-used": vaultAgentKeyRequestSchema
+  "key-take": vaultAgentKeyRequestSchema, "key-used": vaultAgentKeyRequestSchema, "key-list": vaultAgentKeyListRequestSchema, "key-save": vaultAgentKeySaveRequestSchema
 };
 
 /** Every agent call is validated and audited; a pane without an owner has no Vault to use. */

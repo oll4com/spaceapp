@@ -11,7 +11,7 @@ describe("isolated public showcase", () => {
       "Room 1",
       "Research Lab",
       "Operations",
-      "Copilots (coming next)",
+      "Copilots",
     ]);
     expect(tour.rooms.map((r) => r.name)).toEqual([
       "Build",

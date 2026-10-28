@@ -7,6 +7,8 @@ import type { Event, JobApplyRun, Pane } from "@space/contracts";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { getApiConfig } from "../src/config.js";
+import { createJobApplyRunKick } from "../src/job-apply/routes.js";
+import type { RoomPaneObservation } from "../src/room-pane-control.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
@@ -59,6 +61,64 @@ async function fixture() {
 }
 
 describe("job copilot run supervisor", () => {
+  // Daily upgrade 2026-10-27 (plan clipboard:1NF6u6gcCwtj step 4): jobrun:Oi8f4FqqNQUo idled 06:47-14:46 UTC after a side prompt ended its loop.
+  it("types the kickoff again into a RUNNING run's CLI idle 10 minutes at an empty prompt with postings queued, never into a draft or a paused pane", async () => {
+    const { app, store, pane, headers } = await fixture();
+    try {
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/1"] } });
+      const run = (await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json().run as JobApplyRun;
+      let clock = Date.parse(run.lastActivityAt) + 5 * 60_000;
+      let text = "✻ Done.\n────\n❯ \n────";
+      const kickoff = vi.fn(async () => undefined);
+      const markKickoff = vi.fn(async () => undefined);
+      const view = async (_owner: string, paneId: string) => (await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(paneId)}/job-apply/run`, headers })).json();
+      const pacing = vi.fn(async () => ({ nextAllowedAt: null }) as never);
+      const kick = createJobApplyRunKick({ runView: view, markKickoff, pacing }, { store, kickoff, log: { warn: () => undefined }, now: () => clock,
+        inspect: async () => ({ sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text }) as RoomPaneObservation });
+      expect(await kick.tick()).toBe(0); // 5 minutes idle: the loop may still be between postings
+      clock += 6 * 60_000;
+      text = "✻ Done.\n────\n❯ a side question\n────";
+      expect(await kick.tick()).toBe(0); // a draft waits in the composer
+      text = "✻ Done.\n────\n❯ \n────";
+      expect(await kick.tick()).toBe(1);
+      expect(kickoff).toHaveBeenCalledWith(expect.objectContaining({ id: pane.id }), expect.objectContaining({ id: run.id, status: "RUNNING" }), false);
+      expect(markKickoff).toHaveBeenCalledWith(run.ownerUserId, run.id);
+      clock += 60_000;
+      expect(await kick.tick()).toBe(0); // the same state waits 10 minutes before the next kick
+      const settings = (await app.inject({ method: "GET", url: `${paneUrl}/settings`, headers })).json().metadata;
+      await app.inject({ method: "PUT", url: `${paneUrl}/settings`, headers, payload: { ...settings, settings: { ...settings.settings, paused: true } } });
+      clock += 20 * 60_000;
+      expect(await kick.tick()).toBe(0); // never while paused
+      expect(kickoff).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // Queue item 22 (27/10 16:03 and 16:33 UTC): every site at its daily cap, the kick re-typed every 10-30 minutes all night and the agent said PACING.
+  it("does not kick while every queued posting's site is at its daily cap, and kicks once a site is free", async () => {
+    const { app, store, pane, headers } = await fixture();
+    try {
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://boards.greenhouse.io/acme/jobs/1", "https://jobs.ashbyhq.com/globex/2"] } });
+      const run = (await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers })).json().run as JobApplyRun;
+      const clock = Date.parse(run.lastActivityAt) + 11 * 60_000;
+      const capped = new Set(["greenhouse", "ashby"]);
+      const pacing = vi.fn(async (_owner: string, site: string) => ({ nextAllowedAt: capped.has(site) ? "tomorrow" : null }) as never);
+      const kickoff = vi.fn(async () => undefined);
+      const view = async (_owner: string, paneId: string) => (await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(paneId)}/job-apply/run`, headers })).json();
+      const kick = createJobApplyRunKick({ runView: view, markKickoff: vi.fn(async () => undefined), pacing }, { store, kickoff, log: { warn: () => undefined }, now: () => clock,
+        inspect: async () => ({ sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text: "✻ Done.\n────\n❯ \n────" }) as RoomPaneObservation });
+      expect(await kick.tick()).toBe(0);
+      capped.delete("ashby");
+      expect(await kick.tick()).toBe(1);
+      expect(kickoff).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("queues postings, starts a run with a kickoff into the pane CLI, serves job_next, closes with job_report and finishes", async () => {
     const { app, pane, headers, agent, roomEvents, kickoffs } = await fixture();
     try {
@@ -154,6 +214,26 @@ describe("job copilot run supervisor", () => {
       expect(answered.json().memory.key.length).toBeLessThanOrEqual(300);
       const known = await app.inject({ method: "POST", url: `/api/cli/job-apply/applications/${initech!.id}/question`, headers: agent, payload: { question } });
       expect(known.json()).toMatchObject({ answered: true, answer: "No" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("raises no needs-you for a posting parked as NEEDS_USER: only its real question does, and answering it leaves nothing open", async () => {
+    const { app, room, pane, headers, agent } = await fixture();
+    try {
+      const paneUrl = `/api/panes/${encodeURIComponent(pane.id)}/job-apply`;
+      const queued = await app.inject({ method: "POST", url: `${paneUrl}/queue`, headers, payload: { urls: ["https://jobs.lever.co/initech/31"] } });
+      const [initech] = queued.json().queued as Array<{ id: string }>;
+      await app.inject({ method: "POST", url: `${paneUrl}/run/start`, headers });
+      await app.inject({ method: "POST", url: "/api/cli/job-apply/job/next", headers: agent, payload: { waitMs: 0 } });
+      // Stable 2026-10-25: the copilot parked postings ("same open question jobq:…") and each park stayed "Job Copilot needs you" for good.
+      await app.inject({ method: "PATCH", url: `/api/cli/job-apply/applications/${initech!.id}`, headers: agent, payload: { status: "NEEDS_USER", notes: "AI notetaker consent: same open question" } });
+      const asked = await app.inject({ method: "POST", url: `/api/cli/job-apply/applications/${initech!.id}/question`, headers: agent, payload: { question: "Consent to an AI notetaker in interviews?" } });
+      const attention = async () => (await app.inject({ method: "GET", url: "/api/notifications/pending", headers })).json().byRoom[room.id] ?? 0;
+      await vi.waitFor(async () => expect(await attention()).toBe(1));
+      await app.inject({ method: "POST", url: `/api/job-apply/applications/${initech!.id}/answer`, headers, payload: { questionId: asked.json().questionId, answer: "Yes" } });
+      await vi.waitFor(async () => expect(await attention()).toBe(0));
     } finally {
       await app.close();
     }

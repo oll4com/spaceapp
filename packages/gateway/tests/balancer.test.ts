@@ -159,6 +159,29 @@ describe("account selection (codex-lb parity)", () => {
   });
 });
 
+// Operator rule 2026-10-27 (plan clipboard:nUloPOH3blDT): every account's week used, none run out before its reset.
+describe("weekly pace first (Space fork)", () => {
+  const week = 7 * 86_400;
+  // Gateway, 27/10: ntheogr used 45% of its week with 19% of it passed (+26, ahead); niggmopai 8% at 14% (-6).
+  const ntheogr = () => account("ntheogr", { planType: "plus", usedPercent: 61, secondaryUsedPercent: 45, secondaryResetAt: now + 0.81 * week });
+  const niggmopai = () => account("niggmopai", { planType: "prolite", usedPercent: null, secondaryUsedPercent: 8, secondaryResetAt: now + 0.86 * week });
+
+  it("serves new work from the account furthest under its weekly pace, over the plan tiers, ahead-of-pace accounts last", () => {
+    expect(pick([ntheogr(), niggmopai()], { planPriority: ["plus", "prolite", "pro"] })).toBe("ntheogr");
+    expect(pick([ntheogr(), niggmopai()], { planPriority: ["plus", "prolite", "pro"], weeklyPace: true })).toBe("niggmopai");
+    // Claude Max: lab 39% at 67% of its week (-28) is further under pace than ntheo 54% at 79% (-25).
+    const ntheo = account("ntheo", { usedPercent: 36, secondaryUsedPercent: 54, secondaryResetAt: now + 0.21 * week });
+    const lab = account("lab", { usedPercent: 18, secondaryUsedPercent: 39, secondaryResetAt: now + 0.33 * week });
+    const ahead = account("ahead", { usedPercent: 0, secondaryUsedPercent: 90, secondaryResetAt: now + 0.5 * week });
+    expect(pick([ahead, ntheo, lab], { routingStrategy: "CAPACITY_WEIGHTED", weeklyPace: true })).toBe("lab");
+    expect(pick([ahead, ntheo], { weeklyPace: true })).toBe("ntheo");
+    // A limited account still never serves; unknown or reset weeks count as on pace, the plan tier and 5-hour use break ties.
+    expect(pick([account("limited", { status: "RATE_LIMITED", resetAt: now + 600, secondaryUsedPercent: 0, secondaryResetAt: now + week }), ahead], { weeklyPace: true })).toBe("ahead");
+    expect(pick([account("pro", { planType: "pro", usedPercent: 0 }), account("plus", { planType: "plus", usedPercent: 50, secondaryUsedPercent: 70, secondaryResetAt: now - 1 })],
+      { planPriority: ["plus", "pro"], weeklyPace: true })).toBe("plus");
+  });
+});
+
 describe("plan priority tiers (Space fork of codex-lb)", () => {
   it("drains the first configured plan tier, least-used 5h account first", () => {
     const states = [

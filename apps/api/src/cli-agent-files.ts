@@ -1,6 +1,6 @@
 import { execFile } from "./safe-child-process.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { constants, createReadStream } from "node:fs";
+import { constants, createReadStream, existsSync } from "node:fs";
 import { openWorkspacePath, descriptorPath } from "./workspace-filesystem.js";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -420,6 +420,16 @@ export function agentFileStoragePath(input: {
   );
 }
 
+/** Reads and deletes. From 2026-10-03 to 2026-10-25 the write path stored the raw name (Greek letters, spaces, "@") while readers asked
+ *  for its ASCII form (ENOENT on a Nous decision card): such a file opens under its raw name in the same folder, never outside it. */
+export function agentFileReadPath(input: Parameters<typeof agentFileStoragePath>[0]): string {
+  const sanitized = agentFileStoragePath(input);
+  const name = input.storedFilename;
+  if (name === "." || name === ".." || /[/\\\u0000]/.test(name) || existsSync(sanitized)) return sanitized;
+  const raw = join(dirname(sanitized), name);
+  return existsSync(raw) ? raw : sanitized;
+}
+
 export async function persistAgentFile(input: PersistAgentFileInput) {
   if ((input.buffer === undefined) === (input.sourcePath === undefined)) throw new Error("Exactly one Agent File source is required.");
   const sourceHandle = input.sourcePath ? await openWorkspacePath(input.sourceRoot ?? input.artifactRoot, input.sourcePath) : undefined;
@@ -495,7 +505,7 @@ export async function persistAgentFile(input: PersistAgentFileInput) {
 
     const storageDirectory = dirname(logicalFilePath);
     storageHandle = await openWorkspacePath(input.artifactRoot, storageDirectory, true, true);
-    const filePath = join(descriptorPath(storageHandle), storedFilename);
+    const filePath = join(descriptorPath(storageHandle), basename(logicalFilePath));
     const partialPath = `${filePath}.partial-${safeStorageSegment(makeSpaceId("write"))}`;
     let persisted = false;
     try {
@@ -610,7 +620,7 @@ function localAgentFilePath(artifactRoot: string, artifact: Artifact): string {
     throw new Error(`Artifact ${artifact.id} does not use the Agent Files storage namespace.`);
   }
   const [roomId, paneId, cliSessionId, day, storedFilename] = segments as [string, string, string, string, string];
-  return agentFileStoragePath({ artifactRoot, roomId, paneId, cliSessionId, day, storedFilename });
+  return agentFileReadPath({ artifactRoot, roomId, paneId, cliSessionId, day, storedFilename });
 }
 
 async function verifyFileHash(filePath: string, expectedSha256: string, expectedByteSize: number): Promise<void> {

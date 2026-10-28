@@ -13,6 +13,7 @@ export const LOWER_RAIL_LABELS: Record<string, string> = {
   previous: "Previous room",
   next: "Next room",
   rooms: "Rooms",
+  nous: "Nous",
   create: "Create",
   layout: "Pane layout",
   sticky: "Sticky note",

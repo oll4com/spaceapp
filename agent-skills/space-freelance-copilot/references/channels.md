@@ -2,7 +2,7 @@
 
 Caps, autonomy and the Connects budget come from `space_freelance_state`, never from here. Every send is reported
 with the sent proposal's or conversation's own https URL on the platform (`space_freelance_send_done`).
-Identity checks, phone, payout, tax forms, CAPTCHAs and live interviews are the operator's: account
+Identity checks, phone, payout, tax forms, CAPTCHAs (after the single matching browser challenge attempt in SKILL.md) and live interviews are the operator's: account
 `NEEDS_OPERATOR` + `space_browser_request_handoff`.
 
 ## Upwork (upwork.com) — kinds PROPOSAL, MESSAGE, FOLLOW_UP

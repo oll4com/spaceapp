@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SECURITY_ALWAYS_ASK_KINDS, defaultSecurityCopilotPaneMetadata, paneModeSchema, resolveSecurityCopilotPaneMetadata, securityAdvisoryUrlAllowed,
-  securityInventorySchema
+  securityImageScanSchema, securityInventorySchema
 } from "../src/index.js";
 
 const inventory = {
@@ -27,6 +27,14 @@ describe("Security Copilot contracts", () => {
       expect(securityInventorySchema.safeParse({ ...inventory, packages: [{ name: bad, version: "1.0" }] }).success).toBe(false);
     }
     expect(securityInventorySchema.safeParse({ ...inventory, alias: "vm100; reboot" }).success).toBe(false);
+    // Container images and Trivy's results keep the same strict shapes.
+    const id = `sha256:${"d".repeat(64)}`;
+    const vuln = { id: "CVE-2026-53612", pkg: "bsdutils", installed: "1:2.41-5", fixed: "2.41.5-0+deb13u1", severity: "HIGH" };
+    expect(securityInventorySchema.parse({ ...inventory, images: [{ ref: "pgvector/pgvector:0.8.3", id, vulns: [vuln] }] }).images![0]!.vulns).toHaveLength(1);
+    expect(securityInventorySchema.safeParse({ ...inventory, images: [{ ref: "pg; reboot", id }] }).success).toBe(false);
+    expect(securityImageScanSchema.safeParse({ alias: "local", images: [{ id, vulns: [{ ...vuln, pkg: "$(curl x)" }] }] }).success).toBe(false);
+    expect(securityImageScanSchema.safeParse({ alias: "local", images: [] }).success).toBe(false);
+    expect(securityImageScanSchema.parse({ alias: "local", images: [], failed: [{ id }] }).failed).toHaveLength(1);
   });
 
   it("lets the agent read vendor pages only on official https domains", () => {

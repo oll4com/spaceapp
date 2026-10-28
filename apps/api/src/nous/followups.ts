@@ -9,7 +9,6 @@ import { defaultReleasesOptions } from "../instance-releases.js";
  * time, for a merge-queue ticket (dev or stable) to end, or for a pane to finish its turn, then fires once as an inbox
  * line. Per owner, persisted; the rows (status, outcome, times) are the audit. Nothing here acts on anything else.
  */
-export const NOUS_FOLLOWUP_OPEN_MAX = 50;
 const MAX_AHEAD_MS = 30 * 86_400_000;
 /** A ticket in one of these states has ended; CANCELLED too, so its follow-up does not wait forever. */
 const ENDED = new Set<DeployQueueTicket["status"]>(["DEPLOYED", "FAILED", "CONFLICT", "CANCELLED"]);
@@ -65,6 +64,7 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
     async run(owner: string, args: NousFollowupArgs, pane: { paneId: string; paneLabel: string } | null): Promise<{ ok: boolean; display: string; result: string }> {
       const fail = (result: string) => ({ ok: false, display: "Follow-up not changed", result });
       if (args.op === "list") {
+        // Every open follow-up, then the newest closed ones (operator 2026-10-27: no limit on open follow-ups).
         const items = await deps.repository.list(owner, 40);
         return { ok: true, display: "Read my follow-ups", result: items.length ? items.map(lineOf).join("\n") : "No follow-ups." };
       }
@@ -73,7 +73,7 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
         const closed = await deps.repository.close(owner, args.followup, "CANCELLED", "Cancelled by Nous");
         if (closed) return { ok: true, display: "Cancelled a follow-up", result: lineOf(closed) };
         // 30 failures in 7 days (review 2026-10-20): the follow-up had already fired or been cancelled, which is what cancel wants.
-        const ended = (await deps.repository.list(owner, 200)).find((item) => item.id === args.followup);
+        const ended = await deps.repository.get(owner, args.followup);
         return ended ? { ok: true, display: "That follow-up already ended", result: `Already ${ended.status.toLowerCase()}: ${lineOf(ended)}` }
           : fail(`No follow-up ${args.followup}: op list shows yours.`);
       }
@@ -88,8 +88,6 @@ export function createNousFollowups(deps: NousFollowupsDeps) {
         if (due <= now() || due > now() + MAX_AHEAD_MS) return fail("The time must be in the future, at most 30 days ahead.");
         trigger = { kind: "TIME", dueAt: new Date(due).toISOString() };
       }
-      const open = (await deps.repository.list(owner, NOUS_FOLLOWUP_OPEN_MAX + 1)).filter((item) => item.status === "OPEN").length;
-      if (open >= NOUS_FOLLOWUP_OPEN_MAX) return fail(`You already have ${open} open follow-ups: cancel some first.`);
       const added = await deps.repository.add({ ownerUserId: owner, note: args.note, trigger });
       return { ok: true, display: `Set a follow-up ${describe(trigger)}`, result: lineOf(added) };
     },

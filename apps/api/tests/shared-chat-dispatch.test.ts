@@ -1,5 +1,5 @@
 import { cliToggleRuntimeIds } from "@space/contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, makeSpaceId } from "@space/runtime";
 import {
   buildSharedChatDispatchPrompt,
@@ -19,7 +19,11 @@ function createIdleDeepseekPane(store: InMemorySpaceStore, title: string) {
   return { room, pane };
 }
 
-function createRunningSession(store: InMemorySpaceStore, roomId: string, paneId: string, runtimeId: string, updatedAt: string) {
+// The store stamps sessions with its own clock, so the test sets that clock: two real back-to-back creates can share a
+// millisecond and then tie in the most-recent sort (issue #207).
+function createRunningSession(store: InMemorySpaceStore, roomId: string, paneId: string, runtimeId: string, at: string) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(at));
   const sessionId = makeSpaceId("cli_session");
   store.createPaneCliSession({
     sessionId,
@@ -41,12 +45,15 @@ function createRunningSession(store: InMemorySpaceStore, roomId: string, paneId:
     statusReason: null,
     exitCode: null,
     isActive: true,
-    startedAt: "2026-08-15T08:00:00.000Z",
-    updatedAt,
     endedAt: null
   });
+  vi.useRealTimers();
   return sessionId;
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("parseSharedChatMentions", () => {
   it("returns no mentions for plain messages", () => {

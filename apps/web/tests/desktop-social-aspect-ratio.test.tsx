@@ -53,6 +53,17 @@ describe("DesktopWindowTitlebar Social Aspect Ratio & Window Recording", () => {
     expect(recordBtn.textContent).toContain("Record Window");
   });
 
+  it("marks body for the title bar inset only while the bar shows (no body:has() restyle on every DOM change)", () => {
+    const { rerender, unmount } = render(<DesktopWindowTitlebar activeRoomName="Room 1" />);
+    expect(document.body.getAttribute("data-desktop-titlebar")).toBe("true");
+    rerender(<DesktopWindowTitlebar activeRoomName="Room 1" isFullscreen />);
+    expect(document.body.hasAttribute("data-desktop-titlebar")).toBe(false);
+    rerender(<DesktopWindowTitlebar activeRoomName="Room 1" />);
+    expect(document.body.getAttribute("data-desktop-titlebar")).toBe("true");
+    unmount();
+    expect(document.body.hasAttribute("data-desktop-titlebar")).toBe(false);
+  });
+
   it("reveals Social Media Aspect Ratio controls below Full Screen when opening menu", async () => {
     render(<DesktopWindowTitlebar activeRoomName="Room 1" />);
 
@@ -95,6 +106,15 @@ describe("DesktopWindowTitlebar Social Aspect Ratio & Window Recording", () => {
     await waitFor(() => {
       expect(mockBridge.capturePage).toHaveBeenCalled();
     });
+  });
+
+  it("opens local diagnostic logs when supported by the installed desktop version", async () => {
+    mockBridge.openDiagnosticLogs = vi.fn().mockResolvedValue(true);
+    render(<DesktopWindowTitlebar activeRoomName="Room 1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /SpaceApp/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Open diagnostic logs/i }));
+    expect(mockBridge.openDiagnosticLogs).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menuitem", { name: /Open diagnostic logs/i })).toBeNull();
   });
 
   it("checks unsaved drafts before the desktop Reload Window action", async () => {

@@ -29,8 +29,11 @@ export const paneProgressSchema = z.object({
   ticket: z.string().trim().regex(/^q-[A-Za-z0-9_-]{4,80}$/).optional(),
   next: z.string().trim().min(1).max(300).optional(),
   needs: z.string().trim().min(1).max(500).optional(),
+  /** needs-you: the answers the operator picks from (Needs you as questions, plan clipboard:5AQvaoSR-IZa), the recommended one among them. */
+  options: z.array(z.string().trim().min(1).max(80)).min(1).max(6).optional(),
+  recommended: z.string().trim().min(1).max(80).optional(),
   report: z.string().trim().min(1).max(PANE_REPORT_BODY_MAX).optional()
-}).strict();
+}).strict().refine((input) => !input.recommended || (input.options ?? []).includes(input.recommended), { message: "recommended must be one of the options", path: ["recommended"] });
 export type PaneProgressInput = z.infer<typeof paneProgressSchema>;
 const RETENTION_MS = 14 * 86_400_000;
 /** A working pane gets a heartbeat when it has been silent this long (and is tried again no sooner). */
@@ -183,9 +186,14 @@ export function createPaneReports(deps: PaneReportsDeps) {
         next: text(input.next, 300), needs: text(input.needs, 500), body: text(input.report, PANE_REPORT_BODY_MAX) });
       // Needs you: only the operator can act or answer here. One notification per pane; a new ask alerts again; any later report ends it.
       if (report.status === "NEEDS_YOU") {
+        const options = (input.options ?? []).map((option) => cleanText(option, 80)).filter(Boolean);
+        const recommended = input.recommended ? cleanText(input.recommended, 80) : null;
         await deps.notifications?.raise({ ownerUserId: owner, roomId: room.id, paneId: pane.id, source: "AGENT", kind: "NEEDS_YOU", severity: "ATTENTION",
           title: clip(`${pane.paneName ?? pane.title} needs you`, 200), body: [report.summary, report.needs ? `Needs: ${report.needs}` : null].filter(Boolean).join("\n"),
-          link: { roomId: room.id, paneId: pane.id }, dedupeKey: agentNeedsYouKey(pane.id), payload: { alertAt: report.at }, telegram: null }, { realert: true })
+          link: { roomId: room.id, paneId: pane.id }, dedupeKey: agentNeedsYouKey(pane.id), telegram: null,
+          // The question the operator answers from the card; the answer becomes this pane's next prompt.
+          payload: { alertAt: report.at, ask: { question: clip(report.needs ?? report.summary, 300), ...(options.length ? { options } : {}),
+            ...(recommended && options.includes(recommended) ? { recommended } : {}), answer: { kind: "PANE" } } } }, { realert: true })
           .catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be raised."));
       } else {
         await deps.notifications?.resolve(owner, agentNeedsYouKey(pane.id)).catch((error: unknown) => deps.log?.warn(error, "The needs-you notification could not be resolved."));

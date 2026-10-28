@@ -23,7 +23,7 @@ import {
   makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown, buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, SECURITY_COPILOT_CLAUDE_SETTINGS } from "./agent-bootstrap.js";
+import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown, buildAppStudioPersonaMarkdown, buildVideoPersonaMarkdown, buildSecurityCopilotPersonaMarkdown, SECURITY_COPILOT_CLAUDE_SETTINGS, buildMonitoringCopilotPersonaMarkdown, MONITORING_COPILOT_CLAUDE_SETTINGS } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
 import { isCliPane } from "./pane-guards.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
@@ -260,6 +260,14 @@ async function writeCliWorkspaceBootstrap(
     );
     await mkdir(join(sessionCwd, ".claude"), { recursive: true });
     await writeFile(join(sessionCwd, ".claude", "settings.json"), SECURITY_COPILOT_CLAUDE_SETTINGS, { encoding: "utf8", mode: 0o640 });
+  } else if (input.paneMode === "MONITORING_COPILOT") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildMonitoringCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+    await mkdir(join(sessionCwd, ".claude"), { recursive: true });
+    await writeFile(join(sessionCwd, ".claude", "settings.json"), MONITORING_COPILOT_CLAUDE_SETTINGS, { encoding: "utf8", mode: 0o640 });
   }
 }
 

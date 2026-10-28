@@ -7589,6 +7589,51 @@ svg.space-aurora-icon {
   visibility: hidden;
 }
 
+/* The live view's own list for an open native dropdown: Chrome's popup is in no frame (plan clipboard:gHaiX_8yanVA). */
+.browser-select-overlay {
+  position: absolute;
+  z-index: 4;
+  max-width: 90%;
+  overflow-y: auto;
+  border: 1px solid #30383a;
+  border-radius: 6px;
+  background: #101315;
+  color: #e6ebec;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+  padding: 0.25rem 0;
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.browser-select-overlay [role="option"] {
+  padding: 0.25rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.browser-select-overlay [role="option"][data-active="true"],
+.browser-select-overlay [role="option"]:hover {
+  background: #23404a;
+}
+
+.browser-select-overlay [role="option"][aria-selected="true"] {
+  font-weight: 600;
+}
+
+.browser-select-overlay [role="option"][aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+  background: none;
+}
+
+.browser-select-overlay-more {
+  padding: 0.25rem 0.75rem;
+  opacity: 0.7;
+  font-style: italic;
+}
+
 .browser-frame-empty svg[data-lucide="loader-2"] {
   animation: spin 1s linear infinite;
 }
@@ -14181,6 +14226,25 @@ svg.space-aurora-icon {
   flex-shrink: 0;
   width: 12px;
   height: 12px;
+}
+
+/* Whether a plan is on an open pane (operator request 2026-10-26). */
+.terminal-plan-pane-tag {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--room-border, #3c4541);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.terminal-plan-pane-tag[data-on-pane="true"] {
+  background: color-mix(in srgb, var(--room-accent, #6db7aa) 20%, transparent);
+  border-color: color-mix(in srgb, var(--room-accent, #6db7aa) 40%, transparent);
+  color: var(--room-accent, #6db7aa);
 }
 
 .terminal-plan-suggested-link {

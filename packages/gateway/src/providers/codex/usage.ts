@@ -51,9 +51,18 @@ function window(value: unknown): CodexUsageWindow | null {
   };
 }
 
+/**
+ * A plan with only a weekly limit (prolite) reports it as the primary window; it goes in the weekly (secondary) slot, so routing
+ * and displays never read the week as five hours (niggmopai, 2026-10-27).
+ */
+export const codexLoneWeek = (primaryMinutes: number | null | undefined, hasSecondary: boolean): boolean => !hasSecondary && (primaryMinutes ?? 0) >= 24 * 60;
+
 export function parseCodexUsage(payload: unknown): CodexUsage {
   const record = obj(payload) ?? {};
   const rateLimit = obj(record.rate_limit);
+  const primary = window(rateLimit?.primary_window);
+  const secondary = window(rateLimit?.secondary_window);
+  const loneWeek = codexLoneWeek(primary?.limitWindowSeconds === null || primary?.limitWindowSeconds === undefined ? null : primary.limitWindowSeconds / 60, Boolean(secondary));
   const credits = obj(record.credits);
   const additional = Array.isArray(record.additional_rate_limits) ? record.additional_rate_limits : [];
   return {
@@ -61,8 +70,8 @@ export function parseCodexUsage(payload: unknown): CodexUsage {
     workspaceId: str(record.workspace_id),
     workspaceLabel: str(record.workspace_label),
     seatType: str(record.seat_type),
-    primary: window(rateLimit?.primary_window),
-    secondary: window(rateLimit?.secondary_window),
+    primary: loneWeek ? null : primary,
+    secondary: loneWeek ? primary : secondary,
     credits: credits ? { hasCredits: bool(credits.has_credits), unlimited: bool(credits.unlimited), balance: str(credits.balance) } : null,
     resetCreditsAvailable: int(obj(record.rate_limit_reset_credits)?.available_count),
     additional: additional.map(obj).filter((item): item is JsonObject => Boolean(item && str(item.limit_name) && str(item.metered_feature)))

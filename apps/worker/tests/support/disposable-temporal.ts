@@ -12,8 +12,8 @@ import { Connection } from "@temporalio/client";
 import pg from "pg";
 
 /** Same images as the production compose file. Tests never pull them. */
-export const disposablePostgresImage = process.env.SPACE_TEST_PG_IMAGE ?? "pgvector/pgvector:0.8.3-pg17-trixie";
-export const disposableTemporalImage = process.env.SPACE_TEST_TEMPORAL_IMAGE ?? "temporalio/auto-setup:1.29.1";
+export const disposablePostgresImage = process.env.SPACE_TEST_PG_IMAGE ?? "pgvector/pgvector:0.8.7-pg17-trixie";
+export const disposableTemporalImage = process.env.SPACE_TEST_TEMPORAL_IMAGE ?? "temporalio/auto-setup:1.29.7";
 
 function docker(args: string[], timeout = 60_000): string {
   return execFileSync("docker", args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] }).trim();

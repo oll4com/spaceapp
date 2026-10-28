@@ -5,6 +5,7 @@ import {
 } from "@space/contracts";
 import { releaseTrainInputSchema, type ReleaseTrainActor, type ReleaseTrainInput } from "./release-trains.js";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
+import { notePaneReached } from "./room-agent-monitor.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
 
 /**
@@ -325,6 +326,7 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
           when: args.when === "now" ? "NOW" : "AFTER_TURN" }] });
       // A text delivered to a pane that waited on a question or a stop answers that wait.
       const delivered = new Set(operation.results.filter((result) => result.status === "COMPLETED" && result.paneId).map((result) => result.paneId!));
+      for (const paneId of delivered) notePaneReached(paneId);
       for (const pane of panes.filter((entry) => delivered.has(entry.id))) {
         await settleMonitorEvents(ctx, pane, `The Room Agent sent "${args.text.trim().replace(/\s+/g, " ").slice(0, 80)}" for you.`, ["WAITING", "STUCK"]);
       }
@@ -364,6 +366,7 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
           `Answered ${paneName(pane)}: "${args.answer!.trim().slice(0, 60)}"`, `Could not answer ${paneName(pane)}`);
         if (!sent.ok) return sent;
         const decision = `The Room Agent answered "${args.answer!.trim().slice(0, 80)}" for you.`;
+        notePaneReached(pane.id);
         await settleMonitorEvents(ctx, pane, decision);
         return { ...sent, result: `${decision.replace("The Room Agent", "You")} ${paneName(pane)} asked it at an empty prompt, so it went as its next prompt; read it again to see the effect.` };
       }
@@ -372,6 +375,7 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
         : { sessionId: observed.sessionId, answer: args.answer!.trim(), submit: args.submit ?? true,
           ...(observed.promptFingerprint ? { expectedPromptFingerprint: observed.promptFingerprint } : {}) }, ctx.traceId);
       const decision = args.decline ? "The Room Agent declined it for you." : `The Room Agent answered "${args.answer!.trim().slice(0, 80)}" for you.`;
+      notePaneReached(pane.id);
       await settleMonitorEvents(ctx, pane, decision);
       return { ok: true, display: args.decline ? `Declined ${paneName(pane)}'s prompt` : `Answered ${paneName(pane)}: "${args.answer!.trim().slice(0, 60)}"`,
         result: `${decision.replace("The Room Agent", "You")} ${paneName(pane)} continues; read it again to see the effect.` };

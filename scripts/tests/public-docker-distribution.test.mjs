@@ -12,7 +12,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
   const nodeImage =
-    "node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82";
+    "node:22.23.4-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf";
   const nodeStages = Array.from(
     dockerfile.matchAll(/^FROM (\S+) AS (build|runtime-base)$/gm),
     ([, image, stage]) => ({ image, stage })
@@ -95,7 +95,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 
   assert.match(
     normalizedRuntimeStage,
-    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.28\.1 postcss-selector-parser@7\.1\.6/
+    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.29\.1 postcss-selector-parser@7\.1\.6/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -115,7 +115,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
   );
   assert.match(
     normalizedRuntimeStage,
-    /tar -xzf \/tmp\/npm-security-patches\/undici-6\.28\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/undici --strip-components=1/
+    /tar -xzf \/tmp\/npm-security-patches\/undici-6\.29\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/undici --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,

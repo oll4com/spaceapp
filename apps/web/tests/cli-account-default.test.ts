@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ListCliAccountProfilesResponse } from "@space/contracts";
-import { cliAccountProfileForPane } from "../src/features/cli-accounts/cli-account-default.js";
+import { cliAccountProfileForPane, lateListAccountProfileId } from "../src/features/cli-accounts/cli-account-default.js";
 
 function list(profileIds: string[], gatewayProfile?: ListCliAccountProfilesResponse["gatewayProfile"]): ListCliAccountProfilesResponse {
   return {
@@ -19,12 +19,12 @@ function list(profileIds: string[], gatewayProfile?: ListCliAccountProfilesRespo
 describe("account a pane starts on", () => {
   const ids = ["main", "work", "space-gateway"];
 
-  it("opens every new pane on Space Gateway while it is ready for the CLI", () => {
+  it("opens every pane without a CLI on Space Gateway while it is ready for the CLI, whatever its age", () => {
     expect(cliAccountProfileForPane(list(ids, { profileId: "space-gateway", ready: true }), "work", true)).toBe("space-gateway");
     expect(cliAccountProfileForPane(list(ids, { profileId: "space-gateway", ready: true }), "main", true)).toBe("space-gateway");
   });
 
-  it("keeps a running pane on its own account", () => {
+  it("keeps a running pane, or one the operator picked by hand, on its own account", () => {
     expect(cliAccountProfileForPane(list(ids, { profileId: "space-gateway", ready: true }), "work", false)).toBe("work");
   });
 
@@ -40,5 +40,13 @@ describe("account a pane starts on", () => {
     expect(cliAccountProfileForPane(list(["main", "work"]), "work", true)).toBe("work");
     expect(cliAccountProfileForPane(list(["main", "work"], null), "gone", true)).toBe("main");
     expect(cliAccountProfileForPane(list([]), "work", true)).toBe("main");
+  });
+
+  it("starts a pane whose account list is late on the CLI's gateway profile, never the remembered one", () => {
+    expect(lateListAccountProfileId("cli:claude")).toBe("space-gateway");
+    expect(lateListAccountProfileId("cli:gemini")).toBe("space-gateway");
+    expect(lateListAccountProfileId("cli:copilot")).toBe("space-gateway");
+    // CLIs without a gateway profile keep the picker's selection.
+    expect(lateListAccountProfileId("cli:cursor")).toBeUndefined();
   });
 });

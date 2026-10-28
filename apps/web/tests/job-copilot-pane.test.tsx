@@ -83,7 +83,7 @@ const pane: Pane = {
 const now = new Date().toISOString();
 const profile: JobApplyProfile = {
   ownerUserId: "user:1", campaignStartedAt: null, candidate: { fullName: "Nikolaos Theodoropoulos", email: null, phone: null, address: null, location: null, country: null, linkedinUrl: null, githubUrl: null,
-    websiteUrl: null, headline: null, summary: null, workAuthorization: null, needsSponsorship: true, willingToRelocate: null, salaryExpectation: null, noticePeriod: null,
+    websiteUrl: null, headline: null, summary: null, workAuthorization: null, needsSponsorship: true, willingToRelocate: null, salaryExpectation: null, salaryBelowMarketPercent: 10, noticePeriod: null,
     yearsOfExperience: null, skills: [], languages: [], experience: [], education: [], extra: {} },
   qaBank: [], cvArtifactId: "artifact:cv000001", coverLetterArtifactId: null, cvTextChars: 4200, mailbox: null, mailboxVerifiedAt: null, google: null, googleAccounts: [], googleAvailable: true, updatedAt: now
 };

@@ -13,6 +13,7 @@ vi.mock("../src/api.js", () => ({
   api: {
     clipboardItems: vi.fn(),
     rooms: vi.fn().mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 1 } }),
+    panes: vi.fn().mockRejectedValue(new Error("not read")),
     updatePlanProgress: vi.fn().mockResolvedValue({}),
     setClipboardItemCompleted: vi.fn().mockResolvedValue({})
   }
@@ -35,7 +36,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: 18,
       createdAt: "2026-09-27T10:00:00.000Z",
       lastUsedAt: "2026-09-27T10:00:00.000Z"
@@ -56,7 +57,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: 30,
       createdAt: "2026-09-28T10:00:00.000Z",
       lastUsedAt: "2026-09-28T10:00:00.000Z"
@@ -76,7 +77,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: 22,
       createdAt: "2026-09-28T11:00:00.000Z",
       lastUsedAt: "2026-09-28T11:00:00.000Z"
@@ -493,8 +494,8 @@ describe("CliPlansMenu", () => {
     render(<CliPlansMenu pane={pane} active={true} disabled={false} onSelectPlan={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: /Active plan: Mine/i }));
     fireEvent.click(await screen.findByRole("button", { name: /All plans/ }));
-    expect(await screen.findByText("· Linked to Other pane · Room: Ops")).toBeDefined();
-    expect(screen.getByText("· Linked to this pane")).toBeDefined();
+    expect(await screen.findByText("On Other pane · Room: Ops")).toBeDefined();
+    expect(screen.getByText("On this pane")).toBeDefined();
 
     fireEvent.click(within(screen.getByRole("list", { name: "Open plans list" })).getByText("Theirs"));
     expect(screen.queryByRole("button", { name: "Detach from pane" })).toBeNull();
@@ -509,6 +510,34 @@ describe("CliPlansMenu", () => {
     fireEvent.click(within(screen.getByRole("list", { name: "Open plans list" })).getByText("Mine"));
     fireEvent.click(screen.getByRole("button", { name: "Detach from pane" }));
     await waitFor(() => expect(api.updatePlanProgress).toHaveBeenCalledWith("clipboard:mine", { paneId: null, roomId: null, paneTitle: null }));
+  });
+
+  it("names a linked pane as it is now and says when it closed (operator request 2026-10-26)", async () => {
+    vi.mocked(api.clipboardItems).mockResolvedValue({
+      data: [
+        { ...mockPlans[1]!, id: "clipboard:open", title: "On an open pane", roomId: "room:ops", paneId: "pane:other", paneTitle: "Dana" },
+        { ...mockPlans[1]!, id: "clipboard:gone", title: "On a closed pane", roomId: "room:ops", paneId: "pane:gone", paneTitle: "Cody" }
+      ],
+      pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
+    });
+    vi.mocked(api.rooms).mockResolvedValueOnce({ data: [{ id: "room:ops", name: "Ops" }], pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } } as any);
+    vi.mocked(api.panes).mockResolvedValueOnce({ data: [{ id: "pane:other", paneName: "Andy", title: "Security Copilot 1" }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } } as any);
+    render(<CliPlansMenu pane={{ id: "pane:own", title: "Own" }} active={true} disabled={false} onSelectPlan={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Open plans/i }));
+    expect(await screen.findByText("On Andy · Room: Ops")).toBeDefined();
+    expect(screen.getByText("Pane closed")).toBeDefined();
+    expect(api.panes).toHaveBeenCalledWith("room:ops");
+    // Every plan shows; the pane chips keep those on an open pane apart from the rest, and a second click shows all again.
+    const list = screen.getByRole("list", { name: "Open plans list" });
+    fireEvent.click(screen.getByRole("button", { name: "On a pane (1)" }));
+    expect(within(list).queryByText("On a closed pane")).toBeNull();
+    expect(within(list).getByText("On an open pane")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "No pane (1)" }));
+    expect(within(list).queryByText("On an open pane")).toBeNull();
+    expect(within(list).getByText("On a closed pane")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "No pane (1)" }));
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
   });
 
   it("keeps plans viewable without an attached CLI but holds back sending", async () => {
@@ -1067,7 +1096,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: "pane-long-agent-1",
       paneTitle: "Bob",
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: 50,
       createdAt: "2026-10-08T10:00:00.000Z",
       lastUsedAt: "2026-10-08T10:00:00.000Z"
@@ -1143,7 +1172,7 @@ describe("CliPlansMenu", () => {
       roomId: null,
       paneId: null,
       paneTitle: null,
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: 200,
       createdAt: "2026-10-08T10:00:00.000Z",
       lastUsedAt: "2026-10-08T10:00:00.000Z"
