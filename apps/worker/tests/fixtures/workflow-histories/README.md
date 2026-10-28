@@ -27,6 +27,9 @@ baseline, including if a file appears while the suite is running. The default
 destination contains the committed histories and therefore refuses re-recording.
 Use a new output directory, review the results, and add any new compatibility
 fixtures under distinct names while preserving supported earlier histories.
+Register each new fixture name (without `.json`) in `historyNames` in
+`apps/worker/tests/support/workflow-sandbox.ts`. The replay test requires the
+JSON inventory to match that list and replays every listed history.
 The supervisor histories capture the first run, including all 250 polling
 iterations and its continue-as-new event, rather than an empty successor.
 
