@@ -63,6 +63,8 @@ jobs:
           printf '%s\n' "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" "XDG_DATA_HOME=$XDG_DATA_HOME" \
             "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "CONTAINERS_STORAGE_CONF=$CONTAINERS_STORAGE_CONF" \
             "CONTAINERS_CONF=$CONTAINERS_CONF" >> "$GITHUB_ENV"
+          # Health checks run in systemd's user manager, outside this shell.
+          systemctl --user import-environment XDG_CONFIG_HOME XDG_DATA_HOME CONTAINERS_STORAGE_CONF CONTAINERS_CONF
           # Grant user namespaces to this engine binary on Ubuntu's restricted-userns hosts.
           # This leaves the system restriction and other applications' profiles in place.
           if command -v apparmor_parser >/dev/null; then
@@ -79,6 +81,22 @@ jobs:
             docker.io/library/node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 \
             node -e 'if (process.getuid() !== 10001) process.exit(1); require("node:fs").writeFileSync("/probe/owned", "ok")'
           test "$(stat -c '%u' "$probe/owned")" = "$(id -u)"
+          # Require an automatically scheduled health check, not a manual invocation.
+          health_container=$(podman run -d --network none --health-cmd 'node -e "process.exit(0)"' --health-interval 1s \
+            docker.io/library/node:22.23.0-trixie-slim@sha256:cfd8f2a5bc50526aee08e88970979f92722828e7dcc6d8983607fb8bff4bdb82 \
+            node -e 'setInterval(() => {}, 1000)')
+          trap 'podman rm -f "$health_container"; rm -rf -- "$probe"' EXIT
+          for attempt in {1..30}; do
+            health=$(podman inspect --format '{{.State.Health.Status}}' "$health_container")
+            if [ "$health" = healthy ]; then break; fi
+            sleep 1
+          done
+          if [ "$health" != healthy ]; then
+            podman inspect --format '{{json .State.Health}}' "$health_container"
+            systemctl --user list-timers --all --no-pager
+            exit 1
+          fi
+          echo 'PASS automatic Podman health check'
       - name: Unit tests and runtime images
         shell: bash
         run: |
@@ -104,4 +122,4 @@ jobs:
             if curl --fail --silent --unix-socket "$XDG_RUNTIME_DIR/podman/podman.sock" http://localhost/_ping; then break; fi
             sleep 1
           done
-          node scripts/podman-launcher-smoke.mjs small
+          timeout --signal=TERM --kill-after=30s 20m node scripts/podman-launcher-smoke.mjs small
