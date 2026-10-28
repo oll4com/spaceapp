@@ -94,6 +94,7 @@ try {
     const entry = { count, ...result, firstSceneMs, frameP95Ms: percentile(result.frames, .95), pickP95Ms: percentile(result.picks, .95), pickMaxMs: Math.max(...result.picks), longestLoadLayoutTaskMs: Math.max(0, ...result.tasks.map(t => t.duration)), interactionDuringLayout: true, titleToggle: true, keyboardSelection: true, pointerSelection: true, contextLossFallbackAndRestore: true, recoveryRequests, errors };
     output.results.push(entry);
     console.log(JSON.stringify({ count, frameP95Ms: entry.frameP95Ms, pickMaxMs: entry.pickMaxMs, longestLoadLayoutTaskMs: entry.longestLoadLayoutTaskMs }));
+    if (result.edges !== count * 3) throw new Error(`Expected ${count * 3} edges at ${count} nodes, received ${result.edges}`);
     if (entry.frameP95Ms > (count === 2000 ? 16.7 : 33.3) || entry.pickMaxMs > 4 || entry.longestLoadLayoutTaskMs > 100 || errors.length || recoveryRequests) throw new Error(`Rendering or recovery budget failed at ${count} nodes`);
     await page.close();
   }

@@ -10,12 +10,20 @@ export function MemoryGraph3DCanvas({ nodes, edges, positions, coordinates, show
   showTitles: boolean; selectedNodeId: string | null; onSelectNode: (id: string) => void;
   loading: boolean; resetToken: number;
 }) {
-  const volumeRatio = useMemo(() => memory3DVolumeRatio([...coordinates.values()]), [coordinates]);
+  const { extent, volumeRatio } = useMemo(() => {
+    const visible = nodes.flatMap(node => {
+      const point = coordinates.get(node.id);
+      return point ? [point] : [];
+    });
+    let extent = 60;
+    for (const point of visible) extent = Math.max(extent, Math.hypot(point.x, point.y, point.z));
+    return { extent, volumeRatio: memory3DVolumeRatio(visible) };
+  }, [nodes, coordinates]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef<MemoryCamera3D>({ ...DEFAULT_MEMORY_CAMERA });
   const redrawRef = useRef<() => void>(() => {});
-  const current = useRef({ nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode });
-  current.current = { nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode };
+  const current = useRef({ nodes, edges, positions, coordinates, extent, showTitles, selectedNodeId, onSelectNode });
+  current.current = { nodes, edges, positions, coordinates, extent, showTitles, selectedNodeId, onSelectNode };
   useEffect(() => {
     cameraRef.current = { ...DEFAULT_MEMORY_CAMERA };
     redrawRef.current();
@@ -32,9 +40,8 @@ export function MemoryGraph3DCanvas({ nodes, edges, positions, coordinates, show
     let dragged = false, downX = 0, downY = 0;
     const render = () => {
       frame = 0;
-      const { nodes, edges, positions, coordinates, showTitles, selectedNodeId } = current.current;
+      const { nodes, edges, positions, coordinates, extent, showTitles, selectedNodeId } = current.current;
       context.clearRect(0, 0, width, height);
-      const extent = Math.max(60, ...[...coordinates.values()].map(p => Math.hypot(p.x, p.y, p.z)));
       const scale = Math.min(width, height) * 0.4 / extent;
       const projected = new Map(nodes.flatMap(node => {
         const p = coordinates.get(node.id);
