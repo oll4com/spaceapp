@@ -60,6 +60,8 @@ const publicDocs = new Set([
   "docs/cli-providers.md",
   // Linked from CONTRIBUTING; the policy file drives npm run test:architecture.
   "docs/configuration-reference.md",
+  // Longniang, 2026-10-28: preserve the contributor stack guide in public exports.
+  "docs/contributing-dev-stack.md",
   "docs/quality/domain-boundaries.json",
   "docs/decisions/ADR-010-public-distribution.md",
   "docs/getting-started.md",
@@ -136,6 +138,18 @@ const publicScripts = new Set([
   "scripts/tests/composition-root-size.test.mjs",
   "scripts/quality-known-limitations.mjs",
   "scripts/tests/quality-known-limitations.test.mjs",
+  // Longniang, 2026-10-28: ship the complete contributor stack and its public regressions.
+  "scripts/dev-stack.mjs",
+  "scripts/dev-stack/processes.mjs",
+  "scripts/dev-stack/runtime.mjs",
+  "scripts/dev-stack/smoke.mjs",
+  "scripts/dev-stack/state.mjs",
+  "scripts/dev-stack/supervisor.mjs",
+  "scripts/tests/dev-stack-state.test.mjs",
+  "scripts/tests/dev-stack-processes.test.mjs",
+  "scripts/tests/dev-stack-runtime.test.mjs",
+  "scripts/tests/dev-stack-supervisor.test.mjs",
+  "scripts/tests/public-dev-stack-export.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
   "scripts/tests/contributor-smoke.test.mjs"

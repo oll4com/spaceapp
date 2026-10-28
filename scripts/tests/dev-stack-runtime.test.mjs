@@ -6,19 +6,25 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer as createHttpServer } from 'node:http';
+import net from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import { loadConfig, prepareState } from '../dev-stack/state.mjs';
-import { composeDocument, prepareRuntime, runCommand, runtimeEnvironment } from '../dev-stack/runtime.mjs';
+import { composeDocument, prepareRuntime as realPrepareRuntime, runCommand, runtimeEnvironment, discoverDocker, startOpenCodeServer } from '../dev-stack/runtime.mjs';
+import { ProcessManager } from '../dev-stack/processes.mjs';
+
+// Longniang, 2026-10-28: fixtures never query the operator's Docker context or configuration.
+const prepareRuntime = (config, secrets, options = {}) => realPrepareRuntime(config, secrets, { ...options,
+  dockerOptions: { hostEnv: { HOME: config.repoRoot }, run: async () => { throw new Error('synthetic Docker unavailable'); } } });
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const fixture = async (t) => {
+const fixture = async (t, env = {}) => {
   const root = await mkdtemp(path.join(tmpdir(), 'sd-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, 'packages/run-spaceapp/templates'), { recursive: true });
   for (const relative of ['packages/run-spaceapp/templates/compose.yml', 'Dockerfile']) {
     await writeFile(path.join(root, relative), await readFile(path.join(repoRoot, relative)));
   }
-  const config = await loadConfig(root);
+  const config = await loadConfig(root, env);
   const secrets = await prepareState(config);
   return { config, secrets };
 };
@@ -91,7 +97,7 @@ test('explicit proxy and Docker endpoint routing survive without importing a hos
   }
 });
 
-test('isolated OpenCode wrapper implements readiness and launches standalone with its own home', async t => {
+test('isolated OpenCode panes attach to the authenticated shared server with their own home', async t => {
   const { config, secrets } = await fixture(t);
   const { env } = await prepareRuntime(config, secrets);
   const wrapper = path.join(config.stateDir, 'bin/opencode-vscode-parity');
@@ -105,11 +111,15 @@ test('isolated OpenCode wrapper implements readiness and launches standalone wit
   const result = JSON.parse((await runCommand(wrapper, ['--run-inner', '--model', 'opencode/example'], {
     cwd: config.repoRoot, env: { ...env, OPENAI_API_KEY: 'synthetic-provider-key', NODE_OPTIONS: '' },
   })).stdout);
-  assert.deepEqual(result.args, ['--model', 'opencode/example', '--standalone']);
+  assert.deepEqual(result.args, ['--server', `http://127.0.0.1:${config.ports.opencode}`, '--model', 'opencode/example', path.join(config.stateDir, 'workspaces/default')]);
   assert.equal(result.cwd, path.join(config.stateDir, 'workspaces/default'));
   assert.equal(result.env.HOME, path.join(config.stateDir, 'providers/opencode'));
   for (const key of ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'TMPDIR']) assert.ok(result.env[key].startsWith(result.env.HOME + path.sep));
   for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'SPACE_SESSION_SECRET', 'SPACE_DATABASE_URL', 'NODE_OPTIONS']) assert.equal(result.env[key], undefined, key);
+  assert.equal(result.env.OPENCODE_SERVER_USERNAME, 'opencode');
+  assert.equal(result.env.OPENCODE_SERVER_PASSWORD, secrets.opencodeServerPassword);
+  await assert.rejects(runCommand(wrapper, ['--standalone'], { cwd: config.repoRoot, env }), /exit 64/);
+  await assert.rejects(runCommand(wrapper, ['--server=http://unrelated.invalid'], { cwd: config.repoRoot, env }), /exit 64/);
   await assert.rejects(runCommand(wrapper, ['credential-smoke'], { cwd: config.repoRoot, env }), /exit 64/);
 });
 
@@ -187,4 +197,143 @@ test('Vite forwards API and plugin WebSocket upgrades to the selected isolated o
     });
     assert.equal(output, `proxied:${route}`);
   }
+});
+
+// Longniang, 2026-10-28: selected Desktop/Colima endpoints and user Compose plugins without host credential imports.
+test('Docker discovery uses selected context before socket fallback and locates a user plugin', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'docker-discovery-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const socketPath = path.join(root, 'selected.sock');
+  const server = net.createServer();
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const pluginDirectory = path.join(root, '.docker/cli-plugins');
+  await mkdir(pluginDirectory, { recursive: true });
+  await writeFile(path.join(pluginDirectory, 'docker-compose'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const customDirectory = path.join(root, 'custom-compose-plugins');
+  await mkdir(customDirectory);
+  await writeFile(path.join(customDirectory, 'docker-compose'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  let calls = 0;
+  const result = await discoverDocker({ hostEnv: { HOME: root, DOCKER_CONTEXT: 'colima', OPENAI_API_KEY: 'synthetic-excluded' }, platform: 'darwin',
+    run: async (command, args, options) => {
+      calls++;
+      assert.equal(command, 'docker');
+      assert.equal(options.env.OPENAI_API_KEY, undefined);
+      assert.equal(options.env.HOME, root);
+      if (args[0] === 'info') {
+        assert.deepEqual(args, ['info', '--format', '{{json .ClientInfo.Plugins}}']);
+        return { stdout: JSON.stringify([{ Name: 'compose', Path: path.join(customDirectory, 'docker-compose') }]) };
+      }
+      assert.deepEqual(args, ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}']);
+      return { stdout: `unix://${socketPath}\n` };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(result.endpoint, `unix://${socketPath}`);
+  assert(result.pluginDirs.includes(pluginDirectory));
+  assert(result.pluginDirs.includes(customDirectory));
+  await assert.rejects(discoverDocker({ hostEnv: { HOME: root }, run: async () => ({ stdout: 'tcp://remote.invalid:2376' }) }), /remote\/TLS/);
+  await assert.rejects(discoverDocker({ hostEnv: { HOME: root }, run: async () => ({ stdout: `unix://${root}/absent.sock` }) }), /no usable local Unix socket/);
+  const explicit = await discoverDocker({ hostEnv: { HOME: root, DOCKER_HOST: `unix://${socketPath}` }, run: async () => { throw new Error('explicit endpoint must bypass context'); } });
+  assert.equal(explicit.endpoint, `unix://${socketPath}`);
+});
+
+test('Docker discovery falls back to an existing Desktop/Colima socket when context CLI is unavailable', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'docker-fallback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, '.colima/default'), { recursive: true });
+  const socketPath = path.join(root, '.colima/default/docker.sock');
+  const server = net.createServer();
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const result = await discoverDocker({ hostEnv: { HOME: root }, run: async () => { throw new Error('synthetic context unavailable'); } });
+  assert.equal(result.endpoint, `unix://${socketPath}`);
+});
+
+test('shared server is authenticated, loopback-only and reaped by the manager while two wrappers attach', async t => {
+  const reservation = createHttpServer();
+  await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  const { config, secrets } = await fixture(t, { SPACE_DEV_OPENCODE_PORT: String(port) });
+  const { env } = await prepareRuntime(config, secrets);
+  const executable = path.join(config.stateDir, 'vendor/opencode/node_modules/.bin/opencode');
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, `#!${process.execPath}
+import http from 'node:http';
+const args = process.argv.slice(2);
+if (args[0] === 'serve') {
+  if (args[args.indexOf('--hostname') + 1] !== '127.0.0.1') process.exit(7);
+  // Match the pinned CLI's fixed Basic username, independently of the supplied environment.
+  const expected = 'Basic ' + Buffer.from('opencode:' + process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
+  http.createServer((request, response) => { response.writeHead(request.headers.authorization === expected ? 200 : 401); response.end(JSON.stringify({version:'2.0.32',pid:process.pid})); }).listen(Number(args[args.indexOf('--port') + 1]), '127.0.0.1');
+} else console.log(JSON.stringify({ args, home: process.env.HOME }));
+`, { mode: 0o700 });
+  const manager = new ProcessManager();
+  const failures = [];
+  manager.on('failure', event => failures.push(event));
+  t.after(() => manager.stopAll());
+  await startOpenCodeServer(config, manager, { timeoutMs: 5000 });
+  const child = manager.get('opencode-server');
+  assert(child?.pid);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/info`)).status, 401);
+  const wrapper = path.join(config.stateDir, 'bin/opencode-vscode-parity');
+  const results = await Promise.all([1, 2].map(() => runCommand(wrapper, [], { cwd: config.repoRoot, env })));
+  for (const result of results) {
+    const observation = JSON.parse(result.stdout);
+    assert.deepEqual(observation.args.slice(0, 2), ['--server', `http://127.0.0.1:${port}`]);
+    assert.equal(observation.home, path.join(config.stateDir, 'providers/opencode'));
+  }
+  assert.equal(manager.get('opencode-server'), child);
+  await manager.stopAll();
+  assert.deepEqual(failures, []);
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/info`));
+});
+
+test('shared server readiness fails on an early exit, rejects wrong auth, and responds to cancellation', async t => {
+  const { config, secrets } = await fixture(t);
+  await prepareRuntime(config, secrets);
+  const exited = { start: () => ({ pid: 123, exitCode: 1, signalCode: null }) };
+  await assert.rejects(startOpenCodeServer(config, exited), /exited before readiness/);
+  const running = { start: () => ({ pid: 123, exitCode: null, signalCode: null }) };
+  await assert.rejects(startOpenCodeServer(config, running, { timeoutMs: 10, fetchFn: async () => ({ status: 401 }) }), /readiness timed out/);
+  const controller = new AbortController();
+  controller.abort(new Error('synthetic server cancellation'));
+  await assert.rejects(startOpenCodeServer(config, running, { signal: controller.signal }), /synthetic server cancellation/);
+});
+
+// Longniang, 2026-10-28: opt-in proof against the pinned installed CLI, with a fresh HOME and synthetic password only.
+test('installed OpenCode serve exposes authenticated API info with its fixed Basic username', {
+  skip: process.env.SPACE_DEV_TEST_OPENCODE_BINARY ? false : 'Set SPACE_DEV_TEST_OPENCODE_BINARY to an already-installed pinned CLI; no install or provider is used',
+}, async t => {
+  const reservation = createHttpServer();
+  await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  const { config, secrets } = await fixture(t, { SPACE_DEV_OPENCODE_PORT: String(port) });
+  await prepareRuntime(config, secrets);
+  const executable = path.join(config.stateDir, 'vendor/opencode/node_modules/.bin/opencode');
+  await mkdir(path.dirname(executable), { recursive: true });
+  await symlink(path.resolve(process.env.SPACE_DEV_TEST_OPENCODE_BINARY), executable);
+  const manager = new ProcessManager();
+  const failures = [];
+  manager.on('failure', event => failures.push(event));
+  t.after(() => manager.stopAll());
+  try {
+    await startOpenCodeServer(config, manager, { timeoutMs: 20_000 });
+    const url = `http://127.0.0.1:${port}/api/info`;
+    assert.equal((await fetch(url)).status, 401);
+    const wrongUser = 'Basic ' + Buffer.from('spaceapp-dev:' + secrets.opencodeServerPassword).toString('base64');
+    assert.equal((await fetch(url, { headers: { authorization: wrongUser } })).status, 401);
+    const authorization = 'Basic ' + Buffer.from('opencode:' + secrets.opencodeServerPassword).toString('base64');
+    const response = await fetch(url, { headers: { authorization } });
+    assert.equal(response.status, 200);
+    const info = await response.json();
+    assert.equal(info.version, config.openCodePackage.split('@').at(-1));
+    assert.equal(info.pid, manager.get('opencode-server').pid);
+    assert.equal(info.paths.tmp, path.join(config.stateDir, 'providers/opencode/tmp/opencode'));
+  } finally {
+    await manager.stopAll();
+  }
+  assert.deepEqual(failures, []);
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/info`));
 });

@@ -133,8 +133,7 @@ describe("Space Control screenshot capture", () => {
       await vi.advanceTimersByTimeAsync(6000);
       const running = await started as { status: string; operationId: string };
       expect(running).toMatchObject({ status: "RUNNING", operationId: expect.any(String) });
-      // 龙娘 · 2026-10-26: advancing fake timers does not complete the capture directory's real filesystem I/O.
-      await vi.waitFor(() => expect(requests[1]).toMatchObject({ viewport: "story" }));
+      expect(requests[1]).toMatchObject({ viewport: "story" });
       release();
       await vi.waitFor(async () => expect(await service.operations(actor, room.id, running.operationId)).toMatchObject({ status: "COMPLETED" }));
       const done = await service.operations(actor, room.id, running.operationId) as { results: Array<{ evidence: { result: Record<string, unknown> } }> };

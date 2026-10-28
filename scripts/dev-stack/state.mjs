@@ -4,7 +4,8 @@ import { chmod, lstat, mkdir, open, readFile, readdir, realpath } from 'node:fs/
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 
-const PORT_DEFAULTS = { api: 14910, web: 14911, postgres: 15432, temporal: 17233 };
+// Longniang, 2026-10-28: one authenticated, supervisor-owned OpenCode server for every development pane.
+const PORT_DEFAULTS = { api: 14910, web: 14911, postgres: 15432, temporal: 17233, opencode: 14747 };
 const DIRECTORIES = ['secrets', 'logs', 'providers', 'providers/opencode', 'workspaces', 'memory', 'memory-graph', 'artifacts', 'bin', 'vendor'];
 
 async function statOrNull(file) {
@@ -77,7 +78,7 @@ async function checkManifest(config) {
     throw new Error('Refusing development state without a valid ownership manifest');
   }
   const expected = manifestFor(config);
-  if (manifest.format !== expected.format || manifest.version !== expected.version || manifest.repoRoot !== expected.repoRoot || manifest.projectName !== expected.projectName || !manifest.ports || Object.keys(manifest.ports).length !== 4 || Object.entries(expected.ports).some(([key, value]) => manifest.ports[key] !== value)) {
+  if (manifest.format !== expected.format || manifest.version !== expected.version || manifest.repoRoot !== expected.repoRoot || manifest.projectName !== expected.projectName || !manifest.ports || Object.keys(manifest.ports).length !== Object.keys(expected.ports).length || Object.entries(expected.ports).some(([key, value]) => manifest.ports[key] !== value)) {
     throw new Error('Development state manifest does not match this checkout and configuration');
   }
 }
@@ -87,7 +88,7 @@ async function checkDirectories(config) {
     const stat = await statOrNull(path.join(config.stateDir, relative));
     if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) throw new Error(`Refusing unsafe state directory: ${relative}`);
   }
-  for (const name of ['postgres-password', 'session-secret', 'setup-token']) {
+  for (const name of ['postgres-password', 'session-secret', 'setup-token', 'opencode-server-password']) {
     const stat = await statOrNull(path.join(config.stateDir, 'secrets', name));
     if (stat && (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1)) throw new Error(`Expected an unlinked regular state file: ${name}`);
   }
@@ -123,7 +124,7 @@ export async function prepareState(config) {
     await chmod(directory, 0o700);
   }
   const secrets = {};
-  for (const [key, name] of Object.entries({ databasePassword: 'postgres-password', sessionSecret: 'session-secret', setupToken: 'setup-token' })) {
+  for (const [key, name] of Object.entries({ databasePassword: 'postgres-password', sessionSecret: 'session-secret', setupToken: 'setup-token', opencodeServerPassword: 'opencode-server-password' })) {
     const file = path.join(config.stateDir, 'secrets', name);
     if (!await statOrNull(file)) {
       try { await writeExclusive(file, randomBytes(32).toString('hex')); } catch (error) { if (error.code !== 'EEXIST') throw error; }

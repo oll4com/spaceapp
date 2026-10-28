@@ -7112,19 +7112,9 @@ describe("Space API", () => {
     expect(denied.statusCode).toBe(404);
     const deleted = await app.inject({ method: "DELETE", url: path, headers });
     expect(deleted.statusCode).toBe(200);
-    // 龙娘 · 2026-10-26: ownership checks need a fixed frame policy, not this public site's current response or network availability.
-    const publicFetch = vi.mocked(fetchPublicUrl);
-    const previousFetch = publicFetch.getMockImplementation();
-    publicFetch.mockImplementation(async (url) => ({ url, status: 200, ok: true, text: "<title>Status fixture</title>",
-      headers: { "content-type": "text/html", "x-frame-options": "DENY" } }));
-    try {
-      const inspected = await app.inject({ method: "GET", url: "/api/links/inspect?url=https://status.openai.com/", headers });
-      expect(inspected.statusCode).toBe(200);
-      expect(inspected.json()).toMatchObject({ url: "https://status.openai.com/", openMode: "NEW_TAB", canEmbed: false });
-    } finally {
-      publicFetch.mockReset();
-      if (previousFetch) publicFetch.mockImplementation(previousFetch);
-    }
+    const inspected = await app.inject({ method: "GET", url: "/api/links/inspect?url=https://status.openai.com/", headers });
+    expect(inspected.statusCode).toBe(200);
+    expect(inspected.json()).toMatchObject({ url: "https://status.openai.com/", openMode: "NEW_TAB", canEmbed: false });
 
     await app.close();
   });

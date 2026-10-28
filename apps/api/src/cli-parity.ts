@@ -1,5 +1,4 @@
 import { join, resolve, sep } from "node:path";
-import type { SpaceInstance } from "@space/contracts";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 
 export const codexDirectParityRuntimeId = "cli:codex";
@@ -94,8 +93,6 @@ export function publicRoomWorkspacePath(workspaceRoot: string, roomId: string): 
   return join(workspaceRoot, roomId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "room");
 }
 
-export function resolveDirectOperatorParityCwd(cwd: string | null | undefined, workspaceRoot: string, instance: SpaceInstance = "stable"): string {
-  // 龙娘 · 2026-10-26: dev's configured workspace is intentional; only stable maps its legacy root to /etc.
-  if (instance === "dev") return cwd ?? workspaceRoot;
+export function resolveDirectOperatorParityCwd(cwd: string | null | undefined, workspaceRoot: string): string {
   return isLegacyCodexCliCwd(cwd, workspaceRoot) ? codexDirectParityCwd : cwd ?? codexDirectParityCwd;
 }

@@ -16,21 +16,14 @@ WSL2 with Docker available inside that distribution. Native Windows PowerShell
 is not supported by this Unix socket/PTY development stack. Keep the checkout
 path short: the CLI socket path must fit within 100 bytes.
 
-<!-- Longniang, 2026-10-26: an isolated HOME cannot load a user's Docker Desktop/Colima context metadata. -->
-Docker Desktop and Colima commonly use a user-specific Unix socket. The stack
-isolates `HOME` and does not copy your Docker configuration. Before starting,
-resolve the active local Docker context through Docker's own CLI, pass its
-endpoint explicitly, and remove a context override that would take precedence:
-
-```sh
-export DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
-unset DOCKER_CONTEXT
-npm run dev:stack
-```
-
-Keep the same endpoint when running down, reset and rebuild. A standard Linux
-Docker Engine listening at `/var/run/docker.sock` needs no endpoint override.
-These instructions cover local Unix sockets, not remote TLS credential setup.
+<!-- Longniang, 2026-10-28: document automatic local Docker discovery without copying host authentication. -->
+The stack resolves a local Docker endpoint before isolating `HOME`, including
+Docker Desktop and Colima Unix sockets, so a normal local installation does not
+require a manual `DOCKER_HOST` export. Explicit local endpoint overrides remain
+available. The generated development Docker configuration contains only plugin
+discovery paths; host registry authentication and credential-store settings are
+not copied into it. Remote Docker/TLS contexts are outside this local stack's
+support boundary.
 
 The source `node-pty` dependency may need Python 3, Make and a C++ compiler.
 Internet access is needed for locked npm dependencies, the pinned infrastructure
@@ -80,6 +73,7 @@ world-readable.
 | Web | 14911 | `SPACE_DEV_WEB_PORT` |
 | PostgreSQL | 15432 | `SPACE_DEV_POSTGRES_PORT` |
 | Temporal gRPC | 17233 | `SPACE_DEV_TEMPORAL_PORT` |
+| Shared OpenCode server | 14747 | `SPACE_DEV_OPENCODE_PORT` |
 
 For example, `SPACE_DEV_WEB_PORT=14912 npm run dev:stack` changes the web
 listener. Use the same overrides for start, smoke, rebuild, down and reset:
@@ -87,6 +81,19 @@ the ownership manifest checks that they match. Ports must be distinct and in
 1024–65535; installed-instance ports 4910/4911 are refused. Docker publishes
 infrastructure on `127.0.0.1` only. A checkout-specific Compose project label
 keeps its containers and volumes separate from other installations.
+
+<!-- Longniang, 2026-10-28: scope development behavior through the existing public distribution mechanism. -->
+The stack sets `SPACE_PUBLIC_DISTRIBUTION=true` to reuse the application's
+existing room-specific workspace routing. It does not change room defaults or
+CLI path handling for other `SPACE_INSTANCE=dev` deployments. The explicit
+`SPACE_GOOGLE_AUTH_DISABLED=true` switch prevents installed Google credential
+discovery in this isolated instance.
+
+All panes attach to one checkout-owned `opencode serve` process through
+`--server`; they do not start independent standalone servers against a shared
+store. The server binds to loopback, uses a generated development-only password,
+and is supervised and stopped with the rest of this stack. Its home and provider
+state remain inside this checkout's private state.
 
 ## Editing and rebuilding
 
@@ -114,11 +121,11 @@ It verifies strict database/worker/CLI-host readiness and serves web HTML, then
 claims the owner using only this stack's generated setup token. It generates a
 random test email/password in memory, logs out, rejects an unauthenticated room
 request and a wrong password, and signs back in through the real login route.
-It checks the seeded **Getting Started** room, creates an OpenCode terminal,
-allocates the real CLI session, and attaches the authenticated terminal
-WebSocket to start the transport and receive printable terminal output.
+It checks the seeded **Getting Started** room, creates two OpenCode terminals,
+allocates their real CLI sessions, and keeps both authenticated terminal
+WebSockets attached at the same time to receive printable terminal output.
 An allocated session is normally `IDLE` until transport attachment; the check
-requires the same session to be active and `RUNNING` after output. It never calls a
+requires both sessions to remain active and `RUNNING` after output. It never calls a
 development login bypass or submits a model task.
 
 The sanitized `.dev-stack/smoke-proof.json` contains only check outcomes and an
@@ -149,7 +156,8 @@ to another checkout or application are outside their ownership boundary.
 
 The `Contributor development stack` GitHub workflow runs on Ubuntu with Node
 22, starts without a TTY, runs the real owner/terminal check and always resets.
-It then verifies that owned containers, volumes, recorded host processes,
+It publishes a sanitized copy of the supervisor console output as well as the
+JSON proof; the owner setup token is redacted. It then verifies that owned containers, volumes, recorded host processes,
 private state and supervisor lock are gone, while an unrelated container and
 volume remain intact. Its uploaded record is sanitized; service logs and
 generated secrets are not uploaded. A green Linux job records Linux acceptance;

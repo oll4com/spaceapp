@@ -7,6 +7,7 @@ import { chmod, lstat, mkdir, rm, rmdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, prepareState, assertOwnedState } from './state.mjs';
 import { ProcessManager } from './processes.mjs';
+import { START_CYCLE_TIMEOUT_MS } from './runtime.mjs';
 
 function errorText(error) {
   const nested = error instanceof AggregateError ? [...error.errors].map(errorText) : [];
@@ -80,7 +81,12 @@ export async function acquireLifetimeLock(repoRoot) {
   };
 }
 
-export async function requestControl(socketPath, command, { timeoutMs = 180_000 } = {}) {
+// Longniang, 2026-10-28: rebuild can queue behind startup, then execute every serial build/readiness step again.
+export function controlTimeoutMs(command) {
+  return command === 'rebuild' ? 2 * START_CYCLE_TIMEOUT_MS + 60_000 : 600_000;
+}
+
+export async function requestControl(socketPath, command, { timeoutMs = controlTimeoutMs(command) } = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let response = '';
@@ -200,7 +206,7 @@ export class StackSupervisor {
     this.output('Starting development PostgreSQL/Temporal and applying migrations...');
     await this.runtime.prepareInfrastructure(this.config, this.env, { signal });
     signal.throwIfAborted();
-    this.output('Starting CLI host, worker, API and web...');
+    this.output('Starting shared OpenCode server, CLI host, worker, API and web...');
     this.watchCleanup = await this.runtime.startServices(this.config, this.env, this.manager, { signal });
     signal.throwIfAborted();
     this.output('Waiting for strict readiness (database, workflows and CLI host)...');

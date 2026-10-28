@@ -1,5 +1,4 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { defaultRoomProjectPath } from "@space/contracts";
 import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
@@ -2642,9 +2641,6 @@ export class InMemorySpaceStore implements SpaceStore {
   private swarmMessages: SwarmMessage[] = [];
   private swarmReconciles: SwarmReconcile[] = [];
 
-  // 龙娘 · 2026-10-26: capture the explicit dev workspace without changing stable room defaults.
-  private readonly defaultProjectPath = defaultRoomProjectPath(process.env);
-
   constructor(options: StaticCatalogOptions = {}) {
     const catalog = createStaticCatalog(options);
     this.providers = catalog.providers;
@@ -2926,7 +2922,7 @@ export class InMemorySpaceStore implements SpaceStore {
         name: "Getting Started",
         description: "SpaceApp setup and connection workspace.",
         initialPaneCount: 0,
-        projectPath: this.defaultProjectPath
+        projectPath: "/opt/spaceapp"
       },
       makeSpaceId("trace"),
       owner.id
@@ -2941,7 +2937,7 @@ export class InMemorySpaceStore implements SpaceStore {
           title: "OpenCode CLI",
           mode: "TERMINAL",
           terminalRuntimeId: "cli:opencode",
-          cwd: this.defaultProjectPath
+          cwd: "/opt/spaceapp"
         }
       ],
       makeSpaceId("trace")
@@ -2983,7 +2979,7 @@ export class InMemorySpaceStore implements SpaceStore {
         name: "Getting Started",
         description: "SpaceApp setup and connection workspace.",
         initialPaneCount: 0,
-        projectPath: this.defaultProjectPath
+        projectPath: "/opt/spaceapp"
       },
       traceId
     );
@@ -2997,7 +2993,7 @@ export class InMemorySpaceStore implements SpaceStore {
             title: "OpenCode CLI",
             mode: "TERMINAL",
             terminalRuntimeId: "cli:opencode",
-            cwd: this.defaultProjectPath
+            cwd: "/opt/spaceapp"
           }
         ],
         traceId
@@ -3826,7 +3822,7 @@ export class InMemorySpaceStore implements SpaceStore {
   listRooms(ownerUserId?: string | null): Room[] {
     const all = [...this.rooms.values()].map((r) => {
       if (!r.projectPath) {
-        r.projectPath = this.defaultProjectPath;
+        r.projectPath = "/opt/spaceapp";
       }
       return r;
     }).sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt));
@@ -3874,7 +3870,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const existing = [...this.rooms.values()].find((r) => (r.ownerUserId === userId || !r.ownerUserId) && r.name === "Getting Started")
       ?? [...this.rooms.values()].find((r) => r.ownerUserId === userId);
     if (existing) return existing;
-    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0 }, traceId, userId);
+    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0, projectPath: "/opt/spaceapp" }, traceId, userId);
     this.createPanes(
       [
         {
@@ -3882,7 +3878,7 @@ export class InMemorySpaceStore implements SpaceStore {
           title: "OpenCode CLI",
           mode: "TERMINAL",
           terminalRuntimeId: "cli:opencode",
-          cwd: this.defaultProjectPath
+          cwd: "/opt/spaceapp"
         }
       ],
       traceId
@@ -4224,7 +4220,7 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceNotFoundError(`Room ${roomId} was not found.`);
     }
     if (!room.projectPath) {
-      room.projectPath = this.defaultProjectPath;
+      room.projectPath = "/opt/spaceapp";
     }
     return room;
   }
@@ -4235,7 +4231,7 @@ export class InMemorySpaceStore implements SpaceStore {
       id: makeSpaceId("room"),
       name: input.name,
       description: input.description ?? null,
-      projectPath: input.projectPath ?? this.defaultProjectPath,
+      projectPath: input.projectPath ?? "/opt/spaceapp",
       kind: input.kind ?? "WORKSPACE",
       order: this.rooms.size,
       paneLayoutColumns: null,

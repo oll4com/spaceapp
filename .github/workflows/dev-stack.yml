@@ -1,4 +1,5 @@
 # Dragon, 2026-10-26: real isolated Linux stack acceptance and ownership cleanup.
+# Longniang, 2026-10-28: align Node and artifact action pins with the repository CI policy.
 name: Contributor development stack
 on:
   pull_request:
@@ -19,7 +20,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22'
+          node-version-file: .nvmrc
           cache: npm
       - name: Install locked source dependencies
         run: npm ci
@@ -31,7 +32,7 @@ jobs:
       - name: Start stack without a TTY and wait for strict readiness
         shell: bash
         run: |
-          node scripts/dev-stack.mjs up > "$RUNNER_TEMP/dev-stack.log" 2>&1 &
+          npm run dev:stack > "$RUNNER_TEMP/dev-stack.log" 2>&1 &
           echo "$!" > "$RUNNER_TEMP/dev-stack-launch.pid"
           node --input-type=module <<'NODE'
           import { setTimeout as delay } from 'node:timers/promises';
@@ -63,6 +64,21 @@ jobs:
           NODE
       - name: Claim owner, sign in, open Getting Started and receive real OpenCode output
         run: node scripts/dev-stack/smoke.mjs
+      # Longniang, 2026-10-28: retain supervisor console evidence without child logs or the owner token.
+      - name: Save sanitized supervisor console
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+          const logPath = `${process.env.RUNNER_TEMP}/dev-stack.log`;
+          if (existsSync(logPath)) {
+            const lines = readFileSync(logPath, 'utf8').split(/\r?\n/)
+              .filter(line => line.startsWith('[dev-stack]'))
+              .map(line => line.replace(/(Owner setup token:).*/i, '$1 [REDACTED]'));
+            writeFileSync(`${process.env.RUNNER_TEMP}/dev-stack-console.txt`, lines.join('\n') + '\n');
+          }
+          NODE
       - name: Save sanitized proof before reset
         if: always()
         shell: bash
@@ -162,10 +178,11 @@ jobs:
           NODE
       - name: Publish sanitized acceptance record
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-dev-stack-proof
           path: |
+            ${{ runner.temp }}/dev-stack-console.txt
             ${{ runner.temp }}/dev-stack-proof.json
             ${{ runner.temp }}/dev-stack-cleanup-proof.json
           if-no-files-found: ignore

@@ -20,7 +20,8 @@ async function fixture(t) {
 test('configuration derives pins, ports and distinct canonical checkout identity', async t => {
   const root = await fixture(t);
   const config = await loadConfig(root);
-  assert.deepEqual(config.ports, { api: 14910, web: 14911, postgres: 15432, temporal: 17233 });
+  // Longniang, 2026-10-28: the shared development OpenCode server has its own validated loopback port.
+  assert.deepEqual(config.ports, { api: 14910, web: 14911, postgres: 15432, temporal: 17233, opencode: 14747 });
   assert.equal(config.images.postgres, `pgvector/pgvector:test@sha256:${digest}`);
   assert.equal(config.images.temporal, `temporalio/auto-setup:test@sha256:${digest}`);
   assert.equal(config.openCodePackage, '@opencode/cli@2.0.32');
@@ -45,7 +46,7 @@ test('configuration rejects invalid, reserved and duplicate ports', async t => {
     await assert.rejects(loadConfig(root, { SPACE_DEV_API_PORT: value }), /Invalid development port/);
   }
   await assert.rejects(loadConfig(root, { SPACE_DEV_API_PORT: '14911' }), /distinct/);
-  for (const name of ['API', 'WEB', 'POSTGRES', 'TEMPORAL']) {
+  for (const name of ['API', 'WEB', 'POSTGRES', 'TEMPORAL', 'OPENCODE']) {
     assert.equal((await loadConfig(root, { [`SPACE_DEV_${name}_PORT`]: '20000' })).ports[name.toLowerCase()], 20000);
   }
 });
@@ -70,7 +71,7 @@ test('preparation makes private stable generated state and a matching ownership 
   const config = await loadConfig(root);
   const first = await prepareState(config);
   for (const value of Object.values(first)) assert.match(value, /^[a-f0-9]{64}$/);
-  assert.equal(new Set(Object.values(first)).size, 3);
+  assert.equal(new Set(Object.values(first)).size, 4);
   assert.deepEqual(await prepareState(config), first);
   await assertOwnedState(config);
   for (const relative of ['', 'secrets', 'logs', 'providers', 'providers/opencode', 'workspaces', 'memory', 'memory-graph', 'artifacts', 'bin', 'vendor']) {

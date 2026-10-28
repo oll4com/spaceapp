@@ -2103,7 +2103,7 @@ export class CliTerminalManager {
         } catch {}
       }
       let cwd = isDirectOperatorParityRuntime(runtime.id)
-        ? resolveDirectOperatorParityCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot, this.options.config.instance)
+        ? resolveDirectOperatorParityCwd(targetPaneCwd, this.options.config.cliWorkspaceRoot)
         : targetPaneCwd ?? this.options.config.cliWorkspaceRoot;
       // SEC-009: a missing folder is created only where a CLI session may create one; otherwise the session
       // starts in the managed workspace root instead of creating an arbitrary path.

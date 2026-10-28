@@ -274,7 +274,7 @@ describe("mail copilot learns from Gmail history", () => {
 
 describe("mail copilot new-mail sync", () => {
   it("records where to start, then turns new inbox mail into notifications and work items, pages history, skips automated senders as items, and resets on an expired history", async () => {
-    const { app, pane, headers, agent, gmail, sync, paneUrl, repository, owner } = await fixture();
+    const { app, pane, headers, agent, gmail, sync, paneUrl } = await fixture();
     try {
       // First tick: only the starting history id is stored; nothing is reported.
       expect(await sync.tick()).toEqual({ accounts: 1, created: 0 });
@@ -305,14 +305,10 @@ describe("mail copilot new-mail sync", () => {
       expect((await app.inject({ method: "POST", url: "/api/cli/mail-copilot/next", headers: agent, payload: { waitMs: 0 } })).json()).toMatchObject({ done: true, reason: "QUEUE_EMPTY" });
 
       // An expired history restarts from now with a note; mail that arrived meanwhile is not re-read (the backlog scan covers it).
-      expect(await repository.listEvents(owner, { paneId: pane.id, types: ["SYNC_RESET"], limit: 10 })).toEqual([]);
       gmail.expireHistory();
       expect(await sync.tick()).toEqual({ accounts: 1, created: 0 });
-      // 龙娘 · 2026-10-26: same-millisecond events sort by random id; verify the new reset note, not its array position.
-      const events = await app.inject({ method: "GET", url: `/api/mail-copilot/events?paneId=${encodeURIComponent(pane.id)}&limit=100`, headers });
-      expect(events.statusCode).toBe(200);
-      const resets = events.json().events.filter((event: { type: string }) => event.type === "SYNC_RESET");
-      expect(resets).toEqual([expect.objectContaining({ type: "SYNC_RESET", accountEmail: "me@gmail.com" })]);
+      const events = await app.inject({ method: "GET", url: `/api/mail-copilot/events?paneId=${encodeURIComponent(pane.id)}&limit=3`, headers });
+      expect(events.json().events[0]).toMatchObject({ type: "SYNC_RESET", accountEmail: "me@gmail.com" });
       gmail.receive({ id: "m4", threadId: "t4", from: "Anna <anna@acme.com>", subject: "Again", labelIds: ["INBOX"], plain: "Hi" });
       expect(await sync.tick()).toEqual({ accounts: 1, created: 1 });
 

@@ -19,6 +19,8 @@ let csrf = null;
 const proof = { mode: 'FULL_STACK_OPENCODE_TUI', passed: false, checks: {}, checkedAt: new Date().toISOString() };
 let stage = 'readiness';
 const sensitive = new Set();
+// Longniang, 2026-10-28: keep both real pane transports alive through the concurrent RUNNING proof.
+const terminalSockets = new Set();
 function safeMessage(error) {
   let message = error instanceof Error ? error.message : 'Unknown acceptance error';
   for (const value of sensitive) if (value) message = message.replaceAll(value, '[REDACTED]');
@@ -48,12 +50,20 @@ async function terminalOutput(ticket) {
     clientId: randomUUID(), initialCols: '120', initialRows: '36' }).toString();
   return new Promise((resolveOutput, reject) => {
     const socket = new WebSocket(url, { headers: { cookie }, handshakeTimeout: 15_000 });
-    let output = ''; let ready = false; let settled = false;
+    terminalSockets.add(socket);
+    let output = ''; let ready = false; let settled = false; let failure;
     const finish = (error) => {
+      if (error) failure = error;
       if (settled) return;
-      settled = true; clearTimeout(timeout); socket.close();
-      if (error) reject(error);
-      else resolveOutput({ ready, outputBytes: Buffer.byteLength(output), outputSha256: createHash('sha256').update(output).digest('hex') });
+      settled = true; clearTimeout(timeout);
+      if (error) { socket.close(); reject(error); }
+      else {
+        const connection = {
+          proof: { ready, outputBytes: Buffer.byteLength(output), outputSha256: createHash('sha256').update(output).digest('hex') },
+          assertOpen: () => { if (failure) throw failure; assert.equal(socket.readyState, WebSocket.OPEN, 'Terminal transport closed during concurrent pane proof'); },
+        };
+        resolveOutput(connection);
+      }
     };
     const timeout = setTimeout(() => finish(new Error('Timed out waiting for real terminal ready and printable output')), 90_000);
     socket.on('message', data => {
@@ -69,7 +79,7 @@ async function terminalOutput(ticket) {
       } catch { finish(new Error('Invalid terminal protocol frame')); }
     });
     socket.on('error', () => finish(new Error('Terminal WebSocket connection failed')));
-    socket.on('close', () => { if (!settled) finish(new Error('Terminal closed before output proof')); });
+    socket.on('close', () => finish(new Error('Terminal closed during concurrent pane proof')));
   });
 }
 
@@ -113,39 +123,56 @@ try {
   const rooms = await request('/api/rooms');
   const starter = rooms.data?.find(room => room.id === claim.starterRoomId);
   assert.equal(starter?.name, 'Getting Started');
-  assert.equal(starter?.projectPath, resolve(state, 'workspaces'), 'Getting Started must use the isolated development workspace');
+  assert(starter?.id && starter.id === claim.starterRoomId, 'Getting Started must be the seeded starter room');
+  // Longniang, 2026-10-28: public room paths use the existing sanitized room-ID namespace.
+  const roomSlug = starter.id.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'room';
+  const roomWorkspace = resolve(state, 'workspaces', roomSlug);
+  assert(roomWorkspace.startsWith(resolve(state, 'workspaces') + '/'), 'Room workspace must remain inside the isolated development root');
   proof.checks.gettingStarted = true;
-  proof.checks.starterWorkspaceIsolated = true;
   stage = 'opencode-pane-create';
   const panes = await request(`/api/rooms/${encodeURIComponent(starter.id)}/panes`, 'POST', {
-    panes: [{ mode: 'TERMINAL', terminalRuntimeId: 'cli:opencode' }]
+    panes: [{ mode: 'TERMINAL', terminalRuntimeId: 'cli:opencode' }, { mode: 'TERMINAL', terminalRuntimeId: 'cli:opencode' }]
   });
-  const pane = panes.data?.[0]; assert(pane?.id); assert.equal(pane.terminalRuntimeId, 'cli:opencode');
-  const sessionPath = `/api/panes/${encodeURIComponent(pane.id)}/cli/session`;
-  stage = 'opencode-session-post';
-  await request(sessionPath, 'POST', { runtimeId: 'cli:opencode', includeTranscript: false });
-  stage = 'opencode-session-get-before-attach';
-  const active = await request(`${sessionPath}?includeTranscript=false`);
-  // Allocation is deliberately IDLE until a terminal transport attaches and starts the host.
-  assert(['IDLE', 'RUNNING'].includes(active?.session?.status), `Allocated session status ${active?.session?.status}, expected IDLE or RUNNING`);
-  assert.equal(active?.session?.isActive, true, `Allocated session isActive=${active?.session?.isActive}`);
-  assert.equal(active?.runtime?.id, 'cli:opencode');
-  assert.equal(active?.session?.cwd, resolve(state, 'workspaces'), 'Allocated terminal must use the isolated development workspace');
-  proof.checks.terminalWorkspaceIsolated = true;
-  proof.checks.allocatedSession = { status: active.session.status, isActive: active.session.isActive, runtimeId: active.runtime.id };
-  stage = 'opencode-websocket-output';
-  proof.checks.terminal = await terminalOutput(active.websocket);
-  stage = 'opencode-session-running-after-output';
-  let after;
+  assert.equal(panes.data?.length, 2, 'Expected two real OpenCode panes');
+  const sessions = await Promise.all(panes.data.map(async pane => {
+    assert(pane?.id); assert.equal(pane.terminalRuntimeId, 'cli:opencode');
+    const sessionPath = `/api/panes/${encodeURIComponent(pane.id)}/cli/session`;
+    await request(sessionPath, 'POST', { runtimeId: 'cli:opencode', includeTranscript: false });
+    const active = await request(`${sessionPath}?includeTranscript=false`);
+    assert(['IDLE', 'RUNNING'].includes(active?.session?.status), 'Allocated session must be IDLE or RUNNING');
+    assert.equal(active?.session?.isActive, true);
+    assert.equal(active?.runtime?.id, 'cli:opencode');
+    assert.equal(active?.session?.cwd, roomWorkspace, 'Allocated terminal must use this room directory inside the isolated development workspace');
+    return { paneId: pane.id, sessionPath, active };
+  }));
+  assert.equal(new Set(sessions.map(entry => entry.active.session.sessionId)).size, 2, 'Panes must have distinct host sessions');
+  stage = 'opencode-concurrent-websocket-output';
+  const connections = await Promise.all(sessions.map(entry => terminalOutput(entry.active.websocket)));
+  stage = 'opencode-concurrent-running';
+  let statuses;
   for (let attempt = 0; attempt < 30; attempt++) {
-    after = await request(`${sessionPath}?includeTranscript=false`);
-    assert.equal(after?.session?.sessionId, active.session.sessionId, 'Terminal session changed after attach');
-    assert.equal(after?.session?.isActive, true, `Attached session isActive=${after?.session?.isActive}`);
-    if (after.session.status === 'RUNNING') break;
-    assert.equal(after.session.status, 'IDLE', `Unexpected attached session status ${after.session.status}`);
+    for (const connection of connections) connection.assertOpen();
+    statuses = await Promise.all(sessions.map(async entry => {
+      const after = await request(`${entry.sessionPath}?includeTranscript=false`);
+      assert.equal(after?.session?.sessionId, entry.active.session.sessionId, 'Terminal session changed after attach');
+      assert.equal(after?.session?.isActive, true);
+      assert(['IDLE', 'RUNNING'].includes(after.session.status), 'Unexpected attached session status');
+      return after.session.status;
+    }));
+    if (statuses.every(status => status === 'RUNNING')) break;
     await delay(250);
   }
-  assert.equal(after?.session?.status, 'RUNNING', `After terminal output, session status=${after?.session?.status}`);
+  assert.deepEqual(statuses, ['RUNNING', 'RUNNING']);
+  await delay(5000);
+  for (const connection of connections) connection.assertOpen();
+  for (const entry of sessions) {
+    const final = await request(`${entry.sessionPath}?includeTranscript=false`);
+    assert.equal(final?.session?.sessionId, entry.active.session.sessionId);
+    assert.equal(final?.session?.status, 'RUNNING');
+    assert.equal(final?.session?.isActive, true);
+  }
+  proof.checks.terminalWorkspaceIsolated = true;
+  proof.checks.concurrentTerminals = { count: 2, distinctSessions: true, statuses, overlapMs: 5000, terminals: connections.map(connection => connection.proof) };
   proof.passed = true;
 } catch (error) {
   // Do not serialize server bodies, cookies, terminal text, tokens or generated passwords.
@@ -153,6 +180,7 @@ try {
   proof.failedStage = stage;
   process.exitCode = 1;
 } finally {
+  for (const socket of terminalSockets) socket.terminate();
   await writeFile(resolve(state, 'smoke-proof.json'), `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 });
   console.log(JSON.stringify(proof));
 }

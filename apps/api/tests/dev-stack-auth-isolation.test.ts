@@ -1,4 +1,4 @@
-// Longniang, 2026-10-26: protect contributor instances from installed OAuth auto-discovery.
+// Longniang, 2026-10-28: opt out explicitly without changing other dev deployments.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const installedPath = "/opt/spaceapp/secrets/google-oauth.json";
@@ -24,20 +24,20 @@ beforeEach(() => {
 });
 
 describe("development stack OAuth credential isolation", () => {
-  it("never probes or reads installed OAuth files for a dev instance even when they exist", () => {
-    const auth = getAuthConfig({ SPACE_INSTANCE: "dev" });
+  it.each(["dev", "stable"])("never probes installed OAuth files when %s explicitly disables discovery", (instance) => {
+    const auth = getAuthConfig({ SPACE_INSTANCE: instance, SPACE_GOOGLE_AUTH_DISABLED: "true" });
     expect(auth.googleClientId).toBeUndefined();
     expect(auth.googleClientSecret).toBeUndefined();
     expect(filesystem.existsSync).not.toHaveBeenCalled();
     expect(filesystem.readFileSync).not.toHaveBeenCalled();
   });
 
-  it("never probes or reads installed OAuth files when Google auth discovery is disabled", () => {
-    const auth = getAuthConfig({ SPACE_INSTANCE: "stable", SPACE_GOOGLE_AUTH_DISABLED: "true" });
-    expect(auth.googleClientId).toBeUndefined();
-    expect(auth.googleClientSecret).toBeUndefined();
-    expect(filesystem.existsSync).not.toHaveBeenCalled();
-    expect(filesystem.readFileSync).not.toHaveBeenCalled();
+  it("preserves existing dev-instance discovery unless explicitly disabled", () => {
+    const auth = getAuthConfig({ SPACE_INSTANCE: "dev" });
+    expect(auth.googleClientId).toBe(fakeClient.clientId);
+    expect(auth.googleClientSecret).toBe(fakeClient.clientSecret);
+    expect(filesystem.existsSync).toHaveBeenCalledExactlyOnceWith(installedPath);
+    expect(filesystem.readFileSync).toHaveBeenCalledExactlyOnceWith(installedPath, "utf8");
   });
 
   it("preserves default stable-instance discovery of an existing installed client", () => {

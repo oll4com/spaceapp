@@ -1,4 +1,4 @@
-// 龙娘 · 2026-10-26: exercise public PostgreSQL store methods and their bound project path values.
+// Longniang, 2026-10-28: preserve existing database defaults for dev and stable deployments.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PostgresSpaceStore, type PgClientLike, type PgPoolLike } from "../src/index.js";
 
@@ -14,7 +14,7 @@ class RoomPool implements PgPoolLike, PgClientLike {
     if (sql.includes("INSERT INTO rooms")) {
       const starter = sql.includes("'Getting Started'");
       rows = [{ id: values[0], name: starter ? "Getting Started" : values[1], description: null,
-        projectPath: starter ? values[6] : values[9], kind: "WORKSPACE", order: 0, paneCap: 5,
+        projectPath: starter ? null : values[9], kind: "WORKSPACE", order: 0, paneCap: 5,
         traceId: starter ? values[3] : values[5], archivedAt: null,
         createdAt: starter ? values[4] : values[6], updatedAt: starter ? values[4] : values[6], ownerUserId: null }];
     }
@@ -33,11 +33,11 @@ const workspace = "/checkout/.dev-stack/workspaces";
 afterEach(() => vi.unstubAllEnvs());
 
 describe("Postgres room project defaults", () => {
-  it("persists dev defaults and preserves the caller's selected source folder", async () => {
-    vi.stubEnv("SPACE_INSTANCE", "dev");
+  it.each(["dev", "stable"])("preserves %s defaults and explicit source folders", async (instance) => {
+    vi.stubEnv("SPACE_INSTANCE", instance);
     vi.stubEnv("SPACE_CLI_WORKSPACE_ROOT", workspace);
     const store = new PostgresSpaceStore(new RoomPool());
-    expect((await store.createRoom({ name: "Default", initialPaneCount: 0 })).projectPath).toBe(workspace);
+    expect((await store.createRoom({ name: "Default", initialPaneCount: 0 })).projectPath).toBe("/opt/spaceapp");
     expect((await store.createRoom({ name: "Selected", initialPaneCount: 0, projectPath: "/checkout/source" })).projectPath).toBe("/checkout/source");
   });
 
@@ -47,15 +47,9 @@ describe("Postgres room project defaults", () => {
     const pool = new RoomPool();
     const store = new PostgresSpaceStore(pool);
     const room = await store.ensureUserStarterRoom("user:test", "test@example.invalid");
-    expect(room?.projectPath).toBe(instance === "dev" ? workspace : "/opt/spaceapp");
+    expect(room?.projectPath).toBe("/opt/spaceapp");
     const pane = pool.calls.find(call => call.sql.includes("INSERT INTO panes"));
-    expect(pane?.values[8]).toBe(instance === "dev" ? workspace : "/etc");
+    expect(pane?.values[8]).toBe("/etc");
   });
 
-  it("keeps the stable createRoom default despite a configured CLI workspace", async () => {
-    vi.stubEnv("SPACE_INSTANCE", "stable");
-    vi.stubEnv("SPACE_CLI_WORKSPACE_ROOT", workspace);
-    const store = new PostgresSpaceStore(new RoomPool());
-    expect((await store.createRoom({ name: "Default", initialPaneCount: 0 })).projectPath).toBe("/opt/spaceapp");
-  });
 });

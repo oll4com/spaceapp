@@ -31,7 +31,15 @@ const publicTestModules = [
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
   "trivy-report-summary.test.mjs",
-  "verify-export-provenance.test.mjs"
+  "verify-export-provenance.test.mjs",
+  // Longniang, 2026-10-28: track every explicit public suite import, including contributor stack checks.
+  "opencode-first-run.test.mjs",
+  "opencode-standalone.test.mjs",
+  "dev-stack-state.test.mjs",
+  "dev-stack-processes.test.mjs",
+  "dev-stack-runtime.test.mjs",
+  "dev-stack-supervisor.test.mjs",
+  "public-dev-stack-export.test.mjs"
 ];
 
 async function packageFiles(directory) {

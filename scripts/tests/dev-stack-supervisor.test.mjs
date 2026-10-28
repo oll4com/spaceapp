@@ -5,7 +5,15 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, rm, access, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createRedactedOutput, acquireLifetimeLock, requestControl, listenControl, waitForReady, StackSupervisor, runDevStack } from '../dev-stack/supervisor.mjs';
+import { createRedactedOutput, acquireLifetimeLock, requestControl, listenControl, waitForReady, StackSupervisor, runDevStack, controlTimeoutMs } from '../dev-stack/supervisor.mjs';
+import { START_CYCLE_TIMEOUT_MS } from '../dev-stack/runtime.mjs';
+
+// Longniang, 2026-10-28: cover a queued rebuild behind startup, not just the old 180-second socket wait.
+test('rebuild control budget covers both serial startup and rebuild with cleanup margin', () => {
+  assert.equal(START_CYCLE_TIMEOUT_MS, 12 * 300_000 + 600_000 + 300_000 + 120_000 + 60_000 + 120_000);
+  assert(controlTimeoutMs('rebuild') > 2 * START_CYCLE_TIMEOUT_MS);
+  assert(controlTimeoutMs('down') >= 300_000 + 10_000);
+});
 
 async function temporary(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'stack-supervisor-'));
