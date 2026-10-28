@@ -118,6 +118,20 @@ Host-root is supported only on Linux. Run
 `npx --yes run-spaceapp@latest install --access isolated` to remove the host
 mount while keeping SpaceApp data and volumes.
 
+### Rootless Podman support (Linux and macOS)
+
+SpaceApp supports **rootless Podman** (Podman ≥ 5 with `docker-compose` v2 or `podman-compose` as the compose provider, and cgroup v2 with `cpu` and `memory` controllers delegated) on Linux, and **Podman machine** on macOS:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+- **Engine persistence:** `--engine podman` (or `--engine docker`) is saved in `config.json` and used automatically by every subsequent lifecycle command (`up`, `down`, `status`, `logs`, `update`, `rollback`, `backup`, `restore`, `doctor`, `repair`, `workspace`, `credentials`, `provider install`, `uninstall`).
+- **Automatic detection:** `install` without `--engine` keeps using Docker when Docker works. If Docker is absent and Podman is ready, the launcher offers Podman (or selects it automatically with `--non-interactive`).
+- **SELinux & rootless bind mounts:** `workspace add` configures shared SELinux labels (`selinux: z`) and `userns_mode: "keep-id:uid=10001,gid=10001"` so agents read and write files with the host user's ownership even with SELinux enforcing.
+- **Limits:** `--access host-root` is refused on Podman (`--access isolated` is required). Switching engines on an existing installation is refused for data safety because Docker and Podman do not share named volumes; migrate with `backup`, `uninstall`, `install --engine <target>`, and `restore`.
+
+
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in
 isolated Docker provider state. Neither credential source is included in

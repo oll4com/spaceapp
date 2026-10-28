@@ -39,6 +39,16 @@ starts the service. Before adding the current user to the `docker` group, it
 explains that the group grants root-level privileges, adds the user
 automatically, and continues in the same command.
 
+### Rootless Podman (Linux and macOS)
+
+If you prefer rootless containers without a root Docker daemon (for example on Fedora, RHEL, openSUSE, or macOS with Podman machine), install Podman ≥ 5 with `docker-compose` v2 as the compose provider and pass `--engine podman`:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman --profile small
+```
+
+The selected engine is saved in the installation configuration and used by all later commands (`up`, `down`, `status`, `logs`, `backup`, `restore`, `doctor`, `uninstall`). On Linux with SELinux enforcing, registered workspaces (`workspace add`) use shared SELinux labels (`z`) and `keep-id` user namespace mapping so agents read and write workspace files with your host user ownership. `--access host-root` is not supported on Podman, and switching engines on an existing installation requires a portable `backup` and `restore`.
+
 ## macOS
 
 Install Node.js 20.11 or newer, then run in Terminal:

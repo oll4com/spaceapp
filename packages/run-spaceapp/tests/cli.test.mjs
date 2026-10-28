@@ -202,6 +202,7 @@ test("the process launcher dispatches only hard-coded executable literals", asyn
     "docker",
     "hdiutil",
     "open",
+    "podman",
     "sg",
     "spctl",
     "sudo",

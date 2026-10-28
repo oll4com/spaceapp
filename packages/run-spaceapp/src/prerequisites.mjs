@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline/promises";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -138,6 +138,12 @@ export async function ensureDockerAvailable({
 }) {
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
+  }
+  if (installArgs?.allowPodmanFallback && platform !== "win32") {
+    const podmanVer = await captureCommandOutput(execute, { command: "podman", args: ["--version"] });
+    if (podmanVer.code === 0 && /podman/i.test(podmanVer.stdout) && await podmanIsReady(execute)) {
+      return { code: 0, reexecuted: false, selectedEngine: "podman" };
+    }
   }
   if (platform === "win32") {
     return ensureWindowsDocker({
@@ -665,6 +671,96 @@ async function dockerIsReady(execute) {
     }
   }
   return true;
+}
+
+export async function podmanIsReady(execute) {
+  for (const spec of [
+    { command: "podman", args: ["--version"] },
+    { command: "podman", args: ["compose", "version"] },
+    { command: "podman", args: ["info"] }
+  ]) {
+    if (await execute(spec, { stdout: null, stderr: null }) !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function captureCommandOutput(execute, spec) {
+  let stdoutText = "";
+  const stdout = new Writable({
+    write(chunk, _encoding, callback) {
+      if (stdoutText.length < 512 * 1024) stdoutText += chunk.toString();
+      callback();
+    }
+  });
+  try {
+    const code = await execute(spec, { stdin: null, stdout, stderr: null });
+    return { code, stdout: stdoutText };
+  } catch {
+    return { code: 127, stdout: "" };
+  }
+}
+
+export async function inspectPodmanFacts(execute, { platform = process.platform } = {}) {
+  const versionOut = await captureCommandOutput(execute, { command: "podman", args: ["--version"] });
+  const infoOut = await captureCommandOutput(execute, { command: "podman", args: ["info", "--format", "{{json .}}"] });
+  let info = null;
+  if (infoOut.code === 0 && infoOut.stdout.trim()) {
+    try { info = JSON.parse(infoOut.stdout.trim()); } catch { info = null; }
+  }
+  const versionMatch = /(\d+\.\d+\.\d+)/.exec(info?.version?.Version ?? versionOut.stdout ?? "");
+  const version = versionMatch ? versionMatch[1] : null;
+  const major = version ? Number(version.split(".")[0]) : null;
+  const rootless = typeof info?.host?.security?.rootless === "boolean"
+    ? info.host.security.rootless
+    : platform === "darwin"
+      ? true
+      : null;
+  const cgroupVersion = info?.host?.cgroupVersion ?? (platform === "darwin" ? "v2" : null);
+  const controllers = Array.isArray(info?.host?.cgroupControllers) ? info.host.cgroupControllers : null;
+  const cpuDelegated = controllers ? controllers.includes("cpu") : true;
+  const memoryDelegated = controllers ? controllers.includes("memory") : true;
+  const cpus = info?.host?.cpus ?? info?.NCPU ?? null;
+  const memTotal = info?.host?.memTotal ?? info?.MemTotal ?? null;
+
+  return {
+    engine: "podman",
+    cliAvailable: versionOut.code === 0,
+    engineRunning: infoOut.code === 0,
+    version,
+    major,
+    mode: rootless === true ? "rootless" : rootless === false ? "rootful" : "unknown",
+    rootless,
+    cgroupVersion,
+    cpuDelegated,
+    memoryDelegated,
+    cpus,
+    memTotal
+  };
+}
+
+export async function ensurePodmanAvailable({
+  platform = process.platform,
+  stderr = process.stderr,
+  execute
+}) {
+  if (await podmanIsReady(execute)) {
+    return { code: 0, reexecuted: false };
+  }
+  if (platform === "darwin") {
+    stderr.write(
+      "Podman or its Podman machine is not ready on macOS.\n" +
+      "Install Podman 5+ and docker-compose v2, then initialize and start the Podman machine:\n" +
+      "  podman machine init --cpus 4 --memory 8192 --disk-size 20 && podman machine start\n"
+    );
+  } else {
+    stderr.write(
+      "Rootless Podman 5+ or its compose provider (docker-compose v2 / podman-compose) is not ready.\n" +
+      "Install Podman >= 5 and docker-compose v2 using your distribution package manager, then retry.\n"
+    );
+  }
+  return { code: 1, reexecuted: false };
 }
 
 async function installLinuxDockerEngine({
