@@ -1,7 +1,7 @@
 import { execFile } from "./safe-child-process.js";
 import { claudeCostUsd, costUsd, geminiCostUsd } from "@space/gateway";
 import type { GatewayClaudeLogKey, GatewayRepository, SystemAnalyticsModelEventRecord, SystemAnalyticsRepository } from "@space/db";
-import type { GatewayRequestLog } from "@space/contracts";
+import type { GatewayRequestLog, GatewayUsageWindow } from "@space/contracts";
 import { z } from "zod";
 
 /**
@@ -36,7 +36,8 @@ export interface TokenUsageSourceOptions {
   repository: Pick<SystemAnalyticsRepository, "upsertModelEvents" | "getCursor" | "setCursor">;
   gateway: () => TokenUsageGateway | null;
   /** Gateway accounts, to put a direct Claude profile on the same account as its gateway traffic. */
-  gatewayAccounts: () => Promise<{ id: string; provider: string; email: string | null; label: string }[]>;
+  gatewayAccounts: () => Promise<({ id: string; provider: string; email: string | null; label: string }
+    & Partial<Record<"primaryWindow" | "secondaryWindow", GatewayUsageWindow>>)[]>;
   /** The helper's output (`--since` when given), or null where it cannot run (dev has no sudo). */
   readClaude: (since: string | null) => Promise<unknown | null>;
   /** The helper's Codex turns of the last 35 days, from every rollout (older ones are owner-only), or null. */

@@ -26,7 +26,7 @@ no Space-specific backup timer. `space-db-cleanup.timer` prunes data; it is not 
 backup.
 
 The database cluster is the `space-postgres-1` container
-(`pgvector/pgvector:0.8.3-pg17-trixie`, PostgreSQL 17.10), stored in volume
+(`pgvector/pgvector:0.8.7-pg17-trixie`, PostgreSQL 17.11), stored in volume
 `space_space-postgres` under `/var/lib/docker` (ext4 on `/dev/sdb1`). It holds
 three databases:
 

@@ -14,9 +14,10 @@ import { StickyStore } from "../../accounts/sticky-store.js";
 import { requestOrigin } from "../../client-detect.js";
 import { hashKey, header, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
-import { permanentFailureCodes, selectAccount, USAGE_LIMIT_REACHED, type UpstreamError } from "../../router/balancer.js";
+import { permanentFailureCodes, selectAccount, USAGE_LIMIT_REACHED, type SelectionResult, type UpstreamError } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
-import { claudeCreditsExhausted, isClaudeApiKeyAccount } from "./api-key.js";
+import { apiBudgetMessage, DAILY_ALLOWANCE_REACHED, MONTHLY_BUDGET_REACHED, type createApiBudgetPacer } from "./api-budget.js";
+import { claudeCreditsExhausted, isClaudeApiKeyAccount, isClaudeCodeRequest } from "./api-key.js";
 import { buildClaudeUpstreamHeaders, CLAUDE_API_BASE_URL, type ClaudeUpstreamAuth } from "./headers.js";
 import { ClaudeStreamInspector, claudeResponseUsage, readClaudeRateLimitHeaders, type ClaudeUsageTokens } from "./stream.js";
 
@@ -43,6 +44,8 @@ export interface ClaudeProxyOptions {
   settleKeyUsage?: (keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number; model: string | null; at: string }) => Promise<void>;
   /** Session affinity for the prompt cache; without it bindings live in memory only. */
   sticky?: StickyStore;
+  /** The API-key account's pace to the monthly budget; without it only the keys' own caps apply. */
+  apiBudget?: Pick<ReturnType<typeof createApiBudgetPacer>, "read" | "record">;
 }
 
 type FailureKind = "rate_limit" | "transient" | "permanent" | "surface";
@@ -151,8 +154,9 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
    * The subscription accounts come first, sticky binding included. With the Claude API key fallback on, the API-key
    * account serves only while none of them can; every request decides again, so the accounts take over at the first
    * request after one of them resets. A conversation never binds to the key: its prompt cache is not worth staying.
+   * Claude Code never reaches the key (`keyAllowed` false): it gets the subscription pool's own limit answer.
    */
-  async function pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null) {
+  async function pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null, keyAllowed: boolean) {
     const candidates = (await options.pool.accounts()).filter((account) => (!scope || scope.has(account.id)) && !tried.has(account.id));
     const accounts = candidates.filter((account) => !isClaudeApiKeyAccount(account));
     const states = accounts.map((candidate) => options.pool.toBalancerState(candidate));
@@ -166,11 +170,13 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
         return { account: accounts.find((candidate) => candidate.id === stickyState.accountId), result: null, pooled, fallback: false };
       }
     }
-    const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset });
+    const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true });
     for (const state of states) options.pool.absorb(state);
     const account = result.account ? accounts.find((candidate) => candidate.id === result.account!.accountId) : undefined;
-    if (account || !settings.claudeApiKeyFallback) return { account, result, pooled, fallback: false };
+    if (account || !settings.claudeApiKeyFallback || !keyAllowed) return { account, result, pooled, fallback: false };
     const keys = candidates.filter(isClaudeApiKeyAccount);
+    const pace = keys.length ? await options.apiBudget?.read() : null;
+    if (pace?.stop) return { account: undefined, result: { account: null, errorCode: pace.stop, errorMessage: apiBudgetMessage(pace) } as SelectionResult, pooled, fallback: false };
     const keyStates = keys.map((candidate) => options.pool.toBalancerState(candidate));
     const pick = selectAccount(keyStates, { now: now() / 1000, routingStrategy: "ROUND_ROBIN", allowUsageExhaustionError: false });
     for (const state of keyStates) options.pool.absorb(state);
@@ -204,6 +210,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const effective = effectiveCompression(settings, "CLAUDE");
     const compressionMode = requestCompressionMode(effective, key.compressionOverride, header(request, "x-space-gateway-compression"));
     const origin = requestOrigin(request);
+    const keyAllowed = !isClaudeCodeRequest(request.headers);
     const outputPolicy = requestOutputPolicy({ policy: effective.outputPolicy, key, clientName: origin.clientName,
       headerValue: header(request, "x-space-gateway-output-policy") });
     let compressionSaved: number | null = null;
@@ -262,13 +269,14 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     let upstreamRequestId: string | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const { account, result, pooled, fallback }: Awaited<ReturnType<typeof pickAccount>> = retryWith ? { ...retryWith, result: null, pooled: 0 }
-        : await pickAccount(settings, scope, tried, stickyHash);
+        : await pickAccount(settings, scope, tried, stickyHash, keyAllowed);
       retryWith = null;
       if (!account) {
         if (attempt === 0 && result) {
-          const limited = result.errorCode === USAGE_LIMIT_REACHED;
+          const budget = result.errorCode === MONTHLY_BUDGET_REACHED || result.errorCode === DAILY_ALLOWANCE_REACHED;
+          const limited = budget || result.errorCode === USAGE_LIMIT_REACHED;
           const status = limited ? 429 : 503;
-          const message = limited ? claudePoolLimitMessage(pooled, result.resetsAt, now() / 1000)
+          const message = budget ? result.errorMessage! : limited ? claudePoolLimitMessage(pooled, result.resetsAt, now() / 1000)
             : result.errorMessage ?? gatewayErrors.noAccounts().error.message;
           options.logs.add({ ...baseLog(), status: "error", errorCode: result.errorCode ?? "no_accounts", errorMessage: message, latencyMs: now() - startedAt });
           return reply.code(status).send(anthropicError(gatewayError(result.errorCode ?? "no_accounts", message,
@@ -411,7 +419,8 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
 
     // Every attempt failed before any content reached the client.
     const failure = lastFailure ?? { kind: "transient" as const, status: 503, code: "no_accounts", message: gatewayErrors.noAccounts().error.message, error: {}, body: null };
-    options.logs.add({ ...baseLog(), status: "error", errorCode: failure.code, errorMessage: failure.message, latencyMs: now() - startedAt });
+    // The row names the account that answered last (null only when none was tried): "no account" rows hid upstream answers.
+    options.logs.add({ ...baseLog(), accountId: [...tried].at(-1) ?? null, status: "error", errorCode: failure.code, errorMessage: failure.message, latencyMs: now() - startedAt });
     if (failure.kind === "surface" && failure.body) {
       return reply.code(failure.status).header("content-type", "application/json").header("x-request-id", requestId).send(failure.body);
     }
@@ -440,6 +449,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     function finish(account: GatewayAccountRecord, usage: ClaudeUsageTokens, responseModel: string | null, firstTokenAt: number | null,
       errorCode: string | null, errorMessage: string | null = null) {
       const cost = claudeCostUsd(usage, responseModel);
+      if (isClaudeApiKeyAccount(account)) options.apiBudget?.record(cost);
       const inputTokens = totalInput(usage);
       if (inputTokens !== null && options.settleKeyUsage) {
         void options.settleKeyUsage(key.id, {
@@ -457,12 +467,13 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     }
   }
 
-  /** The usable accounts for free calls: subscription accounts first, the API-key account last and only with the fallback on. */
-  async function usableAccounts(scope: Set<string> | null): Promise<GatewayAccountRecord[]> {
+  /** The usable accounts for free calls: subscription accounts first, the API-key account last, only with the fallback on and never for Claude Code. */
+  async function usableAccounts(scope: Set<string> | null, request: FastifyRequest): Promise<GatewayAccountRecord[]> {
     const settings = await options.settings();
+    const keyAllowed = settings.claudeApiKeyFallback && !isClaudeCodeRequest(request.headers);
     return (await options.pool.accounts()).filter((account) => (!scope || scope.has(account.id))
       && account.status !== "PAUSED" && account.status !== "DEACTIVATED" && account.status !== "REAUTH_REQUIRED"
-      && (settings.claudeApiKeyFallback || !isClaudeApiKeyAccount(account)))
+      && (keyAllowed || !isClaudeApiKeyAccount(account)))
       .sort((left, right) => Number(isClaudeApiKeyAccount(left)) - Number(isClaudeApiKeyAccount(right)));
   }
 
@@ -471,7 +482,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
-    const accounts = await usableAccounts(scope);
+    const accounts = await usableAccounts(scope, request);
     let body: Record<string, unknown> = request.body && typeof request.body === "object" ? { ...(request.body as Record<string, unknown>) } : {};
     if (key.enforcedModel) body.model = key.enforcedModel;
     // Counting is free upstream, but it still names a model: the key's allowlist and spent limits apply as on /v1/messages.
@@ -505,7 +516,7 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
   /** Anthropic model list (`GET /v1/models` from Anthropic clients), from any usable account. */
   async function models(request: FastifyRequest, reply: FastifyReply) {
     if (!(await helpers.authenticate(request, reply))) return reply;
-    const accounts = await usableAccounts(null);
+    const accounts = await usableAccounts(null, request);
     for (const account of accounts.slice(0, 2)) {
       try {
         const credentials = await options.pool.credentials(account);

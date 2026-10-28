@@ -14,6 +14,11 @@ export function decodeHtmlEntities(text: string): string {
   });
 }
 
+/** A text/plain part that is really an HTML document (27/10: a bank's mail reached Nous as raw tags). */
+export function looksLikeHtml(text: string): boolean {
+  return /^\s*<(?:!doctype html|html|head|body)\b/i.test(text) || (text.match(/<\/?(?:html|body|div|table|tr|td|p|br|span|font|center)\b[^>]*>/gi)?.length ?? 0) >= 10;
+}
+
 export function htmlToText(html: string): string {
   const text = html
     .replace(/<!--[\s\S]*?-->/g, " ")

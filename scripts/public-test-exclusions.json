@@ -14,6 +14,7 @@
   "apps/api/tests/deepseek-model-catalog.test.ts": "reads a private deploy file or script",
   "apps/api/tests/devtools-http-adapter.test.ts": "reads a private deploy file or script",
   "apps/api/tests/dot-evals.test.ts": "needs a host file or tool that the public tree does not ship",
+  "apps/api/tests/file-response-browser.integration.test.ts": "needs scripts/lib/space-chrome-render.mjs (the private Chrome launcher), which the export does not ship, and real Chrome",
   "apps/api/tests/first-answer-telemetry.test.ts": "a fixed 20 ms wait races the marker write on a loaded host (removed after 1.1.5)",
   "apps/api/tests/gemini-session-verification.test.ts": "needs a host file or tool that the public tree does not ship",
   "apps/api/tests/google-accounts-store.test.ts": "needs the maintainers' scratch directory",

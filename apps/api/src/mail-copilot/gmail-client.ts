@@ -15,11 +15,17 @@ export interface GmailClient {
   listThreads(input: { labelIds?: string[]; q?: string; pageToken?: string; maxResults: number }): Promise<{ ids: string[]; nextPageToken: string | null }>;
   thread(id: string, format: "metadata" | "full"): Promise<GmailJson>;
   message(id: string, format: "metadata" | "full" | "raw"): Promise<GmailJson>;
+  /** The account's verified "Send mail as" addresses (the primary one included), lower-case. */
+  sendAs(): Promise<Array<{ email: string; name: string; isDefault: boolean }>>;
   modifyThread(id: string, change: { addLabelIds: string[]; removeLabelIds: string[] }): Promise<void>;
   modifyMessage(id: string, change: { addLabelIds: string[]; removeLabelIds: string[] }): Promise<void>;
   trashThread(id: string, restore: boolean): Promise<void>;
   send(raw: string, threadId?: string): Promise<{ id: string; threadId: string }>;
   createDraft(raw: string, threadId?: string): Promise<{ id: string; messageId: string }>;
+  /** The id of the draft's current message: Gmail gives an edited draft a new one. */
+  draftMessageId(id: string): Promise<string>;
+  deleteDraft(id: string): Promise<void>;
+  trashMessage(id: string): Promise<void>;
   attachment(messageId: string, attachmentId: string): Promise<Buffer>;
   history(input: { startHistoryId: string; historyTypes?: readonly string[]; labelId?: string; pageToken?: string }): Promise<GmailJson>;
 }
@@ -84,7 +90,13 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
         nextPageToken: typeof body.nextPageToken === "string" ? body.nextPageToken : null };
     },
     thread: (id, format) => call(`/threads/${encodeURIComponent(id)}?format=${format}${format === "metadata" ? "&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date" : ""}`),
-    message: (id, format) => call(`/messages/${encodeURIComponent(id)}?format=${format}${format === "metadata" ? "&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date" : ""}`),
+    // A reply needs Cc for its sender and the threading headers: metadata answers only the headers named.
+    message: (id, format) => call(`/messages/${encodeURIComponent(id)}?format=${format}${format === "metadata" ? ["From", "To", "Cc", "Subject", "Date", "Message-ID", "References"].map((name) => `&metadataHeaders=${name}`).join("") : ""}`),
+    async sendAs() {
+      return ((await call("/settings/sendAs")).sendAs as Array<{ sendAsEmail?: string; displayName?: string; isDefault?: boolean; isPrimary?: boolean; verificationStatus?: string }> | undefined ?? [])
+        .filter((entry) => entry.sendAsEmail && (entry.isPrimary || entry.verificationStatus === "accepted"))
+        .map((entry) => ({ email: entry.sendAsEmail!.toLowerCase(), name: entry.displayName ?? "", isDefault: Boolean(entry.isDefault) }));
+    },
     async modifyThread(id, change) { await call(`/threads/${encodeURIComponent(id)}/modify`, { method: "POST", body: labelIds(change) }); },
     async modifyMessage(id, change) { await call(`/messages/${encodeURIComponent(id)}/modify`, { method: "POST", body: labelIds(change) }); },
     async trashThread(id, restore) { await call(`/threads/${encodeURIComponent(id)}/${restore ? "untrash" : "trash"}`, { method: "POST" }); },
@@ -96,6 +108,11 @@ export function createGmailClient(input: { accessToken: string; fetchImpl?: type
       const body = await call("/drafts", { method: "POST", body: { message: { raw, ...(threadId ? { threadId } : {}) } } });
       return { id: String(body.id ?? ""), messageId: String((body.message as { id?: string } | undefined)?.id ?? "") };
     },
+    async draftMessageId(id) {
+      return String(((await call(`/drafts/${encodeURIComponent(id)}?format=minimal`)).message as { id?: string } | undefined)?.id ?? "");
+    },
+    async deleteDraft(id) { await call(`/drafts/${encodeURIComponent(id)}`, { method: "DELETE" }); },
+    async trashMessage(id) { await call(`/messages/${encodeURIComponent(id)}/trash`, { method: "POST" }); },
     async attachment(messageId, attachmentId) {
       const body = await call(`/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`);
       return Buffer.from(typeof body.data === "string" ? body.data : "", "base64url");

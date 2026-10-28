@@ -20,11 +20,17 @@
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
   font-size: 0.82rem;
 }
-.nous-focus-banner { top: 0.75rem; flex-wrap: wrap; justify-content: flex-end; border-radius: 1rem; }
+/* Below the desktop title bar (z 99999) and a phone notch: at 0.75rem the title bar hid the banner's top half (2026-10-25). */
+.nous-focus-banner { top: calc(max(var(--desktop-titlebar-height, 0px), env(safe-area-inset-top, 0px)) + 0.75rem); flex-wrap: wrap; justify-content: flex-end; border-radius: 1rem; }
 .nous-focus-back { bottom: 1rem; padding: 0.3rem; }
 .nous-focus-banner > svg { flex: 0 0 auto; width: 1.1rem; height: 1.1rem; color: var(--modern-accent, var(--room-accent, #61d2c3)); }
 .nous-focus-text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
 .nous-focus-hold { color: var(--modern-muted, var(--room-muted, #a2a7ad)); }
+/* What the request needs: three lines on the banner, the whole text (scrolling) on the Back pill while the operator is there. */
+.nous-focus-ask { display: block; margin: 0.2rem 0 0; color: var(--modern-muted, var(--room-muted, #a2a7ad)); white-space: pre-line; overflow-wrap: anywhere; }
+.nous-focus-banner .nous-focus-ask { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.nous-focus-back.has-ask { flex-wrap: wrap; justify-content: flex-end; border-radius: 1rem; padding: 0.5rem; }
+.nous-focus-back .nous-focus-ask { flex: 1 1 100%; max-height: 30vh; overflow: auto; margin: 0 0.25rem 0.2rem; color: inherit; }
 .nous-focus-banner button,
 .nous-focus-back button {
   display: inline-flex;

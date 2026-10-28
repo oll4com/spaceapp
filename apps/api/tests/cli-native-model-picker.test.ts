@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { claudeModelMenu, findNativeCliModel, nativeCliCatalogModels, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, prepareNativeCliSettings } from "../src/cli-native-model-picker.js";
+import { claudeModelMenu, claudeSwitchModelQuestion, findNativeCliModel, nativeCliCatalogModels, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, prepareNativeCliSettings } from "../src/cli-native-model-picker.js";
+import { roomTerminalState } from "../src/room-terminal-screen.js";
+import { dashboardScreenState } from "../src/agents-dashboard.js";
 
 const model = { id: "provider/model-2", displayName: "Model Two", isDefault: false,
   defaultReasoningEffort: "none", supportedReasoningEfforts: ["none"] };
@@ -794,6 +796,42 @@ describe('Claude Code per-pane model selection', () => {
       read: async () => screens[index]!, assertCurrent: async () => undefined, wait: async () => undefined });
     expect(writes).toEqual(['/model', '\r', '\u001b[B', '\u001b[D', '\u001b[D', 's']);
     expect(writes).not.toContain('\r\r');
+  });
+
+  // Claude Code asks before a pick drops a cached conversation's cache (27/10 16:07 BKK: Alex/Hugo hung on it until a restart).
+  const switchQuestion = `${banner}❯ /model\n────\n  Switch model?\n\n  This conversation is cached for the current model. Switching to Sonnet 5.5 re-reads the whole\n` +
+    '  conversation on your next message, which costs more and takes longer.\n\n  ❯ 1. Yes, switch to Sonnet 5.5\n    2. No, go back\n';
+  const switched = `${banner.replace('Fable 5.1 with xhigh', 'Sonnet 5.5 with xhigh')}❯ /model\n  ⎿  Set model to Sonnet 5.5 for this session only with xhigh effort\n────\n❯ \n────\n  ⏵⏵ bypass permissions on      ◉ xhigh · /effort`;
+  const cachedPane = (answered: (key: string) => boolean) => {
+    const screens = [idle, menu(3, '◉ xHigh effort'), menu(4, '◉ xHigh effort'), switchQuestion];
+    let index = 0;
+    let revision = 1;
+    let text = idle;
+    const writes: string[] = [];
+    return { writes, read: async () => ({ text, revision }), assertCurrent: async () => undefined, wait: async () => undefined,
+      write: async (data: string) => {
+        writes.push(data);
+        if (data === '/model') return;
+        if (text === switchQuestion) {
+          if (data === '\u001b') text = idle;
+          else if (answered(data)) text = switched;
+        } else text = screens[index = Math.min(index + 1, screens.length - 1)]!;
+        revision += 1;
+      } };
+  };
+
+  it("answers Claude Code's \"Switch model?\" with 1 and confirms the readback, or leaves it with Esc and says so", async () => {
+    expect(claudeSwitchModelQuestion(switchQuestion)).toBe(true);
+    expect(claudeSwitchModelQuestion(menu(4, '◉ xHigh effort'))).toBe(false);
+    expect(roomTerminalState(switchQuestion)).toBe('WAITING_FOR_INPUT');
+    expect(dashboardScreenState(switchQuestion)).toMatchObject({ state: 'WAITING_FOR_INPUT', rule: 'approval' });
+    const yes = cachedPane((key) => key === '1');
+    await switchNativeCliModel({ model: sonnet, effort: 'xhigh', runtimeId: 'cli:claude', ...yes });
+    expect(yes.writes).toEqual(['/model', '\r', '\u001b[B', 's', '1']);
+    const deaf = cachedPane(() => false);
+    await expect(switchNativeCliModel({ model: sonnet, effort: 'xhigh', runtimeId: 'cli:claude', ...deaf }))
+      .rejects.toThrow('Claude Code asked "Switch model?" and did not take the answer, so the switch was cancelled');
+    expect(deaf.writes).toEqual(['/model', '\r', '\u001b[B', 's', '1', '\r', '\u001b']);
   });
 
   it('does nothing when the pane already runs the requested model and effort', async () => {

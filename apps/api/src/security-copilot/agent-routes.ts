@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   securityActionBeginSchema, securityActionFinishSchema, securityActionIdSchema, securityEventIdSchema, securityFindingIdSchema, securityFindingUpdateSchema,
-  securityHostAliasSchema, securityHostIdSchema, securityHostReachSchema, securityHostStatusSchema, securityInventorySchema, securityMemoryCreateSchema,
+  securityHostAliasSchema, securityHostIdSchema, securityHostReachSchema, securityHostStatusSchema, securityImageScanSchema, securityInventorySchema, securityMemoryCreateSchema,
   securityMemoryIdSchema, securityMemoryKindSchema, securityMemoryUpdateSchema, securityOsFamilySchema, type Pane, type SecurityHost
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
@@ -61,6 +61,12 @@ export function registerSecurityCopilotAgentRoutes(app: FastifyInstance, service
   handle("post", "inventory", async ({ owner, pane }, request) => {
     const result = await service.ingestInventory(owner, pane, parseBody(z.object({ inventory: securityInventorySchema }).strict(), request.body ?? {}).inventory);
     await deps.audit(request, "security_copilot.inventory", result.host.id, { paneId: pane.id, packages: result.packages, newFindings: result.newFindings });
+    return result;
+  }, { bodyLimit: INVENTORY_BODY_LIMIT });
+  handle("get", "images", async ({ owner }, request) => service.imageScanDue(owner, parseQuery(z.object({ alias: securityHostAliasSchema }).strict(), request.query).alias));
+  handle("post", "images", async ({ owner, pane }, request) => {
+    const result = await service.recordImageScan(owner, pane, parseBody(securityImageScanSchema, request.body ?? {}));
+    await deps.audit(request, "security_copilot.images", result.host.id, { paneId: pane.id, scanned: result.scanned, newFindings: result.newFindings });
     return result;
   }, { bodyLimit: INVENTORY_BODY_LIMIT });
   handle("post", "hosts/unreachable", async ({ owner }, request) => {

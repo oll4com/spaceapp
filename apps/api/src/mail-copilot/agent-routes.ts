@@ -109,8 +109,27 @@ export function registerMailCopilotAgentRoutes(app: FastifyInstance, service: Ma
     if (!bridge) return reply;
     const input = parseBody(mailComposeInputSchema, request.body ?? {});
     const draft = await service.draft(bridge.owner, bridge.pane, input);
-    await service.record(bridge.owner, { paneId: bridge.pane.id, type: "DRAFTED", accountEmail: input.account, threadId: input.threadId ?? null, message: `The copilot drafted: ${input.subject || "(no subject)"} → ${input.to.join(", ")}`, payload: { draftId: draft.draftId } });
+    await service.record(bridge.owner, { paneId: bridge.pane.id, type: "DRAFTED", accountEmail: input.account, threadId: input.threadId ?? null, message: `The copilot drafted: ${input.subject || "(no subject)"} → ${input.to.join(", ")}`, payload: { draftId: draft.draftId, draftMessageId: draft.messageId } });
     return draft;
+  });
+  app.post(route("draft/delete"), routeOptions, async (request, reply) => {
+    const bridge = await context(request, reply);
+    if (!bridge) return reply;
+    const input = parseBody(z.object({ account: emailSchema, draftId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/) }).strict(), request.body ?? {});
+    await service.deleteDraft(bridge.owner, bridge.pane, input.account, input.draftId);
+    await deps.audit(request, "mail_copilot.agent.draft_delete", input.draftId, { account: input.account });
+    return { ok: true };
+  });
+  // Any mail or draft, at every autonomy (operator decision 2026-10-26): a message to the Trash, a draft discarded.
+  app.post(route("delete"), routeOptions, async (request, reply) => {
+    const bridge = await context(request, reply);
+    if (!bridge) return reply;
+    const gmailId = z.string().regex(/^[A-Za-z0-9_-]{1,200}$/);
+    const input = parseBody(z.object({ account: emailSchema, messageId: gmailId.optional(), draftId: gmailId.optional() }).strict()
+      .refine((value) => Boolean(value.messageId) !== Boolean(value.draftId), "Give exactly one of messageId or draftId."), request.body ?? {});
+    await service.deleteMail(bridge.owner, bridge.pane, input);
+    await deps.audit(request, "mail_copilot.agent.delete", input.messageId ?? input.draftId ?? null, { account: input.account, kind: input.draftId ? "draft" : "message" });
+    return { ok: true, ...(input.messageId ? { trashed: input.messageId } : { discarded: input.draftId }) };
   });
   app.post(route("send"), routeOptions, async (request, reply) => {
     const bridge = await context(request, reply);

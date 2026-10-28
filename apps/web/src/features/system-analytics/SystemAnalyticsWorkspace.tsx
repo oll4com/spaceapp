@@ -10,6 +10,7 @@ import type {
   SystemAnalyticsRange,
   SystemAnalyticsResourcesResponse,
   SystemAnalyticsSeries,
+  SystemAnalyticsTokenAccount,
   SystemAnalyticsTokenRoute
 } from "@space/contracts";
 import { api } from "../../api.js";
@@ -38,6 +39,12 @@ import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
 import { formatUsd, groupModelTokens, recordedTotal, sumCost, sumTokenCounts } from "./token-totals.js";
 import { ShareBar, TokenCompositionBar, TokenTimelineChart } from "./TokenUsageCharts.js";
 import { AnthropicBillingPanel } from "./AnthropicBillingPanel.js";
+
+/** An account's week (plan clipboard:nUloPOH3blDT): used against the share passed, the pace in points; ahead runs out before the reset. */
+function weeklyPaceText(pace: NonNullable<SystemAnalyticsTokenAccount["weeklyPace"]>): string {
+  const points = pace.points === null ? "pace unknown" : `pace ${pace.points > 0 ? "+" : ""}${pace.points} (${pace.pace === "AHEAD" ? "ahead" : pace.pace === "UNDER" ? "under" : "on pace"})`;
+  return `Week ${pace.usedPercent ?? "?"}% used · ${pace.passedPercent}% passed · ${points}`;
+}
 
 const tokenRoutes: Array<{ value: SystemAnalyticsTokenRoute; label: string }> = [
   { value: "all", label: "All" },
@@ -450,7 +457,7 @@ export function SystemAnalyticsWorkspace({
           <header><KeyRound aria-hidden="true" /><div><strong>Tokens by account</strong><small>Last {usagePeriod.toLowerCase()} · Space Gateway accounts and CLI profiles on a direct account</small></div>{selectedAccount !== null && <button type="button" onClick={() => setSelectedAccount(null)}>All accounts</button>}</header>
           <div className="token-model-grid">
             {models.accounts.filter(account => selectedAccount === null || `${account.route}:${account.accountKey}` === selectedAccount).map(account => <button type="button" className="token-model-card" key={`${account.route}:${account.accountKey}`} data-account-key={account.accountKey} aria-pressed={selectedAccount === `${account.route}:${account.accountKey}`} aria-label={`View token usage for ${account.label}`} onClick={() => setSelectedAccount(`${account.route}:${account.accountKey}`)}>
-              <span>{account.label}</span><strong>{formatNumber(account.tokensIn + account.tokensOut)} tokens</strong><ShareBar value={account.tokensIn + account.tokensOut} max={maxAccountTotal} tone={account.route === "GATEWAY" ? "gateway" : "direct"} /><small>{account.route === "GATEWAY" ? "Space Gateway" : "Direct"} · {account.costUsd === 0 && account.unpricedTurns > 0 ? "No API price" : `API value ${formatUsd(account.costUsd)}`}</small>{account.models[0] && <small>Most used: {account.models[0].modelId}</small>}
+              <span>{account.label}</span><strong>{formatNumber(account.tokensIn + account.tokensOut)} tokens</strong><ShareBar value={account.tokensIn + account.tokensOut} max={maxAccountTotal} tone={account.route === "GATEWAY" ? "gateway" : "direct"} /><small>{account.route === "GATEWAY" ? "Space Gateway" : "Direct"} · {account.costUsd === 0 && account.unpricedTurns > 0 ? "No API price" : `API value ${formatUsd(account.costUsd)}`}</small>{account.models[0] && <small>Most used: {account.models[0].modelId}</small>}{account.weeklyPace && <small data-pace={account.weeklyPace.pace ?? "unknown"}>{weeklyPaceText(account.weeklyPace)}</small>}
             </button>)}
           </div>
           {accountDetail && <div className="system-analytics-table-scroll"><table aria-label={`Models of ${accountDetail.label}`}><thead><tr><th>Model</th><th>Provider</th><th>Tokens</th><th>Input / output</th><th>API value</th></tr></thead><tbody>

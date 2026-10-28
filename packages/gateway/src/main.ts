@@ -26,6 +26,7 @@ import { registerAntigravityProxyRoutes } from "./providers/antigravity/antigrav
 import { registerImageRoutes } from "./providers/images/images-route.js";
 import { createAntigravityRefresher } from "./providers/antigravity/credentials.js";
 import { startAntigravityUsagePoller } from "./providers/antigravity/usage-refresh.js";
+import { createApiBudgetPacer } from "./providers/claude/api-budget.js";
 import { registerClaudeProxyRoutes } from "./providers/claude/claude-proxy.js";
 import { apiKeyRefresher, registerEmbeddingsRoute } from "./providers/openai-api/embeddings-proxy.js";
 import { LocalEmbeddings } from "./providers/local/embeddings.js";
@@ -126,7 +127,8 @@ async function main() {
       };
       registerCodexProxyRoutes(app, helpers, { pool: codexPool, logs, settings, settleKeyUsage, compression, modelPlans, speedDefaults,
         sticky: { threads: sticky.codexThreads, continuations: sticky.codexContinuations }, webSockets });
-      const claude = registerClaudeProxyRoutes(app, helpers, { pool: claudePool, logs, settings, settleKeyUsage, compression, sticky: sticky.claudeSessions });
+      const claude = registerClaudeProxyRoutes(app, helpers, { pool: claudePool, logs, settings, settleKeyUsage, compression, sticky: sticky.claudeSessions,
+        apiBudget: createApiBudgetPacer({ repository, settings }) });
       clientVersion = registerCodexModelRoutes(app, helpers, { pool: codexPool, anthropicModels: claude.models }).clientVersion;
       registerWeeklyRemainingRoute(app, helpers, { pool: codexPool });
       registerCodexAccountUsageRoute(app, { pool: codexPool, internalToken: config.internalToken });

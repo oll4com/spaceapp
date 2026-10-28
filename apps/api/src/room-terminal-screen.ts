@@ -47,7 +47,8 @@ export async function projectRoomTerminalScreen(chunks: string[], cols = 100, ro
 }
 
 export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "UNKNOWN" {
-  if (/select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to proceed/i.test(screen)) return "WAITING_FOR_INPUT";
+  // Claude Code's "Switch model? … 1. Yes, switch to … 2. No, go back" is a question with options, not an idle composer (27/10).
+  if (/select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to proceed|switch model\?[\s\S]{0,800}?\b1\.\s+yes,?\s+switch\b/i.test(screen)) return "WAITING_FOR_INPUT";
   if (/(?:ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|send a message)/i.test(screen)) return "IDLE";
   const cleanScreen = screen.replace(/waiting for background terminal[^\n]*(?:esc(?:ape)? to interrupt|\/ps to view|\/stop to close)[^\n]*/gi, "");
   // Qwen and Qoder keep their "Type your message" placeholder visible while a turn runs.
@@ -208,10 +209,14 @@ export function roomAnswerInput(answer: string, submit: boolean): string {
   return submit && answer.length > 1 ? `\u001b[200~${answer}\u001b[201~` : answer;
 }
 
-/** A bare prompt marker among the last lines: the CLI's composer is empty. */
+/**
+ * A bare prompt marker among the last lines: the CLI's composer is empty. The marker's row may also carry only Claude Code's status of
+ * the finished turn ("❯ Cogitated for 18s · done 5:49 PM", "❯ Churned for 45s · done 6:46 PM · 1 sh↓ …"): 28/10 a scheduled task and
+ * held texts waited on such idle panes as if they held a draft.
+ */
 export function roomComposerEmpty(screen: string): boolean {
   const tail = screen.split("\n").filter((line) => line.trim()).slice(-6).join("\n");
-  return /^[ \t\u00a0]*[❯›>][ \t\u00a0]*$/m.test(tail);
+  return /^[ \t\u00a0]*[❯›>][ \t\u00a0]*(?:[A-Z][a-z]+ed for (?:\d+h ?)?(?:\d+m ?)?\d+s(?: · [^\n]*)?)?[ \t\u00a0]*$/m.test(tail);
 }
 
 /**

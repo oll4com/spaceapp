@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  browserSelectStateSchema,
+  spaceAgentBrowserActionRequestSchema,
   artifactSchema,
   agentPaneBindingSchema,
   agentPaneGoalSchema,
@@ -683,7 +685,7 @@ describe("Space contracts", () => {
         mode: "CHAT",
         terminalRuntimeId: "cli:root"
       })
-    ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO or SECURITY_COPILOT mode");
+    ).toThrow("Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT mode");
     expect(updatePaneInputSchema.parse({ terminalRuntimeId: "cli:root" })).toEqual({
       terminalRuntimeId: "cli:root"
     });
@@ -1940,6 +1942,15 @@ describe("Space contracts", () => {
     expect(extract.text).toContain("Observed");
     expect(streamMessage.frame.currentUrl).toBe("https://www.google.com/");
     expect(() => browserToolActionInputSchema.parse({ type: "click", x: -1, y: 20 })).toThrow();
+    // Clearing a field and picking a native dropdown option take keys (plan clipboard:gHaiX_8yanVA); a shortcut list stays closed.
+    for (const key of ["Control+A", "Backspace", "ArrowDown", "Escape", "Space"]) expect(browserToolActionInputSchema.parse({ type: "press", key })).toMatchObject({ key });
+    for (const key of ["Control+C", "a", "F12"]) expect(() => browserToolActionInputSchema.parse({ type: "press", key })).toThrow();
+    // The live view's own dropdown list (option D): the operator route takes both types, no agent tool id does.
+    expect(browserToolActionInputSchema.parse({ type: "select_choose", index: 3 })).toMatchObject({ index: 3 });
+    expect(() => browserToolActionInputSchema.parse({ type: "select_choose", index: -1 })).toThrow();
+    const agentSelect = spaceAgentBrowserActionRequestSchema.safeParse({ toolId: "browser:click", targetPaneId: "pane:browser-proof", action: { type: "select_state" } });
+    expect(agentSelect.success ? null : agentSelect.error.issues[0]?.message).toBe("Browser action type select_state belongs to the operator's live view.");
+    expect(browserSelectStateSchema.safeParse({ selectedIndex: 0, box: { x: 1, y: 2, width: 3, height: 4 }, labels: ["Greece"], disabled: [], truncated: false }).success).toBe(true);
     expect(() => paneBrowserSessionSchema.parse({ ...session, viewport: "invalid-viewport" })).toThrow();
     expect(JSON.stringify(response)).not.toMatch(new RegExp("api[_-]?key|sec" + "ret\\s*[:=]|pass" + "word\\s*[:=]|sk-", "i"));
   });

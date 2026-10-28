@@ -698,7 +698,7 @@ export function createDemoFixture(): DemoFixture {
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: Array.from(clipboardSafetyText).length,
       createdAt: DEMO_FIXED_AT,
       lastUsedAt: DEMO_FIXED_AT
@@ -754,7 +754,7 @@ export function createDemoFixture(): DemoFixture {
       roomId: rooms[0]!.id,
       paneId: "pane:demo-chat",
       paneTitle: "Product Copilot",
-      occurrenceCount: 1,
+      dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
       characterCount: 98,
       createdAt: DEMO_FIXED_AT,
       lastUsedAt: DEMO_FIXED_AT

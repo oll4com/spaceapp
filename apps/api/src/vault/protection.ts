@@ -14,7 +14,10 @@ import { SpaceConflictError } from "@space/runtime";
 // only a closed tab, or the tab itself showing another document, origin or no web page, counts as gone (2026-10-19).
 
 export type VaultProtectionStore = Pick<PostgresVaultRepository, "protectPane" | "unprotectPane" | "protectedPane">;
-type Entry = { owner: string; fill: VaultFillTarget | null } | null;
+/** The stored fence (jsonb): the fill target, plus the agent (`cli:<session>`) that asked for the handoff behind it, which
+ *  gets masked screenshots (operator decision 2026-10-25). */
+type FenceFill = VaultFillTarget & { viewer?: string };
+type Entry = { owner: string; fill: FenceFill | null } | null;
 /** A pane's open tabs as the Browser Host lists them. */
 export type VaultOpenPage = { pageId: string; isActive: boolean };
 // A bound on the row, far above the tabs a pane keeps open; tabs leave the list as soon as they are gone.
@@ -68,12 +71,12 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
   return {
     ownerOf: async (paneId: string): Promise<string | null> => (await entryOf(paneId))?.owner ?? null,
     /** Protects the pane for the page a fill is about to land in; false when another account protects it. */
-    async protect(owner: string, paneId: string, target: VaultFillTarget): Promise<boolean> {
+    async protect(owner: string, paneId: string, target: VaultFillTarget, viewer?: string): Promise<boolean> {
       // One fence per pane: tabs it already covers stay covered next to the new page.
       const previous = (await entryOf(paneId).catch(() => null))?.fill;
       const earlier = previous ? vaultFencedTabs(previous).filter((tab) => tab.targetId !== target.targetId) : [];
-      const fill: VaultFillTarget = { targetId: target.targetId, origin: target.origin, document: target.document,
-        ...(earlier.length ? { also: earlier.slice(0, MAX_FENCED_TABS) } : {}) };
+      const fill: FenceFill = { targetId: target.targetId, origin: target.origin, document: target.document,
+        ...(earlier.length ? { also: earlier.slice(0, MAX_FENCED_TABS) } : {}), ...(viewer ? { viewer } : {}) };
       if (!repository || !await repository.protectPane(owner, paneId, fill)) return false;
       cache.set(paneId, { entry: { owner, fill }, at: Date.now() });
       // Open automation connections to this browser close now (the CLI CDP proxy listens).
@@ -103,6 +106,8 @@ export function createVaultProtection(repository: VaultProtectionStore | null, l
       }
       return false;
     },
+    /** The agent (`cli:<session>`) that asked for the handoff behind this pane's fence, if any. */
+    viewerOf: async (paneId: string): Promise<string | null> => (await entryOf(paneId))?.fill?.viewer ?? null,
     /** The tabs this pane's fence covers (none when it has no fence). */
     async fencedTargets(paneId: string): Promise<string[]> {
       const fill = (await entryOf(paneId))?.fill;
@@ -129,7 +134,7 @@ const handoffCommands = new Set(["REQUEST_HANDOFF", "HANDOFF_STATUS", "CANCEL_HA
  */
 export async function assertVaultBrowserActionAllowed(protection: Pick<VaultProtection, "ownerOf" | "release">, paneId: string, actionType: string): Promise<void> {
   if (interactionActions.has(actionType) || !await protection.ownerOf(paneId) || await protection.release(paneId)) return;
-  throw new SpaceConflictError("This browser holds a Vault fill: until it shows the next page, it can only be navigated, clicked, typed into and scrolled.");
+  throw new SpaceConflictError("This page is locked after a Vault fill or a browser handoff: until the tab shows another page (navigate or reload it), it can only be navigated, clicked, typed into and scrolled.");
 }
 
 export function registerVaultFences(app: FastifyInstance, deps: { protection: VaultProtection; config: Pick<SpaceApiConfig, "internalApiToken" | "agentTokenSecret"> }): void {
@@ -169,10 +174,14 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       if (protectedPanes.size === 0) return;
       // Actions that return no page content stay open, so a login can go on (Next, Sign in, a mail code, Verify) while the
       // fill is in the page; the pane that holds the fence also gets masked screenshots of it (fields drawn as dots), never
-      // another pane (2026-10-19, Nous decision on the Alstom report).
+      // another pane (2026-10-19, Nous decision on the Alstom report), except the agent that asked for the handoff behind the
+      // fence, so it can see where the operator left the page (operator decision 2026-10-25).
+      const viewers = new Map<string, string | null>();
+      for (const id of protectedPanes) viewers.set(id, await deps.protection.viewerOf(id));
+      const maskedFor = (paneId: string) => paneId === claims.paneId || viewers.get(paneId) === `cli:${claims.cliSessionId}`;
       const onlyInteraction = route === "/api/cli/browser/actions" && Array.isArray(body.actions) && body.actions.length > 0
         && body.actions.every((entry) => !protectedPanes.has(String(entry?.targetPaneId)) || interactionActions.has(String(entry?.action?.type))
-          || (entry?.action?.type === "masked_screenshot" && entry?.targetPaneId === claims.paneId));
+          || (entry?.action?.type === "masked_screenshot" && maskedFor(String(entry?.targetPaneId))));
       if (onlyInteraction) return;
       // Closing a tab stays open, so an agent is never stuck behind the tab that holds the fence; its answer keeps only the
       // remaining tab ids (preSerialization below), never their addresses or titles.
@@ -185,7 +194,7 @@ export function registerVaultFences(app: FastifyInstance, deps: { protection: Va
       let released = true;
       for (const id of protectedPanes) released = await deps.protection.release(id) && released;
       if (released) return;
-      return refuse(reply, "VAULT_PROTECTED_SESSION_REQUIRED", "This browser holds a Vault fill: until it shows the next page, agents can only navigate, click, type and scroll it (no page reads, DevTools or Playwright).");
+      return refuse(reply, "VAULT_PROTECTED_SESSION_REQUIRED", "This page is locked for agents after a Vault fill or an operator browser handoff, so nothing typed there is read back. It unlocks when the tab shows another page (navigate or reload it); until then agents can navigate, click, type and scroll it, and only the pane holding the browser or the agent that asked for the handoff gets masked screenshots (no page text, DevTools or Playwright).");
     }
   });
 }

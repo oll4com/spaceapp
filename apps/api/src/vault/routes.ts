@@ -357,11 +357,11 @@ export function registerVaultRoutes(app: FastifyInstance, deps: VaultRouteDepend
     const body = parseBody(vaultHandoffKeyCreateRequestSchema, request.body);
     const id = newVaultHandle("vault_key");
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + body.expiresInHours * 3_600_000).toISOString();
-    const stored = await repository().addHandoffKey(owner, { id, label: body.label, valueSealed: deps.crypto.seal(body.value, connectorSealContext("vault-handoff-key", owner, id)), expiresAt });
+    const expiresAt = body.expiresInHours === null ? null : new Date(createdAt.getTime() + body.expiresInHours * 3_600_000).toISOString();
+    const stored = await repository().addHandoffKey(owner, { id, label: body.label, valueSealed: deps.crypto.seal(body.value, connectorSealContext("vault-handoff-key", owner, id)), expiresAt, kept: body.kept });
     if (!stored) throw new GitControlError("VAULT_KEY_NOT_STORED", "The key could not be stored.", 409);
     await repository().appendAudit(owner, { actor: "OPERATOR", action: "KEY_HANDOFF", result: "OK", reason: "ADDED" });
-    return reply.code(201).send({ key: { id, label: body.label, createdAt: createdAt.toISOString(), expiresAt, takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true } });
+    return reply.code(201).send({ key: { id, label: body.label, createdAt: createdAt.toISOString(), expiresAt, takenAt: null, takenByPaneId: null, usedAt: null, usedByPaneId: null, hasValue: true, kept: body.kept, savedBy: null } });
   });
   app.get(route("/keys"), routeOptions, async (request) => ({ keys: await repository().listHandoffKeys(await deps.owner(request)) }));
   app.delete(route("/keys/:id"), routeOptions, async (request) => {

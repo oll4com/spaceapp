@@ -28,7 +28,8 @@ function fixture(options: { updates?: TelegramUpdate[][]; record?: Partial<Teleg
     sendMessage: vi.fn(async (chatId: string, text: string, sendOptions?: { replyMarkup?: unknown }) => { sent.push({ chatId, text, markup: sendOptions?.replyMarkup }); return { messageId: String(sent.length) }; }),
     answerCallbackQuery: vi.fn(async (id: string, text?: string) => { acknowledged.push({ id, text }); })
   };
-  const send = vi.fn(async (_owner: string, text: string) => ({ id: `nous_msg:${text.length}` }) as never);
+  // /goal and /goals (2026-10-27) are answered by Space itself: the stored message carries the reply for the chat.
+  const send = vi.fn(async (_owner: string, text: string) => ({ id: `nous_msg:${text.length}`, meta: /^\/goals?\b/.test(text) ? { reply: text === "/goals" ? "1. [ACTIVE] 0% Sell 100 licences" : "Goal recorded: ..." } : {} }) as never);
   const answer = vi.fn(async (_owner: string, id: string, input: { answer: string; text?: string }) => {
     if (id.endsWith("gone")) throw new SpaceNotFoundError("This decision does not exist.");
     if (id.endsWith("done")) throw new SpaceConflictError("This decision was already answered.");
@@ -48,6 +49,13 @@ function fixture(options: { updates?: TelegramUpdate[][]; record?: Partial<Teleg
 }
 
 describe("Nous on Telegram", () => {
+  it("answers /goal and /goals from the paired chat at once with Space's reply (2026-10-27)", async () => {
+    const f = fixture({ updates: [[message(9, "/goal Sell 100 licences"), message(10, "/goals")]] });
+    await f.telegram.poll();
+    expect(f.send.mock.calls.map((call) => call[1])).toEqual(["/goal Sell 100 licences", "/goals"]);
+    expect(f.sent.map((item) => item.text)).toEqual(["Goal recorded: ...", "1. [ACTIVE] 0% Sell 100 licences"]);
+  });
+
   it("takes the paired chat's text as the operator's message, keeps the offset, skips older updates and ignores other chats", async () => {
     const f = fixture({ updates: [[message(9, "status?"), message(8, "old"), message(10, "hello from a stranger", "999"), message(3, "stale"), message(11, "/start abc")]] });
     await f.telegram.poll();

@@ -142,3 +142,63 @@ describe("CLI login transfer", () => {
     }
   });
 });
+
+describe("Nous on a public install (operator decision 2026-10-27, B+C3)", () => {
+  it("streams a Nous turn from the CLI container's Claude Code, stops it with the turn, and reads the pane board's answer", async () => {
+    const root = await mkdtemp("/tmp/space-public-nous-");
+    const requests: Array<Record<string, unknown>> = [];
+    let left = 0;
+    let mode: "answer" | "hold" | "busy" = "answer";
+    const lines = [
+      JSON.stringify({ type: "stream_event", event: { type: "message_start" } }),
+      JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "All " } } }),
+      JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "moving." } } }),
+      JSON.stringify({ type: "result", subtype: "success", result: "All moving.", num_turns: 2, total_cost_usd: 0.12 })
+    ];
+    const agent = createServer({ allowHalfOpen: true }, (socket) => {
+      let body = "";
+      let started = false;
+      const start = () => {
+        if (started) return;
+        started = true;
+        const request = JSON.parse(body.split("\n")[0]!) as Record<string, unknown>;
+        requests.push(request);
+        if (request.action === "agent-chat") { socket.end(`${JSON.stringify({ exitCode: 0, stdout: "One line.\n" })}\n`); return; }
+        if (mode === "busy") { socket.end(`${JSON.stringify({ exitCode: 75, stdout: "FAILED busy\n" })}\n`); return; }
+        if (mode === "hold") { socket.write(`${lines[0]}\n`); socket.once("end", () => { left += 1; socket.end(); }); return; }
+        // The answer arrives in pieces, and the end record splits across writes.
+        const out = `${lines.join("\n")}\n\n\x1e${JSON.stringify({ exitCode: 0, stderr: "" })}\n`;
+        for (const piece of [out.slice(0, 50), out.slice(50, out.length - 9), out.slice(out.length - 9)]) socket.write(piece);
+        socket.end();
+      };
+      socket.setEncoding("utf8").on("data", (chunk) => { body += chunk; if (body.includes("\n")) start(); }).on("end", start);
+    });
+    await new Promise<void>((resolve) => agent.listen(join(root, "credentials.sock"), resolve));
+    const host = createPublicCredentialHost({ publicDistribution: true, cliEnabled: true, cliHostSocketPath: join(root, "host.sock") })!;
+    const request = { model: "claude-sonnet-5-5", effort: "medium", system: "You are Nous.", prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp",
+      mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true, fallbackModel: null };
+    try {
+      const events: unknown[] = [];
+      expect(await host.claudeAgentTools(request, new AbortController().signal, (event) => events.push(event)))
+        .toEqual({ text: "All moving.", isError: false, turns: 2, costUsd: 0.12, tokens: null });
+      expect(events).toEqual([{ start: true }, { text: "All " }, { text: "moving." }]);
+      // The request names the wrapper and its action; a null fallback model is left out (the CLI container refuses an empty one).
+      expect(requests[0]).toEqual({ command: "claude-vscode-parity", action: "agent-tools", input: JSON.stringify({ model: "claude-sonnet-5-5", effort: "medium", system: "You are Nous.",
+        prompt: "What waits?", mcpUrl: "http://spaceapp-core:4911/api/cli/nous/mcp", mcpToken: "tok_0123456789abcdefghij", maxTurns: 40, shell: false, stream: true }) });
+      // The operator's Stop: the connection ends, so the CLI container stops the turn.
+      mode = "hold";
+      const stop = new AbortController();
+      const held = host.claudeAgentTools(request, stop.signal);
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      stop.abort();
+      await expect(held).rejects.toThrow("The turn was stopped.");
+      await vi.waitFor(() => expect(left).toBe(1));
+      mode = "busy";
+      await expect(host.claudeAgentTools(request, new AbortController().signal)).rejects.toThrow("The CLI container could not start the turn (FAILED busy).");
+      expect(await host.claudeAgentChat({ model: "claude-haiku-5-5", effort: "low", prompt: "Summarize." })).toBe("One line.");
+      expect(requests.at(-1)).toEqual({ command: "claude-vscode-parity", action: "agent-chat", input: JSON.stringify({ model: "claude-haiku-5-5", effort: "low", prompt: "Summarize." }) });
+    } finally {
+      agent.close();
+    }
+  });
+});

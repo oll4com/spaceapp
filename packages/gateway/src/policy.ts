@@ -30,11 +30,21 @@ export interface PolicyResult {
   serviceTier: string | null;
 }
 
+/**
+ * Codex models the ChatGPT accounts no longer serve ("not supported when using Codex with a ChatGPT account", checked 2026-10-27)
+ * and the current model each runs on: Mission Control kept asking gpt-5.5 (1,540 failed requests in a week). A key's allowlist is
+ * checked on the name the client asked for; the log shows the model served.
+ * shortcut: a hand-kept table, extend it when the catalog drops another model a client still names.
+ */
+export const RETIRED_CODEX_MODELS: Record<string, string> = { "gpt-5.5": "gpt-5.6-sol", "gpt-5.4": "gpt-5.6-sol", "gpt-5.4-mini": "gpt-5.6-luna" };
+
 export function applyRequestPolicy(input: Body, key: GatewayApiKeyRecord | null, options: { fastTier?: string } = {}): PolicyResult {
   const body: Body = { ...input };
   if (key?.enforcedModel) body.model = key.enforcedModel;
-  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
-  assertModelAllowed(key, model);
+  const asked = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
+  assertModelAllowed(key, asked);
+  const model = asked && RETIRED_CODEX_MODELS[asked] ? RETIRED_CODEX_MODELS[asked]! : asked;
+  if (model !== asked) body.model = model;
 
   let reasoning = reasoningOf(body);
   if (key?.enforcedReasoningEffort) {

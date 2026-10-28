@@ -80,4 +80,13 @@ describe("A prompt Claude Code keeps as a draft after its Enter", () => {
     expect(roomComposerEmpty(draft)).toBe(false);
     expect(roomComposerHolds([rule, "❯ the operator's own half-written note", rule].join("\n"), typed)).toBe(false);
   });
+
+  it("reads a prompt row holding only the finished turn's status as empty, never a draft (28/10: Bruno/Kate, Bruno/Finn)", () => {
+    for (const row of ["❯ Cogitated for 18s · done 5:49 PM", "❯ Churned for 45s · done 6:46 PM · 1 sh↓ to managr", "❯ Worked for 2m 3s"]) {
+      expect(roomComposerEmpty([rule, row, rule, footer].join("\n")), row).toBe(true);
+    }
+    for (const draft of ["❯ Cogitated for a while, then fix the tests", "❯ fix the tests for 18s", "❯ cogitated for 18s"]) {
+      expect(roomComposerEmpty([rule, draft, rule, footer].join("\n")), draft).toBe(false);
+    }
+  });
 });

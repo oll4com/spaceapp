@@ -11,6 +11,10 @@ import { cvPdf, sampleJpeg } from "./fixtures/cv-photo-pdf.js";
 import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown } from "../src/agent-bootstrap.js";
 import type { MailboxFactory } from "../src/job-apply/mailbox.js";
 import { matchAnswerMemory, type JobApplyGoogleAccess } from "../src/job-apply/service.js";
+import { fetchPublicUrl } from "../src/public-url-fetch.js";
+
+// Salary research reads public pages through fetchPublicUrl; here it answers trimmed copies of them, never the network.
+vi.mock("../src/public-url-fetch.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../src/public-url-fetch.js")>(), fetchPublicUrl: vi.fn() }));
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
@@ -62,12 +66,12 @@ describe("job copilot persona", () => {
   it("writes the run loop, memory discipline, truthfulness and handoff rules into AGENTS.md and CLAUDE.md", () => {
     const agents = buildCliAgentBootstrapMarkdown({ roomId: "room:jobs0001", paneId: "pane:jobs0001", cliSessionId: "cli_session:1", runtimeId: "cli:claude", paneMode: "JOB_APPLY" });
     expect(agents).toContain("Job Copilot pane:");
-    for (const rule of ["job_next", "job_report", "memory_recall before asking", "fields_record on every step", "Never solve or bypass a CAPTCHA", "VERIFIED only with evidence"]) expect(agents).toContain(rule);
+    for (const rule of ["job_next", "job_report", "memory_recall before asking", "fields_record on every step", "never solve other CAPTCHAs", "VERIFIED only with evidence"]) expect(agents).toContain(rule);
     expect(buildCliAgentBootstrapMarkdown({ paneMode: "TERMINAL" })).not.toContain("Job Copilot pane:");
     const persona = buildJobCopilotPersonaMarkdown({ roomId: "room:jobs0001", paneId: "pane:jobs0001", runtimeId: "cli:claude" });
     expect(persona.startsWith("# Job Copilot")).toBe(true);
     for (const rule of ["space_job_next", "space_job_report", "space_job_memory_recall", "space_job_memory_remember", "space_job_question_ask", "space_job_fields_record",
-      "space_browser_request_handoff", "space_job_review_request", "not eligible", "never solve, bypass or retry"]) {
+      "space_browser_request_handoff", "space_job_review_request", "not eligible", "never solve, bypass or retry", "space_job_salary_research"]) {
       expect(persona).toContain(rule);
     }
     expect(persona).toContain("pane:jobs0001");
@@ -331,6 +335,50 @@ describe("job apply agent routes", () => {
       store.createBrowserControlLease({ sessionId: session.sessionId, paneId: pane.id, roomId: pane.roomId, holderType: "OPERATOR", holderId: "user:operator", reason: "captcha", ttlSeconds: 30 });
       const held = await app.inject({ method: "GET", url: "/api/cli/job-apply/handoff/status", headers: agent });
       expect(held.json()).toMatchObject({ browserRunning: true, held: true, lease: { holderType: "OPERATOR" } });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("job copilot salary research (operator rule 2026-10-25)", () => {
+  it("answers the owner's percentage below the market and records why in the application's Activity", async () => {
+    const pages: Record<string, string> = {
+      "https://www.payscale.com/research/GR/Job=Senior_Software_Engineer/Salary": "payscale-gr-senior-software-engineer.html",
+      "https://www.paylab.com/gr/salaryinfo/information-technology?lang=en&global_salary_period=monthly": "paylab-gr-information-technology.html",
+      "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml": "ecb-eurofxref-daily.xml"
+    };
+    const requested: string[] = [];
+    vi.mocked(fetchPublicUrl).mockImplementation(async (url) => {
+      requested.push(url);
+      const name = pages[url];
+      const text = name ? await readFile(join(import.meta.dirname, "fixtures", "job-salary", name), "utf8") : "";
+      return { url, status: name ? 200 : 404, ok: Boolean(name), headers: {}, text };
+    });
+    const { app, headers, agent } = await fixture();
+    try {
+      await app.inject({ method: "PATCH", url: "/api/cli/job-apply/profile/candidate", headers: agent, payload: { candidate: { fullName: "Candidate", salaryBelowMarketPercent: 20 } } });
+      const posting = "https://job-boards.greenhouse.io/optasia/jobs/7012345";
+      const application = (await app.inject({ method: "POST", url: "/api/cli/job-apply/applications", headers: agent,
+        payload: { company: "Optasia", role: "Senior Software Engineer", ats: "greenhouse", url: posting } })).json().application as { id: string };
+
+      const research = await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent,
+        payload: { title: "Software Engineer", seniority: "Senior", city: "Athens", country: "Greece", applicationId: application.id } });
+      expect(research.statusCode).toBe(200);
+      const result = research.json();
+      expect(result.recommended).toEqual({ yearly: 31_000, monthly: 2_200, currency: "EUR", belowPercent: 20, rule: "20% below the market median (EUR 38,932 a year), rounded down" });
+      expect(result).toMatchObject({ confidence: "medium", askOperator: false, postingRange: null, market: { currency: "EUR", paymentsPerYear: 14, yearly: { median: 38_932 } } });
+      // The application's own posting is read first; Greenhouse has no such job here, so it is skipped, not guessed.
+      expect(requested).toContain("https://boards-api.greenhouse.io/v1/boards/optasia/jobs/7012345?pay_transparency=true");
+      expect(result.skipped).toContainEqual({ source: "posting", url: "https://boards-api.greenhouse.io/v1/boards/optasia/jobs/7012345?pay_transparency=true", reason: "no page for this query" });
+
+      const events = (await app.inject({ method: "GET", url: `/api/job-apply/events?applicationId=${encodeURIComponent(application.id)}&limit=20`, headers })).json().events as Array<{ type: string; message: string; payload: Record<string, any> }>;
+      const note = events.find((event) => event.type === "NOTE" && event.message.startsWith("Salary research"));
+      expect(note?.message).toContain("answer EUR 31,000 a year / EUR 2,200 a month x14");
+      expect(note?.payload.salaryResearch.market.sources.map((row: { source: string }) => row.source)).toEqual(["payscale", "paylab"]);
+
+      expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent, payload: { title: "Engineer", city: "Atlantis", country: "Atlantis" } })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: "/api/cli/job-apply/salary-research", headers: agent, payload: { title: "Engineer", country: "GR" } })).statusCode).toBe(422);
     } finally {
       await app.close();
     }

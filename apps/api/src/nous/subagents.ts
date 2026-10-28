@@ -27,9 +27,9 @@ const RUN_KEEP_MS = 3_600_000;
 export const NOUS_SUBAGENT_EXCLUDED: ReadonlySet<string> = new Set([
   // The operator's: decisions, cards, focus, Away, the turn's outcome.
   "space_ask_operator", "space_withdraw_decision", "space_notify_operator", "space_focus_pane", "space_nous_away", "space_nous_outcome", "space_reply_now",
-  "space_resolve_notification", "space_vault_fill", "space_vault_list", "space_vault_save", "space_council_approve", "space_council_answer",
+  "space_resolve_notification", "space_vault_fill", "space_vault_list", "space_vault_save", "space_vault_key_list", "space_vault_key_save", "space_council_approve", "space_council_answer",
   // What the parent saves and owns: memory, notes, plans, tasks, follow-ups, mutes, release trains.
-  "space_memory_save", "space_note", "space_clipboard_note", "space_plan_create", "space_task_add", "space_task_update", "space_nous_followup",
+  "space_memory_save", "space_note", "space_browser_close_tab", "space_clipboard_note", "space_plan_create", "space_task_add", "space_task_update", "space_nous_followup",
   "space_nous_mute_room", "space_nous_unmute_room", "space_release",
   // Nous's own folder and what reaches the operator's Agent Files: one writer, so two helpers never overwrite each other's file
   // (plan clipboard:GZNzxm7FNwjM). Helpers keep the workbench's reads: web, network checks, git, queues, decisions, costs.
@@ -37,6 +37,8 @@ export const NOUS_SUBAGENT_EXCLUDED: ReadonlySet<string> = new Set([
   // Structure and spending: rooms, opening, stopping or restarting panes, Space Control, models, copilot runs, Council runs, design work.
   "space_create_room", "space_rename_room", "space_open_panes", "space_stop_pane", "space_restart_pane", "space_close_pane", "space_execute",
   "space_set_pane_model", "space_copilot_control", "space_council_start", "space_council_clipboard_plan", "space_design_request", "space_video_request",
+  // The goals: Nous alone records its work on them (helpers read them with space_goals).
+  "space_goal_update",
   // No nested helpers.
   "space_subagents"
 ]);
@@ -59,9 +61,11 @@ export interface NousSubagentDeps {
   /** One helper turn in the worker, with the helper's own token. */
   run(input: { owner: string; subagentId: string; modelChoice?: NousSelectedModel; system: string; prompt: string; timeoutMs: number }, signal: AbortSignal): Promise<{ text: string; isError: boolean }>;
   selectModel?(owner: string): Promise<NousSelectedModel>;
-  /** The parent turn while it runs: when it must end and its abort signal. */
-  parent(owner: string, turnId: string): { deadline: number; signal: AbortSignal } | null;
+  /** The parent turn while it runs: when it must end, its abort signal and why it runs (a GOAL turn keeps the load cap in LOW). */
+  parent(owner: string, turnId: string): { deadline: number; signal: AbortSignal; reason?: string } | null;
   load?(): Promise<NousLoadLevel | null>;
+  /** At most this many at once whatever the load (a self-hosted install: 1, its owner's own Claude plan pays). */
+  maxLive?: number;
   /** LOW admits one helper; CRITICAL admits none. Existing run reports remain readable. */
   tokenMode?(owner: string): Promise<NousSpendMode>;
   now?(): number;
@@ -136,10 +140,12 @@ export function createNousSubagents(deps: NousSubagentDeps) {
       if (mode === "CRITICAL") return { refused: "Low-spend mode is CRITICAL: no helpers start. Handle urgent work briefly; prefer Codex panes for coding and defer non-urgent Claude work." };
       const level = deps.load ? await deps.load().catch(() => null) : null;
       if (level === "OVERLOADED") return { refused: "The server is OVERLOADED: no helpers start now. Do the most urgent part yourself, or try again once it is calm." };
-      const cap = Math.min(level === "BUSY" ? NOUS_SUBAGENTS_BUSY_MAX : NOUS_SUBAGENTS_MAX, mode === "LOW" ? 1 : NOUS_SUBAGENTS_MAX);
+      // A goal turn spends what the server allows (operator order 2026-10-27): LOW caps every other turn's helpers at one.
+      const lowCapped = mode === "LOW" && parent.reason !== "GOAL";
+      const cap = Math.min(level === "BUSY" ? NOUS_SUBAGENTS_BUSY_MAX : NOUS_SUBAGENTS_MAX, lowCapped ? 1 : NOUS_SUBAGENTS_MAX, deps.maxLive ?? NOUS_SUBAGENTS_MAX);
       const running = liveCount(owner);
       if (running + tasks.length > cap) {
-        return { refused: `At most ${cap} helpers run at once${mode === "LOW" ? " in LOW mode" : level === "BUSY" ? " while the server is BUSY" : ""}; ${running} are running and you asked for ${tasks.length}. Wait for them, or send fewer tasks.` };
+        return { refused: `At most ${cap} helpers run at once${lowCapped ? " in LOW mode" : level === "BUSY" ? " while the server is BUSY" : ""}; ${running} are running and you asked for ${tasks.length}. Wait for them, or send fewer tasks.` };
       }
       const remaining = parent.deadline - now() - NOUS_SUBAGENT_MARGIN_MS;
       if (remaining < 60_000) return { refused: "Your turn has under 2 minutes left: do it yourself or leave it for the next turn." };

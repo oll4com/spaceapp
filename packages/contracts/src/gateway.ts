@@ -218,7 +218,8 @@ export const gatewaySettingsSchema = z.object({
   importWithoutOverwrite: z.boolean(),
   /**
    * Claude API key fallback: when every pooled Claude account is out of quota, requests go through a Claude API-key
-   * account (paid per token); the accounts take over again at their next reset. Off: the key is never used.
+   * account (paid per token); the accounts take over again at their next reset. Off: the key is never used. Claude Code never
+   * uses it (operator rule 2026-10-27).
    */
   claudeApiKeyFallback: z.boolean(),
   /**
@@ -438,6 +439,18 @@ export const gatewayAnthropicBillingReportSchema = z.object({
   days: z.array(gatewayAnthropicBillingDaySchema).max(31)
 }).strict();
 
+/** The Claude API-key account's pace to the monthly budget (Space Gateway, plan clipboard:nUloPOH3blDT step 6). */
+export const gatewayApiBudgetPaceSchema = z.object({
+  budgetUsd: z.number().min(0),
+  monthSpentUsd: z.number().min(0),
+  remainingUsd: z.number(),
+  daysLeft: z.number().int().min(1).max(31),
+  allowanceTodayUsd: z.number().min(0),
+  todaySpentUsd: z.number().min(0),
+  stop: z.enum(["MONTHLY_BUDGET_REACHED", "DAILY_ALLOWANCE_REACHED"]).nullable()
+}).strict();
+export type GatewayApiBudgetPace = z.infer<typeof gatewayApiBudgetPaceSchema>;
+
 export const gatewayStatusSchema = z.object({
   service: z.object({
     state: gatewayServiceStateSchema,
@@ -462,6 +475,8 @@ export const gatewayStatusSchema = z.object({
     compressionTokensSaved: z.number().int().min(0)
   }).strict(),
   settings: gatewaySettingsSchema,
+  /** Null without a monthly budget or without Anthropic billing; absent from older gateways. */
+  apiBudget: gatewayApiBudgetPaceSchema.nullable().optional(),
   checkedAt: isoSchema
 }).strict();
 
@@ -812,6 +827,23 @@ export type GatewayLimitType = z.infer<typeof gatewayLimitTypeSchema>;
 export type GatewayLimitWindow = z.infer<typeof gatewayLimitWindowSchema>;
 export type GatewayReasoningEffort = z.infer<typeof gatewayReasoningEffortSchema>;
 export type GatewayUsageWindow = z.infer<typeof gatewayUsageWindowSchema>;
+
+export const GATEWAY_PACE_BAND = 5;
+export interface GatewayWeekPace { usedPercent: number | null; passedPercent: number; points: number | null; resetAt: string; pace: "AHEAD" | "ON" | "UNDER" | null }
+/**
+ * A subscription account's weekly pace (operator rule 2026-10-27, plan clipboard:nUloPOH3blDT: every account's week used, none run
+ * out before its reset): `points` = 7-day used % minus the share of the week passed; AHEAD past +5 runs out early, UNDER past -5
+ * leaves tokens unused. The week is the 7-day window that holds data, whichever slot it sits in. Null without a live week.
+ */
+export function gatewayWeekPace(account: { primaryWindow: GatewayUsageWindow; secondaryWindow: GatewayUsageWindow }, at: number): GatewayWeekPace | null {
+  const week = [account.secondaryWindow, account.primaryWindow].find((window) => window.windowMinutes === 10_080 && (window.usedPercent !== null || window.resetAt !== null));
+  const reset = Date.parse(week?.resetAt ?? "");
+  if (!week?.resetAt || !Number.isFinite(reset) || reset <= at) return null;
+  const passedPercent = Math.round(Math.min(100, Math.max(0, 100 * (1 - (reset - at) / (10_080 * 60_000)))));
+  const points = week.usedPercent === null ? null : Math.round(week.usedPercent - passedPercent);
+  return { usedPercent: week.usedPercent, passedPercent, points, resetAt: week.resetAt,
+    pace: points === null ? null : points > GATEWAY_PACE_BAND ? "AHEAD" : points < -GATEWAY_PACE_BAND ? "UNDER" : "ON" };
+}
 export type GatewayAccount = z.infer<typeof gatewayAccountSchema>;
 export type GatewayApiKeyLimit = z.infer<typeof gatewayApiKeyLimitSchema>;
 export type GatewayApiKey = z.infer<typeof gatewayApiKeySchema>;

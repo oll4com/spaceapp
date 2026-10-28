@@ -6,6 +6,7 @@ import { dispatchFreelanceCopilotLiveEvent } from "../freelance-copilot-pane/liv
 import { dispatchDesignLiveEvent } from "../design-pane/live-events.js";
 import { dispatchAppStudioLiveEvent } from "../app-studio-pane/live-events.js";
 import { dispatchSecurityCopilotLiveEvent } from "../security-copilot-pane/live-events.js";
+import { dispatchMonitoringCopilotLiveEvent } from "../monitoring-copilot-pane/live-events.js";
 import { dispatchVideoLiveEvent } from "../video-pane/live-events.js";
 import type { PaneLiveEventDetail } from "./pane-live-events.js";
 
@@ -18,6 +19,7 @@ const COPILOT_STREAMS: ReadonlyArray<readonly [string, (detail: PaneLiveEventDet
   ["DESIGN_UPDATED", dispatchDesignLiveEvent],
   ["APP_STUDIO_UPDATED", dispatchAppStudioLiveEvent],
   ["SECURITY_COPILOT_UPDATED", dispatchSecurityCopilotLiveEvent],
+  ["MONITORING_COPILOT_UPDATED", dispatchMonitoringCopilotLiveEvent],
   ["VIDEO_UPDATED", dispatchVideoLiveEvent]
 ];
 

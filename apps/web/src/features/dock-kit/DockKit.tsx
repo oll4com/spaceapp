@@ -157,6 +157,8 @@ export interface DockChipOption<T extends string> {
   id: T;
   label: string;
   count?: number;
+  /** An icon before the label; the label then sits in its own span, so a compact bar can show the icon alone (the name stays the button's name and tooltip). */
+  icon?: LucideIcon;
 }
 
 export function DockChips<T extends string>({ options, value, onChange, label, className }: {
@@ -168,18 +170,22 @@ export function DockChips<T extends string>({ options, value, onChange, label, c
 }) {
   return (
     <div className={cx("dock-kit-chips", className)} role="group" aria-label={label}>
-      {options.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          className="dock-kit-chip"
-          aria-pressed={option.id === value}
-          onClick={() => onChange(option.id)}
-        >
-          {option.label}
-          {option.count != null ? <span className="dock-kit-chip-count">{option.count}</span> : null}
-        </button>
-      ))}
+      {options.map((option) => {
+        const Icon = option.icon;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            className="dock-kit-chip"
+            aria-pressed={option.id === value}
+            onClick={() => onChange(option.id)}
+            {...(Icon ? { title: option.label } : {})}
+          >
+            {Icon ? <><Icon className="dock-kit-chip-icon" aria-hidden="true" /><span className="dock-kit-chip-label">{option.label}</span></> : option.label}
+            {option.count != null ? <span className="dock-kit-chip-count">{option.count}</span> : null}
+          </button>
+        );
+      })}
     </div>
   );
 }

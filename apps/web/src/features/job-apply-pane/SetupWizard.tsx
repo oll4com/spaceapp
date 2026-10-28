@@ -318,6 +318,10 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, switching
             <div className="jc-form-grid">
               {text("workAuthorization", "Work authorization")}
               {text("salaryExpectation", "Salary expectation")}
+              <label className="jc-field">
+                <span>Answer salary questions below market by (%)</span>
+                <input type="number" min={0} max={50} value={candidate.salaryBelowMarketPercent} onChange={(event) => setCandidate({ ...candidate, salaryBelowMarketPercent: Math.max(0, Math.min(50, Number.parseInt(event.target.value, 10) || 0)) })} />
+              </label>
               {text("noticePeriod", "Notice period")}
               <label className="jc-field">
                 <span>Years of experience</span>

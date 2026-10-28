@@ -36,7 +36,7 @@ const item: ClipboardItem = {
   roomId: "room:one",
   paneId: "pane:one",
   paneTitle: "Model Task",
-  occurrenceCount: 2,
+  dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 2,
   characterCount: 54,
   createdAt: "2026-07-15T11:00:00.000Z",
   lastUsedAt: "2026-07-15T11:18:00.000Z"
@@ -70,7 +70,7 @@ const planItem: ClipboardItem = {
   roomId: "room:one",
   paneId: "pane:one",
   paneTitle: "Model Task",
-  occurrenceCount: 1,
+  dependsOn: [], dueAt: null, waitsOn: null, occurrenceCount: 1,
   characterCount: 33,
   createdAt: "2026-07-15T12:00:00.000Z",
   lastUsedAt: "2026-07-15T12:05:00.000Z"

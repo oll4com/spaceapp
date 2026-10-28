@@ -385,6 +385,12 @@
   color: var(--dock-accent);
 }
 
+.dock-kit-chip-icon {
+  width: var(--dock-icon);
+  height: var(--dock-icon);
+  flex: 0 0 auto;
+}
+
 .dock-kit-chip-count {
   min-width: 1.1rem;
   padding: 0 0.3rem;

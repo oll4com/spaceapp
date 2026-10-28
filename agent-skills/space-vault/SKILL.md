@@ -1,6 +1,6 @@
 ---
 name: space-vault
-description: "Space Vault for agents: fill a site's login or one-time code from the operator's Vault without ever seeing it, and save the logins you create, through the space_vault tools (opaque item handles; answers are a status and an audit id). Use when a task needs to sign in to, register on or change the password of a site in this pane's browser. Works while the operator's agent access is on; no per-use approval."
+description: "Space Vault for agents: fill a site's login or one-time code from the operator's Vault without ever seeing it, save the logins you create or receive, and find and write server, VM, SSH, admin and API passwords and keys into the files they belong in, through the space_vault tools (opaque handles and ids; answers are a status and an audit id). Use when a task needs to sign in to a site in this pane's browser, or needs a password or key for a server, VM or service, or when a password reaches you (a mail). Works while the operator's agent access is on; no per-use approval."
 metadata:
   category: DOMAIN_POLICY
 ---
@@ -24,15 +24,23 @@ one-time code or seed: Space types them into the page and tells you only the res
   `NEW_ACCOUNT {label, username?}` is for a new account **and** for a password reset of an account the Vault has no item
   for: it works on any https site while agent access is on, with no daily limit (`BLOCKED` with access off). The new login
   is fillable at once.
-- `space_vault_save {site, username, password?, label}`: save a login you created with a password you chose yourself. It is
-  sealed at once and fillable as soon as `space_vault_list` shows it (at once; it never waits for the operator's unlock).
+- `space_vault_save {site, username, password?, label}`: save a website login you created with a password you chose yourself,
+  or one that reached you for the operator (a site's mail with their credentials). It is sealed at once and fillable as soon as
+  `space_vault_list` shows it (at once; it never waits for the operator's unlock).
 - `space_vault_audit {limit?}`: this pane's recent attempts (result codes only).
-- `space_vault_key_install {id, path, content, mode?}`: an API key the operator handed to you (the operator gives you its id,
-  `vault_key:...`, from the Vault dock's API keys). Pass the absolute path of the file it belongs in and that file's content with
-  `{{SPACE_VAULT_KEY}}` where the key goes (`mode` `write` replaces the file, `append` adds the content at its end); Space takes
-  the key and writes the file itself, you never see the key, and it is deleted from the Vault once written. Never a path under
-  `/opt/spaceapp`, `/opt/spaceapp-dev` or `/etc`. `BLOCKED` with `KEY_UNAVAILABLE`: the id is unknown, used, expired or another pane
-  took it; ask the operator for a new one instead of guessing.
+- `space_vault_key_list {q?}`: the operator's kept passwords and keys (servers, VMs, SSH and admin accounts, API keys): ids
+  (`vault_key:...`) and labels, never a value. Look here before you ask the operator for any password or key; `q` is words of
+  the label (`"vm221 spaceadmin"`).
+- `space_vault_key_save {label, value}`: keep a password or key that reached you (a mail, the operator, a service) in the Vault
+  for every agent; label it with host, account and purpose (`"vm221 macOS spaceadmin password"`). Answer `{status: SAVED, id}`.
+  Never put such a value in Space Memory, notes, plans, chat or a file of your own.
+- `space_vault_key_install {id, path, content, mode?}`: write a key or password (an id from `space_vault_key_list`, or one the
+  operator handed to you from the Vault dock's Passwords & keys) into the file it belongs in. Pass the absolute path and that
+  file's content with `{{SPACE_VAULT_KEY}}` where the value goes (`mode` `write` replaces the file, `append` adds the content at
+  its end; a new file is 0600); Space takes the value and writes the file itself, you never see it. A one-time key is deleted
+  from the Vault once written; a kept one stays. Never a path under `/opt/spaceapp`, `/opt/spaceapp-dev` or `/etc`. `BLOCKED` with
+  `KEY_UNAVAILABLE`: the id is unknown, used, expired or another pane took it; ask the operator for a new one instead of guessing.
+  For a shell use, read the file where the tool needs it (`sshpass -f <file>`, `sudo -S < <file>`), never print it.
 
 Answers carry `status` `FILLED`, `SUBMITTED`, `SAVED`, `LISTED`, `BLOCKED`, `EXPIRED`, `REVOKED`, `ORIGIN_MISMATCH` or
 `RATE_LIMITED`, an `auditId`, and for fills a `reason` code. `FIELD_NOT_FOUND_AFTER_RELOAD` means Space reloaded the page
@@ -44,7 +52,10 @@ before filling (your session had run code in that page) and the field was gone: 
 1. Open the site's login page yourself (`space_browser_navigate`); Space checks the page's exact origin against the item.
 2. `space_vault_request_fill` with the handle (`submit: true` when the form should be sent).
 3. Until that page is gone the browser holds the filled value, so you can only navigate, click, type, scroll and press
-   keys in it (`space_browser_press`: Enter, Tab, Shift+Tab); reads, plain screenshots, DevTools and Playwright are refused.
+   keys in it (`space_browser_press`: Enter, Tab, Shift+Tab, arrows, Backspace, Delete, Escape, Home, End, Space, Control+A);
+   reads, plain screenshots, DevTools and Playwright are refused. To replace a field's text, Tab or Shift+Tab into it (that
+   selects its text) and type, or press Control+A, Backspace; click + type appends. For a native dropdown, click it, then
+   press ArrowDown/ArrowUp and Enter: its open list is in no screenshot and a second click closes it without choosing.
    Your own pane also gets `space_browser_masked_screenshot` (every field drawn as dots; it returns the image path).
    Click "Next" or "Sign in" if needed, or fill the next step. A human check or CAPTCHA on the filled page (before Submit) goes
    to the operator with `space_browser_request_handoff`; no reload is needed, and the fence stays on through the handoff.

@@ -118,3 +118,11 @@ which certifies the [Developer Certificate of Origin 1.1](https://developercerti
 that you wrote the contribution or have the right to submit it under the MIT
 License. `git commit -s` adds the line. There is no separate contributor
 license agreement.
+
+## Reviews and payment
+
+Pull requests are reviewed and merged by the maintainers named in the public repository's `MAINTAINERS`
+file. A merged pull request stays in every later release with its author.
+
+Contributions are voluntary; payment applies only to issues labelled 💎 Bounty, under the terms posted on
+that issue.

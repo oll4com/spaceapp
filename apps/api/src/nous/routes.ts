@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { nousAwayInputSchema, nousDecisionAnswerInputSchema, nousDecisionFeedbackInputSchema, nousDecisionIdSchema, nousSendInputSchema, nousSettingsInputSchema } from "@space/contracts";
+import { nousAwayInputSchema, nousDecisionAnswerInputSchema, nousDecisionFeedbackInputSchema, nousDecisionIdSchema, nousGoalCreateInputSchema, nousGoalEditInputSchema, nousGoalIdSchema, nousGoalsReorderInputSchema, nousSendInputSchema, nousSettingsInputSchema, type NousStandingApproval } from "@space/contracts";
 import type { NousAwayControl } from "./away.js";
 import type { NousAttachments } from "./attachments.js";
 import type { NousScorecard } from "./progress.js";
@@ -24,11 +24,14 @@ export interface NousRouteDependencies {
   decisionFiles(owner: string, id: string): Promise<Array<{ ref: string; text: string | null; total: number | null; truncated: boolean; error?: string }>>;
   /** Where Nous works on its own, only a person turns an allowance (May promote, May approve Warm) on. */
   assertAllowanceChange(request: FastifyRequest, owner: string, input: z.infer<typeof nousSettingsInputSchema>): Promise<void>;
+  /** Goal 7365014c-c: the stored Always-approve kinds, each with how often it ran by itself in the last 14 days. */
+  alwaysApproveCounts(owner: string): Promise<Array<NousStandingApproval & { count: number }>>;
   /** The installed Vault broker's commit, hash and the diff stat of its sources to stable's HEAD (vault/broker-report.ts). */
   vaultBrokerReport?(): Promise<string>;
 }
 
 const decisionParams = z.object({ id: nousDecisionIdSchema }).strict();
+const goalParams = z.object({ id: nousGoalIdSchema }).strict();
 const vaultBrokerReinstallSchema = z.object({ reason: z.string().trim().min(1).max(1_000) }).strict();
 
 /** The Nous dock: state, conversation, settings, decisions and the overview. */
@@ -93,6 +96,9 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
 
   app.get("/api/nous/progress", routeOptions, async (request) => ({ progress: await deps.progress(await deps.owner(request)) }));
 
+  // Read only (goal 7365014c-c): Settings shows what each "Always approve" spares the operator.
+  app.get("/api/nous/always-approve", routeOptions, async (request) => ({ rules: await deps.alwaysApproveCounts(await deps.owner(request)) }));
+
   app.get("/api/nous/decisions", routeOptions, async (request) => ({ decisions: await service.decisions(await deps.owner(request)) }));
 
   // An agent asks for the Vault broker's reinstall (space-admin-action vault-broker-reinstall); only the operator's yes runs it.
@@ -125,5 +131,31 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     deps.assertPerson(request);
     const { id } = parseQuery(decisionParams, request.params);
     return { decision: await service.feedback(owner, id, parseBody(nousDecisionFeedbackInputSchema, request.body).couldHaveDecided) };
+  });
+
+  // Goals (operator request 2026-10-27, plan clipboard:DR51jZJEB0j1): the list for the dock; every write from a person only.
+  app.get("/api/nous/goals", routeOptions, async (request) => ({ view: await service.goalsView(await deps.owner(request)) }));
+  app.post("/api/nous/goals", routeOptions, async (request, reply) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    return reply.code(201).send({ goal: await service.createGoal(owner, parseBody(nousGoalCreateInputSchema, request.body).text) });
+  });
+  app.post("/api/nous/goals/reorder", routeOptions, async (request) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    return { goals: await service.reorderGoals(owner, parseBody(nousGoalsReorderInputSchema, request.body).ids) };
+  });
+  app.patch("/api/nous/goals/:id", routeOptions, async (request) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    const { id } = parseQuery(goalParams, request.params);
+    return { goal: await service.editGoal(owner, id, parseBody(nousGoalEditInputSchema, request.body)) };
+  });
+  app.delete("/api/nous/goals/:id", routeOptions, async (request, reply) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    const { id } = parseQuery(goalParams, request.params);
+    if (!(await service.removeGoal(owner, id))) return reply.code(404).send({ error: { code: "NOT_FOUND", message: "This goal does not exist." } });
+    return { removed: true };
   });
 }

@@ -3,12 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore, SpaceEventBus } from "@space/runtime";
+import { InMemoryFreelanceCopilotRepository } from "@space/db";
 import type { Event, FreelanceRun, Pane } from "@space/contracts";
 import { buildCliAgentBootstrapMarkdown, buildFreelanceCopilotPersonaMarkdown } from "../src/agent-bootstrap.js";
 import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { isCliBridgeRoutePath } from "../src/cli-bridge-paths.js";
 import { getApiConfig } from "../src/config.js";
+import { createCopilotRunKick } from "../src/copilot-run-kick.js";
+import { createFreelanceCopilotService } from "../src/freelance-copilot/service.js";
+import type { RoomPaneObservation } from "../src/room-pane-control.js";
 import type { MailboxFactory } from "../src/job-apply/mailbox.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -120,6 +124,36 @@ describe("freelance copilot run loop", () => {
     }
   });
 
+  it("types the kickoff again into a RUNNING run's idle CLI while a brief waits, never into a draft, a busy CLI or a usage limit (daily upgrade 2026-10-27 round 2)", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Freelance", initialPaneCount: 0 }, "trace:t", "user:owner");
+    const pane = store.createPane({ roomId: room.id, title: "Freelance Copilot", mode: "FREELANCE_COPILOT", terminalRuntimeId: "cli:claude" });
+    const service = createFreelanceCopilotService({ repository: new InMemoryFreelanceCopilotRepository(), crypto: {} as never, mailboxes });
+    const { run } = await service.startRun("user:owner", pane.id);
+    let screen: Partial<RoomPaneObservation> = { sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text: "✻ Done.\n────\n❯ \n────" };
+    let clock = 1_000_000;
+    const kickoffs: string[] = [];
+    const kick = createCopilotRunKick({ mode: "FREELANCE_COPILOT", store, log: { warn: () => undefined }, now: () => clock, paused: (candidate) => service.settingsOf(candidate).paused,
+      runView: (owner, candidate) => service.runView(owner, candidate), inspect: async () => screen as RoomPaneObservation, kickoff: async (_pane, kicked) => { kickoffs.push(kicked.id); } });
+    expect(await kick.tick()).toBe(0);
+    await service.createBrief("user:owner", pane, { text: "Find two React leads on Upwork." });
+    expect(await kick.tick()).toBe(1);
+    expect(kickoffs).toEqual([run.id]);
+    clock += 61_000;
+    expect(await kick.tick()).toBe(0);
+    await service.createBrief("user:owner", pane, { text: "And one on Contra." });
+    for (const busy of [{ text: "✻ Done.\n────\n❯ half a sentence\n────" }, { state: "RUNNING" as const }, { usageLimited: true }]) {
+      screen = { ...screen, ...busy };
+      expect(await kick.tick()).toBe(0);
+      screen = { sessionId: "cli_session:1", promptFingerprint: "f", state: "IDLE", usageLimited: false, text: "✻ Done.\n────\n❯ \n────" };
+    }
+    expect(await kick.tick()).toBe(1);
+    await service.pauseRun("user:owner", pane.id);
+    clock += 11 * 60_000;
+    expect(await kick.tick()).toBe(0);
+    expect(kickoffs).toEqual([run.id, run.id]);
+  });
+
   it("shares the operator's bookmarks with the agent, saved in the pane's own account", async () => {
     const { app, pane, headers, agent, outsider } = await fixture();
     try {
@@ -130,6 +164,7 @@ describe("freelance copilot run loop", () => {
       expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: agent })).json().bookmarks).toHaveLength(1);
       expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: outsider })).statusCode).toBe(409);
       expect((await app.inject({ method: "POST", url: `${cli}/bookmarks/mktbm:missing000/open`, headers: agent, payload: {} })).statusCode).toBe(404);
+      expect((await app.inject({ method: "DELETE", url: `${cli}/bookmarks/mktbm:missing000`, headers: agent, payload: {} })).json()).toEqual({ deleted: false });
       // The operator's Bookmarks tab opens it in a Freelance pane too: past the pane check, this runtime has no browser session.
       const opened = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/marketing-copilot/bookmarks/${encodeURIComponent(saved.json().bookmark.id)}/open`, headers, payload: {} });
       expect(opened.json().error.message, opened.body).toContain("Active browser session");

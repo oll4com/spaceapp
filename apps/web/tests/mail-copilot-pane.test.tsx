@@ -188,7 +188,7 @@ describe("MailCopilotPane", () => {
     fireEvent.click(screen.getByRole("button", { name: /Autonomy$/ }));
     fireEvent.click(screen.getByRole("radio", { name: "Rules" }));
     await waitFor(() => expect(apiMock.updateMailCopilotSettings).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ settings: expect.objectContaining({ autonomy: "RULES" }) })));
-    expect(screen.getByText(/Acts alone only under rules you approved/)).toBeTruthy();
+    expect(screen.getByText(/replies alone only under rules you approved/)).toBeTruthy();
     fireEvent.click(screen.getByRole("switch", { name: "Telegram" }));
     await waitFor(() => expect(apiMock.updateMailCopilotSettings).toHaveBeenLastCalledWith(pane.id, expect.objectContaining({ settings: expect.objectContaining({ notifications: expect.objectContaining({ telegram: true }) }) })));
     // The pane row never carries the CLI account (the Browser Host parses pane rows with its start-up contracts).

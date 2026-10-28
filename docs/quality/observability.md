@@ -319,7 +319,8 @@ No credential or transcript export was added.
 | `packages/contracts/tests/observability.test.ts` | Categories, `traceparent` parsing, additive contract fields |
 | `packages/runtime/tests/metrics-registry.test.ts` | Registry format, label safety, series cap, process metrics |
 | `packages/db/tests/trace-records.test.ts` | Bounded, parameterized PostgreSQL trace lookup |
-| `packages/db/tests/room-agent-trace-postgres.test.ts` | Migration 0206 on a disposable PostgreSQL: mission trace and first error code, a continuation found from its source run |
+| `packages/db/tests/room-agent-trace-postgres.test.ts` | Migrations 0206 and 0258 on a disposable PostgreSQL: mission trace and first error code, a continuation found from its source run, CLI sessions by the request that allocated them |
+| `apps/api/tests/cli-terminal-control.test.ts` | "links the request that allocated a CLI session …": the session's request id finds it, its task and revision in `/api/admin/traces/:traceId`; a rejoin does not |
 | `apps/api/tests/trace-correlation.test.ts` | W3C context, log bindings, starter memo and input, Room Agent propagation, start-failure category, lookup projection |
 | `apps/api/tests/observability-metrics.test.ts` | New API metrics, `/metrics` access rule, redaction, CLI disconnect and reconnect counters |
 | `apps/api/src/__tests__/files-search-errors.test.ts` | `EMPTY_RESULT`/`OK` and each failure code |
@@ -329,10 +330,11 @@ No credential or transcript export was added.
 
 ## Not covered
 
-- **Supervisor failures lose their cause.** When `roomAgentSupervisorWorkflow`
-  catches a failed child or activity, it records only generic text. Changing that
-  is workflow code and would need `patched()`. The activity-level cause is in the
-  worker log under the same `traceId`.
+- **Supervisor failures keep their cause (since 2026-10-16, 31e2d2ef23, EXT-G-5).**
+  When `roomAgentSupervisorWorkflow` catches a failed child or activity, it now
+  records `supervisorFailureCode(error)`: the failure chain's safe error type, or
+  `ROOM_AGENT_SUPERVISOR_TIMEOUT`/`ROOM_AGENT_SUPERVISOR_FAILED`, as the mission's
+  and task run's `error_code`. The status text stays generic.
 - **Room Agent missions and task runs: covered since 2026-10-16.** Migration
   0206 adds `trace_id` and `error_code` to `room_agent_missions` and
   `room_agent_task_runs`. The store writes the request trace on mission
@@ -340,9 +342,8 @@ No credential or transcript export was added.
   The continuation and token budgets record `ROOM_AGENT_CONTINUATION_LIMIT` and
   `ROOM_AGENT_TOKEN_LIMIT`. The trace lookup returns the trace's missions and
   task runs (ids, status, error code and times; never instructions). A failed
-  mission's code is the cause when no event or agent run carries one. Still
-  open: other mission failures (the supervisor workflow) record text, not a
-  code, so they have no `error_code`.
+  mission's code is the cause when no event or agent run carries one. Supervisor
+  failures record a code too since 2026-10-16 (previous bullet).
 - **Background continuations keep their own trace (followed since
   2026-10-16).** A continuation still runs as `trace:bg-<uuid>`, because the
   turn's workflow ID embeds its trace ID. The trace lookup now follows each
@@ -351,8 +352,12 @@ No credential or transcript export was added.
   marks it with `continuationOf`. Its events and logs remain under its own
   trace ID. Enabled worker tracing also supplies span links for background
   workflow continuations. Chat-pane sends from room actions use `<actionId>:chat`.
-- **CLI terminal task IDs are not linked.** `cliTaskId` and `revisionId` are not
-  tied to request IDs.
+- **CLI sessions are linked to their request (since 2026-10-27, migration 0258).**
+  `pane_cli_sessions.trace_id` keeps the request that allocated the session (a
+  rejoin of a running session does not take it over), and the trace lookup returns
+  `cliSessions`: session, pane, room, runtime, `cliTaskId`, `cliTaskRevisionId`,
+  launch mode, status and times. Sessions allocated before 0258 have no trace.
+  Terminal input and output frames are not request-scoped and stay unlinked.
 - **Hosts are observed from the API, not instrumented.** Since 2026-10-12 the
   API's `/metrics` carries `space_host_up`, `space_host_start_time_seconds`,
   `space_host_observed_timestamp_seconds`, `space_host_resident_memory_bytes` and

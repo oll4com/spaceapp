@@ -9,8 +9,8 @@ import { GmailConsentActions, gmailAccessLabel } from "./AccountsView.js";
 import { senderHue, senderInitial } from "./MailClient.js";
 
 const AUTONOMY_TEXT: Record<MailCopilotAutonomy, { label: string; detail: string }> = {
-  ASSIST: { label: "Assist", detail: "Drafts and asks; you send. The copilot learns from every reply and action of yours." },
-  RULES: { label: "Rules", detail: "Acts alone only under rules you approved; everything else is a review." },
+  ASSIST: { label: "Assist", detail: "Sorts and archives the inbox on its own; drafts replies and asks, you send. It learns from every reply and action of yours." },
+  RULES: { label: "Rules", detail: "Sorts the inbox on its own; replies alone only under rules you approved, everything else is a review." },
   FULL: { label: "Full", detail: "Acts on its own judgement within the hourly cap; you follow along in Activity." }
 };
 
@@ -142,6 +142,9 @@ export function SetupTab({ pane, settings, accounts, runtimeOptions, switching, 
             <label className="jc-field"><span>Backlog (hours)</span>
               <input type="number" min={1} max={336} value={settings.settings.backlogHours} disabled={busy}
                 onChange={(event) => patch("Backlog", { backlogHours: Math.max(1, Math.min(336, Number.parseInt(event.target.value, 10) || 24)) })} /></label>
+            <label className="jc-field"><span>Daily inbox sort (hour, your time zone)</span>
+              <input type="number" min={0} max={23} value={settings.settings.dailyRunHour} disabled={busy}
+                onChange={(event) => patch("Daily sort", { dailyRunHour: Math.max(0, Math.min(23, Number.parseInt(event.target.value, 10) || 0)) })} /></label>
             <label className="jc-field"><span>Sends per hour (cap)</span>
               <input type="number" min={0} max={200} value={settings.settings.sendsPerHour} disabled={busy}
                 onChange={(event) => patch("Send cap", { sendsPerHour: Math.max(0, Math.min(200, Number.parseInt(event.target.value, 10) || 0)) })} /></label>

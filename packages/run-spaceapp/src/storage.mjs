@@ -113,9 +113,9 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
   const images = [
     ["core", `ghcr.io/oll4com/spaceapp-core:${config.version}`],
     ["cli", `ghcr.io/oll4com/spaceapp-cli:${config.version}`],
-    ["postgres", "pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b"],
+    ["postgres", "pgvector/pgvector:0.8.7-pg17-trixie@sha256:7a7e9f22015b67edb4bef5c59daeebcd7e74bfa570df6ce60ae01237c8648a84"],
     ...(settings.browserEnabled ? [["browser", `ghcr.io/oll4com/spaceapp-browser:${config.version}`]] : []),
-    ...(settings.temporalEnabled ? [["temporal", "temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312"]] : []),
+    ...(settings.temporalEnabled ? [["temporal", "temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f"]] : []),
     ...(config.companionsEnabled ? [["companion", "ghcr.io/soju06/codex-lb:1.22.0@sha256:3010b3c5567522fbb6e7225bdbe963fa1038c2584641fcec69094875e40e36e5"], ["companion", "ghcr.io/oll4com/headroom-codex-lb:code-5b15319@sha256:491c856a8bd8205d45e980370c3ffe7ffe438b6444216c36ac7c60ad24308aa2"]] : [])
   ];
   let missingImageBytes = 0;

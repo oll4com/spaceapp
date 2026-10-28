@@ -1,7 +1,7 @@
 import {
-  SECURITY_ALWAYS_ASK_KINDS, SECURITY_BACKUP_KINDS, SECURITY_MAX_ACTIONS_PER_HOST_HOUR, SECURITY_OPEN_FINDING_STATUSES, securityAdvisoryUrlAllowed,
+  makeNeedsYouAsk, SECURITY_ALWAYS_ASK_KINDS, SECURITY_BACKUP_KINDS, SECURITY_MAX_ACTIONS_PER_HOST_HOUR, SECURITY_IMAGE_SCAN_MAX_AGE_MS, SECURITY_OPEN_FINDING_STATUSES, securityImageScanSchema, securityAdvisoryUrlAllowed,
   securityCopilotPaneMetadataSchema, resolveSecurityCopilotPaneMetadata, securityInventorySchema,
-  type Pane, type SecurityAction, type SecurityActionBegin, type SecurityCopilotPaneMetadata, type SecurityCopilotPaneSettings, type SecurityEvent,
+  type NeedsYouAsk, type Pane, type SecurityAction, type SecurityActionBegin, type SecurityCopilotPaneMetadata, type SecurityCopilotPaneSettings, type SecurityEvent,
   type SecurityEventStatus, type SecurityEventType, type SecurityFinding, type SecurityHost, type SecurityInventory, type SecurityRunStatus
 } from "@space/contracts";
 import { securityFindingKey, type SecurityCopilotRepository } from "@space/db";
@@ -9,7 +9,7 @@ import { SpaceConflictError, SpaceNotFoundError, type MaybePromise } from "@spac
 import type { NotificationService } from "../notifications/service.js";
 import type { SecurityFeeds } from "./feeds.js";
 import {
-  distroFindings, exposureFindings, libraryFindings, newsFindings, productFindings, PRODUCT_CPE,
+  distroFindings, exposureFindings, imageFindings, lifecycleFindings, libraryFindings, newsFindings, productFindings, PRODUCT_CPE,
   type FindingDraft, type KevEntry, type NewsItem, type NvdCve, type OsvVuln
 } from "./matcher.js";
 
@@ -37,7 +37,7 @@ export interface SecurityCopilotServiceOptions {
   store: {
     updateSecurityCopilotMetadata(paneId: string, metadata: SecurityCopilotPaneMetadata): MaybePromise<Pane>;
     listRooms?(): MaybePromise<Array<{ id: string; ownerUserId?: string | null }>>;
-    listPanes?(roomId: string): MaybePromise<Pane[]>;
+    listPanes?(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   };
   feeds?: SecurityFeeds;
   kickoff?: SecurityKickoff;
@@ -95,14 +95,14 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     options.onEvent?.(event);
     return event;
   }
-  async function notice(owner: string, pane: Pane | null, input: { kind: string; severity: "INFO" | "ATTENTION" | "URGENT"; title: string; body: string; dedupeKey: string; target: string; fixed?: boolean }) {
+  async function notice(owner: string, pane: Pane | null, input: { kind: string; severity: "INFO" | "ATTENTION" | "URGENT"; title: string; body: string; dedupeKey: string; target: string; fixed?: boolean; ask?: NeedsYouAsk }) {
     if (!options.notifications) return;
     const settings = pane ? settingsOf(pane).notifications : { needsYou: true, fixed: true, telegram: false };
     // URGENT is a security incident: it always alerts (the pane's switches only quiet the rest).
     if (input.severity !== "URGENT" && !(input.fixed ? settings.fixed : settings.needsYou)) return;
     await options.notifications.raise({ ownerUserId: owner, roomId: pane?.roomId ?? null, paneId: pane?.id ?? null, source: "SECURITY_COPILOT", kind: `SECURITY_${input.kind}`,
       severity: input.severity, title: trimmed(input.title, 200), body: trimmed(input.body), link: pane ? { roomId: pane.roomId, paneId: pane.id, target: input.target } : {},
-      dedupeKey: input.dedupeKey, payload: {}, telegram: settings.telegram || input.severity === "URGENT" ? true : null }).catch(() => undefined);
+      dedupeKey: input.dedupeKey, payload: input.ask ? { ask: input.ask } : {}, telegram: settings.telegram || input.severity === "URGENT" ? true : null }).catch(() => undefined);
   }
   async function runStatus(owner: string, pane: Pane): Promise<SecurityRunStatus> {
     const [latest] = await repository.listEvents(owner, pane.id, { types: ["RUN_STARTED", "RUN_PAUSED", "RUN_STOPPED"], limit: 1 });
@@ -135,6 +135,15 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     return (await repository.listHosts(owner)).filter((host) => host.status === "ACTIVE" && host.reach !== "NONE" && !excluded.has(host.id)
       && host.osFamily !== "WINDOWS" && host.osFamily !== "MACOS" && (!host.inventoryAt || now() - Date.parse(host.inventoryAt) > INVENTORY_MAX_AGE_MS));
   }
+  /**
+   * Images on a host that need a (re)scan: never scanned, or scanned a day ago. Only LOCAL and SSH hosts: the collector exports an
+   * image with `docker save` over those paths. shortcut: pct/qm guests wait, add an export path for them when one has Docker.
+   */
+  function imagesDue(host: SecurityHost) {
+    if (host.reach !== "LOCAL" && host.reach !== "SSH") return [];
+    // A failed scan records only its time, so a broken export is tried again a day later instead of in a loop.
+    return (host.inventory?.images ?? []).filter((image) => !image.scannedAt || now() - Date.parse(image.scannedAt) > SECURITY_IMAGE_SCAN_MAX_AGE_MS);
+  }
   async function work(owner: string, pane: Pane) {
     const [briefs, decided, findings, due, hosts] = await Promise.all([
       repository.listEvents(owner, pane.id, { types: ["BRIEF"], status: ["PENDING", "TAKEN"], limit: 20 }),
@@ -145,7 +154,8 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     return {
       briefs, decided: decided.filter((event) => !event.payload.delivered),
       findings: findings.filter((finding) => finding.status === "NEW" && finding.priority !== "P3" && !excluded.has(finding.hostId)),
-      due, discover: !hosts.length || now() - (lastDiscovery.get(owner) ?? 0) > DISCOVERY_MAX_AGE_MS
+      due, discover: !hosts.length || now() - (lastDiscovery.get(owner) ?? 0) > DISCOVERY_MAX_AGE_MS,
+      images: hosts.filter((host) => host.status === "ACTIVE" && !excluded.has(host.id) && imagesDue(host).length)
     };
   }
   /** Types the kickoff into the pane's CLI when there is work, at most every 10 minutes, never while the agent works or at a busy prompt. */
@@ -156,18 +166,18 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     if (now() - (lastNext.get(pane.id) ?? 0) < WORKING_MS) return false;
     if (!force && now() - (lastKickoff.get(pane.id) ?? 0) < KICKOFF_GAP_MS) return false;
     const open = await work(owner, pane);
-    if (!open.briefs.length && !open.decided.length && !open.findings.length && !open.due.length && !open.discover) return false;
+    if (!open.briefs.length && !open.decided.length && !open.findings.length && !open.due.length && !open.discover && !open.images.length) return false;
     if (!(await options.kickoff.ready(pane))) return false;
     lastKickoff.set(pane.id, now());
     await options.kickoff.send(pane);
     return true;
   }
-  async function ownerPanes(): Promise<Array<{ owner: string; pane: Pane }>> {
+  async function ownerPanes(includeClosed = false): Promise<Array<{ owner: string; pane: Pane }>> {
     if (!store.listRooms || !store.listPanes) return [];
     const out: Array<{ owner: string; pane: Pane }> = [];
     for (const room of await store.listRooms()) {
       if (!room.ownerUserId) continue;
-      for (const pane of await store.listPanes(room.id)) if (pane.mode === "SECURITY_COPILOT" && !pane.isClosed) out.push({ owner: room.ownerUserId, pane });
+      for (const pane of await store.listPanes(room.id, includeClosed)) if (pane.mode === "SECURITY_COPILOT" && (includeClosed || !pane.isClosed)) out.push({ owner: room.ownerUserId, pane });
     }
     return out;
   }
@@ -205,6 +215,10 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       sources.push("INTERNETDB");
     }
     if (intel.newsOk) drafts.push(...newsFindings(inventory, intel.news, intel.kev));
+    drafts.push(...imageFindings(inventory, intel.kev), ...lifecycleFindings(inventory, now()));
+    sources.push("VENDOR");
+    // Image findings close only once every listed image has a scan: an unscanned new image must not close its predecessor's finding.
+    if (inventory.images?.every((image) => image.vulns)) sources.push("IMAGE");
     const fresh: SecurityFinding[] = [];
     const keep = new Set(drafts.map((draft) => securityFindingKey(draft.advisoryId, draft.package)));
     for (const draft of drafts) {
@@ -216,7 +230,8 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     for (const finding of await openFindings(owner, host.id)) {
       if (finding.advisory.sources.includes("NVD") && productAt.get(finding.package) === finding.installedVersion) keep.add(securityFindingKey(finding.advisoryId, finding.package));
     }
-    await repository.closeResolved(owner, host.id, [...sources, "NVD"], keep, `Not in the inventory of ${host.inventoryAt?.slice(0, 16) ?? "now"} any more`);
+    const closed = await repository.closeResolved(owner, host.id, [...sources, "NVD"], keep, `Not in the inventory of ${host.inventoryAt?.slice(0, 16) ?? "now"} any more`);
+    await resolveNotices(owner, closed.map((finding) => finding.id));
     return fresh;
   }
   /** Tells the operator about new findings (P0 URGENT, P1 ATTENTION; the rest only in the feed) and records one FINDINGS line. */
@@ -250,6 +265,11 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
 
   async function setFindings(owner: string, ids: string[], status: SecurityFinding["status"], note: string) {
     for (const id of ids) await repository.updateFinding(owner, id, { status, note: trimmed(note) });
+    if (!SECURITY_OPEN_FINDING_STATUSES.includes(status)) await resolveNotices(owner, ids);
+  }
+  /** A finding that left the open set no longer asks anyone for anything. */
+  async function resolveNotices(owner: string, ids: string[]) {
+    for (const id of ids) await options.notifications?.resolve(owner, `security:finding:${id}`).catch(() => 0);
   }
 
   async function items(owner: string, pane: Pane) {
@@ -309,7 +329,8 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     async ask(owner: string, pane: Pane, input: { question: string; options?: string[] }) {
       assertPane(pane);
       const question = await record(owner, pane, { type: "QUESTION", status: "OPEN", message: input.question, payload: { options: input.options ?? [] } });
-      await notice(owner, pane, { kind: "QUESTION", severity: "ATTENTION", title: "Security Copilot has a question", body: input.question, dedupeKey: `security:question:${question.id}`, target: `question:${question.id}` });
+      await notice(owner, pane, { kind: "QUESTION", severity: "ATTENTION", title: "Security Copilot has a question", body: input.question, dedupeKey: `security:question:${question.id}`, target: `question:${question.id}`,
+        ask: makeNeedsYouAsk(input.question, { kind: "COPILOT_QUESTION", copilot: "SECURITY", questionId: question.id }, input.options) });
       return question;
     },
     async answer(owner: string, pane: Pane, questionId: string, answer: string, answeredBy: SecurityRequester) {
@@ -353,6 +374,8 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       if (open.discover) { lastDiscovery.set(owner, now()); return { done: false, type: "DISCOVER", next: "Call space_security_discover, then inventory the hosts it lists." }; }
       if (open.due.length) return { done: false, type: "INVENTORY", hosts: open.due.slice(0, 10).map((host) => ({ id: host.id, alias: host.alias, label: host.label, reach: host.reach })),
         next: "Call space_security_inventory for each host." };
+      if (open.images.length) return { done: false, type: "SCAN_IMAGES", hosts: open.images.slice(0, 10).map((host) => ({ id: host.id, alias: host.alias, label: host.label, images: imagesDue(host).length })),
+        next: "Call space_security_scan_images for each host until it answers remaining=0." };
       if (open.findings.length) {
         const top = open.findings.slice(0, 10);
         for (const finding of top) await repository.updateFinding(owner, finding.id, { status: "TRIAGING" });
@@ -376,12 +399,39 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
     async ingestInventory(owner: string, pane: Pane, raw: SecurityInventory) {
       assertPane(pane);
       const inventory = securityInventorySchema.parse(raw);
+      const previous = (await repository.listHosts(owner)).find((entry) => entry.alias === inventory.alias)?.inventory?.images ?? [];
+      // A new inventory lists the images again; an image whose id did not change keeps its last scan.
+      if (inventory.images) inventory.images = inventory.images.map((image) => ({ ...previous.find((before) => before.id === image.id && before.scannedAt), ...image }));
       const host = await repository.upsertHost({ ownerUserId: owner, alias: inventory.alias, label: inventory.label, reach: inventory.reach, status: "ACTIVE",
         osFamily: inventory.os.family, osVersion: inventory.os.version, kernel: inventory.os.kernel, note: null }, inventory);
       const fresh = await matchHost(owner, host, settingsOf(pane).publicAddresses);
       await announce(owner, fresh);
       return { host: { id: host.id, alias: host.alias, label: host.label }, packages: inventory.packages.length, libraries: inventory.libraries.length,
-        pendingSecurity: inventory.pendingSecurity.length, newFindings: fresh.length };
+        pendingSecurity: inventory.pendingSecurity.length, newFindings: fresh.length, images: inventory.images?.length ?? null };
+    },
+    /** The images of one host that wait for a scan (ref and id only). */
+    async imageScanDue(owner: string, alias: string) {
+      const host = (await repository.listHosts(owner)).find((entry) => entry.alias === alias);
+      if (!host) throw new SpaceNotFoundError(`Host ${alias} was not found: inventory it first.`);
+      return { host: { id: host.id, alias: host.alias, reach: host.reach }, images: imagesDue(host).map((image) => ({ ref: image.ref, id: image.id })) };
+    },
+    /** Stores Trivy's results for some of a host's images and matches the host again. */
+    async recordImageScan(owner: string, pane: Pane, raw: unknown) {
+      assertPane(pane);
+      const input = securityImageScanSchema.parse(raw);
+      const host = (await repository.listHosts(owner)).find((entry) => entry.alias === input.alias);
+      if (!host?.inventory?.images) throw new SpaceNotFoundError(`Host ${input.alias} lists no images: inventory it first.`);
+      const results = new Map(input.images.map((image) => [image.id, image.vulns]));
+      const failed = new Set(input.failed.map((image) => image.id));
+      const at = iso();
+      const inventory = { ...host.inventory, images: host.inventory.images.map((image) => results.has(image.id) ? { ...image, vulns: results.get(image.id)!, scannedAt: at }
+        : failed.has(image.id) ? { ...image, scannedAt: at } : image) };
+      const updated = await repository.upsertHost({ ownerUserId: owner, alias: host.alias, label: host.label, reach: host.reach, status: host.status,
+        osFamily: host.osFamily, osVersion: host.osVersion, kernel: host.kernel, note: host.note }, inventory);
+      const fresh = await matchHost(owner, updated, settingsOf(pane).publicAddresses);
+      await announce(owner, fresh);
+      return { host: { id: updated.id, alias: updated.alias }, scanned: inventory.images.filter((image) => results.has(image.id)).length,
+        failed: inventory.images.filter((image) => failed.has(image.id)).length, remaining: imagesDue(updated).length, newFindings: fresh.length };
     },
     async markUnreachable(owner: string, alias: string, note: string) {
       const host = (await repository.listHosts(owner)).find((entry) => entry.alias === alias);
@@ -406,7 +456,9 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       if (by === "AGENT" && input.status === "ACCEPTED" && (finding.priority === "P0" || finding.priority === "P1")) {
         throw new SpaceConflictError("Accepting the risk of a P0 or P1 finding is the operator's call: ask with space_security_ask.");
       }
-      return findingView((await repository.updateFinding(owner, id, { status: input.status, note: trimmed(input.note) }))!);
+      const updated = (await repository.updateFinding(owner, id, { status: input.status, note: trimmed(input.note) }))!;
+      if (!SECURITY_OPEN_FINDING_STATUSES.includes(input.status)) await resolveNotices(owner, [id]);
+      return findingView(updated);
     },
     /** Confirms a news lead: the server reads the allowlisted vendor page and needs the advisory id (or an alias) on it. */
     async confirm(owner: string, findingId: string, url: string) {
@@ -457,7 +509,8 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
         await repository.updateAction(owner, action.id, { reviewEventId: review.id }, ["ASKED"]);
         const urgent = findings.some((finding) => finding.priority === "P0");
         await notice(owner, pane, { kind: "REVIEW", severity: urgent ? "URGENT" : "ATTENTION", title: `Approve ${input.kind.toLowerCase().replace(/_/g, " ")} on ${host}?`,
-          body: `${input.summary}. ${reason}`, dedupeKey: `security:review:${review.id}`, target: `review:${review.id}` });
+          body: `${input.summary}. ${reason}`, dedupeKey: `security:review:${review.id}`, target: `review:${review.id}`,
+          ask: makeNeedsYouAsk(`Approve ${input.kind.toLowerCase().replace(/_/g, " ")} on ${host}?`, { kind: "COPILOT_DECISION", copilot: "SECURITY", item: "REVIEW", itemId: review.id }, ["Approve", "Decline"]) });
         return { gate: "ASK" as const, actionId: action.id, reviewId: review.id, reason, next: "Wait with space_security_wait (the operator decides); do not make this change before an approval." };
       }
       const action = await repository.createAction({ ...base, gate: "GO", status: "RUNNING" });
@@ -570,8 +623,11 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
      * announces new findings; writes one digest a day; and types the kickoff into panes with work.
      */
     async watch(): Promise<{ owners: number; newFindings: number; kicked: number }> {
-      const panes = await ownerPanes();
-      if (!panes.length) return { owners: 0, newFindings: 0, kicked: 0 };
+      // The feeds and the matching run with no Security pane open too (closed panes keep their addresses); only the kickoff needs one.
+      const everyPane = await ownerPanes(true);
+      const panes = everyPane.filter((entry) => !entry.pane.isClosed);
+      const owners = new Set([...everyPane.map((entry) => entry.owner), ...await repository.listOwners()]);
+      if (!owners.size) return { owners: 0, newFindings: 0, kicked: 0 };
       if (options.feeds) {
         const feeds = options.feeds;
         const kev = await feeds.kev().catch(() => null);
@@ -589,7 +645,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
         const news = await feeds.news(NEWS_DAYS).catch(() => null);
         if (news) { intel.news = news; intel.newsOk = true; }
         let exposureOk = true;
-        const ips = new Set(panes.flatMap(({ pane }) => settingsOf(pane).publicAddresses.map((entry) => entry.ip)));
+        const ips = new Set(everyPane.flatMap(({ pane }) => settingsOf(pane).publicAddresses.map((entry) => entry.ip)));
         for (const ip of ips) {
           const seen = await feeds.internetDb(ip).catch(() => { exposureOk = false; return null; });
           if (seen) intel.exposure.set(ip, seen.vulns);
@@ -598,9 +654,9 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
       }
       let newFindings = 0;
       let kicked = 0;
-      for (const owner of new Set(panes.map((entry) => entry.owner))) {
+      for (const owner of owners) {
         const fresh: SecurityFinding[] = [];
-        const addresses = panes.filter((entry) => entry.owner === owner).flatMap(({ pane }) => settingsOf(pane).publicAddresses);
+        const addresses = everyPane.filter((entry) => entry.owner === owner).flatMap(({ pane }) => settingsOf(pane).publicAddresses);
         for (const host of await repository.listHosts(owner)) if (host.inventory) fresh.push(...await matchHost(owner, host, addresses).catch(() => []));
         newFindings += fresh.length;
         await announce(owner, fresh);
@@ -615,7 +671,7 @@ export function createSecurityCopilotService(options: SecurityCopilotServiceOpti
         }
       }
       for (const { owner, pane } of panes) if (await kick(owner, pane).catch(() => false)) kicked += 1;
-      return { owners: new Set(panes.map((entry) => entry.owner)).size, newFindings, kicked };
+      return { owners: owners.size, newFindings, kicked };
     }
   };
 }

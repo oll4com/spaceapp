@@ -47,6 +47,26 @@ describe("CLI pane controls settings card", () => {
     });
   });
 
+  it("shows the account picker by default and hides it when switched off", () => {
+    render(<CliPaneControlsSettingsCard />);
+    const toggle = screen.getByRole("switch", { name: "Account picker" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(writeVoiceComposerSettings).toHaveBeenCalledExactlyOnceWith({
+      ...defaultVoiceComposerSettings, opening: "Remember this", terminalTurnControl: false, terminalAccountPicker: false
+    });
+  });
+
+  it("shows the local draft button by default and hides it when switched off", () => {
+    render(<CliPaneControlsSettingsCard />);
+    const toggle = screen.getByRole("switch", { name: "Local draft" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(writeVoiceComposerSettings).toHaveBeenCalledExactlyOnceWith({
+      ...defaultVoiceComposerSettings, opening: "Remember this", terminalTurnControl: false, terminalLocalDraftButton: false
+    });
+  });
+
   it("opens the local draft by default only when switched on", () => {
     render(<CliPaneControlsSettingsCard />);
     const toggle = screen.getByRole("switch", { name: "Local draft open by default" }) as HTMLInputElement;

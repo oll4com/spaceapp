@@ -106,12 +106,13 @@ afterEach(() => {
 });
 
 describe("Needs you brings the operator to a pane", () => {
-  it("shows a delivered needs-you as the banner (source and title, no toast), goes by itself after 5 s and comes back, restoring the room, the maximized pane and the dock", async () => {
+  it("shows a delivered needs-you as the banner (source, title and what it needs, no toast), keeps what it needs on the Back pill, goes by itself after 5 s and comes back, restoring the room, the maximized pane and the dock", async () => {
     const phases: string[] = [];
     window.addEventListener(NOUS_FOCUS_PHASE_EVENT, (event) => phases.push((event as CustomEvent<string>).detail));
     render(<Harness />);
     await deliver(needsYou("n1"));
     expect(screen.getByRole("alert", { name: "Needs you" }).textContent).toContain("Agent: Emma needs you");
+    expect(screen.getByRole("alert").textContent).toContain("Pick the colour");
     expect(peekNotificationStore().toasts).toEqual([]);
     await advance(AUTO_GO_MS - 300);
     expect(calls).toEqual([]);
@@ -119,6 +120,9 @@ describe("Needs you brings the operator to a pane", () => {
     expect(calls).toEqual(["room room:work000001", `max ${EMMA}`, `select ${EMMA}`]);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(document.activeElement).toBe(screen.getByLabelText("Emma terminal"));
+    // Visited is seen: no other tab or reload offers it again.
+    expect(fetched("/notifications/notification:n1/read")).toBe(true);
+    expect(screen.getByRole("status").textContent).toContain("Pick the colour");
     calls.length = 0;
     fireEvent.click(screen.getByRole("button", { name: "Back to Home" }));
     await advance(0);
@@ -147,6 +151,20 @@ describe("Needs you brings the operator to a pane", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await advance(0);
     expect(fetched("/notifications/notification:n2/read")).toBe(true);
+  });
+
+  it("goes by itself with a terminal focused once its keys stop: the terminal's hidden input is not a draft", async () => {
+    render(<Harness />);
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm-helper-textarea";
+    document.body.appendChild(terminal);
+    terminal.focus();
+    fireEvent.keyDown(terminal, { key: "a" });
+    await deliver(needsYou("n1"));
+    expect(screen.getByRole("alert").textContent).toContain("waiting: you are typing");
+    await advance(AUTO_GO_MS + AUTO_GO_FREE_MS + 500);
+    expect(calls[0]).toBe("room room:work000001");
+    terminal.remove();
   });
 
   it("keeps the toast when this device turned the setting off, shows no banner for the pane already on screen, and Take me there goes at once", async () => {
@@ -290,12 +308,13 @@ describe("Needs you brings the operator to a pane", () => {
     await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
     await advance(0);
     expect(screen.queryByRole("alert")).toBeNull();
-    records = [needsYou("m2")];
+    records = [needsYou("m2", { source: "MAIL_COPILOT", kind: "QUESTION", title: "Mail Copilot needs you (Mail 5)" })];
     const listeners = new Map<string, EventListener>();
     const stop = forwardNousPaneBoardEvents({ addEventListener: (type: string, listener: EventListener) => listeners.set(type, listener), removeEventListener: (type: string) => listeners.delete(type) } as unknown as EventSource);
     await act(async () => { listeners.get("replay-complete")!(new Event("replay-complete")); });
     await advance(0);
-    expect(screen.getByRole("alert").textContent).toContain("Agent: Emma needs you");
+    // The source is not said twice.
+    expect(screen.getByRole("alert").textContent).toMatch(/^Mail Copilot needs you \(Mail 5\)/);
     stop();
   });
 

@@ -89,9 +89,6 @@ export function applyRailScaleToShell(shell: HTMLElement, scale: number): void {
     shell.style.removeProperty("--rail-indicator-svg");
     shell.style.removeProperty("--rail-indicator-font");
     shell.style.removeProperty("--rail-tag-font");
-    shell.style.removeProperty("--rail-live-btn");
-    shell.style.removeProperty("--rail-live-btn-half");
-    shell.style.removeProperty("--rail-live-sphere");
     const rails = shell.querySelectorAll<HTMLElement>(".health-indicator-rail, .room-toolbar-collapsed");
     rails.forEach((r) => {
       r.style.removeProperty("--toolbar-control-size");
@@ -108,9 +105,6 @@ export function applyRailScaleToShell(shell: HTMLElement, scale: number): void {
     const indSvg = round1(11 + 4 * t);
     const indFont = round1(8.5 + 2.5 * t);
     const tagFont = round1(6.5 + 1.5 * t);
-    const liveBtn = round1(31 + 13 * t);
-    const liveBtnHalf = round1(liveBtn / 2);
-    const liveSphere = round1(20 + 6 * t);
     const padRight = round1(46 + 18 * t);
 
     shell.dataset.railDownscaled = "true";
@@ -124,9 +118,6 @@ export function applyRailScaleToShell(shell: HTMLElement, scale: number): void {
     shell.style.setProperty("--rail-indicator-svg", `${indSvg}px`, "important");
     shell.style.setProperty("--rail-indicator-font", `${indFont}px`, "important");
     shell.style.setProperty("--rail-tag-font", `${tagFont}px`, "important");
-    shell.style.setProperty("--rail-live-btn", `${liveBtn}px`, "important");
-    shell.style.setProperty("--rail-live-btn-half", `${liveBtnHalf}px`, "important");
-    shell.style.setProperty("--rail-live-sphere", `${liveSphere}px`, "important");
     shell.style.setProperty("--rail-padding-right", `${padRight}px`, "important");
 
     const rails = shell.querySelectorAll<HTMLElement>(".health-indicator-rail, .room-toolbar-collapsed");

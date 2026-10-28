@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  NOUS_EFFORTS, NOUS_FALLBACK_MODELS, NOUS_LOW_SPEND_KINDS, NOUS_MODELS, NOUS_TURN_KINDS, nousLowSpendSettingsSchema, nousModelsSettingsSchema, nousPaneBoardSettingsSchema, nousStandingOrdersSettingsSchema,
-  type NousAway, type NousAwayGrant, type NousLowSpendSettings, type NousModelChoice, type NousModelsSettings, type NousPaneBoardSettings, type NousSettings, type NousStandingOrdersSettings, type NousTurnKind
+  NOUS_EFFORTS, NOUS_FALLBACK_MODELS, NOUS_LOW_SPEND_KINDS, NOUS_MODELS, NOUS_TURN_KINDS, nousLowSpendSettingsSchema, nousModelsSettingsSchema, nousPaneBoardSettingsSchema, nousGoalsSettingsSchema, nousStandingOrdersSettingsSchema,
+  type NousAway, type NousAwayGrant, type NousLowSpendSettings, type NousModelChoice, type NousModelsSettings, type NousPaneBoardSettings, type NousSettings, type NousGoalsSettings, type NousStandingOrdersSettings, type NousTurnKind
 } from "@space/contracts";
 import { api } from "../../api.js";
 import { formatUserTime } from "../date-time-settings/date-time-settings.js";
@@ -31,6 +31,9 @@ export function NousSettingsToggles({ settings, onChange, className }: {
       <SpaceToggle className={className} label="Shell" ariaLabel="Nous may use a shell"
         detail="Nous runs commands itself as your CLI user, like a pane, never with sudo. Off: it asks a pane to run them."
         checked={Boolean(settings?.shell)} disabled={!settings} onChange={(shell) => onChange({ shell })} />
+      <SpaceToggle className={className} label="Copilot questions go to Nous first" ariaLabel="Copilot questions go to Nous first"
+        detail="A copilot's question waits up to an hour for Nous, which answers what it can find itself; the rest comes to you on the pane's card, at once when Nous is off or paused."
+        checked={settings?.copilotQuestionsNousFirst ?? true} disabled={!settings} onChange={(copilotQuestionsNousFirst) => onChange({ copilotQuestionsNousFirst })} />
       <SpaceToggle className={className} label="Talk to Nous from Telegram" ariaLabel="Nous takes messages from the paired Telegram chat"
         detail="Write to Nous from your paired Telegram chat and get its answer there; its decisions arrive with Approve and Decline buttons. Only the paired chat; the same rules as the dock."
         checked={Boolean(settings?.telegramInbound)} disabled={!settings} onChange={(telegramInbound) => onChange({ telegramInbound })} />
@@ -177,8 +180,36 @@ const TURN_KIND_LABELS: Record<NousTurnKind, { label: string; detail: string }> 
   decision: { label: "Acting on your answers", detail: "Turns your decision answers start." },
   inbox: { label: "Reading news from the rooms", detail: "Inbox turns: pane events, reports and notifications." },
   standing: { label: "Standing orders", detail: "Finished panes and stalled plans every tick, the Away round and the daily self-review." },
-  helper: { label: "Helpers", detail: "The helper turns of space_subagents." }
+  helper: { label: "Helpers", detail: "The helper turns of space_subagents." },
+  goal: { label: "Working on your goals", detail: "The goal loop's turns: the strongest model and effort by default, never downgraded in low-spend mode." }
 };
+
+/**
+ * Goals (operator request 2026-10-27, plan clipboard:DR51jZJEB0j1): the goal loop that works the operator's goals in turns of its own.
+ */
+function NousGoalsRows({ settings, onChange, className }: { settings: NousSettings | null; onChange(patch: Partial<NousSettings>): void; className: string }) {
+  const goals = settings?.goals ?? nousGoalsSettingsSchema.parse({});
+  const save = (patch: Partial<NousGoalsSettings>) => onChange({ goals: { ...goals, ...patch } });
+  return (
+    <>
+      <div className="settings-flat-subheading">
+        <strong>Goals</strong>
+        <small>Your standing objectives (/goal in the Nous dock). While one is active, Nous works it in goal turns of its own, in parallel with everything else, and backs off only while nothing moves or the goal waits on you, a third party or a date.</small>
+      </div>
+      <SpaceToggle className={className} label="Goal loop" ariaLabel="Nous goal loop"
+        detail="A goal turn shortly after the previous one while a goal is active. Off: goals stay listed and Nous still serves them in its other turns."
+        checked={goals.loop} disabled={!settings} onChange={(loop) => save({ loop })} />
+      <PaneBoardNumber label="Gap between goal turns (seconds)" detail="How long after a goal turn ends the next one may start." value={goals.gapSeconds} min={10} max={3_600}
+        onSave={(gapSeconds) => save({ gapSeconds })} />
+      <PaneBoardNumber label="Back off (minutes)" detail="The first pause when a goal did not move or waits on someone; it doubles while nothing changes." value={goals.backoffMinutes} min={1} max={180}
+        onSave={(backoffMinutes) => save({ backoffMinutes, backoffMaxMinutes: Math.max(backoffMinutes, goals.backoffMaxMinutes) })} />
+      <PaneBoardNumber label="Back off at most (minutes)" detail="The longest pause between goal turns of a goal that does not move." value={goals.backoffMaxMinutes} min={goals.backoffMinutes} max={720}
+        onSave={(backoffMaxMinutes) => save({ backoffMaxMinutes: Math.max(goals.backoffMinutes, backoffMaxMinutes) })} />
+      <PaneBoardNumber label="Unchanged turns before backing off" detail="Goal turns in a row that leave a goal unchanged before it backs off." value={goals.unchangedTurns} min={1} max={20}
+        onSave={(unchangedTurns) => save({ unchangedTurns })} />
+    </>
+  );
+}
 
 /**
  * The model and effort per turn kind (operator decision 2026-10-24: Fable 5.1, max for the operator's and decision turns, high for
@@ -236,9 +267,7 @@ function NousLowSpendRows({ settings, onChange }: { settings: NousSettings | nul
         checked={low.cheaperModel} disabled={!settings} onChange={(cheaperModel) => save({ cheaperModel })} />
       <div className="settings-flat-subheading"><small>Your messages and decisions keep their model with effort at most high. The inbox batches more slowly, helpers are limited to one (none in CRITICAL), and stalled-plan nudges wait.</small></div>
       <PaneBoardNumber label="Max accounts needed for normal spending" detail="Auto conserves when fewer accounts have room in their 5-hour window." value={low.minMaxAccountsWithRoom} min={1} max={100} onSave={(minMaxAccountsWithRoom) => save({ minMaxAccountsWithRoom })} />
-      <PaneBoardNumber label="Quota left to count as room (%)" detail="A Claude Max account needs at least this percentage left." value={low.roomRemainingPercent} min={1} max={100} onSave={(roomRemainingPercent) => save({ roomRemainingPercent })} />
-      <PaneBoardNumber label="API budget left for LOW (%)" detail="Auto conserves below this percentage of the monthly budget." value={low.lowBudgetRemainingPercent} min={low.criticalBudgetRemainingPercent} max={100} onSave={(lowBudgetRemainingPercent) => save({ lowBudgetRemainingPercent })} />
-      <PaneBoardNumber label="API budget left for CRITICAL (%)" detail="Below this percentage with no Max account having room, no helpers start." value={low.criticalBudgetRemainingPercent} min={0} max={low.lowBudgetRemainingPercent} onSave={(criticalBudgetRemainingPercent) => save({ criticalBudgetRemainingPercent })} />
+      <PaneBoardNumber label="Quota left to count as room (%)" detail="A Claude Max account needs at least this percentage left in its 5-hour window and its week. None with room is CRITICAL: the API key never serves Claude Code." value={low.roomRemainingPercent} min={1} max={100} onSave={(roomRemainingPercent) => save({ roomRemainingPercent })} />
       <PaneBoardNumber label="Inbox turns per hour while conserving" detail="An upper limit in LOW and CRITICAL; a lower normal inbox limit still applies." value={low.maxTurnsPerHour} min={1} max={120} onSave={(maxTurnsPerHour) => save({ maxTurnsPerHour })} />
       {NOUS_LOW_SPEND_KINDS.map((kind) => (
         <div className="settings-flat-row" key={kind}>
@@ -271,9 +300,12 @@ export function NousSettingsCard() {
   const [settings, setSettings] = useState<NousSettings | null>(null);
   const [away, setAway] = useState<NousAway | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  // Goal 7365014c-c: how often each Always-approve kind ran by itself in 14 days (a read only; the list stays the settings' own).
+  const [spared, setSpared] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
+    void api.nousAlwaysApprove().then(({ rules }) => { if (!cancelled) setSpared(new Map(rules.map((rule) => [rule.key, rule.count]))); }).catch(() => undefined);
     api.nous().then(({ state }) => { if (!cancelled) { setSettings(state.settings); setAway(state.away ?? null); } })
       .catch((caught: unknown) => { if (!cancelled) setError(caught instanceof Error ? caught.message : "Nous settings could not be loaded."); });
     return () => { cancelled = true; };
@@ -304,6 +336,7 @@ export function NousSettingsCard() {
       <NousAwayToggles away={away} onChange={saveAway} className="settings-flat-row settings-flat-toggle-row" />
       <NousPaneBoardSettingsRows settings={settings} onChange={save} className="settings-flat-row settings-flat-toggle-row" />
       <NousStandingOrdersRows settings={settings} onChange={save} className="settings-flat-row settings-flat-toggle-row" />
+      <NousGoalsRows settings={settings} onChange={save} className="settings-flat-row settings-flat-toggle-row" />
       <NousModelsRows settings={settings} onChange={save} className="settings-flat-row" />
       <NousLowSpendRows settings={settings} onChange={save} />
       {/* The kinds approved with "Always approve" in the Nous dock (operator request 2026-10-18); removing one makes Nous ask again. */}
@@ -311,7 +344,7 @@ export function NousSettingsCard() {
         <div key={rule.key} className="settings-flat-row">
           <span className="settings-flat-row-copy">
             <strong>Always approved</strong>
-            <small>{rule.label} · since {formatUserTime(rule.at)}</small>
+            <small>{rule.label} · since {formatUserTime(rule.at)}{spared.has(rule.key) ? ` · ran ${spared.get(rule.key)} time${spared.get(rule.key) === 1 ? "" : "s"} for you in 14 days` : ""}</small>
           </span>
           <DockButton aria-label={`Ask me again: ${rule.label}`}
             onClick={() => askAgain(rule.key)}>Ask me again</DockButton>

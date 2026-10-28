@@ -7,6 +7,7 @@ interface XtermWidthCache {
   _weightBold?: unknown;
   _container?: {
     ownerDocument?: unknown;
+    getClientRects?: () => { length: number };
   };
   _measureElements?: unknown;
   _measure?: (content: string, variant: number) => number;
@@ -42,6 +43,7 @@ interface TerminalMeasurementState {
   rendererGeneration: number;
   signature: string | null;
   wrappedMeasure: (content: string, variant: number) => number;
+  hiddenPass?: boolean;
 }
 
 const documentInvalidationStates = new WeakMap<Document, DocumentInvalidationState>();
@@ -213,6 +215,9 @@ function measureWithTerminalMemo(
   content: string,
   variant: number
 ): number {
+  // A hidden terminal (display:none) measures every glyph as 0: after the first, the rest of this render pass answers 0
+  // without another layout read (operator-approved Warm change 2026-10-26: a hidden render took 36.7 s on the desktop app).
+  if (state.hiddenPass) return 0;
   const signature = terminalMeasurementSignature(state);
   if (signature !== state.signature) {
     state.measurements.clear();
@@ -232,6 +237,10 @@ function measureWithTerminalMemo(
   if (cachedWidth !== undefined) return cachedWidth;
 
   const measuredWidth = state.originalMeasure.call(receiver, content, variant);
+  if (measuredWidth === 0 && receiver._container?.getClientRects?.().length === 0) {
+    state.hiddenPass = true;
+    queueMicrotask(() => { state.hiddenPass = false; });
+  }
   if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
     storeMeasurement(state.measurements, key, measuredWidth);
     primeVisibleAscii(state, receiver, content, variant, measuredWidth);

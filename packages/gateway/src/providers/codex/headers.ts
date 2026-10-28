@@ -6,7 +6,7 @@
 const ignoredInbound = new Set([
   "authorization", "chatgpt-account-id", "content-length", "host", "forwarded", "x-real-ip", "true-client-ip",
   "x-codex-installation-id", "x-codex-routing-hint", "x-codex-lb-required-capability", "x-openai-internal-codex-responses-lite",
-  "x-api-key", "cookie"
+  "x-api-key", "cookie", "x-space-project", "x-headroom-project"
 ]);
 const hopByHop = new Set([
   "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
