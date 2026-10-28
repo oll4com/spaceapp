@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
-import type { ActivityInterceptorsFactory } from "@temporalio/worker";
+import { defaultPayloadConverter, type ActivityInterceptorsFactory, type Headers } from "@temporalio/worker";
 import {
   categorizeFailureCode,
   formatTraceparent,
@@ -10,9 +10,11 @@ import {
   traceIdFromTraceparent,
   type FailureCategory
 } from "@space/contracts";
-import type { SpanExporter } from "@space/runtime";
+import { sanitizeSpanAttributes, type SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { lookupActiveWorkflowTrace } from "./workflow-observability.js";
+import { WORKFLOW_TRACE_ID_HEADER, WORKFLOW_TRACEPARENT_HEADER } from "./workflow-observability-interceptors.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -135,8 +137,21 @@ export interface ObserveActivityDependencies {
   metrics?: WorkerMetrics;
   now?: () => number;
   cancelled?: () => boolean;
-  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
+  /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input or workflow header carries a traceparent. */
   spans?: SpanExporter | null;
+  headers?: Headers;
+}
+
+function readActivityHeader(headers: Headers | undefined, key: string): string | null {
+  if (!headers) return null;
+  const payload = headers[key];
+  if (!payload) return null;
+  try {
+    const decoded = defaultPayloadConverter.fromPayload<unknown>(payload);
+    return typeof decoded === "string" ? decoded : null;
+  } catch {
+    return null;
+  }
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -194,8 +209,49 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const headerTp = parseTraceparent(readActivityHeader(dependencies.headers, WORKFLOW_TRACEPARENT_HEADER));
+    const activeWf = lookupActiveWorkflowTrace(
+      info.workflowExecution?.workflowId ?? null,
+      info.workflowExecution?.runId ?? null
+    );
+    const activeWfTp = parseTraceparent(activeWf?.traceparent);
+    const parent = dependencies.spans ? (headerTp ?? activeWfTp ?? activityTraceparent(args)) : null;
     if (parent) {
+      const corr = activityCorrelation(args);
+      const rawAttributes: Record<string, string | number> = {
+        ...(activeWf?.correlation ?? {}),
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt,
+        "space.duration_ms": durationMs
+      };
+      if (info.activityId) rawAttributes["space.activity_id"] = String(info.activityId);
+      if (info.workflowType) rawAttributes["space.workflow_type"] = info.workflowType;
+      if (info.workflowExecution?.workflowId) rawAttributes["space.workflow_id"] = info.workflowExecution.workflowId;
+      if (info.workflowExecution?.runId) rawAttributes["space.run_id"] = info.workflowExecution.runId;
+      if (queueMs !== null) rawAttributes["space.queue_ms"] = queueMs;
+      if (reasonCode) rawAttributes["space.reason_code"] = reasonCode;
+      if (category) rawAttributes["space.category"] = category;
+      const headerTraceId = readActivityHeader(dependencies.headers, WORKFLOW_TRACE_ID_HEADER);
+      if (headerTraceId) rawAttributes["space.trace_id"] = headerTraceId;
+      const corrAttrMap: ReadonlyArray<readonly [string, string]> = [
+        ["traceId", "space.trace_id"],
+        ["parentTraceId", "space.parent_trace_id"],
+        ["missionId", "space.mission_id"],
+        ["roomId", "space.room_id"],
+        ["paneId", "space.pane_id"],
+        ["agentRunId", "space.agent_run_id"],
+        ["agentSessionId", "space.agent_session_id"],
+        ["actionId", "space.action_id"],
+        ["goalId", "space.goal_id"],
+        ["dotId", "space.dot_id"],
+        ["turnId", "space.turn_id"],
+        ["cliTaskId", "space.cli_task_id"],
+        ["revisionId", "space.revision_id"]
+      ];
+      for (const [corrKey, attrKey] of corrAttrMap) {
+        if (corr[corrKey]) rawAttributes[attrKey] = corr[corrKey]!;
+      }
       dependencies.spans!.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
@@ -203,7 +259,7 @@ export async function observeActivityExecution<T>(
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: sanitizeSpanAttributes(rawAttributes),
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -224,11 +280,14 @@ export async function observeActivityExecution<T>(
 }
 
 /** Temporal worker interceptor factory: register in Worker.create({ interceptors }). */
-export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled"> = {}): ActivityInterceptorsFactory {
+export function createActivityObservabilityInterceptors(
+  dependencies: Omit<ObserveActivityDependencies, "cancelled" | "headers"> = {}
+): ActivityInterceptorsFactory {
   return (context) => ({
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headers: input.headers,
         cancelled: () => context.cancellationSignal.aborted
       })
     }

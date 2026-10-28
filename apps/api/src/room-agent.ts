@@ -188,16 +188,17 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
 
   async enqueueAction(actionId: string, bridge: SpaceAgentRoomActionBridgeRequest, traceId: string): Promise<void> {
     const lease = await this.connect("roomAgentActionWorkflow");
+    const traceparent = traceparentForTraceId(traceId) ?? traceparentForTraceId(bridge.requestId ?? null);
     try {
       try {
         await lease.client.workflow.start("roomAgentActionWorkflow", {
           workflowId: `space-room-action:${actionId}`, taskQueue: this.options.taskQueue,
-          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId }],
+          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId, ...(traceparent ? { traceparent } : {}) }],
           workflowIdReusePolicy: "REJECT_DUPLICATE",
           // traceId is this internal request; bridge.requestId is the originating request.
           memo: workflowCorrelationMemo({
             traceId,
-            traceparent: traceparentForTraceId(traceId),
+            traceparent,
             parentTraceId: bridge.requestId ?? null,
             missionId: bridge.missionId
           })
@@ -219,6 +220,11 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
     // the child turn workflow and its activities (additive optional field).
     const item = { ...parsed, turn: withTurnTraceparent(parsed.turn) };
     const workflowId = buildRoomAgentSupervisorWorkflowId(item.turn.roomId);
+    const memo = workflowCorrelationMemo({
+      traceId: item.turn.traceId,
+      traceparent: item.turn.traceparent,
+      missionId: item.missionId
+    });
     const lease = await this.connect(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE);
     try {
       const handle = await lease.client.workflow.signalWithStart(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE, {
@@ -226,7 +232,8 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
         taskQueue: this.options.taskQueue,
         args: [{ roomId: item.turn.roomId, pending: [], processedCount: 0 }],
         signal: ROOM_AGENT_ENQUEUE_SIGNAL,
-        signalArgs: [item]
+        signalArgs: [item],
+        ...(Object.keys(memo).length ? { memo } : {})
       });
       recordWorkflowStart(ROOM_AGENT_SUPERVISOR_WORKFLOW_TYPE, "SIGNALED");
       return { workflowId, runId: handle.signaledRunId };

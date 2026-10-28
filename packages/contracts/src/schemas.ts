@@ -7704,7 +7704,8 @@ export const memoryConsolidationDetailSchema = z
 export const memoryConsolidationWorkflowInputSchema = z
   .object({
     runId: idSchema,
-    traceId: idSchema
+    traceId: idSchema,
+    traceparent: traceparentSchema.optional()
   })
   .strict();
 
@@ -7916,7 +7917,8 @@ export const listMemoryChangeSetsQuerySchema = paginationRequestSchema.extend({
 
 export const memoryMaintenanceInputSchema = z.object({
   scheduledAt: isoDateTimeSchema,
-  traceId: idSchema
+  traceId: idSchema,
+  traceparent: traceparentSchema.optional()
 });
 
 export const memoryMaintenanceResultSchema = z.object({
@@ -7988,7 +7990,8 @@ export const memoryMutationRecoveryResultSchema = z
 export const memoryMutationWorkflowInputSchema = z
   .object({
     changeSetId: idSchema,
-    traceId: idSchema
+    traceId: idSchema,
+    traceparent: traceparentSchema.optional()
   })
   .strict();
 

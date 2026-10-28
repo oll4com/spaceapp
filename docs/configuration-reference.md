@@ -52,3 +52,10 @@ background work, and is hidden in the web app. Public installs upgraded from
 1.1.x that used Job Copilot, the games, channels, Telegram or the desktop
 routes set the modules they keep, for example
 `SPACE_OPTIONAL_MODULES=job-copilot,games`.
+
+## Observability and OTLP trace export
+
+`SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` (unset by default) enables optional zero-dependency OTLP/HTTP JSON trace export (`<base>/v1/traces`) across both `space-api` and all Temporal workers (`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`). When set to an `http:` or `https:` collector base URL:
+- `space-api` exports one `SERVER` span per HTTP request and propagates its W3C `traceparent` into Temporal workflow inputs and memos.
+- Every Temporal worker exports one `INTERNAL` workflow span per workflow run, parented to the API request span or to the parent workflow span for a child workflow. Continue-as-new keeps that parent and adds a span link to the previous run. A background continuation (`trace:bg-*`) starts its own W3C trace and links to the caller's span. Export goes through replay-safe Temporal interceptors and sinks (`callDuringReplay: false`). Each activity attempt is an `INTERNAL` child span with allowlisted identifiers, attempt number, outcome, and stable `reasonCode` / `category`. Unset, the workers export nothing.
+
