@@ -41,17 +41,30 @@ try {
       window.memoryBenchObserver.disconnect();
       const c = document.querySelector("canvas[data-renderer=webgl2]"), gl = c.getContext("webgl2"), info = gl.getExtension("WEBGL_debug_renderer_info");
       const frames = [], picks = [];
-      // Observe submitted line vertices, independently of the input atlas count.
-      const edgeDrawCounts = [], drawArrays = gl.drawArrays;
+      // Attribute draws to each measured animation frame, excluding warmup.
+      const edgeDrawCounts = [], edgeDrawFrames = [], glErrors = [], drawArrays = gl.drawArrays;
+      const initialError = gl.getError();
+      if (initialError !== gl.NO_ERROR) glErrors.push({ frame: "before measurement", error: initialError });
+      let frameEdgeCounts = [];
       gl.drawArrays = function (mode, first, vertices) {
-        if (mode === gl.LINES) edgeDrawCounts.push(vertices / 2);
-        return drawArrays.call(this, mode, first, vertices);
+        const result = drawArrays.call(this, mode, first, vertices);
+        if (mode === gl.LINES) frameEdgeCounts.push(vertices / 2);
+        return result;
       };
       let previous;
       for (let i = 0; i < 420; i++) {
         await new Promise(resolve => requestAnimationFrame(time => {
           if (previous !== undefined && i >= 60) frames.push(time - previous);
           previous = time;
+          // Input from the preceding iteration schedules the renderer before this
+          // callback. Check that frame before dispatching the next interaction.
+          const error = gl.getError();
+          if (error !== gl.NO_ERROR) glErrors.push({ frame: i, error });
+          if (i >= 60) {
+            edgeDrawFrames.push({ frame: i, draws: frameEdgeCounts.length, min: Math.min(...frameEdgeCounts), max: Math.max(...frameEdgeCounts) });
+            edgeDrawCounts.push(...frameEdgeCounts);
+          }
+          frameEdgeCounts = [];
           c.dispatchEvent(new KeyboardEvent("keydown", { key: i % 2 ? "ArrowRight" : "ArrowUp", bubbles: true }));
           c.dispatchEvent(new WheelEvent("wheel", { deltaY: Math.sin(i / 25) * 12, bubbles: true, cancelable: true }));
           const rect = c.getBoundingClientRect(), start = performance.now();
@@ -61,8 +74,8 @@ try {
         }));
       }
       gl.drawArrays = drawArrays;
-      const drawnEdges = { samples: edgeDrawCounts.length, min: Math.min(...edgeDrawCounts), max: Math.max(...edgeDrawCounts) };
-      return { frames, picks, tasks, layoutMs, drawnEdges, gpu: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), edges: Number(document.querySelector("[data-visible-edge-count]").dataset.visibleEdgeCount) };
+      const drawnEdges = { samples: edgeDrawCounts.length, min: Math.min(...edgeDrawCounts), max: Math.max(...edgeDrawCounts), frames: edgeDrawFrames };
+      return { frames, picks, tasks, layoutMs, drawnEdges, glErrors, gpu: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), edges: Number(document.querySelector("[data-visible-edge-count]").dataset.visibleEdgeCount) };
     });
     // Titles and actual click-to-detail remain functional at this size.
     await page.getByRole("button", { name: "Toggle memory titles" }).click();
@@ -103,7 +116,9 @@ try {
     output.results.push(entry);
     console.log(JSON.stringify({ count, frameP95Ms: entry.frameP95Ms, pickMaxMs: entry.pickMaxMs, longestLoadLayoutTaskMs: entry.longestLoadLayoutTaskMs }));
     if (result.edges !== count * 3) throw new Error(`Expected ${count * 3} edges at ${count} nodes, received ${result.edges}`);
-    if (!result.drawnEdges.samples || result.drawnEdges.min !== count * 3 || result.drawnEdges.max !== count * 3) throw new Error(`Expected ${count * 3} drawn edges at ${count} nodes, received ${JSON.stringify(result.drawnEdges)}`);
+    const missingOrInvalidFrames = result.drawnEdges.frames.filter(frame => !frame.draws || frame.min !== count * 3 || frame.max !== count * 3);
+    if (result.drawnEdges.frames.length !== 360 || missingOrInvalidFrames.length || result.drawnEdges.min !== count * 3 || result.drawnEdges.max !== count * 3) throw new Error(`Expected ${count * 3} drawn edges in all 360 measured frames at ${count} nodes; invalid frames: ${JSON.stringify(missingOrInvalidFrames)}`);
+    if (result.glErrors.length) throw new Error(`WebGL draw errors at ${count} nodes: ${JSON.stringify(result.glErrors)}`);
     if (entry.frameP95Ms > (count === 2000 ? 16.7 : 33.3) || entry.pickMaxMs > 4 || entry.longestLoadLayoutTaskMs > 100 || errors.length || recoveryRequests) throw new Error(`Rendering or recovery budget failed at ${count} nodes`);
     await page.close();
   }
