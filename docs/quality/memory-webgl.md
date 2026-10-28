@@ -55,6 +55,8 @@ These are browser frame intervals, not GPU timer-query durations.
 The 3D interval excludes cold fixture construction; a separate fresh-page
 measurement covers the 50,000-node synthetic construction after module loading.
 The harness fails on frame, picking, load-task or recovery-request budget errors.
+It also checks the input edge count and observes actual WebGL line draw calls
+throughout interaction, requiring all three eligible edges per synthetic node.
 
 ## Executed measurement — 27 October 2026
 

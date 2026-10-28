@@ -41,6 +41,12 @@ try {
       window.memoryBenchObserver.disconnect();
       const c = document.querySelector("canvas[data-renderer=webgl2]"), gl = c.getContext("webgl2"), info = gl.getExtension("WEBGL_debug_renderer_info");
       const frames = [], picks = [];
+      // Observe submitted line vertices, independently of the input atlas count.
+      const edgeDrawCounts = [], drawArrays = gl.drawArrays;
+      gl.drawArrays = function (mode, first, vertices) {
+        if (mode === gl.LINES) edgeDrawCounts.push(vertices / 2);
+        return drawArrays.call(this, mode, first, vertices);
+      };
       let previous;
       for (let i = 0; i < 420; i++) {
         await new Promise(resolve => requestAnimationFrame(time => {
@@ -54,7 +60,9 @@ try {
           resolve();
         }));
       }
-      return { frames, picks, tasks, layoutMs, gpu: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), edges: Number(document.querySelector("[data-visible-edge-count]").dataset.visibleEdgeCount) };
+      gl.drawArrays = drawArrays;
+      const drawnEdges = { samples: edgeDrawCounts.length, min: Math.min(...edgeDrawCounts), max: Math.max(...edgeDrawCounts) };
+      return { frames, picks, tasks, layoutMs, drawnEdges, gpu: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), edges: Number(document.querySelector("[data-visible-edge-count]").dataset.visibleEdgeCount) };
     });
     // Titles and actual click-to-detail remain functional at this size.
     await page.getByRole("button", { name: "Toggle memory titles" }).click();
@@ -95,6 +103,7 @@ try {
     output.results.push(entry);
     console.log(JSON.stringify({ count, frameP95Ms: entry.frameP95Ms, pickMaxMs: entry.pickMaxMs, longestLoadLayoutTaskMs: entry.longestLoadLayoutTaskMs }));
     if (result.edges !== count * 3) throw new Error(`Expected ${count * 3} edges at ${count} nodes, received ${result.edges}`);
+    if (!result.drawnEdges.samples || result.drawnEdges.min !== count * 3 || result.drawnEdges.max !== count * 3) throw new Error(`Expected ${count * 3} drawn edges at ${count} nodes, received ${JSON.stringify(result.drawnEdges)}`);
     if (entry.frameP95Ms > (count === 2000 ? 16.7 : 33.3) || entry.pickMaxMs > 4 || entry.longestLoadLayoutTaskMs > 100 || errors.length || recoveryRequests) throw new Error(`Rendering or recovery budget failed at ${count} nodes`);
     await page.close();
   }

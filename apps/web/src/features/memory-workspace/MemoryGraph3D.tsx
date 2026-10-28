@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MemoryGraph3DCanvas } from "./MemoryGraph3DCanvas.js";
 import { MemoryWebGLRenderer, supportsMemoryWebGL2 } from "./memory-webgl.js";
 import {
@@ -27,7 +27,9 @@ export function MemoryGraph3D(props: Props) {
   const redrawRef = useRef<() => void>(() => {}),
     refreshRef = useRef<() => void>(() => {});
   const current = useRef(props);
-  current.current = props;
+  useLayoutEffect(() => {
+    current.current = props;
+  });
   const volumeRatio = useMemo(
     () => memory3DVolumeRatio([...props.coordinates.values()]),
     [props.coordinates],

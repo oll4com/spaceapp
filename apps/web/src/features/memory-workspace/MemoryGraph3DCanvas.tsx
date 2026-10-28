@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 import type { MemoryAtlasPosition } from "./memory-atlas.js";
 import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
@@ -23,7 +23,9 @@ export function MemoryGraph3DCanvas({ nodes, edges, positions, coordinates, show
   const cameraRef = useRef<MemoryCamera3D>({ ...DEFAULT_MEMORY_CAMERA });
   const redrawRef = useRef<() => void>(() => {});
   const current = useRef({ nodes, edges, positions, coordinates, extent, showTitles, selectedNodeId, onSelectNode });
-  current.current = { nodes, edges, positions, coordinates, extent, showTitles, selectedNodeId, onSelectNode };
+  useLayoutEffect(() => {
+    current.current = { nodes, edges, positions, coordinates, extent, showTitles, selectedNodeId, onSelectNode };
+  });
   useEffect(() => {
     cameraRef.current = { ...DEFAULT_MEMORY_CAMERA };
     redrawRef.current();
