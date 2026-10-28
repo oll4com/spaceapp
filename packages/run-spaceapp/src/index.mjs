@@ -1005,6 +1005,7 @@ export async function prepareInstallation(root, {
   validateHome(root);
   const existing = await loadConfig(root).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
   if (engine !== undefined) assertEngineSelection(engine, existing, accessMode ?? existing?.accessMode, process.platform);
+  const persistEngine = engine === "podman" || existing?.engine !== undefined;
   await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([
     mkdir(join(root, "backups"), { recursive: true, mode: 0o700 }),
@@ -1026,7 +1027,7 @@ export async function prepareInstallation(root, {
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
       companionsEnabled,
-      engine
+      engine: persistEngine ? engine : undefined
     });
   }
   if (config.version !== version) {
@@ -1046,7 +1047,7 @@ export async function prepareInstallation(root, {
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };
   }
-  if (engine !== undefined) config = { ...config, engine: containerEngine(engine) };
+  if (persistEngine && engine !== undefined) config = { ...config, engine: containerEngine(engine) };
   validateConfig(config);
 
   const postgresPasswordPath = join(root, "secrets", "postgres-password");

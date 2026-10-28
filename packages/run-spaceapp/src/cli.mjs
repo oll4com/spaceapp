@@ -363,7 +363,7 @@ export async function run(argv, {
   assertEngineSelection(selectedEngine, existingEngineConfig, requestedAccess ?? promptController.answers.access ?? existingEngineConfig?.accessMode, platform);
   if (selectedEngine === "podman") {
     ensureDocker = ensurePodmanAvailable;
-    stdout.write("Container engine: Podman (rootless).\n");
+    stderr.write("Container engine: Podman (rootless).\n");
   }
   if (globalFlags.localImages) {
     const originalExecute = execute;
@@ -450,7 +450,7 @@ export async function run(argv, {
   // Recheck the selected connection before runtime writes: a saved Podman choice
   // must not silently use a rootful connection selected after installation.
   if (selectedEngine === "podman" && !["support-bundle", "open"].includes(command)) {
-    const prerequisites = await ensurePodmanAvailable({ execute, platform, stdout, stderr });
+    const prerequisites = await ensurePodmanAvailable({ execute, platform, stdout: { write() {} }, stderr });
     if (prerequisites.code !== 0) return prerequisites.code;
   }
   if (commandNeedsRuntimeFiles(command, args)) {

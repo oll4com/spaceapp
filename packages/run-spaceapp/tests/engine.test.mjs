@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { containerEngine, selectContainerEngine, engineExecutor, inspectContainerEngine, podmanChecks, renderEngineCompose, withPodmanWritersPaused } from "../src/engine.mjs";
-import { composeCommand, createDefaultConfig, initializeInstallation, installResourceChecks, loadConfig, prepareInstallation, renderWorkspaceCompose, validateConfig } from "../src/index.mjs";
+import { composeCommand, createDefaultConfig, initializeInstallation, installResourceChecks, loadConfig, prepareInstallation, renderWorkspaceCompose, saveConfig, validateConfig } from "../src/index.mjs";
 import { run } from "../src/cli.mjs";
 import { inspectStoragePlan } from "../src/storage.mjs";
 
@@ -197,4 +197,57 @@ test("Podman resumes exactly the running writers after backup failure", async ()
   assert.deepEqual(calls.slice(1), [["pause", id], ["unpause", id]]);
   assert.ok(calls[0].includes("label=com.docker.compose.project=spaceapp-test"));
   assert.ok(calls[0].includes("status=running"));
+});
+
+
+test("Podman preserves machine-readable version and list output", async (t) => {
+  const f = await fixture(t);
+  await initializeInstallation(f.root, { version: "1.1.8", engine: "podman" });
+  for (const args of [["--version"], ["-v"], ["workspace", "list"], ["credentials", "list"], ["user", "list"]]) {
+    let output = "", diagnostics = "";
+    const stdout = new Writable({ write(chunk, _encoding, done) { output += chunk; done(); } });
+    const stderr = new Writable({ write(chunk, _encoding, done) { diagnostics += chunk; done(); } });
+    assert.equal(await run(args, { ...f.options, stdout, stderr }), 0);
+    if (args.length === 1) assert.match(output, /^\d+\.\d+\.\d+\n$/);
+    else assert.doesNotThrow(() => JSON.parse(output), args.join(" "));
+    assert.match(diagnostics, /Container engine: Podman/);
+  }
+});
+
+test("Podman recheck failures remain visible on stderr without stdout pollution", async (t) => {
+  const f = await fixture(t);
+  await initializeInstallation(f.root, { version: "1.1.8", engine: "podman" });
+  let output = "", diagnostics = "";
+  const stdout = new Writable({ write(chunk, _encoding, done) { output += chunk; done(); } });
+  const stderr = new Writable({ write(chunk, _encoding, done) { diagnostics += chunk; done(); } });
+  const execute = async (spec, io) => {
+    if (spec.args[0] === "info") {
+      io.stdout.write(JSON.stringify({ ...info, host: { ...info.host, security: { rootless: false } } }));
+      return 0;
+    }
+    return f.execute(spec, io);
+  };
+  assert.equal(await run(["workspace", "list"], { ...f.options, execute, stdout, stderr }), 1);
+  assert.equal(output, "");
+  assert.match(diagnostics, /FAIL/);
+});
+
+test("explicit Docker selection preserves the legacy config shape on install and update", async (t) => {
+  const f = await fixture(t);
+  await initializeInstallation(f.root, { version: "1.1.8", engine: "docker" });
+  assert.equal(Object.hasOwn(await loadConfig(f.root), "engine"), false);
+  const update = await prepareInstallation(f.root, { version: "1.1.9", engine: "docker" });
+  assert.equal(Object.hasOwn(update.config, "engine"), false);
+});
+
+test("existing explicit Docker and Podman engine choices remain persisted", async (t) => {
+  for (const engine of ["docker", "podman"]) {
+    const f = await fixture(t);
+    await initializeInstallation(f.root, { version: "1.1.8", engine });
+    const config = { ...await loadConfig(f.root), engine };
+    await saveConfig(f.root, config);
+    const update = await prepareInstallation(f.root, { version: "1.1.9", engine });
+    assert.equal(update.config.engine, engine);
+    assert.equal((await prepareInstallation(f.root, { version: "1.1.9" })).config.engine, engine);
+  }
 });
