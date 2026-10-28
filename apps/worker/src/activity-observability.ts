@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import type { Context } from "@temporalio/activity";
+import { defaultPayloadConverter } from "@temporalio/common";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import {
   categorizeFailureCode,
@@ -8,11 +9,13 @@ import {
   isSafeErrorCode,
   parseTraceparent,
   traceIdFromTraceparent,
-  type FailureCategory
+  type FailureCategory,
+  type ParsedTraceparent
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { workflowSpanRegistry } from "./workflow-span-registry.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -137,6 +140,7 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  headers?: Record<string, unknown>;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -194,16 +198,38 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
+    let parent: ParsedTraceparent | null = null;
+    if (dependencies.headers?.traceparent) {
+      try {
+        const raw = defaultPayloadConverter.fromPayload(dependencies.headers.traceparent as never);
+        if (typeof raw === "string") parent = parseTraceparent(raw);
+      } catch {}
+    }
+    if (!parent && info.workflowExecution?.runId) {
+      const registered = workflowSpanRegistry.lookup(info.workflowExecution.runId);
+      if (registered) {
+        parent = { traceId: registered.traceId, parentId: registered.spanId, flags: "01" };
+      }
+    }
+    if (!parent) {
+      parent = activityTraceparent(args);
+    }
+    if (parent && dependencies.spans) {
+      let spanId = randomBytes(8).toString("hex");
+      while (/^0+$/.test(spanId)) spanId = randomBytes(8).toString("hex");
+      dependencies.spans.record({
         traceId: parent.traceId,
-        spanId: randomBytes(8).toString("hex"),
+        spanId,
         parentSpanId: parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: {
+          "space.activity_type": activityType,
+          "space.outcome": outcome,
+          "space.attempt": info.attempt,
+          ...(reasonCode ? { "space.reason_code": reasonCode, "space.category": category ?? "UNSPECIFIED" } : {})
+        },
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -229,6 +255,7 @@ export function createActivityObservabilityInterceptors(dependencies: Omit<Obser
     inbound: {
       execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
         ...dependencies,
+        headers: input.headers,
         cancelled: () => context.cancellationSignal.aborted
       })
     }

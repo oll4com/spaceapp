@@ -215,27 +215,36 @@ Without the endpoint, every activity still writes `activity.started` and
 
 ## Traces (W3C trace context)
 
-The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends one
-SERVER span per API request when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no
-OpenTelemetry dependency; `packages/runtime/src/otlp-span-exporter.ts`). Since
-2026-10-16 the worker and both memory workers use the same exporter (services
-`space-worker`, `space-memory-maintenance-worker`, `space-memory-mutation-worker`):
-one INTERNAL span per activity whose input carries a `traceparent`, as a child of
-that span, with the activity type, outcome and attempt only.
+The trace context is local by default. An optional OTLP/HTTP (JSON) exporter sends spans
+when `SPACE_OTEL_EXPORTER_OTLP_ENDPOINT` is set (no OpenTelemetry SDK dependency;
+`packages/runtime/src/otlp-span-exporter.ts`), maintaining a bounded queue, dropping on
+overflow, applying a POST timeout, and producing zero delay on failure. When unset,
+export is completely inactive with zero overhead.
+
+Every Temporal worker (`worker.ts`, `memory-maintenance-worker.ts`,
+`memory-mutation-worker.ts`) and the API server share this exporter:
 - **API:** a valid inbound `traceparent` is continued (same trace ID, new span).
   An invalid or missing header gets a new trace ID. Every API log line carries
   `w3cTraceId` (Fastify `childLoggerFactory`).
 - **Propagation into turns:** API turn starters and the Room Agent coordinator add
-  the request's `traceparent` to the turn input (an optional contract field) and
-  to the Temporal memo. A bounded in-memory map from request ID to trace context
-  (`apps/api/src/trace-context.ts`) does this without passing the request object
-  through every service.
-- **Worker:** worker logs read the trace ID from the activity input. Internal
-  room-action calls from the worker send a child `traceparent`, so the internal
-  API request joins the same trace.
-- **Workflow code is unchanged.** Correlation is done in the API starter
-  (input/memo) and in an activity interceptor. The workflow bundle only gains the
-  optional contract field.
+  the request's `traceparent` to the turn input and to the Temporal memo.
+- **Workflow spans:** Workflow inbound interceptors (`TracingWorkflowInboundInterceptor`)
+  extract the inbound `traceparent` (from headers, memo, args, or continuation headers)
+  and assign a deterministic 16-character hex span ID. Temporal sinks (`recordWorkflowStart`,
+  `recordWorkflowSpan`) with `callDuringReplay: false` emit spans outside the workflow sandbox
+  upon workflow start and completion/failure, preserving strict workflow determinism.
+  `workflowSpanRegistry` maintains an LRU mapping of run IDs to active span IDs outside the sandbox.
+- **Activity attempt spans:** Outbound workflow interceptors inject `traceparent` payload headers
+  into activity invocations. `observeActivityExecution` exports one INTERNAL span per activity attempt,
+  child of the workflow span, reporting `space.attempt`, `space.outcome`, and on failure
+  `space.reason_code` and `space.category`. Retried attempts export consecutive failure spans ending
+  with the concluding attempt's outcome.
+- **Child workflows & Continuations:** Outbound interceptors propagate `traceparent` headers to
+  `startChildWorkflowExecution` (e.g. `memoryMaintenanceWorkflow` → `memoryConsolidationWorkflow`)
+  nesting child workflow spans under parent workflow spans. Background continuations (`continueAsNew`)
+  pass `continuationTraceparent` linking the new run to the preceding workflow span.
+- **Worker-to-API calls:** Internal room-action calls from the worker send a child `traceparent`,
+  so the internal API request joins the same trace.
 
 ### Replay compatibility
 
@@ -290,7 +299,9 @@ No credential or transcript export was added.
 | `apps/api/tests/observability-metrics.test.ts` | New API metrics, `/metrics` access rule, redaction, CLI disconnect and reconnect counters |
 | `apps/api/src/__tests__/files-search-errors.test.ts` | `EMPTY_RESULT`/`OK` and each failure code |
 | `apps/api/tests/files-search-routes.test.ts` | The HTTP error envelope |
-| `apps/worker/tests/activity-observability.test.ts` | Interceptor records, outcomes, categories, metrics, loopback endpoint |
+| `apps/worker/tests/activity-observability.test.ts` | Interceptor records, outcomes, categories, metrics, retry attempts, loopback endpoint |
+| `apps/worker/tests/workflow-observability.test.ts` | Interceptor replay determinism, workflow start/completion sinks, failure status, outbound header injection |
+| `apps/worker/tests/workflow-trace-otlp-e2e.test.ts` | End-to-end trace tree: API traceparent -> workflow span -> activity retry attempts -> completion with in-memory OTLP collector |
 | `apps/api/tests/observability-fault-injection.test.ts` | Four injected executor faults and one Temporal start failure, end to end |
 
 ## Not covered

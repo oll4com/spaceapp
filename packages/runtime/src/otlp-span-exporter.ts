@@ -120,17 +120,19 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
       stats.failed += batch.length;
     }
   };
-  const flush = (): Promise<void> => {
-    if (!inFlight) {
-      inFlight = (async () => {
-        try {
-          while (queue.length) await flushOnce();
-        } finally {
-          inFlight = null;
-        }
-      })();
-    }
-    return inFlight;
+  const flush = async (): Promise<void> => {
+    while (inFlight) await inFlight;
+    if (!queue.length) return;
+    let promise: Promise<void> | null = null;
+    promise = (async () => {
+      try {
+        while (queue.length) await flushOnce();
+      } finally {
+        if (inFlight === promise) inFlight = null;
+      }
+    })();
+    inFlight = promise;
+    await inFlight;
   };
   const timer = setInterval(() => void flush(), options.flushIntervalMs ?? 5000);
   timer.unref?.();

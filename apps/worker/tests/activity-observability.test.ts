@@ -186,7 +186,9 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toMatch(/activity:\s*\[createActivityObservabilityInterceptors\(\{ spans \}\)\]/);
+    expect(source, entry).toMatch(/workflowModules:\s*\[workflowInterceptorsPath\]/);
+    expect(source, entry).toMatch(/sinks:\s*createWorkflowTraceSinks\(spans\)/);
   }
 });
 
@@ -202,4 +204,100 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+
+it("exports an error span for a failing retryable attempt with reasonCode and category", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (s: Record<string, unknown>) => recorded.push(s), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const parentTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-1122334455667788-01";
+  const info = {
+    activityType: "fetchExternalResource",
+    activityId: "1",
+    attempt: 1,
+    currentAttemptScheduledTimestampMs: 1_000,
+    workflowExecution: { workflowId: "wf-1", runId: "run-1" }
+  } as never;
+
+  const thrown = Object.assign(new Error("upstream timeout"), { code: "UPSTREAM_RETRYABLE_UNAVAILABLE" });
+
+  await expect(
+    observeActivityExecution(
+      info,
+      [{ turn: { traceparent: parentTraceparent } }],
+      async () => { throw thrown; },
+      { metrics, spans: spans as never }
+    )
+  ).rejects.toBe(thrown);
+
+  expect(recorded).toHaveLength(1);
+  const [span] = recorded;
+  expect(span.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+  expect(span.parentSpanId).toBe("1122334455667788");
+  expect(span.name).toBe("activity fetchExternalResource");
+  expect(span.kind).toBe(1);
+  expect(span.error).toBe(true);
+  expect(span.attributes).toMatchObject({
+    "space.activity_type": "fetchExternalResource",
+    "space.attempt": 1,
+    "space.outcome": "FAILED",
+    "space.reason_code": "UPSTREAM_RETRYABLE_UNAVAILABLE",
+    "space.category": "UPSTREAM_UNAVAILABLE"
+  });
+});
+
+it("exports consecutive spans across retried attempts, ending in a completed span", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (s: Record<string, unknown>) => recorded.push(s), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const parentTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-1122334455667788-01";
+
+  // Attempt 1: Fails
+  const info1 = { activityType: "runTask", activityId: "1", attempt: 1, currentAttemptScheduledTimestampMs: 1000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
+  await expect(
+    observeActivityExecution(info1, [{ traceparent: parentTraceparent }], async () => {
+      throw Object.assign(new Error("temporarily down"), { code: "TOOL_UNAVAILABLE" });
+    }, { metrics, spans: spans as never })
+  ).rejects.toThrow();
+
+  // Attempt 2: Succeeds
+  const info2 = { activityType: "runTask", activityId: "1", attempt: 2, currentAttemptScheduledTimestampMs: 2000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
+  await observeActivityExecution(info2, [{ traceparent: parentTraceparent }], async () => {
+    return { status: "COMPLETED" };
+  }, { metrics, spans: spans as never });
+
+  expect(recorded).toHaveLength(2);
+  const span0Attrs = recorded[0].attributes as Record<string, unknown>;
+  const span1Attrs = recorded[1].attributes as Record<string, unknown>;
+  expect(span0Attrs["space.attempt"]).toBe(1);
+  expect(recorded[0].error).toBe(true);
+  expect(span0Attrs["space.outcome"]).toBe("FAILED");
+  expect(span0Attrs["space.category"]).toBe("TOOL_UNAVAILABLE");
+
+  expect(span1Attrs["space.attempt"]).toBe(2);
+  expect(recorded[1].error).toBe(false);
+  expect(span1Attrs["space.outcome"]).toBe("COMPLETED");
+});
+
+it("exports an error span for a noted FAILED_RESULT with explicit reasonCode and category", async () => {
+  const recorded: Array<Record<string, unknown>> = [];
+  const spans = { record: (s: Record<string, unknown>) => recorded.push(s), flush: async () => undefined, close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const parentTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-1122334455667788-01";
+  const info = { activityType: "runCodexAppServerTurn", activityId: "1", attempt: 1, currentAttemptScheduledTimestampMs: 1000, workflowExecution: { workflowId: "w", runId: "r" } } as never;
+
+  await observeActivityExecution(info, [{ traceparent: parentTraceparent }], async () => {
+    noteActivityFailureReason("CODEX_APP_SERVER_TURN_TIMEOUT");
+    return { status: "FAILED" };
+  }, { metrics, spans: spans as never });
+
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0].error).toBe(true);
+  expect(recorded[0].attributes).toMatchObject({
+    "space.activity_type": "runCodexAppServerTurn",
+    "space.attempt": 1,
+    "space.outcome": "FAILED_RESULT",
+    "space.reason_code": "CODEX_APP_SERVER_TURN_TIMEOUT",
+    "space.category": "TIMEOUT"
+  });
 });
