@@ -125,10 +125,17 @@ export function createWorkflowObservabilitySinks(
       workflowFinished: {
         callDuringReplay: false,
         fn(info, payload) {
+          // After a worker restart/cache eviction, workflowStarted was skipped
+          // during replay (callDuringReplay: false), so the in-memory start
+          // time is gone. Prefer the remembered start, then Temporal's
+          // runStartTime, so long-running workflows do not export duration 0.
           const existing = lookupActiveWorkflowTrace(info.workflowId, info.runId);
+          const runStartMs = info.runStartTime instanceof Date ? info.runStartTime.getTime() : Number.NaN;
+          const startedAtMs =
+            existing?.startedAtMs ?? (Number.isFinite(runStartMs) ? runStartMs : undefined);
           recordWorkflowSpan(payload, {
             ...options,
-            ...(existing ? { startedAtMs: existing.startedAtMs } : {})
+            ...(startedAtMs !== undefined ? { startedAtMs } : {})
           });
         }
       }

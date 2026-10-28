@@ -434,6 +434,55 @@ describe("OTLP workflow and activity trace tree (#61)", () => {
     expect(JSON.stringify(metadata)).not.toContain("PRIVATE PROMPT");
   });
 
+  it("uses Temporal runStartTime for workflow span duration when the in-memory start was lost after restart", async () => {
+    const collector = await startFakeOtlpCollector();
+    try {
+      const exporter = createOtlpSpanExporter({
+        endpoint: collector.endpoint,
+        serviceName: "space-worker",
+        flushIntervalMs: 60_000
+      });
+      activeExporters.push(exporter);
+
+      const sinks = createWorkflowObservabilitySinks({ spans: exporter, now: () => 1_700_000_000_500 });
+      // Simulate a worker that finished a long-running workflow after restart:
+      // workflowStarted was suppressed during history replay, so no active entry.
+      sinks.workflowObservability.workflowFinished.fn(
+        {
+          workflowId: "dot-goal:dot_goal:restart",
+          runId: "run-after-restart",
+          runStartTime: new Date(1_700_000_000_000)
+        } as never,
+        {
+          traceId: w3cTraceId,
+          spanId: workflowSpanId("dot-goal:dot_goal:restart", "run-after-restart"),
+          parentSpanId: apiSpanId,
+          workflowType: "dotGoalWorkflow",
+          workflowId: "dot-goal:dot_goal:restart",
+          runId: "run-after-restart",
+          parentWorkflowId: null,
+          parentRunId: null,
+          continuedFromRunId: null,
+          outcome: "COMPLETED",
+          reasonCode: null,
+          category: null,
+          correlation: { "space.goal_id": "dot_goal:restart" },
+          links: []
+        }
+      );
+
+      await exporter.flush();
+      const [exported] = collector.allSpans();
+      expect(exported).toBeDefined();
+      expect(exported!.name).toBe("workflow dotGoalWorkflow");
+      expect(attrMap(exported!.attributes)["space.duration_ms"]).toBe(500);
+      expect(exported!.startTimeUnixNano).toBe(String(1_700_000_000_000n * 1_000_000n));
+      expect(exported!.endTimeUnixNano).toBe(String(1_700_000_000_500n * 1_000_000n));
+    } finally {
+      await collector.close();
+    }
+  });
+
   it("runs a real Temporal workflow with stub activities in @temporalio/testing and exports a connected trace to the local HTTP OTLP collector", async () => {
     // createLocal uses the Temporal CLI dev server, which has an arm64 build.
     // createTimeSkipping's Java test server does not run on Apple Silicon without Rosetta,
