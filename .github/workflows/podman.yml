@@ -4,12 +4,14 @@ on:
     paths:
       - 'packages/run-spaceapp/**'
       - 'scripts/podman-launcher-smoke.mjs'
+      - 'scripts/tests/podman-smoke-cleanup.test.mjs'
       - '.github/workflows/podman.yml'
       - 'Dockerfile'
   push:
     paths:
       - 'packages/run-spaceapp/**'
       - 'scripts/podman-launcher-smoke.mjs'
+      - 'scripts/tests/podman-smoke-cleanup.test.mjs'
       - '.github/workflows/podman.yml'
   workflow_dispatch:
 permissions:
@@ -102,6 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           npm test --workspace=run-spaceapp
+          node --test scripts/tests/podman-smoke-cleanup.test.mjs
           version=$(node -p "require('./packages/run-spaceapp/package.json').spaceappRuntimeVersion")
           for target in core cli; do
             podman build --format docker --layers --build-arg TARGETARCH=amd64 --target "$target" -t "ghcr.io/oll4com/spaceapp-$target:$version" .

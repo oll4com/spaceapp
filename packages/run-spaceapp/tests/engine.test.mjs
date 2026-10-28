@@ -199,6 +199,45 @@ test("Podman resumes exactly the running writers after backup failure", async ()
   assert.ok(calls[0].includes("status=running"));
 });
 
+test("Podman resumes surviving writers when another writer disappears during backup", async () => {
+  const ids = ["a".repeat(64), "b".repeat(64)];
+  const paused = new Set();
+  let backupRan = false, warning = "";
+  const execute = async (spec, io) => {
+    const [command, ...args] = spec.args;
+    if (command === "ps") io.stdout.write(JSON.stringify(ids.map((Id) => ({ Id, Labels: { "com.docker.compose.service": "spaceapp-core" } }))));
+    if (command === "pause") args.forEach((id) => paused.add(id));
+    if (command === "unpause") {
+      // Podman resolves the whole request before unpausing any container.
+      if (args.some((id) => !paused.has(id))) return 125;
+      args.forEach((id) => paused.delete(id));
+    }
+    return 0;
+  };
+  const code = await withPodmanWritersPaused(execute, "spaceapp-test", { stderr: { write: (text) => { warning += text; } } }, async () => {
+    backupRan = true;
+    paused.delete(ids[0]);
+    return 0;
+  });
+  assert.equal(backupRan, true);
+  assert.equal(code, 125);
+  assert.equal(paused.size, 0);
+  assert.match(warning, /could not resume all backup writers/);
+});
+
+test("Podman only resumes writers it successfully paused after a partial pause failure", async () => {
+  const ids = ["a".repeat(64), "b".repeat(64), "c".repeat(64)];
+  const calls = [];
+  const execute = async (spec, io) => {
+    calls.push(spec.args);
+    if (spec.args[0] === "ps") io.stdout.write(JSON.stringify(ids.map((Id) => ({ Id, Labels: { "com.docker.compose.service": "temporal" } }))));
+    if (spec.args[0] === "pause" && spec.args.includes(ids[1])) return 125;
+    return 0;
+  };
+  assert.equal(await withPodmanWritersPaused(execute, "spaceapp-test", { stderr: sink() }, async () => assert.fail("Backup must not run with an unpaused writer")), 125);
+  assert.deepEqual(calls.slice(1), [["pause", ids[0]], ["pause", ids[1]], ["unpause", ids[0]]]);
+});
+
 
 test("Podman preserves machine-readable version and list output", async (t) => {
   const f = await fixture(t);

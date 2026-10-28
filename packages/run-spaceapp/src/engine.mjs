@@ -176,12 +176,21 @@ export async function withPodmanWritersPaused(execute, project, io, backup) {
   }).map((row) => row.Id ?? row.ID);
   if (ids.some((id) => !/^[a-f0-9]{12,64}$/.test(id ?? ""))) throw new Error("Podman returned an invalid writer ID.");
   if (!ids.length) return backup();
-  let code, resumeCode;
+  let code = 0, resumeCode = 0;
+  const pausedIds = [];
   try {
-    code = await execute({ command: "podman", args: ["pause", ...ids] }, io);
+    for (const id of ids) {
+      code = await execute({ command: "podman", args: ["pause", id] }, io);
+      if (code !== 0) break;
+      pausedIds.push(id);
+    }
     if (code === 0) code = await backup();
   } finally {
-    resumeCode = await execute({ command: "podman", args: ["unpause", ...ids] }, io).catch(() => 1);
+    // Resolve each ID separately: one removed writer must not strand the others.
+    for (const id of pausedIds) {
+      const current = await execute({ command: "podman", args: ["unpause", id] }, io).catch(() => 1);
+      if (current !== 0) resumeCode = current;
+    }
     if (resumeCode !== 0) io.stderr.write("Podman could not resume all backup writers. Check their status before continuing.\n");
   }
   return code !== 0 ? code : resumeCode;

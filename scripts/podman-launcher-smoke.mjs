@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { RUNTIME_VERSION } from "../packages/run-spaceapp/src/package-info.mjs";
 import { composeCommand, composeProjectName, loadConfig } from "../packages/run-spaceapp/src/index.mjs";
 
@@ -14,17 +15,38 @@ assert.ok(["small", "medium", "large"].includes(profile), "Pass small, medium or
 const fixture = await mkdtemp(join(process.env.SPACEAPP_SMOKE_TMPDIR ?? tmpdir(), "spaceapp-podman-smoke-"));
 const root = join(fixture, "installation");
 const workspace = join(fixture, "workspace");
-await mkdir(workspace);
 const project = composeProjectName(root);
 const env = { ...process.env, SPACEAPP_HOME: root, SPACEAPP_TELEMETRY: "0" };
 const answers = { confirm: true, profile, access: "isolated", companions: false, telemetry: false, open: false, purgeConfirm: "DELETE" };
 const localImages = process.env.SPACEAPP_SMOKE_LOCAL_IMAGES === "1";
 const sourceVersion = process.env.SPACEAPP_SMOKE_SOURCE_VERSION;
 if (sourceVersion) assert.match(sourceVersion, /^\d+\.\d+\.\d+$/);
+const stopping = new AbortController();
+const activeCommands = new Set();
 
-function podman(args, input) {
+// Keep each acceptance command and its descendants in one cancellable process group.
+function startCommand(command, args, options) {
+  stopping.signal.throwIfAborted();
+  const child = spawn(command, args, { ...options, detached: true });
+  const stop = () => {
+    if (child.pid) {
+      try { process.kill(-child.pid, "SIGTERM"); }
+      catch (error) { if (error.code !== "ESRCH") console.error(error); }
+    }
+  };
+  stopping.signal.addEventListener("abort", stop, { once: true });
+  const closed = new Promise((resolve) => child.once("close", () => {
+    stopping.signal.removeEventListener("abort", stop);
+    activeCommands.delete(closed);
+    resolve();
+  }));
+  activeCommands.add(closed);
+  return child;
+}
+
+function podman(args, input, cleanup = false) {
   return new Promise((resolve, reject) => {
-    const child = spawn("podman", args, { env, stdio: ["pipe", "pipe", "inherit"], shell: false });
+    const child = (cleanup ? spawn : startCommand)("podman", args, { env, stdio: ["pipe", "pipe", "inherit"], shell: false });
     let output = "";
     child.stdout.on("data", (chunk) => { output += chunk; });
     child.on("error", reject);
@@ -39,7 +61,7 @@ async function launch(args, { input, version } = {}) {
     // The exported launcher runs with a real older release for upgrade acceptance; no executor is replaced.
     const entry = version ? ["--input-type=module", "--eval", `import {run} from ${JSON.stringify(new URL("../packages/run-spaceapp/src/cli.mjs", import.meta.url).href)}; process.exitCode = await run(process.argv.slice(1), {runtimeVersion:${JSON.stringify(version)}});`, "--"]
       : [fileURLToPath(new URL("../packages/run-spaceapp/bin/spaceapp.mjs", import.meta.url))];
-    const child = spawn(process.execPath, [...entry,
+    const child = startCommand(process.execPath, [...entry,
       ...args, ...flags, ...(localImages ? ["--local-images"] : [])], { env, stdio: ["pipe", "inherit", "inherit"], shell: false });
     child.on("error", reject);
     child.on("close", resolve);
@@ -54,19 +76,43 @@ async function compose(args) {
 }
 async function ready() {
   for (let attempt = 0; attempt < 90; attempt++) {
+    stopping.signal.throwIfAborted();
     try {
-      const response = await fetch("http://127.0.0.1:4911/readyz", { signal: AbortSignal.timeout(2000) });
+      const response = await fetch("http://127.0.0.1:4911/readyz", { signal: AbortSignal.any([stopping.signal, AbortSignal.timeout(2000)]) });
       if (response.ok && (await response.json()).ok === true) {
-        assert.equal((await fetch("http://127.0.0.1:4911/", { signal: AbortSignal.timeout(5000) })).status, 200);
+        assert.equal((await fetch("http://127.0.0.1:4911/", { signal: AbortSignal.any([stopping.signal, AbortSignal.timeout(5000)]) })).status, 200);
         return;
       }
     } catch { /* Startup may not have bound the port yet. */ }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await delay(2000, undefined, { signal: stopping.signal });
   }
   throw new Error("readyz/web did not become ready");
 }
 let cleaned = false;
+let cleanupPromise;
+function cleanup() {
+  return cleanupPromise ??= (async () => {
+    stopping.abort();
+    await Promise.all(activeCommands);
+    // A failed install may not have committed its config; only address this project's labelled resources.
+    if (!cleaned) {
+      const ids = (await podman(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`], undefined, true).catch(() => "")).split(/\s+/).filter(Boolean);
+      if (ids.length) await podman(["rm", "-f", ...ids], undefined, true);
+      for (const kind of ["volume", "network"]) {
+        const names = (await podman([kind, "ls", "-q", "--filter", `label=com.docker.compose.project=${project}`], undefined, true).catch(() => "")).split(/\s+/).filter(Boolean);
+        if (names.length) await podman([kind, "rm", ...names], undefined, true);
+      }
+    }
+    await rm(fixture, { recursive: true, force: true });
+  })();
+}
+const terminate = () => {
+  process.exitCode = 143;
+  void cleanup().catch((error) => { console.error(error); process.exitCode = 1; });
+};
+process.once("SIGTERM", terminate);
 try {
+  await mkdir(workspace);
   await launch(["install", "--engine", "podman", "--profile", profile], { version: sourceVersion });
   assert.equal((await loadConfig(root)).engine, "podman");
   await ready();
@@ -128,15 +174,9 @@ try {
   assert.equal(await podman(["network", "ls", "-q", "--filter", `label=com.docker.compose.project=${project}`]), "");
   cleaned = true;
   console.log(JSON.stringify({ profile, passed: true, engine: "podman", rootless: true, cleaned: true }));
+} catch (error) {
+  if (!stopping.signal.aborted) throw error;
 } finally {
-  // A failed install may not have committed its config, so also address only this project's labelled resources.
-  if (!cleaned) {
-    const ids = (await podman(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`]).catch(() => "")).split(/\s+/).filter(Boolean);
-    if (ids.length) await podman(["rm", "-f", ...ids]);
-    for (const kind of ["volume", "network"]) {
-      const names = (await podman([kind, "ls", "-q", "--filter", `label=com.docker.compose.project=${project}`]).catch(() => "")).split(/\s+/).filter(Boolean);
-      if (names.length) await podman([kind, "rm", ...names]);
-    }
-  }
-  await rm(fixture, { recursive: true, force: true });
+  await cleanup();
+  process.off("SIGTERM", terminate);
 }
