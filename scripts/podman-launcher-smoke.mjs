@@ -90,20 +90,28 @@ async function ready() {
 }
 let cleaned = false;
 let cleanupPromise;
+function cleanupError(error) {
+  console.error("Podman smoke cleanup failed:", error);
+  process.exitCode ||= 1;
+  return "";
+}
 function cleanup() {
   return cleanupPromise ??= (async () => {
     stopping.abort();
     await Promise.all(activeCommands);
     // A failed install may not have committed its config; only address this project's labelled resources.
-    if (!cleaned) {
-      const ids = (await podman(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`], undefined, true).catch(() => "")).split(/\s+/).filter(Boolean);
-      if (ids.length) await podman(["rm", "-f", ...ids], undefined, true);
-      for (const kind of ["volume", "network"]) {
-        const names = (await podman([kind, "ls", "-q", "--filter", `label=com.docker.compose.project=${project}`], undefined, true).catch(() => "")).split(/\s+/).filter(Boolean);
-        if (names.length) await podman([kind, "rm", ...names], undefined, true);
+    try {
+      if (!cleaned) {
+        const ids = (await podman(["ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`], undefined, true).catch(cleanupError)).split(/\s+/).filter(Boolean);
+        if (ids.length) await podman(["rm", "-f", ...ids], undefined, true).catch(cleanupError);
+        for (const kind of ["volume", "network"]) {
+          const names = (await podman([kind, "ls", "-q", "--filter", `label=com.docker.compose.project=${project}`], undefined, true).catch(cleanupError)).split(/\s+/).filter(Boolean);
+          if (names.length) await podman([kind, "rm", ...names], undefined, true).catch(cleanupError);
+        }
       }
+    } finally {
+      await rm(fixture, { recursive: true, force: true }).catch(cleanupError);
     }
-    await rm(fixture, { recursive: true, force: true });
   })();
 }
 const terminate = () => {
