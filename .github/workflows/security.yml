@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload blocking filesystem scan
         if: always() && hashFiles('trivy-filesystem.sarif') != ''
-        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-filesystem.sarif
 
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload blocking image scan
         if: always() && hashFiles(format('trivy-{0}.sarif', matrix.target)) != ''
-        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-${{ matrix.target }}.sarif
 
