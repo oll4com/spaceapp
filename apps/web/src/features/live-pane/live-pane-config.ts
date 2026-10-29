@@ -22,6 +22,8 @@ export interface LivePaneStoredConfig {
   selectedDeviceId?: string;
   voiceOnly?: boolean;
   showToolCalls?: boolean;
+  /** Recording is per pane and per session: never a default for new panes. */
+  recordSession?: boolean;
   personalMemoryCollapsed?: boolean;
   personalMemories?: LivePersonalMemoryItem[];
 }
@@ -92,7 +94,7 @@ export function saveLivePaneConfig(paneId: string, config: LivePaneStoredConfig,
     const serialized = JSON.stringify(config);
     localStorage.setItem(`space_live_pane_${paneId}`, serialized);
     if (persistAsDefault) {
-      const { streamingMode: _paneOnlyMode, personalMemories: _memories, ...defaults } = config;
+      const { streamingMode: _paneOnlyMode, personalMemories: _memories, recordSession: _paneOnlyRecording, ...defaults } = config;
       localStorage.setItem(GLOBAL_CONFIG_KEY, JSON.stringify(defaults));
       scheduleUserSettingsSave({
         streamingMode: config.streamingMode,

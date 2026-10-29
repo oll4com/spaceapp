@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { isBrowserPane, isCliPane } from "./pane-guards.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import {
-  type AuthUser, createRoomInputSchema, MAX_ROOMS, paginationRequestSchema, type Pane, type PaneBrowserSession,
+  type AuthUser, createRoomInputSchema, MAX_ROOMS, paginationRequestSchema, roomLimitReached, type Pane, type PaneBrowserSession,
   type PaneCliSession, pickNextAvailableRoomName, reorderPanesInputSchema, reorderRoomsInputSchema, type Room,
   roomCliActivityResponseSchema, roomKindSchema, updatePaneLayoutInputSchema, updateRoomInputSchema
 } from "@space/contracts";
@@ -130,8 +130,9 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
     const input = !agentPaneEnabled && omitted ? { ...parsed, initialPaneCount: 0 } : parsed;
     if (input.initialPaneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
     const existingRooms = await store.listRooms(request.user?.id ?? null);
-    if (existingRooms.length >= MAX_ROOMS) {
-      throw new SpaceConflictError(`Maximum room limit of ${MAX_ROOMS} rooms reached.`);
+    const roomLimit = request.user ? (await store.getUserSettings(request.user.id)).roomLimit : MAX_ROOMS;
+    if (roomLimitReached(existingRooms, roomLimit)) {
+      throw new SpaceConflictError(`Maximum room limit of ${roomLimit} rooms reached. Test rooms do not count; change the limit in Settings → Workspace → Rooms.`);
     }
     const roomName = input.name?.trim() || pickNextAvailableRoomName(existingRooms.map((r) => r.name));
     const room = await store.createRoom({ ...input, name: roomName }, request.requestIdForSpace, request.user?.id ?? null);

@@ -1,11 +1,12 @@
 import { registerRoomPlaybackTarget } from "../room-agent/room-playback-control.js";
-import { Captions, Check, ChevronLeft, ChevronRight, Home, Music2, Pause, Play, Plus, Sparkles, Users, X, Youtube } from "../ui-theme/app-icons.js";
+import { Captions, Check, ChevronLeft, ChevronRight, Download, Home, Music2, Pause, Play, Plus, Settings, Sparkles, Users, X, Youtube } from "../ui-theme/app-icons.js";
+import { YouTubeSettingsCard } from "./YouTubeSummarySettingsCard.js";
 import { ChatCopyButton } from "../agent-pane/ChatMarkdown.js";
 import { googleSignInTarget, type YouTubeAccounts } from "./youtube-accounts.js";
 import { GoogleAccountMenuItems, selectedAccountSummary } from "./GoogleAccountMenuItems.js";
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { Pane, UserLink } from '@space/contracts';
+import { agentFilesFolderLabel, type Pane, type UserLink, type VideoAsset } from '@space/contracts';
 import { api } from '../../api.js';
 import type { UiTheme } from '../../ui-theme.js';
 import { takeYouTubeBrowseIntent } from "./youtube-browse-intent.js";
@@ -113,6 +114,9 @@ export function YouTubePane(props: YouTubePaneProps) {
   type AiKind = 'summary' | 'transcript';
   const [aiText, setAiText] = useState<{ kind: AiKind; title: string; text: string; model: string } | null>(null);
   const [aiBusy, setAiBusy] = useState<AiKind | null>(null);
+  /** The Download into the Video library: running, then the saved source. */
+  const [download, setDownload] = useState<{ title: string; asset: VideoAsset | null; folder?: string | null } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const [toolbarCompact, setToolbarCompact] = useState(false);
   const labelledToolbarWidth = useRef(0);
@@ -171,6 +175,27 @@ export function YouTubePane(props: YouTubePaneProps) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : 'Gemini could not read the video. Try again.');
     } finally {
       if (mounted.current) setAiBusy(null);
+    }
+  }
+
+  async function downloadVideo() {
+    if (observerOnly || mode !== 'player' || (download && !download.asset)) return;
+    // Read the player at click time: autoplay may have moved on.
+    const video = playerRef.current?.currentVideo() ?? currentVideo;
+    if (!video?.videoId) return;
+    const title = video.title.trim() || `YouTube ${video.videoId}`;
+    setDownload({ title, asset: null }); setError(null);
+    try {
+      let { job } = await api.youtubeDownload(pane.id, video.videoId, title);
+      while (job.status === 'QUEUED' || job.status === 'RUNNING') {
+        if (!mounted.current) return;
+        ({ job } = await api.youtubeDownloadJob(pane.id, job.id));
+      }
+      const { asset, folder = null } = (job.result ?? {}) as { asset?: VideoAsset; folder?: string | null };
+      if (job.status !== 'DONE' || !asset) throw new Error(job.error ?? 'The video could not be downloaded.');
+      if (mounted.current) setDownload({ title, asset, folder });
+    } catch (cause) {
+      if (mounted.current) { setDownload(null); setError(cause instanceof Error ? cause.message : 'The video could not be downloaded. Try again.'); }
     }
   }
 
@@ -614,16 +639,41 @@ export function YouTubePane(props: YouTubePaneProps) {
         <Captions aria-hidden="true" />
         <span className="youtube-btn-label">{aiBusy === 'transcript' ? 'Getting text…' : 'Full text'}</span>
       </button>
+      <button type="button" className="youtube-tool-btn" title="Download this video into Agent Files and the Video library, at the folder and resolution of this pane's Settings, to cut clips from in a Video pane. Only for videos you have the rights to use."
+        aria-label={download && !download.asset ? 'Downloading video' : 'Download video'} disabled={pending || Boolean(download && !download.asset)} onClick={() => void downloadVideo()}>
+        <Download aria-hidden="true" />
+        <span className="youtube-btn-label">{download && !download.asset ? 'Downloading…' : 'Download'}</span>
+      </button>
       <button type="button" className="youtube-tool-btn" title="Browse YouTube" aria-label="Browse YouTube" disabled={pending} onClick={browse}>
         <Youtube aria-hidden="true" />
         <span className="youtube-btn-label">Browse YouTube</span>
       </button>
       </> : null}
+      <button type="button" className="youtube-tool-btn" title="YouTube settings: summary model, download folder and resolution" aria-label="YouTube settings"
+        aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}>
+        <Settings aria-hidden="true" />
+      </button>
     </div> : null}
+    {settingsOpen ? <section className="youtube-summary" aria-label="YouTube pane settings">
+      <header><strong>Settings</strong><small>Your account, every YouTube pane</small>
+        <button type="button" className="youtube-tool-btn" aria-label="Close settings" title="Close" onClick={() => setSettingsOpen(false)}><X aria-hidden="true" /></button>
+      </header>
+      <YouTubeSettingsCard />
+    </section> : null}
     {error ? <div className="youtube-player-message" role="alert"><span>{error}</span>
       <button type="button" onClick={() => { setError(null); if (mode === 'loading') setReload((value) => value + 1); }}> {mode === 'loading' ? 'Retry' : 'Dismiss'} </button>
     </div> : null}
-    {aiBusy ? <p className="youtube-summary" role="status">Gemini is watching the video{aiBusy === 'transcript' ? ' and writing down everything said; this takes about a minute for every 10 minutes of video' : ''}…</p> : null}
+    {aiBusy ? <p className="youtube-summary" role="status">{aiBusy === 'transcript' ? "Reading the video's captions; a video without them Gemini listens to, about a minute for every 10 minutes of video" : 'Gemini is watching the video'}…</p> : null}
+    {download && !download.asset ? <p className="youtube-summary" role="status">Downloading “{download.title}”; long or 4K videos take several minutes, and Notifications tell you when it is done…</p> : null}
+    {download?.asset ? <section className="youtube-summary" aria-label="Downloaded video">
+      <header><strong title={download.title}>{download.title}</strong>
+        <small>{download.folder ? `Agent Files › ${agentFilesFolderLabel(download.folder)} and the Video library` : 'In the Video library'}{download.asset.width && download.asset.height ? ` · ${download.asset.width}×${download.asset.height}` : ''}</small>
+        <a className="youtube-tool-btn" href={api.artifactFileUrl(download.asset.artifactId)} download={`${download.title.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'video'}.mp4`}
+          title="Save the file to this device" aria-label="Save file"><Download aria-hidden="true" /></a>
+        <button type="button" className="youtube-tool-btn" aria-label="Close" title="Close" onClick={() => setDownload(null)}><X aria-hidden="true" /></button>
+      </header>
+      <p>Open a Video pane to cut clips from it: it is one of the Studio's sources.</p>
+    </section> : null}
     {aiText ? <section className="youtube-summary" aria-label={aiText.kind === 'summary' ? 'AI summary' : 'Full text'}>
       <header><strong title={aiText.title}>{aiText.title}</strong><small>{aiText.kind === 'summary' ? 'Summary' : 'Full text'} · {aiText.model}</small>
         <ChatCopyButton text={aiText.text} label="Copy" />

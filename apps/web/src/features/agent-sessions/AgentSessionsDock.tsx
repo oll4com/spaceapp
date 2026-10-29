@@ -462,10 +462,10 @@ export function AgentSessionsDock({
                             />
                           </div>
                         ) : (
-                          <div className="dock-kit-card-title" title={item.title}>{item.title}</div>
+                          <div className="dock-kit-card-title" data-sensitive-masked="manual" title={item.title}>{item.title}</div>
                         )}
 
-                        <p className="agent-sessions-preview">{item.preview || item.firstUserMessage || "No preview"}</p>
+                        <p className="agent-sessions-preview" data-sensitive-masked="manual">{item.preview || item.firstUserMessage || "No preview"}</p>
                         {item.cwd ? (
                           <div className="dock-kit-meta">
                             <code className="dock-kit-meta-text agent-sessions-cwd" title={item.cwd}>{item.cwd}</code>

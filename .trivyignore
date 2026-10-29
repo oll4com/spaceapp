@@ -3,3 +3,15 @@
 # compose network without TLS (temporal:7233), so the TLS 1.3 handshake flaw has no
 # reachable path. Remove once a Temporal SDK release ships rustls >= 0.23.45.
 GHSA-2mjx-qc3c-rqvc exp:2026-11-10
+
+# GHSA-c8m5-c952-6cm4 is the same rustls 0.23.36 in @temporalio/core-bridge 1.24.0 (fixed in 0.23.46): Debug formatting
+# of a TLS session exposes its master secrets and resumption PSKs. SpaceApp reaches Temporal only over the private compose
+# network without TLS (temporal:7233), so no rustls session exists to format. Remove with its sibling above, once a Temporal
+# SDK release ships rustls >= 0.23.46.
+GHSA-c8m5-c952-6cm4 exp:2026-11-10
+
+# CVE-2026-115905 is the zip crate 8.5.1 in @temporalio/core-bridge 1.24.0 (fixed in 9.0.5): a crafted archive can extract
+# to another path than its central directory names. In the bridge, zip is only the optional ephemeral-server feature of
+# sdk-core, which unpacks Temporal's dev-server download for @temporalio/testing; SpaceApp never installs or calls it, so no
+# archive reaches it. Temporal 1.25.0 ships zip 9.0.5; SpaceApp moves to it in 1.1.10 (Nous decision 29/10, option B).
+CVE-2026-115905 exp:2026-11-10

@@ -15,6 +15,12 @@ const SWEEP_EVERY_MS = 30_000;
 export const ROOM_MONITOR_OVERLAP_MS = 60_000;
 const OVERLAP_STATUSES: RoomAgentEvent["status"][] = ["OPEN", "ESCALATED", "HANDLED", "ACKED"];
 
+/** Item 29a: a text Nous or the Room Agent sent this long before a wait opened still answered it (Alex/Jack 27/10: 7 s before). */
+export const ROOM_MONITOR_ANSWER_LEAD_MS = 30_000;
+const reachedPanes = new Map<string, number>();
+/** Space typed a text from Nous or the Room Agent into this pane (room-agent-tools; a queued one only once typed); a wait it ends counts as answered. */
+export function notePaneReached(paneId: string, at = Date.now()): void { reachedPanes.set(paneId, at); }
+
 export interface RoomMonitorObservation { activity: RoomAgentPaneActivity; reason: string | null }
 
 export interface RoomMonitorTransition { kind: RoomAgentEventKind; severity: RoomAgentEvent["severity"] }
@@ -24,6 +30,7 @@ function attentionKind(reason: string | null): RoomAgentEventKind {
   if (reason === "Sign-in required") return "SIGN_IN";
   if (reason === "CLI error" || reason === "Run failed") return "ERROR";
   if (reason === "API error") return "STUCK";
+  if (reason === "Question for you") return "QUESTION";
   return "WAITING";
 }
 
@@ -50,7 +57,8 @@ export function roomMonitorEventText(kind: RoomAgentEventKind, name: string, rea
       : kind === "SIGN_IN" ? `${name} needs sign-in`
         : kind === "ERROR" ? (reason === "Not running" ? `${name} stopped` : `${name} stopped with an error`)
           : kind === "STUCK" ? (reason === "API error" ? `${name} stopped on an API error` : `${name} seems stuck`)
-            : `${name} is waiting: ${reason ?? "Needs input"}`;
+            : kind === "QUESTION" ? `${name} has a question for you`
+              : `${name} is waiting: ${reason ?? "Needs input"}`;
   const detail = [task.title, task.summary].filter(Boolean).join(" — ") || null;
   return { title, detail };
 }
@@ -100,9 +108,13 @@ export function createRoomAgentMonitor(options: RoomAgentMonitorOptions) {
 
   async function resolveWaiting(roomId: string, paneId: string) {
     const pending = await options.repository.listEvents(roomId, { paneId, statuses: ["OPEN", "ESCALATED"], limit: 20 });
+    const reached = reachedPanes.get(paneId);
     for (const event of pending) {
       if (event.kind === "FINISHED") continue;
-      const resolved = await options.repository.updateEvent(event.eventId, { status: "RESOLVED", decision: event.decision ?? "The pane moved on." }, ["OPEN", "ESCALATED"]);
+      const answered = (event.kind === "WAITING" || event.kind === "STUCK") && event.status === "OPEN" && reached !== undefined
+        && reached >= Date.parse(event.createdAt) - ROOM_MONITOR_ANSWER_LEAD_MS;
+      const resolved = await options.repository.updateEvent(event.eventId, answered ? { status: "HANDLED", decision: "A text Space sent for Nous or the Room Agent reached the pane and it moved on." }
+        : { status: "RESOLVED", decision: event.decision ?? "The pane moved on." }, ["OPEN", "ESCALATED"]);
       if (resolved) await options.onEvent?.(resolved);
     }
   }

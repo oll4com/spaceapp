@@ -1,12 +1,13 @@
 import { rollbackKeepingError } from "./rollback.js";
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, type AppStudioPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, appStudioPaneMetadataSchema, videoPaneMetadataSchema, securityCopilotPaneMetadataSchema, type SecurityCopilotPaneMetadata, monitoringCopilotPaneMetadataSchema, type MonitoringCopilotPaneMetadata, type AppStudioPaneMetadata, type VideoPaneMetadata, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection } from "@space/runtime";
 import { managedPlanExecutionSchema } from "@space/contracts";
 import { PostgresPlanExecutionRepository } from "./plan-execution-repository.js";
 import { PostgresGoogleAccountsRepository } from "./google-accounts-repository.js";
 import type { GoogleAccount, VerifiedGoogleIdentity } from "@space/runtime";
+import { setupExecutionStateSchema, type SetupExecutionState } from "@space/contracts";
 import { transitionAgentRunLedger, pickNextAvailablePaneName, normalizePaneName } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import { ownerWorkingTimeZone, resolveTaskScheduleZone, taskScheduleNextRunAt, type TaskScheduleInput } from "@space/contracts";
@@ -32,6 +33,9 @@ import {
   browserHandoffRequestSchema,
   clipboardItemSchema,
   planStepSchema,
+  planWaitsOnSchema,
+  planDependencyProblem,
+  PLAN_MAP_KEYS,
   type PlanStep,
   cliMaintenanceAuthHandoffSchema,
   cliMaintenanceEventSchema,
@@ -370,6 +374,8 @@ import {
   ACTIVE_PANE_CAP,
   PANE_CLI_TRANSCRIPT_CHUNK_CAP,
   SpaceConflictError,
+  createSetupCompletion,
+  type CompleteSetupExecutionInput,
   roomAgentMissionGuardMatches,
   assertBrowserHandoffTransition,
   assertMemorySearchModeEnabled,
@@ -790,6 +796,9 @@ type ClipboardItemRow = {
   roomId: string | null;
   paneId: string | null;
   paneTitle: string | null;
+  dependsOn?: unknown;
+  dueAt?: Date | string | null;
+  waitsOn?: unknown;
   occurrenceCount: number;
   characterCount: number;
   createdAt: Date | string;
@@ -834,6 +843,9 @@ type PaneRow = {
   freelanceCopilotMetadata?: Pane["freelanceCopilotMetadata"];
   designMetadata?: Pane["designMetadata"];
   appStudioMetadata?: Pane["appStudioMetadata"];
+  videoMetadata?: Pane["videoMetadata"];
+  securityCopilotMetadata?: Pane["securityCopilotMetadata"];
+  monitoringCopilotMetadata?: Pane["monitoringCopilotMetadata"];
   paneName?: string | null;
   mode: Pane["mode"];
   status: Pane["status"];
@@ -1723,8 +1735,8 @@ const roomSelect = `
   FROM rooms
 `;
 
-const clipboardItemSelect = `
-  SELECT
+// One list for every read and RETURNING: a list that misses a column reads it as its default (plan map, 2026-10-25).
+const clipboardItemColumns = `
     id,
     text,
     source,
@@ -1740,10 +1752,16 @@ const clipboardItemSelect = `
     room_id AS "roomId",
     pane_id AS "paneId",
     pane_title AS "paneTitle",
+    depends_on AS "dependsOn",
+    due_at AS "dueAt",
+    waits_on_json AS "waitsOn",
     occurrence_count AS "occurrenceCount",
     character_count AS "characterCount",
     created_at AS "createdAt",
-    last_used_at AS "lastUsedAt"
+    last_used_at AS "lastUsedAt"`;
+
+const clipboardItemSelect = `
+  SELECT ${clipboardItemColumns}
   FROM clipboard_items
 `;
 
@@ -1801,6 +1819,9 @@ const paneSelect = `
     freelance_copilot_metadata AS "freelanceCopilotMetadata",
     design_metadata AS "designMetadata",
     app_studio_metadata AS "appStudioMetadata",
+    video_metadata AS "videoMetadata",
+    security_copilot_metadata AS "securityCopilotMetadata",
+    monitoring_copilot_metadata AS "monitoringCopilotMetadata",
     mode,
     status,
     provider_id AS "providerId",
@@ -2950,6 +2971,10 @@ function mapClipboardItem(row: ClipboardItemRow): ClipboardItem {
     activeAgent: row.activeAgent ?? null,
     steps: normalizePlanSteps(stepsJson),
     lastProgressAt: row.lastProgressAt ? toIso(row.lastProgressAt) : null,
+    dependsOn: Array.isArray(row.dependsOn) ? row.dependsOn.filter((id) => typeof id === "string") : [],
+    dueAt: row.dueAt ? toIso(row.dueAt) : null,
+    // A stored wait that no longer fits the contract reads as none, never as a corrupt row.
+    waitsOn: planWaitsOnSchema.safeParse(row.waitsOn).data ?? null,
     createdAt: toIso(row.createdAt),
     lastUsedAt: toIso(row.lastUsedAt)
   });
@@ -2985,6 +3010,9 @@ function mapPane(row: PaneRow): Pane {
     freelanceCopilotMetadata: row.freelanceCopilotMetadata ?? null,
     designMetadata: row.designMetadata ?? null,
     appStudioMetadata: row.appStudioMetadata ?? null,
+    videoMetadata: row.videoMetadata ?? null,
+    securityCopilotMetadata: row.securityCopilotMetadata ?? null,
+    monitoringCopilotMetadata: row.monitoringCopilotMetadata ?? null,
     paneName: row.paneName ?? null,
     mode: row.mode,
     status: row.status,
@@ -4437,6 +4465,82 @@ export class PostgresSpaceStore implements SpaceStore {
     };
   }
 
+  async getSetupExecutionState(ownerId: string): Promise<SetupExecutionState | null> {
+    const key = idSchema.parse(ownerId);
+    const result = await this.pool.query<{ payload: unknown }>(
+      `SELECT payload FROM space_first_setup_states WHERE owner_id = $1`, [key]
+    );
+    return result.rows[0] ? setupExecutionStateSchema.parse(result.rows[0].payload) : null;
+  }
+
+  async compareAndSwapSetupExecutionState(
+    ownerId: string, expectedRevision: number | null, next: SetupExecutionState
+  ): Promise<boolean> {
+    const key = idSchema.parse(ownerId);
+    const parsed = setupExecutionStateSchema.parse(next);
+    if (parsed.ownerId !== key || parsed.revision !== (expectedRevision === null ? 0 : expectedRevision + 1)) {
+      throw new SpaceConflictError("Setup state owner or revision is invalid.");
+    }
+    const result = expectedRevision === null
+      ? await this.pool.query(
+          `INSERT INTO space_first_setup_states (owner_id, revision, payload, updated_at)
+           VALUES ($1, $2, $3::jsonb, now())
+           ON CONFLICT DO NOTHING RETURNING owner_id`,
+          [key, parsed.revision, JSON.stringify(parsed)]
+        )
+      : await this.pool.query(
+          `UPDATE space_first_setup_states
+           SET revision = $3, payload = $4::jsonb, updated_at = now()
+           WHERE owner_id = $1 AND revision = $2
+           RETURNING owner_id`,
+          [key, expectedRevision, parsed.revision, JSON.stringify(parsed)]
+        );
+    return result.rows.length === 1;
+  }
+
+  async completeSetupExecution(input: CompleteSetupExecutionInput): Promise<SetupOnboarding> {
+    return this.withTransaction(async (client) => {
+      const stateResult = await client.query<{ revision: number; payload: unknown }>(
+        `SELECT revision, payload FROM space_first_setup_states WHERE owner_id = $1 FOR UPDATE`,
+        [input.ownerId]
+      );
+      const row = stateResult.rows[0];
+      if (!row || row.revision !== input.expectedStateRevision) {
+        throw new SpaceConflictError("Setup state revision changed before completion.");
+      }
+      const ownerResult = await client.query<{
+        ownerUserId: string | null; onboardingCompletedAt: Date | string | null; starterRoomId: string | null
+      }>(
+        `SELECT owner_user_id AS "ownerUserId", onboarding_completed_at AS "onboardingCompletedAt",
+                starter_room_id AS "starterRoomId"
+         FROM space_owner_setup WHERE singleton = true FOR UPDATE`
+      );
+      const owner = ownerResult.rows[0];
+      if (!owner || owner.ownerUserId !== input.ownerId || !owner.starterRoomId) {
+        throw new SpaceConflictError("Setup owner or starter room is unavailable.");
+      }
+      if (owner.onboardingCompletedAt !== null && !input.reconfigure) throw new SpaceConflictError("Setup is already complete.");
+      const current = setupExecutionStateSchema.parse(row.payload);
+      const completion = createSetupCompletion(current, input, owner.starterRoomId);
+      const next = setupExecutionStateSchema.parse({ ...current, revision: current.revision + 1, completion });
+      const stateUpdate = await client.query(
+        `UPDATE space_first_setup_states SET revision = $2, payload = $3::jsonb, updated_at = $4 WHERE owner_id = $1`,
+        [input.ownerId, next.revision, JSON.stringify(next), input.completedAt]
+      );
+      if (stateUpdate.rowCount !== 1) throw new SpaceConflictError("Setup state update failed before completion.");
+      const ownerUpdate = await client.query(
+        `UPDATE space_owner_setup SET onboarding_version = $1, onboarding_completed_at = COALESCE(onboarding_completed_at, $2), updated_at = $2
+         WHERE singleton = true AND owner_user_id = $3`,
+        [currentSetupOnboardingVersion, input.completedAt, input.ownerId]
+      );
+      if (ownerUpdate.rowCount !== 1) throw new SpaceConflictError("Owner onboarding update failed before completion.");
+      return {
+        onboardingVersion: currentSetupOnboardingVersion, isComplete: true,
+        completedAt: owner.onboardingCompletedAt ? new Date(owner.onboardingCompletedAt).toISOString() : input.completedAt, starterRoomId: owner.starterRoomId
+      };
+    });
+  }
+
   async listSetupConnectionVerifications(): Promise<SetupConnectionVerification[]> {
     const result = await this.pool.query<{
       connectionId: string;
@@ -4845,13 +4949,22 @@ export class PostgresSpaceStore implements SpaceStore {
     const contentHash = createHash("sha256").update(parsed.text).digest("hex");
     return this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [parsed.ownerUserId]);
+      if (parsed.dependsOn?.length) {
+        const [self, open] = await Promise.all([
+          client.query<{ id: string }>("SELECT id FROM clipboard_items WHERE owner_user_id=$1 AND content_hash=$2", [parsed.ownerUserId, contentHash]),
+          client.query<{ id: string; dependsOn: unknown }>(`SELECT id, depends_on AS "dependsOn" FROM clipboard_items WHERE owner_user_id=$1 AND source='PLAN' AND is_completed=FALSE`, [parsed.ownerUserId])
+        ]);
+        const problem = planDependencyProblem(self.rows[0]?.id ?? null, parsed.dependsOn, open.rows.map((row) => ({ id: row.id, dependsOn: Array.isArray(row.dependsOn) ? row.dependsOn as string[] : [] })));
+        if (problem) throw new SpaceConflictError(problem);
+      }
       const result = await client.query<ClipboardItemRow>(
         `
           INSERT INTO clipboard_items (
             id, owner_user_id, content_hash, text, source, title, minimum_model, minimum_reasoning, is_completed, room_id, pane_id, pane_title,
-            occurrence_count, character_count, created_at, last_used_at, steps_json
+            occurrence_count, character_count, created_at, last_used_at, steps_json, depends_on, due_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $11, FALSE, $8, $9, $10, 1, char_length($4), clock_timestamp(), clock_timestamp(), COALESCE($12::jsonb, '[]'::jsonb))
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $11, FALSE, $8, $9, $10, 1, char_length($4), clock_timestamp(), clock_timestamp(), COALESCE($12::jsonb, '[]'::jsonb),
+            COALESCE($13::jsonb, '[]'::jsonb), $14::timestamptz)
           ON CONFLICT (owner_user_id, content_hash)
           DO UPDATE SET
             text = EXCLUDED.text,
@@ -4864,29 +4977,12 @@ export class PostgresSpaceStore implements SpaceStore {
             room_id = EXCLUDED.room_id,
             pane_id = EXCLUDED.pane_id,
             pane_title = EXCLUDED.pane_title,
+            depends_on = COALESCE($13::jsonb, clipboard_items.depends_on),
+            due_at = COALESCE($14::timestamptz, clipboard_items.due_at),
             occurrence_count = clipboard_items.occurrence_count + 1,
             character_count = EXCLUDED.character_count,
             last_used_at = clock_timestamp()
-          RETURNING
-            id,
-            text,
-            source,
-            title,
-            minimum_model AS "minimumModel",
-    minimum_reasoning AS "minimumReasoning",
-            is_completed AS "isCompleted",
-            execution_status AS "executionStatus",
-            progress_percentage AS "progressPercentage",
-            active_agent AS "activeAgent",
-            steps_json AS "stepsJson",
-            last_progress_at AS "lastProgressAt",
-            room_id AS "roomId",
-            pane_id AS "paneId",
-            pane_title AS "paneTitle",
-            occurrence_count AS "occurrenceCount",
-            character_count AS "characterCount",
-            created_at AS "createdAt",
-            last_used_at AS "lastUsedAt"
+          RETURNING ${clipboardItemColumns}
         `,
         [
           makeSpaceId("clipboard"),
@@ -4900,7 +4996,9 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.paneId ?? null,
           parsed.paneTitle ?? null,
           parsed.minimumReasoning ?? null,
-          parsed.steps ? JSON.stringify(parsed.steps) : null
+          parsed.steps ? JSON.stringify(parsed.steps) : null,
+          parsed.dependsOn ? JSON.stringify(parsed.dependsOn) : null,
+          parsed.dueAt ?? null
         ]
       );
       // Only COPY/PASTE history is capped (newest 100); plans and notes go only by an explicit delete.
@@ -5056,26 +5154,7 @@ export class PostgresSpaceStore implements SpaceStore {
           last_used_at = clock_timestamp()
         WHERE owner_user_id = $1 AND id = $2
           AND NOT EXISTS (SELECT 1 FROM managed_plan_executions WHERE plan_id=$2 AND owner_user_id=$1)
-        RETURNING
-          id,
-          text,
-          source,
-          title,
-          minimum_model AS "minimumModel",
-    minimum_reasoning AS "minimumReasoning",
-          is_completed AS "isCompleted",
-          execution_status AS "executionStatus",
-          progress_percentage AS "progressPercentage",
-          active_agent AS "activeAgent",
-          steps_json AS "stepsJson",
-          last_progress_at AS "lastProgressAt",
-          room_id AS "roomId",
-          pane_id AS "paneId",
-          pane_title AS "paneTitle",
-          occurrence_count AS "occurrenceCount",
-          character_count AS "characterCount",
-          created_at AS "createdAt",
-          last_used_at AS "lastUsedAt"
+        RETURNING ${clipboardItemColumns}
       `,
       [ownerUserId, clipboardItemId, completed]
     );
@@ -5092,12 +5171,28 @@ export class PostgresSpaceStore implements SpaceStore {
   ): Promise<ClipboardItem> {
     return this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [ownerUserId]);
+    // The plan map (dependencies, date, wait) belongs to the plan, not its execution: a managed plan takes it too (2026-10-25).
+    const mapOnly = Object.keys(input).every((key) => (PLAN_MAP_KEYS as readonly string[]).includes(key));
     const managed = await client.query("SELECT id FROM managed_plan_executions WHERE owner_user_id=$1 AND plan_id=$2 LIMIT 1", [ownerUserId, clipboardItemId]);
-    if (managed.rows.length) throw new SpaceConflictError("Managed plan progress is controlled by its execution.");
+    if (managed.rows.length && !mapOnly) throw new SpaceConflictError("Managed plan progress is controlled by its execution.");
     const rows = await client.query<ClipboardItemRow>(`${clipboardItemSelect} WHERE owner_user_id=$1 AND id=$2`, [ownerUserId, clipboardItemId]);
     const existing = rows.rows[0] ? mapClipboardItem(rows.rows[0]) : null;
     if (!existing) {
       throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
+    }
+    if (input.dependsOn) {
+      const open = await client.query<{ id: string; dependsOn: unknown }>(`SELECT id, depends_on AS "dependsOn" FROM clipboard_items WHERE owner_user_id=$1 AND source='PLAN' AND is_completed=FALSE`, [ownerUserId]);
+      const problem = planDependencyProblem(clipboardItemId, input.dependsOn, open.rows.map((row) => ({ id: row.id, dependsOn: Array.isArray(row.dependsOn) ? row.dependsOn as string[] : [] })));
+      if (problem) throw new SpaceConflictError(problem);
+    }
+    const map = { dependsOn: input.dependsOn ?? existing.dependsOn, dueAt: input.dueAt !== undefined ? input.dueAt : existing.dueAt, waitsOn: input.waitsOn !== undefined ? input.waitsOn : existing.waitsOn };
+    if (mapOnly) {
+      const result = await client.query<ClipboardItemRow>(
+        `UPDATE clipboard_items SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, last_used_at = clock_timestamp()
+          WHERE owner_user_id = $1 AND id = $2 RETURNING ${clipboardItemColumns}`,
+        [ownerUserId, clipboardItemId, JSON.stringify(map.dependsOn), map.dueAt, map.waitsOn ? JSON.stringify(map.waitsOn) : null]
+      );
+      return mapClipboardItem(firstOrNotFound(result.rows, `Clipboard item ${clipboardItemId} was not found.`));
     }
 
     let steps = [...existing.steps];
@@ -5176,33 +5271,26 @@ export class PostgresSpaceStore implements SpaceStore {
           room_id = $8,
           pane_id = $9,
           pane_title = $10,
+          depends_on = $11::jsonb,
+          due_at = $12::timestamptz,
+          waits_on_json = $13::jsonb,
+          title = COALESCE($14, title),
+          text = COALESCE($15, text),
+          content_hash = COALESCE($16, content_hash),
+          character_count = char_length(COALESCE($15, text)),
           last_progress_at = clock_timestamp(),
           last_used_at = clock_timestamp()
         WHERE owner_user_id = $1 AND id = $2
           AND NOT EXISTS (SELECT 1 FROM managed_plan_executions WHERE plan_id=$2 AND owner_user_id=$1)
-        RETURNING
-          id,
-          text,
-          source,
-          title,
-          minimum_model AS "minimumModel",
-    minimum_reasoning AS "minimumReasoning",
-          is_completed AS "isCompleted",
-          execution_status AS "executionStatus",
-          progress_percentage AS "progressPercentage",
-          active_agent AS "activeAgent",
-          steps_json AS "stepsJson",
-          last_progress_at AS "lastProgressAt",
-          room_id AS "roomId",
-          pane_id AS "paneId",
-          pane_title AS "paneTitle",
-          occurrence_count AS "occurrenceCount",
-          character_count AS "characterCount",
-          created_at AS "createdAt",
-          last_used_at AS "lastUsedAt"
+        RETURNING ${clipboardItemColumns}
       `,
-      [ownerUserId, clipboardItemId, executionStatus, finalPercentage, activeAgent, JSON.stringify(steps), isCompleted, nextRoomId, nextPaneId, nextPaneTitle]
-    );
+      [ownerUserId, clipboardItemId, executionStatus, finalPercentage, activeAgent, JSON.stringify(steps), isCompleted, nextRoomId, nextPaneId, nextPaneTitle,
+        JSON.stringify(map.dependsOn), map.dueAt, map.waitsOn ? JSON.stringify(map.waitsOn) : null,
+        input.title ?? null, input.text ?? null, input.text !== undefined ? createHash("sha256").update(input.text).digest("hex") : null]
+    ).catch((error: unknown) => {
+      if ((error as { code?: string }).code === "23505") throw new SpaceConflictError("Another clipboard record already has this exact text.");
+      throw error;
+    });
 
     return mapClipboardItem(
       firstOrNotFound(result.rows, `Clipboard item ${clipboardItemId} was not found.`)
@@ -5215,26 +5303,7 @@ export class PostgresSpaceStore implements SpaceStore {
       `
         DELETE FROM clipboard_items
         WHERE owner_user_id = $1 AND id = $2
-        RETURNING
-          id,
-          text,
-          source,
-          title,
-          minimum_model AS "minimumModel",
-    minimum_reasoning AS "minimumReasoning",
-          is_completed AS "isCompleted",
-          execution_status AS "executionStatus",
-          progress_percentage AS "progressPercentage",
-          active_agent AS "activeAgent",
-          steps_json AS "stepsJson",
-          last_progress_at AS "lastProgressAt",
-          room_id AS "roomId",
-          pane_id AS "paneId",
-          pane_title AS "paneTitle",
-          occurrence_count AS "occurrenceCount",
-          character_count AS "characterCount",
-          created_at AS "createdAt",
-          last_used_at AS "lastUsedAt"
+        RETURNING ${clipboardItemColumns}
       `,
       [ownerUserId, clipboardItemId]
     );
@@ -5340,6 +5409,10 @@ export class PostgresSpaceStore implements SpaceStore {
     if (parsed.status) {
       values.push(parsed.status);
       conditions.push(`status = $${values.length}`);
+    }
+    if (parsed.source) {
+      values.push(parsed.source);
+      conditions.push(`source = $${values.length}`);
     }
     if (parsed.q) {
       const escapedSearch = parsed.q.replace(/[\\%_]/g, "\\$&");
@@ -7993,6 +8066,39 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async updateVideoMetadata(paneId: string, metadata: VideoPaneMetadata): Promise<Pane> {
+    const parsed = videoPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "VIDEO" || pane.isClosed) throw new SpaceConflictError("An open Video pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET video_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, videoMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
+  async updateSecurityCopilotMetadata(paneId: string, metadata: SecurityCopilotPaneMetadata): Promise<Pane> {
+    const parsed = securityCopilotPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "SECURITY_COPILOT" || pane.isClosed) throw new SpaceConflictError("An open Security Copilot pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET security_copilot_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, securityCopilotMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
+  async updateMonitoringCopilotMetadata(paneId: string, metadata: MonitoringCopilotPaneMetadata): Promise<Pane> {
+    const parsed = monitoringCopilotPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "MONITORING_COPILOT" || pane.isClosed) throw new SpaceConflictError("An open Monitoring Copilot pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET monitoring_copilot_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, monitoringCopilotMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
   async updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Promise<Pane> {
     return this.withTransaction(async (client) => {
       const current = await this.getPaneForUpdate(client, paneId);
@@ -8038,7 +8144,7 @@ export class PostgresSpaceStore implements SpaceStore {
         providerId: input.providerId === undefined ? current.providerId : input.providerId,
         modelId: input.modelId === undefined ? current.modelId : input.modelId,
         terminalRuntimeId:
-          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO"].includes(input.mode ?? current.mode)
+          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN", "APP_STUDIO", "VIDEO", "SECURITY_COPILOT", "MONITORING_COPILOT"].includes(input.mode ?? current.mode)
             ? input.terminalRuntimeId === undefined
               ? current.terminalRuntimeId
               : input.terminalRuntimeId
@@ -8089,6 +8195,9 @@ export class PostgresSpaceStore implements SpaceStore {
     freelance_copilot_metadata AS "freelanceCopilotMetadata",
     design_metadata AS "designMetadata",
     app_studio_metadata AS "appStudioMetadata",
+    video_metadata AS "videoMetadata",
+    security_copilot_metadata AS "securityCopilotMetadata",
+    monitoring_copilot_metadata AS "monitoringCopilotMetadata",
             mode,
             status,
             provider_id AS "providerId",
@@ -10451,15 +10560,15 @@ export class PostgresSpaceStore implements SpaceStore {
     }, { deadlockRetries: 1 });
   }
 
-  async createPaneCliSession(input: CreatePaneCliSessionInput, _traceId = makeSpaceId("trace")): Promise<PaneCliSession> {
+  async createPaneCliSession(input: CreatePaneCliSessionInput, traceId?: string): Promise<PaneCliSession> {
     const parsed = createPaneCliSessionInputSchema.parse(input);
     return this.withTransaction(async (client) => {
       const pane = await this.getPaneForUpdate(client, parsed.paneId);
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN or APP_STUDIO panes.`);
+      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN" && pane.mode !== "APP_STUDIO" && pane.mode !== "VIDEO" && pane.mode !== "SECURITY_COPILOT" && pane.mode !== "MONITORING_COPILOT") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT, DESIGN, APP_STUDIO, VIDEO, SECURITY_COPILOT or MONITORING_COPILOT panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -10548,9 +10657,10 @@ export class PostgresSpaceStore implements SpaceStore {
             is_active,
             started_at,
             updated_at,
-            ended_at
+            ended_at,
+            trace_id
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NULL, $18, $19, $19, NULL, $20)
           ON CONFLICT (session_id)
           DO UPDATE SET
             pane_id = EXCLUDED.pane_id,
@@ -10572,7 +10682,9 @@ export class PostgresSpaceStore implements SpaceStore {
             exit_code = EXCLUDED.exit_code,
             is_active = EXCLUDED.is_active,
             updated_at = EXCLUDED.updated_at,
-            ended_at = EXCLUDED.ended_at
+            ended_at = EXCLUDED.ended_at,
+            -- The request that first allocated the session keeps it.
+            trace_id = COALESCE(pane_cli_sessions.trace_id, EXCLUDED.trace_id)
           RETURNING
             session_id AS "sessionId",
             pane_id AS "paneId",
@@ -10617,7 +10729,8 @@ export class PostgresSpaceStore implements SpaceStore {
           parsed.status ?? "IDLE",
           parsed.statusReason ?? null,
           isActive,
-          timestamp
+          timestamp,
+          traceId ?? null
         ]
       );
       const stored = mapPaneCliSession(firstOrNotFound(result.rows, `CLI session ${sessionId} was not stored.`));
@@ -12737,6 +12850,8 @@ export class PostgresSpaceStore implements SpaceStore {
     agentRuns: Array<Pick<SpaceAgentRunRecord, "runId" | "workflowId" | "status" | "errorCode" | "createdAt" | "completedAt"> & { continuationOf: string | null }>;
     roomAgentMissions: Array<{ missionId: string; roomId: string; status: string; errorCode: string | null; queuedAt: string; completedAt: string | null }>;
     roomAgentTaskRuns: Array<{ runId: string; missionId: string; roomId: string; status: string; errorCode: string | null; queuedAt: string; completedAt: string | null }>;
+    cliSessions: Array<{ sessionId: string; paneId: string; roomId: string; runtimeId: string; cliTaskId: string | null; cliTaskRevisionId: string | null;
+      launchMode: string; status: string; startedAt: string; endedAt: string | null }>;
   }> {
     // Same bounds as traceRecordLimits in @space/runtime (kept local so this
     // package does not depend on a newer runtime build at test time).
@@ -12790,19 +12905,27 @@ export class PostgresSpaceStore implements SpaceStore {
       }
       frontier = found.rows.map((row) => row.runId);
     }
-    const [missions, taskRuns] = await Promise.all([
+    type TraceCliSessionRow = { sessionId: string; paneId: string; roomId: string; runtimeId: string; cliTaskId: string | null; cliTaskRevisionId: string | null;
+      launchMode: string; status: string; startedAt: Date | string; endedAt: Date | string | null };
+    const [missions, taskRuns, cliSessions] = await Promise.all([
       this.pool.query<{ missionId: string; roomId: string; status: string; errorCode: string | null; queuedAt: Date | string; completedAt: Date | string | null }>(
         `SELECT mission_id AS "missionId", room_id AS "roomId", status, error_code AS "errorCode", queued_at AS "queuedAt", completed_at AS "completedAt"
            FROM room_agent_missions WHERE trace_id = $1 ORDER BY queued_at DESC LIMIT $2`, [traceId, limit]),
       this.pool.query<{ runId: string; missionId: string; roomId: string; status: string; errorCode: string | null; queuedAt: Date | string; completedAt: Date | string | null }>(
         `SELECT run_id AS "runId", mission_id AS "missionId", room_id AS "roomId", status, error_code AS "errorCode", queued_at AS "queuedAt", completed_at AS "completedAt"
-           FROM room_agent_task_runs WHERE trace_id = $1 ORDER BY queued_at DESC LIMIT $2`, [traceId, limit])
+           FROM room_agent_task_runs WHERE trace_id = $1 ORDER BY queued_at DESC LIMIT $2`, [traceId, limit]),
+      // idx_pane_cli_sessions_trace (migration 0258).
+      this.pool.query<TraceCliSessionRow>(
+        `SELECT session_id AS "sessionId", pane_id AS "paneId", room_id AS "roomId", runtime_id AS "runtimeId", cli_task_id AS "cliTaskId",
+                cli_task_revision_id AS "cliTaskRevisionId", launch_mode AS "launchMode", status, started_at AS "startedAt", ended_at AS "endedAt"
+           FROM pane_cli_sessions WHERE trace_id = $1 ORDER BY started_at DESC LIMIT $2`, [traceId, limit])
     ]);
     return {
       ...records,
       agentRuns: agentRuns.slice(0, limit),
       roomAgentMissions: missions.rows.map((row) => ({ ...row, queuedAt: toIso(row.queuedAt), completedAt: toIso(row.completedAt) })),
-      roomAgentTaskRuns: taskRuns.rows.map((row) => ({ ...row, queuedAt: toIso(row.queuedAt), completedAt: toIso(row.completedAt) }))
+      roomAgentTaskRuns: taskRuns.rows.map((row) => ({ ...row, queuedAt: toIso(row.queuedAt), completedAt: toIso(row.completedAt) })),
+      cliSessions: cliSessions.rows.map((row) => ({ ...row, startedAt: toIso(row.startedAt), endedAt: toIso(row.endedAt) }))
     };
   }
 

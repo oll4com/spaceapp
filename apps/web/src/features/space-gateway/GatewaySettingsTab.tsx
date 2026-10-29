@@ -207,7 +207,7 @@ export function GatewaySettingsTab({ settings, status, client, onSaved }: {
       <WarmupSection settings={settings} client={client} onSaved={onSaved} />
       <PoliciesSection settings={settings} client={client} onSaved={onSaved} />
       <LanSection settings={settings} status={status} client={client} onSaved={onSaved} />
-      <AnthropicBillingSection client={client} />
+      <AnthropicBillingSection settings={settings} client={client} onSaved={onSaved} />
       <section className="gw-card" aria-label="Sign-in">
         <header><h3>Sign-in</h3></header>
         <p className="space-gateway-note">Space sign-in replaces a separate dashboard password, session lifetime and TOTP: only Space administrators can open Space Gateway, their sessions follow Space's sign-in rules, and every change here is recorded in the audit log.</p>
@@ -287,7 +287,7 @@ export function GatewayRoutingTab({ settings, client, onSaved, onAddClaudeApiKey
       <SpaceToggle checked={sticky} label="Sticky threads" detail="Keep a conversation on the same account to reuse its prompt cache." onChange={setSticky} />
       <SpaceToggle checked={earlierReset} label="Prefer earlier reset" detail="Among eligible accounts, use the one whose quota resets soonest." onChange={setEarlierReset} />
       <SpaceToggle checked={apiKeyFallback} label="Claude API key fallback"
-        detail="When every Claude account is out of quota, send Claude requests through the Claude API key (paid per token). The accounts take over again at their next reset. The key must be in Accounts as a Claude API key account."
+        detail="When every Claude account is out of quota, send Claude requests from clients other than Claude Code through the Claude API key (paid per token); Claude Code never uses it. The accounts take over again at their next reset. The key must be in Accounts as a Claude API key account."
         onChange={setApiKeyFallback} />
       {onAddClaudeApiKey ? (
         <div className="space-gateway-toolbar">

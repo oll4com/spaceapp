@@ -15,7 +15,7 @@ const settings: GatewaySettings = {
   compressionTimeBudgetMs: 250, compressionProviders: { CLAUDE: { mode: "OFF", outputPolicy: "LEAN" } }, requestLogRetentionDays: 30, displayTimeFormat: "24H",
   displayAccountWindows: "BOTH", displayBurnProjection: true,
   upstreamStreamTransport: "DEFAULT", promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false, warmupWindows: "BOTH",
-  warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false, lanMode: "ENV", lanHost: null, lanPort: null,
+  warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false, anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null, lanMode: "ENV", lanHost: null, lanPort: null,
   lanAllowedSources: [], updatedAt: "2026-10-11T10:00:00.000Z"
 };
 
@@ -484,6 +484,30 @@ describe("SpaceGatewayDialog", () => {
     fireEvent.click(within(card).getByRole("button", { name: "Confirm remove" }));
     await waitFor(() => expect(api.removeAnthropicAdminKey).toHaveBeenCalled());
     expect(await within(card).findByText("No admin key")).toBeTruthy();
+  });
+
+  it("saves the monthly Anthropic API budget and credits, refuses a non-positive one and clears them when emptied", async () => {
+    const api = client();
+    render(<SpaceGatewayDialog client={api} initialTab="settings" onClose={() => undefined} />);
+    const card = await screen.findByRole("form", { name: "Anthropic billing" });
+    const budget = within(card).getByLabelText(/Monthly API budget/) as HTMLInputElement;
+    const save = () => fireEvent.click(within(screen.getByRole("form", { name: "Anthropic billing" })).getByRole("button", { name: "Save budget and credits" }));
+    fireEvent.change(budget, { target: { value: "0" } });
+    save();
+    expect(await within(card).findByText("The budget and the credits must be dollar amounts above 0.")).toBeTruthy();
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    fireEvent.change(budget, { target: { value: "500" } });
+    fireEvent.change(within(card).getByLabelText(/Anthropic credits/), { target: { value: "1500" } });
+    save();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ anthropicMonthlyBudgetUsd: 500, anthropicCreditsUsd: 1500 }));
+    // Saved settings remount the tab, which reads the amounts back.
+    await waitFor(() => expect((within(screen.getByRole("form", { name: "Anthropic billing" })).getByLabelText(/Monthly API budget/) as HTMLInputElement).value).toBe("500"));
+    const saved = screen.getByRole("form", { name: "Anthropic billing" });
+    expect((within(saved).getByLabelText(/Anthropic credits/) as HTMLInputElement).value).toBe("1500");
+    fireEvent.change(within(saved).getByLabelText(/Monthly API budget/), { target: { value: "" } });
+    fireEvent.change(within(saved).getByLabelText(/Anthropic credits/), { target: { value: "" } });
+    save();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ anthropicMonthlyBudgetUsd: null, anthropicCreditsUsd: null }));
   });
 
   it("shows an empty request log", async () => {

@@ -5,7 +5,7 @@ import type { NousPaneBoardSettings, Pane, Room, SpaceNotification } from "@spac
 import { nousPaneBoardSettingsSchema } from "@space/contracts";
 import { InMemoryNousPaneSummariesRepository, type PaneReport } from "@space/db";
 import { describe, expect, it, vi } from "vitest";
-import { createPaneBoard, fallbackSummary, panePrompt, parseSummaryAnswer, summaryPrompt, type PaneBoardSnapshot } from "../src/nous/pane-board.js";
+import { boardPanes, createPaneBoard, fallbackSummary, panePrompt, parseSummaryAnswer, summaryPrompt, type PaneBoardSnapshot } from "../src/nous/pane-board.js";
 
 const owner = "user:operator";
 const room = (id: string, name: string, order: number, kind = "WORKSPACE") => ({ id, name, kind, order, ownerUserId: owner, archivedAt: null }) as unknown as Room;
@@ -176,6 +176,32 @@ describe("Nous pane board pieces", () => {
     expect(fallbackSummary({ ...base, state: "working", report: snapshot.reports[0]!, check: null }, 0)).toEqual(expect.objectContaining({ line: "Step 3 done.", waitsOn: "NONE" }));
     expect(panePrompt({ pane: andy, state: "waiting", report: snapshot.reports[0]! })).toEqual({ question: "Waiting for input", options: [] });
     expect(panePrompt({ pane: andy, state: "working", report: snapshot.reports[1]! })).toBeNull();
+  });
+
+  it("keeps INFO notices (new mail, a learned rule) off the board: only what waits for the operator (operator request 2026-10-21)", () => {
+    const { snapshot, andy } = world();
+    const notice = (id: string, severity: string) => ({ id, paneId: andy.id, source: "MAIL_COPILOT", severity, title: id, status: "OPEN" }) as unknown as SpaceNotification;
+    snapshot.notifications = [notice("notification:mail", "INFO"), notice("notification:review", "ATTENTION")];
+    expect(boardPanes(snapshot, { showClosed: false }).find((entry) => entry.pane.id === andy.id)!.notifications.map((item) => item.id)).toEqual(["notification:review"]);
+  });
+
+  it("names a copilot's own waiting work and waits on Nothing for it, unless something waits for the operator (Ask Last step 8)", async () => {
+    // 27/10 22:35 BKK: a Marketing pane said "waiting for approval" 3 hours after its posts were approved (the agent's last report).
+    const f = setup({ answer: (prompt) => JSON.stringify([...prompt.matchAll(/"paneId":"([^"]+)"/g)].map((match) => match[1]).filter((id) => id !== "…")
+      .map((paneId) => ({ paneId, line: "Περιμένει έγκριση για τις αναρτήσεις", waitsOn: "OPERATOR", needsOperator: true }))) });
+    const mia = pane("pane:mia00001", "Mia", "room:beta00001", { mode: "MARKETING_COPILOT", terminalRuntimeId: "cli:claude" });
+    f.snapshot.rooms = [{ room: f.snapshot.rooms[1]!.room, sample: { data: [mia], activity: { [mia.id]: "idle" }, details: {}, sampledAt: "" } }];
+    f.snapshot.reports = [report(mia.id, "9", "2026-10-27T11:50:00.000Z", { status: "WAITING", summary: "Waiting for approval of 4 Reddit replies." })];
+    f.snapshot.copilotWork = { [mia.id]: 4 };
+    await f.board.tick(owner);
+    expect(f.prompts[0]).toContain('"waitingForCopilot":4');
+    const line = (await f.board.board(owner)).rooms[0]!.panes[0]!.summary;
+    expect(line).toEqual(expect.objectContaining({ line: "Περιμένει έγκριση για τις αναρτήσεις (4 waiting for the copilot)", waitsOn: "NONE", needsOperator: false }));
+    // A card for the operator on the pane keeps it theirs.
+    const input = boardPanes(f.snapshot, { showClosed: false })[0]!;
+    const card = { id: "notification:review", paneId: mia.id, source: "MARKETING_COPILOT", severity: "ATTENTION", title: "Review a post", status: "OPEN" } as unknown as SpaceNotification;
+    expect(fallbackSummary({ ...input, notifications: [card] }, 0)).toEqual(expect.objectContaining({ waitsOn: "OPERATOR" }));
+    expect(fallbackSummary({ ...input, report: { ...input.report!, status: "NEEDS_YOU" } }, 0)).toEqual(expect.objectContaining({ line: "Waiting for approval of 4 Reddit replies. (4 waiting for the copilot)".slice(0, 400), waitsOn: "NONE" }));
   });
 
   it("keeps the prompt within the worker's limit", () => {

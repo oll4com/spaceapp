@@ -8,7 +8,7 @@ describe("Mail Copilot contracts", () => {
   it("reads unconfigured panes as Assist defaults and keeps the view (the CLI account lives in the session, never the row)", () => {
     const metadata = defaultMailCopilotPaneMetadata();
     expect(metadata).toEqual({ version: 1, settings: {
-      autonomy: "ASSIST", paused: false, accounts: [], backlogHours: 24, sendsPerHour: 20, signature: null, notifications: { newMail: true, needsYou: true, telegram: false, mutedAccounts: [] }
+      autonomy: "ASSIST", paused: false, accounts: [], backlogHours: 24, dailyRunHour: 9, sendsPerHour: 20, signature: null, notifications: { newMail: true, needsYou: true, telegram: false, mutedAccounts: [] }
     } });
     expect(resolveMailCopilotPaneMetadata(null)).toEqual(metadata);
     const parsed = mailCopilotPaneMetadataSchema.parse({ version: 1, settings: { autonomy: "RULES", accounts: ["me@gmail.com"] },
@@ -18,6 +18,9 @@ describe("Mail Copilot contracts", () => {
     expect(parsed.view).toMatchObject({ account: "me@gmail.com", threadId: "t1", messageId: null, query: null });
     expect(() => mailCopilotPaneMetadataSchema.parse({ version: 1, settings: { autonomy: "YOLO" } })).toThrow();
     expect(() => mailCopilotPaneMetadataSchema.parse({ version: 2, settings: {} })).toThrow();
+    // Rows stored before the daily organize run (2026-10-27) read with its 09:00 default; the hour is 0-23.
+    expect(resolveMailCopilotPaneMetadata({ version: 1, settings: { autonomy: "ASSIST", paused: false, accounts: [], backlogHours: 24, sendsPerHour: 20, signature: null } } as never).settings.dailyRunHour).toBe(9);
+    expect(mailCopilotPaneMetadataSchema.safeParse({ version: 1, settings: { dailyRunHour: 24 } }).success).toBe(false);
   });
 
   it("creates MAIL_COPILOT panes with a CLI runtime and an account, like Job Copilot", () => {

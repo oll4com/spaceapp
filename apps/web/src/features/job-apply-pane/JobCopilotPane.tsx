@@ -13,6 +13,7 @@ import { HeldBrowserStrip } from "../copilot-kit/HandoffOverlay.js";
 import { browserVisible, resolveActiveTab, tabsForLayout } from "./layout.js";
 import { useCopilotLayout } from "../copilot-kit/copilot-layout.js";
 import { MemoryTab } from "./MemoryTab.js";
+import { BookmarksTab } from "../marketing-copilot-pane/BookmarksTab.js";
 import { QueueTab } from "./QueueTab.js";
 import { SetupWizard } from "./SetupWizard.js";
 import { StartOver } from "./StartOver.js";
@@ -64,7 +65,7 @@ function writeRailPreference(paneId: string, preference: RailPreference): void {
   }
 }
 
-const TAB_LABELS: Record<CopilotRailTab, string> = { browser: "Browser", activity: "Activity", queue: "Queue", fields: "Fields", memory: "Memory", setup: "Setup", terminal: "Terminal" };
+const TAB_LABELS: Record<CopilotRailTab, string> = { browser: "Browser", activity: "Activity", queue: "Queue", fields: "Fields", memory: "Memory", bookmarks: "Bookmarks", setup: "Setup", terminal: "Terminal" };
 
 /**
  * Job Copilot: full-bleed live browser, a command bar (agent, run state, counters) and a
@@ -265,6 +266,7 @@ export function JobCopilotPane({ pane, isVisible, terminal, browser }: JobCopilo
           ) : null}
           {railOpen && activeTab === "fields" ? <FieldsTab paneId={pane.id} application={fieldsApplication} /> : null}
           {railOpen && activeTab === "memory" ? <MemoryTab paneId={pane.id} /> : null}
+          {railOpen && activeTab === "bookmarks" ? <BookmarksTab paneId={pane.id} onOpened={() => { if (layout === "stacked") selectTab("browser"); }} /> : null}
           {railOpen && activeTab === "queue" ? (
             <QueueTab applications={data.applications} campaignStartedAt={data.profile?.campaignStartedAt ?? null} paneId={pane.id} selectedId={selectedApplicationId} onSelect={setSelectedApplicationId}
               onCreated={(application) => data.setApplications((current) => [application, ...current.filter((entry) => entry.id !== application.id)])} onRefresh={() => void data.refresh()} />

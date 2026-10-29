@@ -260,6 +260,8 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
     expect(recorded.type).toBe("ROOM_WATCHDOG_ALERT");
+    // The watchdog's background auto-interrupt can record PANE_UPDATED in the same millisecond, so "latest" is a race;
+    // what matters is that the alert itself was stored.
     expect(store.listEvents(room.id).find((event) => event.id === recorded.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
   });
 

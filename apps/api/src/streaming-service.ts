@@ -418,6 +418,22 @@ export class StreamingService {
     return { authorization, accounts };
   }
 
+  /** Safe setup subject; raw client and grant credentials stay inside this service. */
+  async connectionFingerprint(accountId: string): Promise<string> {
+    const account = await this.requiredAccount(accountId);
+    const authorization = await this.requiredAuthorization(account.authorizationId);
+    if (account.status !== "ACTIVE" || authorization.status !== "ACTIVE") {
+      throw new StreamingServiceError("AUTHORIZATION_INACTIVE", "The provider authorization is not active.", 409);
+    }
+    const [client, credential] = await Promise.all([
+      this.options.credentialStore.readClient(account.provider),
+      this.options.credentialStore.readCredential(authorization.credentialRef)
+    ]);
+    return digest(JSON.stringify({ version: "streaming-connection:v1", accountId, provider: account.provider,
+      externalAccountId: account.externalAccountId, authorizationId: authorization.id, scopes: authorization.scopes,
+      client: digest(JSON.stringify(client)), credential: digest(JSON.stringify(credential)) }));
+  }
+
   async verifyAccount(accountId: string): Promise<StreamingVerifyAccountResponse> {
     const account = await this.requiredAccount(accountId);
     const authorization = await this.requiredAuthorization(account.authorizationId);

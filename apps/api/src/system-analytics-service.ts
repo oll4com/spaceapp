@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { cpus } from "node:os";
 import { promisify } from "node:util";
 import {
+  gatewayWeekPace,
   cliToggleRuntimeIds,
   systemAnalyticsCliSessionsResponseSchema,
   systemAnalyticsModelsResponseSchema,
@@ -1793,8 +1794,11 @@ export class SystemAnalyticsService {
   private async tokenAccounts(groups: SystemAnalyticsModelEventGroup[]): Promise<SystemAnalyticsTokenAccount[]> {
     const providerNames: Record<string, string> = { CLAUDE: "Claude", ANTHROPIC_API: "Claude API", CODEX: "Codex", ANTIGRAVITY: "Google",
       GOOGLE_AI: "Google AI", OPENAI_API: "OpenAI API", COPILOT: "Copilot", DEEPSEEK: "DeepSeek", OPENROUTER: "OpenRouter", KIMI: "Kimi", QWEN: "Qwen" };
-    const labels = new Map((await this.tokenSources?.gatewayAccounts().catch(() => []) ?? [])
-      .map((account) => [account.id, `${account.label} · ${providerNames[account.provider] ?? account.provider}`]));
+    const gatewayAccounts = await this.tokenSources?.gatewayAccounts().catch(() => []) ?? [];
+    const labels = new Map(gatewayAccounts.map((account) => [account.id, `${account.label} · ${providerNames[account.provider] ?? account.provider}`]));
+    // Each subscription account's weekly pace (plan clipboard:nUloPOH3blDT): used % minus the share of its week passed.
+    const paces = new Map(gatewayAccounts.map((account) => [account.id, account.primaryWindow && account.secondaryWindow
+      ? gatewayWeekPace({ primaryWindow: account.primaryWindow, secondaryWindow: account.secondaryWindow }, this.now().getTime()) : null]));
     const accounts = new Map<string, { route: "GATEWAY" | "DIRECT"; groups: SystemAnalyticsModelEventGroup[] }>();
     for (const group of groups) {
       if (!group.hasTokens) continue;
@@ -1816,7 +1820,7 @@ export class SystemAnalyticsService {
         models.set(modelKey(group.providerId, group.modelId), model);
       }
       return {
-        accountKey, label: tokenAccountLabel(accountKey, labels), route: entry.route, ...tokenTotals(entry.groups),
+        accountKey, label: tokenAccountLabel(accountKey, labels), route: entry.route, weeklyPace: paces.get(accountKey) ?? null, ...tokenTotals(entry.groups),
         models: [...models.values()].sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 50)
       };
     }).sort((left, right) => right.tokensIn + right.tokensOut - left.tokensIn - left.tokensOut).slice(0, 200);

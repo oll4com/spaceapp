@@ -862,6 +862,36 @@ describe("model stats MDL badge", () => {
     expect(within(card).getByText("The last sync failed (anthropic_http_429).")).toBeTruthy();
   });
 
+  it("lists the Claude API's spend and every provider's balance, credit meter and details on the API tab", async () => {
+    const client = createClient();
+    client.apiProviderAccounts = vi.fn(async () => ({
+      data: [
+        { id: "anthropic", providerId: "anthropic", label: "Claude API (Anthropic)", status: "CONNECTED" as const, balance: null, currency: "USD",
+          usage: "$363.10", limit: null, remainingPercent: null, detail: "Today $61.18 (estimate) · 7 days $93.27 · 31 days $363.10", sampledAt },
+        { id: "openrouter", providerId: "openrouter", label: "OpenRouter", status: "CONNECTED" as const, balance: "$0.00", currency: "USD",
+          usage: "$15.23", limit: "$15.00", remainingPercent: 0, detail: "Credits: $15.00 · Used: $15.23", sampledAt },
+        { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "UNCONFIGURED" as const, balance: null, currency: null, detail: "No DEEPSEEK_API_KEY found", sampledAt: null },
+      ],
+      pagination: { page: 1, pageSize: 3, totalItems: 3, totalPages: 1 }, isStale: false, error: null, source: "mock" as const, checkedAt: sampledAt,
+    }));
+
+    render(<ToolbarMetrics environment={environment} client={client} />);
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "ALL 62%" }));
+    const panel = await screen.findByRole("region", { name: "Account usage details" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "API Providers" }));
+    const claude = (await within(panel).findByText("Claude API (Anthropic)")).closest("li") as HTMLElement;
+    expect(claude.className).toContain("is-available");
+    expect(within(claude).getByText("$363.10")).toBeTruthy();
+    expect(within(claude).getByText("Spent this month")).toBeTruthy();
+    expect(within(claude).getByText("Today $61.18 (estimate)")).toBeTruthy();
+    expect(within(claude).queryByRole("meter")).toBeNull();
+    const openRouter = within(panel).getByText("OpenRouter").closest("li") as HTMLElement;
+    expect(within(openRouter).getByText("Balance")).toBeTruthy();
+    expect(within(openRouter).getByRole("meter", { name: "Left of $15.00 remaining" }).getAttribute("aria-valuenow")).toBe("0");
+    expect(within(panel).getByText("DeepSeek").closest("li")!.className).toContain("is-offline");
+    expect(within(panel).getByText("Not set up")).toBeTruthy();
+  });
+
   it("leaves out the 5h cell of an account that has only a weekly limit", () => {
     const entry = (fiveHourRemainingPercent: number | null) => ({
       id: "a", title: "prolite@example.test", details: [], capacity: 100, availability: { state: "available" as const, backAt: null },

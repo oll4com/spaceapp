@@ -400,26 +400,24 @@
   scrollbar-width: thin;
   padding-bottom: 0.5rem;
 }
-.space-shell .room-toolbar-collapsed .room-live-rail-button,
-.space-shell .room-toolbar-collapsed .live-pane-orb-button {
-  --live-rail-top-edge: calc(max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 0px));
-  --live-rail-bottom-edge: calc(100dvh - max(8px, env(safe-area-inset-bottom)) - var(--room-toolbar-collapsed-height, 420px));
-  --live-rail-midpoint: calc((var(--live-rail-top-edge) + var(--live-rail-bottom-edge)) / 2);
-  position: fixed;
-  top: clamp(
-    calc(var(--live-rail-top-edge) + 34px),
-    var(--live-rail-midpoint),
-    calc(var(--live-rail-bottom-edge) - 34px)
-  );
-  right: max(4px, env(safe-area-inset-right));
-  width: 48px !important;
-  height: 48px !important;
-  min-width: 48px !important;
-  min-height: 48px !important;
-  max-width: 48px !important;
-  max-height: 48px !important;
-  transform: translateY(-50%);
-  z-index: 72;
+/* The Live orb is the rail's round top end, pinned there (operator 2026-10-25): first whatever the stored rail order
+   (!important beats use-rail-order's inline order) and sticky while the rail scrolls. */
+.space-shell .room-toolbar-collapsed:has(> .room-live-rail-button) {
+  border-top-left-radius: calc(var(--rail-width, 50px) / 2);
+  border-top-right-radius: calc(var(--rail-width, 50px) / 2);
+}
+.space-shell .room-toolbar-collapsed .room-live-rail-button {
+  position: sticky;
+  top: 0;
+  order: -1 !important;
+  flex: 0 0 var(--toolbar-control-size, 44px);
+  width: var(--toolbar-control-size, 44px) !important;
+  height: var(--toolbar-control-size, 44px) !important;
+  min-width: var(--toolbar-control-size, 44px) !important;
+  min-height: var(--toolbar-control-size, 44px) !important;
+  max-width: var(--toolbar-control-size, 44px) !important;
+  max-height: var(--toolbar-control-size, 44px) !important;
+  z-index: 1;
   border: 1px solid rgba(255, 255, 255, 0.12);
   /* !important: the Liquid Glass theme rounds every button to 12px with equal specificity. */
   border-radius: 50% !important;
@@ -432,8 +430,7 @@
   -webkit-tap-highlight-color: transparent;
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.6s ease, color 0.2s ease;
 }
-.space-shell .room-toolbar-collapsed .room-live-rail-button::before,
-.space-shell .room-toolbar-collapsed .live-pane-orb-button::before {
+.space-shell .room-toolbar-collapsed .room-live-rail-button::before {
   content: "";
   position: absolute;
   inset: -6px !important;
@@ -445,29 +442,10 @@
   z-index: -1;
   animation: room-live-rail-breathe 2.8s ease-in-out infinite;
 }
-.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed .room-live-rail-button,
-.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed .live-pane-orb-button {
-  width: 44px !important;
-  height: 44px !important;
-  min-width: 44px !important;
-  min-height: 44px !important;
-  max-width: 44px !important;
-  max-height: 44px !important;
-}
-.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed .room-live-rail-button::before,
-.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed .live-pane-orb-button::before {
+.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed .room-live-rail-button::before {
   inset: -3px !important;
   filter: blur(5px) !important;
   opacity: 0.3 !important;
-}
-.space-shell:has(.health-indicator-rail) .room-toolbar-collapsed .room-live-rail-button {
-  --live-rail-top-edge: calc(max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
-}
-.space-shell:has(.health-indicator-rail) .room-toolbar-collapsed .live-pane-orb-button {
-  --live-rail-top-edge: calc(max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
-}
-.space-shell:has(.desktop-window-titlebar):not([data-browser-fullscreen="true"]):has(.health-indicator-rail) .room-toolbar-collapsed :is(.room-live-rail-button, .live-pane-orb-button) {
-  --live-rail-top-edge: calc(32px + max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
 }
 .space-shell .room-toolbar-collapsed .room-live-rail-button:hover {
   filter: brightness(1.12);
@@ -2614,29 +2592,7 @@ html.space-osk-open .space-shell[data-shell-mode="mobile"] .workspace .board { p
   height: var(--toolbar-icon-size, 14px) !important;
 }
 
-.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .room-live-rail-button,
-.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .live-pane-orb-button {
-  width: var(--rail-live-btn, 34px) !important;
-  height: var(--rail-live-btn, 34px) !important;
-  min-width: var(--rail-live-btn, 34px) !important;
-  min-height: var(--rail-live-btn, 34px) !important;
-  max-width: var(--rail-live-btn, 34px) !important;
-  max-height: var(--rail-live-btn, 34px) !important;
-  right: max(1px, env(safe-area-inset-right)) !important;
-  top: clamp(
-    calc(var(--live-rail-top-edge) + 26px),
-    var(--live-rail-midpoint),
-    calc(var(--live-rail-bottom-edge) - 26px)
-  ) !important;
-}
-
-.space-shell[data-rail-downscaled="true"]:has(.desktop-window-titlebar):not([data-browser-fullscreen="true"]):has(.health-indicator-rail) .room-toolbar-collapsed :is(.room-live-rail-button, .live-pane-orb-button) {
-  --live-rail-top-edge: calc(32px + max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px)) !important;
-}
-
-
-.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .room-live-rail-button::before,
-.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .live-pane-orb-button::before {
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .room-live-rail-button::before {
   inset: -3px !important;
   filter: blur(5px) !important;
   opacity: 0.3 !important;

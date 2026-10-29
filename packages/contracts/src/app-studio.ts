@@ -46,8 +46,9 @@ export function appStudioDevice(id: string): AppStudioDevice | null {
   return APP_STUDIO_DEVICES.find((device) => device.id === id) ?? null;
 }
 /** A route inside the app, e.g. "/" or "/settings". */
-export const appStudioRouteSchema = z.string().trim().min(1).max(200).regex(/^\/[A-Za-z0-9/_\-.[\]()]*$/)
-  .refine((route) => !route.split("/").includes(".."), "A route never leaves the app.");
+/** A screen of the app: its path, an optional query string (a state such as ?state=locked) and #2-#5 for the screens below the first one. */
+export const appStudioRouteSchema = z.string().trim().min(1).max(200).regex(/^\/[A-Za-z0-9/_\-.[\]()]*(\?[A-Za-z0-9_\-.=&%,~+:]*)?(#[2-5])?$/)
+  .refine((route) => !route.split(/[?#]/)[0]!.split("/").includes(".."), "A route never leaves the app.");
 export const APP_STUDIO_MAX_ROUTES = 20;
 
 // ---- pane metadata ------------------------------------------------------------------------------

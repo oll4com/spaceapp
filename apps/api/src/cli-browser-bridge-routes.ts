@@ -18,6 +18,7 @@ import { buildGenericUserUploadStorage, inferUploadMimeType, isAllowedImageMime,
 import { recordUploadedArtifact } from "./upload-record.js";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
+import { assertBrowserHostPressKey } from "./browser-sessions.js";
 import {
   safeBrowserActionRequestForResponse, safeBrowserObservationText, safeBrowserObservationUrl
 } from "./browser-observation.js";
@@ -43,9 +44,15 @@ import type { MailCopilotService } from "./mail-copilot/service.js";
 import { registerMarketingCopilotAgentRoutes } from "./marketing-copilot/agent-routes.js";
 import type { MarketingCopilotService } from "./marketing-copilot/service.js";
 import { registerDesignAgentRoutes } from "./design/agent-routes.js";
+import { registerVideoAgentRoutes } from "./video/agent-routes.js";
+import type { VideoService } from "./video/service.js";
 import type { DesignService } from "./design/service.js";
 import { registerAppStudioAgentRoutes } from "./app-studio/agent-routes.js";
 import type { AppStudioService } from "./app-studio/service.js";
+import { registerSecurityCopilotAgentRoutes } from "./security-copilot/agent-routes.js";
+import type { SecurityCopilotService } from "./security-copilot/service.js";
+import { registerMonitoringCopilotAgentRoutes } from "./monitoring-copilot/agent-routes.js";
+import type { MonitoringCopilotService } from "./monitoring-copilot/service.js";
 import { registerFreelanceCopilotAgentRoutes } from "./freelance-copilot/agent-routes.js";
 import { registerTaskAgentRoutes } from "./task-agent-routes.js";
 import { registerPaneReportRoutes } from "./pane-report-routes.js";
@@ -76,8 +83,13 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   freelanceCopilotService?: FreelanceCopilotService;
   /** Design requests (every CLI pane) and the Design pane's worker tools; see design/agent-routes.ts. */
   designService?: DesignService;
+  videoService?: VideoService;
   /** The App Studio pane's agent tools; see app-studio/agent-routes.ts. */
   appStudioService?: AppStudioService;
+  /** The Security Copilot pane's agent tools; see security-copilot/agent-routes.ts. */
+  securityCopilotService?: SecurityCopilotService;
+  /** The Monitoring Copilot pane's agent tools; see monitoring-copilot/agent-routes.ts. */
+  monitoringCopilotService?: MonitoringCopilotService;
   vault?: VaultModule;
   /** Set once the pane browser routes are registered; agents choose saved Google sign-ins through it. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
@@ -188,6 +200,17 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "design", targetId, metadata })
     });
   }
+  if (deps.videoService) {
+    registerVideoAgentRoutes(app, deps.videoService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      uploadRoot: config.browserEvidenceArtifactRoot,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "video", targetId, metadata })
+    });
+  }
   if (deps.appStudioService) {
     registerAppStudioAgentRoutes(app, deps.appStudioService, {
       store,
@@ -197,6 +220,26 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       parseQuery,
       uploadRoot: config.browserEvidenceArtifactRoot,
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "app_studio", targetId, metadata })
+    });
+  }
+  if (deps.securityCopilotService) {
+    registerSecurityCopilotAgentRoutes(app, deps.securityCopilotService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "security_copilot", targetId, metadata })
+    });
+  }
+  if (deps.monitoringCopilotService) {
+    registerMonitoringCopilotAgentRoutes(app, deps.monitoringCopilotService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "monitoring_copilot", targetId, metadata })
     });
   }
   if (deps.vault) registerVaultAgentBridge(app, deps.vault, { store, requireBridge: requireCliBrowserBridgeContext });
@@ -443,6 +486,7 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
         if (browserPane.roomId !== bridge.claims.roomId) {
           throw new SpaceNotFoundError(`Browser pane ${browserPane.id} was not found in room ${bridge.claims.roomId}.`);
         }
+        await assertBrowserHostPressKey(browserSessionManager, actionRequest.action);
         const actionResult = await browserSessionManager.action(
           browserPane,
           actionRequest.action,

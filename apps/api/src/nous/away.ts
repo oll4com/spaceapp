@@ -135,7 +135,7 @@ export function createNousAway(deps: NousAwayDeps) {
     },
 
     /** Nous's own ATTENTION alerts wait while Away (logged for the summary); URGENT ones and everything else go out as usual. */
-    async raise(input: NotificationRaiseInput, options: { realert?: boolean } = {}) {
+    async raise(input: NotificationRaiseInput, options: Omit<Parameters<NotificationService["raise"]>[1] & object, "held"> = {}) {
       const held = input.source === "NOUS" && input.severity === "ATTENTION" && await holdAlert(input.ownerUserId, input.title);
       return deps.notifications.raise(input, { ...options, ...(held ? { held: true } : {}) });
     },

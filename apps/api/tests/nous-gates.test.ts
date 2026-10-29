@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { eventSchema, nousDecisionCategorySchema, type NousDecision } from "@space/contracts";
+import { eventSchema, nousAnswerIntent, nousDecisionCategorySchema, type NousDecision } from "@space/contracts";
 import { InMemoryControlRepository, InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { InMemorySpaceStore, makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -96,6 +96,101 @@ describe("Nous's gates", () => {
     expect(executeAction).toHaveBeenCalledTimes(1);
     expect((executeAction.mock.calls[0] as unknown as [NousDecision])[0]).toMatchObject({ id: approved.id, status: "APPROVED" });
     await service.idle(owner);
+  });
+
+  it("reads a bare yes or no in words as the operator's decision, and leaves conditions as words (operator gap 2026-10-24)", async () => {
+    expect(nousAnswerIntent("ναι")).toBe("APPROVE");
+    expect(nousAnswerIntent("Yes!")).toBe("APPROVE");
+    expect(nousAnswerIntent("ok, send nothing else")).toBe("APPROVE");
+    expect(nousAnswerIntent("προχώρα - και πες μου μετά")).toBe("APPROVE");
+    expect(nousAnswerIntent("no thanks")).toBe("DECLINE");
+    expect(nousAnswerIntent("όχι.")).toBe("DECLINE");
+    expect(nousAnswerIntent("ναι, αλλά αύριο")).toBeNull();
+    expect(nousAnswerIntent("yes, only if the tests pass")).toBeNull();
+    expect(nousAnswerIntent("ναι ναι")).toBeNull();
+    expect(nousAnswerIntent("why?")).toBeNull();
+    expect(nousAnswerIntent(`yes, ${"x".repeat(201)}`)).toBeNull();
+    // The operator's real answers that left actions unrun (27/10 PHP 7.1 removal, 26/10 send): a yes word with a plain-space note, an imperative.
+    expect(nousAnswerIntent("ωραια την διαγραφεις!!")).toBe("APPROVE");
+    expect(nousAnswerIntent("να φυγει τωρα")).toBe("APPROVE");
+    expect(nousAnswerIntent("ναι κάν'το")).toBe("APPROVE");
+    expect(nousAnswerIntent("οκ προχώρα")).toBe("APPROVE");
+    expect(nousAnswerIntent("διάγραψε")).toBe("APPROVE");
+    expect(nousAnswerIntent("Sounds good")).toBe("APPROVE");
+    expect(nousAnswerIntent("τέλεια, στείλ'το")).toBe("APPROVE");
+    expect(nousAnswerIntent("ωραία, αλλά αύριο")).toBeNull();
+    expect(nousAnswerIntent("ωραία την στέλνεις αύριο")).toBeNull();
+    expect(nousAnswerIntent("να φύγει αύριο")).toBeNull();
+    expect(nousAnswerIntent("ωραία; τι θα σβήσει;")).toBeNull();
+    expect(nousAnswerIntent("ναι στείλ'το\u037e")).toBeNull(); // the Greek question mark
+    expect(nousAnswerIntent("ναι μην το σβήσεις")).toBeNull();
+    // «Do it now» brushing a later date aside is a yes (27/10 14:37, a "from tomorrow" card); a real condition still is not.
+    expect(nousAnswerIntent("ασε τα αυριο κανε το τωρα!!! να τελιώνουμε δεν υπαρχει λογος για αυριο και αυριο!!!")).toBe("APPROVE");
+    expect(nousAnswerIntent("κάνε το τώρα και πες μου μετά")).toBe("APPROVE");
+    expect(nousAnswerIntent("κάνε το αύριο")).toBeNull();
+    expect(nousAnswerIntent("κάνε το τώρα αν περάσουν τα τεστ")).toBeNull();
+    expect(nousAnswerIntent("κάνε το τώρα, μετά το backup")).toBeNull();
+    expect(nousAnswerIntent("μην το κάνεις τώρα")).toBeNull();
+    expect(nousAnswerIntent("αυριο θα φυγουν ολες οι παραγγελιες -- επιβεβαιωσε οτι ηταν διαθεσιμο οτ προιον -- και ζητησε συνγμωη για την καθυστερηση")).toBeNull();
+
+    const executeAction = vi.fn(async () => "ran");
+    const repository = new InMemoryNousRepository();
+    const service = createNousService({
+      repository,
+      runner: async () => ({ text: "ok", isError: false }),
+      world: async () => ({ text: "world", overview: {} }),
+      settings: async () => ({ enabled: false, maxTurnsPerHour: 20 }),
+      notifications: { raise: vi.fn(async () => null), resolve: vi.fn(async () => 0) },
+      executeAction
+    } as unknown as NousServiceDeps);
+    const owner = "user:operator";
+    const ask = (title: string, action = true) => service.ask({ ownerUserId: owner, category: "EXTERNAL", title, body: "", options: ["Send", "Hold"], recommendation: "send", refs: {},
+      action: action ? { type: "PANE_TEXT", roomId: "room:gates2", paneId: "pane:jill", text: "send the proposal", mode: "PROMPT" } : null });
+
+    const yes = await service.answer(owner, (await ask("Send the proposal to Acme?")).id, { answer: "ANSWER", text: "ναι, και πες μου πότε" });
+    expect(yes).toMatchObject({ status: "APPROVED", answer: "ναι, και πες μου πότε", outcome: "ran" });
+    const no = await service.answer(owner, (await ask("Send the proposal to Beta?")).id, { answer: "ANSWER", text: "no" });
+    expect(no).toMatchObject({ status: "DECLINED", outcome: null });
+    const words = await service.answer(owner, (await ask("Send the proposal to Gamma?")).id, { answer: "ANSWER", text: "ναι, αλλά μετά το demo" });
+    expect(words).toMatchObject({ status: "ANSWERED", outcome: null });
+    // Without an action a yes is still words for Nous to read (nothing to run).
+    const noAction = await service.answer(owner, (await ask("Which one first?", false)).id, { answer: "ANSWER", text: "ναι" });
+    expect(noAction.status).toBe("ANSWERED");
+    expect(executeAction).toHaveBeenCalledTimes(1);
+    const notes = (await repository.listMessages(owner, 50)).filter((message) => message.kind === "DECISION").map((message) => message.content);
+    expect(notes.find((text) => text.includes("Acme"))).toContain("approved (read from their words)");
+    expect(notes.find((text) => text.includes("Gamma"))).toContain("The action was not run.");
+    await service.idle(owner);
+  });
+
+  it("asks last (goal ee5a573e): a question carries what Nous checked first, an approval of an action may not, and the operator sees the list", async () => {
+    const ask = vi.fn(async (input: { title: string }) => ({ id: "nous_decision:x", status: "OPEN", title: input.title }));
+    const tools = createNousTools({ ask, rooms: async () => [{ id: "room:gates1", name: "Main" }], listPanes: async () => [] } as unknown as NousToolDeps);
+    const ctx = { owner: "user:operator", turnId: "nous_turn:g1", callId: "toolu_g", traceId: "trace:g" };
+    const base = { title: "Which logo?", body: "Two drafts are ready.", recommendation: "The blue one." };
+    const direction = await tools.execute("space_ask_operator", { ...base, category: "DIRECTION", options: ["Blue", "Red"] }, ctx);
+    expect(direction).toMatchObject({ ok: false, result: expect.stringContaining("checked is required: Ask last (operator goal ee5a573e") });
+    const actionless = await tools.execute("space_ask_operator", { ...base, category: "EXTERNAL" }, ctx);
+    expect(actionless.ok).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
+    const external = await tools.execute("space_ask_operator", { ...base, category: "EXTERNAL", title: "Send the reply",
+      action: { type: "COPILOT", copilot: "MAIL", item: "REVIEW", itemId: "mailrev:1", paneId: null, decision: "APPROVE" } }, ctx);
+    expect(external.ok).toBe(true);
+    const checked = ["Space Memory: no logo preference", "Design pane: both drafts delivered 27/10"];
+    expect((await tools.execute("space_ask_operator", { ...base, category: "DIRECTION", options: ["Blue", "Red"], checked }, ctx)).ok).toBe(true);
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ category: "DIRECTION" }), { checked });
+
+    const raise = vi.fn(async () => null);
+    const service = createNousService({ repository: new InMemoryNousRepository(), runner: async () => ({ text: "ok", isError: false }),
+      world: async () => ({ text: "world", overview: {} }), settings: async () => ({ enabled: false, maxTurnsPerHour: 20 }),
+      notifications: { raise, resolve: vi.fn(async () => 0) }, executeAction: vi.fn() } as unknown as NousServiceDeps);
+    const decision = await service.ask({ ownerUserId: "user:operator", category: "DIRECTION", title: "Which logo?", body: "Two drafts are ready.", options: ["Blue", "Red"],
+      recommendation: "The blue one.", refs: {}, action: null }, { checked });
+    const block = "\n\nChecked first:\n• Space Memory: no logo preference\n• Design pane: both drafts delivered 27/10";
+    expect(decision.body).toBe(`Two drafts are ready.${block}`);
+    // The card's text is what Telegram sends too.
+    expect((raise.mock.calls[0] as unknown as [{ body: string }])[0].body).toBe(`Recommendation: The blue one.\nTwo drafts are ready.${block}`);
+    await service.idle("user:operator");
   });
 
   it("never holds Nous's own cards and decisions from the operator, even while it holds other notifications", async () => {

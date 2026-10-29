@@ -346,7 +346,7 @@ describe("first-owner setup", { timeout: 60_000 }, () => {
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: "Create your Space owner" })).toBeNull();
     }, APP_VIEW_WAIT);
-    expect(await screen.findByRole("heading", { name: "Setup & connections" }, APP_VIEW_WAIT)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Your Space" }, APP_VIEW_WAIT)).toBeTruthy();
     const claim = requests.find((request) => request.url === "/api/setup/claim");
     expect(claim?.init?.method).toBe("POST");
     expect(JSON.parse(String(claim?.init?.body))).toEqual({

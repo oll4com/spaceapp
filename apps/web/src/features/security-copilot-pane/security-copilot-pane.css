@@ -1,0 +1,47 @@
+/* Security Copilot pane: findings, hosts and held changes inside the copilot kit's pane (bar, rail and controls come from copilot-pane.css). */
+.sc-main { overflow: auto; }
+.sc-findings { display: grid; gap: 10px; align-content: start; padding: 14px; }
+.sc-counts { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+.sc-count { display: grid; gap: 2px; min-width: 88px; padding: 8px 10px; border: 1px solid var(--jc-border); border-radius: 10px; background: transparent; color: var(--jc-text); text-align: left; cursor: pointer; }
+.sc-count strong { font-size: 20px; line-height: 1.1; }
+.sc-count span { font-size: 11px; color: var(--jc-muted); }
+.sc-count.selected { border-color: var(--jc-accent); box-shadow: inset 0 0 0 1px var(--jc-accent); }
+.sc-count.priority-p0 strong, .sc-priority.priority-p0 { color: var(--danger, #e5484d); }
+.sc-count.priority-p1 strong, .sc-priority.priority-p1 { color: var(--warning, #f5a524); }
+.sc-host-filter { margin-left: auto; min-width: 180px; }
+.sc-reboot { margin: 0; }
+.sc-finding-list { display: grid; gap: 6px; }
+.sc-finding { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--jc-border); border-left-width: 3px; border-radius: 8px; }
+.sc-finding.priority-p0 { border-left-color: var(--danger, #e5484d); }
+.sc-finding.priority-p1 { border-left-color: var(--warning, #f5a524); }
+.sc-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.sc-finding-id { overflow-wrap: anywhere; }
+.sc-finding-host { color: var(--jc-muted); font-size: 12px; }
+.sc-finding-head .status-new, .sc-finding-head .status-failed { margin-left: auto; }
+.sc-kev { color: var(--danger, #e5484d); border-color: currentColor; }
+.sc-finding-line, .sc-host-line { margin: 0; font-size: 12px; color: var(--jc-muted); overflow-wrap: anywhere; }
+.sc-finding-detail { display: grid; gap: 6px; padding-top: 6px; border-top: 1px solid var(--jc-border); }
+.sc-finding-detail p { margin: 0; overflow-wrap: anywhere; }
+.sc-refs { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
+.sc-autonomy { font-size: 11px; }
+
+.sc-activity, .sc-hosts, .sc-memory { display: grid; gap: 10px; align-content: start; padding: 12px; overflow: auto; }
+.sc-review { border-color: color-mix(in srgb, var(--warning, #f5a524) 55%, var(--jc-border)); }
+.sc-review-detail { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+.sc-review-detail dt { color: var(--jc-muted); }
+.sc-review-detail dd { margin: 0; overflow-wrap: anywhere; }
+.sc-review-detail pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
+.sc-question { border-color: color-mix(in srgb, var(--jc-accent) 45%, var(--jc-border)); }
+.sc-question p, .sc-feed-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sc-brief textarea { resize: vertical; }
+.sc-feed, .sc-host-list, .sc-memory-list { display: grid; gap: 8px; }
+.sc-feed-item, .sc-host, .sc-memory-item { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--jc-border); }
+.sc-feed-item .jc-row, .sc-host .jc-row, .sc-memory-item .jc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.sc-feed-item .jc-row-meta, .sc-memory-item .jc-row-meta { margin-left: auto; font-size: 11px; color: var(--jc-muted); }
+.sc-host[data-status="stopped"], .sc-host[data-status="unreachable"] { opacity: 0.75; }
+.sc-feeds { margin: 0; padding-left: 18px; font-size: 12px; }
+.sc-feed-error { color: var(--danger, #e5484d); }
+.sc-addresses { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.sc-addresses li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sc-address-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.status-pending, .status-taken, .status-open { color: var(--jc-accent); }

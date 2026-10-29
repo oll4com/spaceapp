@@ -10,6 +10,7 @@ import { nanoid } from "nanoid";
 import type { BrowserHostActorContext, BrowserHostCaptureMetrics } from "@space/browser-host";
 import {
   browserFrameSchema,
+  browserSelectStateSchema,
   freelanceEgressPac,
   resolveFreelanceCopilotPaneMetadata,
   browserRecordingFrameSummarySchema,
@@ -40,7 +41,7 @@ import {
   type PaneBrowserSession,
   type PaneBrowserSessionResponse
 } from "@space/contracts";
-import type { VaultHostFillResult, VaultHostTarget } from "@space/contracts";
+import type { BrowserSelectState, VaultHostFillResult, VaultHostTarget } from "@space/contracts";
 import { VAULT_BROKER_HOST_SOCKET_PATH, createSocketVaultBroker, sealedFillBroker } from "./vault/broker-client.js";
 import { readVaultTarget, runSealedFill, type SealedFillPage } from "./vault/sealed-fill.js";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
@@ -71,6 +72,16 @@ interface ViewportSize {
 }
 
 const DEEPSEEK_HARNESS_BROWSER_ORIGIN = "http://10.254.240.21:3080";
+
+/**
+ * Caps a pane profile's HTTP cache at 256 MB and stops Chrome's on-device model downloads: caches were 8.4 of the
+ * 10.9 GB of pane profiles on 2026-10-21 (plan clipboard:LPzoMHnHzK9A F7). One --disable-features only: Chrome
+ * honours the last one, so Vulkan stays in this list.
+ */
+export const PANE_CHROME_STORAGE_ARGS = [
+  "--disk-cache-size=268435456",
+  "--disable-features=Vulkan,OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction,OptimizationGuideOnDeviceModel"
+];
 
 /** Chrome's saved-login stores in a profile (and their SQLite side files). */
 export const CHROME_SAVED_LOGIN_FILES = ["Login Data", "Login Data For Account"]
@@ -247,6 +258,8 @@ interface BrowserRuntime {
   accountWork: Promise<unknown>;
   /** Set by a Vault sealed fill: this page keeps no console or network entries from then on (ADR-012). */
   vaultProtected?: boolean;
+  /** The proxy routes this pane needs (a Freelance Copilot's); null: any Chrome of its account. */
+  egressKey: string | null;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -265,6 +278,8 @@ export interface BrowserSessionStatus {
   defaultUrl: string;
   checkedAt: string;
   capacity?: ReturnType<BrowserCapacityGate["snapshot"]>;
+  /** This host presses every `space_browser_press` key (assertBrowserHostPressKey). */
+  pressKeys?: boolean;
 }
 
 export interface StartBrowserSessionInput {
@@ -372,6 +387,8 @@ export interface BrowserSessionManager {
   adoptPaneGoogleProfile?(source: PaneProfileSource, context?: BrowserHostActorContext): Promise<PaneProfileAdoptionResult>;
 }
 
+const SCREENCAST = { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 };
+
 const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
   mobile: { width: 390, height: 844, deviceScaleFactor: 2, mobile: true },
   tablet: { width: 834, height: 1112, deviceScaleFactor: 2, mobile: true },
@@ -395,6 +412,14 @@ export function allocateDisplay(): number | null {
     }
   }
   return null;
+}
+
+// A live X server this process never started holds the display (another API, a parallel test worker): its lock names it.
+export function displayHeldElsewhere(display: number): boolean {
+  let pid: number;
+  try { pid = Number(readFileSync(`/tmp/.X${display}-lock`, "utf8").trim()); } catch { return false; }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 export function releaseDisplay(display: number): void {
@@ -516,14 +541,83 @@ export async function captureMaskedScreenshot(send: <T = unknown>(method: string
   }
 }
 
-/** Enter (with its submit char), Tab or Shift+Tab as real key events in the page. */
+type BrowserPressKey = Extract<BrowserToolActionInput, { type: "press" }>["key"];
+const namedKey = (key: string, vk: number) => ({ key, code: key, vk });
+// CDP takes Windows virtual key codes; Enter and Space also send their character.
+const PRESS_KEYS: Record<BrowserPressKey, { key: string; code: string; vk: number; modifiers?: number; text?: string }> = {
+  Enter: { ...namedKey("Enter", 13), text: "\r" }, Tab: namedKey("Tab", 9), "Shift+Tab": { ...namedKey("Tab", 9), modifiers: 8 },
+  Backspace: namedKey("Backspace", 8), Delete: namedKey("Delete", 46), Escape: namedKey("Escape", 27), Home: namedKey("Home", 36), End: namedKey("End", 35),
+  ArrowLeft: namedKey("ArrowLeft", 37), ArrowUp: namedKey("ArrowUp", 38), ArrowRight: namedKey("ArrowRight", 39), ArrowDown: namedKey("ArrowDown", 40),
+  Space: { key: " ", code: "Space", vk: 32, text: " " },
+  // Select all: Chrome on Linux maps Ctrl+A to it (live-view repro 2026-10-25, plan clipboard:gHaiX_8yanVA).
+  "Control+A": { key: "a", code: "KeyA", vk: 65, modifiers: 2 }
+};
+
+/** One `space_browser_press` key as real key events in the page. */
 export async function pressBrowserKey(client: { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> }, sessionId: string,
-  key: "Enter" | "Tab" | "Shift+Tab"): Promise<void> {
-  const name = key === "Enter" ? "Enter" : "Tab";
-  const base = { key: name, code: name, windowsVirtualKeyCode: name === "Enter" ? 13 : 9, modifiers: key === "Shift+Tab" ? 8 : 0 };
+  key: BrowserPressKey): Promise<void> {
+  const { vk, text, modifiers = 0, ...names } = PRESS_KEYS[key];
+  const base = { ...names, windowsVirtualKeyCode: vk, modifiers };
   await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }, sessionId);
-  if (name === "Enter") await client.send("Input.dispatchKeyEvent", { type: "char", text: "\r", ...base }, sessionId);
+  if (text) await client.send("Input.dispatchKeyEvent", { type: "char", text, ...base }, sessionId);
   await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, sessionId);
+}
+
+/**
+ * A Browser Host started before the wider `press` keys presses Tab for every key but Enter (and says it pressed the key):
+ * only a host whose status says `pressKeys` gets them; until its guarded restart they fail closed.
+ */
+export async function assertBrowserHostPressKey(
+  manager: { status(): BrowserSessionStatus; browserHostHealth?(): Promise<{ status: unknown }> },
+  action: BrowserToolActionInput
+): Promise<void> {
+  if (action.type !== "press" || ["Enter", "Tab", "Shift+Tab"].includes(action.key)) return;
+  const knows = (status: unknown) => (status as { pressKeys?: unknown } | undefined)?.pressKeys === true;
+  if (knows(manager.status()) || knows((await manager.browserHostHealth?.().catch(() => null))?.status)) return;
+  throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `press ${action.key} needs the Browser Host restart that brings it.`);
+}
+
+// The focused element when it is an open native dropdown (top frame), read in an isolated world so page scripts cannot fake it.
+const OPEN_SELECT_EXPRESSION = `(() => {
+  const select = document.activeElement;
+  if (!(select instanceof HTMLSelectElement) || select.multiple) return null;
+  try { if (!select.matches(":open")) return null; } catch { return null; }
+  const box = select.getBoundingClientRect();
+  const options = Array.from(select.options).slice(0, 500);
+  return { selectedIndex: select.selectedIndex, box: { x: box.x, y: box.y, width: box.width, height: box.height },
+    labels: options.map((option) => (option.label || option.text).slice(0, 80)),
+    disabled: options.flatMap((option, index) => option.disabled || option.parentElement?.disabled === true ? [index] : []),
+    truncated: select.options.length > 500 };
+})()`;
+
+/** The open native dropdown the live view must draw itself (option D, plan clipboard:gHaiX_8yanVA), or null. */
+export async function readOpenBrowserSelect(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>): Promise<BrowserSelectState | null> {
+  const tree = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree");
+  const world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: tree.frameTree.frame.id, worldName: "space-select-state" });
+  const read = await send<{ result?: { value?: unknown } }>("Runtime.evaluate", { contextId: world.executionContextId, returnByValue: true, expression: OPEN_SELECT_EXPRESSION });
+  const parsed = browserSelectStateSchema.nullable().safeParse(read.result?.value ?? null);
+  if (!parsed.success || !parsed.data) return null;
+  const state = parsed.data;
+  // The action's text holds 20,000 characters: leave the last labels out and say so.
+  while (state.labels.length > 0 && JSON.stringify(state).length > 19_000) { state.labels.pop(); state.truncated = true; }
+  state.disabled = state.disabled.filter((index) => index < state.labels.length);
+  return state;
+}
+
+/**
+ * Picks option `index` of the open dropdown with real keys: arrows from the highlighted (selected) option, then Enter, so the
+ * page gets one change. The popup steps over disabled options, so only enabled ones between the two count.
+ */
+export async function chooseOpenBrowserSelectOption(client: { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> },
+  sessionId: string, index: number): Promise<string> {
+  const state = await readOpenBrowserSelect((method, params) => client.send(method, params, sessionId));
+  if (!state) throw new SpaceConflictError("The dropdown is no longer open.");
+  if (index >= state.labels.length || state.disabled.includes(index)) throw new SpaceConflictError("That option cannot be chosen.");
+  const from = state.selectedIndex;
+  const steps = state.labels.filter((_, i) => !state.disabled.includes(i) && (index > from ? i > from && i <= index : i >= index && i < from)).length;
+  for (let step = 0; step < steps; step += 1) await pressBrowserKey(client, sessionId, index > from ? "ArrowDown" : "ArrowUp");
+  await pressBrowserKey(client, sessionId, "Enter");
+  return `Chose "${state.labels[index]}".`;
 }
 
 function sanitizeSegment(value: string): string {
@@ -2280,20 +2374,27 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     let xvfb: ChildProcessWithoutNullStreams | undefined;
     let display: number | null = null;
     if (config.browserSessionsXvfbEnabled) {
-      display = allocateDisplay();
-      if (display === null) {
-        throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
-      }
+      // Displays another process's X server holds stay reserved until this launch ends, so each try takes the next one.
+      const heldElsewhere: number[] = [];
       try {
-        xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
-      } catch (error) {
-        releaseDisplay(display);
-        throw new SpaceFeatureDisabledError(
-          "BROWSER_XVFB_UNAVAILABLE",
-          `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
-          { display }
-        );
-      }
+        while (!xvfb) {
+          display = allocateDisplay();
+          if (display === null) {
+            throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
+          }
+          try {
+            xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
+          } catch (error) {
+            if (displayHeldElsewhere(display)) { heldElsewhere.push(display); continue; }
+            releaseDisplay(display);
+            throw new SpaceFeatureDisabledError(
+              "BROWSER_XVFB_UNAVAILABLE",
+              `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
+              { display }
+            );
+          }
+        }
+      } finally { heldElsewhere.forEach(releaseDisplay); }
     }
     const chrome = spawn(
       config.browserSessionsChromePath,
@@ -2312,7 +2413,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--use-gl=angle",
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
-        "--disable-features=Vulkan",
+        ...PANE_CHROME_STORAGE_ARGS,
         ...(egress?.args ?? []),
         "about:blank"
       ],
@@ -2705,13 +2806,16 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       await closeProfile(profile, session.profilePath);
       profile = undefined;
     }
-    // A Freelance Copilot pane only joins a Chrome started with its own routes: an idle one restarts with them, one
-    // that another pane uses is refused (the pane would otherwise leave from the wrong country).
+    // A Freelance Copilot pane only joins a Chrome started with its own routes (else it leaves from the wrong country):
+    // the account's Chrome restarts with them and the panes sharing the account come back on it with their tabs.
+    // Another Freelance pane's routes are refused: two route sets would restart each other's Chrome in turn.
     let egress: Awaited<ReturnType<typeof egressFor>> = null;
+    let moved: string[] = [];
     try {
       egress = await egressFor(session.paneId);
       if (egress && profile && (profile.egressKey ?? null) !== egress.key) {
-        if (profile.members.size) throw new SpaceConflictError("FREELANCE_EGRESS: this browser account is open in another pane without the Freelance Copilot's routes; close it there or give the Freelance Copilot its own browser account.");
+        if ([...profile.members].some(member => member.egressKey)) throw new SpaceConflictError("FREELANCE_EGRESS: another Freelance Copilot pane uses this browser account with other routes; close it there or give this Freelance Copilot another browser account.");
+        moved = [...runtimes].filter(([, member]) => member.profile === profile).map(([id]) => id);
         await closeProfile(profile, session.profilePath);
         profile = undefined;
       }
@@ -2732,13 +2836,15 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         pageSessions: new Map(),
         consoleEntries: [],
         networkEntries: [],
-        streamSubscribers: new Map(),
+        // The live views of the Chrome this one replaces (a crash, a restart onto Freelance routes) stream from it.
+        streamSubscribers: stale?.streamSubscribers ?? new Map(),
         screencastActive: false,
         streamSequence: 0,
         detachDiagnostics: () => undefined,
         accountTabs: new Map(),
         pageProfiles: new Map(),
-        accountWork: Promise.resolve()
+        accountWork: Promise.resolve(),
+        egressKey: egress?.key ?? null
       };
       profile.members.add(runtime);
       runtime.targetId = await createOwnedPage(runtime, "about:blank");
@@ -2757,6 +2863,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         await createOwnedPage(runtime, url, true);
       }
       runtimes.set(session.sessionId, runtime);
+      if (runtime.streamSubscribers.size && capacity.acquireLive(`stream:${session.sessionId}`, capacity.maxSessions)) {
+        try {
+          await client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
+          runtime.screencastActive = true;
+        } catch { capacity.releaseLive(`stream:${session.sessionId}`); }
+      }
+      // They wait for this profile lock, so they join this Chrome.
+      for (const id of moved) void Promise.resolve(store.getPaneBrowserSession(id)).then(other => other?.isActive ? ensureRuntime(other) : undefined).catch(() => undefined);
       scheduleGoogleAccountCheck(session.profilePath, 6_000, googleCheckStaleMs);
       return runtime;
     } catch (error) {
@@ -2797,11 +2911,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     runtime.streamSubscribers.set(id, { id, profile, lastSentAt: 0, onFrame });
     try {
       if (!runtime.screencastActive) {
-        await runtime.client.send(
-          "Page.startScreencast",
-          { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
-          runtime.cdpSessionId
-        );
+        await runtime.client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
         runtime.screencastActive = true;
       }
     } catch (error) {
@@ -2816,14 +2926,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       async stop() {
         if (stopped) return;
         stopped = true;
-        runtime.streamSubscribers.delete(id);
-        if (runtime.streamSubscribers.size || !runtime.screencastActive) return;
-        runtime.screencastActive = false;
+        // A relaunched Chrome's runtime took this stream over (same subscribers) and stops its screencast.
+        const live = runtimes.get(sessionId);
+        const current = live?.streamSubscribers === runtime.streamSubscribers ? live : runtime;
+        current.streamSubscribers.delete(id);
+        if (current.streamSubscribers.size || !current.screencastActive) return;
+        current.screencastActive = false;
         // A runtime that was replaced after a crash (or stopped) already gave up
         // this session's slot; it now belongs to the replacement's stream.
-        if (runtimes.get(sessionId) !== runtime) return;
+        if (runtimes.get(sessionId) !== current) return;
         capacity.releaseLive(workloadKey);
-        await runtime.client.send("Page.stopScreencast", {}, runtime.cdpSessionId).catch(() => undefined);
+        await current.client.send("Page.stopScreencast", {}, current.cdpSessionId).catch(() => undefined);
         void pumpCaptureQueue();
       }
     };
@@ -2983,11 +3096,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await setViewport(runtime, session.viewport, runtime.viewportDimensions);
     await runtime.client.send("Target.activateTarget", { targetId: pageId });
     if (wasStreaming && runtime.streamSubscribers.size) {
-      await runtime.client.send(
-        "Page.startScreencast",
-        { format: "jpeg", quality: 72, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 },
-        runtime.cdpSessionId
-      );
+      await runtime.client.send("Page.startScreencast", SCREENCAST, runtime.cdpSessionId);
     }
   }
 
@@ -3665,7 +3774,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       statusReason: statusReason(),
       defaultUrl: config.browserSessionsDefaultUrl,
       checkedAt: nowIso(),
-      capacity: capacity.snapshot()
+      capacity: capacity.snapshot(),
+      pressKeys: true
     }),
     startOrRestore(input, context) {
       if (input.accountTab) return switchPageAccount(input, input.accountTab, context);
@@ -3910,11 +4020,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       if (input.type === "masked_screenshot") {
         text = JSON.stringify(await maskedScreenshot(session, runtime));
       }
+      if (input.type === "select_state") {
+        text = JSON.stringify(await readOpenBrowserSelect((method, params) => runtime.client.send(method, params, runtime.cdpSessionId)));
+      }
+      if (input.type === "select_choose") {
+        text = await chooseOpenBrowserSelectOption(runtime.client, runtime.cdpSessionId, input.index);
+      }
       if (input.type === "record") {
         text = await executeActionRecording(session, runtime, input, context);
       }
-      // A masked screenshot returns no unmasked live frame next to it.
-      const frame = input.type === "masked_screenshot" ? null : await captureFrame(session.sessionId);
+      // A masked screenshot returns no unmasked live frame next to it; a dropdown read after every press needs none.
+      const frame = input.type === "masked_screenshot" || input.type === "select_state" ? null : await captureFrame(session.sessionId);
       const fresh = await store.getPaneBrowserSession(session.sessionId);
       return browserToolActionResultSchema.parse({ session: fresh ?? session, frame, text });
     },

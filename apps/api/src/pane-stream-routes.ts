@@ -1,4 +1,5 @@
 import { countsAsOperatorInput, createBrowserControlActivity } from "./browser-control-activity.js";
+import { dirname, join } from "node:path";
 import type {} from "./request-context.js";
 import type {} from "@fastify/websocket";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
@@ -13,6 +14,7 @@ import { operatorBrowserActor } from "./browser-actors.js";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import { createBrowserLiveSender } from "./browser-live-sender.js";
+import { createBrowserStreamHostWatch, type BrowserStreamHostEnd } from "./browser-stream-host-watch.js";
 import type { SpaceApiConfig } from "./config.js";
 import { assertBrowserPaneCompatible, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
@@ -95,6 +97,13 @@ function browserInputAckError(error: unknown): { code: string; message: string }
   return { code: "BROWSER_INPUT_FAILED", message: "Browser input could not be dispatched." };
 }
 
+/** No error message: the page keeps a stream error on screen after it reconnects, but clears its own reconnect notice. */
+function closeBrowserSocketForHostEnd(socket: { readyState: number; close(code?: number, reason?: string): void }, reason: BrowserStreamHostEnd) {
+  if (socket.readyState !== 1) return;
+  if (reason === "restarted") socket.close(1012, "Browser Host restarted");
+  else socket.close(1011, "Browser Host unavailable");
+}
+
 function sendBrowserStreamMessage(
   socket: { readyState: number; bufferedAmount: number; send(data: string): void },
   message: unknown
@@ -121,7 +130,12 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
   const { config, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions,
     websocketRouteOptions: defaultWebsocketRateLimitOptions } = options;
   // Operator input per control lease; returned so the browser routes and the CLI bridge share it (idle release, agent reclaim).
-  const controlActivity = createBrowserControlActivity();
+  const controlActivity = createBrowserControlActivity(undefined,
+    process.env.VITEST === "true" ? null : join(dirname(config.browserEvidenceArtifactRoot), "browser-agents.json"));
+  const readHostHealth = browserSessionManager.browserHostHealth?.bind(browserSessionManager);
+  const hostWatch = readHostHealth
+    ? createBrowserStreamHostWatch({ health: readHostHealth, intervalMs: config.browserStreamHostWatchMs })
+    : null;
   app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
     void (async () => {
       const params = parseQuery(idParamSchema, request.params);
@@ -294,8 +308,14 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
       const stop = () => {
         if (stopped) return;
         stopped = true;
+        unwatch?.();
         void stream.stop().catch(() => undefined);
       };
+      // The watch never calls back synchronously, so `unwatch` is set before `stop` can run.
+      const unwatch = hostWatch?.watch((reason) => {
+        stop();
+        closeBrowserSocketForHostEnd(socket, reason);
+      });
       socket.once("close", stop);
       socket.once("error", stop);
     })().catch((error: unknown) => {
@@ -356,8 +376,14 @@ export function registerPaneStreamRoutes(app: FastifyInstance, options: {
       const stop = () => {
         if (stopped) return;
         stopped = true;
+        unwatch?.();
         void stream.stop().catch(() => undefined);
       };
+      // The watch never calls back synchronously, so `unwatch` is set before `stop` can run.
+      const unwatch = hostWatch?.watch((reason) => {
+        stop();
+        closeBrowserSocketForHostEnd(socket, reason);
+      });
       socket.once("close", stop);
       socket.once("error", stop);
     })().catch((error: unknown) => {

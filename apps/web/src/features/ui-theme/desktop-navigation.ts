@@ -26,7 +26,6 @@ export const desktopActionDescriptions: Record<string, string> = {
   "add-files": "Open the native file manager pane in this room.",
   "add-demos": "Open the Demo Projects pane: run a demo, preview it live and check its connections.",
   "add-empty-slots": "Add or remove empty positions in this room.",
-  "add-vault": "Open your encrypted Vault to add a login or generate a password.",
   "surface-clipboard": "Saved text, notes, and plans.",
   "surface-tasks": "Follow tasks and their progress.",
   "surface-vault": "Encrypted passwords agents can use but never see.",

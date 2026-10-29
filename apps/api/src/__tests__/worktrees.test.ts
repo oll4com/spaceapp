@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdir, mkdtemp, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execGit, WorktreeService } from "../worktrees/worktree-service.js";
@@ -121,6 +121,33 @@ describe("WorktreeService", () => {
 
     const exists = await readFile(join(wt.worktreePath, "README.md"), "utf8").catch(() => null);
     expect(exists).toBeNull();
+  });
+
+  it("fails closed: git's refusal and a tree this user cannot fully delete remove nothing", async () => {
+    const wt = await service.createWorktree({
+      repoPath: tempRepo,
+      roomId: "room:test-fail-closed",
+      branchName: "feat/fail-closed",
+      baseBranch: "main",
+      linkModules: false
+    });
+    await writeFile(join(wt.worktreePath, "unsaved.txt"), "work\n");
+    await expect(service.removeWorktree(wt.worktreePath)).rejects.toMatchObject({ code: "REMOVE_FAILED" });
+    expect(await readFile(join(wt.worktreePath, "unsaved.txt"), "utf8")).toBe("work\n");
+    expect(await readFile(join(wt.worktreePath, "README.md"), "utf8")).toContain("Test Project");
+
+    if (process.getuid?.() !== 0) {
+      // Another user's directory: entries this user may not delete.
+      const locked = join(wt.worktreePath, "locked");
+      await mkdir(locked);
+      await writeFile(join(locked, "file.txt"), "x\n");
+      await chmod(locked, 0o555);
+      await expect(service.removeWorktree(wt.worktreePath, true)).rejects.toThrow(/Nothing was removed/);
+      expect(await readFile(join(wt.worktreePath, "README.md"), "utf8")).toContain("Test Project");
+      await chmod(locked, 0o755);
+    }
+    await service.removeWorktree(wt.worktreePath, true);
+    expect(await readFile(join(wt.worktreePath, "README.md"), "utf8").catch(() => null)).toBeNull();
   });
 
   it("exposes working REST API endpoints via Fastify", async () => {
@@ -257,6 +284,37 @@ describe("WorktreeService", () => {
     await expect(service.mergeWorktree("/tmp/totally-fake-never-existed-path")).rejects.toThrow(
       "Worktree not found for /tmp/totally-fake-never-existed-path."
     );
+  });
+
+  it("reads branch, HEAD, dirty state and repository like before, and rewrites the registry only on a change", async () => {
+    const wt = await service.createWorktree({
+      repoPath: tempRepo,
+      roomId: "room:badge-read-test",
+      branchName: "feat/badge-read",
+      baseBranch: "main",
+      linkModules: false
+    });
+    const head = (await execGit(wt.worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+    const clean = await service.getWorktree(wt.worktreePath);
+    expect(clean).toMatchObject({ branch: "feat/badge-read", baseCommit: head, isDirty: false, status: "ACTIVE", aheadCount: 0 });
+    expect(clean?.repoPath).toBe(await realpath(tempRepo));
+    await writeFile(join(wt.worktreePath, "untracked.txt"), "new\n");
+    expect(await service.getWorktree(wt.worktreePath)).toMatchObject({ isDirty: true, status: "DIRTY" });
+    await execGit(wt.worktreePath, ["checkout", "-q", "--detach"]);
+    expect(await service.getWorktree(wt.worktreePath)).toMatchObject({ branch: "", baseCommit: head });
+
+    const registry = join(tempStorage, ".worktree-registry.json");
+    const record = { worktreePath: wt.worktreePath, branch: "feat/badge-read", baseCommit: head, status: "DIRTY" as const };
+    await service.recordWorktree(record);
+    const before = await stat(registry);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await service.recordWorktree(record);
+    const unchanged = await stat(registry);
+    expect([unchanged.ino, unchanged.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+    await service.recordWorktree({ ...record, status: "ACTIVE" });
+    expect((await stat(registry)).mtimeMs).not.toBe(before.mtimeMs);
+    expect((await service.getRecordedWorktree(wt.worktreePath))?.status).toBe("ACTIVE");
+    await service.removeWorktree(wt.worktreePath, true);
   });
 
   it("preserves ACTIVE status for freshly created clean worktrees on disk", async () => {

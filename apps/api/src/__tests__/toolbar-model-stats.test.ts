@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ import {
   readOpenCodeModelRows,
   readCodexRolloutTail,
   resolveCodexRolloutPaths,
+  resolveRecentCodexRollouts,
   runSqliteSnapshotFallback
 } from "../toolbar-model-stats.js";
 
@@ -261,6 +262,48 @@ describe("batched Codex rollout resolution", () => {
       ]));
       expect(await resolveCodexRolloutPaths([], root)).toEqual(new Map());
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Codex rollout lookup caches", () => {
+  const execFileAsync = promisify(execFile);
+
+  it("keeps found paths and misses, and looks a missing thread up again only after five minutes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "model-stats-cache-test-"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const db = join(root, "state_5.sqlite");
+      await execFileAsync("sqlite3", [db, "create table threads(id text, rollout_path text); insert into threads values ('a','/primary/a');"]);
+      expect(await resolveCodexRolloutPaths(["a", "late"], root)).toEqual(new Map([["a", "/primary/a"]]));
+      await execFileAsync("sqlite3", [db, "insert into threads values ('late','/primary/late');"]);
+      expect(await resolveCodexRolloutPaths(["a", "late"], root)).toEqual(new Map([["a", "/primary/a"]]));
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      expect(await resolveCodexRolloutPaths(["a", "late"], root)).toEqual(new Map([["a", "/primary/a"], ["late", "/primary/late"]]));
+    } finally {
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("asks a state DB again only when its files changed, and serves later windows from the kept rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "model-stats-recent-test-"));
+    const db = join(root, "state_5.sqlite");
+    const nowSec = Math.floor(Date.now() / 1000);
+    try {
+      await execFileAsync("sqlite3", [db, `create table threads(id text, rollout_path text, updated_at integer); insert into threads values ('new','/r/new',${nowSec - 10}),('old','/r/old',${nowSec - 300});`]);
+      expect(await resolveRecentCodexRollouts((nowSec - 600) * 1000, root)).toEqual([
+        { threadId: "new", rolloutPath: "/r/new" }, { threadId: "old", rolloutPath: "/r/old" }
+      ]);
+      // An unreadable DB proves the next answers come from the kept rows: a query would now fail.
+      await chmod(db, 0o000);
+      expect(await resolveRecentCodexRollouts((nowSec - 600) * 1000, root)).toHaveLength(2);
+      expect(await resolveRecentCodexRollouts((nowSec - 60) * 1000, root)).toEqual([{ threadId: "new", rolloutPath: "/r/new" }]);
+      await utimes(db, nowSec, nowSec + 5);
+      expect(await resolveRecentCodexRollouts((nowSec - 600) * 1000, root)).toEqual([]);
+    } finally {
+      await chmod(db, 0o644).catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   });

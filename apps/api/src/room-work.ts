@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import type { DeployQueueTicket, Pane } from "@space/contracts";
 import { readDeployQueue } from "./deploy-queue.js";
@@ -10,6 +11,8 @@ import { execGit, type WorktreeRecord } from "./worktrees/worktree-service.js";
  * collides, so the Room Agent can coordinate them (operator request 2026-10-15). Read at most once a minute per room.
  */
 export const ROOM_WORK_TTL_MS = 60_000;
+/** The longest a worktree's git state is reused while its HEAD, index and refs stay unchanged (operator-approved 2026-10-24). */
+export const WORKTREE_MAX_AGE_MS = 5 * 60_000;
 const GIT_TIMEOUT_MS = 5_000;
 const MAX_FILES = 200;
 const ACTIVE_TICKETS = new Set(["AWAITING_APPROVAL", "QUEUED", "INTEGRATING", "VERIFYING", "DEPLOYING"]);
@@ -104,16 +107,30 @@ function porcelainPaths(stdout: string): string[] {
   });
 }
 
-/** The pane's worktree, branch and the files it changed since the branch left its base, plus uncommitted ones. */
-async function readWorktree(cwd: string): Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> {
-  const head = await execGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], GIT_TIMEOUT_MS).catch(() => null);
-  const [top, commonDir] = head?.code === 0 ? head.stdout.trim().split("\n") : [];
-  if (!top || !commonDir) return { top: null, branch: null, files: [] };
+interface WorktreeGit { top: string; commonDir: string; gitDir: string; base: "dev" | "main" }
+
+/** Where the pane's git worktree lives; null outside git. */
+async function locateWorktree(cwd: string): Promise<WorktreeGit | null> {
+  const head = await execGit(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"], GIT_TIMEOUT_MS).catch(() => null);
+  const [top, commonDir, gitDir] = head?.code === 0 ? head.stdout.trim().split("\n") : [];
+  return top && commonDir && gitDir ? { top, commonDir, gitDir, base: defaultWorktreeBaseBranch(dirname(commonDir)) } : null;
+}
+
+/** Changes when the worktree's HEAD, index, branch tip or base branch moves (fs metadata only, no git). */
+async function worktreeChangeKey(git: WorktreeGit): Promise<string> {
+  const files = [`${git.gitDir}/HEAD`, `${git.gitDir}/index`, `${git.gitDir}/logs/HEAD`, `${git.commonDir}/packed-refs`,
+    `${git.commonDir}/refs/heads/${git.base}`, `${git.commonDir}/logs/refs/heads/${git.base}`];
+  return (await Promise.all(files.map((file) => stat(file).then((info) => `${info.size}:${info.mtimeMs}`, () => "-")))).join("|");
+}
+
+/** The worktree's branch and the files it changed since the branch left its base, plus uncommitted ones. */
+async function readWorktree(git: WorktreeGit): Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> {
+  const { top, commonDir } = git;
   const linked = commonDir !== `${top}/.git`;
   const [branch, committed, status] = await Promise.all([
     execGit(top, ["branch", "--show-current"], GIT_TIMEOUT_MS).catch(() => null),
     // The main checkout is the live tree; only feature worktrees have work of their own on top of a base.
-    linked ? execGit(top, ["diff", "--name-only", `${defaultWorktreeBaseBranch(dirname(commonDir))}...HEAD`], GIT_TIMEOUT_MS).catch(() => null) : null,
+    linked ? execGit(top, ["diff", "--name-only", `${git.base}...HEAD`], GIT_TIMEOUT_MS).catch(() => null) : null,
     execGit(top, ["status", "--porcelain"], GIT_TIMEOUT_MS).catch(() => null)
   ]);
   const files = new Set([
@@ -134,6 +151,28 @@ export function createRoomWork(deps: {
 }) {
   const now = deps.now ?? Date.now;
   const rooms = new Map<string, { at: number; work: Promise<RoomWork> }>();
+  // Stable ran 4 git per CLI pane a minute (~8,900 an hour, 2026-10-24): a worktree is read once for every pane and
+  // room working in it, and again only when its HEAD, index or refs moved, or after 5 minutes for unstaged edits.
+  const locations = new Map<string, { at: number; git: Promise<WorktreeGit | null> }>();
+  const states = new Map<string, { at: number; key: string; read: Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> }>();
+
+  async function worktreeOf(cwd: string): Promise<Pick<RoomWorkPane, "top" | "branch" | "files">> {
+    let location = locations.get(cwd);
+    if (!location || now() - location.at > WORKTREE_MAX_AGE_MS) {
+      if (locations.size > 1_000) locations.clear();
+      location = { at: now(), git: locateWorktree(cwd) };
+      locations.set(cwd, location);
+    }
+    const git = await location.git;
+    if (!git) return { top: null, branch: null, files: [] };
+    const key = await worktreeChangeKey(git);
+    const state = states.get(git.top);
+    if (state && state.key === key && now() - state.at <= WORKTREE_MAX_AGE_MS) return state.read;
+    if (states.size > 1_000) states.clear();
+    const read = readWorktree(git);
+    states.set(git.top, { at: now(), key, read });
+    return read;
+  }
   let shared: { at: number; tickets: Promise<DeployQueueTicket[]>; registry: Promise<WorktreeRecord[]> } | null = null;
 
   /** Queue tickets and the worktree registry, read once a minute for every room. */
@@ -158,7 +197,7 @@ export function createRoomWork(deps: {
       const task = pane.taskMetadata?.topics?.at(-1);
       const tickets = queued.filter((ticket) => ticket.submitter?.paneId === pane.id);
       const dir = paneWorktree(pane, tickets, registry);
-      return { paneId: pane.id, name: pane.paneName ?? pane.title, ...(dir ? await readWorktree(dir) : { top: null, branch: null, files: [] }), tickets,
+      return { paneId: pane.id, name: pane.paneName ?? pane.title, ...(dir ? await worktreeOf(dir) : { top: null, branch: null, files: [] }), tickets,
         task: task ? [task.title, task.summary].filter(Boolean).join(" — ") : null };
     }));
     const overlaps = roomWorkOverlaps(panes, trains);

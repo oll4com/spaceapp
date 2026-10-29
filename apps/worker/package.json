@@ -23,7 +23,7 @@
     "@temporalio/client": "1.24.0",
     "@temporalio/worker": "1.24.0",
     "@temporalio/workflow": "1.24.0",
-    "undici": "8.10.2",
+    "undici": "8.12.3",
     "@temporalio/common": "1.24.0"
   },
   "devDependencies": {

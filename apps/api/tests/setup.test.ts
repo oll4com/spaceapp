@@ -164,7 +164,7 @@ describe("public single-owner setup API", () => {
       user: { id: "user:owner", email: "owner@example.com", role: "ADMIN" },
       isAuthenticated: true,
       isSetupRequired: false,
-      onboardingVersion: 1,
+      onboardingVersion: 2,
       isOnboardingComplete: false
     });
     const starterRoomId = claimed.json().starterRoomId as string;
@@ -202,7 +202,7 @@ describe("public single-owner setup API", () => {
     });
     expect(overview.statusCode).toBe(200);
     expect(overview.json()).toEqual({
-      onboardingVersion: 1,
+      onboardingVersion: 2,
       isComplete: false,
       completedAt: null,
       starterRoomId,
@@ -273,13 +273,19 @@ describe("public single-owner setup API", () => {
         [csrfPayload.headerName]: csrfPayload.csrfToken
       }
     });
-    expect(finished.statusCode).toBe(200);
-    expect(finished.json()).toMatchObject({
-      onboardingVersion: 1,
-      isComplete: true,
-      starterRoomId,
-      connections: [expect.objectContaining({ id: "cli:codex", state: "CONNECTED" })]
+    expect(finished.statusCode).toBe(409);
+    expect(finished.json().error.code).toBe("SETUP_RUN_REQUIRED");
+    expect(store.getOwnerOnboarding().isComplete).toBe(false);
+
+    const legacyCompletedAt = "2026-07-23T12:00:00.000Z";
+    store.completeOwnerOnboarding(legacyCompletedAt);
+    const legacyRepeat = await app.inject({
+      method: "POST", url: "/api/setup/finish",
+      headers: { cookie: sessionCookie, [csrfPayload.headerName]: csrfPayload.csrfToken }
     });
+    expect(legacyRepeat.statusCode).toBe(200);
+    expect(legacyRepeat.json().completedAt).toBe(legacyCompletedAt);
+    expect(store.getOwnerOnboarding().completedAt).toBe(legacyCompletedAt);
 
     const status = await app.inject({ method: "GET", url: "/api/setup/status" });
     expect(status.json()).toEqual({ setupRequired: false, expiresAt: null });

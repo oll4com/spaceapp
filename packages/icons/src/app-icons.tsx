@@ -8,6 +8,7 @@ import {
   Filter as LucideFilter,
   ScrollText as LucideScrollText,
   Table as LucideTable,
+  Target as LucideTarget,
   ArrowDown as LucideArrowDown,
   ArrowUpCircle as LucideArrowUpCircle,
   ArrowUpDown as LucideArrowUpDown,
@@ -54,6 +55,7 @@ import {
   ArrowRightLeft as LucideArrowRightLeft,
   ArrowUp as LucideArrowUp,
   ArrowUpToLine as LucideArrowUpToLine,
+  ChevronsUp as LucideChevronsUp,
   Bell as LucideBell,
   Mail as LucideMail,
   Bookmark as LucideBookmark,
@@ -161,6 +163,7 @@ import {
   Megaphone as LucideMegaphone,
   Handshake as LucideHandshake,
   TabletSmartphone as LucideTabletSmartphone,
+  ShieldHalf as LucideShieldHalf,
   Gavel as LucideGavel,
   NotebookPen as LucideNotebookPen,
   Blend as LucideBlend,
@@ -175,6 +178,7 @@ import {
   Play as LucidePlay,
   Plus as LucidePlus,
   Printer as LucidePrinter,
+  Radar as LucideRadar,
   Radio as LucideRadio,
   RectangleHorizontal as LucideRectangleHorizontal,
   Recycle as LucideRecycle,
@@ -460,6 +464,7 @@ export const lucideIcons = {
   Megaphone: LucideMegaphone,
   Handshake: LucideHandshake,
   TabletSmartphone: LucideTabletSmartphone,
+  ShieldHalf: LucideShieldHalf,
   Gavel: LucideGavel,
   NotebookPen: LucideNotebookPen,
   Blend: LucideBlend,
@@ -472,6 +477,7 @@ export const lucideIcons = {
   Play: LucidePlay,
   Plus: LucidePlus,
   Printer: LucidePrinter,
+  Radar: LucideRadar,
   Radio: LucideRadio,
   RectangleHorizontal: LucideRectangleHorizontal,
   RefreshCw: LucideRefreshCw,
@@ -495,6 +501,8 @@ export const lucideIcons = {
   Square: LucideSquare,
   Star: LucideStar,
   Tablet: LucideTablet,
+  // Goals (Nous, 2026-10-27): a target, never shared with another meaning.
+  Target: LucideTarget,
   Terminal: LucideTerminal,
   Trash2: LucideTrash2,
   Undo2: LucideUndo2,
@@ -691,6 +699,7 @@ export const {
   Megaphone,
   Handshake,
   TabletSmartphone,
+  ShieldHalf,
   Gavel,
   NotebookPen,
   Blend,
@@ -703,6 +712,7 @@ export const {
   Play,
   Plus,
   Printer,
+  Radar,
   Radio,
   RectangleHorizontal,
   RefreshCw,
@@ -726,6 +736,7 @@ export const {
   Square,
   Star,
   Tablet,
+  Target,
   Terminal,
   Trash2,
   Undo2,
@@ -750,6 +761,8 @@ export const VolumeX = LucideVolumeX;
 export const StickyNote = LucideStickyNote;
 export const ArrowUpToLine = LucideArrowUpToLine;
 export const ArrowDownToLine = LucideArrowDownToLine;
+// Nous conversation: back through the operator's own messages, newest first (operator request 2026-10-21).
+export const ChevronsUp = LucideChevronsUp;
 export const Hash = LucideHash;
 // Data and diff surfaces: Lucide glyphs routed through the shared icon module.
 export const AlignJustify = LucideAlignJustify;

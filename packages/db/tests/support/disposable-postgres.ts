@@ -6,7 +6,7 @@ import path from "node:path";
 import pg from "pg";
 
 /** Same image as the production compose file (PostgreSQL 17 + pgvector). */
-export const disposablePostgresImage = process.env.SPACE_TEST_PG_IMAGE ?? "pgvector/pgvector:0.8.3-pg17-trixie";
+export const disposablePostgresImage = process.env.SPACE_TEST_PG_IMAGE ?? "pgvector/pgvector:0.8.7-pg17-trixie";
 
 function docker(args: string[], timeout = 30_000): string {
   return execFileSync("docker", args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] }).trim();

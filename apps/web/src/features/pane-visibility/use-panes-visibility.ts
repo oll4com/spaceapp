@@ -12,7 +12,10 @@ const PANE_SERVER_MODULE: Partial<Record<NonCliPaneType, string>> = {
   marketing: "marketing-copilot",
   freelance: "freelance-copilot",
   design: "design",
-  "app-studio": "app-studio"
+  "app-studio": "app-studio",
+  video: "video",
+  security: "security-copilot",
+  monitoring: "monitoring-copilot"
 };
 
 export const PANES_HIDDEN_STORAGE_KEY = "space:panes-hidden:v1";
@@ -131,6 +134,27 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     label: "App Studio",
     description: "An agent that builds mobile apps for Android and iOS and shows every screen on the most-used phones.",
     icon: modeIcons.APP_STUDIO
+  },
+  {
+    id: "video",
+    actionId: "add-video",
+    label: "Video",
+    description: "A video studio: clips, captions, narration and music in every social format, for you and for any agent that asks.",
+    icon: modeIcons.VIDEO
+  },
+  {
+    id: "security",
+    actionId: "add-security",
+    label: "Security Copilot",
+    description: "An agent that keeps every server and SpaceApp patched: it watches new vulnerabilities, inventories your hosts and fixes what they need.",
+    icon: modeIcons.SECURITY_COPILOT
+  },
+  {
+    id: "monitoring",
+    actionId: "add-monitoring",
+    label: "Monitoring Copilot",
+    description: "An agent that watches your servers and sites: it explains the alerts, failing probes and AI Guardian messages and answers your questions about the fleet.",
+    icon: modeIcons.MONITORING_COPILOT
   }
 ];
 
@@ -154,7 +178,10 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-marketing": "marketing",
   "add-freelance": "freelance",
   "add-design": "design",
-  "add-app-studio": "app-studio"
+  "add-app-studio": "app-studio",
+  "add-video": "video",
+  "add-security": "security",
+  "add-monitoring": "monitoring"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -173,7 +200,10 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   marketing: "add-marketing",
   freelance: "add-freelance",
   design: "add-design",
-  "app-studio": "add-app-studio"
+  "app-studio": "add-app-studio",
+  video: "add-video",
+  security: "add-security",
+  monitoring: "add-monitoring"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";

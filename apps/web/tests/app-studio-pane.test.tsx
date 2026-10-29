@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntime, AppStudioEvent, AppStudioPaneMetadata, AppStudioPreview, Pane } from "@space/contracts";
 import { defaultAppStudioPaneMetadata } from "@space/contracts";
 import { AppStudioPane, resolveActiveTab, tabsForLayout } from "../src/features/app-studio-pane/AppStudioPane.js";
+import { BUILD_APK_BRIEF } from "../src/features/app-studio-pane/ActivityTab.js";
 import { APP_STUDIO_KIND, copilotKindForMode } from "../src/features/copilot-kit/copilot-kind.js";
 
 const apiMock = vi.hoisted(() => ({
@@ -91,6 +92,25 @@ describe("AppStudioPane", () => {
     await waitFor(() => expect(apiMock.createAppStudioBrief).toHaveBeenCalledWith(pane.id, "Add a settings screen"));
     fireEvent.click(screen.getByRole("button", { name: "Dark" }));
     await waitFor(() => expect(apiMock.answerAppStudioQuestion).toHaveBeenCalledWith(pane.id, "asevt:question1", "Dark"));
+  });
+
+  it("asks for an APK with one button and links the built APK for download (Nous Warm approval 2026-10-23)", async () => {
+    const downloadPath = "/api/artifacts/artifact%3Aapk00001/file";
+    apiMock.appStudioState.mockResolvedValue({
+      metadata: defaultAppStudioPaneMetadata(), run: { status: "IDLE", paused: false, openQuestions: 0, pendingBriefs: 0 }, previews: [],
+      events: [event("asevt:apknote1", "NOTE", null, "APK com.oll4.nous 1.0.0 (27.7 MB) is ready to download", { apkArtifactId: "artifact:apk00001", downloadPath }),
+        event("asevt:note0002", "NOTE", null, "A plain note", { downloadPath: "https://elsewhere.example/x.apk" })]
+    });
+    render(<AppStudioPane pane={pane} isVisible terminal={<div>terminal</div>} />);
+    const links = await screen.findAllByRole("link", { name: "Download APK" });
+    // Only the API's own artifact path becomes a link.
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([downloadPath]);
+    expect(links[0]!.hasAttribute("download")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Build APK" }));
+    await waitFor(() => expect(apiMock.createAppStudioBrief).toHaveBeenCalledWith(pane.id, BUILD_APK_BRIEF));
+    // The shell entry by its absolute path, as the persona and skill name it (the public export rewrites /opt/spaceapp for all three).
+    expect(BUILD_APK_BRIEF).toContain("/opt/spaceapp/scripts/space-app-studio-build.mjs");
+    expect(apiMock.appStudioState.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   it("chooses the preview devices with switches and keeps at least one", async () => {

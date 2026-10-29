@@ -355,6 +355,44 @@ export const LIVE_AUDIO_PROVIDERS: Record<LiveAudioProviderId, LiveAudioProvider
       { id: "default", label: "Default Greek Voice", providerId: "local", gender: "neutral", description: "Local synthesized Greek voice" }
     ]
   },
+  fish: {
+    id: "fish",
+    displayName: "Fish Audio (Drama 3)",
+    description: "Fish Audio realtime speech to text, Space's voice delegate with tools, and Drama 3 text to speech",
+    transport: "websocket",
+    defaultModel: "drama-3",
+    defaultVoice: "c70cfb98867a4bfb9ae20d2401257b92",
+    supportsWebRtc: false,
+    supportsWebSocket: true,
+    supportsVision: false,
+    supportsTools: true,
+    supportsInterruption: true,
+    credentialEnvVars: [],
+    credentialKeyFiles: ["/opt/spaceapp/secrets/space-fish-audio.key"],
+    models: [
+      {
+        id: "drama-3",
+        label: "Drama 3",
+        description: "Expressive Fish Audio text to speech behind realtime speech to text (transcribe-stream-1)",
+        providerId: "fish",
+        defaultVoice: "c70cfb98867a4bfb9ae20d2401257b92",
+        nativeAudio: false,
+        capabilities: {
+          bidirectionalAudio: true,
+          speechToSpeech: true,
+          interruption: true,
+          tools: true,
+          vision: false
+        }
+      }
+    ],
+    // Fish Audio's public Drama 3 voices (model ids); the operator's own Fish voices can be added here.
+    voices: [
+      { id: "c70cfb98867a4bfb9ae20d2401257b92", label: "Delia", providerId: "fish", gender: "female", description: "EN-US, female" },
+      { id: "bf322df2096a46f18c579d0baa36f41d", label: "Adrian", providerId: "fish", gender: "male", description: "EN-US, male" },
+      { id: "f3a2b90078d54a65af4b95f63bc7798e", label: "Sheila", providerId: "fish", gender: "female", description: "EN-US, female" }
+    ]
+  },
   vercel: {
     id: "vercel",
     displayName: "Vercel AI Gateway",
@@ -478,6 +516,7 @@ export function inferProviderFromModel(modelId?: string | null): LiveAudioProvid
   if (trimmed.startsWith("gemini-")) return "google";
   if (trimmed.startsWith("amazon.nova") || trimmed.startsWith("nova-")) return "amazon";
   if (trimmed === "local-qwen3-greek" || trimmed.startsWith("local-")) return "local";
+  if (trimmed === "drama-3") return "fish";
   if (trimmed.startsWith("openai/") || trimmed.includes("(Vercel)") || trimmed.startsWith("vercel/")) return "vercel";
   return "openai";
 }

@@ -122,3 +122,27 @@ describe("synthetic CLI render fixture", () => {
     await manager.closeAll();
   });
 });
+
+it('recognizes only exact mixed synthetic terminal-bearing identities and never enables interactive start', async () => {
+  const {warmMixedProofManifests}=await import('@space/contracts');
+  const {warmMixedProofDescriptions}=await import('../cli-render-proof-fixture.js');
+  const store=new InMemorySpaceStore();
+  for(const profile of Object.keys(warmMixedProofManifests) as (keyof typeof warmMixedProofManifests)[]) {
+    const room=store.createRoom({name:'Mixed fixture',description:warmMixedProofDescriptions[profile],kind:'AGENT_PROOF',initialPaneCount:0});
+    const panes=store.createPanes(warmMixedProofManifests[profile].map(mode=>({roomId:room.id,title:`Mixed ${profile.slice(-1)}`,mode,
+      terminalRuntimeId:mode==='BROWSER'?null:'cli:codex',cwd:mode==='BROWSER'?null:'/tmp'})));
+    for(const pane of panes.filter(p=>p.mode!=='BROWSER')) {
+      const session=store.createPaneCliSession({paneId:pane.id,roomId:room.id,runtimeId:'cli:codex',providerId:'codex',agentId:'codex',modelId:null,reasoningEffort:'low',launchMode:'FRESH',cwd:'/tmp',codexThreadId:null,status:'RUNNING'});
+      expect(await isCliRenderProofSession(store,session)).toBe(true);
+      expect(await isCliRenderProofSession(store,{...session,runtimeId:'cli:gemini'})).toBe(false);
+      expect(await isCliRenderProofSession(store,{...session,paneId:'pane:foreign'})).toBe(false);
+    }
+    const host=fixtureHost();
+    await expect(startCliRenderProofFixture(store,room.id,'/unused',host.host)).rejects.toThrow('scope changed');
+    expect(host.input).not.toHaveBeenCalled();
+    const terminal=panes[0]!;
+    const session=store.getActivePaneCliSession(terminal.id)!;
+    store.updatePane(terminal.id,{title:'Changed manifest'});
+    expect(await isCliRenderProofSession(store,session)).toBe(false);
+  }
+});

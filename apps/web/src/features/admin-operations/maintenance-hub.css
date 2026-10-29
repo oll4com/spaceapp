@@ -57,7 +57,6 @@
 .maintenance-hub-schedule .space-toggle small { font-weight: 400; }
 .maintenance-hub-hour { display: inline-flex; align-items: center; gap: 10px; color: inherit; font-size: 13px; font-weight: 600; }
 .maintenance-hub-hour select { padding: 6px 10px; border: 1px solid #80808050; border-radius: 8px; background: transparent; color: inherit; }
-.maintenance-hub-hour select option { color: #182421; }
 .manage-workspace[data-color-mode="light"] .maintenance-hub-run { color: #fff; background: var(--accent-color, #23866f); }
 @media (max-width: 600px) {
   .maintenance-hub { padding: 14px; }

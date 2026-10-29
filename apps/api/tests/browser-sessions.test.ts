@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import {
   allocateDisplay,
+  displayHeldElsewhere,
   applyRestoreState,
   assertSafeBrowserTargetUrl,
   BrowserCapacityGate,
@@ -18,6 +19,7 @@ import {
   createBrowserSessionManager,
   dispatchBrowserRuntimeInput,
   isPrivateOrReservedAddress,
+  PANE_CHROME_STORAGE_ARGS,
   readPageMetadata,
   recordBrowserFramesInSegments,
   recoverInterruptedBrowserCaptureJobs,
@@ -1260,6 +1262,18 @@ describe("browser session display pool", () => {
     for (const display of allocated) releaseDisplay(display);
     expect(allocateDisplay()).not.toBeNull();
   });
+
+  it("sees a display another live X server holds, so a launch takes the next one (parallel test workers, 1.1.9 CI)", async () => {
+    const display = 4242; // outside the pool, so no real X server of a parallel worker is touched
+    const lock = `/tmp/.X${display}-lock`;
+    expect(displayHeldElsewhere(display)).toBe(false);
+    await writeFile(lock, `${process.pid}\n`, { flag: "wx" });
+    try {
+      expect(displayHeldElsewhere(display)).toBe(true);
+      await writeFile(lock, "999999999\n");
+      expect(displayHeldElsewhere(display)).toBe(false);
+    } finally { await rm(lock, { force: true }); }
+  });
 });
 
 describe("responsive viewport bounds", () => {
@@ -1283,5 +1297,14 @@ describe("live frame pacing", () => {
     const resumed = nextBrowserFrameDeadline(30000, deadline, 35)!;
     expect(resumed).toBeCloseTo(30000 + 1000 / 35);
     expect(nextBrowserFrameDeadline(30001, resumed, 35)).toBeNull();
+  });
+});
+
+describe("pane Chrome storage flags (plan clipboard:LPzoMHnHzK9A F7)", () => {
+  it("caps the HTTP cache, stops on-device model downloads and keeps one --disable-features with Vulkan", () => {
+    expect(PANE_CHROME_STORAGE_ARGS).toContain("--disk-cache-size=268435456");
+    const disabled = PANE_CHROME_STORAGE_ARGS.filter((arg) => arg.startsWith("--disable-features="));
+    expect(disabled).toHaveLength(1);
+    expect(disabled[0].slice("--disable-features=".length).split(",")).toEqual(expect.arrayContaining(["Vulkan", "OptimizationGuideModelDownloading"]));
   });
 });

@@ -30,7 +30,7 @@ async function wired(options: { autonomous?: boolean } = {}) {
     parseBody: (schema, body) => schema.parse(body), parseQuery: (schema, query) => schema.parse(query), readActivity: async () => { throw new Error("No activity in this test."); },
     roomTools: { execute }, inspectPane: vi.fn() as never, answerCli: vi.fn() as never, releaseTrain: async () => "No release trains yet.",
     notifications: { raise, resolve: vi.fn(async () => {}), list: async () => [], setStatus: async () => null } as never,
-    copilots: {}, claudeUsageProvider: async () => ({ data: [] }) as never,
+    copilots: {},
     runner: async (input) => {
       prompts.push(input.prompt);
       for (const [name, args] of queue.splice(0)) outcomes.push(await wiring.service.callTool(owner, input.turnId, name, args, `toolu_${outcomes.length}`));
@@ -123,12 +123,12 @@ describe("Nous Away mode: the grant", () => {
         ["delete", { category: "DESTRUCTIVE", title: "Delete the old room", body: "", recommendation: "Delete.", action: { type: "SPACE_CONTROL", roomId: f.room.id, actions: [{ kind: "room", operation: "delete" }] } }],
         ["payment", { category: "EXTERNAL", title: "Pay the invoice", body: "", recommendation: "Pay.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "pay the invoice with the card", mode: "PROMPT" } }],
         ["third-party send", { category: "EXTERNAL", title: "Send the proposal", body: "", recommendation: "Send.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "send the proposal email to the client", mode: "PROMPT" } }],
-        ["Warm code", { category: "DIRECTION", title: "Approve the Warm change", body: "", recommendation: "Approve.", action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "approve the Warm cache change", mode: "PROMPT" } }],
+        ["Warm code", { category: "DIRECTION", title: "Approve the Warm change", body: "", recommendation: "Approve.", checked: ["AGENTS.md: Warm changes need the operator's approval"], action: { type: "PANE_TEXT", roomId: f.room.id, paneId: f.andy.id, text: "approve the Warm cache change", mode: "PROMPT" } }],
         ["pane-host restart", { ...promote(f.room.id, f.andy.id, "sudo systemctl restart codex-pane-host.service"), title: "Restart the pane host" }]
       ];
       const results = await f.say("Going to sleep, I give you full control until morning",
         [["space_nous_away", start], ["space_ask_operator", promote(f.room.id, f.andy.id)], ...never.map(([, args]) => ["space_ask_operator", args] as [string, Record<string, unknown>]),
-          ["space_ask_operator", { category: "DESTRUCTIVE", title: "Data loss risk on the backup", body: "", recommendation: "Stop the job.", urgent: true }]]);
+          ["space_ask_operator", { category: "DESTRUCTIVE", title: "Data loss risk on the backup", body: "", recommendation: "Stop the job.", urgent: true, checked: ["backup log: the job deletes old snapshots"] }]]);
       const [, approved, ...asked] = results;
       expect(approved).toMatchObject({ ok: true, display: expect.stringMatching(/^Approved by the away grant/) });
       expect(f.execute).toHaveBeenCalledWith("send_to_pane", { panes: [f.andy.id], text: VERIFIED_PROMOTE }, expect.anything());
@@ -187,19 +187,24 @@ describe("Nous Away mode: quiet chat and rounds", () => {
     expect((await repository.listMessages(owner, 50)).filter((message) => message.kind === "ANSWER").map((message) => message.content)).toEqual(["Briefing."]);
   });
 
-  it("wakes Nous every 30 minutes while Away even without plans or inbox", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  it("runs the Away round as a standing turn of its own while Away, even without plans or inbox (standing orders 2026-10-21)", async () => {
     const f = await wired({ autonomous: true });
     try {
-      f.store.updateUserSettings(owner, { nous: { enabled: true } });
-      const notice = vi.spyOn(f.wiring.service, "notice");
-      await vi.advanceTimersByTimeAsync(30 * 60_000);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      // No plan and nobody away: the round has nothing to look at.
-      expect(notice.mock.calls.filter(([, key]) => key === "heartbeat")).toEqual([]);
+      // The daily self-review (2026-10-24) is its own standing turn: off here, so the tick brings only the Away round.
+      f.store.updateUserSettings(owner, { nous: { enabled: true, standingOrders: { dailyReview: false } } });
+      const standing = vi.spyOn(f.wiring.service, "standing");
+      // No plan, nothing finished and nobody away: the tick has nothing to bring.
+      expect(await f.wiring.standingOrders.tickOwner(owner)).toEqual({ paneLines: 0, stalledPlans: 0, turn: null });
+      expect(standing).not.toHaveBeenCalled();
       await f.say("Going to sleep", [["space_nous_away", { ...start, grant: [] }]]);
-      await vi.advanceTimersByTimeAsync(30 * 60_000);
-      await vi.waitFor(() => expect(notice).toHaveBeenCalledWith(owner, "heartbeat", expect.stringMatching(/^Heartbeat: 0 open plans/)));
+      await f.wiring.standingOrders.tickOwner(owner);
+      await vi.waitFor(() => expect(standing).toHaveBeenCalledWith(owner, "HEARTBEAT", expect.stringMatching(/^Away round: 0 open plans/)));
+      await f.wiring.service.idle(owner);
+      // The round ran as its own turn with the Away prompt; its reply went to the away log, not the chat (the one answer is the operator turn's).
+      expect(f.prompts.at(-1)).toContain("Away round: look over the plans and the panes");
+      const messages = await f.wiring.service.messages(owner);
+      expect(messages.filter((message) => message.kind === "ANSWER")).toHaveLength(1);
+      expect(messages.find((message) => message.kind === "INBOX" && message.meta.standing === "HEARTBEAT")?.content).toMatch(/^Away round: Away round: 0 open plans/);
     } finally {
       await f.app.close();
     }

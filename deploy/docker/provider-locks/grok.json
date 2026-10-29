@@ -1,0 +1,129 @@
+{
+  "name": "grok",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "dependencies": {
+        "@xai-official/grok": "0.2.111"
+      }
+    },
+    "node_modules/@iarna/toml": {
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/@iarna/toml/-/toml-3.0.0.tgz",
+      "integrity": "sha512-td6ZUkz2oS3VeleBcN+m//Q6HlCFCPrnI0FZhrt/h4XqLEdOyYp2u21nd8MdsR+WJy5r9PTDaHTDDfhf4H4l6Q==",
+      "license": "ISC"
+    },
+    "node_modules/@xai-official/grok": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok/-/grok-0.2.111.tgz",
+      "integrity": "sha512-baZxgwR0W+juZ6Wrni5gfORI+ayN/Q5ZjetyLBR9JIOMQg5s7W2GErJF4iONSYer+MS4k/Y2WaP+ekrmfIqFzA==",
+      "cpu": [
+        "arm64",
+        "x64"
+      ],
+      "hasInstallScript": true,
+      "license": "Apache-2.0",
+      "os": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "dependencies": {
+        "@iarna/toml": "^3.0.0"
+      },
+      "bin": {
+        "grok": "bin/grok"
+      },
+      "engines": {
+        "node": ">=20"
+      },
+      "optionalDependencies": {
+        "@xai-official/grok-darwin-arm64": "0.2.111",
+        "@xai-official/grok-darwin-x64": "0.2.111",
+        "@xai-official/grok-linux-arm64": "0.2.111",
+        "@xai-official/grok-linux-x64": "0.2.111",
+        "@xai-official/grok-win32-arm64": "0.2.111",
+        "@xai-official/grok-win32-x64": "0.2.111"
+      }
+    },
+    "node_modules/@xai-official/grok-darwin-arm64": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok-darwin-arm64/-/grok-darwin-arm64-0.2.111.tgz",
+      "integrity": "sha512-6VFLmBj0HmFCC3r2vmjU4g69RiBVn39PzeGiKcMHVwnZf+hF1rJ5jcfHg/mIK/cRCutJ72Aasl4/Gz71U8J6XA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@xai-official/grok-darwin-x64": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok-darwin-x64/-/grok-darwin-x64-0.2.111.tgz",
+      "integrity": "sha512-QJKIUZ/yRjMo6rVWwPLlTy8Lmi3jHNWKvs249rpOrWX6pictKlL8Qcr0Y8Xajx1IVeJP3BsMQLigSyae1IC/qA==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@xai-official/grok-linux-arm64": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok-linux-arm64/-/grok-linux-arm64-0.2.111.tgz",
+      "integrity": "sha512-zAZ9xbKILa47IHC3dd7x5NkhyfUe7yoEsG7XWJyqMS9mtUvlZvTrhzH43K+HVixlV8Ge0Eh8btjPWNoFu7HBfg==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@xai-official/grok-linux-x64": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok-linux-x64/-/grok-linux-x64-0.2.111.tgz",
+      "integrity": "sha512-wffFfRU2a2505jtHx9+UYi+E7MNaAxXPqlHwPQMnC6q4eq4vjoyWdkvMBsN6Qokr7BjD6DIvkZdwGplosXyUdQ==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@xai-official/grok-win32-arm64": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok-win32-arm64/-/grok-win32-arm64-0.2.111.tgz",
+      "integrity": "sha512-pl8hnDYnV9/NHc0AT9z3opVWetQfP76+hHp53wE0RpiriXVRKG5FZVh7r78V5VtQWxbonVEZR41/4LEOzyumEg==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@xai-official/grok-win32-x64": {
+      "version": "0.2.111",
+      "resolved": "https://registry.npmjs.org/@xai-official/grok-win32-x64/-/grok-win32-x64-0.2.111.tgz",
+      "integrity": "sha512-sfRkUQ2pjOuCYW18+O/GqtdLCkjhUcQ1/vmyH+WiBJ5mlYOpSzbjlXYMTGoIjV4j6yR6r4GuIQs9r4dsKyomwA==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "Apache-2.0",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    }
+  }
+}

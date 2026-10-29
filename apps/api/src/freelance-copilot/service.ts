@@ -478,7 +478,8 @@ export function createFreelanceCopilotService(options: FreelanceCopilotServiceOp
       const run = await repository.getActiveRun(pane.id);
       const mine = run && run.ownerUserId === owner ? run : null;
       const items = await repository.listEvents(owner, { types: ["BRIEF", "MAIL"], status: ["PENDING"], limit: 200 });
-      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: items.length + (await approvedDue(owner, pane)).length + (await followUpsDue(owner, pane)).length };
+      const own = items.filter((item) => item.type !== "BRIEF" || !item.paneId || item.paneId === pane.id);
+      return { run: mine, status: mine?.status ?? "IDLE", pending: await service.pendingItems(owner, pane.id), backlog: own.length + (await approvedDue(owner, pane)).length + (await followUpsDue(owner, pane)).length };
     },
     activeRun: (paneId: string) => repository.getActiveRun(paneId),
     async startRun(owner: string, paneId: string): Promise<{ run: FreelanceRun; kickoff: boolean }> {

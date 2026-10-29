@@ -115,6 +115,31 @@ describe("Marketing Copilot reviews, briefs and runs", () => {
     await expect(service.decideReview(owner, target, third.id, { decision: "approve" })).rejects.toThrow(/no longer waiting/);
   });
 
+  it("takes back an approved post not yet published: the copilot's edit makes it an unscheduled draft, the operator can reject one; a publishing post stays", async () => {
+    const { service } = setup();
+    const target = pane();
+    const approved = async (scheduledAt?: string) => {
+      const { post } = await service.createPost(owner, target, { channel: "X", kind: "POST", body, assets: [], ...(scheduledAt ? { scheduledAt } : {}) });
+      await service.requestReview(owner, target, { postId: post.id });
+      return service.decideReview(owner, target, post.id, { decision: "approve" });
+    };
+    const first = await approved("2026-10-27T12:40:00.000Z");
+    const { post: edited } = await service.updatePost(owner, first.id, { body: "SpaceApp: AI coding CLIs side by side, self-hosted." });
+    expect(edited).toMatchObject({ status: "DRAFT", body: "SpaceApp: AI coding CLIs side by side, self-hosted.", scheduledAt: null });
+    // The approval is gone: under Assist it cannot be published until it is reviewed again.
+    await expect(service.beginPublish(owner, target, first.id)).rejects.toThrow(/MARKETING_NEEDS_REVIEW/);
+    const second = await approved();
+    await expect(service.decideReview(owner, target, second.id, { decision: "revise", note: "Shorter." })).rejects.toThrow(/no longer waiting/);
+    expect((await service.decideReview(owner, target, second.id, { decision: "reject", note: "Not this body." })).status).toBe("REJECTED");
+    const third = await approved();
+    expect((await service.beginPublish(owner, target, third.id)).status).toBe("PUBLISHING");
+    await expect(service.updatePost(owner, third.id, { body: "Too late." })).rejects.toThrow(/Only a draft/);
+    await expect(service.decideReview(owner, target, third.id, { decision: "reject" })).rejects.toThrow(/no longer waiting/);
+    expect((await service.finishPublish(owner, target, { postId: third.id, url: "https://x.com/spaceapp/status/1847" })).status).toBe("PUBLISHED");
+    await expect(service.updatePost(owner, third.id, { body: "Too late." })).rejects.toThrow(/Only a draft/);
+    await expect(service.decideReview(owner, target, third.id, { decision: "reject" })).rejects.toThrow(/no longer waiting/);
+  });
+
   it("serves briefs first, then approved posts that are due, and finishes when nothing is left", async () => {
     const { service, advance } = setup();
     const target = pane();
@@ -133,6 +158,25 @@ describe("Marketing Copilot reviews, briefs and runs", () => {
     await service.startRun(owner, target.id);
     expect(await service.nextItem(owner, target, { waitMs: 0 })).toMatchObject({ done: false, kind: "PUBLISH", post: { id: later.id } });
     expect((await service.runView(owner, target)).backlog).toBe(1);
+  });
+
+  // Stable 2026-10-23: the briefs Nous gave Bruno's Marketing pane (12:09-17:21 UTC) were taken by Dino's: one queue per owner.
+  it("gives a brief to the pane it names, a brief without a pane to any, and serves both before a due post", async () => {
+    const { service } = setup();
+    const mine = pane();
+    const other = { ...pane(), id: "pane:mkt000002", title: "Marketing Copilot 2" } as Pane;
+    for (const target of [mine, other]) await service.startRun(owner, target.id);
+    const due = (await service.createPost(owner, other, { channel: "X", kind: "POST", body, assets: [] })).post;
+    await service.requestReview(owner, other, { postId: due.id });
+    await service.decideReview(owner, other, due.id, { decision: "approve" });
+    await service.createBrief(owner, mine, { text: "For Marketing Copilot 1" });
+    await service.createBrief(owner, null, { text: "For any pane" });
+    await service.createBrief(owner, other, { text: "For Marketing Copilot 2" });
+    expect((await service.runView(owner, other)).backlog).toBe(3);
+    expect(await service.nextItem(owner, other, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For any pane" } });
+    expect(await service.nextItem(owner, other, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For Marketing Copilot 2", payload: { takenByPaneId: other.id } } });
+    expect(await service.nextItem(owner, other, { waitMs: 0 })).toMatchObject({ kind: "PUBLISH", post: { id: due.id } });
+    expect(await service.nextItem(owner, mine, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For Marketing Copilot 1", payload: { takenByPaneId: mine.id } } });
   });
 
   it("asks the operator, remembers the answer, and keeps proposed campaigns waiting for approval", async () => {

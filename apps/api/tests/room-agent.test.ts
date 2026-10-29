@@ -833,6 +833,40 @@ describe("completeRoomAgentPrompt", () => {
 
 
 describe("Room Agent request trace retention", () => {
+  it("carries the message request parent through legacy mission recovery after registry eviction", async () => {
+    const { app, cookie, csrfToken, room, store } = await setup({ failFirstEnqueue: true });
+    const clientRequestId = "legacy-retained-parent-0001";
+    const objective = "Finish this legacy mission.";
+    expect((await startMission(app, cookie, csrfToken, room.id, objective, clientRequestId)).statusCode).toBe(500);
+    // Old persisted request records have no fingerprint. Recovery must still
+    // build its scheduling input from the retained HTTP request context.
+    store.getRoomAgentRequest(room.id, clientRequestId)!.requestFingerprint = undefined;
+    const enqueue = store.enqueueRoomAgentMission.bind(store);
+    const proposed: RoomAgentSupervisorQueueItem[] = [];
+    const enqueueSpy = vi.spyOn(store, "enqueueRoomAgentMission").mockImplementation((input, traceId) => {
+      proposed.push(input.queueItem);
+      return enqueue(input, traceId);
+    });
+    const remember = requestTraceContexts.remember.bind(requestTraceContexts);
+    let expectedParent: string | undefined;
+    const traceSpy = vi.spyOn(requestTraceContexts, "remember").mockImplementation((id, context) => {
+      remember(id, context);
+      if (context.w3cTraceId !== "4bf92f3577b34da6a3ce929d0e0e4736") return;
+      expectedParent = context.traceparent;
+      for (let i = 0; i < 4096; i++) remember(`req:legacy-eviction:${i}`, context);
+      expect(requestTraceContexts.lookup(id)).toBeNull();
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: `/api/rooms/${room.id}/room-agent/messages`,
+        headers: { cookie, [csrfHeaderName]: csrfToken, traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+        payload: { content: objective, clientRequestId } });
+      expect(response.statusCode).toBe(202);
+      expect(expectedParent).toBeDefined();
+      expect(proposed).toHaveLength(1);
+      expect(proposed[0]!.turn).toMatchObject({ traceId: response.headers["x-request-id"], traceparent: expectedParent });
+    } finally { enqueueSpy.mockRestore(); traceSpy.mockRestore(); }
+  });
+
   it("persists the live mission API parent even when request lookup is evicted before enqueue", async () => {
     const { app, cookie, csrfToken, room, enqueued } = await setup();
     const remember = requestTraceContexts.remember.bind(requestTraceContexts);

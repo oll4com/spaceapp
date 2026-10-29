@@ -33,7 +33,7 @@ const b64 = vaultBase64url;
 
 export const vaultRandomBytes = (length: number) => globalThis.crypto.getRandomValues(new Uint8Array(length));
 export const wipeVaultBytes = (...buffers: (Uint8Array | null | undefined)[]) => { for (const buffer of buffers) buffer?.fill(0); };
-export const newVaultHandle = (prefix: "vault" | "vault_item" | "vault_delegation" | "vault_audit" | "vault_pending" | "vault_approval" | "vault_grant") => `${prefix}:${b64.encode(vaultRandomBytes(16))}`;
+export const newVaultHandle = (prefix: "vault" | "vault_item" | "vault_delegation" | "vault_audit" | "vault_pending" | "vault_approval" | "vault_grant" | "vault_key") => `${prefix}:${b64.encode(vaultRandomBytes(16))}`;
 
 /** HKDF-SHA256 to a 32-byte key; `info` names the key's single use. */
 export async function deriveVaultKey(inputKey: Uint8Array, info: string, salt: Uint8Array = new Uint8Array(32)): Promise<Uint8Array> {

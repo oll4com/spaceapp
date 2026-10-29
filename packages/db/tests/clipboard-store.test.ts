@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PostgresSpaceStore, type PgClientLike, type PgPoolLike } from "../src/index.js";
 
@@ -22,6 +23,9 @@ const clipboardRow = {
   roomId: null,
   paneId: null,
   paneTitle: null,
+  dependsOn: [],
+  dueAt: null,
+  waitsOn: null,
   occurrenceCount: 1,
   characterCount: 8,
   createdAt: "2026-07-15T10:00:00.000Z",
@@ -177,5 +181,54 @@ describe("PostgresSpaceStore clipboard history", () => {
       title: "2. Environment Preset Logic Hook",
       status: "PENDING"
     });
+  });
+});
+
+describe("PostgresSpaceStore plan map (operator request 2026-10-25)", () => {
+  /** The owner's open plans: the row itself and one other plan that depends on it; `managed` makes the row a managed plan. */
+  class PlanPool extends ClipboardPgPool {
+    constructor(private readonly managed = false) { super(); }
+    override async query<T = unknown>(sql: string, values: unknown[] = []) {
+      if (sql.includes("SELECT id FROM managed_plan_executions")) { this.calls.push({ sql, values }); return { rows: (this.managed ? [{ id: "exec:1" }] : []) as T[], rowCount: this.managed ? 1 : 0 }; }
+      if (sql.includes('depends_on AS "dependsOn" FROM clipboard_items')) {
+        this.calls.push({ sql, values });
+        return { rows: [{ id: clipboardRow.id, dependsOn: [] }, { id: "clipboard:other001", dependsOn: [clipboardRow.id] }, { id: "clipboard:free0001", dependsOn: [] }] as T[], rowCount: 3 };
+      }
+      return super.query<T>(sql, values);
+    }
+  }
+
+  it("writes depends_on, due_at and waits_on_json on a progress update and every RETURNING list carries them", async () => {
+    const pool = new PlanPool();
+    const store = new PostgresSpaceStore(pool);
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, {
+      executionStatus: "IN_PROGRESS", dependsOn: ["clipboard:free0001"], dueAt: "2026-10-30T09:00:00.000Z", waitsOn: { kind: "THIRD_PARTY", what: "the mail server", until: null }
+    });
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
+    expect(update?.sql).toContain("depends_on = $11::jsonb");
+    expect(update?.values.slice(10)).toEqual(['["clipboard:free0001"]', "2026-10-30T09:00:00.000Z", '{"kind":"THIRD_PARTY","what":"the mail server","until":null}', null, null, null]);
+    const reads = pool.calls.filter((call) => call.sql.includes("RETURNING") || call.sql.includes('steps_json AS "stepsJson"'));
+    expect(reads.length).toBeGreaterThan(1);
+    for (const call of reads) expect(call.sql).toContain('waits_on_json AS "waitsOn"');
+  });
+
+  it("edits a plan's title and text in place with the new content hash (Nous daily upgrade 2026-10-27)", async () => {
+    const pool = new PlanPool();
+    const store = new PostgresSpaceStore(pool);
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, { title: "New title", text: "New text." });
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
+    expect(update?.sql).toContain("text = COALESCE($15, text)");
+    expect(update?.values.slice(13)).toEqual(["New title", "New text.", createHash("sha256").update("New text.").digest("hex")]);
+  });
+
+  it("lets a managed plan take a map-only update and refuses a loop", async () => {
+    const pool = new PlanPool(true);
+    const store = new PostgresSpaceStore(pool);
+    await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { progressPercentage: 10 })).rejects.toThrow("Managed plan progress");
+    await store.updateClipboardItemProgress("user:one", clipboardRow.id, { dueAt: "2026-10-30T09:00:00.000Z" });
+    const update = pool.calls.find((call) => call.sql.includes("UPDATE clipboard_items"));
+    expect(update?.sql).toContain("SET depends_on = $3::jsonb, due_at = $4::timestamptz, waits_on_json = $5::jsonb, last_used_at = clock_timestamp()");
+    expect(update?.sql).not.toContain("last_progress_at = clock_timestamp()");
+    await expect(store.updateClipboardItemProgress("user:one", clipboardRow.id, { dependsOn: ["clipboard:other001"] })).rejects.toThrow("would loop");
   });
 });

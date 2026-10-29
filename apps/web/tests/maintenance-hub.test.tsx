@@ -69,15 +69,17 @@ describe("MaintenanceHub", () => {
   });
 
   it("turns on the nightly run in the browser's time zone and changes its hour", async () => {
+    // The switch stays disabled until the first status load; a click before it lands is ignored, so flush it first.
+    vi.useFakeTimers();
     const api = client(status());
     render(<MaintenanceHub client={api} />);
-    const toggle = await screen.findByRole("switch", { name: "Run automatically every night" });
-    fireEvent.click(toggle);
-    await screen.findByRole("combobox", { name: "Nightly maintenance time" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.click(screen.getByRole("switch", { name: "Run automatically every night" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(api.updateMaintenanceAutopilotSchedule).toHaveBeenCalledWith({ enabled: true, hour: 4, timeZone: schedule.timeZone });
     expect(screen.getByText(/Next run/)).toBeTruthy();
     fireEvent.change(screen.getByRole("combobox", { name: "Nightly maintenance time" }), { target: { value: "2" } });
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(api.updateMaintenanceAutopilotSchedule).toHaveBeenLastCalledWith({ enabled: true, hour: 2, timeZone: schedule.timeZone });
   });
 

@@ -1,5 +1,5 @@
 import { api } from "../../api.js";
-import { delegateVaultItems, importVaultPending, lockVaultKeys, vaultInboxKey, type UnlockedVault } from "./vault-client.js";
+import { VAULT_OLD_BROKER_DELEGATION_MAX, VaultInboxError, delegateVaultItems, importVaultPending, lockVaultKeys, vaultInboxKey, type UnlockedVault } from "./vault-client.js";
 import { readVaultAutoLock, startVaultAutoLock, type VaultAutoLockReason } from "./vault-auto-lock.js";
 
 /**
@@ -9,7 +9,9 @@ import { readVaultAutoLock, startVaultAutoLock, type VaultAutoLockReason } from 
  * or IndexedDB. While unlocked, the inbox import (every 30 s) and the hand-over to agents run here, dock open or not.
  */
 export type VaultLockReason = VaultAutoLockReason | "LOCK" | "REVOKE" | "SIGN_OUT";
-export type VaultSessionEvent = { kind: "unlocked" } | { kind: "locked"; reason: VaultLockReason } | { kind: "imported"; count: number };
+export type VaultSessionEvent = { kind: "unlocked" } | { kind: "locked"; reason: VaultLockReason } | { kind: "imported"; count: number }
+  /** The inbox cannot be used (its key does not open, or waiting logins were sealed to another key): shown, never swallowed. */
+  | { kind: "inbox-error"; message: string };
 
 const IMPORT_EVERY_MS = 30_000;
 let keys: UnlockedVault | null = null;
@@ -33,14 +35,34 @@ export async function handOverToAgents(current: UnlockedVault | null = keys): Pr
   if (!current) return;
   const state = await api.vaultState();
   if (!state.agentAccess) return;
-  const records = await Promise.all((await api.vaultItems()).items.map(async (item) => (await api.vaultItem(item.id)).item));
-  await delegateVaultItems(api, current, { records, delegationGeneration: state.vault?.delegationGeneration ?? 0, epoch: state.vault?.epoch, inbox: await vaultInboxKey(api, current) });
+  const { items, stats } = await api.vaultItems();
+  // The order an older broker's 200 are taken in: logins agents already used (latest use first), then logins made here or by
+  // agents, then imported ones (newest first). A large Chrome import never pushes out the logins agents work with.
+  const rank = (item: (typeof items)[number]) => stats?.[item.id]?.lastUsedAt ? 0 : item.googleAccountId ? 2 : 1;
+  const latest = (item: (typeof items)[number]) => stats?.[item.id]?.lastUsedAt ?? stats?.[item.id]?.changedAt ?? "";
+  const ordered = items.filter((item) => item.policy.agentUse && item.status === "ACTIVE")
+    .sort((a, b) => rank(a) - rank(b) || latest(b).localeCompare(latest(a)));
+  // One request for every item's envelopes, not one per item.
+  const byId = new Map((await api.vaultItemRecords()).items.map((record) => [record.metadata.id, record]));
+  const records = ordered.map((item) => byId.get(item.id)).filter((record) => record !== undefined);
+  const inbox = await vaultInboxKey(api, current);
+  const delegate = (list: typeof records) => delegateVaultItems(api, current, { records: list, delegationGeneration: state.vault?.delegationGeneration ?? 0, epoch: state.vault?.epoch, inbox });
+  // Every login is offered (no count limit, operator rule 2026-10-20); a broker or API from before that refuses more than 200
+  // as a whole, so the 200 most recent go instead of none, and the dock shows how many wait.
+  await delegate(records).catch((error) => records.length > VAULT_OLD_BROKER_DELEGATION_MAX ? delegate(records.slice(0, VAULT_OLD_BROKER_DELEGATION_MAX)) : Promise.reject(error));
 }
 
-/** Adds the logins agents saved or the Vault generated; hands them over when there were any. */
+/** Adds the logins agents saved or the Vault generated; hands them over when there were any. An unusable inbox is reported, not swallowed. */
 export async function importVaultInbox(current: UnlockedVault | null = keys): Promise<number> {
   if (!current) return 0;
-  const count = await importVaultPending(api, current, await vaultInboxKey(api, current));
+  let result;
+  try { result = await importVaultPending(api, current, await vaultInboxKey(api, current)); }
+  catch (error) { if (error instanceof VaultInboxError) emit({ kind: "inbox-error", message: error.message }); throw error; }
+  const { imported: count, unreadable } = result;
+  if (unreadable.length) {
+    const names = unreadable.slice(0, 3).map((entry) => entry.label).join(", ");
+    emit({ kind: "inbox-error", message: `${unreadable.length} waiting login${unreadable.length === 1 ? "" : "s"} (${names}) cannot be opened with your inbox key and stay waiting. Check Activity for an INBOX_SET entry you did not make.` });
+  }
   if (count) { emit({ kind: "imported", count }); await handOverToAgents(current); }
   return count;
 }

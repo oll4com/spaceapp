@@ -17,6 +17,8 @@ import type { RoomPaneObservation } from "./room-pane-control.js";
  * reported once.
  */
 export const CLAUDE_GATEWAY_PROFILE = "space-gateway";
+/** Four 30-second ticks: a turn that is only finishing never raises it. */
+const BUSY_REPORT_TICKS = 4;
 export const CLAUDE_LIMIT_CONTINUE = "continue";
 /** Ticks (30 s apart) the restarted CLI gets to show an empty prompt before Space reports that it could not type continue. */
 const CONTINUE_TICKS = 6;
@@ -46,6 +48,8 @@ export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
   const continuing = new Map<string, { sessionId: string; ticks: number }>();
   /** The limited session each staying pane was reported for. */
   const reported = new Map<string, string>();
+  /** Ticks a limited pane's turn has stayed busy (Claude keeps it running while background agents or shells run). */
+  const busyTicks = new Map<string, { sessionId: string; ticks: number }>();
   let running = false;
 
   async function continueMoved(pane: Pane, session: PaneCliSession, moved: { sessionId: string; ticks: number }) {
@@ -74,6 +78,7 @@ export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
     const observed = await deps.inspect(pane, false);
     if (!observed.usageLimited || observed.sessionId !== session.sessionId) {
       reported.delete(pane.id);
+      busyTicks.delete(pane.id);
       return;
     }
     const stays = await deps.pinnedDirect(pane.id) ? "you picked its direct account in the pane"
@@ -84,7 +89,17 @@ export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
       return deps.record(pane, "STAYS", `hit its Claude usage limit and stays there: ${stays}`);
     }
     // The switch restarts the CLI, so a limit menu or a turn still on screen waits for the next tick.
-    if (observed.state !== "IDLE") return;
+    if (observed.state !== "IDLE") {
+      // A turn Claude keeps busy at the limit (background agents or shells, Cleo/Dana 2026-10-21) waited unseen: say so once after 2 minutes.
+      const busy = busyTicks.get(pane.id);
+      const ticks = observed.state === "RUNNING" && busy?.sessionId === session.sessionId ? busy.ticks + 1 : 1;
+      busyTicks.set(pane.id, { sessionId: session.sessionId, ticks });
+      if (observed.state !== "RUNNING" || ticks < BUSY_REPORT_TICKS || reported.get(pane.id) === session.sessionId) return;
+      reported.set(pane.id, session.sessionId);
+      return deps.record(pane, "STAYS", "hit its Claude usage limit while its turn still runs (background agents or shells): "
+        + "it moves to Space Gateway once that turn ends, or continues by itself after the limit resets");
+    }
+    busyTicks.delete(pane.id);
     await deps.switchToGateway(pane, session);
     reported.delete(pane.id);
     continuing.set(pane.id, { sessionId: (await deps.activeSession(pane.id))?.sessionId ?? "", ticks: 0 });
@@ -104,7 +119,9 @@ export function createClaudeLimitMove(deps: ClaudeLimitMoveDeps) {
       } finally {
         running = false;
       }
-    }
+    },
+    /** The same "ready Claude subscription account" rule for Nous's helpers, which fall back to the gateway at a quota limit. */
+    gatewayReady: () => deps.gatewayReady()
   };
 }
 

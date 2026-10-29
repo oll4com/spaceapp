@@ -63,6 +63,8 @@ describe("Space Gateway admin routes", () => {
     const status = (await app.inject({ url: "/api/admin/gateway/status", headers: authHeaders("ADMIN") })).json();
     expect(status.service).toMatchObject({ state: "NOT_INSTALLED", error: "Space Gateway is not running." });
     expect(status.accounts).toEqual({ total: 1, active: 1, byProvider: [{ provider: "CODEX", total: 1, active: 1 }] });
+    // The Claude API-key account's pace to the monthly budget: none without a budget and Anthropic billing (plan clipboard:nUloPOH3blDT step 6).
+    expect(status.apiBudget).toBeNull();
     const accounts = await app.inject({ url: "/api/admin/gateway/accounts", headers: authHeaders("ADMIN") });
     expect(accounts.body).not.toContain("secret-envelope");
     expect(accounts.body).not.toContain("chatgpt-a");

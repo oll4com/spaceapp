@@ -18,7 +18,8 @@ const observation = (sessionId: string, extra: Partial<RoomPaneObservation> = {}
   runtimeId: "cli:claude", sessionId, state: "IDLE", nativeTaskRef: null, modelId: null, nativeMode: null, checkedAt: "2026-10-20T14:00:00.000Z",
   tasks: [], text: "────\n❯ \n────", promptFingerprint: `fp-${sessionId}`, ...extra });
 
-function fixture(options: { mode?: Pane["mode"]; account?: string | null; ready?: boolean; pinned?: boolean; after?: Partial<RoomPaneObservation> } = {}) {
+function fixture(options: { mode?: Pane["mode"]; account?: string | null; ready?: boolean; pinned?: boolean; after?: Partial<RoomPaneObservation>;
+  limitedState?: RoomPaneObservation["state"] } = {}) {
   let active = session("cli_session:direct1", options.account === undefined ? null : options.account);
   const calls: string[] = [];
   const records: Array<{ outcome: string; text: string }> = [];
@@ -26,7 +27,7 @@ function fixture(options: { mode?: Pane["mode"]; account?: string | null; ready?
     listPanes: async () => [pane(options.mode)],
     activeSession: async () => active,
     inspect: async () => active.sessionId === "cli_session:direct1"
-      ? observation(active.sessionId, { usageLimited: true })
+      ? observation(active.sessionId, { usageLimited: true, state: options.limitedState ?? "IDLE" })
       : observation(active.sessionId, options.after),
     gatewayReady: async () => options.ready ?? true,
     pinnedDirect: async () => options.pinned ?? false,
@@ -57,6 +58,16 @@ describe("Claude panes at a usage limit move to Space Gateway", () => {
     await f.mover.tick();
     expect(f.calls).toEqual([]);
     expect(f.records).toEqual([{ outcome: "STAYS", text: expect.stringContaining("no ready Claude account") }]);
+  });
+
+  it("says once, after two minutes, that a limited turn Claude keeps running waits, and does not restart it (Cleo/Dana 2026-10-21)", async () => {
+    const f = fixture({ limitedState: "RUNNING" });
+    for (let tick = 0; tick < 3; tick += 1) await f.mover.tick();
+    expect(f.records).toEqual([]);
+    for (let tick = 0; tick < 4; tick += 1) await f.mover.tick();
+    expect(f.calls).toEqual([]);
+    expect(f.records).toEqual([{ outcome: "STAYS", text: expect.stringContaining("while its turn still runs (background agents or shells)") }]);
+    expect(await f.mover.gatewayReady()).toBe(true);
   });
 
   it("leaves a pane the operator put on its direct account", async () => {

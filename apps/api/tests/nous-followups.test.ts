@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryNousFollowupsRepository } from "@space/db";
-import { createNousFollowups, NOUS_FOLLOWUP_OPEN_MAX } from "../src/nous/followups.js";
+import { createNousFollowups } from "../src/nous/followups.js";
 
 // Nous's follow-ups (plan clipboard:8s0ZNiO3q5ZT S3).
 const owner = "user:operator";
@@ -29,7 +29,7 @@ describe("Nous's follow-ups", () => {
     expect((await f.followups.run("user:someone", { op: "list" }, null)).result).toBe("No follow-ups.");
   });
 
-  it("fires once when the time comes, a ticket ends or a pane finishes, and never after a cancel", async () => {
+  it("fires when the time comes, a ticket ends or a pane finishes, closes only once the turn that saw it completed, and never after a cancel", async () => {
     const f = fixture();
     await f.followups.run(owner, { op: "add", note: "Look at the deploy", inMinutes: 10 }, null);
     await f.followups.run(owner, { op: "add", note: "Merge dev into S3", ticket: "q-20261017-124931-f2cc" }, null);
@@ -45,23 +45,38 @@ describe("Nous's follow-ups", () => {
     f.advance(11 * 60_000);
     f.tickets.set("q-20261017-124931-f2cc", "DEPLOYED");
     expect(await f.followups.tick()).toBe(2);
-    expect(await f.followups.tick()).toBe(0);
+    // Until the turn that carried the line completes, the row stays OPEN and the tick notices the same key again (never doubled).
+    expect(await f.followups.tick()).toBe(2);
     await f.followups.paneFinished("pane:other0001");
-    await f.followups.paneFinished("pane:andy0001");
     await f.followups.paneFinished("pane:andy0001");
 
     // The created time comes from the repository's own clock, so only the part after it is compared.
-    expect(f.notice.mock.calls.map((call) => (call as unknown as [string, string, string])[2].replace(/^Follow-up you set \S+ /, ""))).toEqual([
+    const calls = f.notice.mock.calls as unknown as Array<[string, string, string, () => Promise<void>]>;
+    expect(calls.map((call) => call[2].replace(/^Follow-up you set \S+ /, ""))).toEqual([
+      "(time came): Look at the deploy", "(ticket q-20261017-124931-f2cc DEPLOYED): Merge dev into S3",
       "(time came): Look at the deploy", "(ticket q-20261017-124931-f2cc DEPLOYED): Merge dev into S3", "(Andy finished): Read Andy"
     ]);
-    expect((f.notice.mock.calls[0] as unknown as [string, string])[1]).toMatch(/^followup:nous_followup:/);
-    const listed = (await f.repository.list(owner, 10)).map((item) => item.status);
-    expect(listed.sort()).toEqual(["CANCELLED", "FIRED", "FIRED", "FIRED"]);
+    expect(calls[0]![1]).toMatch(/^followup:nous_followup:/);
+    expect((await f.repository.list(owner, 10)).map((item) => item.status).sort()).toEqual(["CANCELLED", "OPEN", "OPEN", "OPEN"]);
+    // The turn completed: each line's onDone closes its follow-up as FIRED, once; the tick has nothing left.
+    for (const call of calls) await call[3]();
+    expect(await f.followups.tick()).toBe(0);
+    await f.followups.paneFinished("pane:andy0001");
+    expect(calls).toHaveLength(5);
+    expect((await f.repository.list(owner, 10)).map((item) => item.status).sort()).toEqual(["CANCELLED", "FIRED", "FIRED", "FIRED"]);
   });
 
-  it("keeps at most 50 open follow-ups per owner", async () => {
+  it("has no limit on open follow-ups: adds past the old 50, lists every one, fires and cancels past the old windows (operator 2026-10-27)", async () => {
     const f = fixture();
-    for (let index = 0; index < NOUS_FOLLOWUP_OPEN_MAX; index += 1) await f.repository.add({ ownerUserId: owner, note: `n${index}`, trigger: { kind: "TICKET", ticketId: "q-20261017-000000-0000" } });
-    expect((await f.followups.run(owner, { op: "add", note: "one more", inMinutes: 5 }, null)).result).toContain("cancel some first");
+    const first = await f.repository.add({ ownerUserId: owner, note: "n0", trigger: { kind: "TICKET", ticketId: "q-20261017-000000-0000" } });
+    for (let index = 1; index < 250; index += 1) await f.repository.add({ ownerUserId: owner, note: `n${index}`, trigger: { kind: "TICKET", ticketId: "q-20261017-000000-0000" } });
+    expect(await f.followups.run(owner, { op: "add", note: "one more", inMinutes: 5 }, null)).toMatchObject({ ok: true });
+    expect((await f.followups.run(owner, { op: "list" }, null)).result.split("\n")).toHaveLength(251);
+    f.advance(6 * 60_000);
+    expect(await f.followups.tick()).toBe(1);
+    expect(f.notice.mock.calls.map((call) => (call as unknown as [string, string, string])[2])).toEqual([expect.stringContaining("(time came): one more")]);
+    // The oldest one, behind 249 open rows: cancel finds it by id, also once it has ended (the old 200-row window missed it).
+    expect((await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).ok).toBe(true);
+    expect(await f.followups.run(owner, { op: "cancel", followup: first.id }, null)).toMatchObject({ ok: true, result: expect.stringContaining("Already cancelled") });
   });
 });

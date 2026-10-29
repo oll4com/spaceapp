@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync } from "node:fs";
+import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   CreateWorktreeInput,
@@ -119,6 +119,64 @@ export interface WorktreeRegistryData {
 const registryUpdates = new Map<string, Promise<void>>();
 const repositoryInitializations = new Map<string, Promise<void>>();
 
+const registryReads = new Map<string, { version: string; data: WorktreeRegistryData }>();
+
+/** The record `recordWorktree` writes for both of its registry keys. */
+function recordUpdate(reg: WorktreeRegistryData, record: Partial<WorktreeRecord> & { worktreePath: string }) {
+  const normPath = resolve(record.worktreePath);
+  const wtId = basename(normPath);
+  const existing = reg.worktrees[normPath] || reg.worktrees[wtId];
+  const now = new Date().toISOString();
+  const updated: WorktreeRecord = {
+    id: record.id || existing?.id || `wt:${wtId}`,
+    worktreePath: normPath,
+    repoPath: record.repoPath || existing?.repoPath || "/opt/spaceapp",
+    branch: record.branch || existing?.branch || `space/${wtId}`,
+    baseBranch: record.baseBranch || existing?.baseBranch || "main",
+    baseCommit: record.baseCommit || existing?.baseCommit || "",
+    roomId: record.roomId || existing?.roomId,
+    paneId: record.paneId || existing?.paneId,
+    status: record.status || existing?.status || "ACTIVE",
+    mergeCommitSha: record.mergeCommitSha || existing?.mergeCommitSha,
+    createdAt: existing?.createdAt || record.createdAt || now,
+    updatedAt: now,
+    mergedAt: record.mergedAt || (record.status === "MERGED" ? (existing?.mergedAt || now) : existing?.mergedAt),
+    discardedAt: record.discardedAt || (record.status === "DISCARDED" ? (existing?.discardedAt || now) : existing?.discardedAt)
+  };
+  return { reg, updated, normPath, wtId };
+}
+
+/** Both registry keys already hold this record, apart from updatedAt. */
+function changesNothing({ reg, updated, normPath, wtId }: ReturnType<typeof recordUpdate>): boolean {
+  const comparable = (value: WorktreeRecord | undefined) => value
+    && JSON.stringify(Object.entries(value).filter(([key, field]) => key !== "updatedAt" && field !== undefined).sort(([a], [b]) => a.localeCompare(b)));
+  const next = comparable(updated);
+  return comparable(reg.worktrees[normPath]) === next && comparable(reg.worktrees[wtId]) === next;
+}
+
+/** The first directory (the tree's parent included) whose entries this user may not delete; null when all of it can go. */
+async function firstUndeletableDirectory(dir: string, top = true): Promise<string | null> {
+  for (const path of top ? [dirname(dir), dir] : [dir]) {
+    try {
+      await access(path, fsConstants.W_OK | fsConstants.X_OK);
+    } catch {
+      return path;
+    }
+  }
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return dir;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const blocked = await firstUndeletableDirectory(join(dir, entry.name), false);
+    if (blocked) return blocked;
+  }
+  return null;
+}
+
 export class WorktreeService {
   constructor(private readonly baseStorageDir = WORKTREES_ROOT) {}
 
@@ -161,29 +219,25 @@ export class WorktreeService {
     }
   }
 
+  /**
+   * The registry (1.4 MB of JSON on stable) parsed once per file version, for read-only use: badges read and rewrote it
+   * on every load, ~2.2 s of the API's loop every 5 minutes (stable profile 2026-10-24).
+   */
+  private async readRegistryShared(): Promise<WorktreeRegistryData> {
+    const version = await stat(this.registryPath).then((info) => `${info.ino}:${info.size}:${info.mtimeMs}`, () => "missing");
+    const cached = registryReads.get(this.registryPath);
+    if (cached?.version === version) return cached.data;
+    const data = await this.readRegistry();
+    registryReads.set(this.registryPath, { version, data });
+    return data;
+  }
+
   private async updateRecordedWorktree(record: Partial<WorktreeRecord> & { worktreePath: string }): Promise<void> {
     try {
+      // A record that would change nothing but updatedAt is not written again.
+      if (changesNothing(recordUpdate(await this.readRegistryShared(), record))) return;
       const reg = await this.readRegistry();
-      const normPath = resolve(record.worktreePath);
-      const wtId = basename(normPath);
-      const existing = reg.worktrees[normPath] || reg.worktrees[wtId];
-      const now = new Date().toISOString();
-      const updated: WorktreeRecord = {
-        id: record.id || existing?.id || `wt:${wtId}`,
-        worktreePath: normPath,
-        repoPath: record.repoPath || existing?.repoPath || "/opt/spaceapp",
-        branch: record.branch || existing?.branch || `space/${wtId}`,
-        baseBranch: record.baseBranch || existing?.baseBranch || "main",
-        baseCommit: record.baseCommit || existing?.baseCommit || "",
-        roomId: record.roomId || existing?.roomId,
-        paneId: record.paneId || existing?.paneId,
-        status: record.status || existing?.status || "ACTIVE",
-        mergeCommitSha: record.mergeCommitSha || existing?.mergeCommitSha,
-        createdAt: existing?.createdAt || record.createdAt || now,
-        updatedAt: now,
-        mergedAt: record.mergedAt || (record.status === "MERGED" ? (existing?.mergedAt || now) : existing?.mergedAt),
-        discardedAt: record.discardedAt || (record.status === "DISCARDED" ? (existing?.discardedAt || now) : existing?.discardedAt)
-      };
+      const { updated, normPath, wtId } = recordUpdate(reg, record);
       reg.worktrees[normPath] = updated;
       reg.worktrees[wtId] = updated;
       await this.writeRegistry(reg);
@@ -192,10 +246,11 @@ export class WorktreeService {
 
   async getRecordedWorktree(worktreePath: string): Promise<WorktreeRecord | null> {
     try {
-      const reg = await this.readRegistry();
+      const reg = await this.readRegistryShared();
       const normPath = resolve(worktreePath);
       const wtId = basename(normPath);
-      return reg.worktrees[normPath] || reg.worktrees[wtId] || null;
+      const found = reg.worktrees[normPath] || reg.worktrees[wtId];
+      return found ? { ...found } : null;
     } catch {
       return null;
     }
@@ -506,19 +561,26 @@ export class WorktreeService {
     }
 
     try {
-      const toplevel = await execGit(realPath, ["rev-parse", "--show-toplevel"]);
-      if (toplevel.code === 0 && toplevel.stdout.trim() === realPath) {
-        const branchResult = await execGit(realPath, ["branch", "--show-current"]);
-        const branch = branchResult.stdout.trim();
-        const headResult = await execGit(realPath, ["rev-parse", "HEAD"]);
-        const head = headResult.stdout.trim();
-        const statusResult = await execGit(realPath, ["status", "--porcelain"]);
-        const isDirty = statusResult.stdout.trim().length > 0;
+      // Badges load this every 20 s per worktree: 3 git runs instead of 6 (stable 2026-10-24: ~11,000 git an hour).
+      const location = await execGit(realPath, ["rev-parse", "--show-toplevel", "--git-common-dir"]);
+      const [toplevel, commonOut] = location.code === 0 ? location.stdout.trim().split("\n") : [];
+      if (toplevel === realPath) {
+        const statusResult = await execGit(realPath, ["status", "--porcelain=v2", "--branch", "--no-ahead-behind"]);
+        const statusLines = statusResult.code === 0 ? statusResult.stdout.split("\n") : [];
+        const header = (name: string) => statusLines.find((line) => line.startsWith(`# branch.${name} `))?.slice(`# branch.${name} `.length).trim();
+        const branchHeader = header("head");
+        const oidHeader = header("oid");
+        const branch = branchHeader === undefined
+          ? (await execGit(realPath, ["branch", "--show-current"])).stdout.trim()
+          : branchHeader === "(detached)" ? "" : branchHeader;
+        const head = oidHeader === undefined
+          ? (await execGit(realPath, ["rev-parse", "HEAD"])).stdout.trim()
+          : oidHeader === "(initial)" ? "" : oidHeader;
+        const isDirty = statusLines.some((line) => line.length > 0 && !line.startsWith("#"));
 
         let repoPath = "";
-        const commonRes = await execGit(realPath, ["rev-parse", "--git-common-dir"]);
-        if (commonRes.code === 0) {
-          const commonDir = resolve(realPath, commonRes.stdout.trim());
+        if (commonOut) {
+          const commonDir = resolve(realPath, commonOut.trim());
           repoPath = commonDir.endsWith("/.git") ? dirname(commonDir) : dirname(dirname(commonDir));
         }
         if (!repoPath) repoPath = "/opt/spaceapp";
@@ -862,7 +924,12 @@ export class WorktreeService {
   async removeWorktree(worktreePath: string, force = false): Promise<void> {
     // Defense in depth: the service deletes recursively, so it applies the route's guard
     // itself (also with force) instead of trusting every caller to have done so.
-    await assertRemovableWorktreePath(worktreePath, WORKTREES_ROOT);
+    const target = await assertRemovableWorktreePath(worktreePath, WORKTREES_ROOT);
+    // Fail closed before anything goes: a tree this user cannot fully delete (another user's) would be left half-deleted.
+    const blocked = target.kind === "MISSING" ? null : await firstUndeletableDirectory(target.path);
+    if (blocked) {
+      throw new WorktreeError("REMOVE_FAILED", `Cannot remove ${target.path}: this user may not delete entries of ${blocked}. Nothing was removed.`);
+    }
     const existing = await this.getRecordedWorktree(worktreePath);
     if (!existing || existing.status !== "MERGED") {
       await this.recordWorktree({
@@ -887,7 +954,9 @@ export class WorktreeService {
 
       if (repoRoot && repoRoot !== realPath) {
         const removeArgs = force ? ["worktree", "remove", "--force", realPath] : ["worktree", "remove", realPath];
-        await execGit(repoRoot, removeArgs);
+        const removed = await execGit(repoRoot, removeArgs);
+        // git refuses changes without --force; deleting anyway would lose them.
+        if (removed.code !== 0) throw new Error(removed.stderr.trim() || `git worktree remove exited ${removed.code}`);
         await execGit(repoRoot, ["worktree", "prune"]);
       }
 

@@ -23,8 +23,8 @@ observing it. Ask what the owner wants to do first and give one simple next acti
 - OpenCode is the only agent required at first install. On first launch, SpaceApp
   refreshes OpenCode's native catalog, checks zero input/output cost and tool support,
   and tries a small completion. The first working free model becomes the default.
-- See `/var/lib/spaceapp/memory/installation-model.json` for the verified model and
-  date. Free models can disappear or be rate-limited; report that honestly. Never
+- Read `/var/lib/spaceapp/memory/installation-model.json` for the verified model and
+  date (that exact path: searching `/var/lib/spaceapp` makes OpenCode ask the owner). Free models can disappear or be rate-limited; report that honestly. Never
   substitute a paid provider or overwrite the owner's existing model choice.
 - Optional agents install into a persistent private volume on first use: codex,
   gemini, qwen, kimi, grok, claude, deepseek, autohand, cursor and copilot.

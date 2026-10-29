@@ -13,6 +13,7 @@ import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 import { SPACE_ARTIFACT_MIME } from "../src/features/artifacts/artifact-drag.js";
 import { rememberNewPaneAccount } from "../src/features/cli-accounts/cli-account-memory.js";
+import { CLI_ACCOUNT_PROFILES_EVENT } from "../src/cli-account-profile-events.js";
 import type { TerminalActionAvailability } from "../src/features/terminal-pane/terminal-action-availability.js";
 import { VoiceInputProvider } from "../src/features/voice-input/VoiceInputProvider.js";
 import { defaultVoiceComposerSettings, VOICE_SETTINGS_STORAGE_KEY } from "../src/voice-settings.js";
@@ -878,6 +879,74 @@ describe("TerminalPane uploads and paste", () => {
     }
   });
 
+  describe("Claude pane account (never the last pane viewed)", () => {
+    const key = "space.cli.claude.account-profile";
+    const claudeProfile = (profileId: string, displayName: string) =>
+      ({ runtimeId: "cli:claude", profileId, displayName, createdAt: "2026-10-25T00:00:00.000Z", updatedAt: "2026-10-25T00:00:00.000Z", updatedBy: null });
+    const profiles = [claudeProfile("main", "Main account"), claudeProfile("work", "Work account"), claudeProfile("space-gateway", "Space Gateway")];
+    const claudeRuntime = () => cliSessionResponse("terminal-ws-ticket-claude-runtime", "IDLE", true, { runtimeId: "cli:claude" }).runtime;
+    const renderClaude = (pane = cliPane({ terminalRuntimeId: "cli:claude" })) => render(
+      <VoiceInputProvider>
+        <TerminalPane pane={pane} terminalFontSize={12} />
+      </VoiceInputProvider>
+    );
+    const claudeListCalls = () => apiMock.listCliAccountProfiles.mock.calls.filter(([runtimeId]) => runtimeId === "cli:claude").length;
+    afterEach(() => window.localStorage.removeItem(key));
+
+    it("remembers the account only on the operator's pick, never when a pane loads", async () => {
+      window.localStorage.removeItem(key);
+      const active = cliSessionResponse("terminal-ws-ticket-claude-work", "RUNNING", true, {
+        runtimeId: "cli:claude", sessionId: "cli_session:claude-work", accountProfileId: "work"
+      });
+      apiMock.cliRuntimes.mockResolvedValueOnce({ data: [active.runtime], checkedAt: "2026-10-25T00:00:00.000Z" });
+      apiMock.activeCliSession.mockResolvedValueOnce(active);
+      apiMock.listCliAccountProfiles.mockResolvedValue({ profiles, gatewayProfile: { profileId: "space-gateway", ready: true } });
+      renderClaude();
+      const trigger = await screen.findByRole("button", { name: "Claude account for Codex CLI" });
+      await waitFor(() => expect(trigger.getAttribute("title")).toMatch(/^Claude account: Work account/));
+      expect(window.localStorage.getItem(key)).toBeNull();
+
+      fireEvent.click(trigger);
+      const menu = await screen.findByRole("menu", { name: "Claude account for Codex CLI" });
+      fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Main account/ }));
+      await waitFor(() => expect(apiMock.createCliSession).toHaveBeenCalledWith("pane:cli-upload", expect.objectContaining({ accountProfileId: "main" })));
+      expect(window.localStorage.getItem(key)).toBe("main");
+    });
+
+    it("selects Space Gateway for a pane without a CLI whatever its age, and keeps the operator's pick after a list reload", async () => {
+      window.localStorage.setItem(key, "work");
+      apiMock.cliRuntimes.mockResolvedValueOnce({ data: [claudeRuntime()], checkedAt: "2026-10-25T00:00:00.000Z" });
+      apiMock.listCliAccountProfiles.mockResolvedValue({ profiles, gatewayProfile: { profileId: "space-gateway", ready: true } });
+      renderClaude(cliPane({ terminalRuntimeId: "cli:claude", fresh: false }));
+      const trigger = await screen.findByRole("button", { name: "Claude account for Codex CLI" });
+      await waitFor(() => expect(trigger.getAttribute("title")).toMatch(/^Claude account: Space Gateway/));
+      expect(apiMock.createCliSession).not.toHaveBeenCalled();
+
+      fireEvent.click(trigger);
+      const menu = await screen.findByRole("menu", { name: "Claude account for Codex CLI" });
+      fireEvent.click(within(menu).getByRole("menuitemradio", { name: /Work account/ }));
+      await waitFor(() => expect(trigger.getAttribute("title")).toMatch(/^Claude account: Work account/));
+      const loads = claudeListCalls();
+      act(() => { window.dispatchEvent(new Event(CLI_ACCOUNT_PROFILES_EVENT)); });
+      await waitFor(() => expect(claudeListCalls()).toBeGreaterThan(loads));
+      await act(async () => { await Promise.resolve(); });
+      expect(trigger.getAttribute("title")).toMatch(/^Claude account: Work account/);
+      expect(apiMock.createCliSession).not.toHaveBeenCalled();
+    });
+
+    it("starts a new pane on Space Gateway when its account list is later than 3 s", async () => {
+      window.localStorage.setItem(key, "work");
+      apiMock.cliRuntimes.mockResolvedValueOnce({ data: [claudeRuntime()], checkedAt: "2026-10-25T00:00:00.000Z" });
+      apiMock.listCliAccountProfiles.mockReturnValue(new Promise(() => {}));
+      renderClaude();
+      await waitFor(() => expect(apiMock.createCliSession).toHaveBeenCalledWith("pane:cli-upload", expect.objectContaining({
+        runtimeId: "cli:claude",
+        accountProfileId: "space-gateway"
+      })), { timeout: 6_000 });
+      expect(apiMock.createCliSession).toHaveBeenCalledTimes(1);
+    }, 10_000);
+  });
+
   it.each([
     { source: "this device's launch", opened: "work", saved: null, expected: "work" },
     { source: "the saved Job Copilot default", opened: null, saved: "work", expected: "work" },
@@ -1348,6 +1417,28 @@ describe("TerminalPane uploads and paste", () => {
       expect.objectContaining({ cols: 133, rows: 41, leaseId: "cli_control_lease:presize" })
     ]);
     expect(types().indexOf("resize")).toBeLessThan(types().indexOf("control_release"));
+  });
+
+  it("sizes a hidden full-screen pane's CLI to the grid recorded while its borrowed lease was pending", async () => {
+    MockWebSocket.protocolVersion = 2;
+    recordFullscreenGeometry(56, 41);
+    render(<TerminalPane pane={cliPane()} terminalFontSize={12} isVisible={false} fullscreenLayout presizeInFullscreen />);
+    await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
+    const socket = MockWebSocket.instances[0]!;
+    const frames = () => socket.sent.map((frame) => JSON.parse(frame) as { type: string; cols?: number; rows?: number; leaseId?: string });
+    const types = () => frames().map((frame) => frame.type);
+    const receive = (message: object) => act(() => {
+      socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(message) }));
+    });
+    await waitFor(() => expect(types()).toContain("control_upgrade"));
+    receive({ type: "control_upgraded" });
+    await waitFor(() => expect(types()).toContain("control_request"));
+    act(() => recordFullscreenGeometry(128, 41));
+    receive({ type: "control_granted", leaseId: "cli_control_lease:latest", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    await waitFor(() => expect(types()).toContain("control_release"));
+    expect(frames().filter((frame) => frame.type === "resize" && frame.leaseId === "cli_control_lease:latest")).toEqual([
+      expect.objectContaining({ cols: 128, rows: 41 })
+    ]);
   });
 
   it("presizes a hidden full-screen pane once an unfocused page gets focus back", async () => {
@@ -3608,7 +3699,7 @@ describe("TerminalPane uploads and paste", () => {
     );
   });
 
-  it("lets Enter after a bare # submit normally and picks a variable only after arrow navigation", async () => {
+  it("lets Enter after a bare # submit normally; after arrow navigation Enter picks and sends, Tab only picks", async () => {
     window.localStorage.setItem("space.promptVariables.v1", JSON.stringify([
       { id: "var:pc", name: "pc_thai", value: "10.0.0.5", createdAt: "2026-10-11T00:00:00.000Z", updatedAt: "2026-10-11T00:00:00.000Z" }
     ]));
@@ -3629,23 +3720,61 @@ describe("TerminalPane uploads and paste", () => {
         expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "ArrowDown" }))).toBe(false);
       });
       act(() => {
-        expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+        expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "Tab" }))).toBe(false);
       });
       await waitFor(() => expect(socket.sent).toContain(JSON.stringify({ type: "input", data: "\u007f#pc_thai " })));
+
+      act(() => terminal.emitData(" and #pc"));
+      await screen.findByRole("listbox", { name: "Prompt variables suggestions" });
+      socket.sent.length = 0;
+      act(() => {
+        expect(terminal.customKeyEventHandler?.(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(false);
+      });
+      // One Enter: the prompt is cleared, rewritten with both values after a gap, and submitted.
+      const inputs = () => socket.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === "input").map((frame) => frame.data);
+      expect(inputs()).toEqual(["\u0015\u0015"]);
+      await waitFor(() => expect(inputs()).toEqual(["\u0015\u0015", "\u0015\u001b[200~ping 10.0.0.5  and 10.0.0.5\u001b[201~", "\r"]));
     } finally {
       window.localStorage.removeItem("space.promptVariables.v1");
     }
   });
 
-  it("leaves the Shortcuts and Plans buttons out of the toolbar when Settings hides them", async () => {
+  it("expands a variable added after the CLI connected when Enter submits it", async () => {
+    try {
+      render(<TerminalPane pane={cliPane()} terminalFontSize={12} />);
+      await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
+      const terminal = xtermMock.instances[0] as unknown as { emitData: (data: string) => void };
+      const socket = MockWebSocket.instances[0]!;
+      act(() => {
+        window.localStorage.setItem("space.promptVariables.v1", JSON.stringify([
+          { id: "var:chk", name: "chk", value: "what is done", createdAt: "2026-10-22T00:00:00.000Z", updatedAt: "2026-10-22T00:00:00.000Z" }
+        ]));
+        window.dispatchEvent(new CustomEvent("space:prompt-variables-updated"));
+      });
+
+      act(() => terminal.emitData("#chk"));
+      socket.sent.length = 0;
+      act(() => terminal.emitData("\r"));
+      // Claude Code mixes up a Ctrl+U and a paste in one read: the clear goes first, the bracketed value and Enter after a gap.
+      const inputs = () => socket.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === "input").map((frame) => frame.data);
+      expect(inputs()).toEqual(["\u0015\u0015"]);
+      await waitFor(() => expect(inputs()).toEqual(["\u0015\u0015", "\u0015\u001b[200~what is done\u001b[201~", "\r"]));
+    } finally {
+      window.localStorage.removeItem("space.promptVariables.v1");
+    }
+  });
+
+  it("leaves the Shortcuts, Plans and Local draft buttons out of the toolbar when Settings hides them", async () => {
     window.localStorage.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify({
-      ...defaultVoiceComposerSettings, terminalControlsVersion: 2, terminalShortcutsButton: false, terminalPlansButton: false
+      ...defaultVoiceComposerSettings, terminalControlsVersion: 2, terminalShortcutsButton: false, terminalPlansButton: false,
+      terminalLocalDraftButton: false
     }));
     render(<TerminalPane pane={cliPane()} terminalFontSize={12} />);
     await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
     expect(await screen.findByRole("button", { name: "Send prompt" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "CLI shortcuts" })).toBeNull();
     expect(screen.queryByRole("button", { name: /Open plans|Active plan/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open local draft" })).toBeNull();
     expect(screen.getByRole("button", { name: /Prompt Variables \(#\)/ })).toBeTruthy();
   });
 
@@ -6057,6 +6186,39 @@ describe("TerminalPane uploads and paste", () => {
     expect(xtermMock.instances[0]?.writes.join("")).not.toContain("/opt/spaceapp/var/artifacts/cli-uploads/");
     expect(screen.queryByText(/srv\/space\/var\/artifacts\/cli-uploads/)).toBeNull();
     expect(screen.queryByText(/Clipboard debug/i)).toBeNull();
+  });
+
+  it("uploads Clip Tool images one after another, in the order they were sent, past a failed one", async () => {
+    render(<TerminalPane pane={cliPane()} terminalFontSize={12} />);
+
+    await waitFor(() => expect(apiMock.createCliSession).toHaveBeenCalled());
+    await waitFor(() => expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN));
+    const socket = MockWebSocket.instances[0]!;
+    socket.sent.length = 0;
+    let finishFirst!: (value: ReturnType<typeof cliUploadResponse>) => void;
+    apiMock.uploadCliFiles
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockRejectedValueOnce(new Error("Upload failed"));
+    const files = ["snip-1.png", "snip-2.png", "snip-3.png"].map((name) => new File([name], name, { type: "image/png" }));
+
+    for (const file of files) {
+      window.dispatchEvent(new CustomEvent("space:terminal-pane-action", { detail: { paneId: "pane:cli-upload", action: "attach_clip_image", file } }));
+    }
+
+    await waitFor(() => expect(apiMock.uploadCliFiles).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(apiMock.uploadCliFiles).toHaveBeenCalledTimes(1);
+    finishFirst(cliUploadResponse([files[0]!]));
+    await waitFor(() => expect(apiMock.uploadCliFiles).toHaveBeenCalledTimes(3));
+    expect(apiMock.uploadCliFiles.mock.calls.map(([request]) => request.files[0].name)).toEqual(["snip-1.png", "snip-2.png", "snip-3.png"]);
+    const imageInputs = () => socket.sent
+      .map((frame) => JSON.parse(frame) as { type?: string; data?: string })
+      .filter((frame) => frame.type === "input" && frame.data?.startsWith("\u001b[200~"))
+      .map((frame) => frame.data);
+    await waitFor(() => expect(imageInputs()).toEqual([
+      "\u001b[200~/opt/spaceapp/var/artifacts/cli-uploads/snip-1.png\u001b[201~",
+      "\u001b[200~/opt/spaceapp/var/artifacts/cli-uploads/snip-3.png\u001b[201~"
+    ]));
   });
 
   it("uploads short Clipboard-card action and drag text as exact UTF-8 TXT files without Enter", async () => {

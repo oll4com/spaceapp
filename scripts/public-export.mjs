@@ -109,6 +109,9 @@ const publicScripts = new Set([
   "scripts/space-hygiene-check.mjs",
   "scripts/trivy-report-summary.mjs",
   "scripts/verify-published-containers.mjs",
+  // run-spaceapp 1.1.8: the lab installs of the published package ran its locked images (review IR117-C-F7).
+  "scripts/shipped-image-evidence.mjs",
+  "scripts/tests/shipped-image-evidence.test.mjs",
   "scripts/tests/container-image-size-budget.test.mjs",
   "scripts/tests/mcp-hono-compatibility.test.mjs",
   "scripts/tests/portable-backup-restore.test.mjs",

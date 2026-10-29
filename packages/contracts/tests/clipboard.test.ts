@@ -8,6 +8,8 @@ import {
   setClipboardItemCompletedRequestSchema,
   spaceAgentClipboardActionEnvelopeSchema,
   planStepSchema,
+  planDependencyProblem,
+  updatePlanProgressRequestSchema,
   upsertClipboardItemInputSchema
 } from "../src/index.js";
 
@@ -206,6 +208,21 @@ describe("plan reasoning recommendations", () => {
     expect(() => createClipboardItemRequestSchema.parse({ text: "note", source: "COPY", minimumReasoning: "high" })).toThrow();
   });
 
+  it("numbers steps given without an order by position, on every step input (2026-10-24: six steps all arrived as Stage 1)", () => {
+    const steps = [{ title: "Contracts" }, { title: "API" }, { title: "Web" }];
+    const plan = { text: "A plan with three steps", minimumModel: "claude-fable-5-1" };
+    const created = createClipboardItemRequestSchema.parse({ ...plan, source: "PLAN", steps });
+    expect(created.steps!.map((step) => [step.id, step.order])).toEqual([["step-1", 1], ["step-2", 2], ["step-3", 3]]);
+    expect(saveAgentClipboardPlanInputSchema.parse({ ...plan, steps }).steps!.map((step) => step.order)).toEqual([1, 2, 3]);
+    expect(upsertClipboardItemInputSchema.parse({ ...plan, ownerUserId: "user:operator", source: "PLAN", steps }).steps!.map((step) => step.order)).toEqual([1, 2, 3]);
+    expect(updatePlanProgressRequestSchema.parse({ steps }).steps!.map((step) => step.order)).toEqual([1, 2, 3]);
+    // Explicit unique orders stay as given; an explicit id survives the renumbering of duplicates.
+    const explicit = createClipboardItemRequestSchema.parse({ ...plan, source: "PLAN", steps: [{ title: "b", order: 2 }, { title: "a", order: 1 }] });
+    expect(explicit.steps!.map((step) => [step.id, step.order])).toEqual([["step-2", 2], ["step-1", 1]]);
+    const named = updatePlanProgressRequestSchema.parse({ steps: [{ id: "deploy", title: "Deploy" }, { title: "Verify" }] });
+    expect(named.steps!.map((step) => [step.id, step.order])).toEqual([["deploy", 1], ["step-2", 2]]);
+  });
+
   it("coerces PLANNED status to PENDING and supplies default id and order", () => {
     const rawStep = { title: "Contracts & DB Schema", status: "PLANNED" };
     const parsed = planStepSchema.parse(rawStep);
@@ -228,5 +245,30 @@ describe("plan reasoning recommendations", () => {
     expect(parsed.order).toBe(4);
     expect(parsed.status).toBe("COMPLETED");
     expect((parsed as Record<string, unknown>).extraMetadata).toBeUndefined();
+  });
+});
+
+describe("plan map contracts (operator request 2026-10-25)", () => {
+  const base = { id: "clipboard:plan1", text: "Plan", source: "PLAN" as const, occurrenceCount: 1, characterCount: 4, createdAt: "2026-10-25T10:00:00.000Z", lastUsedAt: "2026-10-25T10:00:00.000Z" };
+
+  it("defaults dependsOn, dueAt and waitsOn on a stored item", () => {
+    expect(clipboardItemSchema.parse(base)).toMatchObject({ dependsOn: [], dueAt: null, waitsOn: null });
+    expect(clipboardItemSchema.parse({ ...base, waitsOn: { kind: "THIRD_PARTY", what: "the mail server" } }).waitsOn).toEqual({ kind: "THIRD_PARTY", what: "the mail server", until: null });
+  });
+
+  it("takes waitsOn null to clear and refuses a 31st dependency or map fields on a note", () => {
+    expect(updatePlanProgressRequestSchema.parse({ waitsOn: null, dueAt: null, dependsOn: [] })).toEqual({ waitsOn: null, dueAt: null, dependsOn: [] });
+    expect(updatePlanProgressRequestSchema.safeParse({ dependsOn: Array.from({ length: 31 }, (_, index) => `clipboard:dep${index}`) }).success).toBe(false);
+    expect(createClipboardItemRequestSchema.safeParse({ text: "note", source: "MANUAL_NOTE", dueAt: "2026-10-30T00:00:00.000Z" }).success).toBe(false);
+    expect(createClipboardItemRequestSchema.safeParse({ text: "plan", source: "PLAN", minimumModel: "m", dependsOn: ["clipboard:dep1"], dueAt: "2026-10-30T00:00:00.000Z" }).success).toBe(true);
+  });
+
+  it("planDependencyProblem names a self dependency, an unknown plan and a loop", () => {
+    const plans = [{ id: "clipboard:a", dependsOn: ["clipboard:b"] }, { id: "clipboard:b", dependsOn: [] }, { id: "clipboard:c", dependsOn: [] }];
+    expect(planDependencyProblem("clipboard:a", ["clipboard:a"], plans)).toBe("A plan cannot depend on itself.");
+    expect(planDependencyProblem("clipboard:a", ["clipboard:zz"], plans)).toBe("Plan clipboard:zz is not an open plan.");
+    expect(planDependencyProblem("clipboard:b", ["clipboard:a"], plans)).toBe("The dependency would loop: clipboard:b → clipboard:a → clipboard:b.");
+    expect(planDependencyProblem("clipboard:b", ["clipboard:c"], plans)).toBeNull();
+    expect(planDependencyProblem(null, ["clipboard:c"], plans)).toBeNull();
   });
 });

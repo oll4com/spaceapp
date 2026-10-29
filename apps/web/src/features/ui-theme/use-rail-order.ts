@@ -3,7 +3,7 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 
 export const RAIL_ORDER_KEY = 'space:room-rail-order:v1';
-export const RAIL_IDS = ['previous', 'next', 'rooms', 'create', 'layout', 'sticky', 'keyboard', 'music', 'snip-tool', 'live-model', 'quick-links', 'docks', 'tools', 'fullscreen', 'expand'];
+export const RAIL_IDS = ['previous', 'next', 'rooms', 'nous', 'create', 'layout', 'sticky', 'keyboard', 'music', 'snip-tool', 'live-model', 'quick-links', 'docks', 'tools', 'fullscreen', 'expand'];
 
 export const UPPER_RAIL_ORDER_KEY = 'space:upper-rail-order:v1';
 export const UPPER_RAIL_IDS = ['minimized-bar', 'agents-dashboard', 'accounts', 'codex-reset', 'cli', 'memory', 'cpu', 'rtt'];

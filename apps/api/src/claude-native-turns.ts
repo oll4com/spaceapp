@@ -1,11 +1,13 @@
 import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { execFile } from "./safe-child-process.js";
 import { promisify } from "node:util";
 import type { PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 import { createNativeReadCache } from "./native-read-cache.js";
+import { createNativeReadServer } from "./native-read-server.js";
 
 // Claude Code 2.1 transcript JSONL: a turn starts at a non-meta user prompt
 // (typed or a background task notification) and ends at system/turn_duration.
@@ -14,6 +16,9 @@ export const CLAUDE_SPACE_CONFIG_DIR = "/var/lib/spaceapp-user/.codex/space-clau
 const CLAUDE_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
 /** The newest characters of Claude's last answer this read returns (Nous's space_read_pane reply "last"). */
 export const CLAUDE_LAST_ANSWER_MAX_CHARS = 6_000;
+/** The newest turns whose end and final answer a read returns, and the newest characters kept of each answer. */
+export const CLAUDE_TURN_RESULTS = 8;
+export const CLAUDE_TURN_RESULT_MAX_CHARS = 24_000;
 export const claudeNativeSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Claude Code's live per-process session status; `shell` is idle with background shells still running (2.1.303: `idle && shells ? "shell"`). */
@@ -40,6 +45,23 @@ export interface ClaudeNativeTurns {
   /** Claude's last answer text from the transcript (its newest characters), null before the first one. */
   lastAnswer: string | null;
   tasks: NativeTaskExecution[];
+  /** The newest turns' ends and final answers (managed plan stages read their results here); absent from readers older than 2026-10-21. */
+  turnResults?: ClaudeTurnResult[];
+  /** The newest /model pick after the last answer (`model` is the family, e.g. "haiku"; `effort` null when unknown); null once an
+   * answer follows it; absent from readers older than 2026-10-21. */
+  modelPick?: ClaudeModelPick | null;
+}
+
+export interface ClaudeModelPick { model: string | null; effort: string | null }
+
+export interface ClaudeTurnResult {
+  taskId: string;
+  /** How the transcript closed the turn: turn_duration, an interrupt or the next prompt; null while open or when only the idle session closes it. */
+  ended: "COMPLETED" | "INTERRUPTED" | null;
+  /** The turn's last answer text (its newest characters). */
+  answer: string | null;
+  apiError: "rate_limit" | "server_error" | null;
+  resetsAt: string | null;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -69,14 +91,17 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   let lastActivityAt: string | null = null;
   let modelId: string | null = null;
   let reasoningEffort: string | null = null;
+  let modelPick: ClaudeModelPick | null = null;
   let aiTitle: string | null = null;
   let customTitle: string | null = null;
   let apiError = false;
   let rateLimit: ClaudeNativeTurns["rateLimit"] = null;
   let lastAnswer: string | null = null;
   let lastAnswerId: string | null = null;
-  const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number) => {
+  const results: (ClaudeTurnResult & { answerId: string | null })[] = [];
+  const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number, ended = true) => {
     if (!open) return;
+    if (ended) results.at(-1)!.ended = status;
     open.status = status;
     open.timing.completedAt = completedAt;
     open.timing.durationMs = typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0
@@ -115,12 +140,23 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
         const id = text(message.id);
         lastAnswer = (id && id === lastAnswerId && lastAnswer ? `${lastAnswer}\n${said}` : said).slice(-CLAUDE_LAST_ANSWER_MAX_CHARS);
         lastAnswerId = id;
+        const turn = open ? results.at(-1)! : null;
+        if (turn) {
+          turn.answer = (id && id === turn.answerId && turn.answer ? `${turn.answer}\n${said}` : said).slice(-CLAUDE_TURN_RESULT_MAX_CHARS);
+          turn.answerId = id;
+        }
+      }
+      if (open) {
+        const turn = results.at(-1)!;
+        turn.apiError = entry.isApiErrorMessage === true && (entry.error === "rate_limit" || entry.error === "server_error") ? entry.error : null;
+        turn.resetsAt = rateLimit?.resetsAt ?? null;
       }
       const model = text(message.model);
       if (!model || model === "<synthetic>") continue;
       const effort = text(entry.effort);
       modelId = model;
       reasoningEffort = effort;
+      modelPick = null;
       if (!open) continue;
       const lastModel = open.modelsUsed.at(-1);
       if (lastModel?.modelId === model && lastModel.reasoningEffort === effort) continue;
@@ -130,6 +166,11 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
       continue;
     }
     if (entry.type !== "user" || entry.isMeta === true) continue;
+    // Auto-compaction inside a turn writes its summary as a user record of that same turn (same turnPosition).
+    if (entry.isCompactSummary === true && open) {
+      if (at) lastActivityAt = at;
+      continue;
+    }
     const prompt = promptText(entry);
     if (prompt === null) {
       if (at && open) lastActivityAt = at;
@@ -140,7 +181,17 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
       close("INTERRUPTED", at ?? lastActivityAt);
       continue;
     }
-    if (/^<(?:command-|local-command-|bash-)/.test(trimmed)) continue;
+    if (/^<(?:command-|local-command-|bash-)/.test(trimmed)) {
+      // "Set model to `Haiku 5.5` for this session only with `low` effort"; picking the current model and effort again names no effort.
+      if (trimmed.startsWith("<local-command-stdout>Set model to ")) {
+        const family = (value: string | null | undefined) => value?.toLowerCase().match(/\b(opus|sonnet|haiku|fable)\b/)?.[1] ?? null;
+        const before: ClaudeModelPick = modelPick ?? { model: family(modelId), effort: reasoningEffort };
+        const model = family(trimmed.split("</local-command-stdout>")[0]);
+        const effort = trimmed.match(/\bwith `?(low|medium|high|xhigh|max)`? effort\b/)?.[1] ?? null;
+        modelPick = { model, effort: effort ?? (model !== null && model === before.model ? before.effort : null) };
+      }
+      continue;
+    }
     // A prompt arriving while a turn is still open means that turn ended without
     // a turn_duration record (killed or crashed CLI).
     close("INTERRUPTED", lastActivityAt ?? at);
@@ -154,11 +205,13 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
       modelsUsed: []
     };
     tasks.push(open);
+    results.push({ taskId: open.taskId, ended: null, answer: null, answerId: null, apiError: null, resetsAt: null });
     if (at) lastActivityAt = at;
   }
-  if (open && !busy) close("INTERRUPTED", lastActivityAt);
+  if (open && !busy) close("INTERRUPTED", lastActivityAt, undefined, false);
   for (const task of tasks) task.timing.observedAt = observedAt;
-  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, lastAnswer };
+  const turnResults = results.slice(-CLAUDE_TURN_RESULTS).map(({ answerId: _id, ...result }) => result);
+  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, lastAnswer, turnResults, modelPick };
 }
 
 async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {
@@ -246,13 +299,50 @@ export function validClaudeTurnReadIdentity(input: { paneId: string; sessionId: 
     Number.isSafeInteger(input.rootPid) && input.rootPid! > 1 && input.rootPid! < 2 ** 31;
 }
 
-// Every read spawns the launcher through sudo; badge, dashboard and task-registry
-// polls of the same pane share one read for a few seconds (see native-read-cache.ts).
+// Reads go to Claude's private files through the sudo launcher; badge, dashboard and task-registry
+// polls of the same pane share one read (see native-read-cache.ts). An idle pane is
+// read every 30 s (6 s spawned ~11,700 launchers an hour for 34 panes, 2026-10-24);
+// the operator's Enter expires it at once, and Space's own typing reads `fresh`.
 const claudeNativeTurnsCache = createNativeReadCache<ClaudeNativeTurns>({
   busyTtlMs: 3_000,
-  idleTtlMs: 6_000,
+  idleTtlMs: 30_000,
   isBusy: (turns) => turns.busy || turns.status === "waiting"
 });
+
+// One long-lived launcher reader serves the reads (34 Claude panes spawned ~6,600 sudo launchers an hour
+// with the 30 s idle cache, 2026-10-24); the one-shot launcher read stays the fallback.
+const claudeNativeTurnsServer = createNativeReadServer<ClaudeNativeTurns>({
+  command: "/opt/spaceapp/bin/claude-vscode-parity",
+  args: ["native-turns", "--serve"]
+});
+
+/** The launcher's `native-turns --serve`: one `{id, paneId, sessionId, rootPid}` JSON request per line, one
+ * `{id, result}` line per answer, with the one-shot read's validation and reader. Ends when `input` closes. */
+export async function serveClaudeNativeTurns(
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream,
+  read: typeof readClaudeNativeTurns = readClaudeNativeTurns
+): Promise<void> {
+  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+    if (line.length > 1_024) continue;
+    let request: Record<string, unknown>;
+    try { request = record(JSON.parse(line)); } catch { continue; }
+    const id = request.id;
+    if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
+    const identity = {
+      paneId: typeof request.paneId === "string" ? request.paneId : "",
+      sessionId: typeof request.sessionId === "string" ? request.sessionId : "",
+      rootPid: typeof request.rootPid === "number" ? request.rootPid : null
+    };
+    const result = validClaudeTurnReadIdentity(identity) ? read(identity).catch(() => null) : Promise.resolve(null);
+    void result.then((turns) => output.write(`${JSON.stringify({ id, result: turns })}\n`));
+  }
+}
+
+/** A submitted prompt may start a turn: the pane's next read goes to the launcher. */
+export function expireClaudeNativeTurns(paneId: string): void {
+  claudeNativeTurnsCache.expire(`${paneId}|`);
+}
 
 /** Fixed launcher read adapter; Claude's private session and transcript files keep their permissions.
  * Pass `fresh` where a just-finished state matters (resume, delivery checks, Room Agent inspections). */
@@ -262,6 +352,8 @@ export async function loadClaudeNativeTurns(
 ): Promise<ClaudeNativeTurns | null> {
   if (!validClaudeTurnReadIdentity(input)) return null;
   return claudeNativeTurnsCache.read(`${input.paneId}|${input.sessionId}|${input.rootPid}`, async () => {
+    const served = await claudeNativeTurnsServer.read({ paneId: input.paneId, sessionId: input.sessionId, rootPid: input.rootPid });
+    if (served !== undefined) return served;
     try {
       const { stdout } = await promisify(execFile)("/opt/spaceapp/bin/claude-vscode-parity",
         ["native-turns", input.paneId, input.sessionId, String(input.rootPid)],

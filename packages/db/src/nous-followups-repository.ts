@@ -12,9 +12,11 @@ export interface NousFollowup {
 
 export interface NousFollowupsRepository {
   add(input: { ownerUserId: string; note: string; trigger: NousFollowupTrigger }): Promise<NousFollowup>;
-  /** The owner's open follow-ups first, then the newest closed ones. */
-  list(owner: string, limit: number): Promise<NousFollowup[]>;
-  /** Every open follow-up of every owner (the tick and the pane events check them). */
+  /** Every open follow-up of the owner, newest first, then the newest `closedLimit` closed ones (operator 2026-10-27: no limit on open ones). */
+  list(owner: string, closedLimit: number): Promise<NousFollowup[]>;
+  /** One of the owner's follow-ups by id, open or closed; null when it is not the owner's. */
+  get(owner: string, id: string): Promise<NousFollowup | null>;
+  /** Every open follow-up of every owner, no limit (the tick and the pane events check them). */
   listOpen(): Promise<NousFollowup[]>;
   /** Closes an open follow-up once; null when it is not open (fired, cancelled, another owner's). */
   close(owner: string, id: string, status: "FIRED" | "CANCELLED", outcome: string): Promise<NousFollowup | null>;
@@ -33,8 +35,13 @@ export class InMemoryNousFollowupsRepository implements NousFollowupsRepository 
     this.rows.push(row);
     return structuredClone(row);
   }
-  async list(owner: string, limit: number) {
-    return structuredClone(this.rows.filter((row) => row.ownerUserId === owner).sort(order).slice(0, limit));
+  async list(owner: string, closedLimit: number) {
+    const rows = this.rows.filter((row) => row.ownerUserId === owner).sort(order);
+    return structuredClone([...rows.filter((row) => row.status === "OPEN"), ...rows.filter((row) => row.status !== "OPEN").slice(0, closedLimit)]);
+  }
+  async get(owner: string, id: string) {
+    const row = this.rows.find((entry) => entry.id === id && entry.ownerUserId === owner);
+    return row ? structuredClone(row) : null;
   }
   async listOpen() {
     return structuredClone(this.rows.filter((row) => row.status === "OPEN"));
@@ -73,13 +80,19 @@ export class PostgresNousFollowupsRepository implements NousFollowupsRepository 
       trigger.kind === "PANE" ? trigger.paneId : null, trigger.kind === "PANE" ? trigger.paneLabel : null]);
     return followupOf(result.rows[0]!);
   }
-  async list(owner: string, limit: number) {
-    const result = await this.pool.query<Row>(`SELECT ${columns} FROM nous_followups WHERE owner_user_id = $1
-      ORDER BY (status = 'OPEN') DESC, created_at DESC, id DESC LIMIT $2`, [owner, limit]);
-    return result.rows.map(followupOf);
+  async list(owner: string, closedLimit: number) {
+    const open = await this.pool.query<Row>(`SELECT ${columns} FROM nous_followups WHERE owner_user_id = $1 AND status = 'OPEN'
+      ORDER BY created_at DESC, id DESC`, [owner]);
+    const closed = await this.pool.query<Row>(`SELECT ${columns} FROM nous_followups WHERE owner_user_id = $1 AND status <> 'OPEN'
+      ORDER BY created_at DESC, id DESC LIMIT $2`, [owner, closedLimit]);
+    return [...open.rows, ...closed.rows].map(followupOf);
+  }
+  async get(owner: string, id: string) {
+    const result = await this.pool.query<Row>(`SELECT ${columns} FROM nous_followups WHERE owner_user_id = $1 AND id = $2`, [owner, id]);
+    return result.rows[0] ? followupOf(result.rows[0]) : null;
   }
   async listOpen() {
-    const result = await this.pool.query<Row>(`SELECT ${columns} FROM nous_followups WHERE status = 'OPEN' ORDER BY created_at ASC LIMIT 1000`);
+    const result = await this.pool.query<Row>(`SELECT ${columns} FROM nous_followups WHERE status = 'OPEN' ORDER BY created_at ASC`);
     return result.rows.map(followupOf);
   }
   async close(owner: string, id: string, status: "FIRED" | "CANCELLED", outcome: string) {

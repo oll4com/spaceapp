@@ -1,3 +1,4 @@
+import { Writable } from "node:stream";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -2030,6 +2031,26 @@ describe("Space API", () => {
     expect(reCreated.json().name).toBe("Alex");
   });
 
+
+  it("leaves test rooms out of the room limit and takes the limit from the user's settings (operator 2026-10-21)", async () => {
+    const store = new InMemorySpaceStore();
+    const { app, cookie, csrfToken } = await authedApp({ store });
+    const headers = { cookie, [csrfHeaderName]: csrfToken };
+    const create = () => app.inject({ method: "POST", url: "/api/rooms", headers, payload: { initialPaneCount: 0 } });
+    const me = (await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } })).json();
+    for (let index = 0; index < 3; index++) {
+      await store.createRoom({ name: `Proof ${index}`, initialPaneCount: 0, kind: "AGENT_PROOF" }, undefined, me.user.id);
+    }
+    const rooms = (await app.inject({ method: "GET", url: "/api/rooms", headers: { cookie } })).json().data as { kind: string }[];
+    for (let index = rooms.filter((room) => room.kind === "WORKSPACE").length; index < 6; index++) {
+      expect((await create()).statusCode).toBe(200);
+    }
+    expect((await create()).json().error.message).toContain("Maximum room limit of 6 rooms reached");
+    expect((await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { roomLimit: 7 } })).statusCode).toBe(200);
+    expect((await create()).statusCode).toBe(200);
+    expect((await create()).json().error.message).toContain("Maximum room limit of 7 rooms reached");
+    expect((await app.inject({ method: "PATCH", url: "/api/user-settings", headers, payload: { roomLimit: 17 } })).statusCode).toBe(422);
+  });
 
   it("persists minimized pane state through PATCH and validates the layout invariant", async () => {
     const { app, cookie, csrfToken } = await authedApp();
@@ -4423,6 +4444,29 @@ describe("Space API", () => {
     expect(list.json().pagination.totalItems).toBe(1);
   });
 
+  it("stores a Live session recording as a VIDEO Media artifact with source LIVE_RECORDING", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-live-recording-"));
+    const { app, cookie, csrfToken } = await authedApp({
+      config: getApiConfig({ SPACE_ARTIFACT_ROOT: artifactRoot })
+    });
+    const roomResponse = await app.inject({
+      method: "POST",
+      url: "/api/rooms",
+      headers: { cookie, [csrfHeaderName]: csrfToken },
+      payload: { name: "Live Room", initialPaneCount: 0 }
+    });
+    const roomId = roomResponse.json().id as string;
+    const recording = multipartImagePayload([{ filename: "live-2026-10-21T10-00-00-000Z.webm", mimeType: "video/webm", body: Buffer.from("webm", "utf8") }]);
+    const recorded = await app.inject({
+      method: "POST",
+      url: `/api/artifacts/file-uploads?roomId=${encodeURIComponent(roomId)}&source=LIVE_RECORDING`,
+      headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": recording.contentType },
+      payload: recording.payload
+    });
+    expect(recorded.statusCode).toBe(200);
+    expect(recorded.json().artifacts[0]).toMatchObject({ roomId, kind: "VIDEO", mimeType: "video/webm", metadata: { source: "LIVE_RECORDING" } });
+  });
+
   it("serves and permanently deletes local artifact files", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-media-artifacts-"));
     const { app, cookie, csrfToken } = await authedApp({
@@ -4722,47 +4766,52 @@ describe("Space API", () => {
 
   it("accepts larger MP4 uploads for room artifacts and stores them as VIDEO", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "space-api-video-artifacts-"));
-    const { app, cookie, csrfToken } = await authedApp({
-      config: getApiConfig({ SPACE_ARTIFACT_ROOT: artifactRoot })
-    });
-    const roomResponse = await app.inject({
-      method: "POST",
-      url: "/api/rooms",
-      headers: { cookie, [csrfHeaderName]: csrfToken },
-      payload: { name: "Video Room", initialPaneCount: 0 }
-    });
-    const roomId = roomResponse.json().id as string;
-    const body = Buffer.alloc(11 * 1024 * 1024, 7);
-    const multipart = multipartImagePayload([{ filename: "capture.mp4", mimeType: "video/mp4", body }]);
+    try {
+      const { app, cookie, csrfToken } = await authedApp({
+        config: getApiConfig({ SPACE_ARTIFACT_ROOT: artifactRoot })
+      });
+      const roomResponse = await app.inject({
+        method: "POST",
+        url: "/api/rooms",
+        headers: { cookie, [csrfHeaderName]: csrfToken },
+        payload: { name: "Video Room", initialPaneCount: 0 }
+      });
+      const roomId = roomResponse.json().id as string;
+      const body = Buffer.alloc(11 * 1024 * 1024, 7);
+      const multipart = multipartImagePayload([{ filename: "capture.mp4", mimeType: "video/mp4", body }]);
 
-    const uploaded = await app.inject({
-      method: "POST",
-      url: `/api/artifacts/file-uploads?roomId=${encodeURIComponent(roomId)}&source=USER_UPLOAD`,
-      headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": multipart.contentType },
-      payload: multipart.payload
-    });
+      const uploaded = await app.inject({
+        method: "POST",
+        url: `/api/artifacts/file-uploads?roomId=${encodeURIComponent(roomId)}&source=USER_UPLOAD`,
+        headers: { cookie, [csrfHeaderName]: csrfToken, "content-type": multipart.contentType },
+        payload: multipart.payload
+      });
 
-    expect(uploaded.statusCode).toBe(200);
-    expect(uploaded.json().artifacts[0]).toMatchObject({
-      kind: "VIDEO",
-      mimeType: "video/mp4",
-      byteSize: body.byteLength,
-      metadata: expect.objectContaining({
-        originalFilename: "capture.mp4",
-        declaredMimeType: "video/mp4",
-        resolvedMimeType: "video/mp4"
-      })
-    });
+      expect(uploaded.statusCode).toBe(200);
+      expect(uploaded.json().artifacts[0]).toMatchObject({
+        kind: "VIDEO",
+        mimeType: "video/mp4",
+        byteSize: body.byteLength,
+        metadata: expect.objectContaining({
+          originalFilename: "capture.mp4",
+          declaredMimeType: "video/mp4",
+          resolvedMimeType: "video/mp4"
+        })
+      });
 
-    const artifactId = uploaded.json().artifacts[0]?.id as string;
-    const file = await app.inject({
-      method: "GET",
-      url: `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
-      headers: { cookie }
-    });
-    expect(file.statusCode).toBe(200);
-    expect(file.headers["content-type"]).toContain("video/mp4");
-    expect(Number(file.headers["content-length"])).toBe(body.byteLength);
+      const artifactId = uploaded.json().artifacts[0]?.id as string;
+      const file = await app.inject({
+        method: "GET",
+        url: `/api/artifacts/${encodeURIComponent(artifactId)}/file`,
+        headers: { cookie }
+      });
+      expect(file.statusCode).toBe(200);
+      expect(file.headers["content-type"]).toContain("video/mp4");
+      expect(Number(file.headers["content-length"])).toBe(body.byteLength);
+    } finally {
+      // The upload is 11 MB; a leftover folder per run filled the CLI temp dirs (47 of them, 0.5 GB on 2026-10-21).
+      await rm(artifactRoot, { recursive: true, force: true });
+    }
   });
 
   it("fails closed for non-local artifact file access and deletion", async () => {
@@ -5078,7 +5127,7 @@ describe("Space API", () => {
     const pane = store.createPane({ roomId: room.id, title: "YouTube", mode: "YOUTUBE" });
     const chat = store.createPane({ roomId: room.id, title: "Chat", mode: "CHAT" });
     const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_ARTIFACT_ROOT: join(root, "artifacts"), SPACE_GATEWAY_KEY_FILE: keyFile }),
-      browserSessionManager: fakeBrowserSessionManager() });
+      browserSessionManager: fakeBrowserSessionManager(), videoEngine: async () => ({ path: null }) });
     const headers = { cookie, [csrfHeaderName]: csrfToken };
     const realFetch = globalThis.fetch;
     const gateway = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => String(input).endsWith("/gemini/v1/generate")
@@ -5245,14 +5294,24 @@ describe("Space API", () => {
     const failingManager = Object.assign(fakeBrowserSessionManager({ enabled: true }), {
       stopPane: async (): Promise<void> => {
         throw new SpaceFeatureDisabledError("BROWSER_HOST_UNAVAILABLE", "The Browser Host is unavailable.");
+      },
+      startOrRestore: async (): Promise<never> => {
+        throw new SpaceFeatureDisabledError("BROWSER_HOST_UNAVAILABLE", "The Browser Host is unavailable.", { hostCode: "BROWSER_HOST_UNAVAILABLE", hostDetails: { causeCode: "EAGAIN" } });
       }
     });
+    const logs: string[] = [];
     const { app, cookie, csrfToken } = await authedApp({
       store,
       config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }),
-      browserSessionManager: failingManager
+      browserSessionManager: failingManager,
+      logStream: new Writable({ write(chunk, _encoding, callback) { logs.push(String(chunk)); callback(); } })
     });
     const headers = { cookie, [csrfHeaderName]: csrfToken };
+
+    // Stable 2026-10-27: five minutes of fast 503s left no trace of the host's code; the log line now carries it.
+    const started = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(browserPane.id)}/browser/session`, headers, payload: {} });
+    expect(started.statusCode).toBe(503);
+    expect(logs.find((line) => line.includes("request blocked by feature gate"))).toContain('"hostError":{"hostCode":"BROWSER_HOST_UNAVAILABLE","hostDetails":{"causeCode":"EAGAIN"}}');
 
     const closedYouTube = await app.inject({
       method: "DELETE",
@@ -5647,7 +5706,7 @@ describe("Space API", () => {
     expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
   });
 
-  it("releases an operator lease nobody has pressed for 2 minutes on its heartbeat, never one still in use", async () => {
+  it("releases an operator lease nobody has pressed for 60 s on its heartbeat, never one still in use", async () => {
     // Operator report 2026-10-15: a Space tab on an old web bundle kept heartbeating a lease for an hour and blocked the agents.
     const start = Date.parse("2026-10-15T10:00:00.000Z");
     vi.useFakeTimers({ toFake: ["Date"], now: start });
@@ -5692,15 +5751,15 @@ describe("Space API", () => {
       });
       expect(input.statusCode).toBe(200);
       // A bare hover is not use: it does not keep the browser.
-      vi.setSystemTime(start + 5 * 60_000);
+      vi.setSystemTime(start + 4 * 60_000 + 30_000);
       const hover = await app.inject({
         method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/input`, headers,
         payload: { type: "POINTER", leaseId, eventType: "mouseMoved", x: 140, y: 90, button: "none" }
       });
       expect(hover.statusCode).toBe(200);
-      // Five minutes after taking control but one after the last press: the operator keeps it.
+      // Four and a half minutes after taking control but 30 s after the last press: the operator keeps it.
       expect((await heartbeat()).json().lease.status).toBe("ACTIVE");
-      // Operator decision 2026-10-15: back to the agent 2 minutes after the last press.
+      // Operator decision 2026-10-24: back to the agent 60 s after the last press (2 minutes until then).
       vi.setSystemTime(start + 6 * 60_000 + 1000);
       const idle = await heartbeat();
       expect(idle.statusCode).toBe(200);
@@ -5714,7 +5773,79 @@ describe("Space API", () => {
     }
   });
 
-  it("lets a CLI agent reclaim the browser from an operator only after 2 minutes without input", async () => {
+  it("keeps a sign-in handoff with the operator while they stay on the pane, and lets it go 60 s after they leave (operator 2026-10-27)", async () => {
+    const start = Date.parse("2026-10-27T09:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: start });
+    try {
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: "Bank", initialPaneCount: 0 });
+      const pane = store.createPane({ roomId: room.id, title: "Bank", mode: "BROWSER" });
+      const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      store.createPaneBrowserSession({
+        sessionId, paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: `profile:${pane.id}`,
+        profilePath: `/tmp/${pane.id}`, viewport: "desktop", targetUrl: "https://www.google.com/", currentUrl: "https://www.google.com/",
+        title: "Bank", status: "READY", isActive: true
+      });
+      const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }), browserSessionManager: fakeBrowserSessionManager({ enabled: true }) });
+      const headers = { cookie, [csrfHeaderName]: csrfToken };
+      store.createBrowserControlLease({ leaseId: "browser_lease:test", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
+        holderId: "user:dev-operator", reason: "Direct browser interaction", ttlSeconds: 300 });
+      const handoff = store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
+        reason: "Sign in to NBG: enter the SMS code", ttlSeconds: 1800 });
+      const acquired = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/acquire`, headers,
+        payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 } });
+      const leaseId = acquired.json().lease.leaseId as string;
+      const heartbeat = (present?: boolean) => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/heartbeat`, headers,
+        payload: { leaseId, ttlSeconds: 60, ...(present === undefined ? {} : { present }) } });
+      expect((await heartbeat(true)).json()).toMatchObject({ lease: { status: "ACTIVE" }, presenceHold: true });
+      // Five minutes without a key while they wait on the pane for the SMS: still theirs.
+      for (let minute = 1; minute <= 5; minute += 1) {
+        vi.setSystemTime(start + minute * 60_000);
+        expect((await heartbeat(true)).json().lease.status).toBe("ACTIVE");
+      }
+      // They leave the pane: idle counts from then, and 60 s later the browser goes back to the agent.
+      vi.setSystemTime(start + 5 * 60_000 + 30_000);
+      expect((await heartbeat(false)).json().lease.status).toBe("ACTIVE");
+      vi.setSystemTime(start + 6 * 60_000 + 1_000);
+      expect((await heartbeat(false)).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
+      expect(store.getBrowserHandoffRequest(handoff.handoffRequestId)?.status).toBe("COMPLETED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the 60 s rule for control without a sign-in handoff even while the operator is on the pane (operator 2026-10-24)", async () => {
+    const start = Date.parse("2026-10-27T09:00:00.000Z");
+    vi.useFakeTimers({ toFake: ["Date"], now: start });
+    try {
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: "Shop", initialPaneCount: 0 });
+      const pane = store.createPane({ roomId: room.id, title: "Shop", mode: "BROWSER" });
+      const sessionId = `browser_session:${pane.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      store.createPaneBrowserSession({
+        sessionId, paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: `profile:${pane.id}`,
+        profilePath: `/tmp/${pane.id}`, viewport: "desktop", targetUrl: "https://www.google.com/", currentUrl: "https://www.google.com/",
+        title: "Shop", status: "READY", isActive: true
+      });
+      const { app, cookie, csrfToken } = await authedApp({ store, config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }), browserSessionManager: fakeBrowserSessionManager({ enabled: true }) });
+      const headers = { cookie, [csrfHeaderName]: csrfToken };
+      store.createBrowserControlLease({ leaseId: "browser_lease:test", sessionId, paneId: pane.id, roomId: room.id, holderType: "OPERATOR",
+        holderId: "user:dev-operator", reason: "Direct browser interaction", ttlSeconds: 300 });
+      store.createBrowserHandoffRequest({ sessionId, paneId: pane.id, roomId: room.id, requestedByType: "AGENT", requestedById: "cli:cli_session:test",
+        reason: "Choose the shipping option you prefer", ttlSeconds: 1800 });
+      const acquired = await app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/acquire`, headers,
+        payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 } });
+      const leaseId = acquired.json().lease.leaseId as string;
+      const heartbeat = () => app.inject({ method: "POST", url: `/api/panes/${encodeURIComponent(pane.id)}/browser/control/heartbeat`, headers, payload: { leaseId, ttlSeconds: 60, present: true } });
+      expect((await heartbeat()).json()).not.toHaveProperty("presenceHold");
+      vi.setSystemTime(start + 61_000);
+      expect((await heartbeat()).json().lease).toMatchObject({ leaseId, status: "RELEASED" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a CLI agent reclaim the browser from an operator only after 60 s without input", async () => {
     const start = Date.parse("2026-10-15T10:00:00.000Z");
     vi.useFakeTimers({ toFake: ["Date"], now: start });
     try {
@@ -5750,12 +5881,12 @@ describe("Space API", () => {
         headers: { cookie, [csrfHeaderName]: csrfToken }, payload: { holderType: "OPERATOR", holderId: "space-user", ttlSeconds: 60 }
       });
       expect(acquired.statusCode).toBe(200);
-      vi.setSystemTime(start + 90_000);
-      expect(await reclaim()).toMatchObject({ reclaimed: false, reason: "OPERATOR_ACTIVE", idleSeconds: 90, retryAfterSeconds: 30 });
-      vi.setSystemTime(start + 120_000);
-      expect(await reclaim()).toMatchObject({ reclaimed: true, reason: "RECLAIMED", idleSeconds: 120, lease: { status: "RELEASED" } });
+      vi.setSystemTime(start + 45_000);
+      expect(await reclaim()).toMatchObject({ reclaimed: false, reason: "OPERATOR_ACTIVE", idleSeconds: 45, retryAfterSeconds: 15 });
+      vi.setSystemTime(start + 60_000);
+      expect(await reclaim()).toMatchObject({ reclaimed: true, reason: "RECLAIMED", idleSeconds: 60, lease: { status: "RELEASED" } });
       expect(store.listAuditEvents().filter((event) => event.action === "pane.browser.control.agent_reclaim")).toEqual([
-        expect.objectContaining({ targetId: browserPane.id, metadata: { sessionId, leaseId: "browser_lease:test", agent: `cli:t3code:${t3Pane.id}`, idleSeconds: 120 } })
+        expect.objectContaining({ targetId: browserPane.id, metadata: { sessionId, leaseId: "browser_lease:test", agent: `cli:t3code:${t3Pane.id}`, idleSeconds: 60 } })
       ]);
       // A handoff the operator took and then left (his tab stopped renewing the lease) reads COMPLETED to the agent.
       const handoff = store.createBrowserHandoffRequest({
@@ -6128,7 +6259,8 @@ describe("Space API", () => {
     ]);
     // The browser's corner label names the CLI pane that drove it and its room (operator 2026-10-20).
     const pagesWithAgent = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(browserPane.id)}/browser/pages`, headers: { cookie } });
-    expect(pagesWithAgent.json().agent).toEqual({ paneId: cliPane.id, title: "Codex CLI", roomId: room.id, roomName: "CLI Browser Bridge" });
+    expect(pagesWithAgent.json().agent).toEqual({ paneId: cliPane.id, title: "Codex CLI", paneName: cliPane.paneName ?? null, roomId: room.id, roomName: "CLI Browser Bridge",
+      drivenAt: expect.any(String), active: true });
     expect(failedActions.statusCode).toBe(200);
     expect(failedActions.json().results).toEqual([
       expect.objectContaining({
@@ -6810,6 +6942,28 @@ describe("Space API", () => {
       data: [{ id: otherCreated.json().id, text: "other owner item" }],
       pagination: { totalItems: 1 }
     });
+  });
+
+  it("keeps a plan's dependencies, due date and wait through the progress route and refuses loops (plan map, 2026-10-25)", async () => {
+    const sessionSecret = "test-secret-with-enough-length";
+    const store = new InMemorySpaceStore();
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: false, operatorEmail: "space@space.local", operatorPasswordHash: "unused", secureCookies: false } });
+    const token = signSession({ id: "user:planner", email: "planner@space.local", role: "OPERATOR" }, sessionSecret);
+    const headers = { cookie: `space_session=${token}`, [csrfHeaderName]: createCsrfToken(token, sessionSecret)! };
+    const plan = async (text: string) => (await app.inject({ method: "POST", url: "/api/clipboard-items", headers, payload: { text, source: "PLAN", minimumModel: "claude-opus-5-5" } })).json().id as string;
+    const mail = await plan("Fix the mail server");
+    const site = await plan("Launch the site");
+    const patch = (id: string, payload: unknown) => app.inject({ method: "PATCH", url: `/api/clipboard-items/${encodeURIComponent(id)}/progress`, headers, payload });
+
+    expect((await patch(site, { dependsOn: [site] })).statusCode).toBe(409);
+    const linked = await patch(site, { dependsOn: [mail], dueAt: "2026-10-30T09:00:00.000Z", waitsOn: { kind: "THIRD_PARTY", what: "the hosting company" } });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json()).toMatchObject({ dependsOn: [mail], dueAt: "2026-10-30T09:00:00.000Z", waitsOn: { kind: "THIRD_PARTY", what: "the hosting company", until: null }, executionStatus: "PLANNED" });
+    expect((await patch(mail, { dependsOn: [site] })).statusCode).toBe(409);
+    expect((await patch(site, { dependsOn: ["clipboard:nowhere0001"] })).statusCode).toBe(409);
+    const cleared = await patch(site, { dueAt: null, waitsOn: null, progressPercentage: 20 });
+    expect(cleared.json()).toMatchObject({ dependsOn: [mail], dueAt: null, waitsOn: null, progressPercentage: 20 });
+    expect((await app.inject({ method: "GET", url: "/api/clipboard-items?source=PLAN", headers })).json().data.find((item: { id: string }) => item.id === site)).toMatchObject({ dependsOn: [mail] });
   });
 
   it("stores and mutates task history with a status lifecycle, only for the authenticated owner", async () => {

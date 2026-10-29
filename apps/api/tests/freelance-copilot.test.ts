@@ -122,4 +122,18 @@ describe("Freelance Copilot send gate", () => {
     expect(await service.nextItem(owner, target, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
     expect(await service.waitForCode(owner, { pattern: "available", timeoutMs: 0 })).toMatchObject({ code: "available", subject: "New message from Acme" });
   });
+
+  // Marketing's twin (stable 2026-10-23): a brief given to one pane was taken by another pane of the same owner.
+  it("gives a brief to the pane it names, and a brief without a pane to any", async () => {
+    const { service } = setup();
+    const mine = pane();
+    const other = { ...pane(), id: "pane:fl0000002", title: "Freelance Copilot 2" } as Pane;
+    for (const target of [mine, other]) await service.startRun(owner, target.id);
+    await service.createBrief(owner, mine, { text: "For Freelance Copilot 1" });
+    await service.createBrief(owner, null, { text: "For any pane" });
+    expect((await service.runView(owner, other)).backlog).toBe(1);
+    expect(await service.nextItem(owner, other, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For any pane" } });
+    expect(await service.nextItem(owner, other, { waitMs: 0 })).toEqual({ done: true, reason: "QUEUE_EMPTY" });
+    expect(await service.nextItem(owner, mine, { waitMs: 0 })).toMatchObject({ kind: "BRIEF", item: { message: "For Freelance Copilot 1", payload: { takenByPaneId: mine.id } } });
+  });
 });

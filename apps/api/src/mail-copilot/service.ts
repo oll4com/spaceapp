@@ -14,6 +14,7 @@ import type { MailCopilotKickoff } from "./kickoff.js";
 import { buildMime, header, parseParticipants, parsePayload } from "./gmail-mime.js";
 import { sanitizeMailHtml } from "./html-sanitizer.js";
 import { decodeEntities } from "../job-apply/gmail-mailbox.js";
+import { mailCopilotNoticeKey } from "./notify.js";
 
 /** The owner's Google connector: every account allowed for Space and an access token per capability. */
 export interface MailCopilotGoogleAccess {
@@ -29,6 +30,8 @@ export interface MailCopilotServiceOptions {
   repository: MailCopilotRepository;
   /** Every activity event, for the room stream and notifications. */
   onEvent?(event: MailCopilotEvent): void;
+  /** Closes a Space notification by its dedupe key (a NEEDS_USER mail the operator handled no longer needs them). */
+  resolveNotice?(owner: string, dedupeKey: string): Promise<unknown>;
   /** Starts a run for new work nobody pressed Start for (a mail sent to the copilot to fix). */
   kickoff?: MailCopilotKickoff;
   now?(): string;
@@ -39,8 +42,14 @@ const NEXT_POLL_MS = 2_000;
 const NEXT_MAX_WAIT_MS = 120_000;
 /** A TAKEN item nobody reported for this long goes back to the queue (a crashed CLI). */
 const TAKEN_STALE_MS = 30 * 60_000;
+/** A RUNNING run with no activity this long, whose CLI sits at an empty prompt, lost its agent: it gets its kickoff again. */
+const RUN_IDLE_MS = 10 * 60_000;
 /** The backlog scan looks at this many newest inbox conversations per account. */
 const BACKLOG_SCAN_LIMIT = 25;
+/** shortcut: the daily whole-inbox scan stops after this many conversations per account; page on across days if inboxes grow larger. */
+const DAILY_SCAN_LIMIT = 1000;
+/** A thread with one of these was decided once; SKIPPED is undecided and comes back in the next daily run. */
+const DECIDED_TYPES: MailCopilotEventType[] = ["TRIAGED", "REPLIED", "DRAFTED", "ARCHIVED", "TRASHED", "LABELED", "NEEDS_USER", "FIXED"];
 /** Senders a copilot never answers on its own. */
 const AUTOMATED_SENDER = /(^|[.<@-])(no-?reply|do-?not-?reply|noreply|notifications?|newsletter|mailer-daemon|postmaster|bounce)([.>@-]|$)/i;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,6 +113,13 @@ function accessOf(capabilities: readonly ConnectorCapability[]): MailAccountSumm
 function gmailError(account: string, error: unknown): Error {
   if (error instanceof GmailMailboxError) return new SpaceConflictError(`${account}: ${error.message}`);
   return error instanceof Error ? error : new Error(String(error));
+}
+/** As Gmail answers: a reply goes from the "Send mail as" address the mail was sent to, anything else from the default one; the account itself when Gmail lists none. */
+async function senderFor(client: GmailClient, account: string, headers: unknown): Promise<{ from: string; fromName?: string }> {
+  const aliases = await client.sendAs().catch(() => []);
+  const recipients = new Set(parseParticipants([header(headers, "To"), header(headers, "Cc")].filter(Boolean).join(", ")).map((entry) => entry.address));
+  const alias = aliases.find((entry) => recipients.has(entry.email)) ?? aliases.find((entry) => entry.isDefault);
+  return alias ? { from: alias.email, fromName: alias.name } : { from: account };
 }
 function iso(internalDate: unknown): string | null {
   const ms = Number(internalDate);
@@ -234,13 +250,14 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     };
   }
 
-  const RULE_ACTION_FOR: Record<string, MailRule["action"]["type"]> = { send: "REPLY", archive: "ARCHIVE", label: "LABEL", move: "MOVE", trash: "TRASH", star: "STAR", read: "MARK_READ" };
+  const RULE_ACTION_FOR: Record<string, MailRule["action"]["type"]> = { send: "REPLY" };
   /**
-   * ASSIST: the agent drafts and asks. RULES: only under an approved rule of the owner that names this action and
-   * matches the message (the rule's use is recorded). FULL: on its own judgement.
+   * The gate on what the copilot sends (organizing is never gated). ASSIST: the agent drafts and asks. RULES: only
+   * under an approved rule of the owner that names this action and matches the message (the rule's use is recorded).
+   * FULL: on its own judgement.
    */
   type GateContext = { paneId: string | null; accountEmail: string | null; threadId: string | null; messageId?: string | null };
-  async function authorize(owner: string, pane: Pane | null, action: string, ruleId: string | undefined, subject: () => Promise<MailRuleSubject | null>, context: GateContext, labelIds: readonly string[] = []): Promise<void> {
+  async function authorize(owner: string, pane: Pane | null, action: string, ruleId: string | undefined, subject: () => Promise<MailRuleSubject | null>, context: GateContext): Promise<void> {
     const autonomy = paneSettings(pane).autonomy;
     if (autonomy === "FULL") return;
     if (autonomy === "ASSIST") throw new SpaceConflictError(`MAIL_NEEDS_REVIEW: autonomy is Assist, so the copilot cannot ${action} on its own; ask with space_mail_review_request.`);
@@ -249,9 +266,6 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     if (!rule || rule.status !== "APPROVED") throw new SpaceConflictError(`MAIL_NEEDS_REVIEW: rule ${ruleId} is not an approved rule of the operator.`);
     if (rule.accountEmail && context.accountEmail && rule.accountEmail !== context.accountEmail) throw new SpaceConflictError(`MAIL_NEEDS_REVIEW: rule "${rule.name}" belongs to ${rule.accountEmail}.`);
     if (rule.action.type !== RULE_ACTION_FOR[action]) throw new SpaceConflictError(`MAIL_NEEDS_REVIEW: rule "${rule.name}" allows ${rule.action.type}, not ${action}.`);
-    if ((rule.action.type === "LABEL" || rule.action.type === "MOVE") && (!labelIds.length || !labelIds.every((label) => rule.action.labels?.includes(label)))) {
-      throw new SpaceConflictError(`MAIL_NEEDS_REVIEW: rule "${rule.name}" allows only the labels ${(rule.action.labels ?? []).join(", ") || "(none named)"}.`);
-    }
     const facts = await subject();
     if (!facts || !mailRuleMatches(rule.condition, facts)) throw new SpaceConflictError(`MAIL_NEEDS_REVIEW: rule "${rule.name}" does not match this message; ask with space_mail_review_request.`);
     await repository.updateRule(owner, rule.id, { appliedCount: rule.appliedCount + 1, lastAppliedAt: now() });
@@ -464,6 +478,10 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
   async function closeHandledItems(owner: string, account: string, threadId: string): Promise<void> {
     const waiting = await repository.listEvents(owner, { accountEmail: account, threadId, types: ["MAIL_RECEIVED", "TRIAGE"], status: ["PENDING"], limit: 20 });
     for (const item of waiting) await repository.setItemStatus(owner, item.id, "DONE");
+    // Needs you as questions (plan clipboard:5AQvaoSR-IZa): a mail the copilot left to the operator stops asking once they handled it.
+    if (options.resolveNotice) for (const asked of await repository.listEvents(owner, { accountEmail: account, threadId, types: ["NEEDS_USER"], limit: 20 })) {
+      await options.resolveNotice(owner, mailCopilotNoticeKey(asked.id));
+    }
   }
   /** The copilot's questions about a hand-off (same conversation, or asked while it was being worked on) with the operator's answers. */
   function exchangesFor(request: MailCopilotEvent, until: string | null, questions: MailCopilotEvent[], answers: MailCopilotEvent[]): MailFixRequestView["exchanges"] {
@@ -574,23 +592,20 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       return { account: email!, threadId, subject: messages[0]!.subject, messages };
     },
     /**
-     * Archive, trash, star, read, labels and a move to a label on a whole thread (full access). The agent is held to
-     * the pane's autonomy. Everything but read marks lands in the account's action log, which the copilot learns from.
+     * Archive, trash, star, read, labels and a move to a label on a whole thread (full access). Organizing is the
+     * copilot's own job at every autonomy (operator 2026-10-27; only sending is gated). Everything but read marks lands
+     * in the account's action log (actor AGENT for the copilot), which the copilot learns from.
      */
     async modify(owner: string, pane: Pane | null, threadId: string, rawInput: MailThreadAction, by: "operator" | "agent" = "operator", ruleId?: string): Promise<void> {
       await mailAccounts(owner, pane, rawInput.account);
       const client = await clientFor(owner, rawInput.account, "MAIL_ORGANIZE");
       const input: MailThreadAction = rawInput.labelIds?.length ? { ...rawInput, labelIds: await resolveLabelIds(client, rawInput.labelIds).catch((error) => { throw gmailError(rawInput.account, error); }) } : rawInput;
-      const context = { paneId: pane?.id ?? null, accountEmail: input.account, threadId };
       const logged = LOGGED_ACTION[input.action];
       let facts: Promise<MailRuleSubject | null> | null = null;
       const subject = () => facts ??= client.thread(threadId, "metadata").then((thread) => {
         const message = correspondent((thread.messages as GmailJson[] | undefined) ?? [], input.account);
         return message ? ruleSubject(message) : null;
       }, (error: unknown) => { throw gmailError(input.account, error); });
-      if (by === "agent" && input.action !== "read" && input.action !== "unread" && input.action !== "star" && input.action !== "unstar") {
-        await authorize(owner, pane, input.action, ruleId, subject, context, input.labelIds);
-      }
       try {
         if (input.action === "trash" || input.action === "untrash") await client.trashThread(threadId, input.action === "untrash");
         else {
@@ -631,7 +646,8 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
       const inReplyTo = header(headers, "Message-ID") || null;
       const references = header(headers, "References") || null;
-      const raw = buildMime({ from: input.account, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text, inReplyTo, references });
+      const sender = await senderFor(client, input.account, headers);
+      const raw = buildMime({ ...sender, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text, inReplyTo, references });
       let sent: { id: string; threadId: string };
       try {
         sent = await client.send(raw, input.threadId);
@@ -639,7 +655,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         throw gmailError(input.account, error);
       }
       await record(owner, { paneId: pane?.id ?? null, type: "SENT", accountEmail: input.account, threadId: sent.threadId, messageId: sent.id,
-        message: `${by === "agent" ? "The copilot sent" : "You sent"}: ${input.subject || "(no subject)"} → ${input.to.join(", ")}`, payload: { by, to: input.to, cc: input.cc, reply: Boolean(input.inReplyToMessageId) } });
+        message: `${by === "agent" ? "The copilot sent" : "You sent"}: ${input.subject || "(no subject)"} → ${input.to.join(", ")}`, payload: { by, from: sender.from, to: input.to, cc: input.cc, reply: Boolean(input.inReplyToMessageId) } });
       // Replies and forwards join the action log (a forward names no correspondent: the forwarded mail is in its body).
       const kind: MailOperatorAction | null = /^\s*fwd?\s*:/i.test(input.subject) ? "FORWARD" : original ? "REPLY" : null;
       if (kind) await logAction(owner, { accountEmail: input.account, threadId: sent.threadId, messageId: sent.id, action: kind, facts: original ? ruleSubject(original) : { from: "", subject: input.subject },
@@ -659,7 +675,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       // A reply draft carries the threading headers too, or Gmail starts a new thread despite the threadId.
       const original = input.inReplyToMessageId ? await client.message(input.inReplyToMessageId, "metadata").catch((error) => { throw gmailError(input.account, error); }) : null;
       const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
-      const raw = buildMime({ from: input.account, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text,
+      const raw = buildMime({ ...await senderFor(client, input.account, headers), to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text,
         inReplyTo: header(headers, "Message-ID") || null, references: header(headers, "References") || null });
       try {
         const draft = await client.createDraft(raw, input.threadId);
@@ -667,6 +683,34 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       } catch (error) {
         throw gmailError(input.account, error);
       }
+    },
+    /** Deletes a draft the copilot saved itself (its DRAFTED event names it) and nobody changed since; every other draft is the operator's. */
+    async deleteDraft(owner: string, pane: Pane, account: string, draftId: string): Promise<void> {
+      await mailAccounts(owner, pane, account);
+      // shortcut: only the newest 500 copilot drafts of the account are found; page the events if older ones must go.
+      const drafted = (await repository.listEvents(owner, { accountEmail: account, types: ["DRAFTED"], limit: 500 })).find((event) => event.payload.draftId === draftId);
+      if (!drafted) throw new SpaceConflictError("The copilot did not save that draft; only the operator deletes it.");
+      const client = await clientFor(owner, account, "MAIL_ORGANIZE");
+      const current = await client.draftMessageId(draftId).catch((error) => { throw gmailError(account, error); });
+      // Drafts saved before 2026-10-26 carry no message id: those are deleted as saved.
+      if (typeof drafted.payload.draftMessageId === "string" && current !== drafted.payload.draftMessageId) throw new SpaceConflictError("That draft changed after the copilot saved it (the operator may have edited it); only the operator deletes it now.");
+      await client.deleteDraft(draftId).catch((error) => { throw gmailError(account, error); });
+      await record(owner, { paneId: pane.id, type: "NOTE", accountEmail: account, threadId: drafted.threadId, message: `The copilot deleted its draft: ${drafted.message.replace(/^The copilot drafted: /, "")}`, payload: { draftId, deleted: true } });
+    },
+    /** Gmail's Delete for any mail or draft, allowed at every autonomy (operator decision 2026-10-26): a message goes to the Trash (30 days), a draft is discarded. */
+    async deleteMail(owner: string, pane: Pane, input: { account: string; messageId?: string; draftId?: string }): Promise<void> {
+      await mailAccounts(owner, pane, input.account);
+      const client = await clientFor(owner, input.account, "MAIL_ORGANIZE");
+      if (input.draftId) {
+        await client.deleteDraft(input.draftId).catch((error) => { throw gmailError(input.account, error); });
+        await record(owner, { paneId: pane.id, type: "NOTE", accountEmail: input.account, message: "The copilot discarded a draft", payload: { draftId: input.draftId, deleted: true } });
+        return;
+      }
+      const message = await client.message(input.messageId!, "metadata").catch((error) => { throw gmailError(input.account, error); });
+      await client.trashMessage(input.messageId!).catch((error) => { throw gmailError(input.account, error); });
+      const facts = ruleSubject(message);
+      await record(owner, { paneId: pane.id, type: "TRASHED", accountEmail: input.account, threadId: String(message.threadId ?? "") || null, messageId: input.messageId!,
+        message: `The copilot deleted: ${facts.subject || "(no subject)"} from ${facts.from || "?"}`, payload: { action: "delete", from: facts.from, subject: facts.subject } });
     },
     /** One attachment's bytes and type, for download or inline display. */
     async attachment(owner: string, pane: Pane | null, account: string, messageId: string, attachmentId: string): Promise<{ data: Buffer; filename: string; mimeType: string }> {
@@ -722,7 +766,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       await record(owner, { paneId, runId: run.id, type: "RUN_STARTED", message: "Run started: the copilot works through new mail and the backlog" });
       return { run, kickoff: true, resumed: false };
     },
-    async markKickoff(owner: string, runId: string): Promise<void> { await repository.updateRun(owner, runId, { kickoffSentAt: now() }); },
+    async markKickoff(owner: string, runId: string): Promise<void> { await repository.updateRun(owner, runId, { kickoffSentAt: now(), lastActivityAt: now() }); },
     async pauseRun(owner: string, paneId: string): Promise<MailCopilotRun> {
       const run = await repository.getActiveRun(paneId);
       if (!run || run.ownerUserId !== owner) throw new SpaceConflictError("No run is active in this pane.");
@@ -772,15 +816,34 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         await sleep(Math.min(NEXT_POLL_MS, Math.max(0, deadline - Date.now())));
       }
     },
-    /** Untriaged inbox conversations of the pane's accounts within the backlog window become TRIAGE items, once per thread. */
-    async scanBacklog(owner: string, pane: Pane, runId: string | null): Promise<number> {
+    /**
+     * Untriaged inbox conversations of the pane's accounts within the backlog window become TRIAGE items, once per thread.
+     * The daily run's scan (`wholeInbox`) takes every inbox conversation, automated senders included, that no item decided
+     * yet and none waits for.
+     */
+    async scanBacklog(owner: string, pane: Pane, runId: string | null, wholeInbox = false): Promise<number> {
       const settings = paneSettings(pane);
       const since = Date.parse(now()) - settings.backlogHours * 3_600_000;
-      const page = await this.threads(owner, pane, { account: "all", labelId: "INBOX", max: BACKLOG_SCAN_LIMIT });
+      const threads: MailThreadSummary[] = [];
+      if (!wholeInbox) threads.push(...(await this.threads(owner, pane, { account: "all", labelId: "INBOX", max: BACKLOG_SCAN_LIMIT })).threads);
+      // Per account: the unified view keeps only `max` threads of a page while every account's cursor moves on.
+      else for (const account of await mailAccounts(owner, pane, "all")) {
+        let pageToken: string | undefined;
+        let taken = 0;
+        do {
+          const page = await this.threads(owner, pane, { account, labelId: "INBOX", max: 50, ...(pageToken ? { pageToken } : {}) });
+          threads.push(...page.threads);
+          taken += page.threads.length;
+          pageToken = page.nextPageToken ?? undefined;
+        } while (pageToken && taken < DAILY_SCAN_LIMIT);
+      }
       let created = 0;
-      for (const thread of page.threads) {
-        if (!thread.receivedAt || Date.parse(thread.receivedAt) < since || AUTOMATED_SENDER.test(thread.from.address)) continue;
-        const seen = await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "TRIAGED", "REPLIED", "DRAFTED", "ARCHIVED", "TRASHED", "LABELED", "SKIPPED", "NEEDS_USER"], limit: 1 });
+      for (const thread of threads) {
+        if (!wholeInbox && (!thread.receivedAt || Date.parse(thread.receivedAt) < since || AUTOMATED_SENDER.test(thread.from.address))) continue;
+        const seen = wholeInbox
+          ? (await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "FIX_REQUESTED", ...DECIDED_TYPES], limit: 50 }))
+            .filter((event) => DECIDED_TYPES.includes(event.type) || event.status === "PENDING" || event.status === "TAKEN")
+          : await repository.listEvents(owner, { accountEmail: thread.account, threadId: thread.threadId, types: ["TRIAGE", "MAIL_RECEIVED", "TRIAGED", "REPLIED", "DRAFTED", "ARCHIVED", "TRASHED", "LABELED", "SKIPPED", "NEEDS_USER"], limit: 1 });
         if (seen.length) continue;
         await record(owner, { paneId: pane.id, runId, type: "TRIAGE", status: "PENDING", accountEmail: thread.account, threadId: thread.threadId, messageId: thread.messageId,
           message: `Triage: ${thread.subject || "(no subject)"} from ${thread.from.name || thread.from.address}`, payload: { from: thread.from, subject: thread.subject, snippet: thread.snippet, labelIds: thread.labelIds, receivedAt: thread.receivedAt } });
@@ -1019,11 +1082,37 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       const active = await repository.getActiveRun(pane.id);
       if (active?.status === "PAUSED" || (active && active.ownerUserId !== owner) || !(await options.kickoff.ready(pane))) return false;
       const started = await this.startRun(owner, pane.id);
-      if (started.kickoff) {
+      if (started.kickoff || Date.parse(now()) - Date.parse(started.run.lastActivityAt) >= RUN_IDLE_MS) {
         await options.kickoff.send(pane, started.run);
         await this.markKickoff(owner, started.run.id);
       }
       return true;
+    },
+    /**
+     * The daily organize run (operator 2026-10-27): once a day from the pane's `dailyRunHour` in the owner's time zone,
+     * when the pane is not paused and its CLI can take the kickoff, the whole inbox is scanned and the run starts.
+     */
+    async dailyRun(owner: string, pane: Pane, timeZone: string): Promise<boolean> {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" })
+        .formatToParts(new Date(now())).map((part) => [part.type, part.value]));
+      const day = `${parts.year}-${parts.month}-${parts.day}`;
+      if (Number(parts.hour) < paneSettings(pane).dailyRunHour || paneSettings(pane).paused || !options.kickoff) return false;
+      const marks = await repository.listEvents(owner, { paneId: pane.id, types: ["NOTE"], since: new Date(Date.parse(now()) - 48 * 3_600_000).toISOString(), limit: 500 });
+      if (marks.some((event) => event.payload.dailyRun === day)) return false;
+      const active = await repository.getActiveRun(pane.id);
+      if (active?.status === "PAUSED") return false;
+      // The pane always runs (operator 2026-10-27): a stopped CLI is started first and the pass waits for its prompt.
+      if (options.kickoff.startCli && options.kickoff.cliRunning && !(await options.kickoff.cliRunning(pane))) { await options.kickoff.startCli(pane); return false; }
+      if (!(await options.kickoff.ready(pane))) return false;
+      // The mark goes first: a failed scan is not retried every minute, and the run still takes the usual backlog.
+      const mark = await record(owner, { paneId: pane.id, type: "NOTE", message: `Daily organize run ${day}: the whole inbox`, payload: { dailyRun: day } });
+      await this.scanBacklog(owner, pane, active?.id ?? null, true).catch((error: unknown) => record(owner, { paneId: pane.id, type: "NOTE",
+        message: `Daily inbox scan failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 1000), payload: { dailyRunOf: mark.id } }));
+      return this.autostart(owner, pane);
+    },
+    /** New mail that made work items starts the pane's run on its own (operator 2026-10-27: the pane always runs). */
+    async startForNewMail(owner: string, pane: Pane): Promise<boolean> {
+      return (await repository.countPendingItems(owner)) > 0 && this.autostart(owner, pane);
     },
     syncState: (owner: string, email: string) => repository.getSyncState(owner, email),
     /** Every mail sent to the copilot to fix (Activity → Sent to AI), newest first: the request, the questions and answers, and the result. */
@@ -1051,6 +1140,9 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
       });
     },
     /** The action log as the operator reads it back (Activity → Your actions), newest first, for the pane's accounts. */
+    /** Replies and forwards logged on one thread since a time (Nous's double-send guard, queue item 27). */
+    threadReplies: (owner: string, account: string, threadId: string, since: string) =>
+      repository.listActions(owner, { accountEmail: account.toLowerCase(), threadId, actions: ["REPLY", "FORWARD"], since, limit: 5 }),
     async actionLog(owner: string, pane: Pane | null, input: { account?: string; source?: MailActionRecord["source"]; limit: number }): Promise<MailActionLogEntry[]> {
       const accounts = await mailAccounts(owner, pane, input.account ?? "all");
       const rows = (await repository.listActions(owner, { accountEmail: input.account, sources: input.source ? [input.source] : undefined, limit: input.account ? input.limit : 500 }))

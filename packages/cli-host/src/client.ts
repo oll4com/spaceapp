@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
-import { encodeLengthPrefixedJson, LengthPrefixedJsonDecoder } from "./framing.js";
+import { encodeLengthPrefixedJson } from "./framing.js";
 import { CliHostError } from "./session-registry.js";
 import type {
   CliHostAttachInput,
@@ -23,6 +23,45 @@ interface PendingRequest {
 // metadata can make a valid attach response substantially larger on the wire.
 const maximumCliHostResponseFrameBytes = 64 * 1024 * 1024;
 
+/**
+ * framing.ts's decoder for the host's answers, joining a frame's chunks once the frame is complete: concatenating on
+ * every chunk copied ~0.5 GB for one 8 MB frame and held stable's API loop 3.7 s (profile 2026-10-24). Same frame
+ * rules and errors; it lives here because only this client ships without a pane host restart.
+ */
+export class ChunkedJsonFrameDecoder {
+  private chunks: Buffer[] = [];
+  private size = 0;
+
+  constructor(private readonly maximumFrameBytes: number) {}
+
+  push(chunk: Buffer): unknown[] {
+    if (chunk.length) {
+      this.chunks.push(chunk);
+      this.size += chunk.length;
+    }
+    const values: unknown[] = [];
+    while (this.size >= 4) {
+      const length = (this.chunks[0]!.length >= 4 ? this.chunks[0]! : this.joined()).readUInt32BE(0);
+      if (length === 0 || length > this.maximumFrameBytes) {
+        throw new Error(`CLI host IPC frame length ${length} is invalid.`);
+      }
+      if (this.size < length + 4) break;
+      const buffer = this.joined();
+      values.push(JSON.parse(buffer.toString("utf8", 4, length + 4)));
+      const rest = buffer.subarray(length + 4);
+      this.chunks = rest.length ? [rest] : [];
+      this.size = rest.length;
+    }
+    return values;
+  }
+
+  private joined(): Buffer {
+    const buffer = this.chunks.length === 1 ? this.chunks[0]! : Buffer.concat(this.chunks, this.size);
+    this.chunks = [buffer];
+    return buffer;
+  }
+}
+
 export interface CliHostHealth {
   hostPid: number;
   startedAt: string;
@@ -33,7 +72,7 @@ export interface CliHostHealth {
 export class CliHostClient {
   private socket: Socket | null = null;
   private connecting: Promise<Socket> | null = null;
-  private decoder = new LengthPrefixedJsonDecoder(maximumCliHostResponseFrameBytes);
+  private decoder = new ChunkedJsonFrameDecoder(maximumCliHostResponseFrameBytes);
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Map<string, CliHostEventListener>();
   private readonly earlyEvents = new Map<string, CliHostEvent[]>();
@@ -122,7 +161,7 @@ export class CliHostClient {
   private async connect(): Promise<Socket> {
     if (this.socket && !this.socket.destroyed) return this.socket;
     if (this.connecting) return this.connecting;
-    this.decoder = new LengthPrefixedJsonDecoder(maximumCliHostResponseFrameBytes);
+    this.decoder = new ChunkedJsonFrameDecoder(maximumCliHostResponseFrameBytes);
     this.connecting = new Promise<Socket>((resolve, reject) => {
       const socket = createConnection(this.options.socketPath);
       const onError = (error: Error) => {

@@ -1,10 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { nousAwayInputSchema, nousDecisionAnswerInputSchema, nousDecisionFeedbackInputSchema, nousDecisionIdSchema, nousSendInputSchema, nousSettingsInputSchema } from "@space/contracts";
+import { nousAwayInputSchema, nousDecisionAnswerInputSchema, nousDecisionFeedbackInputSchema, nousDecisionIdSchema, nousGoalCreateInputSchema, nousGoalEditInputSchema, nousGoalIdSchema, nousGoalsReorderInputSchema, nousSendInputSchema, nousSettingsInputSchema, type NousStandingApproval } from "@space/contracts";
 import type { NousAwayControl } from "./away.js";
 import type { NousAttachments } from "./attachments.js";
 import type { NousScorecard } from "./progress.js";
-import type { NousService } from "./service.js";
+import { operatorMessagesToAnswer, type NousService } from "./service.js";
 
 export interface NousRouteDependencies {
   routeOptions: Record<string, unknown>;
@@ -20,11 +20,18 @@ export interface NousRouteDependencies {
   attachments?: NousAttachments;
   /** Away mode's Settings switch (plan clipboard:B7eTUHTJYg3X). */
   away?: Pick<NousAwayControl, "fromSettings">;
+  /** "Show everything" (operator request 2026-10-21): the texts a decision sends, read whole from the files it names. */
+  decisionFiles(owner: string, id: string): Promise<Array<{ ref: string; text: string | null; total: number | null; truncated: boolean; error?: string }>>;
   /** Where Nous works on its own, only a person turns an allowance (May promote, May approve Warm) on. */
-  assertAllowanceChange(request: FastifyRequest, owner: string, input: { mayPromote?: boolean; mayApproveWarm?: boolean }): Promise<void>;
+  assertAllowanceChange(request: FastifyRequest, owner: string, input: z.infer<typeof nousSettingsInputSchema>): Promise<void>;
+  /** Goal 7365014c-c: the stored Always-approve kinds, each with how often it ran by itself in the last 14 days. */
+  alwaysApproveCounts(owner: string): Promise<Array<NousStandingApproval & { count: number }>>;
+  /** The installed Vault broker's commit, hash and the diff stat of its sources to stable's HEAD (vault/broker-report.ts). */
+  vaultBrokerReport?(): Promise<string>;
 }
 
 const decisionParams = z.object({ id: nousDecisionIdSchema }).strict();
+const goalParams = z.object({ id: nousGoalIdSchema }).strict();
 const vaultBrokerReinstallSchema = z.object({ reason: z.string().trim().min(1).max(1_000) }).strict();
 
 /** The Nous dock: state, conversation, settings, decisions and the overview. */
@@ -33,11 +40,18 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
 
   app.get("/api/nous", routeOptions, async (request) => ({ state: await service.state(await deps.owner(request)) }));
 
+  // Read only: what Nous's turns ran on and cost (space-admin-action nous-turn-costs; the model study, 2026-10-21).
+  app.get("/api/nous/turn-costs", routeOptions, async (request) => {
+    const { days } = parseQuery(z.object({ days: z.coerce.number().int().min(1).max(90).default(7) }).strict(), request.query);
+    return { costs: await service.turnCosts(await deps.owner(request), days) };
+  });
+
   app.get("/api/nous/messages", routeOptions, async (request) => {
     const owner = await deps.owner(request);
     const messages = await service.messages(owner);
     const operatorIds = messages.filter((message) => message.kind === "OPERATOR").map((message) => message.id);
-    return { messages, attachments: deps.attachments ? await deps.attachments.forMessages(owner, operatorIds) : {} };
+    // `waiting`: the operator's messages still in Nous's queue (no answer yet); the dock marks them queued or being answered.
+    return { messages, waiting: operatorMessagesToAnswer(messages).map((message) => message.id), attachments: deps.attachments ? await deps.attachments.forMessages(owner, operatorIds) : {} };
   });
 
   app.post("/api/nous/messages", routeOptions, async (request, reply) => {
@@ -82,15 +96,27 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
 
   app.get("/api/nous/progress", routeOptions, async (request) => ({ progress: await deps.progress(await deps.owner(request)) }));
 
+  // Read only (goal 7365014c-c): Settings shows what each "Always approve" spares the operator.
+  app.get("/api/nous/always-approve", routeOptions, async (request) => ({ rules: await deps.alwaysApproveCounts(await deps.owner(request)) }));
+
   app.get("/api/nous/decisions", routeOptions, async (request) => ({ decisions: await service.decisions(await deps.owner(request)) }));
 
   // An agent asks for the Vault broker's reinstall (space-admin-action vault-broker-reinstall); only the operator's yes runs it.
   app.post("/api/nous/decisions/vault-broker-reinstall", routeOptions, async (request) => {
     const { reason } = parseBody(vaultBrokerReinstallSchema, request.body);
+    // The operator approves a build of stable's code nobody reviewed as a broker diff: the card shows what the reinstall would change.
+    const report = deps.vaultBrokerReport ? await deps.vaultBrokerReport().catch((error: Error) => `**Installed broker:** could not be read (${error.message}).`) : null;
     return { decision: await service.ask({ ownerUserId: await deps.owner(request), category: "RELEASE", title: "Reinstall the Vault broker from stable's code",
       body: "Space builds the broker from stable's committed code (refused if /opt/spaceapp has local changes), installs it as root, keeps the old one "
-        + "as broker.mjs.previous and restarts space-vault-broker.service; if it does not come back, the old one is restored. Unlock the Vault once afterwards.",
+        + "as broker.mjs.previous and restarts space-vault-broker.service; if it does not come back, the old one is restored. Unlock the Vault once afterwards."
+        + (report ? `\n\n${report}` : ""),
       options: [], recommendation: reason, refs: {}, action: { type: "VAULT_BROKER_REINSTALL" } }) };
+  });
+
+  app.get("/api/nous/decisions/:id/files", routeOptions, async (request) => {
+    const owner = await deps.owner(request);
+    const { id } = parseQuery(decisionParams, request.params);
+    return { files: await deps.decisionFiles(owner, id) };
   });
 
   app.post("/api/nous/decisions/:id/answer", routeOptions, async (request) => {
@@ -105,5 +131,31 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     deps.assertPerson(request);
     const { id } = parseQuery(decisionParams, request.params);
     return { decision: await service.feedback(owner, id, parseBody(nousDecisionFeedbackInputSchema, request.body).couldHaveDecided) };
+  });
+
+  // Goals (operator request 2026-10-27, plan clipboard:DR51jZJEB0j1): the list for the dock; every write from a person only.
+  app.get("/api/nous/goals", routeOptions, async (request) => ({ view: await service.goalsView(await deps.owner(request)) }));
+  app.post("/api/nous/goals", routeOptions, async (request, reply) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    return reply.code(201).send({ goal: await service.createGoal(owner, parseBody(nousGoalCreateInputSchema, request.body).text) });
+  });
+  app.post("/api/nous/goals/reorder", routeOptions, async (request) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    return { goals: await service.reorderGoals(owner, parseBody(nousGoalsReorderInputSchema, request.body).ids) };
+  });
+  app.patch("/api/nous/goals/:id", routeOptions, async (request) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    const { id } = parseQuery(goalParams, request.params);
+    return { goal: await service.editGoal(owner, id, parseBody(nousGoalEditInputSchema, request.body)) };
+  });
+  app.delete("/api/nous/goals/:id", routeOptions, async (request, reply) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    const { id } = parseQuery(goalParams, request.params);
+    if (!(await service.removeGoal(owner, id))) return reply.code(404).send({ error: { code: "NOT_FOUND", message: "This goal does not exist." } });
+    return { removed: true };
   });
 }

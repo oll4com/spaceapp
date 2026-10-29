@@ -69,5 +69,5 @@ describe("Space Memory files", () => {
     expect(saved.provenance).toBe(paths.monthlyPath);
     const titles = (await bridge.list(query)).map((entry) => entry.title);
     expect(titles).toEqual(expect.arrayContaining(["Renamed month entry", "Legacy month entry"]));
-  });
+  }, 15_000); // reads parse each source in a fresh worker thread (about a second per source)
 });

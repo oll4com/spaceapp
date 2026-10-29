@@ -44,7 +44,7 @@ describe("Nous's pane watch", () => {
     expect(paneWatchOverview(entries)[3]).toMatchObject({ pane: "Dana", room: "Bruno", verdict: "WAITING_DATE", note: "Visa on 20 Oct", overdue: false });
     const world = renderNousWorld({ rooms: [{ room: bruno, sample: sample([andy], {}) }], notifications: [], plans: [], tasks: [], trains: "", decisions: [], notes: [],
       now: new Date(now).toISOString(), paneChecked: () => "checked 15:15 (ok working)", panesNotChecked: "## Panes not checked\n- Bruno/Andy · never checked" });
-    expect(world).toContain("- Andy · CLI · checked 15:15 (ok working)");
+    expect(world).toContain("- Andy · shell (no AI CLI: read it, never send to it) · checked 15:15 (ok working)");
     expect(world).toContain("## Panes not checked\n- Bruno/Andy · never checked");
   });
 
@@ -68,9 +68,24 @@ describe("Nous's pane watch", () => {
     const checks = new Map((await repository.list(owner)).map((check) => [check.paneId, check]));
     expect(checks.get(andy.id)).toMatchObject({ verdict: "OPERATOR_TEST", note: "The operator's login test", nextCheckAt: null });
     expect(checks.get(bob.id)).toMatchObject({ verdict: "WAITING_DATE", nextCheckAt: new Date(now + 90 * 60_000).toISOString() });
+    // KEEP_OPEN (standing orders 2026-10-21): a finished pane Nous keeps open needs its next check and says why.
+    expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote" }, ctx)).result).toContain("KEEP_OPEN needs nextCheckInMinutes");
+    expect(await tools.execute("space_pane_checked", { room: "Bruno", pane: "Bob", verdict: "KEEP_OPEN", note: "Waits for the promote", nextCheckInMinutes: 120 }, ctx))
+      .toMatchObject({ ok: true, display: "Checked Bob in Bruno: keep open" });
+    const kept = (await repository.list(owner)).find((check) => check.paneId === bob.id);
+    expect(kept).toMatchObject({ verdict: "KEEP_OPEN", note: "Waits for the promote", nextCheckAt: new Date(now + 120 * 60_000).toISOString() });
+    expect(paneCheckedText({ room: bruno, pane: bob, state: "done", check: kept!, dueAt: kept!.nextCheckAt!, overdue: false }, clock)).toBe("checked 16:00 (keep open), keep open");
     // A later read keeps the verdict and moves only the time.
     await watch.read(owner, bruno.id, andy.id);
     expect((await repository.list(owner)).find((check) => check.paneId === andy.id)).toMatchObject({ verdict: "OPERATOR_TEST" });
+    // The operator's own pane is closed only while "Close your own panes too" is on (2026-10-24, on by default).
+    let mayClose = false;
+    const closer = createNousTools({ paneWatch: watch, roomTool, rooms: async () => [bruno], listPanes: async () => [andy, bob], closeOperatorPanes: async () => mayClose } as unknown as NousToolDeps);
+    expect(await closer.execute("space_close_pane", { room: "Bruno", panes: ["Andy"] }, ctx)).toMatchObject({ ok: false, display: "The operator's own pane stays open" });
+    expect(roomTool).not.toHaveBeenCalledWith("close_pane", expect.anything(), expect.anything());
+    mayClose = true;
+    expect((await closer.execute("space_close_pane", { room: "Bruno", panes: ["Andy"] }, ctx)).ok).toBe(true);
+    expect(roomTool).toHaveBeenCalledWith("close_pane", { panes: [andy.id] }, expect.anything());
     expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "OK_WORKING" }, { ...ctx, owner: "user:other" })).ok).toBe(false);
     expect((await tools.execute("space_pane_checked", { room: "Bruno", pane: "Andy", verdict: "FINE" }, ctx)).ok).toBe(false);
   });

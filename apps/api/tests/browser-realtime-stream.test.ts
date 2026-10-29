@@ -28,11 +28,11 @@ async function waitForMessage(
   throw new Error(`Timed out waiting for browser stream message. Seen: ${JSON.stringify(messages)}`);
 }
 
-async function authedApp(store: InMemorySpaceStore, browserSessionManager: BrowserSessionManager) {
+async function authedApp(store: InMemorySpaceStore, browserSessionManager: BrowserSessionManager, env: Record<string, string> = {}) {
   const app = await createApp({
     store,
     browserSessionManager,
-    config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true" }),
+    config: getApiConfig({ SPACE_BROWSER_SESSIONS_ENABLED: "true", ...env }),
     auth: {
       sessionSecret: "test-secret-with-enough-length",
       devLogin: true,
@@ -245,6 +245,56 @@ describe("browser realtime stream API", () => {
       });
       expect(JSON.stringify(failure)).not.toContain("private browser runtime detail");
       socket.terminate();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("closes the viewer socket when the Browser Host restarts, so the page reconnects to the new host", async () => {
+    const { store, pane, session } = browserFixture();
+    let host = { hostPid: 101, startedAt: "2026-10-27T10:00:00.000Z" };
+    const base = realtimeManager(session, async () => undefined);
+    const stops: Array<ReturnType<typeof vi.fn>> = [];
+    const manager = Object.assign(base, {
+      browserHostHealth: vi.fn(async () => ({ ...host, buildCommit: null, status: base.status(), capacity: null, captureMetrics: {} })),
+      startFrameStream: async () => {
+        const stop = vi.fn(async () => undefined);
+        stops.push(stop);
+        return {
+          id: "browser_stream:test",
+          profile: { requestedMode: "AUTO", resolvedMode: "INTERACTIVE", framesPerSecond: 10, format: "jpeg", quality: 70 },
+          stop
+        };
+      }
+    }) as BrowserSessionManager;
+    const ticket = manager.issueFrameTicket(pane.id, session.sessionId, 60_000);
+    const { app, cookie } = await authedApp(store, manager, { SPACE_BROWSER_STREAM_HOST_WATCH_MS: "50" });
+    const messages: BrowserStreamWebSocketServerMessage[] = [];
+    let closed: { code: number; reason: string } | null = null;
+    try {
+      await app.injectWS(
+        `/api/panes/${encodeURIComponent(pane.id)}/browser/stream?sessionId=${encodeURIComponent(session.sessionId)}` +
+          `&token=${encodeURIComponent(ticket.token)}&mode=AUTO`,
+        { headers: { cookie } },
+        {
+          onInit(ws) {
+            ws.on("message", (raw, isBinary) => {
+              if (!isBinary) messages.push(browserStreamWebSocketServerMessageSchema.parse(JSON.parse(String(raw))));
+            });
+            ws.on("close", (code, reason) => { closed = { code, reason: reason.toString() }; });
+          }
+        }
+      );
+      await waitForMessage(messages, (message) => message.type === "ready");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(closed).toBeNull();
+      host = { hostPid: 202, startedAt: "2026-10-27T10:05:00.000Z" };
+      const deadline = Date.now() + 5_000;
+      while (!closed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(closed).toEqual({ code: 1012, reason: "Browser Host restarted" });
+      expect(messages.some((message) => message.type === "error")).toBe(false);
+      while (stops[0]?.mock.calls.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(stops[0]).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();
     }

@@ -8,13 +8,15 @@ const start = Date.parse("2026-10-15T08:00:00.000Z");
 const cliPane = { id: "pane:cli", roomId: "room:mine", mode: "TERMINAL", title: "Claude" } as Pane;
 const emptyPrompt = { state: "IDLE", sessionId: "cli_session:1", promptFingerprint: "a".repeat(16), text: "done.\n\n❯ \n" };
 
-function fixture(screen: Record<string, unknown> = emptyPrompt) {
+function fixture(screen: Record<string, unknown> = emptyPrompt, options: { reopen?: boolean; notice?: (owner: string, key: string, line: string) => Promise<void> } = {}) {
   const store = new InMemorySpaceStore();
   const answer = vi.fn(async () => ({}));
   const inspect = vi.fn(async () => screen as never);
   const panes: Record<string, Pane> = { [cliPane.id]: cliPane, "pane:chat": { ...cliPane, id: "pane:chat", mode: "CHAT" } as Pane,
     "pane:foreign": { ...cliPane, id: "pane:foreign", roomId: "room:theirs" } as Pane,
-    "pane:job": { ...cliPane, id: "pane:job", mode: "JOB_APPLY", title: "Job Copilot 1" } as Pane };
+    "pane:job": { ...cliPane, id: "pane:job", mode: "JOB_APPLY", title: "Job Copilot 1" } as Pane,
+    "pane:closed": { ...cliPane, id: "pane:closed", isClosed: true } as Pane };
+  const reopen = vi.fn(async (pane: Pane, _owner: string) => { panes[pane.id] = { ...pane, isClosed: false }; });
   const runner = createTaskScheduleRunner({
     store: {
       dueTaskSchedules: (now, limit) => store.dueTaskSchedules(now, limit),
@@ -22,11 +24,11 @@ function fixture(screen: Record<string, unknown> = emptyPrompt) {
       getPane: async (id) => { if (!panes[id]) throw new Error("gone"); return panes[id]!; },
       getRoom: async (id) => ({ id, ownerUserId: id === "room:mine" ? owner : "user:other" }) as never
     },
-    inspect, answer, now: () => Date.now()
+    inspect, answer, now: () => Date.now(), ...(options.reopen ? { reopen } : {}), ...(options.notice ? { notice: options.notice } : {})
   });
   const add = (objective: string, schedule: Parameters<InMemorySpaceStore["upsertTaskItem"]>[0]["schedule"], paneId: string | null = cliPane.id) =>
     store.upsertTaskItem({ ownerUserId: owner, title: "Hetzner watch", objective, status: "OPEN", source: "AGENT", paneId, schedule });
-  return { store, runner, answer, inspect, add, get: (id: string) => store.getTaskItem(owner, id)! };
+  return { store, runner, answer, inspect, reopen, add, get: (id: string) => store.getTaskItem(owner, id)! };
 }
 const every2h = { recurrence: { kind: "INTERVAL" as const, minutes: 120 }, timeZone: "Europe/Athens" };
 
@@ -49,6 +51,30 @@ describe("scheduled tasks", () => {
     expect(await runner.tick()).toMatchObject({ RAN: 0 });
   });
 
+  it("skips a task whose pane is closed at once and says to rebind it (task:wY8Cs2_OPK-5, daily review 2026-10-21)", async () => {
+    const { runner, answer, inspect, add, get } = fixture();
+    const task = add("Run the daily self-review.", every2h, "pane:closed");
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ SKIPPED: 1, WAITING: 0 });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(answer).not.toHaveBeenCalled();
+    expect(get(task.id).schedule).toMatchObject({ nextRunAt: "2026-10-15T12:00:10.000Z",
+      lastOutcome: "Skipped 2026-10-15T10:00:00.000Z: its pane is closed; rebind the task to an open pane." });
+  });
+
+  it("reopens a task's pane Nous closed and types the task once its CLI is at the prompt (operator order 2026-10-24)", async () => {
+    const { runner, answer, reopen, add, get } = fixture(emptyPrompt, { reopen: true });
+    const task = add("Run the daily self-review.", every2h, "pane:closed");
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:10.000Z"));
+    expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:closed" }), owner);
+    expect(answer).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.parse("2026-10-15T10:00:40.000Z"));
+    expect(await runner.tick()).toMatchObject({ RAN: 1 });
+    expect(reopen).toHaveBeenCalledTimes(1);
+    expect(get(task.id).schedule?.lastOutcome).toMatch(/^Sent to the CLI/);
+  });
+
   it("never types into a draft: waits, then skips once the interval has passed", async () => {
     const { runner, answer, add, get } = fixture({ ...emptyPrompt, text: "❯ half-written reply" });
     const task = add("Check the ticket.", every2h);
@@ -59,6 +85,22 @@ describe("scheduled tasks", () => {
     expect(answer).not.toHaveBeenCalled();
     expect(get(task.id).schedule).toMatchObject({ nextRunAt: "2026-10-15T14:00:01.000Z", lastRunAt: null });
     expect(get(task.id).schedule!.lastOutcome).toMatch(/busy or had a draft/);
+  });
+
+  it("tells Nous once when a task waits two ticks on an idle pane read as holding a draft (28/10, task:q2cxS1lnbsOp)", async () => {
+    const notice = vi.fn(async () => undefined);
+    const { runner, add } = fixture({ ...emptyPrompt, text: "❯ half-written reply" }, { notice });
+    const task = add("Check the ticket.", every2h);
+    vi.setSystemTime(Date.parse("2026-10-15T10:30:00.000Z"));
+    for (let tick = 0; tick < 3; tick += 1) expect(await runner.tick()).toMatchObject({ WAITING: 1 });
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledWith(owner, `task-waits:${task.id}`, expect.stringContaining("is idle but its prompt reads as holding a draft"));
+    // A busy pane is no draft: nothing is said.
+    const busy = vi.fn(async () => undefined);
+    const working = fixture({ ...emptyPrompt, state: "RUNNING", text: "✢ Nesting… (esc to interrupt)" }, { notice: busy });
+    working.add("Check the ticket.", every2h);
+    for (let tick = 0; tick < 3; tick += 1) await working.runner.tick();
+    expect(busy).not.toHaveBeenCalled();
   });
 
   it("retries a task the CLI refused within its grace period", async () => {

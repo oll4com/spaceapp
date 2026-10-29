@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monitoring Copilot"
+  short_description: "Watch the fleet inside a Space Monitoring Copilot pane: explain the collector's alerts, targets and guardian messages with bounded Prometheus and Loki queries, and answer the operator's and Nous's briefs."
+  default_prompt: "Use $space-monitoring-copilot: call space_monitoring_next until it returns done, recall your memory before you explain an alert, query Prometheus and Loki only through space_monitoring_query and space_monitoring_logs, and close each brief with space_monitoring_brief_done."

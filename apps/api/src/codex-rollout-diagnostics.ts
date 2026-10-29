@@ -690,6 +690,19 @@ function scopedReducer<T>(threadId: string, inner: RolloutReducer<T>, empty: T):
   };
 }
 
+// A rollout is append-only JSONL: its size and mtime identify the content these readers parse. Stable's API parsed up to
+// 2 MB per Codex pane on every activity poll (~1.2 s of its loop every 5 minutes, 2026-10-24).
+const rolloutResults = new Map<string, { size: number; mtimeMs: number; value: unknown }>();
+function rememberRolloutResult(key: string, size: number, mtimeMs: number, value: unknown): void {
+  rolloutResults.delete(key);
+  rolloutResults.set(key, { size, mtimeMs, value });
+  if (rolloutResults.size > currentTurnRolloutPathCacheMax) rolloutResults.delete(rolloutResults.keys().next().value!);
+}
+function rolloutResult<T>(key: string, size: number, mtimeMs: number): T | undefined {
+  const cached = rolloutResults.get(key);
+  return cached && cached.size === size && cached.mtimeMs === mtimeMs ? cached.value as T : undefined;
+}
+
 export async function findCurrentCodexCliTurnActivity(
   options: FindCurrentCodexCliTurnActivityOptions
 ): Promise<CodexCliTurnActivity> {
@@ -729,11 +742,15 @@ export async function findCurrentCodexCliTurnActivity(
     const fileStat = await handle.stat();
     const byteLength = Math.min(fileStat.size, currentTurnTailBytes);
     if (byteLength < 1) return { status: "PENDING", turnId: null };
+    const known = rolloutResult<CodexCliTurnActivity>(`turn\0${rolloutPath}`, fileStat.size, fileStat.mtimeMs);
+    if (known) return known;
     const buffer = Buffer.allocUnsafe(byteLength);
     const { bytesRead } = await handle.read(buffer, 0, byteLength, fileStat.size - byteLength);
     const content = buffer.subarray(0, bytesRead).toString("utf8");
     const activity = inspectCurrentCodexCliTurnActivity(content);
-    return activity.status === "PENDING" ? { status: "RUNNING", turnId: null } : activity;
+    const result: CodexCliTurnActivity = activity.status === "PENDING" ? { status: "RUNNING", turnId: null } : activity;
+    rememberRolloutResult(`turn\0${rolloutPath}`, fileStat.size, fileStat.mtimeMs, result);
+    return result;
   } catch {
     currentTurnRolloutPathCache.delete(cacheKey);
     return { status: "PENDING", turnId: null };
@@ -746,25 +763,36 @@ export async function findCodexCliPlanState(
   options: FindCodexCliPlanStateOptions
 ): Promise<CodexCliPlanState | null> {
   const stateDbPath = join(options.codexHome, "state_5.sqlite");
-  const sql = `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`;
-  let rolloutPath: string;
-  try {
-    const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
-      timeout: 1_500,
-      maxBuffer: 64 * 1024
-    });
-    const rows = JSON.parse(String(stdout || "[]")) as Array<{ rollout_path?: unknown }>;
-    if (rows.length !== 1 || typeof rows[0]?.rollout_path !== "string") return null;
-    rolloutPath = resolve(rows[0].rollout_path);
-  } catch {
-    return null;
+  const cacheKey = `${stateDbPath}\0${options.threadId}`;
+  let rolloutPath = currentTurnRolloutPathCache.get(cacheKey);
+  if (!rolloutPath) {
+    const sql = `SELECT rollout_path FROM threads WHERE id = ${sqliteQuote(options.threadId)} LIMIT 2`;
+    try {
+      const { stdout } = await execFileAsync("sqlite3", ["-readonly", "-json", stateDbPath, sql], {
+        timeout: 1_500,
+        maxBuffer: 64 * 1024
+      });
+      const rows = JSON.parse(String(stdout || "[]")) as Array<{ rollout_path?: unknown }>;
+      if (rows.length !== 1 || typeof rows[0]?.rollout_path !== "string") return null;
+      rolloutPath = resolve(rows[0].rollout_path);
+      currentTurnRolloutPathCache.set(cacheKey, rolloutPath);
+      if (currentTurnRolloutPathCache.size > currentTurnRolloutPathCacheMax) currentTurnRolloutPathCache.delete(currentTurnRolloutPathCache.keys().next().value!);
+    } catch {
+      return null;
+    }
   }
   const codexHome = resolve(options.codexHome);
   if (rolloutPath !== codexHome && !rolloutPath.startsWith(`${codexHome}${sep}`)) return null;
   try {
+    const fileStat = await stat(rolloutPath);
+    const known = rolloutResult<CodexCliPlanState | null>(`plan\0${rolloutPath}`, fileStat.size, fileStat.mtimeMs);
+    if (known !== undefined) return known;
     const content = await readFile(rolloutPath, "utf8");
-    return inspectCodexCliPlanState(content, inspectCurrentCodexCliTurnActivity(content));
+    const plan = inspectCodexCliPlanState(content, inspectCurrentCodexCliTurnActivity(content));
+    rememberRolloutResult(`plan\0${rolloutPath}`, fileStat.size, fileStat.mtimeMs, plan);
+    return plan;
   } catch {
+    currentTurnRolloutPathCache.delete(cacheKey);
     return null;
   }
 }

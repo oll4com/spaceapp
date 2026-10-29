@@ -27,7 +27,8 @@ export async function readDesktopRelease(directory = desktopReleaseDirectory) {
       const artifact = await realpath(resolve(directory, target.filename));
       if (!artifact.startsWith(releaseRoot + sep)) return null;
       const info = await stat(artifact);
-      return info.isFile() && info.size > 0 ? target : null;
+      // The size lets the desktop app tell a partial or stale download from the real file before it runs it.
+      return info.isFile() && info.size > 0 ? { ...target, size: info.size } : null;
     } catch {
       return null;
     }

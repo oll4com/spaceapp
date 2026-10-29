@@ -4,6 +4,7 @@ import { AccountPool, type CredentialRefresher, type StoredCredentials } from ".
 import { generateGatewayApiKey } from "../src/api-keys.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
 import { compressBlock } from "../src/compression/engine.js";
+import { applyRequestPolicy, PolicyRejection } from "../src/policy.js";
 import { registerCodexProxyRoutes } from "../src/providers/codex/codex-proxy.js";
 import { RequestLogWriter } from "../src/request-log-writer.js";
 import { createGatewayServer } from "../src/server.js";
@@ -193,12 +194,25 @@ describe("Codex proxy", () => {
     expect(response.json()).toMatchObject({ error: { code: "no_accounts", message: "All accounts are paused" } });
   });
 
-  it("passes request errors through unchanged", async () => {
-    const { post, calls } = await setup(() => new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "Unknown parameter: foo" } }), { status: 400 }));
+  it("passes request errors through unchanged, and logs the account that answered them", async () => {
+    const { post, calls, logs, repository } = await setup(() => new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "Unknown parameter: foo" } }), { status: 400 }));
     const response = await post({ model: "m", input: "hi", foo: 1 });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: { type: "invalid_request_error", message: "Unknown parameter: foo" } });
     expect(calls).toHaveLength(1);
+    // 2026-10-27: such rows were logged with no account, so a week of upstream refusals read as "no account" failures.
+    await logs.flush();
+    const [log] = await repository.listRequestLogs({ limit: 1 });
+    expect(log).toMatchObject({ status: "error", accountId: calls[0]!.accountId === "chatgpt-a" ? accountA : accountB });
+  });
+
+  it("serves a model the ChatGPT accounts retired on its current successor, after the key's allowlist checked the name asked", async () => {
+    const { post, calls } = await setup(() => streamResponse(completed("resp_1")));
+    expect((await post({ model: "gpt-5.5", input: "hi" })).statusCode).toBe(200);
+    expect((await post({ model: "gpt-5.4-mini", input: "hi" })).statusCode).toBe(200);
+    expect(calls.map((call) => call.body.model)).toEqual(["gpt-5.6-sol", "gpt-5.6-luna"]);
+    expect(applyRequestPolicy({ model: "gpt-5.5" }, { allowedModels: ["gpt-5.5"], enforcedModel: null } as never)).toMatchObject({ model: "gpt-5.6-sol", body: { model: "gpt-5.6-sol" } });
+    expect(() => applyRequestPolicy({ model: "gpt-5.5" }, { allowedModels: ["gpt-5.6-sol"], enforcedModel: null } as never)).toThrow(PolicyRejection);
   });
 
   it("counts usage against key limits and rejects once a limit is used up", async () => {

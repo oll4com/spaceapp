@@ -12,7 +12,7 @@ const turnId = "nous_turn:parent0001";
 const minute = 60_000;
 
 /** Helpers that wait until the test lets them answer. */
-function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERLOADED"; capMs?: number; answerMs?: number } = {}) {
+function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERLOADED"; capMs?: number; answerMs?: number; reason?: string; tokenMode?: "NORMAL" | "LOW" | "CRITICAL" } = {}) {
   const parentController = new AbortController();
   let parentRunning = true;
   const release: Array<() => void> = [];
@@ -24,22 +24,38 @@ function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERL
     release.push(() => resolve({ text: `Report of ${input.prompt.split("\n")[0]}`, isError: false }));
   });
   const subagents = createNousSubagents({ run, ...(options.capMs ? { capMs: options.capMs } : {}), ...(options.answerMs ? { answerMs: options.answerMs } : {}),
-    parent: (who, id) => who === owner && id === turnId && parentRunning ? { deadline: Date.now() + (options.deadlineIn ?? 20 * minute), signal: parentController.signal } : null,
-    ...(options.load ? { load: async () => options.load! } : {}) });
+    parent: (who, id) => who === owner && id === turnId && parentRunning ? { deadline: Date.now() + (options.deadlineIn ?? 20 * minute), signal: parentController.signal, ...(options.reason ? { reason: options.reason } : {}) } : null,
+    ...(options.load ? { load: async () => options.load! } : {}), ...(options.tokenMode ? { tokenMode: async () => options.tokenMode! } : {}) });
   const task = (title: string) => ({ title, instructions: `Check ${title}.` });
   return { subagents, started, release, task, endParent: () => { parentRunning = false; parentController.abort(); } };
 }
 
 describe("Nous's helpers (space_subagents)", () => {
+  it("caps LOW mode at one helper for every turn but a goal turn, which keeps the load cap (operator order 2026-10-27)", async () => {
+    const low = fixture({ tokenMode: "LOW", reason: "INBOX" });
+    expect(await low.subagents.run(owner, turnId, [low.task("a"), low.task("b")])).toEqual({ refused: expect.stringContaining("At most 1 helpers run at once in LOW mode") });
+    const goal = fixture({ tokenMode: "LOW", reason: "GOAL", answerMs: 20 });
+    const started = await goal.subagents.run(owner, turnId, [goal.task("a"), goal.task("b"), goal.task("c")]);
+    expect("refused" in started).toBe(false);
+    expect(goal.started).toHaveLength(3);
+    const busy = fixture({ tokenMode: "LOW", reason: "GOAL", load: "BUSY" });
+    expect(await busy.subagents.run(owner, turnId, [busy.task("a"), busy.task("b"), busy.task("c")])).toEqual({ refused: expect.stringContaining("At most 2 helpers run at once while the server is BUSY") });
+    const critical = fixture({ tokenMode: "CRITICAL", reason: "GOAL" });
+    expect(await critical.subagents.run(owner, turnId, [critical.task("a")])).toEqual({ refused: expect.stringContaining("CRITICAL") });
+    goal.release.forEach((release) => release());
+  });
+
   it("keeps the operator's, memory, notes and structural tools with the parent, and gives helpers the reads and routine pane work", () => {
     const all = nousToolDefinitions({ copilots: true });
     const helperTools = nousSubagentTools(all).map((tool) => tool.name);
     const parentOnly = ["space_ask_operator", "space_withdraw_decision", "space_nous_away", "space_nous_outcome", "space_notify_operator", "space_focus_pane",
-      "space_release", "space_council_approve", "space_vault_fill", "space_vault_save", "space_memory_save", "space_note", "space_subagents"];
+      "space_release", "space_council_approve", "space_vault_fill", "space_vault_save", "space_memory_save", "space_note", "space_subagents", "space_files_write", "space_agent_files_add"];
     for (const name of parentOnly) expect(NOUS_SUBAGENT_EXCLUDED.has(name), name).toBe(true);
     expect(helperTools.filter((name) => NOUS_SUBAGENT_EXCLUDED.has(name))).toEqual([]);
     expect(helperTools).toEqual(expect.arrayContaining(["space_world", "space_read_pane", "space_send_to_pane", "space_answer_pane", "space_pane_checked",
-      "space_plan_update", "space_pane_reports", "space_mail_read", "space_files_read"]));
+      "space_plan_update", "space_pane_reports", "space_mail_read", "space_files_read",
+      // The workbench's reads (plan clipboard:GZNzxm7FNwjM).
+      "space_web_read", "space_web_search", "space_net_check", "space_git", "space_queue_status", "space_nous_decisions", "space_nous_turn_costs"]));
     // Every excluded name is a real tool (no typo leaves a tool open).
     const names = new Set(all.map((tool) => tool.name));
     expect([...NOUS_SUBAGENT_EXCLUDED].filter((name) => !names.has(name) && !name.startsWith("space_vault_"))).toEqual([]);
@@ -47,7 +63,7 @@ describe("Nous's helpers (space_subagents)", () => {
   });
 
   it("tells Nous when to use helpers and that it keeps the decisions and the final answer", () => {
-    expect(NOUS_PERSONA).toContain("Helpers (space_subagents)");
+    expect(NOUS_PERSONA).toContain("Helpers (space_subagents) are mandatory when a turn has two or more independent things to handle");
     expect(NOUS_PERSONA).toMatch(/never use them for one quick action/);
     expect(NOUS_PERSONA).toMatch(/You keep the decisions, the operator's cards, memory and notes, the outcome and the final answer/);
   });

@@ -408,6 +408,8 @@ export const marketingPublishDoneSchema = z.object({
   screenshotPath: z.string().trim().min(1).max(500).optional()
 }).strict();
 export const marketingPublishFailedSchema = z.object({ postId: marketingPostIdSchema, reason: z.string().trim().min(1).max(1000) }).strict();
+/** An approved post the copilot's own pacing holds: it keeps its approval and comes back as a PUBLISH item at `until` (queue item 19, 27/10). */
+export const marketingPublishDeferSchema = z.object({ postId: marketingPostIdSchema, until: z.string().datetime({ offset: true }), reason: z.string().trim().min(1).max(500) }).strict();
 
 // Unqualified absolute claims SpaceApp's public documents never make (the same rules as
 // scripts/check-public-claims.mjs ABSOLUTE_RULES; a contracts test keeps the two lists equal).

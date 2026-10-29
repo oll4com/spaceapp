@@ -57,6 +57,14 @@ describe("Room Agent autopilot", () => {
     expect(c.onEvent).toHaveBeenCalledWith(expect.objectContaining({ status: "HANDLED" }));
   });
 
+  it("escalates a CLI's question for the operator (kind QUESTION) without asking a model (operator decision 2026-10-24)", async () => {
+    const c = await setup('{"action":"ANSWER","answer":"1","submit":false,"reason":"x"}');
+    const question = await c.repository.addEvent({ roomId: pane.roomId, paneId: pane.id, paneName: "Bob", kind: "QUESTION", severity: "ATTENTION", title: "Bob has a question for you", detail: null });
+    expect(await c.autopilot.handle(question)).toMatchObject({ status: "ESCALATED", decision: "Needs you: Answer its question in the pane." });
+    expect(c.complete).not.toHaveBeenCalled();
+    expect(c.answer).not.toHaveBeenCalled();
+  });
+
   it("sends protected and destructive prompts to the operator without asking a model", async () => {
     for (const body of ["Bash: git push github main", "Bash: rm -rf /opt/spaceapp/var/worktrees/space/wt-a", "Edit apps/web/src/features/rooms/use-warm-room-cache.ts"]) {
       const c = await setup('{"action":"ANSWER","answer":"1","submit":false,"reason":"x"}', screen(body));

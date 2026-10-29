@@ -27,7 +27,6 @@ import {
   Cpu,
   Crosshair,
   Database,
-  Download,
   ExternalLink,
   Eye,
   EyeOff,
@@ -234,7 +233,6 @@ export const helpSections: HelpSection[] = [
       entry("add-browser", "Add browser pane", modeIcons.BROWSER, "Room toolbar", "Adds a managed Chrome browser pane to the current room."),
       entry("add-files", "File Manager", modeIcons.FILES, "Room toolbar", "Adds an interactive File Manager pane for navigating and previewing workspace files."),
       entry("add-demos", "Demo Projects", modeIcons.DEMOS, "Room toolbar", "Adds an interactive Demo Projects pane showcasing ready-to-run reference applications."),
-      entry("add-vault", "Open the Vault", Vault, "Room toolbar", "Opens the Vault dock from the Create menu to add a login or generate a strong password; it adds no pane to the room."),
       entry("add-youtube", "Add YouTube pane", modeIcons.YOUTUBE, "Room toolbar", "Adds an embedded YouTube player pane with playback and floating controls."),
       entry("add-vnc", "Add VNC pane", modeIcons.VNC, "Room toolbar", "Adds a remote desktop VNC client pane for connecting to graphical desktop environments."),
       entry("add-live", "Add Live audio pane", modeIcons.LIVE, "Room toolbar", "Adds an interactive real-time voice and audio conversation pane powered by OpenAI Live."),
@@ -375,10 +373,8 @@ export const helpSections: HelpSection[] = [
       entry("browser-pc", "PC view", Monitor, "Browser toolbar", "Sets the managed page to the desktop viewport profile."),
       entry("browser-tablet", "Tablet view", Tablet, "Browser toolbar", "Sets the managed page to the tablet viewport profile."),
       entry("browser-mobile", "Mobile view", Smartphone, "Browser toolbar", "Sets the managed page to the mobile viewport profile."),
-      entry("browser-bookmarks", "Browser bookmarks", Bookmark, "Browser toolbar", "Opens managed bookmarks for the active browser session."),
-      entry("browser-bookmark-save", "Save current browser page", BookmarkPlus, "Bookmark menu", "Saves the active page to the Space-managed bookmark collection."),
-      entry("browser-bookmark-import", "Import browser bookmarks", Upload, "Bookmark menu", "Imports supported bookmarks from a Chrome JSON export."),
-      entry("browser-bookmark-export", "Export browser bookmarks", Download, "Bookmark menu", "Downloads the managed bookmark collection as JSON."),
+      entry("browser-bookmarks", "Browser bookmarks", Bookmark, "Browser toolbar", "Opens the bookmarks every browser pane and copilot shares; each opens in a new tab with the Google account saved for it."),
+      entry("browser-bookmark-save", "Save to bookmarks", BookmarkPlus, "Browser tab menu", "Right-click a tab to save its page with the Google account it is open in."),
       entry("browser-refresh", "Refresh browser frame", RefreshCw, "Browser toolbar", "Requests a fresh rendered frame from the active browser session."),
       entry("browser-reconnect", "Reconnect browser", RotateCw, "Browser toolbar", "Reattaches the pane to its managed browser session after a disconnect."),
       entry("browser-handoff", "Join browser session", UserCheck, "Browser toolbar", "Acquires an operator control lease for click, touch, scroll, and text input."),
@@ -508,7 +504,10 @@ export const helpSections: HelpSection[] = [
       entry("mode-mail", "Mail Copilot pane symbol", modeIcons.MAIL_COPILOT, "Pane badge", "Identifies a Mail Copilot pane that handles your Gmail accounts.", ["INFORMATIONAL"]),
       entry("mode-marketing", "Marketing Copilot pane symbol", modeIcons.MARKETING_COPILOT, "Pane badge", "Identifies a Marketing Copilot pane that promotes SpaceApp on your own accounts.", ["INFORMATIONAL"]),
       entry("mode-freelance", "Freelance Copilot pane symbol", modeIcons.FREELANCE_COPILOT, "Pane badge", "Identifies a Freelance Copilot pane that finds clients on freelance platforms and hands you the ones ready to go ahead.", ["INFORMATIONAL"]),
-      entry("mode-app-studio", "App Studio pane symbol", modeIcons.APP_STUDIO, "Pane badge", "Identifies an App Studio pane that builds mobile apps for Android and iOS and shows every screen on the most-used phones.", ["INFORMATIONAL"])
+      entry("mode-app-studio", "App Studio pane symbol", modeIcons.APP_STUDIO, "Pane badge", "Identifies an App Studio pane that builds mobile apps for Android and iOS and shows every screen on the most-used phones.", ["INFORMATIONAL"]),
+      entry("mode-monitoring-copilot", "Monitoring Copilot pane symbol", modeIcons.MONITORING_COPILOT, "Pane badge", "Identifies a Monitoring Copilot pane that explains the monitoring collector's alerts, failing probes and AI Guardian messages, and answers briefs about the fleet."),
+      entry("mode-security-copilot", "Security Copilot pane symbol", modeIcons.SECURITY_COPILOT, "Pane badge", "Identifies a Security Copilot pane that watches new vulnerabilities, inventories every Proxmox host and fixes what they need through Space's gate."),
+      entry("mode-video", "Video pane symbol", modeIcons.VIDEO, "Pane badge", "Identifies a Video pane: the video studio that cuts clips with captions, narration and music in every social format for you and for any agent that asks.", ["INFORMATIONAL"])
     ]
   }
 ];

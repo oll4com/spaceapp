@@ -36,6 +36,15 @@ describe("Room Agent monitor events while Nous works on the owner's behalf (plan
     expect(await routing.sentToNous("room:nous000001")).toBe(false);
   });
 
+  it("on: a CLI's question for the operator (kind QUESTION) still reaches them at once, like a sign-in (operator decision 2026-10-24)", async () => {
+    const { routing, raise } = setup({ active: true });
+    await routing.route(event({ kind: "QUESTION", title: "Bob has a question for you" }));
+    await settle();
+    expect(raise).toHaveBeenCalledTimes(1);
+    expect(raise.mock.calls[0]![0]).toMatchObject({ source: "ROOM_AGENT", kind: "QUESTION", severity: "ATTENTION", paneId: "pane:nous000001" });
+    expect(hasWaitingEvents({ messages: [{ kind: "SYSTEM", meta: { type: "MONITOR_EVENT", status: "OPEN", eventKind: "QUESTION" } }] } as unknown as RoomAgentSession)).toBe(false);
+  });
+
   it("on: every event is Nous's alone, no notification row and no Telegram, the feed marks it sent to Nous", async () => {
     const { routing, raise, enqueueTelegramNotice } = setup({ active: true });
     for (const kind of ["FINISHED", "WAITING", "OVERLAP", "STUCK"] as const) await routing.route(event({ kind, eventId: `room_agent_event:${kind}0001` }));

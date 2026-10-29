@@ -10,6 +10,7 @@ import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession, signSessionWithTtl } from "../src/auth.js";
 import { registerNousPaneBoardRoutes, type PaneBoardRouteDeps } from "../src/nous/pane-board-routes.js";
 import { parseBody, parseQuery } from "../src/route-parsing.js";
+import { configureQueueOperatorGrants, takePaneQueueGrant } from "../src/queue-operator-grants.js";
 
 const sessionSecret = "nous-board-secret-with-enough-length";
 const headers = (id: string, role: "ADMIN" | "OPERATOR" | "USER" = "ADMIN") => {
@@ -21,6 +22,22 @@ const headers = (id: string, role: "ADMIN" | "OPERATOR" | "USER" = "ADMIN") => {
 describe("Nous pane board routes", () => {
   const apps: FastifyInstance[] = [];
   afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
+
+  it("holds the pane's promote grant for the operator's own reply asking to promote, never a proof session's (2026-10-21)", async () => {
+    const store = new InMemorySpaceStore();
+    const app = await createApp({ store, auth: { sessionSecret, devLogin: false, secureCookies: false }, nousRunner: async () => ({ text: "ok", isError: false }), paneBoardRunner: vi.fn(async () => "[]") });
+    apps.push(app);
+    configureQueueOperatorGrants(sessionSecret);
+    const operator = headers("user:operator");
+    await app.inject({ method: "GET", url: "/api/nous", headers: operator });
+    const room = await store.createRoom({ name: "Clara", initialPaneCount: 0 }, undefined, "user:operator");
+    const pane = await store.createPane({ roomId: room.id, title: "Cody", paneName: "Cody", mode: "TERMINAL" });
+    const reply = (who: Record<string, string>, text: string) => app.inject({ method: "POST", url: `/api/nous/pane-board/${pane.id}/answer`, headers: who, payload: { text } });
+    expect((await reply(headers("user:operator-proof"), "κάνε promote")).statusCode).toBe(200);
+    expect(takePaneQueueGrant(pane.id, "promote")).toBeNull();
+    expect((await reply(operator, "κάνε promote")).json()).toMatchObject({ routed: "NOUS" });
+    expect(takePaneQueueGrant(pane.id, "promote")).toEqual(expect.any(String));
+  });
 
   it("serves the operator's board by room and keeps USERs out", async () => {
     const store = new InMemorySpaceStore();

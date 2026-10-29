@@ -42,7 +42,9 @@ credential_agent_user=spaceapp
 if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
   credential_agent_user=root:spaceapp
 fi
-gosu "$credential_agent_user" node /app/deploy/docker/credential-agent.mjs &
+# The credential smoke, the Room Agent's OpenCode tier and the model lists go through this agent: when it dies (an
+# unhandled error, out of memory) it starts again after 2 s instead of leaving the container up without it (1.1.8).
+( while :; do gosu "$credential_agent_user" node /app/deploy/docker/credential-agent.mjs; sleep 2; done ) &
 
 if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
   exec gosu root:spaceapp node packages/cli-host/dist/main.js

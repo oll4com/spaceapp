@@ -114,6 +114,13 @@ export interface SpaceApiConfig {
   memoryEmbeddingKeyFile: string | null;
   /** The Design pane's Space Gateway key (`space-admin-action design-key`): image models only, a daily cost cap. */
   designGatewayKeyFile: string;
+  /** The monitoring collector's scrape token for GET /api/metrics/scrape (root-provisioned; missing: the scrape is refused). */
+  metricsTokenFile: string;
+  /** The Video pane's engine files (one folder per pane; never /tmp) and its pinned tools (venv, models, auto-editor). */
+  videoWorkRoot: string;
+  videoToolsDir: string;
+  /** The Studio's source upload cap; nginx allows 500 MB. */
+  videoSourceMaxBytes: number;
   /** The dedicated key that seals connector tokens and copilot mailbox passwords (hardening plan step 9). */
   connectorKeyFile: string;
   memoryEmbeddingKeyName: string | null;
@@ -154,6 +161,8 @@ export interface SpaceApiConfig {
   browserEvidenceChromePath: string;
   browserEvidenceArtifactRoot: string;
   browserEvidenceTargetOrigin: string;
+  /** Where a CLI container reaches this API (SPACE_CLI_API_BASE_URL, public compose: http://spaceapp-core:4911); null: the local one. */
+  cliApiBaseUrl: string | null;
   browserEvidenceTimeoutMs: number;
   appDiagnosticsRoot: string;
   maintenanceAutopilotStateFile: string;
@@ -167,6 +176,7 @@ export interface SpaceApiConfig {
   jobApplyRoot: string;
   browserSessionsDefaultUrl: string;
   browserSessionsTokenTtlMs: number;
+  browserStreamHostWatchMs: number;
   browserSessionsAudioEnabled: boolean;
   browserSessionsPulseServer: string;
   browserSessionsPulseSink: string;
@@ -268,8 +278,19 @@ function parseGatewayUrl(raw: string | undefined): string {
   return url.origin;
 }
 
+/** A public install's CLI container is another host on the compose network: Nous's MCP server is reached at this origin. */
+function parseCliApiBaseUrl(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const url = new URL(value);
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("SPACE_CLI_API_BASE_URL must be an http(s) origin.");
+  }
+  return url.origin;
+}
+
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "app-studio", "video", "security-copilot", "monitoring-copilot", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -378,6 +399,11 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
     designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || "/opt/spaceapp/secrets/space-design.key",
+    metricsTokenFile: env.SPACE_METRICS_TOKEN_FILE || "/opt/spaceapp/secrets/space-metrics.token",
+    // Next to the artifact root (stable /opt/spaceapp/var/video, dev /opt/spaceapp-dev/var/video): the dev API may write only under its own var.
+    videoWorkRoot: env.SPACE_VIDEO_WORK_ROOT || join(dirname(artifactRoot), "video"),
+    videoToolsDir: env.SPACE_VIDEO_TOOLS_DIR || "/opt/spaceapp/var/models/video",
+    videoSourceMaxBytes: Number.parseInt(env.SPACE_VIDEO_SOURCE_MAX_BYTES || "", 10) || 480 * 1024 * 1024,
     // Dev never reads stable's key: it has its own under its var directory.
     connectorKeyFile: env.SPACE_CONNECTOR_KEY_FILE || (env.SPACE_INSTANCE === "dev" ? "/opt/spaceapp-dev/var/connector/space-connector.key" : "/opt/spaceapp/secrets/space-connector.key"),
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,
@@ -417,6 +443,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserEvidenceChromePath: env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
     browserEvidenceArtifactRoot: artifactRoot,
     browserEvidenceTargetOrigin: env.SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN || "http://127.0.0.1:4911",
+    cliApiBaseUrl: parseCliApiBaseUrl(env.SPACE_CLI_API_BASE_URL),
     browserEvidenceTimeoutMs: Number.parseInt(env.SPACE_BROWSER_EVIDENCE_TIMEOUT_MS ?? "20000", 10),
     appDiagnosticsRoot: env.SPACE_APP_DIAGNOSTICS_ROOT || "/opt/spaceapp/var/app-diagnostics",
     maintenanceAutopilotStateFile: env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || "/opt/spaceapp/var/maintenance-autopilot/state.json",
@@ -430,6 +457,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     jobApplyRoot: env.SPACE_JOB_APPLY_ROOT || join(artifactRoot, "job-apply"),
     browserSessionsDefaultUrl: env.SPACE_BROWSER_SESSIONS_DEFAULT_URL || "https://www.google.com/",
     browserSessionsTokenTtlMs: Math.min(parsePositiveInt(env.SPACE_BROWSER_SESSIONS_TOKEN_TTL_MS, 60000), 5 * 60 * 1000),
+    browserStreamHostWatchMs: Math.min(Math.max(parsePositiveInt(env.SPACE_BROWSER_STREAM_HOST_WATCH_MS, 5000), 50), 60_000),
     browserSessionsAudioEnabled: env.SPACE_BROWSER_SESSIONS_AUDIO_ENABLED !== "false",
     browserSessionsPulseServer: env.SPACE_BROWSER_SESSIONS_PULSE_SERVER || "unix:/run/pulse/native",
     browserSessionsPulseSink: env.SPACE_BROWSER_SESSIONS_PULSE_SINK || "space_audio",

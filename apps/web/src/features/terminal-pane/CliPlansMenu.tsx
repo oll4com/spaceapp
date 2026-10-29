@@ -20,7 +20,7 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import { SPACE_CLIPBOARD_UPDATED_EVENT } from "../clipboard-dock/clipboard-events.js";
-import { canOpenPlanPane, openPlanPane, planAssignee, useRoomNames } from "../clipboard-dock/plan-assignee.js";
+import { canOpenPlanPane, openPlanPane, planAssignee, planOnOpenPane, useOpenPaneNames, useRoomNames } from "../clipboard-dock/plan-assignee.js";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { ManagedPlanProgress } from "./ManagedPlanProgress.js";
@@ -466,6 +466,7 @@ export function CliPlansMenu({
   const [userViewMode, setUserViewMode] = useState<"active_plan" | "all_plans" | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "in_progress" | "not_in_progress">("all");
+  const [paneFilter, setPaneFilter] = useState<"all" | "on_pane" | "no_pane">("all");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
@@ -480,6 +481,7 @@ export function CliPlansMenu({
   const resetFilters = useCallback(() => {
     setSearchQuery("");
     setStatusFilter("all");
+    setPaneFilter("all");
     setSelectedModels([]);
     setModelDropdownOpen(false);
   }, []);
@@ -488,6 +490,7 @@ export function CliPlansMenu({
 
   // Room names for the plans' "Linked to" line, read each time the list opens.
   const roomNames = useRoomNames(open);
+  const openPanes = useOpenPaneNames(roomNames);
 
   const loadPlans = useCallback(async (fresh = false) => {
     if (typeof api?.clipboardItems !== "function") {
@@ -971,6 +974,9 @@ export function CliPlansMenu({
       if (statusFilter === "not_in_progress" && p.executionStatus === "IN_PROGRESS") {
         return false;
       }
+      if (paneFilter !== "all" && planOnOpenPane(p, pane?.id, openPanes) !== (paneFilter === "on_pane")) {
+        return false;
+      }
 
       // Model filter: Multi-select
       if (selectedModels.length > 0) {
@@ -996,10 +1002,11 @@ export function CliPlansMenu({
 
       return true;
     });
-  }, [plans, searchQuery, statusFilter, selectedModels]);
+  }, [plans, searchQuery, statusFilter, paneFilter, pane?.id, openPanes, selectedModels]);
+  const onPaneCount = plans.filter((p) => planOnOpenPane(p, pane?.id, openPanes)).length;
 
   const hasActiveFilters =
-    statusFilter !== "all" || selectedModels.length > 0 || Boolean(searchQuery.trim());
+    statusFilter !== "all" || paneFilter !== "all" || selectedModels.length > 0 || Boolean(searchQuery.trim());
 
   const activePlanSteps = useMemo(() => {
     return displayPlan ? resolvePlanDisplaySteps(displayPlan) : [];
@@ -1132,7 +1139,7 @@ export function CliPlansMenu({
                     </div>
                     {previewPlan.paneId && previewPlan.paneId !== pane?.id ? (
                       <div className="terminal-plan-preview-note" role="note">
-                        Linked to {planAssignee(previewPlan, pane?.id, roomNames)}. Sending it here links it to this pane.
+                        Linked to {planAssignee(previewPlan, pane?.id, roomNames, openPanes)}. Sending it here links it to this pane.
                       </div>
                     ) : null}
                     <pre className="terminal-plan-preview-text" tabIndex={0}>{previewPlan.text}</pre>
@@ -1627,6 +1634,25 @@ export function CliPlansMenu({
                           Not in Progress ({notInProgressCount})
                         </button>
                       </div>
+                      {/* Pane filter (operator request 2026-10-26): plans on an open pane apart from the rest; a second click shows all. */}
+                      <div className="terminal-plans-status-filters" role="group" aria-label="Filter plans by pane">
+                        <button
+                          type="button"
+                          className={`terminal-plans-filter-chip ${paneFilter === "on_pane" ? "is-active" : ""}`}
+                          onClick={() => setPaneFilter((current) => current === "on_pane" ? "all" : "on_pane")}
+                          aria-pressed={paneFilter === "on_pane"}
+                        >
+                          On a pane ({onPaneCount})
+                        </button>
+                        <button
+                          type="button"
+                          className={`terminal-plans-filter-chip ${paneFilter === "no_pane" ? "is-active" : ""}`}
+                          onClick={() => setPaneFilter((current) => current === "no_pane" ? "all" : "no_pane")}
+                          aria-pressed={paneFilter === "no_pane"}
+                        >
+                          No pane ({plans.length - onPaneCount})
+                        </button>
+                      </div>
 
                       {/* Model Multi-Select Filter */}
                       {availableModels.length > 0 || hasPlansWithoutModel ? (
@@ -1799,7 +1825,8 @@ export function CliPlansMenu({
                           plan.executionStatus && plan.executionStatus !== "PLANNED";
                         const isThisPaneActive = Boolean(activePlan && activePlan.id === plan.id);
                         const stepsCount = Array.isArray(plan.steps) ? plan.steps.length : 0;
-                        const assignee = planAssignee(plan, pane?.id, roomNames);
+                        const assignee = planAssignee(plan, pane?.id, roomNames, openPanes);
+                        const onPane = planOnOpenPane(plan, pane?.id, openPanes);
 
                         return (
                           <div key={plan.id} role="listitem" className="terminal-plan-item-row">
@@ -1851,6 +1878,9 @@ export function CliPlansMenu({
                             ) : null}
 
                             <div className="terminal-plan-item-meta">
+                              <span className="terminal-plan-pane-tag" data-on-pane={onPane ? "true" : "false"} title={assignee ? `Linked to ${assignee}` : "Not linked to a pane"}>
+                                {onPane ? `On ${assignee}` : assignee ? "Pane closed" : "No pane"}
+                              </span>
                               <Clock3 aria-hidden="true" style={{ width: 11, height: 11 }} />
                               <span>{dateLabel}</span>
                               {plan.characterCount ? (
@@ -1859,7 +1889,6 @@ export function CliPlansMenu({
                               {stepsCount > 0 && plan.progressPercentage === 0 ? (
                                 <span>· {stepsCount} stages</span>
                               ) : null}
-                              {assignee ? <span>· Linked to {assignee}</span> : null}
                             </div>
                             {snippet ? (
                               <div className="terminal-plan-item-snippet">{snippet}</div>

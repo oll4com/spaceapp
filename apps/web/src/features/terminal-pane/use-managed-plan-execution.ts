@@ -38,7 +38,7 @@ export function useManagedPlanExecution(input: { api: ManagedPlanApi; paneId: st
   }, [input.api, input.enabled, input.paneId, input.sessionId]);
   const getClient = () => {
     const client = clientRef.current;
-    if (!client || !input.enabled || client.paneId !== input.paneId || client.sessionId !== input.sessionId) throw new Error("A visible current Codex session is required for managed plan controls.");
+    if (!client || !input.enabled || client.paneId !== input.paneId || client.sessionId !== input.sessionId) throw new Error("A visible current Codex or Claude Code session is required for managed plan controls.");
     return client;
   };
   return { ...state, getClient, refresh: () => getClient().refresh(),

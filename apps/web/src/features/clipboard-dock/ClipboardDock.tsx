@@ -33,7 +33,7 @@ import {
   DATE_TIME_SETTINGS_UPDATED_EVENT
 } from "../date-time-settings/date-time-settings.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
-import { canOpenPlanPane, openPlanPane, planAssignee, useRoomNames } from "./plan-assignee.js";
+import { canOpenPlanPane, openPlanPane, planAssignee, useOpenPaneNames, useRoomNames } from "./plan-assignee.js";
 import { isLikelyModelDescriptor, isSameModel, resolveStepModel } from "../terminal-pane/plan-model-resolver.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
@@ -157,6 +157,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   const isFiltered = Boolean(search.trim()) || sourceFilter !== "ALL";
   const insertTarget = activePaneLabel ?? "active pane";
   const roomNames = useRoomNames(isDockActive);
+  const openPanes = useOpenPaneNames(roomNames);
 
   const handleOpenStickyNote = useCallback((item?: ClipboardItem | null) => {
     if (onOpenStickyNote) {
@@ -402,7 +403,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
             const isNote = item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE";
             const planStatus = item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED");
             const planProgress = item.progressPercentage ?? (item.isCompleted ? 100 : 0);
-            const assignee = isPlan ? planAssignee(item, undefined, roomNames) : null;
+            const assignee = isPlan ? planAssignee(item, undefined, roomNames, openPanes) : null;
             const planModel = item.minimumModel ? `${item.minimumModel}${item.minimumReasoning ? ` · ${item.minimumReasoning}` : ""}` : null;
             const steps = isPlan && item.steps ? orderedSteps(item.steps) : [];
             const visibleSteps = expanded ? steps : steps.slice(0, COLLAPSED_PLAN_STEPS);
@@ -430,7 +431,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                   </span>
                   {item.occurrenceCount > 1 ? <span className="dock-kit-badge">Used {item.occurrenceCount}×</span> : null}
                 </div>
-                {item.title ? <div className="dock-kit-card-title">{item.title}</div> : null}
+                {item.title ? <div className="dock-kit-card-title" data-sensitive-masked="manual">{item.title}</div> : null}
                 {isPlan ? (
                   <div className="clipboard-plan-progress-container">
                     <div className="clipboard-plan-progress-header">
@@ -482,7 +483,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                           return (
                             <div className={`clipboard-plan-step-item is-${step.status.toLowerCase()}`} key={step.id}>
                               <span className={`clipboard-plan-step-bullet is-${step.status.toLowerCase()}`} />
-                              <span className="clipboard-plan-step-title" title={step.title}>{stepTitleWithoutModel(step.title)}</span>
+                              <span className="clipboard-plan-step-title" data-sensitive-masked="manual" title={step.title}>{stepTitleWithoutModel(step.title)}</span>
                               {step.progress > 0 && step.status !== "COMPLETED" ? (
                                 <span className="clipboard-plan-step-pct">{step.progress}%</span>
                               ) : null}
@@ -517,6 +518,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                     toggleExpanded(item.id);
                   }}
                   aria-label="Copy clip text"
+                  data-sensitive-masked="manual"
                   title="Click to copy, double-click to expand or collapse"
                 >
                   {snippet ? <span className="clipboard-card-snippet">{snippet}</span> : item.text}

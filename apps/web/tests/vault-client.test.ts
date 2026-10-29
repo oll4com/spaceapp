@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   VaultCryptoError, generateVaultTransportKey, openServerShare, openWithVaultPrivateKey, sealServerShare, sealToVaultPublicKey,
   vaultBase64url, vaultItemRecordSchema, vaultRandomBytes, vaultSignupGrantOperatorMessage, vaultDelegationOperatorMessage, vaultDigest, openVaultEnvelope, vaultDelegateRequestSchema, vaultSignupGrantRequestSchema, vaultUnlockChallengeMessage, verifyVaultMessage, type VaultKdfParams,
-  type VaultSymmetricEnvelope
+  vaultOperatorRequestMessage, sealVaultEnvelope, type VaultSymmetricEnvelope
 } from "@space/contracts";
 import { VAULT_AUTO_LOCK_DEFAULTS, VAULT_AUTO_LOCK_KEY, readVaultAutoLock } from "../src/features/vault/vault-auto-lock.js";
-import { argon2idKdf, changeMasterPassword, confirmVaultItem, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, restorePreviousVaultItem, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey, type VaultApi, type VaultInboxApi } from "../src/features/vault/vault-client.js";
+import {
+  VaultInboxError, argon2idKdf, changeMasterPassword, confirmVaultItem, recoverVault, decryptVaultItem, encryptVaultItem, importVaultPending, planDuplicateRemoval, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey,
+  type VaultApi, type VaultInboxApi
+} from "../src/features/vault/vault-client.js";
 
 // Synthetic secrets only. The fake API keeps what the server keeps (ciphertext and public keys); the fake broker does
 // what the root-owned broker does, with a synthetic ARK the API side never sees.
@@ -67,6 +70,10 @@ describe("Vault dock client", () => {
     const again = await unlockVault(client, "user:alice", `${SENTINEL}-master`, fastKdf);
     expect(again.vrk).toEqual(unlocked.vrk);
     await expect(unlockVault(client, "user:alice", "wrong master password", fastKdf)).rejects.toBeInstanceOf(VaultCryptoError);
+    // The recovery envelope goes with the unlock key's signature over it, at the vault's epoch (Vault review 2026-10-22).
+    const recovery = JSON.parse(server.sent[1]!) as Record<string, unknown> & { operatorSignature: string };
+    expect(recovery.epoch).toBe(1);
+    expect(await verifyVaultMessage(vaultBase64url.decode(server.vault.unlockPublicKey), vaultOperatorRequestMessage("recovery", { ownerUserId: "user:alice", vaultId: unlocked.vaultId, ...recovery }), recovery.operatorSignature)).toBe(true);
     for (const sent of server.sent) {
       expect(sent).not.toContain(SENTINEL);
       expect(sent).not.toContain(vaultBase64url.encode(unlocked.vrk));
@@ -104,8 +111,6 @@ describe("Vault dock client", () => {
     expect(changed.history).toHaveLength(1);
     expect((await decryptVaultItem(unlocked, changed, changed.history[0]!.fields)).PASSWORD).toBe(`${SENTINEL}-1`);
     expect(vaultItemRecordSchema.parse(confirmVaultItem(changed)).history).toEqual([]);
-    const restored = vaultItemRecordSchema.parse(restorePreviousVaultItem(changed));
-    expect((await decryptVaultItem(unlocked, restored)).PASSWORD).toBe(`${SENTINEL}-1`);
     // An unchanged password adds no history; another user's keys cannot open the item.
     expect((await encryptVaultItem(unlocked, draft, first)).history).toEqual([]);
     await expect(decryptVaultItem({ ...unlocked, ownerUserId: "user:bob" }, first)).rejects.toBeInstanceOf(VaultCryptoError);
@@ -174,7 +179,7 @@ describe("Vault dock client", () => {
   });
 
   it("adds logins agents saved and applies passwords they changed while locked as ACTIVE items, the old password kept for undo", async () => {
-    const { client } = await harness();
+    const { client, server } = await harness();
     const { unlocked } = await setUpVault(client, "user:alice", "master", fastKdf);
     const stored: Record<string, any> = {};
     let inbox: any = null;
@@ -190,6 +195,14 @@ describe("Vault dock client", () => {
     expect(inbox.publicKey).toBe(vaultBase64url.encode(key.publicKey));
     expect(JSON.stringify(inbox)).not.toContain(vaultBase64url.encode(key.privateKey));
     expect((await vaultInboxKey(api, unlocked)).privateKey).toEqual(key.privateKey);
+    // The key goes with the unlock key's signature (Vault review 2026-10-22); a stored key this Vault cannot open is an error, never silence.
+    expect(inbox.epoch).toBe(unlocked.epoch);
+    expect(await verifyVaultMessage(vaultBase64url.decode(server.vault.unlockPublicKey), vaultOperatorRequestMessage("inbox", { ownerUserId: "user:alice", vaultId: unlocked.vaultId, ...inbox }), inbox.operatorSignature)).toBe(true);
+    const mine = inbox;
+    inbox = { ...mine, privateKeyEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), key.privateKey, { ownerUserId: "user:alice", vaultId: unlocked.vaultId, keyVersion: 1, purpose: "INBOX_KEY" }) };
+    await expect(vaultInboxKey(api, unlocked)).rejects.toMatchObject({ code: "INBOX_KEY_UNREADABLE" });
+    await expect(vaultInboxKey(api, unlocked)).rejects.toBeInstanceOf(VaultInboxError);
+    inbox = mine;
     const scope = { ownerUserId: "user:alice", vaultId: unlocked.vaultId, keyVersion: 1 };
     const seal = (text: string) => sealToVaultPublicKey(key.publicKey, new TextEncoder().encode(text), scope);
     const existing = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Mail", origins: ["https://mail.example"], policy, secrets: { USERNAME: "synthetic@example.com", PASSWORD: "SYNTHETIC-old" } }));
@@ -198,7 +211,7 @@ describe("Vault dock client", () => {
     pending.push({ id: "vault_pending:AAAAAAAAAAAAAAAAAAAAAA", kind: "NEW_ACCOUNT", handle: newHandle, label: "Shop", origin: "https://shop.example", sealedUsername: await seal("synthetic-shop@example.com"), sealedPassword: await seal(`${SENTINEL}-new`), paneId: null, createdAt: "" },
       { id: "vault_pending:CCCCCCCCCCCCCCCCCCCCCC", kind: "CHANGE_PASSWORD", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null, sealedPassword: await seal(`${SENTINEL}-changed`), paneId: null, createdAt: "" },
       { id: "vault_pending:DDDDDDDDDDDDDDDDDDDDDD", kind: "NEW_ACCOUNT", handle: "vault_item:DDDDDDDDDDDDDDDDDDDDDD", label: "Forum", origin: "https://forum.example", sealedUsername: await seal("synthetic-forum"), sealedPassword: null, paneId: null, createdAt: "" });
-    expect(await importVaultPending(api, unlocked, key)).toBe(3);
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [] });
     expect(deleted).toHaveLength(3);
     const created = vaultItemRecordSchema.parse(stored[newHandle]);
     expect(created.metadata).toMatchObject({ status: "ACTIVE", policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true } });
@@ -216,13 +229,39 @@ describe("Vault dock client", () => {
     pending.push(await reset("vault_pending:EEEEEEEEEEEEEEEEEEEEEE", "vault_item:EEEEEEEEEEEEEEEEEEEEEE", `${SENTINEL}-third`, "2026-10-19T08:14:00.000Z"),
       await reset("vault_pending:FFFFFFFFFFFFFFFFFFFFFF", "vault_item:FFFFFFFFFFFFFFFFFFFFFF", `${SENTINEL}-second`, "2026-10-19T08:12:00.000Z"),
       await reset("vault_pending:GGGGGGGGGGGGGGGGGGGGGG", "vault_item:GGGGGGGGGGGGGGGGGGGGGG", `${SENTINEL}-other`, "2026-10-19T08:13:00.000Z", "another-shop-user"));
-    expect(await importVaultPending(api, unlocked, key)).toBe(3);
+    // A waiting login sealed to a key this inbox does not hold stays waiting and is reported (Vault review 2026-10-22).
+    const foreignKey = await generateVaultTransportKey();
+    pending.push({ id: "vault_pending:HHHHHHHHHHHHHHHHHHHHHH", kind: "CHANGE_PASSWORD", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null,
+      sealedPassword: await sealToVaultPublicKey(foreignKey.publicKey, new TextEncoder().encode(`${SENTINEL}-foreign`), scope), paneId: null, createdAt: "2026-10-19T08:15:00.000Z" });
+    expect(await importVaultPending(api, unlocked, key)).toEqual({ imported: 3, unreadable: [{ kind: "CHANGE_PASSWORD", label: "Mail", origin: "https://mail.example" }] });
+    expect(deleted).not.toContain("vault_pending:HHHHHHHHHHHHHHHHHHHHHH");
+    expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored[existing.metadata.id]))).PASSWORD).toBe(`${SENTINEL}-changed`);
     expect(stored["vault_item:EEEEEEEEEEEEEEEEEEEEEE"]).toBeUndefined();
     expect(stored["vault_item:FFFFFFFFFFFFFFFFFFFFFF"]).toBeUndefined();
     const shop = vaultItemRecordSchema.parse(stored[newHandle]);
     expect((await decryptVaultItem(unlocked, shop)).PASSWORD).toBe(`${SENTINEL}-third`);
     expect(shop.history.length).toBe(2);
     expect((await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored["vault_item:GGGGGGGGGGGGGGGGGGGGGG"]))).USERNAME).toBe("another-shop-user");
+  });
+
+  it("plans duplicate removal: the same site, username and account more than once, the most recently changed copy stays (operator request 2026-10-22)", async () => {
+    const { client } = await harness();
+    const { unlocked } = await setUpVault(client, "user:alice", "master", fastKdf);
+    const make = async (label: string, origins: string[], username: string | undefined, googleAccountId: string | null = null) =>
+      vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label, origins, policy, googleAccountId, secrets: { ...(username ? { USERNAME: username } : {}), PASSWORD: `${SENTINEL}-${label}` } }));
+    const older = await make("Shop old", ["https://shop.example"], "Same@Example.com");
+    const newer = await make("Shop new", ["https://shop.example"], "same@example.com");
+    const newest = await make("Shop newest", ["https://shop.example", "https://m.shop.example"], "same@example.com ");
+    const otherUser = await make("Shop other", ["https://shop.example"], "other@example.com");
+    const otherAccount = await make("Shop work", ["https://shop.example"], "same@example.com", "google_account:work");
+    const noUsernameA = await make("Wifi A", ["https://router.example"], undefined);
+    const noUsernameB = await make("Wifi B", ["https://router.example"], undefined);
+    const stats = { [older.metadata.id]: { addedAt: "2026-10-01T00:00:00.000Z", changedAt: "2026-10-05T00:00:00.000Z" }, [newer.metadata.id]: { addedAt: "2026-10-02T00:00:00.000Z", changedAt: "2026-10-10T00:00:00.000Z" },
+      [newest.metadata.id]: { addedAt: "2026-10-20T00:00:00.000Z", changedAt: "2026-10-20T00:00:00.000Z" } };
+    const plan = await planDuplicateRemoval(unlocked, [older, newer, newest, otherUser, otherAccount, noUsernameA, noUsernameB], stats);
+    expect(plan).toEqual({ groups: 1, remove: [newer.metadata.id, older.metadata.id] });
+    // A pending copy is not a duplicate of an active one; nothing to remove among distinct logins.
+    expect(await planDuplicateRemoval(unlocked, [otherUser, otherAccount, { ...older, metadata: { ...older.metadata, status: "PENDING" } }], stats)).toEqual({ groups: 0, remove: [] });
   });
 
   it("never auto-locks by default; a choice the operator stored still wins (operator decision 2026-10-19)", () => {

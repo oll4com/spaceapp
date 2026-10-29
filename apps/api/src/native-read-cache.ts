@@ -51,6 +51,10 @@ export function createNativeReadCache<T>(options: NativeReadCacheOptions<T>) {
       entries.set(key, entry);
       return entry.value;
     },
+    /** Drops every entry whose key starts with `prefix`, a read in flight too (it may finish with the old state). */
+    expire(prefix: string): void {
+      for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
+    },
     size: () => entries.size
   };
 }

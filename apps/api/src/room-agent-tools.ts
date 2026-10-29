@@ -5,6 +5,7 @@ import {
 } from "@space/contracts";
 import { releaseTrainInputSchema, type ReleaseTrainActor, type ReleaseTrainInput } from "./release-trains.js";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
+import { notePaneReached } from "./room-agent-monitor.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
 
 /**
@@ -271,13 +272,25 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     return operationOutcome(operation, done, failure);
   }
 
-  async function settleMonitorEvents(ctx: RoomAgentToolContext, pane: Pane, decision: string) {
+  async function settleMonitorEvents(ctx: RoomAgentToolContext, pane: Pane, decision: string, kinds?: RoomAgentEvent["kind"][]) {
     if (!deps.monitor) return;
     const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 }).catch(() => []);
     for (const event of open) {
+      if (kinds && !kinds.includes(event.kind)) continue;
       const updated = await deps.monitor.updateEvent(event.eventId, { status: "HANDLED", decision }, ["OPEN", "ESCALATED"]).catch(() => null);
       if (updated) await deps.monitor.changed(updated).catch(() => {});
     }
+  }
+
+  /**
+   * Claude says it waits on a question (the monitor's open "Question for you") while its screen shows an empty prompt: the answer
+   * goes as its next prompt. Daily review 2026-10-22: 18 one-word answers ("1", "3") in 7 days were refused as "not waiting"; Nous
+   * then sent them with send_to_pane and the panes moved on, but the waits never counted as answered.
+   */
+  async function waitsOnTextQuestion(ctx: RoomAgentToolContext, pane: Pane): Promise<boolean> {
+    if (!deps.monitor) return false;
+    const open = await deps.monitor.listEvents(ctx.roomId, { paneId: pane.id, statuses: ["OPEN", "ESCALATED"], limit: 5 }).catch(() => []);
+    return open.some((event) => event.kind === "WAITING" && /waiting: Question for you/.test(event.title));
   }
 
   const handlers: { [K in RoomAgentToolName]: (args: z.infer<typeof schemas[K]>, ctx: RoomAgentToolContext, raw: Record<string, unknown>) => Promise<RoomAgentToolOutcome> } = {
@@ -308,8 +321,16 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
     async send_to_pane(args, ctx) {
       const { panes, problem } = await resolvePanes(ctx, args.panes);
       if (problem) return fail(`Could not find ${args.panes.join(", ")}`, problem);
-      return control(ctx, [{ kind: "pane", operation: "prompt", target: { paneIds: panes.map((pane) => pane.id), state: "OPEN" }, text: args.text,
-        when: args.when === "now" ? "NOW" : "AFTER_TURN" }], `Sent to ${names(panes)}`, `Could not send to ${names(panes)}`);
+      const operation = await deps.controlExecute(ctx.actorId!, { roomId: ctx.roomId, requestId: ctx.requestId, ...(ctx.confirmed ? { userExplicitlyAuthorized: true } : {}),
+        actions: [{ kind: "pane", operation: "prompt", target: { paneIds: panes.map((pane) => pane.id), state: "OPEN" }, text: args.text,
+          when: args.when === "now" ? "NOW" : "AFTER_TURN" }] });
+      // A text delivered to a pane that waited on a question or a stop answers that wait.
+      const delivered = new Set(operation.results.filter((result) => result.status === "COMPLETED" && result.paneId).map((result) => result.paneId!));
+      for (const paneId of delivered) notePaneReached(paneId);
+      for (const pane of panes.filter((entry) => delivered.has(entry.id))) {
+        await settleMonitorEvents(ctx, pane, `The Room Agent sent "${args.text.trim().replace(/\s+/g, " ").slice(0, 80)}" for you.`, ["WAITING", "STUCK"]);
+      }
+      return operationOutcome(operation, `Sent to ${names(panes)}`, `Could not send to ${names(panes)}`);
     },
     async answer_pane_prompt(args, ctx, raw) {
       if (args.answer === undefined && !args.decline) return fail("No answer given", "Give an answer (or an empty string to press Enter) or decline:true.");
@@ -318,7 +339,8 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
       if (pane.mode !== "TERMINAL") return fail(`${paneName(pane)} has no prompt to answer`, "Only CLI panes have prompts to answer.");
       const observed = await deps.inspectPane(pane);
       if (!observed.sessionId) return fail(`${paneName(pane)} has no running CLI`);
-      if (!args.decline && !["WAITING_FOR_INPUT", "UNKNOWN"].includes(observed.state)) {
+      const textQuestion = !args.decline && observed.state === "IDLE" && Boolean(args.answer?.trim()) && await waitsOnTextQuestion(ctx, pane);
+      if (!args.decline && !textQuestion && !["WAITING_FOR_INPUT", "UNKNOWN"].includes(observed.state)) {
         const next = observed.state === "IDLE" ? "It is at an empty prompt: send the answer as its next prompt (send_to_pane) instead."
           : observed.state === "RUNNING" ? "Its turn is still running: send the answer with send_to_pane (after its turn)." : "Read the pane again.";
         return fail(`${paneName(pane)} is not waiting for an answer`, `${paneName(pane)} is not waiting for an answer (state ${observed.state}). ${next}`);
@@ -339,11 +361,21 @@ export function createRoomAgentTools(deps: RoomAgentToolDeps) {
             args: { ...args, ...(observed.promptFingerprint ? { expectedPromptFingerprint: observed.promptFingerprint } : {}) } } };
         }
       }
+      if (textQuestion) {
+        const sent = await control(ctx, [{ kind: "pane", operation: "prompt", target: { paneIds: [pane.id], state: "OPEN" }, text: args.answer!.trim(), when: "NOW" }],
+          `Answered ${paneName(pane)}: "${args.answer!.trim().slice(0, 60)}"`, `Could not answer ${paneName(pane)}`);
+        if (!sent.ok) return sent;
+        const decision = `The Room Agent answered "${args.answer!.trim().slice(0, 80)}" for you.`;
+        notePaneReached(pane.id);
+        await settleMonitorEvents(ctx, pane, decision);
+        return { ...sent, result: `${decision.replace("The Room Agent", "You")} ${paneName(pane)} asked it at an empty prompt, so it went as its next prompt; read it again to see the effect.` };
+      }
       await deps.answerCli(pane, args.decline
         ? { sessionId: observed.sessionId, key: "ESCAPE" }
         : { sessionId: observed.sessionId, answer: args.answer!.trim(), submit: args.submit ?? true,
           ...(observed.promptFingerprint ? { expectedPromptFingerprint: observed.promptFingerprint } : {}) }, ctx.traceId);
       const decision = args.decline ? "The Room Agent declined it for you." : `The Room Agent answered "${args.answer!.trim().slice(0, 80)}" for you.`;
+      notePaneReached(pane.id);
       await settleMonitorEvents(ctx, pane, decision);
       return { ok: true, display: args.decline ? `Declined ${paneName(pane)}'s prompt` : `Answered ${paneName(pane)}: "${args.answer!.trim().slice(0, 60)}"`,
         result: `${decision.replace("The Room Agent", "You")} ${paneName(pane)} continues; read it again to see the effect.` };

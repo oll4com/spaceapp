@@ -109,6 +109,11 @@ describe("PostgresSpaceStore task history", () => {
     const scopedCalls = pool.calls.filter((call) => call.sql.includes("task_items"));
     expect(scopedCalls.every((call) => call.sql.includes("owner_user_id"))).toBe(true);
     expect(scopedCalls.flatMap((call) => call.values)).not.toContain("user:two");
+    // Who added the task (the Tasks dock's You / Agents filter) is a bound value too.
+    await store.listTaskItems("user:one", { source: "AGENT", page: 1, pageSize: 25 });
+    const sourceCall = pool.calls.at(-1)!;
+    expect(sourceCall.sql).toContain("source = $2");
+    expect(sourceCall.values).toEqual(["user:one", "AGENT", 25, 0]);
   });
 
   it("maps a schedule and claims a due run with a compare-and-set on its due time", async () => {

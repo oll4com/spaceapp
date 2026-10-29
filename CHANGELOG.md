@@ -5,9 +5,130 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.9] - 2026-10-25
+
+Source: sanitized Space app @ 25bcec3e77 (5029 files). 1.1.8 was prepared but never published; its changes are part of
+1.1.9 and are listed below. Verifies SpaceApp's image attestations before an installation first uses a version, restores
+backups more safely, and ships the remaining fixes from the 1.1.7 reviews; open items are listed in
+`docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Since the first 1.1.9 candidate
+
+- Monitoring Copilot pane (optional module, off by default in public installs): reads alerts from an Alertmanager,
+  Prometheus and Loki collector on a private network, turns them into notifications and runs approved fixes through a
+  server gate. In public installs it cannot reach a real collector yet (known limitation MON-001).
+- Needs-you cards ask their question with options and send the answer back; copilot questions, reviews and proposed rules
+  do the same.
+- Mail Copilot: replies go out from the Send-mail-as address the mail was sent to and keep the thread; a daily inbox
+  archive run; the copilot may delete mail and its own unchanged drafts.
+- Job Copilot: test and interview requests become reminder tasks with their deadline; triage finds receipts from the
+  companies' own domains; salary research answers a posting's range in its own currency.
+- Snip Tool: snips are held in clipboard mode, and one Ctrl+V into a CLI pane pastes them all in the order taken.
+- Browser panes: the live view shows an open native dropdown and picks its option; agents can clear fields and pick
+  dropdown options; a bounded Cloudflare check helper for copilots.
+- Settings → CLI pane controls can hide a pane's account picker and local draft button.
+- Vault: kept passwords and keys (server, VM and admin passwords) that agents find and save.
+- Agent Files whose names hold Greek letters, spaces or @ open again; the desktop app no longer hangs for tens of seconds.
+- CONTRIBUTING.md now says that contributions are voluntary and that payment applies only to issues labelled 💎 Bounty.
+- ws 8.21.3.
+- Marketing Copilot: a post approved without a schedule starts its run within a minute; an approval older than 24 hours,
+  or one whose post changed since, goes back to review instead of publishing. Its metrics count npm downloads per posted
+  day, and a day npm has not posted reads as unknown instead of 0.
+- Job, Freelance and Marketing Copilot runs left waiting at an empty prompt with work queued get their kickoff again.
+- Browser panes: a sign-in, code or CAPTCHA handoff stays with you while you remain on the pane; live views whose stream
+  ended with a restarted Browser Host close instead of hanging.
+- Closing a pane works for every CLI runtime, including a terminal whose CLI was started by hand.
+- Claude Code panes: the "Switch model?" question after a session-only model pick is answered and checked.
+- Space Gateway: retired Codex models run on their successors, new work goes to the account furthest under its weekly
+  pace, and the Token usage page shows each account's weekly pace.
+- Diagnostics: a request's trace links to the CLI session, task and revision it started (migration 0258).
+- Container images: Node 22.23.4, the Node security release with the fix for CVE-2026-111497 in its bundled Brotli decoder.
+- Known limitation: on Windows, the release lab did not observe OpenCode's first answer. OpenCode launched and reached
+  OpenCode Zen, which refused every free model because the lab's address had reached Zen's free usage limit. The Windows
+  fresh install, upgrade, the large machine profile and the OpenCode launch passed, as did the first answer on Linux and macOS.
+- Known limitation: right after a fresh install, the first OpenCode launch may show "No free OpenCode model…"; launch it
+  again. Fixed in 1.1.10.
+- New CLI panes start their CLI on time even when the browser's clock differs from the server's (known limitation UX-004
+  fixed).
+- A detached pane's room screen keeps its terminal's own width.
+- Scheduled tasks: a task's title and objective can be changed in place.
+- Marketing Copilot: open GitHub issues left a day without a label or answer are named once, and a held approved post keeps
+  its approval with a new time.
+- App Studio: release-signed APKs with the app's own signing key from the Vault.
+
+### Since the 1.1.8 candidate
+
+- Plans: each plan can name the plans it depends on, a due date and what it waits on; the Nous dock's Plans tab shows the
+  plan map (what to unblock first, dates, a dependency diagram on the desktop).
+- Needs-you requests: no false or stale banners, the request's text under its title, the banner below the desktop title bar.
+- CLI panes no longer start on the account of the last pane viewed.
+- Job Copilot: salary research for a position (what it pays, and the figure to answer below the market).
+- Security Copilot: Windows and macOS inventory, end-of-support findings, and container image scans with pinned Trivy.
+- Temporal (medium and large installs): `temporalio/auto-setup` 1.29.7 instead of 1.29.1, pinned by digest (Trivy: 22 -> 3
+  critical in the image).
+- npm's bundled undici 6.29.1 in the images; the browser image budget is 1765 MiB.
+- PostgreSQL: `pgvector/pgvector` 0.8.7-pg17-trixie instead of 0.8.3, pinned by digest (Trivy: 4 -> 1 critical in the image);
+  an update moves the database container to it.
+
+### Backup and restore
+
+- A restore that fails without changing anything, or that puts every database and file back, starts SpaceApp again with its
+  data from before the restore and names the pre-restore backup (1.1.7 left it stopped). A restore that cannot be fully
+  undone keeps SpaceApp stopped and says how to go on.
+- A backup with workflow history is refused before any change on an installation without Temporal (profile small), with
+  the command to install a profile that has it.
+- A backup made by an older SpaceApp restores into a newer installation: each database is restored into an emptied
+  schema, so tables the newer version added that reference the backup's tables no longer stop the restore.
+
+- `backup` on an installation without CLI settings no longer prints tar's "Cowardly refusing to create an empty
+  archive" before its own note.
+- `backup` gives up after two minutes of waiting for a database lock instead of keeping the paused installation frozen;
+  the writers resume and the backup reports the failure.
+
+### Databases
+
+- The core image carries Python with its sqlite3 module, so the Databases tool's SQLite connections work in public
+  installations.
+
+### Integrity
+
+- Every runtime version an installation ran from a published package keeps its image digests (`image-digests.json`), so
+  `rollback` pulls the previous version's images by digest too; a version installed before digest pinning is pulled by
+  version tag, and the rollback plan says which.
+
+### OpenCode
+
+- The onboarding guide names the model record's exact path
+  (`/var/lib/spaceapp/memory/installation-model.json`), so the assistant no longer searches `/var/lib/spaceapp` and stops
+  at OpenCode's "Access external directory" prompt.
+
+- The free model the first run saved is checked once a day; when OpenCode Zen retires it, the next free model that
+  passes the tool-call check replaces it. A model the owner chose is never replaced.
+
+### Supply chain
+
+- zod 4.6.7 (GHSA-mrhx-c7xc-m3w5, high: validating an oversized constrained collection could exhaust memory). The
+  advisory was published after the 1.1.7 release gates; 1.1.7 and 1.1.6 ship zod 4.4.3.
+- The CLIs installed on first use (Codex, Gemini, Qwen, Kimi, Grok, Autohand, Copilot, DeepSeek, Claude Code) install with
+  `npm ci` from a lockfile per provider in the CLI image, so every dependency is pinned with its integrity hash, not only
+  the CLI's own version. `provider install claude` uses the same lockfile.
+- Before an installation first uses a SpaceApp version, the launcher checks its images' attestations: every platform image
+  in each pinned index must have an SBOM and a provenance statement about that exact image from the public release
+  workflow on `main`, read by digest. It records the release run and commit in `image-attestations.json` and stops before
+  pulling when a check fails. The release workflow runs the same check, and a full release's images must come from its
+  own commit. `scripts/shipped-image-evidence.mjs` confirms that the lab's installs of the published `next` package ran
+  exactly its locked images before `latest` (reviews EXT-C-F5, IR117-C-F7). The registry reads use `HTTPS_PROXY` /
+  `NO_PROXY`, or else the Docker client's proxy in `~/.docker/config.json`; an unreachable registry stops with those
+  settings named. `SPACEAPP_IMAGE_VERIFY=off` skips the check on air-gapped or locked-down hosts, with a warning on
+  every run.
+
+### Licence
+
+- The LICENSE files use ASCII quotes, so they match the standard MIT text byte for byte.
+
 ## [1.1.7] - 2026-10-21
 
-Source: sanitized Space app @ c067c535c2 (4729 files: SpaceApp 77d00f6895 with
+Source: sanitized Space app @ 3e4572bc97 (4729 files: SpaceApp 77d00f6895 with
 the reviewed fixes of the 1.1.7 internal review and the dependency security
 updates below). Moves SpaceApp and the
 launcher to the MIT License, makes OpenCode 2 the first CLI, and ships the
@@ -46,9 +167,10 @@ remaining fixes from the independent reviews; open items are listed in
 
 ### Security and integrity
 
-- Dependency security updates: hono 4.13.11 (GHSA-5r4p-p66f-jhc7) and
+- Dependency security updates: hono 4.13.11 (GHSA-5r4p-p66f-jhc7),
   sanitize-html 2.18.1 (GHSA-x3q4-9hxx-gx8m, GHSA-374f-7chj-9948,
-  GHSA-cv27-6wvh-8x7j, CVE-2026-113650) in the images; vite 7.3.7 and vitest
+  GHSA-cv27-6wvh-8x7j, CVE-2026-113650) and ip-address 10.7.4
+  (GHSA-rxp7-6hxx-x8q5, CVE-2026-111997) in the images; vite 7.3.7 and vitest
   4.1.12 in the build and test tools.
 
 - SpaceApp's own images are pulled by the digest the release records in the

@@ -184,7 +184,7 @@ services:
       - spaceapp
 
   postgres:
-    image: pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
+    image: pgvector/pgvector:0.8.7-pg17-trixie@sha256:7a7e9f22015b67edb4bef5c59daeebcd7e74bfa570df6ce60ae01237c8648a84
     restart: unless-stopped
     mem_limit: "${SPACEAPP_POSTGRES_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_POSTGRES_CPU_LIMIT}"
@@ -205,7 +205,7 @@ services:
       - spaceapp
 
   temporal:
-    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
+    image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
     profiles: ["workflows"]
     restart: unless-stopped
     mem_limit: "${SPACEAPP_TEMPORAL_MEMORY_LIMIT}"

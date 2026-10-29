@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexUpstreamHeaders } from "../src/providers/codex/headers.js";
 import { readCodexRateLimitEvent, readCodexRateLimitHeaders, ResponseStreamInspector } from "../src/providers/codex/stream.js";
+import { parseCodexUsage } from "../src/providers/codex/usage.js";
 
 const encoder = new TextEncoder();
 const event = (type: string, body: Record<string, unknown> = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...body })}\n\n`;
@@ -38,13 +39,18 @@ describe("Responses stream inspection", () => {
     const headers = new Headers({ "x-codex-primary-used-percent": "37.5", "x-codex-secondary-used-percent": "12", "x-codex-primary-reset-after-seconds": "600", "x-codex-secondary-window-minutes": "" });
     expect(readCodexRateLimitHeaders(headers)).toEqual({ primaryUsedPercent: 37.5, secondaryUsedPercent: 12, primaryResetAfterSeconds: 600,
       secondaryResetAfterSeconds: null, primaryWindowMinutes: null, secondaryWindowMinutes: null });
-    // A Prolite account (weekly window only) gets its missing window as 0 minutes, 0% and reset 0: read as absent.
+    // A Prolite account (weekly window only) gets its missing window as 0 minutes, 0% and reset 0: read as absent, and its week,
+    // reported as the primary window, lands in the weekly slot (niggmopai, 2026-10-27).
     const prolite = new Headers({ "x-codex-primary-used-percent": "39", "x-codex-primary-window-minutes": "10080", "x-codex-primary-reset-after-seconds": "600",
       "x-codex-secondary-used-percent": "0", "x-codex-secondary-window-minutes": "0", "x-codex-secondary-reset-after-seconds": "0" });
-    expect(readCodexRateLimitHeaders(prolite)).toEqual({ primaryUsedPercent: 39, secondaryUsedPercent: null, primaryResetAfterSeconds: 600,
-      secondaryResetAfterSeconds: null, primaryWindowMinutes: 10080, secondaryWindowMinutes: null });
+    expect(readCodexRateLimitHeaders(prolite)).toEqual({ primaryUsedPercent: null, secondaryUsedPercent: 39, primaryResetAfterSeconds: null,
+      secondaryResetAfterSeconds: 600, primaryWindowMinutes: null, secondaryWindowMinutes: 10080 });
     expect(readCodexRateLimitEvent({ rate_limits: { primary: { used_percent: 39, window_minutes: 10080 }, secondary: { used_percent: 0, window_minutes: 0, reset_at: 5 } } }, 0))
-      .toMatchObject({ primaryUsedPercent: 39, secondaryUsedPercent: null, secondaryResetAfterSeconds: null, secondaryWindowMinutes: null });
+      .toMatchObject({ primaryUsedPercent: null, secondaryUsedPercent: 39, primaryWindowMinutes: null, secondaryWindowMinutes: 10080 });
+    expect(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 8, reset_at: 2_000_000_000, limit_window_seconds: 604_800 } } }))
+      .toMatchObject({ primary: null, secondary: { usedPercent: 8, resetAt: 2_000_000_000, limitWindowSeconds: 604_800 } });
+    expect(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 61, limit_window_seconds: 18_000 }, secondary_window: { used_percent: 45, limit_window_seconds: 604_800 } } }))
+      .toMatchObject({ primary: { usedPercent: 61 }, secondary: { usedPercent: 45 } });
   });
 });
 

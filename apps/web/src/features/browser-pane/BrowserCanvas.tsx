@@ -5,7 +5,8 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type PointerEvent
+  type PointerEvent,
+  type ReactNode
 } from "react";
 
 export interface BrowserViewportSize {
@@ -63,6 +64,8 @@ interface BrowserCanvasProps {
   historyLimit?: number;
   onInput(input: BrowserCanvasInput): void;
   onPresented?(): void;
+  /** Drawn over the canvas inside its surface (the live view's own dropdown list). */
+  overlay?(viewport: BrowserViewportSize): ReactNode;
 }
 
 interface DecodedFrame {
@@ -173,7 +176,7 @@ async function decodeFrame(source: string | Blob): Promise<DecodedFrame> {
 }
 
 export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>(function BrowserCanvas(
-  { ariaLabel, viewportSize, interactive, source, capturedAt, historyLimit = 1, onInput, onPresented },
+  { ariaLabel, viewportSize, interactive, source, capturedAt, historyLimit = 1, onInput, onPresented, overlay },
   forwardedRef
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -367,7 +370,8 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
       inputRef.current({
         type: "TOUCH",
         eventType: eventType === "mousePressed" ? "touchStart" : eventType === "mouseReleased" ? "touchEnd" : "touchMove",
-        touchPoints: eventType === "mouseReleased" ? [] : [{ x: mapped.x, y: mapped.y, id: Math.max(0, event.pointerId), force: event.pressure }],
+        // Chrome numbers touch pointers upward for the page's life; the contract takes ids 0-100.
+        touchPoints: eventType === "mouseReleased" ? [] : [{ x: mapped.x, y: mapped.y, id: Math.max(0, event.pointerId) % 100, force: event.pressure }],
         modifiers: modifierMaskFromEvent(event)
       });
       if (eventType === "mouseReleased") lastPointerPointRef.current.delete(event.pointerId);
@@ -473,6 +477,7 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
         }}
       />
       {!hasFrame ? <span className="browser-canvas-empty" aria-hidden="true" /> : null}
+      {overlay?.(viewportSize)}
     </div>
   );
 });
