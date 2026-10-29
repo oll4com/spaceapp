@@ -833,7 +833,7 @@ function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string
       const schedule = await options.consolidationCoordinator.start({
         runId: run.id,
         traceId: request.requestIdForSpace
-      }, workflowId);
+      }, workflowId, request.traceContext.traceparent);
       await options.recordAudit?.(request, {
         action: claim.created ? "memory.consolidation.created" : "memory.consolidation.retried",
         targetType: "memory_consolidation",
@@ -1055,7 +1055,7 @@ function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string
     const result = await options.mutationCoordinator.start({
       changeSetId: id,
       traceId: request.requestIdForSpace
-    }, workflowCommandHash);
+    }, workflowCommandHash, request.traceContext.traceparent);
     await options.recordAudit?.(request, {
       action: claim.created ? action : retryAction,
       targetType: "memory_change_set",

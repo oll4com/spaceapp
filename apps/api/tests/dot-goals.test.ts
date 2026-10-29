@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import type { FastifyRequest } from "fastify";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
+import { evictRequestTraceContext } from "./support/trace-registry-eviction.js";
 import { dotGoalStepPrompt, type DotGoal } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 import { createDotGoalService, DotGoalError, type DotGoalServiceDeps } from "../src/dot-goals.js";
@@ -69,6 +72,20 @@ function fixture(overrides: { runStatus?: string; pendingApproval?: boolean; sen
 const input = { sessionId: "agent_session:1", objective: "Ship the report", milestones: ["Draft", "Review"], criteria: ["Report published"], budget: { maxSteps: 2 } };
 
 describe("Dot Goals", () => {
+  it("passes the request parent to workflow startup after an awaited store operation evicts its registry entry", async () => {
+    const { service, deps } = fixture();
+    const context = createRequestTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    const requestId = "req:goal-retained";
+    requestTraceContexts.remember(requestId, context);
+    const getRoom = vi.mocked(deps.store.getRoom).getMockImplementation()!;
+    vi.spyOn(deps.store, "getRoom").mockImplementation(async (...args) => {
+      evictRequestTraceContext(requestId);
+      return getRoom(...args);
+    });
+    const goal = await service.create("user:1", dotId, input, { id: requestId, traceContext: context } as FastifyRequest);
+    expect(deps.workflow!.start).toHaveBeenCalledWith(goal.goalId, requestId, context.traceparent);
+  });
+
   it("creates one open Goal per conversation for the owner's Dot and starts its workflow", async () => {
     const { service, deps } = fixture();
     const goal = await service.create("user:1", dotId, input, null);

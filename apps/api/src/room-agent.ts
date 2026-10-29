@@ -632,7 +632,7 @@ export function createRoomAgentService(options: {
     ].join("\n");
   }
 
-  async function sendAdvanced(roomId: string, content: string, clientRequestId: string, traceId: string, requestFingerprint?: string, newMission?: { ownerId: string }): Promise<RoomAgentSession> {
+  async function sendAdvanced(roomId: string, content: string, clientRequestId: string, traceId: string, requestFingerprint?: string, newMission?: { ownerId: string }, traceparent?: string): Promise<RoomAgentSession> {
     const { pane, session } = await ensureSession(roomId);
     const missions = await store.listRoomAgentMissions(roomId, 500);
     const activeMission = missions.find((mission) =>
@@ -662,7 +662,8 @@ export function createRoomAgentService(options: {
         selectedToolIds: [...roomAgentSelectedToolIds],
         permissionMode: "full_access",
         collaborationMode: "default",
-        traceId
+        traceId,
+        ...(traceparent ? { traceparent } : {})
       }
     });
     const childWorkflowId = buildCodexAppServerTurnWorkflowId(turn.turn);
@@ -696,7 +697,7 @@ export function createRoomAgentService(options: {
     const [actions, tasks] = mission ? await Promise.all([store.listRoomAgentActions(mission.id), store.listRoomAgentTaskRuns(mission.id)]) : [[], []];
     return { roomId, snapshot: roomMissionSnapshot(mission, actions, tasks) };
   }
-  async function startMission(roomId: string, objective: string, clientRequestId: string, traceId: string, actor: BrowserHostActorContext) {
+  async function startMission(roomId: string, objective: string, clientRequestId: string, traceId: string, actor: BrowserHostActorContext, traceparent?: string) {
     if (actor.holderType !== "OPERATOR" || !actor.holderId) throw new SpaceConflictError("An authenticated operator is required.");
     const digest = fingerprint(`live-mission:${objective}`, actor);
     const key = JSON.stringify([roomId, clientRequestId]);
@@ -708,7 +709,7 @@ export function createRoomAgentService(options: {
     const pending = (async () => {
       const existing = await store.getRoomAgentRequest(roomId, clientRequestId);
       if (existing) await assertMatchingRequest(existing, objective, digest);
-      return sendAdvanced(roomId, objective, clientRequestId, traceId, digest, { ownerId: actor.holderId });
+      return sendAdvanced(roomId, objective, clientRequestId, traceId, digest, { ownerId: actor.holderId }, traceparent);
     })();
     directRequests.set(key, { fingerprint: digest, pending });
     try { return await pending; }
@@ -729,8 +730,8 @@ export function createRoomAgentService(options: {
   const replay = async (roomId: string, clientRequestId: string): Promise<RoomAgentSession> => ({
     ...await load(roomId), directCommand: { requestId: clientRequestId, status: "REPLAYED", durationMs: 0 }
   });
-  function send(roomId: string, content: string, clientRequestId: string, traceId: string, actor?: BrowserHostActorContext, selectedBrowserPaneId?: string) {
-    return dispatchRequest(roomId, content, clientRequestId, traceId, actor, undefined, selectedBrowserPaneId);
+  function send(roomId: string, content: string, clientRequestId: string, traceId: string, actor?: BrowserHostActorContext, selectedBrowserPaneId?: string, traceparent?: string) {
+    return dispatchRequest(roomId, content, clientRequestId, traceId, actor, undefined, selectedBrowserPaneId, traceparent);
   }
   function executeCommand(roomId: string, raw: RoomCommand, traceId: string, actor: BrowserHostActorContext) {
     const command = roomCommandSchema.parse(raw);
@@ -761,7 +762,7 @@ export function createRoomAgentService(options: {
     }
   }
   async function dispatchRequest(roomId: string, content: string, clientRequestId: string, traceId: string,
-    actor?: BrowserHostActorContext, typedAction?: RoomCommand["action"], selectedBrowserPaneId?: string): Promise<RoomAgentSession> {
+    actor?: BrowserHostActorContext, typedAction?: RoomCommand["action"], selectedBrowserPaneId?: string, traceparent?: string): Promise<RoomAgentSession> {
     await assertRoomAgentActor(actor);
     const started = performance.now();
     const key = JSON.stringify([roomId, clientRequestId]);
@@ -786,11 +787,11 @@ export function createRoomAgentService(options: {
       const existing = await store.getRoomAgentRequest(roomId, clientRequestId);
       if (existing) {
         // Preserve the legacy advanced-workflow retry contract for requests saved before request fingerprints.
-        if (existing.missionId && !typedAction && !existing.requestFingerprint) return sendAdvanced(roomId, content, clientRequestId, traceId);
+        if (existing.missionId && !typedAction && !existing.requestFingerprint) return sendAdvanced(roomId, content, clientRequestId, traceId, undefined, undefined, traceparent);
         await assertMatchingRequest(existing, content, digest);
         if (!typedAction && existing.directAction?.type === "SEARCH" && existing.directAction.paneId !== selectedBrowserPaneId)
           throw new SpaceConflictError("Request ID was already used with a different browser target.");
-        if (existing.missionId) return sendAdvanced(roomId, content, clientRequestId, traceId, digest);
+        if (existing.missionId) return sendAdvanced(roomId, content, clientRequestId, traceId, digest, undefined, traceparent);
         if (existing.directAction?.type === "CHAT") return replay(roomId, clientRequestId);
         // Pane creation has its own durable transaction: safely finish a request whose
         // worker died after accepting it or committing its batch but before the transcript.

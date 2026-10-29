@@ -27,7 +27,7 @@ import type { DotGoalsRepository, DotsRepository } from "@space/db";
  * blocking question, cancellation, three consecutive failures or the budget.
  */
 export interface DotGoalWorkflowCoordinator {
-  start(goalId: string, requestId?: string): Promise<void>;
+  start(goalId: string, requestId?: string, traceparent?: string | null): Promise<void>;
   wake(goalId: string): Promise<void>;
   /** Starts the Goal's workflow when none is running; true when it had to start one. */
   ensure?(goalId: string): Promise<boolean>;
@@ -39,12 +39,12 @@ export class TemporalDotGoalWorkflowCoordinator implements DotGoalWorkflowCoordi
     try { return await action(new Client({ connection, namespace: this.options.namespace })); }
     finally { await connection.close(); }
   }
-  start(goalId: string, requestId?: string) {
+  start(goalId: string, requestId?: string, traceparent?: string | null) {
     return this.client(async (client) => {
       try {
         await client.workflow.start("dotGoalWorkflow", { workflowId: dotGoalWorkflowId(goalId), taskQueue: this.options.taskQueue,
           args: [{ goalId }], workflowIdReusePolicy: "REJECT_DUPLICATE",
-          memo: workflowCorrelationMemo({ traceId: requestId, traceparent: traceparentForTraceId(requestId) }) });
+          memo: workflowCorrelationMemo({ traceId: requestId, traceparent: traceparent ?? traceparentForTraceId(requestId) }) });
       } catch (error) { if (!(error instanceof WorkflowExecutionAlreadyStartedError)) throw error; }
     });
   }
@@ -128,7 +128,7 @@ export function createDotGoalService(deps: DotGoalServiceDeps) {
       throw error;
     }
     try {
-      if (request) await deps.workflow.start(goal.goalId, request.id);
+      if (request) await deps.workflow.start(goal.goalId, request.id, request.traceContext.traceparent);
       else await deps.workflow.start(goal.goalId);
     }
     catch {

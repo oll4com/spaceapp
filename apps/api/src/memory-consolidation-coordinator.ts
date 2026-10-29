@@ -42,13 +42,14 @@ function isAlreadyStarted(error: unknown): boolean {
 export async function scheduleMemoryConsolidation(
   rawInput: MemoryConsolidationWorkflowInput,
   workflowId: string,
-  startWorkflow: MemoryConsolidationWorkflowStarter
+  startWorkflow: MemoryConsolidationWorkflowStarter,
+  traceparent?: string | null
 ): Promise<MemoryConsolidationStartResult> {
   const input = memoryConsolidationWorkflowInputSchema.parse(rawInput);
   try {
     const handle = await startWorkflow(MEMORY_CONSOLIDATION_WORKFLOW_TYPE, {
       args: [input],
-      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }),
+      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparent ?? traceparentForTraceId(input.traceId) }),
       taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
@@ -66,7 +67,7 @@ export async function scheduleMemoryConsolidation(
 }
 
 export interface MemoryConsolidationCoordinator {
-  start(input: MemoryConsolidationWorkflowInput, workflowId: string): Promise<MemoryConsolidationStartResult>;
+  start(input: MemoryConsolidationWorkflowInput, workflowId: string, traceparent?: string | null): Promise<MemoryConsolidationStartResult>;
 }
 
 class DisabledMemoryConsolidationCoordinator implements MemoryConsolidationCoordinator {
@@ -81,14 +82,15 @@ class DisabledMemoryConsolidationCoordinator implements MemoryConsolidationCoord
 class TemporalMemoryConsolidationCoordinator implements MemoryConsolidationCoordinator {
   constructor(private readonly options: { address: string; namespace: string }) {}
 
-  async start(input: MemoryConsolidationWorkflowInput, workflowId: string): Promise<MemoryConsolidationStartResult> {
+  async start(input: MemoryConsolidationWorkflowInput, workflowId: string, traceparent?: string | null): Promise<MemoryConsolidationStartResult> {
     const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
     try {
       const client = new Client({ connection, namespace: this.options.namespace });
       return await scheduleMemoryConsolidation(
         input,
         workflowId,
-        (workflowType, startOptions) => client.workflow.start(workflowType, startOptions)
+        (workflowType, startOptions) => client.workflow.start(workflowType, startOptions),
+        traceparent
       );
     } finally {
       await connection.close();

@@ -102,7 +102,7 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
       throw new SpaceConflictError("Room Agent control grant changed. Retry the same request.");
     }
     const session = await roomAgentService.startMission(params.id, input.objective, input.clientRequestId,
-      request.requestIdForSpace, { holderType: "OPERATOR", holderId: actor.id });
+      request.requestIdForSpace, { holderType: "OPERATOR", holderId: actor.id }, request.traceContext.traceparent);
     await recordAudit(store, request, { action: "room.agent.mission.start", targetType: "room", targetId: params.id,
       metadata: { sessionId: session.sessionId, missionId: session.missionSnapshot?.mission.id ?? null } });
     return reply.code(202).send(session);
@@ -117,7 +117,7 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
       }
     }
     const input = parseBody(roomAgentMessageInputSchema, request.body);
-    const session = await roomAgentService.send(params.id, input.content, input.clientRequestId, request.requestIdForSpace, operatorBrowserActor(request), input.selectedBrowserPaneId);
+    const session = await roomAgentService.send(params.id, input.content, input.clientRequestId, request.requestIdForSpace, operatorBrowserActor(request), input.selectedBrowserPaneId, request.traceContext.traceparent);
     await recordAudit(store, request, {
       action: "room.agent.message",
       targetType: "room",

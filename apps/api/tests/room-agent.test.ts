@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requestTraceContexts } from "../src/trace-context.js";
 import type { RoomAgentSupervisorQueueItem } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
 import { InMemoryRoomAgentMonitorRepository } from "@space/db";
@@ -827,5 +828,30 @@ describe("completeRoomAgentPrompt", () => {
       modelSelection: { providerId: "cli:opencode", modelId: "opencode/big-pickle", reasoningEffort: null, providerName: "OpenCode", modelName: "opencode/big-pickle", tier: "OPENCODE" } }))
       .toBe("answer");
     expect(runOpenCode).toHaveBeenCalledExactlyOnceWith("opencode/big-pickle", "s\n\nUser request: c", 1_000);
+  });
+});
+
+
+describe("Room Agent request trace retention", () => {
+  it("persists the live mission API parent even when request lookup is evicted before enqueue", async () => {
+    const { app, cookie, csrfToken, room, enqueued } = await setup();
+    const remember = requestTraceContexts.remember.bind(requestTraceContexts);
+    let expectedParent: string | undefined;
+    const spy = vi.spyOn(requestTraceContexts, "remember").mockImplementation((id, context) => {
+      remember(id, context);
+      if (context.w3cTraceId !== "4bf92f3577b34da6a3ce929d0e0e4736") return;
+      expectedParent = context.traceparent;
+      for (let i = 0; i < 4096; i++) remember(`req:room-eviction:${i}`, context);
+      expect(requestTraceContexts.lookup(id)).toBeNull();
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: `/api/rooms/${room.id}/room-agent/missions`,
+        headers: { cookie, [csrfHeaderName]: csrfToken, traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+        payload: { objective: "Finish the room safely.", clientRequestId: "mission-retained-parent-0001" } });
+      expect(response.statusCode).toBe(202);
+      expect(expectedParent).toBeDefined();
+      expect(enqueued).toHaveLength(1);
+      expect(enqueued[0]!.turn).toMatchObject({ traceId: response.headers["x-request-id"], traceparent: expectedParent });
+    } finally { spy.mockRestore(); }
   });
 });

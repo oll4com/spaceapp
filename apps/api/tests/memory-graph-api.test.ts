@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { evictRequestTraceContext } from "./support/trace-registry-eviction.js";
+import { scheduleMemoryConsolidation } from "../src/memory-consolidation-coordinator.js";
+import { scheduleMemoryMutation } from "../src/memory-mutation-coordinator.js";
 import { describe, expect, it } from "vitest";
 import type { ListMemoryQuery, MemoryEntry, MemoryGraphSnapshot } from "@space/contracts";
 import { InMemorySpaceStore } from "@space/runtime";
@@ -725,6 +728,42 @@ describe("Memory graph API", () => {
     });
     expect(sensitiveEdit.statusCode).toBe(409);
     await app.close();
+  });
+
+  it.each(["consolidation", "mutation"] as const)("retains the %s API parent after registry eviction", async kind => {
+    const memos: Record<string, string>[] = [];
+    const store = new InMemorySpaceStore();
+    const starter = async (_type: string, options: { workflowId: string; memo: Record<string, string> }) => {
+      memos.push(options.memo);
+      return { workflowId: options.workflowId };
+    };
+    const app = await memoryGraphApp(true, store, true, {
+      start: (input, commandHash, traceparent) => scheduleMemoryMutation(input, starter, commandHash, traceparent)
+    }, { maintenanceEnabled: true, memoryConsolidationCoordinator: {
+      start: (input, workflowId, traceparent) => scheduleMemoryConsolidation(input, workflowId, starter, traceparent)
+    } });
+    let expectedParent: string | undefined;
+    app.addHook("preHandler", async request => {
+      if (!request.headers.traceparent) return;
+      expectedParent = request.traceContext.traceparent;
+      evictRequestTraceContext(request.requestIdForSpace);
+    });
+    try {
+      let url = "/api/admin/memory/consolidations";
+      if (kind === "mutation") {
+        const created = await app.inject({ method: "POST", url: "/api/admin/memory/change-sets", headers: mutationHeaders, payload: changeSetInput() });
+        expect(created.statusCode).toBe(201);
+        const id = created.json().id as string;
+        store.updateMemoryChangeSet(id, { status: "APPROVED" });
+        url = `/api/admin/memory/change-sets/${encodeURIComponent(id)}/execute`;
+      }
+      const response = await app.inject({ method: "POST", url,
+        headers: { ...mutationHeaders, traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+        payload: kind === "consolidation" ? { mode: "AUDIT" } : {} });
+      expect(response.statusCode).toBe(202);
+      expect(expectedParent).toBeDefined();
+      expect(memos).toEqual([{ spaceTraceId: response.headers["x-request-id"], traceparent: expectedParent, w3cTraceId: "4bf92f3577b34da6a3ce929d0e0e4736" }]);
+    } finally { await app.close(); }
   });
 
   it("creates retry-safe durable consolidation runs and exposes bounded detail", async () => {

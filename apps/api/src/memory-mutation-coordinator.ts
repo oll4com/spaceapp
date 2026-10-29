@@ -43,14 +43,15 @@ function isAlreadyStarted(error: unknown): boolean {
 export async function scheduleMemoryMutation(
   rawInput: MemoryMutationWorkflowInput,
   startWorkflow: MemoryMutationWorkflowStarter,
-  commandHash?: string
+  commandHash?: string,
+  traceparent?: string | null
 ): Promise<MemoryMutationStartResult> {
   const input = memoryMutationWorkflowInputSchema.parse(rawInput);
   const workflowId = buildMemoryMutationWorkflowId(input.changeSetId, commandHash);
   try {
     const handle = await startWorkflow(MEMORY_MUTATION_WORKFLOW_TYPE, {
       args: [input],
-      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparentForTraceId(input.traceId) }),
+      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: traceparent ?? traceparentForTraceId(input.traceId) }),
       taskQueue: MEMORY_MUTATION_TASK_QUEUE,
       workflowId,
       workflowIdReusePolicy: "REJECT_DUPLICATE",
@@ -64,7 +65,7 @@ export async function scheduleMemoryMutation(
 }
 
 export interface MemoryMutationCoordinator {
-  start(input: MemoryMutationWorkflowInput, commandHash?: string): Promise<MemoryMutationStartResult>;
+  start(input: MemoryMutationWorkflowInput, commandHash?: string, traceparent?: string | null): Promise<MemoryMutationStartResult>;
 }
 
 class DisabledMemoryMutationCoordinator implements MemoryMutationCoordinator {
@@ -79,14 +80,15 @@ class DisabledMemoryMutationCoordinator implements MemoryMutationCoordinator {
 class TemporalMemoryMutationCoordinator implements MemoryMutationCoordinator {
   constructor(private readonly options: { address: string; namespace: string }) {}
 
-  async start(input: MemoryMutationWorkflowInput, commandHash?: string): Promise<MemoryMutationStartResult> {
+  async start(input: MemoryMutationWorkflowInput, commandHash?: string, traceparent?: string | null): Promise<MemoryMutationStartResult> {
     const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
     try {
       const client = new Client({ connection, namespace: this.options.namespace });
       return await scheduleMemoryMutation(
         input,
         (workflowType, options) => client.workflow.start(workflowType, options),
-        commandHash
+        commandHash,
+        traceparent
       );
     } finally {
       await connection.close();
