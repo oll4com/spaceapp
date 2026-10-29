@@ -65,6 +65,12 @@ function eligibleTargets(sessions: PaneCliSession[], panesForRoom: Map<string, P
   return targets;
 }
 
+function updatedAtMs(session: PaneCliSession): number {
+  const ms = Date.parse(session.updatedAt);
+  // An unparsable timestamp sorts last instead of poisoning the comparison.
+  return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
+}
+
 export async function pickSharedChatDispatchTarget(
   store: SpaceStore,
   runtimeId: string
@@ -86,7 +92,13 @@ export async function pickSharedChatDispatchTarget(
   }
   const targets = eligibleTargets(sessions, panesForRoom);
   if (!targets.length) return null;
-  targets.sort((left, right) => right.session.updatedAt.localeCompare(left.session.updatedAt));
+  // Compare instants, not strings: ISO timestamps with a different fractional
+  // precision or offset do not sort lexically in time order.
+  targets.sort((left, right) => {
+    const cmp = updatedAtMs(right.session) - updatedAtMs(left.session);
+    if (cmp !== 0) return cmp;
+    return right.session.sessionId.localeCompare(left.session.sessionId);
+  });
   return targets[0] ?? null;
 }
 
