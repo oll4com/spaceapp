@@ -834,10 +834,11 @@ describe("completeRoomAgentPrompt", () => {
 
 describe("Room Agent request trace retention", () => {
   it("carries the message request parent through legacy mission recovery after registry eviction", async () => {
-    const { app, cookie, csrfToken, room, store } = await setup({ failFirstEnqueue: true });
+    const { app, cookie, csrfToken, room, store, enqueued } = await setup({ failFirstEnqueue: true });
     const clientRequestId = "legacy-retained-parent-0001";
     const objective = "Finish this legacy mission.";
     expect((await startMission(app, cookie, csrfToken, room.id, objective, clientRequestId)).statusCode).toBe(500);
+    const originalSignal = structuredClone(enqueued[0]!);
     // Old persisted request records have no fingerprint. Recovery must still
     // build its scheduling input from the retained HTTP request context.
     store.getRoomAgentRequest(room.id, clientRequestId)!.requestFingerprint = undefined;
@@ -864,6 +865,7 @@ describe("Room Agent request trace retention", () => {
       expect(expectedParent).toBeDefined();
       expect(proposed).toHaveLength(1);
       expect(proposed[0]!.turn).toMatchObject({ traceId: response.headers["x-request-id"], traceparent: expectedParent });
+      expect(enqueued).toEqual([originalSignal, originalSignal]);
     } finally { enqueueSpy.mockRestore(); traceSpy.mockRestore(); }
   });
 
