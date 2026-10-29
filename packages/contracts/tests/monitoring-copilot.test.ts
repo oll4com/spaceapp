@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  MONITORING_ALWAYS_ASK_KINDS, MONITORING_COLLECTOR_DEFAULTS, NOTIFICATION_SOURCES, NEEDS_YOU_KINDS, monitoringActionBeginSchema, monitoringActionFinishSchema, PANE_TYPES, defaultMonitoringCopilotPaneMetadata, monitoringCollectorUrlSchema, monitoringCopilotPaneMetadataSchema,
+  MONITORING_ALWAYS_ASK_KINDS, MONITORING_COLLECTOR_DEFAULTS, MONITORING_COLLECTOR_NETWORK, NOTIFICATION_SOURCES, NEEDS_YOU_KINDS, monitoringActionBeginSchema, monitoringActionFinishSchema, PANE_TYPES, defaultMonitoringCopilotPaneMetadata, monitoringCollectorUrlSchema, monitoringCopilotPaneMetadataSchema,
   monitoringGuardianKey, monitoringGuardianLevel, monitoringLogQuerySchema, monitoringPromQuerySchema, monitoringSeverityOf, paneModeSchema,
   resolveMonitoringCopilotPaneMetadata, roomPaneBatchItemSchema
 } from "../src/index.js";
@@ -24,6 +25,13 @@ describe("Monitoring Copilot contracts", () => {
       "http://example.com:9090", "http://192.0.2.210:9093/api", "http://user@192.0.2.210:9093", "http://169.254.169.254:80", "http://127.0.0.1:9090"]) {
       expect(monitoringCollectorUrlSchema.safeParse(bad).success, bad).toBe(false);
     }
+  });
+
+  // EXP-001: the public export rewrites plain addresses but not a regex-escaped copy, so the network lives in one plain string.
+  it("builds the collector pattern from the one plain network string, so the public export rewrites both alike", () => {
+    expect(monitoringCollectorUrlSchema.safeParse(`http://${MONITORING_COLLECTOR_NETWORK}210:9093`).success).toBe(true);
+    for (const url of Object.values(MONITORING_COLLECTOR_DEFAULTS)) expect(monitoringCollectorUrlSchema.safeParse(url).success, url).toBe(true);
+    expect(readFileSync(new URL("../src/monitoring-copilot.ts", import.meta.url), "utf8")).not.toMatch(/\d+\\\.\d+\\\.\d+\\\./);
   });
 
   it("maps severities and classifies guardian messages", () => {

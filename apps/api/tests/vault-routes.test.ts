@@ -246,13 +246,13 @@ describe("Vault API key handoff", () => {
       };
       const one = agentOf("One");
       const two = agentOf("Two");
-      const created = await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "vm221 macOS spaceadmin password", value: SENTINEL, expiresInHours: null, kept: true } });
+      const created = await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "lab mac admin password", value: SENTINEL, expiresInHours: null, kept: true } });
       const key = created.json().key;
       expect(key).toMatchObject({ kept: true, expiresAt: null, savedBy: null, hasValue: true });
       // A one-time key is not listed: only kept ones are the agents' to find.
-      await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "vm221 one-time", value: "x" } });
-      expect((await one.call("key-list", { q: "public-host spaceadmin" })).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), keys: [{ id: key.id, label: "vm221 macOS spaceadmin password", savedBy: null }] });
-      expect((await one.call("key-list", { q: "vm222" })).json().keys).toEqual([]);
+      await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "lab one-time", value: "x" } });
+      expect((await one.call("key-list", { q: "LAB admin" })).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), keys: [{ id: key.id, label: "lab mac admin password", savedBy: null }] });
+      expect((await one.call("key-list", { q: "other-host" })).json().keys).toEqual([]);
       for (const agent of [one, two, one]) {
         expect((await agent.call("key-take", { id: key.id })).json()).toMatchObject({ status: "TAKEN", value: SENTINEL });
         expect((await agent.call("key-used", { id: key.id })).json()).toMatchObject({ status: "USED" });

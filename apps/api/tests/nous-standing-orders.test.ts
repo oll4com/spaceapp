@@ -225,7 +225,8 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
       { source: "Mail Copilot", type: "RULE_DECIDED", decision: "approve", count: 1 }, { source: "Marketing Copilot", type: "REVIEW_DECIDED", decision: "approve", count: 4 },
       { source: "Job Copilot", type: "ANSWERED", decision: "Nous", count: 2 }, { source: "Needs you", type: "AGENT", decision: "answered", count: 1 }
     ];
-    const decisions = [{ id: "nous_decision:a", status: "APPROVED", answeredAt: "2026-10-27T10:00:00.000Z", createdAt: since } as unknown as NousDecision];
+    // Answered an hour ago: space_nous_decisions {summary} counts the last day from now, so a fixed date falls out of it a day later.
+    const decisions = [{ id: "nous_decision:a", status: "APPROVED", answeredAt: new Date(Date.now() - 3_600_000).toISOString(), createdAt: since } as unknown as NousDecision];
     const text = renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions, rails });
     expect(text).toContain(["## The operator's answers in every rail (goal 7365014c-b)", "- Mail Copilot: reviews approve 3, edit 1; rules approve 1",
       "- Marketing Copilot: reviews approve 4", "- Job Copilot: questions Nous 2", "- Needs you: agent answered 1", "- Nous decisions: approved 1, declined 0, in words 0", "## Orders"].join("\n"));

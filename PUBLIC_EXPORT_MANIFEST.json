@@ -1,9 +1,9 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "4be1c81f559c7ef08920c5321bec686cdf97c452",
+  "sourceCommit": "25bcec3e772b21e7543146c971d5fb1a4d95edc0",
   "fileCount": 5029,
-  "transformations": 436,
+  "transformations": 435,
   "files": [
     {
       "path": ".gitignore",
@@ -9115,9 +9115,9 @@
     },
     {
       "path": "apps/api/src/browser-sessions.ts",
-      "sourceObjectId": "ef4916953cd5d9c94ec830e7113669371034a2a4",
-      "sha256": "d5b2fd15df986361939fb70c6c9ed1f6562596a65c8bfeaa545d0517fdc14fe9",
-      "size": 200787
+      "sourceObjectId": "c9af5bd87a393b74501301ccfac61523df9d7816",
+      "sha256": "863696774321b32f33722a0b87cab9561c37bc7192bc1a816b3719266fe1f118",
+      "size": 201690
     },
     {
       "path": "apps/api/src/browser-stream-host-watch.ts",
@@ -10819,9 +10819,9 @@
     },
     {
       "path": "apps/api/src/nous/service.ts",
-      "sourceObjectId": "10ba5c226ace64b156df1491945fdacddbad3b0b",
-      "sha256": "bce49526506f9854234c383ecb39e29ca419317c5d56b804d47b1e541eb1cc54",
-      "size": 83651
+      "sourceObjectId": "8c9314fea6ffcb93a1ebf571abcb303c64c0131e",
+      "sha256": "e896c4dcad49218c8c59ce2052b28dbb53c03ae2dc8b841112e30e133115f9a4",
+      "size": 83850
     },
     {
       "path": "apps/api/src/nous/stalled-plans.ts",
@@ -12517,9 +12517,9 @@
     },
     {
       "path": "apps/api/tests/browser-sessions.test.ts",
-      "sourceObjectId": "3aeb125993952f606fad372f5d28b8bac2385d5c",
-      "sha256": "129bbf0626e220f370862acfa94acfb9c3dca762459614707fbb446f2aea33b4",
-      "size": 54041
+      "sourceObjectId": "a81241604af58fba67fa5d443ba17332384af630",
+      "sha256": "54d7e1880cb34b7e14d17b514cc0b9809c462e4432be52847746c4f6c819c008",
+      "size": 54681
     },
     {
       "path": "apps/api/tests/browser-stream-host-watch.test.ts",
@@ -13273,9 +13273,9 @@
     },
     {
       "path": "apps/api/tests/fixtures/token-usage-models-expected.json",
-      "sourceObjectId": "813a41b2128346d026493dd96b78e88b424fbc47",
-      "sha256": "994ee95b5be62505b5846d09a76af4ceace90e2b4c01f36dc8a4b5e153e29f09",
-      "size": 91649
+      "sourceObjectId": "c36c97bc6231cdbc65065cc53867c1dd02c598e7",
+      "sha256": "1b06424a59faece470b3c3f30ff3456428317b9eeed8b56fb4665cac55e1553b",
+      "size": 92601
     },
     {
       "path": "apps/api/tests/freelance-copilot-kickoff.test.ts",
@@ -13945,9 +13945,9 @@
     },
     {
       "path": "apps/api/tests/nous-standing-orders.test.ts",
-      "sourceObjectId": "0119c55bd5432f8126ddbd474aeb276948d40c51",
-      "sha256": "6b903796736cc3648a517850ca8b80d4b389fe8167ed8c60c5cf8511dd0b84f0",
-      "size": 43079
+      "sourceObjectId": "97772d189408969846f73ce08182672027ff3c8a",
+      "sha256": "95cd15a80b259cb2f2954f742d7fb71127a0f9a1fbb3b88c67cc523224687468",
+      "size": 43234
     },
     {
       "path": "apps/api/tests/nous-subagents.test.ts",
@@ -13975,9 +13975,9 @@
     },
     {
       "path": "apps/api/tests/nous.test.ts",
-      "sourceObjectId": "a26f52625ffbff0c4a0b0ff943151bc8ee60dc13",
-      "sha256": "65c3fd48a97250d1e7016344507418c6e7f66446c40e8fd1906b4df18681fc9a",
-      "size": 138593
+      "sourceObjectId": "cf4de93445da93a3d4e98d32f71fbfc3a8cdea56",
+      "sha256": "2e4ba6530c114ab36f5f5f82791d16a740028f34cd73482b8ba9259070f01690",
+      "size": 139389
     },
     {
       "path": "apps/api/tests/observability-cardinality.test.ts",
@@ -15097,9 +15097,9 @@
     },
     {
       "path": "apps/api/tests/vault-routes.test.ts",
-      "sourceObjectId": "656eca9678308cfb940d47729ab10060483b492e",
-      "sha256": "a98c1e1ed83492ff2667c4ed19bf0c0686f112d88601669f2ad811da43c1860a",
-      "size": 29019
+      "sourceObjectId": "2115a2cb1b2a8a38ddfb47a8a2aff3fc09dda870",
+      "sha256": "b8338e87fad71515d501f1f694180a121803dc49252f45cd977cb80f028c3f6c",
+      "size": 28991
     },
     {
       "path": "apps/api/tests/vault-sealed-fill.test.ts",
@@ -20347,9 +20347,9 @@
     },
     {
       "path": "apps/web/src/features/vault/VaultDock.tsx",
-      "sourceObjectId": "d4098ea950fb7908368f62bb25d254fda5d4ac75",
-      "sha256": "658e48cc00a7e4148c26047634d2302f333478f9f753a2cd0ca09bde97c87ebc",
-      "size": 52080
+      "sourceObjectId": "60e0a7f99da537841a919fdf0f28cb87a05795c2",
+      "sha256": "22fa40fb67ca5533302cdd23bcb55b15a997520e4b168c3fb95b574c946ed801",
+      "size": 52014
     },
     {
       "path": "apps/web/src/features/vault/chrome-import.ts",
@@ -23887,15 +23887,15 @@
     },
     {
       "path": "package-lock.json",
-      "sourceObjectId": "075292674a3ae9fa9ea56d4a11875f57699fa64e",
-      "sha256": "e1a5c81841d321c22370d3ae3ea8331f5ef9d6034b3028324c9e5032b4443c40",
-      "size": 419142
+      "sourceObjectId": "bb1033b3a312d2a557e570f7f7c9ebfa14e4237f",
+      "sha256": "22a75e12335b1b75c37365647dcc970a9ee4e441667e94e9d8c285bbd00461e6",
+      "size": 419140
     },
     {
       "path": "package.json",
-      "sourceObjectId": "423f08df30f15ba86e54d8824c6756e189aac416",
-      "sha256": "bb01c0d9190cb10509ca21bf1ccac45d30f84e4ad786e0dea656978332af2ced",
-      "size": 4221
+      "sourceObjectId": "a1b6170e01fd7e48c8d38e339b72a843600b59b8",
+      "sha256": "96277e604fa59ef249cfba70dbad271c7cf3150143e367b58bb76f50bd276341",
+      "size": 4220
     },
     {
       "path": "packages/browser-host/package.json",
@@ -24391,9 +24391,9 @@
     },
     {
       "path": "packages/contracts/src/monitoring-copilot.ts",
-      "sourceObjectId": "5a7ba4317ba499d6ce3de53577ce68f0b92a896d",
-      "sha256": "837a4f87106715865cb30d594c0d0ef31b2d159b313740782860432538438d33",
-      "size": 17859
+      "sourceObjectId": "f3750610c0b28ab2cb88d177f12cace381aa6502",
+      "sha256": "6cff00bc0b56ed25c8b21a12e7ef2e3c3624de461554a81df18cdae5f62667e5",
+      "size": 18248
     },
     {
       "path": "packages/contracts/src/notifications.ts",
@@ -24847,9 +24847,9 @@
     },
     {
       "path": "packages/contracts/tests/monitoring-copilot.test.ts",
-      "sourceObjectId": "54918300e120969949325169786a30b9d94aac8a",
-      "sha256": "7066e02fed436666497c041eb8497aab2190fb045b3dd85ae2fda924a49e71a7",
-      "size": 6273
+      "sourceObjectId": "0db8d550e78e4919cf99b8cc326d31ca3862b3ed",
+      "sha256": "5a0b91d6b154c8c67de2b6d62884ff5f8c69892c78ca1dd4b5fb9ba44776f927",
+      "size": 6995
     },
     {
       "path": "packages/contracts/tests/notifications.test.ts",

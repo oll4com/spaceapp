@@ -7,7 +7,7 @@ Semantic Versioning.
 
 ## [1.1.9] - 2026-10-25
 
-Source: sanitized Space app @ 4be1c81f55 (5029 files). 1.1.8 was prepared but never published; its changes are part of
+Source: sanitized Space app @ 25bcec3e77 (5029 files). 1.1.8 was prepared but never published; its changes are part of
 1.1.9 and are listed below. Verifies SpaceApp's image attestations before an installation first uses a version, restores
 backups more safely, and ships the remaining fixes from the 1.1.7 reviews; open items are listed in
 `docs/quality/KNOWN_LIMITATIONS.md`.

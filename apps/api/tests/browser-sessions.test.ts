@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import {
   allocateDisplay,
+  displayHeldElsewhere,
   applyRestoreState,
   assertSafeBrowserTargetUrl,
   BrowserCapacityGate,
@@ -1260,6 +1261,18 @@ describe("browser session display pool", () => {
 
     for (const display of allocated) releaseDisplay(display);
     expect(allocateDisplay()).not.toBeNull();
+  });
+
+  it("sees a display another live X server holds, so a launch takes the next one (parallel test workers, 1.1.9 CI)", async () => {
+    const display = 4242; // outside the pool, so no real X server of a parallel worker is touched
+    const lock = `/tmp/.X${display}-lock`;
+    expect(displayHeldElsewhere(display)).toBe(false);
+    await writeFile(lock, `${process.pid}\n`, { flag: "wx" });
+    try {
+      expect(displayHeldElsewhere(display)).toBe(true);
+      await writeFile(lock, "999999999\n");
+      expect(displayHeldElsewhere(display)).toBe(false);
+    } finally { await rm(lock, { force: true }); }
   });
 });
 

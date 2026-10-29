@@ -23,8 +23,12 @@ export type MonitoringAutonomy = z.infer<typeof monitoringAutonomySchema>;
  * Only a collector on the fleet's private bridge, over plain HTTP with an explicit port: Space never fetches anything else for
  * this pane, so a stored setting cannot turn the watcher into a request forwarder.
  */
-export const monitoringCollectorUrlSchema = z.string().regex(/^http:\/\/10\.100\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]):(?:[1-9]\d{1,4})$/,
-  "Use http://192.0.2.<host>:<port> (the collector on the fleet's private bridge).");
+/** The collector network, one plain string: the public export rewrites it like every private address, so the pattern built
+ * from it below matches the public tree's own defaults (EXP-001: a regex-escaped copy was left private and rejected them). */
+export const MONITORING_COLLECTOR_NETWORK = "192.0.2.";
+export const monitoringCollectorUrlSchema = z.string().regex(
+  new RegExp(`^http://${MONITORING_COLLECTOR_NETWORK.replace(/\./g, "\\.")}(?:[1-9]\\d?|1\\d\\d|2[0-4]\\d|25[0-4]):(?:[1-9]\\d{1,4})$`),
+  `Use http://${MONITORING_COLLECTOR_NETWORK}<host>:<port> (the collector on the fleet's private bridge).`);
 export const MONITORING_COLLECTOR_DEFAULTS = {
   prometheusUrl: "http://192.0.2.210:9090",
   alertmanagerUrl: "http://192.0.2.210:9093",

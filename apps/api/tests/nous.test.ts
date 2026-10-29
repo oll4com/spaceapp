@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { nousLowSpendSettingsSchema, nousSettingsSchema, type Pane, type Room, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
+import { nousLowSpendSettingsSchema, nousSettingsSchema, type NousMessage, type Pane, type Room, type RoomAgentEvent, type SpaceNotification } from "@space/contracts";
 import { InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@space/db";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
 import { NOUS_DIGEST_MAX_CHARS, renderNousWorld } from "../src/nous/digest.js";
-import { createNousService, nousHistory, NOUS_PERSONA, NousUnavailableError, operatorMessagesToAnswer, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
+import { createNousService, nousHistory, NOUS_PERSONA, NousUnavailableError, operatorMessagesToAnswer, renderDone, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
 import { createNousTools, nousControlRisk, nousToolDefinitions, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
 import { createNousMutes } from "../src/nous/mutes.js";
 import { copilotDeps, nousLiveCounts, registerNous } from "../src/nous/wiring.js";
@@ -1341,6 +1341,15 @@ describe("Nous's turns", () => {
     expect(retry!.reason).toBe("OPERATOR");
     expect(retry!.prompt).toContain("# Already done since these messages (tool steps of earlier turns; do not repeat them)\n- did space_copilot_brief: “Review the reply.”");
     expect(retry!.prompt).toContain("Review the mail to Anna.");
+  });
+
+  it("lists a step recorded in the same millisecond as the waiting message: by position, not time (1.1.9 public suite flake)", () => {
+    const at = "2026-10-28T18:14:00.000Z";
+    const row = (id: string, kind: NousMessage["kind"], content: string) =>
+      ({ id, ownerUserId: owner, turnId: null, kind, status: "DONE", content, meta: {}, createdAt: at, updatedAt: at }) as NousMessage;
+    const messages = [row("m1", "TOOL", "did an earlier step"), row("m2", "OPERATOR", "Review the mail."), row("m3", "TOOL", "did space_copilot_brief")];
+    expect(renderDone(messages, "m2")).toBe("# Already done since these messages (tool steps of earlier turns; do not repeat them)\n- did space_copilot_brief");
+    expect(renderDone(messages, undefined)).toBe("");
   });
 
   it("withdraws a COPILOT decision whose item the operator decided in the rail, with one inbox line (daily upgrade 2026-10-27)", async () => {

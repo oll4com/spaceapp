@@ -414,6 +414,14 @@ export function allocateDisplay(): number | null {
   return null;
 }
 
+// A live X server this process never started holds the display (another API, a parallel test worker): its lock names it.
+export function displayHeldElsewhere(display: number): boolean {
+  let pid: number;
+  try { pid = Number(readFileSync(`/tmp/.X${display}-lock`, "utf8").trim()); } catch { return false; }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
 export function releaseDisplay(display: number): void {
   usedDisplays.delete(display);
 }
@@ -2366,20 +2374,27 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     let xvfb: ChildProcessWithoutNullStreams | undefined;
     let display: number | null = null;
     if (config.browserSessionsXvfbEnabled) {
-      display = allocateDisplay();
-      if (display === null) {
-        throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
-      }
+      // Displays another process's X server holds stay reserved until this launch ends, so each try takes the next one.
+      const heldElsewhere: number[] = [];
       try {
-        xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
-      } catch (error) {
-        releaseDisplay(display);
-        throw new SpaceFeatureDisabledError(
-          "BROWSER_XVFB_UNAVAILABLE",
-          `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
-          { display }
-        );
-      }
+        while (!xvfb) {
+          display = allocateDisplay();
+          if (display === null) {
+            throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
+          }
+          try {
+            xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
+          } catch (error) {
+            if (displayHeldElsewhere(display)) { heldElsewhere.push(display); continue; }
+            releaseDisplay(display);
+            throw new SpaceFeatureDisabledError(
+              "BROWSER_XVFB_UNAVAILABLE",
+              `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
+              { display }
+            );
+          }
+        }
+      } finally { heldElsewhere.forEach(releaseDisplay); }
     }
     const chrome = spawn(
       config.browserSessionsChromePath,

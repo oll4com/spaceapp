@@ -1,6 +1,8 @@
 <h3 align="center">🏅 Accepted into Anthropic’s Claude for Startups program.<br>Enrolled in the OpenAI Partner Network.</h3>
 
-<p align="center"><sub>Through SpaceApp’s maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic or OpenAI.</sub></p>
+<p align="center"><sub>Through SpaceApp's maker, oll4.com, since October 2026. Membership in a program is not an endorsement of SpaceApp by Anthropic, OpenAI or NVIDIA.<br>© 2025 NVIDIA, the NVIDIA logo, and NVIDIA Inception are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries.</sub></p>
+
+<p align="center"><br><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/nvidia-inception-program-badge-rgb-for-screen.svg" alt="NVIDIA Inception program member badge" width="150" /><br><br>SpaceApp is a member of NVIDIA Inception.<br><br></p>
 
 <p align="center">
   <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>

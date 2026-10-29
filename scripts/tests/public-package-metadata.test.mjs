@@ -225,10 +225,11 @@ test("MCP Node transport is forced to the reviewed Hono security release", async
     await readFile(join(root, "package-lock.json"), "utf8")
   );
 
-  assert.equal(rootPackage.overrides?.["@hono/node-server"], "2.0.12");
+  // 1.1.9: 2.1.3 fixes CVE-2026-118663 (serveStatic decodes the path twice), which the 2026-10-29 database added.
+  assert.equal(rootPackage.overrides?.["@hono/node-server"], "2.1.3");
   assert.equal(
     lockfile.packages["node_modules/@hono/node-server"].version,
-    "2.0.12"
+    "2.1.3"
   );
 });
 
@@ -241,7 +242,9 @@ test("temporary vulnerability ignores are narrow, documented, and expiring", asy
 
   // An ignore that no longer matches is removed, not renewed (1.1.7, review INT5-C-F16): on 2026-10-19 Trivy 0.70.0 with
   // that day's database found only this rustls advisory in the 1.1.6 core, CLI and browser images and nothing in the source.
-  assert.deepEqual(activeEntries, ["GHSA-2mjx-qc3c-rqvc exp:2026-11-10"]);
+  // 1.1.9: the 2026-10-28 database added a second advisory on the same rustls in the Temporal bridge, and the 2026-10-29 one
+  // the zip crate of its ephemeral-server feature; both with the same expiry.
+  assert.deepEqual(activeEntries, ["GHSA-2mjx-qc3c-rqvc exp:2026-11-10", "GHSA-c8m5-c952-6cm4 exp:2026-11-10", "CVE-2026-115905 exp:2026-11-10"]);
   assert.match(ignoreFile, /without TLS/i);
   assert.doesNotMatch(ignoreFile, /trustProxy/i);
 });

@@ -650,7 +650,7 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
         {agentAccess ? null : <p className="vault-hint">Agents take keys only while "Agents and Nous can use my Vault" is on (Items).</p>}
         <label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength={80} required placeholder="vm221 macOS spaceadmin password" /></label>
         <label>Key<input type="password" value={value} onChange={(event) => setValue(event.target.value)} maxLength={4096} required autoComplete="off" spellCheck={false} /></label>
-        <label className="vault-check"><input type="checkbox" checked={kept} onChange={(event) => setKept(event.target.checked)} /> Keep it for every agent</label>
+        <SpaceToggle compact checked={kept} label="Keep it for every agent" onChange={setKept} />
         <label>Expires in<select value={hours} onChange={(event) => setHours(Number(event.target.value))}>
           {KEY_HOURS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
         </select></label>
