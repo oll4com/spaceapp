@@ -25,19 +25,37 @@
 .nous-hero-side { display: grid; justify-items: end; gap: 0.4rem; }
 .nous-hero-actions { display: flex; gap: 0.3rem; }
 
-/* The views take one full row; a narrow dock (four views no longer fit) shows them as a 2×2 grid. Labels ellipsize only as a last resort. */
+/* The views in one line (operator request 2026-10-27: seven names took four rows of a narrow dock): a segmented bar of icon tabs, evenly
+   spaced in the docked width (about 264 px inside), the chosen view's name from 21rem, every name from 45rem (where all seven fit). A tab keeps its name as its
+   accessible name and tooltip; while its name is hidden its count is a corner badge. Three classes deep: the room theme restyles every button. */
 .nous-dock > .nous-toolbar { padding-inline: 0.5rem; container-type: inline-size; }
-/* Five views: a narrow dock (a 360-412 px phone) shows them as two rows of three instead of clipping each name. */
-/* A column is never narrower than its label (the docked desktop view is about 300 px); too narrow even for that, two a row. */
-@container (max-width: 36rem) {
-  .nous-toolbar .dock-kit-chips { display: grid; grid-template-columns: repeat(3, minmax(max-content, 1fr)); }
-  .nous-toolbar .dock-kit-chips .dock-kit-chip { padding-inline: 0.25rem; }
+.nous-toolbar .nous-views { flex-wrap: nowrap; gap: 2px; padding: 3px; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-surface); }
+.nous-toolbar .nous-views .dock-kit-chip {
+  position: relative; flex: 1 1 0; min-width: 1.5rem; min-height: 0; height: 1.9rem; justify-content: center; gap: 0.3rem; padding: 0 0.3rem;
+  border: 0; border-radius: var(--dock-radius-sm); background: transparent; color: var(--dock-muted); font-size: 0.72rem; overflow: hidden;
 }
-@container (max-width: 18rem) { .nous-toolbar .dock-kit-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.nous-toolbar .dock-kit-chips { flex-wrap: nowrap; gap: 0.25rem; }
-.nous-toolbar .dock-kit-chip { display: block; flex: 1 1 auto; min-width: 0; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; text-align: center; line-height: calc(1.75rem - 2px); }
-.nous-toolbar .dock-kit-chip:has(> .dock-kit-chip-count) { flex-shrink: 0; }
-.nous-toolbar .dock-kit-chip-count { display: inline-block; margin-left: 0.3rem; vertical-align: 1px; }
+.nous-toolbar .nous-views .dock-kit-chip:hover:not(:disabled) { background: color-mix(in srgb, var(--dock-text) 7%, transparent); color: var(--dock-text); }
+.nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"],
+.nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--dock-accent-soft); color: var(--dock-accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dock-accent) 40%, transparent);
+}
+.nous-toolbar .nous-views .dock-kit-chip-icon { width: 1rem; height: 1rem; }
+.nous-toolbar .nous-views .dock-kit-chip-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.nous-toolbar .nous-views .dock-kit-chip-count {
+  /* At the centred icon's top-right corner, whatever the tab's width. */
+  position: absolute; top: 1px; left: calc(50% + 0.3rem); min-width: 0.85rem; padding: 0 0.18rem; background: var(--dock-accent); color: var(--dock-on-accent);
+  font-size: 0.56rem; font-weight: 700; line-height: 0.85rem; text-align: center;
+}
+@container (min-width: 21rem) {
+  .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] { flex: 0 1 auto; padding-inline: 0.6rem; }
+  .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] .dock-kit-chip-label { position: static; width: auto; height: auto; min-width: 0; clip-path: none; text-overflow: ellipsis; }
+  .nous-toolbar .nous-views .dock-kit-chip[aria-pressed="true"] .dock-kit-chip-count { position: static; flex: none; min-width: 1rem; padding: 0 0.25rem; font-size: 0.62rem; line-height: 1rem; }
+}
+@container (min-width: 45rem) {
+  .nous-toolbar .nous-views .dock-kit-chip { flex: 1 1 auto; padding-inline: 0.5rem; }
+  .nous-toolbar .nous-views .dock-kit-chip .dock-kit-chip-label { position: static; width: auto; height: auto; min-width: 0; clip-path: none; text-overflow: ellipsis; }
+  .nous-toolbar .nous-views .dock-kit-chip .dock-kit-chip-count { position: static; flex: none; min-width: 1rem; padding: 0 0.25rem; font-size: 0.62rem; line-height: 1rem; }
+}
 
 .nous-brain { display: block; color: var(--dock-accent); filter: drop-shadow(0 0 10px var(--dock-accent-soft)); }
 
@@ -107,6 +125,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* Vertical lists only (operator 2026-10-27): code blocks and tables scroll inside themselves. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
@@ -489,6 +509,8 @@
 .nous-rail .dock-kit-chip[aria-pressed="true"],
 .nous-rail .dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) { border-color: transparent; background: var(--dock-accent-soft); color: var(--dock-text); }
 .nous-rail .dock-kit-chip-count { background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-rail .nous-views .dock-kit-chip { justify-content: flex-start; gap: 0.6rem; }
+.nous-rail .nous-views .dock-kit-chip-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 
 /* The work: one readable column (the fullscreen rule above) at a larger size. */
 .nous-stage { grid-area: stage; grid-row: 1 / -1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem 0 1.25rem; }
@@ -657,6 +679,7 @@
 @media (prefers-reduced-motion: reduce) { .nous-live .nous-live-dot.is-active { animation: none; } }
 .nous-live-plans-legend { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-size: 0.7rem; color: var(--dock-muted); }
 .nous-live-plan-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dock-text); }
+.nous-live-plans.is-off-pane .nous-live-plan-name { color: var(--dock-muted); }
 .nous-live-plan-percent { text-align: right; color: var(--dock-muted); font-variant-numeric: tabular-nums; }
 .nous-live-collapsible { padding-bottom: 0.4rem; border-bottom: 1px solid var(--dock-border); }
 .nous-live-collapsible > summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--dock-text); padding-block: 0.2rem; }
@@ -669,29 +692,36 @@
   .dock-panel.nous-dock.nous-workspace { grid-template-rows: auto auto minmax(0, 1fr); grid-template-areas: "tools" "rail" "stage"; }
 }
 /* Pane board (plan clipboard:Y9cgKVHFaHrr): rooms with their panes, one live line each, the operator's items and a reply box. */
-.nous-pane-board { flex: 1 1 auto; display: flex; flex-direction: column; gap: 0.6rem; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0.25rem 0.5rem 0.75rem; container-type: inline-size; }
-.nous-pane-board-tools { display: flex; align-items: center; gap: 0.4rem; }
-.nous-pane-board-tools .dock-kit-chips { flex: 1 1 auto; flex-wrap: wrap; }
-.nous-pane-board-rooms { flex-wrap: wrap; }
+.nous-pane-board { flex: 1 1 auto; display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 0.25rem 0.5rem 0.75rem; container-type: inline-size; }
+/* One row: the room and wait dropdowns, Clear (only while a filter is set) and Refresh. */
+.nous-pane-board-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.nous-pane-board-tools .dock-kit-select { flex: 1 1 7rem; width: auto; min-width: 0; text-overflow: ellipsis; }
 .nous-pane-board-paused { padding-inline: 0.1rem; }
-.nous-board-room { display: grid; gap: 0.4rem; }
-.nous-board-room-head { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.2rem; border: 0; border-bottom: 1px solid var(--dock-border); background: none; color: var(--dock-text); font: inherit; cursor: pointer; text-align: left; }
+.nous-board-room { display: grid; gap: 0.5rem; }
+/* Three classes: the room theme paints every button (.space-shell[data-room-theme] button) as a raised box. */
+.nous-pane-board .nous-board-room-head.nous-board-room-head { display: flex; align-items: center; gap: 0.45rem; min-height: 0; padding: 0.35rem 0.15rem; border: 0; border-bottom: 1px solid var(--dock-border); border-radius: 0; background: none; box-shadow: none; color: var(--dock-text); font: inherit; cursor: pointer; text-align: left; }
+.nous-pane-board .nous-board-room-head.nous-board-room-head:hover { border-bottom-color: var(--dock-border-strong); }
 .nous-board-room-chevron { display: inline-flex; }
 .nous-board-room-chevron svg { width: 1rem; height: 1rem; color: var(--dock-muted); }
 .nous-board-room-head:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+.nous-board-room-name { min-width: 0; overflow: hidden; font-size: 0.86rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.nous-board-room-meta { flex: none; color: var(--dock-muted); font-size: var(--dock-font-sm); font-variant-numeric: tabular-nums; }
+.nous-board-room-head .nous-board-count.is-attention { flex: none; width: auto; margin-left: auto; padding: 0 0.5rem; font-size: 0.7rem; }
 .nous-board-panes { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
-.nous-board-pane { display: grid; gap: 0.35rem; min-width: 0; padding: 0.6rem 0.7rem; border: 1px solid var(--dock-border); border-radius: 10px; background: var(--dock-raised); color: var(--dock-text); }
-.nous-board-pane.needs-me { border-color: var(--dock-warning); }
-.nous-board-pane-head { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; min-width: 0; }
+.nous-board-pane { display: grid; gap: 0.4rem; min-width: 0; padding: 0.65rem 0.75rem; border: 1px solid var(--dock-border); border-radius: 10px; background: var(--dock-raised); color: var(--dock-text); }
+.nous-board-pane.needs-me { border-color: var(--dock-warning); box-shadow: inset 3px 0 0 var(--dock-warning); }
+/* Head: icon, name, state and Go to pane on one line; model, plan and task in a quiet line under it. */
+.nous-board-pane-head { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
 .nous-board-pane-icon { width: 1rem; height: 1rem; flex: 0 0 auto; color: var(--dock-muted); }
-.nous-board-pane-name { font-size: 0.88rem; }
-.nous-board-state { padding: 0 0.45rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.68rem; font-weight: 600; line-height: 1.5; }
+.nous-board-pane-name { min-width: 0; overflow: hidden; font-size: 0.88rem; text-overflow: ellipsis; white-space: nowrap; }
+.nous-board-state { flex: none; padding: 0 0.45rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.68rem; font-weight: 600; line-height: 1.5; }
 .nous-board-state.is-working { color: var(--dock-accent); background: var(--dock-accent-soft); }
 .nous-board-state.is-waiting { color: var(--dock-warning); background: var(--dock-warning-soft); }
 .nous-board-state.is-done { color: var(--dock-success); }
-.nous-board-model { font-size: 0.7rem; }
-.nous-board-pane-plan { min-width: 0; max-width: 100%; overflow: hidden; color: var(--dock-muted); font-size: 0.72rem; white-space: nowrap; text-overflow: ellipsis; }
-.nous-board-go { margin-left: auto; }
+.nous-board-pane-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem; min-width: 0; color: var(--dock-muted); font-size: 0.72rem; }
+.nous-board-model { flex: none; font-variant-numeric: tabular-nums; }
+.nous-board-pane-plan { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nous-board-go { flex: none; margin-left: auto; }
 .nous-board-line { display: flex; align-items: baseline; gap: 0.45rem; margin: 0; font-size: 0.82rem; line-height: 1.45; min-width: 0; }
 .nous-board-line-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .nous-board-line-time { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
@@ -706,9 +736,9 @@
 .nous-pane-badge { padding: 0 0.4rem; border-radius: 999px; background: var(--dock-warning-soft); color: var(--dock-warning); font-size: 0.68rem; font-weight: 600; }
 .nous-board-items { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
 .nous-board-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.45rem; width: 100%; padding: 0.35rem 0.5rem; border: 1px solid var(--dock-border); border-radius: 8px; background: var(--dock-soft); color: var(--dock-text); font: inherit; font-size: 0.78rem; text-align: left; overflow-wrap: anywhere; }
-button.nous-board-item { cursor: pointer; }
-button.nous-board-item:hover { border-color: var(--dock-border-strong); }
-.nous-board-item.is-card { border-color: var(--dock-warning); }
+.nous-pane-board button.nous-board-item.nous-board-item { min-height: 0; border-color: var(--dock-border); background: var(--dock-soft); color: var(--dock-text); cursor: pointer; }
+.nous-pane-board button.nous-board-item.nous-board-item:hover { border-color: var(--dock-border-strong); }
+.nous-pane-board .nous-board-item.nous-board-item.is-card { border-color: var(--dock-warning); }
 .nous-board-item > strong { color: var(--dock-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .nous-board-item-body { flex-basis: 100%; color: var(--dock-muted); white-space: pre-line; }
 .nous-board-item .dock-kit-button { margin-left: auto; }
@@ -724,7 +754,7 @@ button.nous-board-item:hover { border-color: var(--dock-border-strong); }
 /* Wide (full screen): the line, the items and the reply sit side by side under the pane's head. */
 @container (min-width: 56rem) {
   .nous-board-pane { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); column-gap: 1rem; }
-  .nous-board-pane > .nous-board-pane-head { grid-column: 1 / -1; }
+  .nous-board-pane > :is(.nous-board-pane-head, .nous-board-pane-meta) { grid-column: 1 / -1; }
   .nous-board-pane > :is(.nous-board-line, .nous-board-detail, .nous-board-check) { grid-column: 1; }
   .nous-board-pane > :is(.nous-board-items, .nous-board-prompt, .nous-board-reply, .nous-board-result) { grid-column: 2; }
 }
@@ -767,3 +797,155 @@ button.nous-board-item:hover { border-color: var(--dock-border-strong); }
 .nous-everything-file h5 { margin: 0; font-size: 0.78rem; font-weight: 600; color: var(--dock-muted); overflow-wrap: anywhere; }
 .nous-everything-file pre { margin: 0; padding: 0.75rem 0.9rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); font: inherit; font-size: 0.86rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .nous-everything > .nous-decision-actions { padding: 0.75rem 1.25rem 1rem; border-top: 1px solid var(--dock-border); }
+
+/* Plans view (operator request 2026-10-25; redesigned the same day after the operator's review). Spacing on a 4px scale:
+   0.25 / 0.5 / 0.75 / 1 / 1.5rem; hairline rows instead of boxes; warning only for what waits on the operator or the server. */
+/* Every grid here sizes its column to the container, never to a long no-wrap chip or title (minmax(0, 1fr)). */
+.nous-plans { container-type: inline-size; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+.nous-plans-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+.nous-plans-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; }
+.nous-plans-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; margin: 0; color: var(--dock-muted); font-size: var(--dock-font-sm); }
+.nous-plans-summary strong { color: var(--dock-text); font-size: var(--dock-font); font-weight: 650; }
+.nous-plans-summary .is-you { color: var(--dock-warning); font-weight: 600; }
+.nous-plans-summary .is-overdue { color: var(--dock-danger); font-weight: 600; }
+
+/* (0,3,0) beats the room theme's ".space-shell[data-room-theme] button" (0,2,1), which painted a box behind every title. */
+.nous-plans .nous-plans-btn.nous-plans-btn { min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.nous-plans .nous-plans-btn.nous-plans-btn:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 2px; border-radius: 6px; }
+
+.nous-plans .nous-plans-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+.nous-plans .nous-plans-section h3 { margin: 0; color: var(--dock-text); font-size: var(--dock-font); font-weight: 650; }
+
+.nous-plan-holds { display: grid; gap: 0.25rem; padding: 0.75rem 1rem; border: 1px solid color-mix(in srgb, var(--dock-warning) 45%, transparent); border-radius: 12px; background: var(--dock-warning-soft); color: var(--dock-text); font-size: var(--dock-font-sm); line-height: 1.45; }
+.nous-plan-holds strong { color: var(--dock-warning); font-size: var(--dock-font); }
+.nous-plans .nous-plan-holds ul { margin: 0; padding-left: 1rem; }
+
+.nous-kind { display: inline-flex; align-items: center; justify-self: start; height: 1.35rem; padding: 0 0.5rem; border: 1px solid var(--dock-border); border-radius: 999px; color: var(--dock-muted); font-size: 0.7rem; font-weight: 650; white-space: nowrap; }
+.nous-kind:is(.is-operator, .is-server) { border-color: color-mix(in srgb, var(--dock-warning) 55%, transparent); background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-kind.is-finish { border-color: color-mix(in srgb, var(--dock-accent) 45%, transparent); color: var(--dock-accent); }
+
+/* Unblock first: what to clear, the plans it holds, how many plans move once it is cleared. */
+.nous-plans .nous-unblock { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--dock-border); }
+.nous-unblock-item { display: grid; grid-template-columns: 5.75rem minmax(0, 1fr) auto; align-items: start; gap: 0.25rem 0.75rem; padding: 0.75rem 0; border-bottom: 1px solid var(--dock-border); }
+.nous-unblock-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; min-width: 0; }
+.nous-unblock-what, .nous-plans .nous-unblock-finish.nous-plans-btn { display: -webkit-box; margin: 0; overflow: hidden; color: var(--dock-text); font-size: var(--dock-font); font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.nous-plans .nous-unblock-finish.nous-plans-btn:hover { color: var(--dock-accent); }
+/* "Holds" and "Needs" sit in their own column beside the chips, which wrap and shrink to the space left. */
+.nous-unblock-plans, .nous-plan-needs { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0.5rem; margin: 0; color: var(--dock-muted); font-size: var(--dock-font-sm); }
+.nous-plan-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; min-width: 0; }
+.nous-unblock-count { padding-top: 0.15rem; color: var(--dock-muted); font-size: var(--dock-font-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nous-plans .nous-plan-chip.nous-plans-btn { max-width: 100%; overflow: hidden; padding: 0.15rem 0.55rem; border: 1px solid var(--dock-border); border-radius: 999px; background: var(--dock-soft); color: var(--dock-text); font-size: var(--dock-font-sm); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; transition: border-color 150ms ease-out, color 150ms ease-out; }
+.nous-plans .nous-plan-chip.nous-plans-btn:hover { border-color: var(--dock-accent); color: var(--dock-accent); }
+
+/* Dates: one timeline of due dates and resume times. */
+.nous-plans .nous-plan-dates { display: grid; margin: 0; padding: 0; list-style: none; }
+.nous-plan-dates li { display: grid; grid-template-columns: 9.5rem 4.25rem minmax(0, 1fr) auto; align-items: baseline; gap: 0.75rem; padding: 0.45rem 0; border-bottom: 1px solid color-mix(in srgb, var(--dock-border) 60%, transparent); font-size: var(--dock-font-sm); }
+.nous-plan-dates time { color: var(--dock-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nous-plan-date-kind { color: var(--dock-muted); }
+.nous-plans .nous-plan-date-title.nous-plans-btn { overflow: hidden; color: var(--dock-text); text-overflow: ellipsis; white-space: nowrap; }
+.nous-plans .nous-plan-date-title.nous-plans-btn:hover { color: var(--dock-accent); }
+.nous-plan-dates .is-overdue time, .nous-plan-date-flag { color: var(--dock-danger); font-weight: 600; }
+.nous-plans .nous-plans-more.nous-plans-btn { justify-self: start; color: var(--dock-accent); font-size: var(--dock-font-sm); font-weight: 600; }
+
+/* All plans, grouped by what they wait on. */
+.nous-plan-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
+.nous-plan-group + .nous-plan-group { margin-top: 1rem; }
+.nous-plans .nous-plan-group h4 { display: flex; align-items: center; gap: 0.5rem; margin: 0; padding-bottom: 0.35rem; border-bottom: 1px solid var(--dock-border); color: var(--dock-muted); font-size: var(--dock-font-sm); font-weight: 650; }
+.nous-plan-group-count { min-width: 1.3rem; padding: 0 0.35rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-text); font-size: 0.72rem; font-variant-numeric: tabular-nums; text-align: center; }
+.nous-plans .nous-plan-group ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.nous-plan-item { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.35rem; border-bottom: 1px solid color-mix(in srgb, var(--dock-border) 60%, transparent); }
+.nous-plans .nous-plan-row.nous-plans-btn { display: grid; gap: 0.35rem; width: calc(100% + 1rem); margin-inline: -0.5rem; padding: 0.6rem 0.5rem; border-radius: 8px; transition: background-color 150ms ease-out; }
+.nous-plans .nous-plan-row.nous-plans-btn:hover { background: color-mix(in srgb, var(--dock-text) 5%, transparent); }
+.nous-plan-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+.nous-plan-row-title { display: -webkit-box; min-width: 0; overflow: hidden; color: var(--dock-text); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.nous-plan-row-pct { flex: none; color: var(--dock-muted); font-size: var(--dock-font-sm); font-variant-numeric: tabular-nums; }
+.nous-plan-row-detail { display: -webkit-box; overflow: hidden; color: var(--dock-muted); font-size: var(--dock-font-sm); line-height: 1.45; overflow-wrap: anywhere; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.nous-plan-row-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; color: var(--dock-muted); font-size: 0.74rem; }
+.nous-plan-row-meta .is-overdue { color: var(--dock-danger); font-weight: 600; }
+.nous-plan-row:is(.is-blocked, .is-failed) .nous-progress span { background: var(--dock-warning); }
+.nous-plan-needs { margin-bottom: 0.5rem; }
+
+/* Diagram: fixed-size boxes over an SVG of the arrows; it scrolls instead of shrinking. Desktop widths only. */
+.nous-plan-diagram-wrap { display: grid; gap: 0.75rem; min-width: 0; }
+.nous-plan-diagram-scroll { max-height: 70vh; overflow: auto; padding: 0.25rem; }
+.nous-plan-diagram { position: relative; }
+.nous-plan-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.nous-plan-edge { fill: none; stroke: color-mix(in srgb, var(--dock-muted) 65%, transparent); stroke-width: 1.5; }
+.nous-plan-edges marker path { fill: color-mix(in srgb, var(--dock-muted) 65%, transparent); }
+.nous-diagram-node { position: absolute; box-sizing: border-box; width: 248px; height: 88px; display: grid; align-content: start; gap: 0.3rem; padding: 0.55rem 0.7rem; overflow: hidden; border: 1px solid var(--dock-border); border-radius: 10px; background: var(--dock-raised); }
+.nous-diagram-node.is-blocker.is-operator { border-color: color-mix(in srgb, var(--dock-warning) 50%, transparent); }
+.nous-plans .nous-diagram-node.nous-plans-btn { padding: 0.55rem 0.7rem; border: 1px solid var(--dock-border); border-radius: 10px; background: var(--dock-surface); transition: border-color 150ms ease-out, background-color 150ms ease-out; }
+.nous-plans .nous-diagram-node.nous-plans-btn:hover { border-color: var(--dock-border-strong); background: var(--dock-raised); }
+.nous-plans .nous-diagram-node.is-overdue.nous-plans-btn { border-color: color-mix(in srgb, var(--dock-danger) 60%, transparent); }
+.nous-diagram-text { display: -webkit-box; overflow: hidden; color: var(--dock-text); font-size: 0.8rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.nous-diagram-node.is-blocker .nous-diagram-text { font-weight: 500; }
+.nous-diagram-meta { overflow: hidden; color: var(--dock-muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+
+.nous-plans[data-view="diagram"] > .nous-plans-list { display: none; }
+/* The diagram is for a desktop: a narrow dock or a phone keeps the list only. */
+@container (max-width: 40rem) {
+  .nous-plan-map-toggle, .nous-plans > .nous-plan-diagram-wrap { display: none; }
+  .nous-plans[data-view="diagram"] > .nous-plans-list { display: grid; }
+}
+/* Maximized, the diagram leaves the 76ch reading column and takes the stage's width; the list keeps the column. */
+.dock-panel.nous-dock.is-fullscreen .nous-overview:has(> .nous-plans[data-view="diagram"]) { padding-inline: 1.25rem; }
+/* A narrow dock: the tag sits above its blocker, a date's title under its time. */
+@container (max-width: 30rem) {
+  .nous-unblock-item { grid-template-columns: minmax(0, 1fr) auto; }
+  .nous-unblock-item > .nous-kind { grid-column: 1 / -1; }
+  .nous-plan-dates li { grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.25rem 0.5rem; }
+  .nous-plans .nous-plan-dates .nous-plan-date-title.nous-plans-btn { grid-column: 1 / -1; grid-row: 2; }
+}
+
+/* Goals (operator request 2026-10-27, plan clipboard:DR51jZJEB0j1): the Goals view; the Goals tab carries the ACTIVE count. */
+.nous-goals { gap: 0.6rem; }
+/* The add field: the message composer's look (a field that grows with its text, the round action beside it). */
+.nous-goal-add { flex: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 0.35rem; }
+.nous-goal-add > .dock-kit-icon-button { --dock-control: 2.6rem; --dock-icon: 1.2rem; }
+.nous-goal-add textarea, .nous-goal-edit textarea {
+  width: 100%; box-sizing: border-box; padding: 0.6rem 0.7rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius);
+  background: var(--dock-raised); color: var(--dock-text); font: inherit; font-size: max(16px, var(--dock-font, 0.8rem)); line-height: 1.35;
+  resize: none; field-sizing: content; min-height: 2.6rem; max-height: 10rem; scrollbar-width: thin;
+}
+.nous-goal-add textarea::placeholder { color: var(--dock-muted); }
+.nous-goal-add textarea:focus-visible, .nous-goal-edit textarea:focus-visible { outline: none; border-color: var(--dock-accent); box-shadow: 0 0 0 3px var(--dock-accent-soft); }
+.nous-goals-loop { flex: none; display: flex; align-items: center; gap: 0.45rem; margin: 0; color: var(--dock-muted); font-size: var(--dock-font-sm); line-height: 1.35; }
+.nous-goals-dot { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--dock-success); box-shadow: 0 0 0 3px var(--dock-success-soft); }
+.nous-goals-loop.is-held { color: var(--dock-warning); }
+.nous-goals-loop.is-held .nous-goals-dot { background: var(--dock-warning); box-shadow: 0 0 0 3px var(--dock-warning-soft); }
+.nous-goals-loop.is-running .nous-goals-dot { background: var(--dock-accent); box-shadow: 0 0 0 3px var(--dock-accent-soft); animation: nous-goal-pulse 1.4s ease-in-out infinite; }
+@keyframes nous-goal-pulse { 50% { box-shadow: 0 0 0 6px transparent; } }
+.nous-goals-divider { flex: none; margin: 0.4rem 0 0; color: var(--dock-muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+/* A goal card: status, rank and percent, the operator's words, a progress bar, Nous's facts as a two-column list, the log, one row of actions. */
+.nous-goal {
+  flex: none; display: grid; gap: 0.5rem; padding: 0.7rem 0.75rem 0.55rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+}
+.nous-goal.is-active { border-color: color-mix(in srgb, var(--dock-accent) 35%, var(--dock-border)); box-shadow: inset 3px 0 0 var(--dock-accent); }
+.nous-goal.is-paused, .nous-goal.is-dropped { opacity: 0.72; }
+.nous-goal-top { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+.nous-goal-status { padding: 0.05rem 0.5rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: 0.64rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.nous-goal-status.is-active { background: var(--dock-accent-soft); color: var(--dock-accent); }
+.nous-goal-status.is-achieved { background: var(--dock-success-soft); color: var(--dock-success); }
+.nous-goal-rank { color: var(--dock-muted); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+.nous-goal-percent { margin-left: auto; color: var(--dock-text); font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.nous-goal-text { margin: 0; color: var(--dock-text); font-size: 0.86rem; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.nous-goal-bar { display: block; height: 5px; border-radius: 999px; background: var(--dock-soft); overflow: hidden; }
+.nous-goal-bar span { display: block; height: 100%; border-radius: inherit; background: var(--dock-accent); transition: width 300ms ease-out; }
+.nous-goal.is-achieved .nous-goal-bar span { background: var(--dock-success); }
+.nous-goal-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.3rem 0.6rem; margin: 0; font-size: 0.72rem; line-height: 1.4; }
+.nous-goal-facts dt { color: var(--dock-muted); font-size: 0.68rem; font-weight: 500; line-height: 1.5; }
+.nous-goal-facts dd { margin: 0; min-width: 0; color: var(--dock-text); overflow-wrap: anywhere; }
+.nous-goal-facts dd.is-empty { color: var(--dock-muted); font-style: italic; }
+.nous-goal-facts dd.is-wait { color: var(--dock-warning); }
+.nous-goal-log summary { width: max-content; cursor: pointer; color: var(--dock-muted); font-size: 0.7rem; font-weight: 600; }
+.nous-goal-log ol { margin: 0.35rem 0 0; padding: 0 0 0 0.75rem; display: grid; gap: 0.3rem; border-left: 2px solid var(--dock-border); list-style: none;
+  font-size: 0.7rem; line-height: 1.4; color: var(--dock-text); overflow-wrap: anywhere; white-space: pre-line; }
+.nous-goal-log-when { color: var(--dock-muted); }
+.nous-goal-actions { display: flex; justify-content: flex-end; gap: 0.15rem; margin-top: 0.1rem; padding-top: 0.45rem; border-top: 1px solid var(--dock-border); }
+.nous-goal .nous-goal-actions .dock-kit-icon-button { --dock-control: 1.8rem; --dock-icon: 0.95rem; border-color: transparent; background: transparent; color: var(--dock-muted); }
+.nous-goal .nous-goal-actions .dock-kit-icon-button:hover:not(:disabled) { border-color: transparent; background: var(--dock-soft); color: var(--dock-text); }
+.nous-goal .nous-goal-actions .dock-kit-icon-button[aria-label="Delete the goal"]:hover:not(:disabled) { background: var(--dock-danger-soft); color: var(--dock-danger); }
+.nous-goal-edit { display: grid; gap: 0.35rem; }
+.nous-goal-edit-actions { display: flex; justify-content: flex-end; gap: 0.3rem; }
+@media (prefers-reduced-motion: reduce) { .nous-goals-loop.is-running .nous-goals-dot { animation: none; } }

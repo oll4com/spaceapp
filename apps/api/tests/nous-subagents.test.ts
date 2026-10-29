@@ -12,7 +12,7 @@ const turnId = "nous_turn:parent0001";
 const minute = 60_000;
 
 /** Helpers that wait until the test lets them answer. */
-function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERLOADED"; capMs?: number; answerMs?: number } = {}) {
+function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERLOADED"; capMs?: number; answerMs?: number; reason?: string; tokenMode?: "NORMAL" | "LOW" | "CRITICAL" } = {}) {
   const parentController = new AbortController();
   let parentRunning = true;
   const release: Array<() => void> = [];
@@ -24,13 +24,27 @@ function fixture(options: { deadlineIn?: number; load?: "CALM" | "BUSY" | "OVERL
     release.push(() => resolve({ text: `Report of ${input.prompt.split("\n")[0]}`, isError: false }));
   });
   const subagents = createNousSubagents({ run, ...(options.capMs ? { capMs: options.capMs } : {}), ...(options.answerMs ? { answerMs: options.answerMs } : {}),
-    parent: (who, id) => who === owner && id === turnId && parentRunning ? { deadline: Date.now() + (options.deadlineIn ?? 20 * minute), signal: parentController.signal } : null,
-    ...(options.load ? { load: async () => options.load! } : {}) });
+    parent: (who, id) => who === owner && id === turnId && parentRunning ? { deadline: Date.now() + (options.deadlineIn ?? 20 * minute), signal: parentController.signal, ...(options.reason ? { reason: options.reason } : {}) } : null,
+    ...(options.load ? { load: async () => options.load! } : {}), ...(options.tokenMode ? { tokenMode: async () => options.tokenMode! } : {}) });
   const task = (title: string) => ({ title, instructions: `Check ${title}.` });
   return { subagents, started, release, task, endParent: () => { parentRunning = false; parentController.abort(); } };
 }
 
 describe("Nous's helpers (space_subagents)", () => {
+  it("caps LOW mode at one helper for every turn but a goal turn, which keeps the load cap (operator order 2026-10-27)", async () => {
+    const low = fixture({ tokenMode: "LOW", reason: "INBOX" });
+    expect(await low.subagents.run(owner, turnId, [low.task("a"), low.task("b")])).toEqual({ refused: expect.stringContaining("At most 1 helpers run at once in LOW mode") });
+    const goal = fixture({ tokenMode: "LOW", reason: "GOAL", answerMs: 20 });
+    const started = await goal.subagents.run(owner, turnId, [goal.task("a"), goal.task("b"), goal.task("c")]);
+    expect("refused" in started).toBe(false);
+    expect(goal.started).toHaveLength(3);
+    const busy = fixture({ tokenMode: "LOW", reason: "GOAL", load: "BUSY" });
+    expect(await busy.subagents.run(owner, turnId, [busy.task("a"), busy.task("b"), busy.task("c")])).toEqual({ refused: expect.stringContaining("At most 2 helpers run at once while the server is BUSY") });
+    const critical = fixture({ tokenMode: "CRITICAL", reason: "GOAL" });
+    expect(await critical.subagents.run(owner, turnId, [critical.task("a")])).toEqual({ refused: expect.stringContaining("CRITICAL") });
+    goal.release.forEach((release) => release());
+  });
+
   it("keeps the operator's, memory, notes and structural tools with the parent, and gives helpers the reads and routine pane work", () => {
     const all = nousToolDefinitions({ copilots: true });
     const helperTools = nousSubagentTools(all).map((tool) => tool.name);

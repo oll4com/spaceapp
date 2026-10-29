@@ -8,6 +8,7 @@ import {
   setClipboardItemCompletedRequestSchema,
   spaceAgentClipboardActionEnvelopeSchema,
   planStepSchema,
+  planDependencyProblem,
   updatePlanProgressRequestSchema,
   upsertClipboardItemInputSchema
 } from "../src/index.js";
@@ -244,5 +245,30 @@ describe("plan reasoning recommendations", () => {
     expect(parsed.order).toBe(4);
     expect(parsed.status).toBe("COMPLETED");
     expect((parsed as Record<string, unknown>).extraMetadata).toBeUndefined();
+  });
+});
+
+describe("plan map contracts (operator request 2026-10-25)", () => {
+  const base = { id: "clipboard:plan1", text: "Plan", source: "PLAN" as const, occurrenceCount: 1, characterCount: 4, createdAt: "2026-10-25T10:00:00.000Z", lastUsedAt: "2026-10-25T10:00:00.000Z" };
+
+  it("defaults dependsOn, dueAt and waitsOn on a stored item", () => {
+    expect(clipboardItemSchema.parse(base)).toMatchObject({ dependsOn: [], dueAt: null, waitsOn: null });
+    expect(clipboardItemSchema.parse({ ...base, waitsOn: { kind: "THIRD_PARTY", what: "the mail server" } }).waitsOn).toEqual({ kind: "THIRD_PARTY", what: "the mail server", until: null });
+  });
+
+  it("takes waitsOn null to clear and refuses a 31st dependency or map fields on a note", () => {
+    expect(updatePlanProgressRequestSchema.parse({ waitsOn: null, dueAt: null, dependsOn: [] })).toEqual({ waitsOn: null, dueAt: null, dependsOn: [] });
+    expect(updatePlanProgressRequestSchema.safeParse({ dependsOn: Array.from({ length: 31 }, (_, index) => `clipboard:dep${index}`) }).success).toBe(false);
+    expect(createClipboardItemRequestSchema.safeParse({ text: "note", source: "MANUAL_NOTE", dueAt: "2026-10-30T00:00:00.000Z" }).success).toBe(false);
+    expect(createClipboardItemRequestSchema.safeParse({ text: "plan", source: "PLAN", minimumModel: "m", dependsOn: ["clipboard:dep1"], dueAt: "2026-10-30T00:00:00.000Z" }).success).toBe(true);
+  });
+
+  it("planDependencyProblem names a self dependency, an unknown plan and a loop", () => {
+    const plans = [{ id: "clipboard:a", dependsOn: ["clipboard:b"] }, { id: "clipboard:b", dependsOn: [] }, { id: "clipboard:c", dependsOn: [] }];
+    expect(planDependencyProblem("clipboard:a", ["clipboard:a"], plans)).toBe("A plan cannot depend on itself.");
+    expect(planDependencyProblem("clipboard:a", ["clipboard:zz"], plans)).toBe("Plan clipboard:zz is not an open plan.");
+    expect(planDependencyProblem("clipboard:b", ["clipboard:a"], plans)).toBe("The dependency would loop: clipboard:b → clipboard:a → clipboard:b.");
+    expect(planDependencyProblem("clipboard:b", ["clipboard:c"], plans)).toBeNull();
+    expect(planDependencyProblem(null, ["clipboard:c"], plans)).toBeNull();
   });
 });

@@ -16,7 +16,7 @@ import {
   type useRailVisibility
 } from "../ui-theme/use-rail-visibility.js";
 import type { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
-import { ChevronLeft, ChevronRight, Crop, Keyboard, Maximize2, Minimize2, Music2, PanelLeft, PanelTopOpen, PanelsTopLeft, Star, StickyNote } from "../ui-theme/app-icons.js";
+import { ChevronLeft, ChevronRight, Crop, Keyboard, Maximize2, Minimize2, Music2, Nous, PanelLeft, PanelTopOpen, PanelsTopLeft, Star, StickyNote } from "../ui-theme/app-icons.js";
 import { VIBE_MUSIC_PANEL_ID } from "../vibe-music/vibe-music-session.js";
 import { OSK_PANEL_ID } from "./room-toolbar-actions.js";
 import type { ToolbarPopovers } from "./useToolbarPopovers.js";
@@ -151,6 +151,28 @@ export function CollapsedRoomRail({
           }}
         >
           <PanelLeft aria-hidden="true" />
+        </button>
+      ) : null}
+      {railVisibility.isVisible("nous") ? (
+        <button
+          type="button"
+          className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "nous" ? " is-active" : ""}`}
+          title={sideSurfaceToggleLabel("nous")}
+          data-rail-id="nous"
+          aria-label={sideSurfaceToggleLabel("nous")}
+          aria-pressed={isSideSurfaceOpen && activeSideSurface === "nous"}
+          onClick={() => {
+            setIsThemeMenuOpen(false);
+            setIsPaneLayoutMenuOpen(false);
+            setIsCollapsedPaneLayoutMenuOpen(false);
+            setIsPaneSpanAllMenuOpen(false);
+            setIsWorkspaceTextSizePickerOpen(false);
+            setIsVibeMusicOpen(false);
+            setLowerRailVisibilityMenu(null);
+            toggleSideSurface("nous");
+          }}
+        >
+          <Nous aria-hidden="true" />
         </button>
       ) : null}
       {railVisibility.isVisible("live-model") ? (

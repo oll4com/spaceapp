@@ -506,6 +506,24 @@ describe("Space control",()=>{
   expect(entry.verificationEvidence.modelVerified).toBe(true);
   expect(entry.verificationEvidence.accountVerified).toBe(true);
  });
+ it("closes a pane whose CLI runtime has no native controls, like the UI's close button (27/10: Bruno/Leo)", async () => {
+  const c = fixture();
+  const shell = c.store.createPane({ roomId: c.room.id, title: "Leo", mode: "TERMINAL", terminalRuntimeId: "cli:harness" });
+  const prompt = await c.execute([{ kind: "pane", operation: "prompt", target: { paneIds: [shell.id] }, text: "Hi" }], "request:prompt") as any;
+  expect(JSON.stringify(prompt)).toContain("Native controls for this CLI runtime are not supported.");
+  const dry = await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [shell.id], state: "ALL" } }], "request:dry", { dryRun: true }) as any;
+  expect(JSON.stringify(dry)).not.toContain("Native controls");
+  expect(c.store.getPane(shell.id).isClosed).toBe(false);
+  const closed = await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [shell.id], state: "ALL" } }], "request:close") as any;
+  expect(closed).toMatchObject({ status: "COMPLETED", results: [{ paneId: shell.id, status: "COMPLETED" }] });
+  expect(c.store.getPane(shell.id)).toMatchObject({ isClosed: true, status: "CLOSED" });
+  expect(c.controller.interrupt).toHaveBeenCalledWith(expect.objectContaining({ id: shell.id }), expect.any(String));
+  // 27/10 22:08: a shell pane the operator started Codex in by hand has no runtime at all (terminal_runtime_id null).
+  const bare = c.store.createPane({ roomId: c.room.id, title: "Leo", mode: "TERMINAL", terminalRuntimeId: null } as never);
+  expect(await c.execute([{ kind: "pane", operation: "close", target: { paneIds: [bare.id], state: "ALL" } }], "request:bare"))
+    .toMatchObject({ status: "COMPLETED", results: [{ paneId: bare.id, status: "COMPLETED" }] });
+  expect(c.store.getPane(bare.id)).toMatchObject({ isClosed: true, status: "CLOSED" });
+ });
  it("inspect CONTENT returns open panes before closed panes so open content is not starved by older closed panes", async () => {
   const c = fixture();
   // Close the first two panes so they become older closed panes

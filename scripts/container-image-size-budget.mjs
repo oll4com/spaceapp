@@ -13,9 +13,11 @@ const mebibyte = 1024 * 1024;
 // 1.1.8 raised core to 1150 MiB for Python with sqlite3 (the Databases tool's SQLite worker): linux/amd64 measured
 // 1090.6 MiB with python3 (rc3 without Python: 1057.9 MiB); the trimmed python3-minimal + libpython3-stdlib variant
 // measured 1078.6 MiB, 21.4 MiB under the old 1100 MiB, and arm64 ran about 22 MiB above amd64 in 1.1.5.
+// 1.1.8 raised browser to 1765 MiB (Nous decision 2026-10-25): the release run measured linux/arm64 at 1756.3 MiB
+// (amd64 1741.6 MiB); shrinking the arm64 browser image is planned for 1.1.9.
 export const containerImageSizeBudgets = Object.freeze({
   core: 1150 * mebibyte,
-  browser: 1750 * mebibyte,
+  browser: 1765 * mebibyte,
   cli: 2800 * mebibyte
 });
 

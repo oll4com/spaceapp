@@ -18,6 +18,8 @@ export interface TaskScheduleRunnerDeps {
   answer(pane: Pane, input: { expectedSessionId: string; answer: string; submit: boolean; expectedPromptFingerprint: string }): Promise<unknown>;
   /** Reopens the task's closed CLI pane as its owner (Space Control: a terminal resumes its conversation, a copilot-style pane starts its CLI). */
   reopen?(pane: Pane, ownerUserId: string): Promise<unknown>;
+  /** One line to Nous's inbox when an occurrence keeps waiting on an idle pane whose prompt reads as a draft (28/10). */
+  notice?(ownerUserId: string, key: string, line: string): Promise<void>;
   now?: () => number;
 }
 
@@ -32,6 +34,8 @@ export function scheduledTaskPrompt(task: TaskItem): string {
 
 export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
   const now = () => deps.now?.() ?? Date.now();
+  /** Ticks each occurrence (task|due time) waited on an idle pane read as holding a draft. */
+  const draftWaits = new Map<string, number>();
 
   async function runOccurrence(task: TaskItem & { ownerUserId: string }): Promise<"RAN" | "REMINDED" | "WAITING" | "SKIPPED" | "LOST"> {
     const schedule = task.schedule!;
@@ -64,7 +68,18 @@ export function createTaskScheduleRunner(deps: TaskScheduleRunnerDeps) {
     }
     const observed = await deps.inspect(pane).catch(() => null);
     if (observed && (!observed.sessionId || observed.state === "EXITED" || observed.state === "ERROR")) return waitOrSkip("the pane has no running CLI");
-    if (!observed || !atEmptyPrompt(observed)) return waitOrSkip("the CLI was busy or had a draft at its prompt");
+    if (!observed || !atEmptyPrompt(observed)) {
+      // 28/10: a task waited silently on an idle pane read as holding a draft (up to 12 h); after two ticks Nous hears it and can restart the pane.
+      if (observed?.state === "IDLE" && deps.notice) {
+        const key = `${task.id}|${dueAt}`;
+        if (draftWaits.size > 1_000) draftWaits.clear();
+        draftWaits.set(key, (draftWaits.get(key) ?? 0) + 1);
+        if (draftWaits.get(key) === 2) await deps.notice(task.ownerUserId, `task-waits:${task.id}`, `Scheduled task "${task.title}" (${task.id}, due ${dueAt}) waits: `
+          + `pane ${pane.paneName ?? pane.title} is idle but its prompt reads as holding a draft, so nothing is typed. Read it (space_read_pane), then clear the draft `
+          + "(space_clear_pane_draft) or restart the pane (space_restart_pane) so the task can type.").catch(() => undefined);
+      }
+      return waitOrSkip("the CLI was busy or had a draft at its prompt");
+    }
     try {
       await deps.answer(pane, { expectedSessionId: observed.sessionId, answer: scheduledTaskPrompt(task), submit: true, expectedPromptFingerprint: observed.promptFingerprint });
     } catch (error) {

@@ -1,8 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { eventSchema, type FreelanceEvent, type FreelanceRun, type Pane } from "@space/contracts";
+import { eventSchema, makeNeedsYouAsk, type FreelanceEvent, type FreelanceRun, type Pane } from "@space/contracts";
 import { InMemoryFreelanceCopilotRepository, PostgresFreelanceCopilotRepository, type FreelanceCopilotRepository } from "@space/db";
 import { makeSpaceId, SpaceConflictError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import { submitCliPrompt } from "../cli-prompt-submit.js";
+import { createCopilotRunKick } from "../copilot-run-kick.js";
+import type { RoomPaneObservation } from "../room-pane-control.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import type { ConnectorCrypto } from "../dot-connectors.js";
 import type { MailboxFactory } from "../job-apply/mailbox.js";
@@ -27,6 +29,8 @@ export interface FreelanceCopilotWiring extends Omit<FreelanceCopilotRouteDepend
   /** The instance job `freelance-copilot-scheduler` (stable; dev opts in). */
   scheduler: boolean;
   log: { warn(details: unknown, message: string): void };
+  /** The pane's CLI as the Room Agent sees it: a stalled RUNNING run is kicked only at an empty prompt. */
+  inspect?(pane: Pane): Promise<RoomPaneObservation>;
 }
 
 const KICKOFF = (runId: string) => `Freelance Copilot run ${runId} started in this pane. Read the space-freelance-copilot skill (SKILL.md and its references), then loop: call space_freelancecopilot space_freelance_next until it returns done=true (without MCP tools in this session, call them on demand: JSON {"serverId","toolName","arguments"} on stdin to space-capability call); recall memory before writing, ground every claim in PROFILE, CASE_STUDY and FACT memories, send only after space_freelance_send_begin succeeds, report the sent URL with space_freelance_send_done, and call space_freelance_client_ready as soon as a client wants to go ahead.`;
@@ -71,9 +75,14 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
     const settings = service.settingsOf(pane).notifications;
     const clientReady = plan.action === "clientReady";
     if (clientReady ? !settings.clientReady : !settings.needsYou) return;
+    // Needs you as questions (plan clipboard:5AQvaoSR-IZa): the operator answers or decides from the card.
+    const decide = (item: "REVIEW" | "RULE" | "CAMPAIGN", itemId: unknown) => itemId ? makeNeedsYouAsk(event.message, { kind: "COPILOT_DECISION", copilot: "FREELANCE", item, itemId: String(itemId) }, ["Approve", "Decline"]) : null;
+    const ask = event.type === "QUESTION" ? makeNeedsYouAsk(String(event.payload.question ?? event.message), { kind: "COPILOT_QUESTION", copilot: "FREELANCE", questionId: String(event.payload.questionId) },
+      Array.isArray(event.payload.options) ? event.payload.options.map(String) : [])
+      : event.type === "REVIEW_REQUESTED" ? decide("REVIEW", event.messageId) : event.type === "RULE_PROPOSED" ? decide("RULE", event.payload.ruleId) : null;
     await notifications.raise({ ownerUserId: owner, roomId: pane.roomId, paneId: pane.id, source: "FREELANCE_COPILOT", kind: event.type, severity: "ATTENTION",
       title: clientReady ? `A client wants to go ahead (${pane.title})` : `Freelance Copilot needs you (${pane.title})`, body: event.message.slice(0, 2000),
-      link: { roomId: pane.roomId, paneId: pane.id, target: event.leadId ? `lead:${event.leadId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id },
+      link: { roomId: pane.roomId, paneId: pane.id, target: event.leadId ? `lead:${event.leadId}` : `event:${event.id}` }, dedupeKey, payload: { eventId: event.id, ...(ask ? { ask } : {}) },
       telegram: settings.telegram ? true : null });
   }
 
@@ -135,6 +144,12 @@ export function registerFreelanceCopilot(app: FastifyInstance, deps: FreelanceCo
     });
     scheduler.start();
     app.addHook("onClose", async () => scheduler.stop());
+    if (deps.inspect) {
+      const kick = createCopilotRunKick({ mode: "FREELANCE_COPILOT", store, log: deps.log, inspect: deps.inspect, paused: (pane) => service.settingsOf(pane).paused,
+        runView: (owner, pane) => service.runView(owner, pane), kickoff });
+      kick.start();
+      app.addHook("onClose", async () => kick.stop());
+    }
   }
   return service;
 }

@@ -250,7 +250,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
       }
     }
     const result = selectAccount(states, {
-      now: now() / 1000, routingStrategy: settings.routingStrategy, planPriority: settings.planPriority, preferEarlierReset: settings.preferEarlierReset
+      now: now() / 1000, routingStrategy: settings.routingStrategy, planPriority: settings.planPriority, preferEarlierReset: settings.preferEarlierReset, weeklyPace: true
     });
     for (const state of states) options.pool.absorb(state);
     if (!result.account) return { none: { errorCode: result.errorCode ?? null, errorMessage: result.errorMessage ?? null } };
@@ -469,7 +469,8 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
 
     // Every attempt failed before any output reached the client.
     const failure = lastFailure ?? { kind: "transient" as const, status: 503, code: "no_accounts", message: gatewayErrors.noAccounts().error.message, error: {}, body: null };
-    options.logs.add({ ...baseLog(), status: "error", errorCode: failure.code, errorMessage: failure.message, latencyMs: now() - startedAt });
+    // The row names the account that answered last (null only when none was tried): "no account" rows hid upstream answers.
+    options.logs.add({ ...baseLog(), accountId: [...tried].at(-1) ?? null, status: "error", errorCode: failure.code, errorMessage: failure.message, latencyMs: now() - startedAt });
     if (failure.kind === "surface" && failure.body) {
       return reply.code(failure.status).header("content-type", "application/json").header("x-request-id", requestId).send(failure.body);
     }
@@ -572,7 +573,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
       return reply.code(upstream.status).header("content-type", upstream.headers.get("content-type") ?? "application/json").header("x-request-id", requestId).send(text);
     }
     const failure = lastFailure ?? { kind: "transient" as const, status: 503, code: "no_accounts", message: gatewayErrors.noAccounts().error.message, error: {}, body: null };
-    log({ status: "error", errorCode: failure.code, errorMessage: failure.message });
+    log({ accountId: [...tried].at(-1) ?? null, status: "error", errorCode: failure.code, errorMessage: failure.message });
     if (failure.kind === "surface" && failure.body) {
       return reply.code(failure.status).header("content-type", "application/json").header("x-request-id", requestId).send(failure.body);
     }

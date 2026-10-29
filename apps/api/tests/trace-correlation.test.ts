@@ -157,6 +157,20 @@ describe("trace lookup projection", () => {
     expect(projected.causalError).toMatchObject({ code: "ROOM_AGENT_TOKEN_LIMIT", source: "room-agent-mission",
       eventId: "room_agent_mission:one", workflowId: null, at: "2026-10-16T09:05:00.000Z" });
   });
+
+  it("returns the CLI sessions a trace allocated with their task and revision ids", async () => {
+    const { projectTraceRecords } = await import("../src/trace-routes.js");
+    const projected = projectTraceRecords("req:clisession01", {
+      events: [], auditEvents: [], workflows: [],
+      cliSessions: [{ sessionId: "cli_session:one", paneId: "pane:cli", roomId: "room:cli", runtimeId: "cli:codex",
+        cliTaskId: "cli_task:one", cliTaskRevisionId: "not an identifier", launchMode: "RESUME", status: "RUNNING",
+        startedAt: "2026-10-27T16:00:00.000Z", endedAt: null }]
+    } as Parameters<typeof projectTraceRecords>[1]);
+    expect(projected.cliSessions).toEqual([{ sessionId: "cli_session:one", paneId: "pane:cli", roomId: "room:cli", runtimeId: "cli:codex",
+      cliTaskId: "cli_task:one", cliTaskRevisionId: null, launchMode: "RESUME", status: "RUNNING",
+      startedAt: "2026-10-27T16:00:00.000Z", endedAt: null }]);
+    expect(projectTraceRecords("req:clisession02", { events: [], auditEvents: [], workflows: [] }).cliSessions).toEqual([]);
+  });
 });
 
 function metricValue(pattern: RegExp): number {

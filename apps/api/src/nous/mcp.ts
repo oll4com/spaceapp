@@ -44,7 +44,7 @@ const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(),
 const callSchema = z.object({ name: z.string().max(100), arguments: z.record(z.string(), z.unknown()).optional(), _meta: z.record(z.string(), z.unknown()).optional() });
 
 export function registerNousMcpRoute(app: FastifyInstance, deps: {
-  secret: string; service: Pick<NousService, "turnRunning" | "callTool">; tools: NousToolDefinition[]; routeOptions: Record<string, unknown>;
+  secret: string; service: Pick<NousService, "turnRunning" | "callTool">; tools: NousToolDefinition[] | (() => Promise<NousToolDefinition[]>); routeOptions: Record<string, unknown>;
   /** The operator's attached files: their tools answer with image blocks, which Nous's own tools cannot. */
   attachments?: Pick<NousAttachments, "tools" | "handles" | "callTool">;
   /** The turn's helpers: a helper's token works only while it and its parent turn run, with the helpers' tools only. */
@@ -68,7 +68,10 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
       return answer({ protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "space-nous", version: "1.0.0" } });
     }
     if (method === "ping") return answer({});
-    if (method === "tools/list") return answer({ tools: [...(helper ? nousSubagentTools(deps.tools) : deps.tools), ...(deps.attachments?.tools ?? [])] });
+    if (method === "tools/list") {
+      const tools = typeof deps.tools === "function" ? await deps.tools() : deps.tools;
+      return answer({ tools: [...(helper ? nousSubagentTools(tools) : tools), ...(deps.attachments?.tools ?? [])] });
+    }
     if (method === "tools/call") {
       const call = callSchema.safeParse(params);
       if (!call.success) return { jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid tool call." } };

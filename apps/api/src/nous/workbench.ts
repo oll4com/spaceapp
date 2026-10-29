@@ -4,10 +4,9 @@ import type { DeployQueueReport, DeployQueueTicket, NousDecision } from "@space/
  * Nous's workbench (operator request 2026-10-21, plan clipboard:GZNzxm7FNwjM): the hourly limits of its own tools and the Space
  * reads it used to ask panes for (merge queue, its decisions with their outcome).
  */
-export const NOUS_WORKBENCH_LIMITS: Readonly<Record<string, number>> = {
-  space_files_write: 120, space_agent_files_add: 20, space_web_read: 60, space_web_search: 30, space_net_check: 120, space_git: 240, space_db_query: 240,
-  space_queue_status: 120, space_nous_decisions: 120, space_nous_turn_costs: 60, space_clear_pane_draft: 30, space_look: 120
-};
+// Operator rule 2026-10-27 «δεν θελω να υπαρχει όριο»: the read tools and its own folder have no hourly cap (a web search stopped at 30
+// in the middle of a research the operator asked for); only new Agent Files (the operator's Agent Files rule) and draft clears keep one.
+export const NOUS_WORKBENCH_LIMITS: Readonly<Record<string, number>> = { space_agent_files_add: 20, space_clear_pane_draft: 30 };
 const HOUR_MS = 3_600_000;
 
 /** Calls per owner and tool in the last hour (in memory: an API restart starts the count again). */

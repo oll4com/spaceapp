@@ -7,6 +7,10 @@ metadata:
 
 # Video pane (video studio)
 
+**Browser checks (2026-10-27):** Cloudflare: for a full-page "Verify you are human" or "Just a moment" check, call space_browser_cloudflare on space_browser once with targetPaneId from space_browser_context (your managed browser pane) and optionally its active pageId. It uses the existing browser and is free. CLEARED means the challenge was observed and the page loaded; NO_CHALLENGE means no solve was needed. Re-snapshot and verify the original task. On needsOperator, an error or an unavailable tool, request browser handoff; do not loop, reload or change accounts/proxies. HUMAN Press & Hold uses its separate shared rule. Embedded Turnstile, other CAPTCHAs, identity checks, login/MFA and Vault-protected pages keep their existing handoff rules. This does not authorize a submission, message, payment or account change.
+
+Press & Hold: for a HUMAN/PerimeterX full-page check such as Fiverr "It needs a human touch" or "Before we continue", call space_browser_press_hold on space_browser once with targetPaneId from space_browser_context and optionally its active pageId. It holds only the challenge button once, for at most 15 seconds in a 40-second attempt, in the existing browser and network route, for free. CLEARED means the challenge was observed and the real page loaded; NO_CHALLENGE means no solve was needed. Re-snapshot and verify the original task. On needsOperator, an error or an unavailable tool, request browser handoff; do not retry, reload or change accounts/proxies. Other CAPTCHAs, identity checks, login/MFA and Vault protection keep their handoff rules. This does not authorize a submission, message, payment or account change.
+
 Two roles use this skill:
 
 - **Requesters** (any CLI pane, Nous, Dots, the Live pane, Marketing Copilot): ask the room owner's Video pane for a video with

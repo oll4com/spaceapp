@@ -81,7 +81,11 @@ async function mount() {
       import("./client-error-reporter.js"),
       import("./live-api.js")
     ]);
-    installClientErrorReporter({ send: (report) => api.reportClientError(report) });
+    installClientErrorReporter({ send: (report) => {
+      // Keep the same sanitized evidence locally even when the server cannot be reached.
+      try { (window as any).spaceDesktop?.reportClientError?.(report); } catch { /* Diagnostics must not break reporting. */ }
+      return api.reportClientError(report);
+    } });
   }
   root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /><InstanceBadge /></SurfaceErrorBoundary></StrictMode>);
   return route;

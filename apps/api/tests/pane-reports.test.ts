@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Pane, Room, RoomAgentEvent } from "@space/contracts";
 import { InMemoryNousPaneChecksRepository, InMemoryPaneReportsRepository } from "@space/db";
-import { createPaneReports, paneReportLine, paneReportsText, planReportLine, questionSummary, reportSummary, screenSummary, tailSummary } from "../src/pane-reports.js";
+import { createPaneReports, paneProgressSchema, paneReportLine, paneReportsText, planReportLine, questionSummary, reportSummary, screenSummary, tailSummary } from "../src/pane-reports.js";
 import { createNousPaneWatch } from "../src/nous/pane-watch.js";
 import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousTools, type NousToolDeps } from "../src/nous/tools.js";
@@ -68,6 +68,11 @@ describe("pane reports", () => {
       title: "Andy needs you", body: "Pick the colour\nNeeds: red or blue", link: { roomId: bruno.id, paneId: andy.id }, dedupeKey: `agent:needs-you:${andy.id}`,
       payload: { alertAt: new Date(now).toISOString() }, telegram: null });
     expect(raise.mock.calls[0]![1]).toEqual({ realert: true });
+    expect(raise.mock.calls[0]![0]).toMatchObject({ payload: { ask: { question: "red or blue", answer: { kind: "PANE" } } } });
+    // Needs you as questions (plan clipboard:5AQvaoSR-IZa): the options and the recommended one reach the card.
+    await reports.report(bruno, andy, { status: "needs-you", summary: "Pick the colour", needs: "Which colour?", options: ["Red", "Blue"], recommended: "Blue" });
+    expect(raise.mock.calls[1]![0]).toMatchObject({ payload: { ask: { question: "Which colour?", options: ["Red", "Blue"], recommended: "Blue", answer: { kind: "PANE" } } } });
+    expect(paneProgressSchema.safeParse({ status: "needs-you", summary: "x", options: ["Red"], recommended: "Blue" }).success).toBe(false);
     expect(resolve).not.toHaveBeenCalled();
     await reports.report(bruno, andy, { status: "progress", summary: "Painting it blue" });
     expect(resolve).toHaveBeenCalledWith(owner, `agent:needs-you:${andy.id}`);

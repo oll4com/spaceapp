@@ -7,8 +7,8 @@ import type { CopilotLaunchSettings, Pane, UserSettings } from "@space/contracts
  * the contracts it loaded at start).
  */
 export interface CopilotKind {
-  id: "job" | "mail" | "marketing" | "freelance" | "design" | "app-studio" | "video" | "security";
-  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" | "APP_STUDIO" | "VIDEO" | "SECURITY_COPILOT";
+  id: "job" | "mail" | "marketing" | "freelance" | "design" | "app-studio" | "video" | "security" | "monitoring";
+  mode: "JOB_APPLY" | "MAIL_COPILOT" | "MARKETING_COPILOT" | "FREELANCE_COPILOT" | "DESIGN" | "APP_STUDIO" | "VIDEO" | "SECURITY_COPILOT" | "MONITORING_COPILOT";
   /** "Job Copilot", "Mail Copilot": the Create menu entry, dialog titles and notices. */
   label: string;
   /** The CLI recommended for this copilot (Claude Code: long, tool-heavy loops with native MCP and account profiles). */
@@ -23,11 +23,11 @@ export interface CopilotKind {
   /** Where the default agent is changed, named in notices ("Settings → Job Copilot"). */
   settingsPlace: string;
   /** The user-settings key holding the remembered agent. */
-  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio" | "video" | "securityCopilot";
+  settingsKey: "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio" | "video" | "securityCopilot" | "monitoringCopilot";
   /** Prefix of the settings card's form control names ("job-copilot"). */
   controlPrefix: string;
   /** The remembered launch of this kind in the user's settings. */
-  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio" | "video" | "securityCopilot">): CopilotLaunchSettings | null;
+  remembered(settings: Pick<UserSettings, "jobCopilot" | "mailCopilot" | "marketingCopilot" | "freelanceCopilot" | "design" | "appStudio" | "video" | "securityCopilot" | "monitoringCopilot">): CopilotLaunchSettings | null;
 }
 
 export const JOB_COPILOT_KIND: CopilotKind = {
@@ -154,7 +154,23 @@ export const SECURITY_COPILOT_KIND: CopilotKind = {
   remembered: (settings) => settings.securityCopilot ?? null
 };
 
-export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND, APP_STUDIO_KIND, VIDEO_KIND, SECURITY_COPILOT_KIND];
+/** The Monitoring Copilot pane: explains the monitoring collector's alerts and answers briefs (plan clipboard:xkCJ9CeYZq4D). */
+export const MONITORING_COPILOT_KIND: CopilotKind = {
+  id: "monitoring",
+  mode: "MONITORING_COPILOT",
+  label: "Monitoring Copilot",
+  preferredRuntimeId: "cli:claude",
+  recommendedReason: "Recommended: native MCP, skills, long tool-heavy loops",
+  agentDescription: "The AI coding CLI that explains your servers' alerts, reads the probes and answers your and Nous's questions about the fleet. Claude Code is recommended.",
+  launchHeading: "Choose the watch officer",
+  launchDescription: "The watch officer explains what the monitoring collector reports: critical alerts, failing probes and the AI Guardian's messages, with bounded Prometheus and Loki queries. Claude Code is recommended; any ready CLI works.",
+  settingsPlace: "Settings → Monitoring Copilot",
+  settingsKey: "monitoringCopilot",
+  controlPrefix: "monitoring-copilot",
+  remembered: (settings) => settings.monitoringCopilot ?? null
+};
+
+export const COPILOT_KINDS: readonly CopilotKind[] = [JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, FREELANCE_COPILOT_KIND, DESIGN_KIND, APP_STUDIO_KIND, VIDEO_KIND, SECURITY_COPILOT_KIND, MONITORING_COPILOT_KIND];
 
 export function copilotKindForMode(mode: Pane["mode"]): CopilotKind | null {
   return COPILOT_KINDS.find((kind) => kind.mode === mode) ?? null;

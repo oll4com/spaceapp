@@ -69,12 +69,12 @@ export function registerVault(app: FastifyInstance, deps: {
   };
   // A completed handoff fences the page the operator worked in; the CDP proxy hides fenced tabs from other panes.
   registerVaultFenceHooks(deps.store, {
-    async fenceHandoff(paneId) {
+    async fenceHandoff(paneId, viewer) {
       const owner = await paneOwner(paneId);
       if (!owner || !browser?.vaultTarget) return;
       const live = await browser.vaultTarget(await deps.store.getPane(paneId));
       if (!live.eligible || !live.targetId || !live.origin) return;
-      await protection.protect(owner, paneId, { targetId: live.targetId, origin: live.origin, document: live.document ?? null });
+      await protection.protect(owner, paneId, { targetId: live.targetId, origin: live.origin, document: live.document ?? null }, viewer);
     },
     fencedTargets: (paneId) => protection.fencedTargets(paneId)
   });

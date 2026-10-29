@@ -96,7 +96,7 @@ export function distroFindings(inventory: SecurityInventory, kev: Map<string, Ke
       const aliases = [...new Set([...(existing?.advisory.aliases ?? []), ...entry.cves])].slice(0, 40);
       if (existing && existing.package.length <= entry.package.length) { existing.advisory.aliases = aliases; continue; }
       drafts.set(entry.advisory, { advisoryId: entry.advisory, package: entry.package, installedVersion: installed(inventory, entry.package), fixedVersion: entry.version ?? null, priority: "P3",
-        advisory: advisory({ id: entry.advisory, aliases, sources: ["DISTRO"], title: `${inventory.os.family === "ALMALINUX" ? "AlmaLinux" : "Distro"} security update for ${entry.package}`, severity: entry.severity }) });
+        advisory: advisory({ id: entry.advisory, aliases, sources: ["DISTRO"], title: `${{ ALMALINUX: "AlmaLinux", WINDOWS: "Windows", MACOS: "macOS" }[inventory.os.family as string] ?? "Distro"} security update for ${entry.package}`, severity: entry.severity }) });
       continue;
     }
     const source = sourceOf.get(entry.package) ?? entry.package;
@@ -136,6 +136,60 @@ export function productFindings(inventory: SecurityInventory, cves: NvdCve[], ke
       fixedVersion: fixed, priority: priorityOf(enriched) });
   }
   return drafts;
+}
+
+/**
+ * One finding per container image, like NVD's per binary: Trivy's fixable vulnerabilities of the image grouped, the worst first,
+ * fixed by pulling or rebuilding the image (CONTAINER_UPDATE). The title is the server's own words, never Trivy's text.
+ */
+export function imageFindings(inventory: SecurityInventory, kev: Map<string, KevEntry>): FindingDraft[] {
+  const rank: Record<SecuritySeverity, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, UNKNOWN: 0 };
+  const drafts: FindingDraft[] = [];
+  for (const image of inventory.images ?? []) {
+    if (!image.vulns?.length) continue;
+    const vulns = [...image.vulns].sort((left, right) => rank[right.severity] - rank[left.severity] || left.id.localeCompare(right.id));
+    const ids = [...new Set(vulns.map((vuln) => vuln.id))];
+    const kevHit = ids.map((id) => kev.get(id)).find(Boolean);
+    const worst = vulns[0]!;
+    const count = (severity: SecuritySeverity) => new Set(vulns.filter((vuln) => vuln.severity === severity).map((vuln) => vuln.id)).size;
+    const link = (id: string) => /^CVE-/.test(id) ? `https://nvd.nist.gov/vuln/detail/${id}` : /^GHSA-/.test(id) ? `https://github.com/advisories/${id}` : null;
+    const enriched = advisory({ id: "IMAGE", aliases: [...(kevHit ? [kevHit.cveID] : []), ...ids.filter((id) => id !== kevHit?.cveID)].slice(0, 40),
+      sources: kevHit ? ["IMAGE", "KEV"] : ["IMAGE"], kev: Boolean(kevHit), kevAddedAt: kevHit?.dateAdded ?? null, severity: worst.severity,
+      title: `${image.ref}: ${ids.length} fixable (${count("CRITICAL")} critical, ${count("HIGH")} high); worst ${worst.id} in ${worst.pkg} ${worst.installed}, fixed in ${worst.fixed}`.slice(0, 300),
+      references: ids.slice(0, 5).map(link).filter((url): url is string => Boolean(url)) });
+    drafts.push({ advisoryId: "IMAGE", advisory: enriched, package: `image:${image.ref}`.slice(0, 200), installedVersion: image.id.slice(7, 19), fixedVersion: null,
+      priority: priorityOf(enriched) });
+  }
+  return drafts;
+}
+
+/**
+ * Microsoft's end of support per build (extended support for servers; Home/Pro servicing for clients, Enterprise gets a year more).
+ * shortcut: a fixed table, add a row when a host runs a build it lacks.
+ */
+export const WINDOWS_END_OF_SUPPORT: Array<{ product: "windows" | "windows_server"; build: string; name: string; ends: string }> = [
+  { product: "windows_server", build: "7601", name: "Windows Server 2008 R2", ends: "2020-01-14" },
+  { product: "windows_server", build: "9200", name: "Windows Server 2012", ends: "2023-10-10" },
+  { product: "windows_server", build: "9600", name: "Windows Server 2012 R2", ends: "2023-10-10" },
+  { product: "windows_server", build: "14393", name: "Windows Server 2016", ends: "2027-01-12" },
+  { product: "windows_server", build: "17763", name: "Windows Server 2019", ends: "2029-01-09" },
+  { product: "windows_server", build: "20348", name: "Windows Server 2022", ends: "2031-10-14" },
+  { product: "windows", build: "7601", name: "Windows 7", ends: "2020-01-14" },
+  { product: "windows", build: "9600", name: "Windows 8.1", ends: "2023-01-10" },
+  { product: "windows", build: "19045", name: "Windows 10 22H2", ends: "2025-10-14" },
+  { product: "windows", build: "22621", name: "Windows 11 22H2", ends: "2024-10-08" },
+  { product: "windows", build: "22631", name: "Windows 11 23H2", ends: "2025-11-11" },
+  { product: "windows", build: "26100", name: "Windows 11 24H2", ends: "2026-10-13" }
+];
+/** An operating system past its vendor's end of support gets no security fixes at all: one P1 finding until it is upgraded. */
+export function lifecycleFindings(inventory: SecurityInventory, nowMs: number): FindingDraft[] {
+  const product = inventory.products.find((item) => item.product === "windows" || item.product === "windows_server");
+  const row = product && WINDOWS_END_OF_SUPPORT.find((entry) => entry.product === product.product && entry.build === inventory.os.kernel);
+  if (!row || Date.parse(row.ends) > nowMs) return [];
+  const enriched = advisory({ id: `EOL:${row.product}-${row.build}`, sources: ["VENDOR"], severity: "CRITICAL", publishedAt: row.ends,
+    title: `${row.name} (${product!.version}) has had no security updates since ${row.ends}, the end of Microsoft's support`,
+    references: ["https://learn.microsoft.com/en-us/lifecycle/products/"] });
+  return [{ advisoryId: enriched.id, advisory: enriched, package: `os:${row.product}`, installedVersion: product!.version, fixedVersion: null, priority: priorityOf(enriched) }];
 }
 
 /** npm and PyPI libraries against OSV (the query already chose the vulnerable versions). */

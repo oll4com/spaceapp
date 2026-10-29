@@ -33,7 +33,7 @@ export interface OwnerQuietState {
 
 const minutesOf = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3, 5));
 
-function localParts(now: Date, timeZone: string) {
+export function localParts(now: Date, timeZone: string) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" }).formatToParts(now).map((part) => [part.type, part.value]));
   return { label: `${parts.weekday} ${parts.day} ${parts.month} ${parts.hour}:${parts.minute} ${parts.timeZoneName}`, zone: parts.timeZoneName ?? timeZone,

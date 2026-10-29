@@ -24,14 +24,14 @@ import {
   importManagedBrowserBookmarks, listManagedBrowserBookmarks, parseChromeBookmarksImport
 } from "./browser-bookmarks.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
-import { assertSafeBrowserTargetUrl, browserSessionRestoreUrls } from "./browser-sessions.js";
+import { assertBrowserHostPressKey, assertSafeBrowserTargetUrl, browserSessionRestoreUrls } from "./browser-sessions.js";
 import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
 import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
 import type { PaneBrowserAccount } from "./pane-browser-account.js";
 import { assertBrowserPaneCompatible, getActiveBrowserSessionForPane, getPaneById } from "./pane-guards.js";
 import { recordAudit } from "./request-audit.js";
-import { BROWSER_CONTROL_IDLE_RELEASE_MS, browserAgentOf, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
+import { BROWSER_CONTROL_IDLE_RELEASE_MS, SIGN_IN_HANDOFF_REASON, browserAgentOf, countsAsOperatorInput, createBrowserControlActivity, releaseBrowserControlLease, startBrowserControlIdleRelease, type BrowserControlActivity } from "./browser-control-activity.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 import {
   googleAccountSignInUrl, privatePaneProfileId, selectYouTubeAccountSchema, youtubeAccountSignInUrl,
@@ -631,7 +631,11 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (!browserSessionManager.heartbeatControl) {
       throw new SpaceFeatureDisabledError("BROWSER_CONTROL_UNAVAILABLE", "Browser control handoff is unavailable on this runtime.");
     }
+    const { present, ...hostInput } = input;
     const current = await store.getBrowserControlLease(input.leaseId);
+    const handoff = current?.status === "ACTIVE" && current.holderType === "OPERATOR" ? await store.getActiveBrowserHandoffRequest(current.sessionId) : null;
+    const presenceHold = handoff?.status === "ACCEPTED" && handoff.controlLeaseId === current!.leaseId && SIGN_IN_HANDOFF_REASON.test(handoff.reason);
+    if (presenceHold && present) controlActivity.noteInput(current!.leaseId);
     // A heartbeat alone (an open tab, an old web bundle) does not keep an operator lease nobody has touched.
     if (current?.status === "ACTIVE" && current.holderType === "OPERATOR" && current.paneId === pane.id
       && controlActivity.idleMs(current) >= BROWSER_CONTROL_IDLE_RELEASE_MS) {
@@ -639,10 +643,10 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         { pane, lease: current, request, auditAction: "pane.browser.control.idle_release", auditMetadata: { idleSeconds: Math.floor(controlActivity.idleMs(current) / 1000) } });
       return browserControlLeaseResponseSchema.parse({ lease: released });
     }
-    const lease = await browserSessionManager.heartbeatControl(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
+    const lease = await browserSessionManager.heartbeatControl(pane, hostInput, request.requestIdForSpace, operatorBrowserActor(request));
     controlActivity.watch(lease);
     await acceptHandoffForOperatorLease(request.user, lease);
-    return browserControlLeaseResponseSchema.parse({ lease });
+    return browserControlLeaseResponseSchema.parse({ lease, ...(presenceHold ? { presenceHold } : {}) });
   });
   app.post("/api/panes/:id/browser/control/release", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -931,6 +935,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const input = parseBody(browserToolActionInputSchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
     assertBrowserPaneCompatible(pane);
+    await assertBrowserHostPressKey(browserSessionManager, input);
     const result = await browserSessionManager.action(pane, input, request.requestIdForSpace, operatorBrowserActor(request));
     await recordAudit(store, request, {
       action: "pane.browser.action",

@@ -198,17 +198,7 @@ function claudeAvailability(account: ClaudeUsageAccount, clock: number, fallback
     const entry = claudeAccountEntries([account], clock)[0]!;
     const usable = account.pool.filter((member) => !member.signInRequired);
     const detail = account.pool.length ? poolDetail(usable.map((member) => classifyQuota(member, clock)), account.pool.length) : "No pooled accounts";
-    if (fallback) {
-      const api = claudeAvailability(fallback.api, clock, fallback);
-      const { spentUsd, budgetUsd } = fallback.api.apiKeyMonth ?? {};
-      const budget = spentUsd != null && budgetUsd != null
-        ? `${usdText(Math.max(0, budgetUsd - spentUsd))} of ${usdText(budgetUsd)} budget left`
-        : budgetUsd == null ? "Monthly API budget not set" : "Monthly API spend unavailable";
-      return { tone: fallback.inUse ? "ready" : "neutral", percent: api.percent, color: api.percent === null ? CLI_ACCOUNT_NEUTRAL_COLOR : api.color,
-        label: fallback.inUse ? "Using API" : "API fallback",
-        description: `${fallback.inUse ? "API fallback used in the last 5 minutes" : "API fallback enabled; no recent successful use confirmed"} · ${detail} · ${api.description}`,
-        detail: budget, windows: [] };
-    }
+    // The API key never serves Claude Code (operator rule 2026-10-27): this row shows the subscription pool only.
     return { ...fromQuota(entry, [], clock, detail), detail };
   }
   if (account.status === "GATEWAY") {

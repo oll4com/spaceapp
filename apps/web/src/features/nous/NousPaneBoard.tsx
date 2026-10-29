@@ -6,21 +6,27 @@ import { DockButton, DockChips, DockIconButton, DockNotice, DockState } from "..
 import { NOTIFICATION_STREAM_EVENT } from "../notifications/useNotifications.js";
 import { NOUS_PANE_BOARD_EVENT, requestNousFocus } from "../nous-focus/nous-focus-events.js";
 import { modeIcons } from "../pane-card/pane-mode-icons.js";
-import { ChevronDown, ChevronRight, Nous, RefreshCw, Send, Terminal } from "../ui-theme/app-icons.js";
+import { ChevronDown, ChevronRight, Nous, RefreshCw, Send, Terminal, X } from "../ui-theme/app-icons.js";
 
 /**
  * Nous's pane board (operator request 2026-10-19, plan clipboard:Y9cgKVHFaHrr): every open pane by room with its live line
  * (what it does, what it waits on), what waits for the operator under it, and a reply box per pane. Full screen it is a wide
  * board; in the narrow dock the same rows stack. The server sends ids on its stream; the board refetches.
+ * Operator request 2026-10-27: one row of two dropdowns (room, wait) and an icon that clears them. What waits for the operator
+ * has its own tab (Needs you), so it is no filter here.
  */
-type WaitsFilter = "ALL" | "NEEDS_ME" | Exclude<NousPaneWaitsOn, "OPERATOR">;
+type WaitsFilter = "ALL" | Exclude<NousPaneWaitsOn, "OPERATOR">;
+const WAITS_FILTERS = ["DATE", "PROMOTE", "THIRD_PARTY", "NOUS", "NONE"] as const;
+const FILTER_LABELS: Record<(typeof WAITS_FILTERS)[number], string> = {
+  DATE: "Waits on a date", PROMOTE: "Waits on a promote", THIRD_PARTY: "Waits on a third party", NOUS: "Waits on Nous", NONE: "Waits on nothing"
+};
 type Target = NousPaneBoardAnswerInput["target"];
 const WAITS_LABELS: Record<NousPaneWaitsOn, string> = { OPERATOR: "You", DATE: "Date", PROMOTE: "Promote", THIRD_PARTY: "Third party", NOUS: "Nous", NONE: "Nothing" };
 const STATE_LABELS: Record<string, string> = { working: "Working", waiting: "Waiting", done: "Done", idle: "Idle", closed: "Closed" };
 const PAUSED_LABELS: Record<NonNullable<Board["paused"]>, string> = {
   OFF: "Summaries are off in Settings: lines are Space's own.",
   NOUS_OFF: "Nous is off: lines are Space's own where panes changed.",
-  UNAVAILABLE: "The summary model runs only on the stable instance: lines are Space's own.",
+  UNAVAILABLE: "No summary model runs here: lines are Space's own.",
   DAILY_CAP: "Summaries paused (daily cap): lines are Space's own where panes changed."
 };
 // Nous's own check of each pane (plan clipboard:MAongwnxq9Ro), from the dock's overview.
@@ -68,15 +74,15 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
   const panes = board.rooms.flatMap((entry) => entry.panes);
   if (!panes.length) return <DockState kind="empty" icon={Nous} title="No open panes" detail="Every open pane shows here by room, with what it does and what it waits on." />;
 
-  const matches = (pane: NousPaneBoardPane, value: WaitsFilter) => value === "ALL" || (value === "NEEDS_ME" ? needsMe(pane) : pane.summary.waitsOn === value);
-  const count = (value: WaitsFilter) => panes.filter((pane) => matches(pane, value)).length;
-  const filters: Array<{ id: WaitsFilter; label: string; count?: number }> = [
-    { id: "ALL", label: "All", count: panes.length }, { id: "NEEDS_ME", label: "Needs me", count: count("NEEDS_ME") },
-    ...(["DATE", "PROMOTE", "THIRD_PARTY", "NOUS", "NONE"] as const).filter((value) => count(value) > 0 || filter === value)
-      .map((value) => ({ id: value, label: value === "NONE" ? "Working or nothing" : WAITS_LABELS[value], count: count(value) }))
-  ];
+  // A room that closed since it was picked falls back to every room.
+  const roomId = board.rooms.some((entry) => entry.roomId === room) ? room : "ALL";
+  const matches = (pane: NousPaneBoardPane, value: WaitsFilter) => value === "ALL" || pane.summary.waitsOn === value;
+  // Each dropdown counts within the other's choice, so its numbers are what picking it shows.
+  const inRoom = roomId === "ALL" ? panes : board.rooms.find((entry) => entry.roomId === roomId)!.panes;
+  const count = (value: WaitsFilter) => inRoom.filter((pane) => matches(pane, value)).length;
   const rooms = board.rooms.map((entry) => ({ ...entry, panes: entry.panes.filter((pane) => matches(pane, filter)) }));
-  const shown = rooms.filter((entry) => (room === "ALL" || entry.roomId === room) && entry.panes.length);
+  const shown = rooms.filter((entry) => (roomId === "ALL" || entry.roomId === roomId) && entry.panes.length);
+  const filtered = filter !== "ALL" || roomId !== "ALL";
   const refresh = async () => {
     setRefreshing(true);
     try { await api.refreshNousPaneBoard(); } catch (err) { setError(messageOf(err, "The refresh could not start.")); } finally { setRefreshing(false); }
@@ -85,16 +91,22 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
   return (
     <div className="nous-pane-board">
       <div className="nous-pane-board-tools">
-        <DockChips label="Waits on" value={filter} onChange={setFilter} options={filters} />
+        {board.rooms.length > 1 ? (
+          <select className="dock-kit-select" aria-label="Room" value={roomId} onChange={(event) => setRoom(event.currentTarget.value)}>
+            <option value="ALL">All rooms · {rooms.reduce((sum, entry) => sum + entry.panes.length, 0)}</option>
+            {rooms.filter((entry) => entry.panes.length || entry.roomId === roomId).map((entry) => <option key={entry.roomId} value={entry.roomId}>{entry.name} · {entry.panes.length}</option>)}
+          </select>
+        ) : null}
+        <select className="dock-kit-select" aria-label="Waits on" value={filter} onChange={(event) => setFilter(event.currentTarget.value as WaitsFilter)}>
+          <option value="ALL">Any wait · {inRoom.length}</option>
+          {WAITS_FILTERS.filter((value) => count(value) > 0 || filter === value).map((value) => <option key={value} value={value}>{FILTER_LABELS[value]} · {count(value)}</option>)}
+        </select>
+        {filtered ? <DockIconButton label="Clear the filters" icon={X} onClick={() => { setFilter("ALL"); setRoom("ALL"); }} /> : null}
         <DockIconButton label="Refresh the summaries" icon={RefreshCw} busy={refreshing} onClick={() => void refresh()} />
       </div>
-      {board.rooms.length > 1 ? (
-        <DockChips className="nous-pane-board-rooms" label="Rooms" value={room} onChange={setRoom}
-          options={[{ id: "ALL", label: "All rooms" }, ...rooms.filter((entry) => entry.panes.length || entry.roomId === room).map((entry) => ({ id: entry.roomId, label: entry.name, count: entry.panes.length }))]} />
-      ) : null}
       {board.paused ? <p className="nous-muted nous-pane-board-paused" role="status">{PAUSED_LABELS[board.paused]}</p> : null}
       {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
-      {!shown.length ? <DockState kind="empty" icon={Nous} title={filter === "NEEDS_ME" ? "Nothing needs you" : "No panes here"} /> : null}
+      {!shown.length ? <DockState kind="empty" icon={Nous} title="No panes here" /> : null}
       {shown.map((entry) => {
         const open = !collapsed.has(entry.roomId);
         const mine = entry.panes.filter(needsMe).length;
@@ -104,9 +116,9 @@ export function NousPaneBoard({ active, decisions, overview, renderDecision, onS
               onClick={() => setCollapsed((current) => { const next = new Set(current); if (next.has(entry.roomId)) next.delete(entry.roomId); else next.add(entry.roomId); return next; })}>
               {/* Wrapped: the shell paints expanded buttons with a direct icon child as active toggles. */}
               <span className="nous-board-room-chevron" aria-hidden="true">{open ? <ChevronDown /> : <ChevronRight />}</span>
-              <strong>{entry.name}</strong>
-              <span className="nous-board-count">{entry.panes.length}</span>
-              {mine ? <span className="nous-board-count is-attention" title="Panes that need you">{mine}</span> : null}
+              <strong className="nous-board-room-name">{entry.name}</strong>
+              <span className="nous-board-room-meta">{entry.panes.length === 1 ? "1 pane" : `${entry.panes.length} panes`}</span>
+              {mine ? <span className="nous-board-count is-attention">{mine} {mine === 1 ? "needs" : "need"} you</span> : null}
             </button>
             {open ? (
               <ol className="nous-board-panes">
@@ -171,12 +183,16 @@ function BoardPaneRow({ pane, roomName, check, decisions, renderDecision, onSent
         <Icon className="nous-board-pane-icon" aria-hidden="true" />
         <strong className="nous-board-pane-name">{pane.name}</strong>
         <span className={`nous-board-state is-${pane.state}`}>{STATE_LABELS[pane.state] ?? pane.state}</span>
-        {pane.model ? <span className="nous-muted nous-board-model">{pane.model}</span> : null}
-        {pane.plan ? <span className="nous-board-pane-plan" data-sensitive-masked="manual" title={pane.plan.nextStep ? `Next: ${pane.plan.nextStep}` : pane.plan.title}>{pane.plan.title} · {pane.plan.progress}%</span> : null}
-        {/* A finished pane a scheduled task is bound to stays open (operator decision 2026-10-21). */}
-        {pane.keptOpenForTask ? <span className="nous-pane-badge" title={`Scheduled task: ${pane.keptOpenForTask.title}`}>Task: {pane.keptOpenForTask.title}</span> : null}
         <DockButton className="nous-board-go" onClick={goTo}>Go to pane</DockButton>
       </div>
+      {pane.model || pane.plan || pane.keptOpenForTask ? (
+        <div className="nous-board-pane-meta">
+          {pane.model ? <span className="nous-board-model">{pane.model}</span> : null}
+          {pane.plan ? <span className="nous-board-pane-plan" data-sensitive-masked="manual" title={pane.plan.nextStep ? `Next: ${pane.plan.nextStep}` : pane.plan.title}>{pane.plan.title} · {pane.plan.progress}%</span> : null}
+          {/* A finished pane a scheduled task is bound to stays open (operator decision 2026-10-21). */}
+          {pane.keptOpenForTask ? <span className="nous-pane-badge" title={`Scheduled task: ${pane.keptOpenForTask.title}`}>Task: {pane.keptOpenForTask.title}</span> : null}
+        </div>
+      ) : null}
       <p className="nous-board-line">
         <span className={`nous-waits is-${summary.waitsOn.toLowerCase()}`} title="Waits on">{WAITS_LABELS[summary.waitsOn]}{summary.until ? ` · ${formatUserTime(summary.until)}` : ""}</span>
         <span className="nous-board-line-text" data-sensitive-masked="manual">{summary.line}</span>

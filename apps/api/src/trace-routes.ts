@@ -91,6 +91,18 @@ export function projectTraceRecords(traceId: string, records: TraceRecords): Tra
     agentRuns,
     roomAgentMissions,
     roomAgentTaskRuns,
+    cliSessions: (records.cliSessions ?? []).map((session) => ({
+      sessionId: session.sessionId,
+      paneId: session.paneId,
+      roomId: session.roomId,
+      runtimeId: session.runtimeId,
+      cliTaskId: identifier(session.cliTaskId),
+      cliTaskRevisionId: identifier(session.cliTaskRevisionId),
+      launchMode: session.launchMode,
+      status: session.status,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt ?? null
+    })),
     events,
     auditEvents: records.auditEvents.map((audit) => ({
       id: audit.id,

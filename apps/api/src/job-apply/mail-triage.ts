@@ -2,8 +2,8 @@ import type { JobApplyMailCategory } from "@space/contracts";
 import { companyKey } from "./gmail-mailbox.js";
 
 // Which inbox mail belongs to job applications, and what it asks for. The rules are conservative: only plain
-// receipts, stale security codes and clear rejections are archived; everything else (interviews, assessments,
-// scheduling, questions, offers and anything unrecognized) stays in the inbox as "Action needed".
+// receipts, stale security codes and clear rejections are archived; a request to take a test or an interview stays
+// in the inbox as "Action needed", and everything else (questions, offers, surveys, anything unrecognized) stays as "Other".
 
 /** Applicant tracking systems, job boards and assessment or scheduling services that write to applicants. */
 export const APPLICATION_SENDER_DOMAINS = [
@@ -28,14 +28,42 @@ function domainIn(domain: string, list: readonly string[]): boolean {
   return list.some((entry) => domain === entry || domain.endsWith(`.${entry}`));
 }
 
-/** Gmail search for recent inbox mail from application senders and from the tracked companies' names. */
-export function triageQuery(companies: readonly string[], days = 14): string {
-  const terms = [...APPLICATION_SENDER_DOMAINS, ...ASSESSMENT_SENDER_DOMAINS, ...LINKEDIN_APPLICATION_SENDERS].map((entry) => `from:${entry}`);
+// Receipts and status mail companies send from their own domain (Datadog, Zscaler, IMC, x.ai: the ntheogr inbox,
+// 2026-10-27): found by subject, and filed only when the mail is about a job (`isJobReceipt`).
+const RECEIPT_SUBJECT_PHRASES = ["thank you for applying", "thanks for applying", "thank you for your application", "we've received your application",
+  "we have received your application", "we've got it", "your application", "application received", "application status"];
+const RECEIPT_SUBJECT = /\bthanks? (you )?for (applying|your application)\b|\bwe(['’]ve| have) (received your application|got it)\b|\byour application\b|\bapplication (received|status)\b/i;
+const JOB_CONTEXT = /\b(roles?|positions?|jobs?|candidates?|candidacy|careers?|hiring|recruit\w*|talent|resumes?|résumé|openings?|interviews?|vacanc\w+)\b/i;
+// shortcut: Gmail documents no query length limit; 1,400 characters of terms per search stays well inside URL limits. Lower it if Gmail ever answers 400.
+const MAX_QUERY_TERMS_LENGTH = 1400;
+
+/**
+ * Gmail searches for recent inbox mail: application senders and receipt subjects in the first, every tracked company's name
+ * in the next ones (split to stay within the query length).
+ */
+export function triageQueries(companies: readonly string[], days = 14): string[] {
+  const groups = [[...APPLICATION_SENDER_DOMAINS, ...ASSESSMENT_SENDER_DOMAINS, ...LINKEDIN_APPLICATION_SENDERS].map((entry) => `from:${entry}`)
+    .concat(RECEIPT_SUBJECT_PHRASES.map((phrase) => `subject:"${phrase}"`))];
+  const known = new Set(groups[0]);
   for (const company of companies) {
     const word = company.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter((part) => part.length >= 3)[0];
-    if (word && !terms.includes(`from:${word}`)) terms.push(`from:${word}`);
+    const term = `from:${word}`;
+    if (!word || known.has(term)) continue;
+    known.add(term);
+    const last = groups.at(-1)!;
+    if (groups.length === 1 || last.join(" ").length + term.length + 1 > MAX_QUERY_TERMS_LENGTH) groups.push([term]);
+    else last.push(term);
   }
-  return `in:inbox newer_than:${days}d {${terms.join(" ")}}`;
+  return groups.map((terms) => `in:inbox newer_than:${days}d {${terms.join(" ")}}`);
+}
+
+/** A receipt or status subject from a sender Space does not know yet: worth reading to see whether it is about a job. */
+export function hasReceiptSubject(message: { from: string; subject: string }): boolean {
+  return !isLinkedInDigest(message) && RECEIPT_SUBJECT.test(message.subject);
+}
+/** Such a mail is application mail only when it is about a job (a bank's "Your application is approved" is not). */
+export function isJobReceipt(message: { from: string; subject: string; text: string }): boolean {
+  return hasReceiptSubject(message) && JOB_CONTEXT.test(`${message.subject}\n${message.text}`);
 }
 
 /**
@@ -93,10 +121,26 @@ const REJECTION = /\bnot (be )?moving forward\b|\bdecided to (move|proceed) forw
 // Receipts often say "if you are not selected, keep an eye on our jobs page": a rejection phrase inside a
 // conditional sentence is not a rejection.
 const CONDITIONAL = /\b(if|in case|in the event|should you|unless|whether)\b/i;
+const sentences = (text: string) => text.split(/(?<=[.!?])\s+|\n+/);
 function assertsRejection(text: string): boolean {
-  return text.split(/(?<=[.!?])\s+|\n+/).some((sentence) => REJECTION.test(sentence) && !CONDITIONAL.test(sentence));
+  return sentences(text).some((sentence) => REJECTION.test(sentence) && !CONDITIONAL.test(sentence));
 }
-const STRONG_ACTION = /\binvit(ed|ing|es) you to\b|\bplease (complete|schedule|select|choose|book|reply|respond|provide|send|fill|confirm|submit|share)\b|\bcomplete (the|your|this|our) (assessment|test|challenge|questionnaire|form|exercise)\b|\btake[- ]home\b|\bcoding (challenge|assessment|test|exercise)\b|\bonline assessment\b|\b(select|choose|book|pick) a (time|slot)\b|\byour availability\b|\bschedule (a|an|your) (call|interview|chat|time|meeting)\b|\bdeadline\b|\bexpires? (on|in|at)\b|\boffer letter\b|\breference check\b|\bbackground check\b/i;
+// "Action needed" is only a request to take a test or an interview (operator rule 2026-10-27): receipts promising an
+// interview "if" there is a fit (Primer, Lambda, Alloy), surveys (Neo4j), offers and other asks are not.
+const TEST_OR_INTERVIEW = /\binvit(e|es|ed|ing|ation)\b.{0,80}?\b(assessments?|tests?|challenges?|interviews?|exercises?|assignments?|quiz(zes)?)\b|\b(assessment|challenge|interview|test)s?\b.{0,40}?\binvit(e|ation)\b|\bplease (complete|take|start|finish|attempt)\b.{0,40}?\b(assessment|test|challenge|exercise|assignment|quiz)\b|\btake[- ]home\b|\bcoding (challenge|assessment|test|exercise)\b|\bonline assessment\b|\b(answer|complete|fill (in|out)|respond to)\b.{0,30}?\bscreening questions?\b|\b(select|choose|book|pick|schedule|reserve|set up|arrange)\b.{0,20}?\b(time|slot|interview)\b|\byour availability\b/i;
+// The employer's promise to write later, and feedback surveys, ask nothing yet.
+export const NOT_A_REQUEST = /\b(will|['’]ll|may|might|shall)\s+(be\s+)?(reach(ing)?\s+out|contact(ing)?|in\s+touch|get(ting)?\s+(back|in\s+touch)|follow(ing)?\s+up|let\s+you\s+know|notify|invited|asked)\b|\b(survey|feedback)\b/i;
+export function asksForTestOrInterview(text: string): boolean {
+  // A conditional sentence counts only when it says "please" ("If you're still interested, please pick a time"), so a real invite is never archived as a receipt.
+  return sentences(text).some((sentence) => TEST_OR_INTERVIEW.test(sentence) && !NOT_A_REQUEST.test(sentence) && (!CONDITIONAL.test(sentence) || /\bplease\b/i.test(sentence)));
+}
+// A later mail of the thread that says the test is done ("Thank you for completing the assessment"); "Once you have
+// completed the test, ..." in an invitation is a condition, not a report.
+const COMPLETED = /\b(?:completing|submitting|completed|submitted|finished)\s+(?:the |your |our |this )?(?:[\w-]+\s+){0,3}?(?:assessment|test|challenge|exercise|assignment|quiz)\b|\b(?:assessment|test|challenge|exercise|assignment|quiz)\s+(?:has been |was |is )?(?:successfully )?(?:completed|submitted)\b/i;
+export function reportsCompletion(text: string): boolean {
+  return sentences(text).some((sentence) => COMPLETED.test(sentence) && !/\b(once|after|when|if|before|until|unless|please)\b/i.test(sentence));
+}
+
 const CONFIRMATION = /\bthanks? (you )?for (applying|your application|your interest|submitting)\b|\bapplication (has been |was )?(received|submitted|sent)\b|\b(we('ve| have)|we) received your application\b|\bapplication confirmation\b|\bsuccessfully submitted\b|\byour application (to|for|with)\b/i;
 
 /**
@@ -106,15 +150,17 @@ const CONFIRMATION = /\bthanks? (you )?for (applying|your application|your inter
 export function classifyApplicationMail(message: { from: string; subject: string; text: string; receivedAt: string | null }, nowMs: number): JobApplyMailCategory | null {
   const domain = senderDomain(message.from);
   const text = `${message.subject}\n${message.text}`.slice(0, 6000);
+  // "Thank you for completing the assessment" (HackerRank too) is a receipt; it closes the thread's reminder task.
+  if (reportsCompletion(text) && !asksForTestOrInterview(text)) return "CONFIRMATION";
   if (domainIn(domain, ASSESSMENT_SENDER_DOMAINS)) return "ACTION_NEEDED";
   if (SECURITY_CODE.test(message.subject) || (SECURITY_CODE.test(text) && /\bcode\b/i.test(message.subject))) {
     const received = message.receivedAt ? Date.parse(message.receivedAt) : Number.NaN;
     return Number.isFinite(received) && nowMs - received >= 3_600_000 ? "CONFIRMATION" : null;
   }
   if (assertsRejection(text)) return "REJECTION";
-  if (STRONG_ACTION.test(text)) return "ACTION_NEEDED";
+  if (asksForTestOrInterview(text)) return "ACTION_NEEDED";
   if (CONFIRMATION.test(text)) return "CONFIRMATION";
-  return "ACTION_NEEDED";
+  return "OTHER";
 }
 
 /** "Name <address>" as a short display sender. */

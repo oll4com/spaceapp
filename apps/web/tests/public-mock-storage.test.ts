@@ -37,9 +37,10 @@ describe("isolated public demo terminal transport", () => {
     installMockStorage();
     expect(window.localStorage.getItem("workspace.snapshot")).toBeNull();
     expect(window.localStorage.getItem("space.uiTheme.v1")).toBe("modern");
-    expect(window.sessionStorage.getItem("space.selectedRoomId.user:demo-user")).toBe("room:demo-launch");
+    // The demo opens on Research Lab on every load, whatever room the last visit chose.
+    expect(window.sessionStorage.getItem("space.selectedRoomId.user:demo-user")).toBe("room:demo-research");
     const { runtime } = createDemoRuntime({ fixture: createCurrentMockFixture(), localStorage: window.localStorage, sessionStorage: window.sessionStorage });
-    expect((await runtime.api.rooms()).data.map(room => room.name)).toEqual(["Room 1", "Research Lab", "Operations", "Copilots (coming next)"]);
+    expect((await runtime.api.rooms()).data.map(room => room.name)).toEqual(["Room 1", "Research Lab", "Operations", "Copilots"]);
     for (const [key, value] of Object.entries(oldKeys)) {
       expect(physicalLocal.getItem(key)).toBe(value);
       physicalLocal.removeItem(key);

@@ -115,7 +115,7 @@ export function VaultDock() {
           })} />
         : (
           <>
-            <DockChips label="Vault view" value={view} onChange={setView} options={[{ id: "items", label: "Items" }, { id: "keys", label: "API keys" }, { id: "audit", label: "Activity" }, { id: "settings", label: "Settings" }]} />
+            <DockChips label="Vault view" value={view} onChange={setView} options={[{ id: "items", label: "Items" }, { id: "keys", label: "Passwords & keys" }, { id: "audit", label: "Activity" }, { id: "settings", label: "Settings" }]} />
             {view === "items" ? <ItemsView version={itemsVersion} keys={unlockedRef} run={run} confirm={confirm} defaults={defaults} vaultState={state} onVaultChanged={load} />
               : view === "keys" ? <KeysView run={run} confirm={confirm} busy={busy} agentAccess={state.agentAccess} />
               : view === "audit" ? <AuditView />
@@ -608,23 +608,28 @@ function SettingsView({ run, confirm, busy, defaults, onDefaultsChange, autoLock
   );
 }
 
-const KEY_HOURS = [[1, "1 hour"], [24, "1 day"], [168, "7 days"], [720, "30 days"]] as const;
-const keyState = (key: VaultHandoffKey) => key.usedAt ? `Written by ${key.usedByPaneId ?? "an agent"} ${formatUserTime(key.usedAt, { withDate: true })}; the key is deleted`
+const KEY_HOURS = [[0, "Never"], [1, "1 hour"], [24, "1 day"], [168, "7 days"], [720, "30 days"]] as const;
+const keyState = (key: VaultHandoffKey) => key.kept ? [`Kept for agents${key.savedBy ? `, saved by ${key.savedBy}` : ""}`,
+  key.usedAt ? `last written by ${key.usedByPaneId ?? "an agent"} ${formatUserTime(key.usedAt, { withDate: true })}` : null,
+  !key.hasValue ? "expired" : key.expiresAt ? `until ${formatUserTime(key.expiresAt, { withDate: true })}` : null].filter(Boolean).join("; ")
+  : key.usedAt ? `Written by ${key.usedByPaneId ?? "an agent"} ${formatUserTime(key.usedAt, { withDate: true })}; the key is deleted`
   : !key.hasValue ? "Expired; the key is deleted"
   : key.takenAt ? `Taken by ${key.takenByPaneId ?? "an agent"} ${formatUserTime(key.takenAt, { withDate: true })}, not written yet`
-  : `Waiting for an agent until ${formatUserTime(key.expiresAt, { withDate: true })}`;
+  : `Waiting for an agent${key.expiresAt ? ` until ${formatUserTime(key.expiresAt, { withDate: true })}` : ""}`;
 
 /**
  * API keys for agents (operator request 2026-10-22, plan clipboard:-qvpC_Q0rAVg): paste a key, get an id, give it to an agent;
- * its space_vault_key_install writes the key into the file it belongs in without the key entering the agent's context, and the
- * key is deleted here once that succeeded. Space can read these keys (they are sealed with the API's key, not the Vault's):
- * they are for handing over, not for keeping; logins stay in Items.
+ * its space_vault_key_install writes the key into the file it belongs in without the key entering the agent's context, and a
+ * one-time key is deleted here once that succeeded. Kept ones (operator request 2026-10-26: server, VM and admin passwords) stay,
+ * and agents find them by label (space_vault_key_list) and save the ones that reach them (space_vault_key_save). Space can read
+ * these (they are sealed with the API's key, not the Vault's); website logins stay in Items.
  */
 function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: Confirm; busy: boolean; agentAccess: boolean }) {
   const [keys, setKeys] = useState<VaultHandoffKey[]>([]);
   const [label, setLabel] = useState("");
   const [value, setValue] = useState("");
-  const [hours, setHours] = useState<number>(168);
+  const [hours, setHours] = useState<number>(0);
+  const [kept, setKept] = useState(true);
   const [issued, setIssued] = useState<VaultHandoffKey | null>(null);
   const [copied, setCopied] = useState(false);
   const reload = useCallback(async () => setKeys((await api.vaultHandoffKeys()).keys), []);
@@ -632,7 +637,7 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
   const add = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
-      const { key } = await api.vaultCreateHandoffKey({ label: label.trim(), value, expiresInHours: hours });
+      const { key } = await api.vaultCreateHandoffKey({ label: label.trim(), value, expiresInHours: hours || null, kept });
       setIssued(key); setCopied(false); setLabel(""); setValue("");
       await reload();
     });
@@ -640,11 +645,12 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
   return (
     <div className="vault-items">
       <form className="vault-card" aria-label="New API key for an agent" onSubmit={add}>
-        <h3>API keys for agents</h3>
-        <p>Paste a key and give its id to an agent. The agent's <code>space_vault_key_install</code> writes the key into the file it belongs in; the key never enters the agent's conversation and is deleted here once it was written. Space can read these keys, so keep logins in Items.</p>
+        <h3>Passwords and keys for agents</h3>
+        <p>Server, VM and admin passwords and API keys. A kept one stays here: agents find it by its label and write it into the file it belongs in with <code>space_vault_key_install</code>, and they keep the passwords they receive (a mail, a service) here too. A one-time key goes only to the agent you give its id to and is deleted once written. Space can read these, so keep website logins in Items.</p>
         {agentAccess ? null : <p className="vault-hint">Agents take keys only while "Agents and Nous can use my Vault" is on (Items).</p>}
-        <label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength={80} required placeholder="OpenAI key for the demo project" /></label>
+        <label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength={80} required placeholder="vm221 macOS spaceadmin password" /></label>
         <label>Key<input type="password" value={value} onChange={(event) => setValue(event.target.value)} maxLength={4096} required autoComplete="off" spellCheck={false} /></label>
+        <SpaceToggle compact checked={kept} label="Keep it for every agent" onChange={setKept} />
         <label>Expires in<select value={hours} onChange={(event) => setHours(Number(event.target.value))}>
           {KEY_HOURS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
         </select></label>
@@ -652,15 +658,15 @@ function KeysView({ run, confirm, busy, agentAccess }: { run: Runner; confirm: C
       </form>
       {issued ? (
         <div className="vault-card" role="status" aria-label="Key id for the agent">
-          <p>Give this id to the agent for <strong>{issued.label}</strong>:</p>
+          <p>{issued.kept ? <>Agents find <strong>{issued.label}</strong> by its label; its id:</> : <>Give this id to the agent for <strong>{issued.label}</strong>:</>}</p>
           <p><code>{issued.id}</code></p>
           <DockButton onClick={() => { void navigator.clipboard?.writeText(issued.id).then(() => setCopied(true), () => undefined); }}>{copied ? "Copied" : "Copy id"}</DockButton>
         </div>
       ) : null}
-      {keys.length === 0 ? <DockState kind="empty" icon={Vault} title="No API keys waiting" detail="A key you add here is deleted as soon as an agent has written it where it belongs." /> : null}
+      {keys.length === 0 ? <DockState kind="empty" icon={Vault} title="No passwords or keys" detail="Kept ones stay for every agent; a one-time key is deleted as soon as an agent has written it where it belongs." /> : null}
       <ul className="vault-list">
         {keys.map((key) => (
-          <li key={key.id} className="vault-row" data-status={key.usedAt || !key.hasValue ? "PENDING" : "ACTIVE"}>
+          <li key={key.id} className="vault-row" data-status={!key.hasValue || (key.usedAt && !key.kept) ? "PENDING" : "ACTIVE"}>
             <div className="vault-row-main">
               <strong>{key.label}</strong>
               <span className="vault-meta"><code>{key.id}</code> · {keyState(key)}</span>

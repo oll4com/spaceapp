@@ -13,7 +13,7 @@ import {
 import type { z } from "zod";
 import type { GatewayAccountRecord, GatewayApiKeyRecord, GatewayRepository } from "@space/db";
 import { readFile } from "node:fs/promises";
-import { anthropicAdminStatus, anthropicBillingReport, generateGatewayApiKey, lanAccessFromSettings } from "@space/gateway";
+import { anthropicAdminStatus, anthropicBillingReport, createApiBudgetPacer, generateGatewayApiKey, lanAccessFromSettings } from "@space/gateway";
 import { discoverAntigravityProfiles, extractEmailFromIdToken, type AntigravityProfileLocation } from "../antigravity-usage-services.js";
 import {
   buildAccountDetail, buildApiKeyDetail, buildGatewayDashboard, defaultHealthProbes, GatewayHealthSampler, requestLogCsv, type GatewayHealthProbes
@@ -137,6 +137,8 @@ export function createGatewayAdminService(options: {
       return typeof lastStatusBody?.lanListen === "string" ? lastStatusBody.lanListen : null;
     } })
   });
+  // The Claude API-key account's pace to the monthly budget, as the proxy computes it (cached a minute).
+  const apiBudget = createApiBudgetPacer({ repository, settings: () => repository.getSettings(), now: () => now().getTime() });
   const dashboardCache = new Map<GatewayDashboardRange, { at: number; value: Promise<GatewayDashboard> }>();
   const knownAccount = async (accountId: string) => (await repository.listAccounts()).find((account) => account.id === accountId) ?? null;
   const knownKey = async (keyId: string) => (await repository.listApiKeys()).find((key) => key.id === keyId) ?? null;
@@ -228,6 +230,7 @@ export function createGatewayAdminService(options: {
         apiKeys: { total: keys.length, active: keys.filter((key) => key.isActive).length },
         last24h: usage,
         settings,
+        apiBudget: await apiBudget.read().catch(() => null),
         checkedAt: now().toISOString()
       });
     },

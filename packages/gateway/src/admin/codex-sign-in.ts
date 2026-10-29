@@ -196,7 +196,7 @@ export function registerCodexSignInRoutes(app: FastifyInstance, options: CodexSi
     }
     if (!account || account.provider !== "CODEX") return reply.code(404).send({ error: { code: "not_found", message: "Account not found." } });
     const requested = (request.body as { model?: unknown } | null)?.model;
-    const model = typeof requested === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(requested) ? requested : "gpt-5.5";
+    const model = typeof requested === "string" && /^[A-Za-z0-9._:-]{1,80}$/.test(requested) ? requested : "gpt-5.6-sol";
     const startedAt = now();
     try {
       const credentials = await options.pool.credentials(account);

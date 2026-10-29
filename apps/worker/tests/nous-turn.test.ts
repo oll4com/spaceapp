@@ -8,7 +8,7 @@ import { NOUS_TURN_MAX_BODY_BYTES, type NousTurnInput, NousTurnInputError, parse
 
 const base: NousTurnInput = {
   model: "claude-opus-5-5", effort: "xhigh", claudeProfile: "crew", system: "You are Nous.", prompt: "What waits?",
-  mcpUrl: "http://127.0.0.1:4911/api/cli/nous/mcp", mcpToken: "nous.abcdefghijklmnopqrstuvwxyz0123456789", maxTurns: 40, timeoutMs: 1_200_000, shell: false, fallbackModel: null, stream: false
+  mcpUrl: "http://127.0.0.1:4911/api/cli/nous/mcp", mcpToken: "nous.abcdefghijklmnopqrstuvwxyz0123456789", maxTurns: 40, timeoutMs: 1_200_000, shell: false, fallbackModel: null, stream: false, caller: "nous"
 };
 
 /** `body`: the first JSON line of the answer (the whole answer of a plain one); `raw`: every line, for the NDJSON stream. */
@@ -35,6 +35,9 @@ describe("Nous turns in the worker", () => {
     expect(validateNousTurnInput({ ...base, shell: "yes" }).shell).toBe(false);
     // The fallback model (Settings, off by default) is bounded like the model.
     expect(validateNousTurnInput({ ...base, fallbackModel: "claude-opus-5-5" }).fallbackModel).toBe("claude-opus-5-5");
+    // The gateway log tag: a helper, else a turn.
+    expect(validateNousTurnInput({ ...base, caller: "nous-helper" }).caller).toBe("nous-helper");
+    expect(validateNousTurnInput({ ...base, caller: "x-space-project: evil" }).caller).toBe("nous");
     for (const bad of [{ mcpUrl: "https://evil.example/collect" }, { mcpToken: "short" }, { effort: "ultra" }, { model: "../../x" }, { maxTurns: 0 },
       { prompt: " " }, { claudeProfile: "Bad Profile" }, { prompt: "x".repeat(400_001) }, { fallbackModel: "../../x" }, { fallbackModel: 7 }]) {
       expect(() => validateNousTurnInput({ ...base, ...bad })).toThrow(NousTurnInputError);

@@ -10,6 +10,7 @@ import { nanoid } from "nanoid";
 import type { BrowserHostActorContext, BrowserHostCaptureMetrics } from "@space/browser-host";
 import {
   browserFrameSchema,
+  browserSelectStateSchema,
   freelanceEgressPac,
   resolveFreelanceCopilotPaneMetadata,
   browserRecordingFrameSummarySchema,
@@ -40,7 +41,7 @@ import {
   type PaneBrowserSession,
   type PaneBrowserSessionResponse
 } from "@space/contracts";
-import type { VaultHostFillResult, VaultHostTarget } from "@space/contracts";
+import type { BrowserSelectState, VaultHostFillResult, VaultHostTarget } from "@space/contracts";
 import { VAULT_BROKER_HOST_SOCKET_PATH, createSocketVaultBroker, sealedFillBroker } from "./vault/broker-client.js";
 import { readVaultTarget, runSealedFill, type SealedFillPage } from "./vault/sealed-fill.js";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
@@ -277,6 +278,8 @@ export interface BrowserSessionStatus {
   defaultUrl: string;
   checkedAt: string;
   capacity?: ReturnType<BrowserCapacityGate["snapshot"]>;
+  /** This host presses every `space_browser_press` key (assertBrowserHostPressKey). */
+  pressKeys?: boolean;
 }
 
 export interface StartBrowserSessionInput {
@@ -411,6 +414,14 @@ export function allocateDisplay(): number | null {
   return null;
 }
 
+// A live X server this process never started holds the display (another API, a parallel test worker): its lock names it.
+export function displayHeldElsewhere(display: number): boolean {
+  let pid: number;
+  try { pid = Number(readFileSync(`/tmp/.X${display}-lock`, "utf8").trim()); } catch { return false; }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
 export function releaseDisplay(display: number): void {
   usedDisplays.delete(display);
 }
@@ -530,14 +541,83 @@ export async function captureMaskedScreenshot(send: <T = unknown>(method: string
   }
 }
 
-/** Enter (with its submit char), Tab or Shift+Tab as real key events in the page. */
+type BrowserPressKey = Extract<BrowserToolActionInput, { type: "press" }>["key"];
+const namedKey = (key: string, vk: number) => ({ key, code: key, vk });
+// CDP takes Windows virtual key codes; Enter and Space also send their character.
+const PRESS_KEYS: Record<BrowserPressKey, { key: string; code: string; vk: number; modifiers?: number; text?: string }> = {
+  Enter: { ...namedKey("Enter", 13), text: "\r" }, Tab: namedKey("Tab", 9), "Shift+Tab": { ...namedKey("Tab", 9), modifiers: 8 },
+  Backspace: namedKey("Backspace", 8), Delete: namedKey("Delete", 46), Escape: namedKey("Escape", 27), Home: namedKey("Home", 36), End: namedKey("End", 35),
+  ArrowLeft: namedKey("ArrowLeft", 37), ArrowUp: namedKey("ArrowUp", 38), ArrowRight: namedKey("ArrowRight", 39), ArrowDown: namedKey("ArrowDown", 40),
+  Space: { key: " ", code: "Space", vk: 32, text: " " },
+  // Select all: Chrome on Linux maps Ctrl+A to it (live-view repro 2026-10-25, plan clipboard:gHaiX_8yanVA).
+  "Control+A": { key: "a", code: "KeyA", vk: 65, modifiers: 2 }
+};
+
+/** One `space_browser_press` key as real key events in the page. */
 export async function pressBrowserKey(client: { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> }, sessionId: string,
-  key: "Enter" | "Tab" | "Shift+Tab"): Promise<void> {
-  const name = key === "Enter" ? "Enter" : "Tab";
-  const base = { key: name, code: name, windowsVirtualKeyCode: name === "Enter" ? 13 : 9, modifiers: key === "Shift+Tab" ? 8 : 0 };
+  key: BrowserPressKey): Promise<void> {
+  const { vk, text, modifiers = 0, ...names } = PRESS_KEYS[key];
+  const base = { ...names, windowsVirtualKeyCode: vk, modifiers };
   await client.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }, sessionId);
-  if (name === "Enter") await client.send("Input.dispatchKeyEvent", { type: "char", text: "\r", ...base }, sessionId);
+  if (text) await client.send("Input.dispatchKeyEvent", { type: "char", text, ...base }, sessionId);
   await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, sessionId);
+}
+
+/**
+ * A Browser Host started before the wider `press` keys presses Tab for every key but Enter (and says it pressed the key):
+ * only a host whose status says `pressKeys` gets them; until its guarded restart they fail closed.
+ */
+export async function assertBrowserHostPressKey(
+  manager: { status(): BrowserSessionStatus; browserHostHealth?(): Promise<{ status: unknown }> },
+  action: BrowserToolActionInput
+): Promise<void> {
+  if (action.type !== "press" || ["Enter", "Tab", "Shift+Tab"].includes(action.key)) return;
+  const knows = (status: unknown) => (status as { pressKeys?: unknown } | undefined)?.pressKeys === true;
+  if (knows(manager.status()) || knows((await manager.browserHostHealth?.().catch(() => null))?.status)) return;
+  throw new SpaceFeatureDisabledError("BROWSER_ACTION_UNAVAILABLE", `press ${action.key} needs the Browser Host restart that brings it.`);
+}
+
+// The focused element when it is an open native dropdown (top frame), read in an isolated world so page scripts cannot fake it.
+const OPEN_SELECT_EXPRESSION = `(() => {
+  const select = document.activeElement;
+  if (!(select instanceof HTMLSelectElement) || select.multiple) return null;
+  try { if (!select.matches(":open")) return null; } catch { return null; }
+  const box = select.getBoundingClientRect();
+  const options = Array.from(select.options).slice(0, 500);
+  return { selectedIndex: select.selectedIndex, box: { x: box.x, y: box.y, width: box.width, height: box.height },
+    labels: options.map((option) => (option.label || option.text).slice(0, 80)),
+    disabled: options.flatMap((option, index) => option.disabled || option.parentElement?.disabled === true ? [index] : []),
+    truncated: select.options.length > 500 };
+})()`;
+
+/** The open native dropdown the live view must draw itself (option D, plan clipboard:gHaiX_8yanVA), or null. */
+export async function readOpenBrowserSelect(send: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>): Promise<BrowserSelectState | null> {
+  const tree = await send<{ frameTree: BrowserFrameTreeNode }>("Page.getFrameTree");
+  const world = await send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: tree.frameTree.frame.id, worldName: "space-select-state" });
+  const read = await send<{ result?: { value?: unknown } }>("Runtime.evaluate", { contextId: world.executionContextId, returnByValue: true, expression: OPEN_SELECT_EXPRESSION });
+  const parsed = browserSelectStateSchema.nullable().safeParse(read.result?.value ?? null);
+  if (!parsed.success || !parsed.data) return null;
+  const state = parsed.data;
+  // The action's text holds 20,000 characters: leave the last labels out and say so.
+  while (state.labels.length > 0 && JSON.stringify(state).length > 19_000) { state.labels.pop(); state.truncated = true; }
+  state.disabled = state.disabled.filter((index) => index < state.labels.length);
+  return state;
+}
+
+/**
+ * Picks option `index` of the open dropdown with real keys: arrows from the highlighted (selected) option, then Enter, so the
+ * page gets one change. The popup steps over disabled options, so only enabled ones between the two count.
+ */
+export async function chooseOpenBrowserSelectOption(client: { send<T = unknown>(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<T> },
+  sessionId: string, index: number): Promise<string> {
+  const state = await readOpenBrowserSelect((method, params) => client.send(method, params, sessionId));
+  if (!state) throw new SpaceConflictError("The dropdown is no longer open.");
+  if (index >= state.labels.length || state.disabled.includes(index)) throw new SpaceConflictError("That option cannot be chosen.");
+  const from = state.selectedIndex;
+  const steps = state.labels.filter((_, i) => !state.disabled.includes(i) && (index > from ? i > from && i <= index : i >= index && i < from)).length;
+  for (let step = 0; step < steps; step += 1) await pressBrowserKey(client, sessionId, index > from ? "ArrowDown" : "ArrowUp");
+  await pressBrowserKey(client, sessionId, "Enter");
+  return `Chose "${state.labels[index]}".`;
 }
 
 function sanitizeSegment(value: string): string {
@@ -2294,20 +2374,27 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     let xvfb: ChildProcessWithoutNullStreams | undefined;
     let display: number | null = null;
     if (config.browserSessionsXvfbEnabled) {
-      display = allocateDisplay();
-      if (display === null) {
-        throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
-      }
+      // Displays another process's X server holds stay reserved until this launch ends, so each try takes the next one.
+      const heldElsewhere: number[] = [];
       try {
-        xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
-      } catch (error) {
-        releaseDisplay(display);
-        throw new SpaceFeatureDisabledError(
-          "BROWSER_XVFB_UNAVAILABLE",
-          `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
-          { display }
-        );
-      }
+        while (!xvfb) {
+          display = allocateDisplay();
+          if (display === null) {
+            throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
+          }
+          try {
+            xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
+          } catch (error) {
+            if (displayHeldElsewhere(display)) { heldElsewhere.push(display); continue; }
+            releaseDisplay(display);
+            throw new SpaceFeatureDisabledError(
+              "BROWSER_XVFB_UNAVAILABLE",
+              `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
+              { display }
+            );
+          }
+        }
+      } finally { heldElsewhere.forEach(releaseDisplay); }
     }
     const chrome = spawn(
       config.browserSessionsChromePath,
@@ -3687,7 +3774,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       statusReason: statusReason(),
       defaultUrl: config.browserSessionsDefaultUrl,
       checkedAt: nowIso(),
-      capacity: capacity.snapshot()
+      capacity: capacity.snapshot(),
+      pressKeys: true
     }),
     startOrRestore(input, context) {
       if (input.accountTab) return switchPageAccount(input, input.accountTab, context);
@@ -3932,11 +4020,17 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       if (input.type === "masked_screenshot") {
         text = JSON.stringify(await maskedScreenshot(session, runtime));
       }
+      if (input.type === "select_state") {
+        text = JSON.stringify(await readOpenBrowserSelect((method, params) => runtime.client.send(method, params, runtime.cdpSessionId)));
+      }
+      if (input.type === "select_choose") {
+        text = await chooseOpenBrowserSelectOption(runtime.client, runtime.cdpSessionId, input.index);
+      }
       if (input.type === "record") {
         text = await executeActionRecording(session, runtime, input, context);
       }
-      // A masked screenshot returns no unmasked live frame next to it.
-      const frame = input.type === "masked_screenshot" ? null : await captureFrame(session.sessionId);
+      // A masked screenshot returns no unmasked live frame next to it; a dropdown read after every press needs none.
+      const frame = input.type === "masked_screenshot" || input.type === "select_state" ? null : await captureFrame(session.sessionId);
       const fresh = await store.getPaneBrowserSession(session.sessionId);
       return browserToolActionResultSchema.parse({ session: fresh ?? session, frame, text });
     },

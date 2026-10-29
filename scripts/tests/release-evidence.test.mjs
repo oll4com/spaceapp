@@ -32,3 +32,20 @@ test('the 1.1.6-only Zen exception (operator decision efc30984) covers only a na
  const otherScenario=complete();otherScenario.launcherVersion='1.1.6';otherScenario.runtimeVersion='1.1.6';otherScenario.checks=otherScenario.checks.filter(x=>!(x.platform==='linux'&&x.scenario==='upgrade'));otherScenario.knownExceptions=[{platform:'linux',scenario:'upgrade',decision:'efc30984'}];
  assert.deepEqual(validateEvidence(otherScenario,v116),['linux/upgrade: missing real successful proof']);
 });
+test('the 1.1.9 Zen exception (operator decision 54b65a84) covers only a named first-agent proof of 1.1.9',()=>{
+ const v119={digest:'source',version:'1.1.9',runtime:'1.1.9',now};
+ const withoutWindows=(version)=>{const e=complete();e.launcherVersion=version;e.runtimeVersion=version;e.checks=e.checks.filter(x=>!(x.platform==='windows'&&x.scenario==='first-agent'));return e;};
+ const named=(platforms,decision='54b65a84')=>platforms.map(platform=>({platform,scenario:'first-agent',decision,reason:'OpenCode Zen free limit (provider.quota) on the lab address'}));
+ const passes=withoutWindows('1.1.9');passes.knownExceptions=named(['windows']);
+ assert.deepEqual(validateEvidence(passes,v119),[]);
+ assert.deepEqual(validateEvidence(withoutWindows('1.1.9'),v119),['windows/first-agent: missing real successful proof']);
+ // Only 1.1.9's own decision, only the named platform, only first-agent; the Linux and macOS first answers stay required.
+ const oldDecision=withoutWindows('1.1.9');oldDecision.knownExceptions=named(['windows'],'efc30984');
+ assert.equal(validateEvidence(oldDecision,v119).length,1);
+ const v1110=withoutWindows('1.1.10');v1110.knownExceptions=named(['windows']);
+ assert.equal(validateEvidence(v1110,{...v119,version:'1.1.10',runtime:'1.1.10'}).length,1);
+ const linuxToo=withoutWindows('1.1.9');linuxToo.checks=linuxToo.checks.filter(x=>!(x.platform==='linux'&&x.scenario==='first-agent'));linuxToo.knownExceptions=named(['windows']);
+ assert.deepEqual(validateEvidence(linuxToo,v119),['linux/first-agent: missing real successful proof']);
+ const otherScenario=withoutWindows('1.1.9');otherScenario.knownExceptions=named(['windows']);otherScenario.checks=otherScenario.checks.filter(x=>!(x.platform==='windows'&&x.scenario==='upgrade'));
+ assert.deepEqual(validateEvidence(otherScenario,v119),['windows/upgrade: missing real successful proof']);
+});

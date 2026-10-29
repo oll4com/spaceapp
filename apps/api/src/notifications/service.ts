@@ -1,6 +1,6 @@
 import {
   NOTIFICATION_SOURCE_LABELS, eventSchema, notificationChannelEnabled, notificationRaiseInputSchema, resolveNotificationSettings,
-  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationStreamPayload, type PushDeviceRegistration, type SpaceNotification, type UserSettings, isHandRequest, needsOperatorHands } from "@space/contracts";
+  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationStreamPayload, type PushDeviceRegistration, type SpaceNotification, type UserSettings, isCopilotQuestion, isHandRequest, needsOperatorHands, needsYou } from "@space/contracts";
 import type { SpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, type SpaceEventBus } from "@space/runtime";
 import type { FcmSender } from "./fcm.js";
@@ -19,10 +19,17 @@ export interface NotificationServiceDeps {
    * Nous, the mind of SpaceApp (operator decision 2026-10-17): while it is on and working, what needs the operator reaches
    * Nous first and their phone only through Nous's own decisions; anything urgent still goes out.
    */
-  nous?: { held(owner: string): Promise<boolean>; raised(notification: SpaceNotification): void };
+  nous?: { held(owner: string): Promise<boolean>; raised(notification: SpaceNotification): void;
+    /** "Copilot questions go to Nous first" is on, Nous is on and its model is not paused (Ask Last step 7). */
+    holdsCopilotQuestions?(owner: string): Promise<boolean>;
+    /** Goal 7365014c-d: answers a new needs-you card of a kind the operator always answers the same way; its ACKED record, or null. */
+    autoAnswer?(notification: SpaceNotification): Promise<SpaceNotification | null> };
   log?: { warn(meta: Record<string, unknown>, message: string): void };
   now?(): string;
 }
+
+/** How long a copilot's question waits for Nous before it reaches the operator anyway (Ask Last step 7). */
+export const NOUS_QUESTION_HOLD_MS = 60 * 60_000;
 
 /** Kept for 30 days, then pruned, except unresolved ATTENTION and URGENT items, which stay until resolved (Record Retention Invariant). */
 export const NOTIFICATION_RETENTION_MS = 30 * 24 * 3_600_000;
@@ -75,12 +82,22 @@ export function createNotificationService(deps: NotificationServiceDeps) {
       // until (the web shows it without a pop-up meanwhile). URGENT never waits.
       const night = parsed.severity !== "URGENT" && isHandRequest(parsed.source, parsed.kind) ? ownerQuietState(settings, new Date(now())) : null;
       const input = night?.quiet ? { ...parsed, payload: { ...parsed.payload, heldUntil: night.wakeAt } } : parsed;
-      const { notification, created } = await deps.repository.raise({ ...input, reopen: options.realert === true });
+      let { notification, created } = await deps.repository.raise({ ...input, reopen: options.realert === true });
+      // Ask Last step 7: a new copilot question goes to Nous first (its inbox line below), up to an hour; only a new record is held, so
+      // a producer refreshing a released question never holds it again.
+      const forNous = created && Boolean(notification.dedupeKey) && isCopilotQuestion(notification) && parsed.severity !== "URGENT"
+        && Boolean(await deps.nous?.holdsCopilotQuestions?.(input.ownerUserId).catch(() => false));
+      if (forNous) notification = (await deps.repository.raise({ ...input, payload: { ...input.payload,
+        heldForNous: { until: new Date(Date.parse(now()) + NOUS_QUESTION_HOLD_MS).toISOString() } } })).notification;
+      // Goal 7365014c-d: a card the operator chose "Always answer like this" for is answered before anyone is alerted.
+      const answered = created && !forNous && needsYou(notification) && deps.nous?.autoAnswer
+        ? await deps.nous.autoAnswer(notification).catch((error) => { deps.log?.warn({ err: error, notificationId: notification.id }, "Notification auto-answer failed."); return null; }) : null;
+      if (answered) notification = answered;
       await publish(created ? "NOTIFICATION_CREATED" : "NOTIFICATION_UPDATED", notification);
-      if (created || options.realert) {
+      if ((created || options.realert) && !answered) {
         const channels = resolveNotificationSettings(settings?.notifications);
         // What only the operator's hands can do (handoff, CAPTCHA, sign-in, NEEDS_USER) never waits for Nous.
-        const held = options.held === true || night?.quiet === true
+        const held = options.held === true || night?.quiet === true || forNous
           || (input.severity === "ATTENTION" && input.source !== "NOUS" && !needsOperatorHands(input.source, input.kind) && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false)));
         const telegram = !held && (input.telegram ?? (notificationChannelEnabled(channels, input.source, "telegram") && input.severity !== "INFO"));
         if (telegram && !settings?.suppressNotifications) {
@@ -104,8 +121,8 @@ export function createNotificationService(deps: NotificationServiceDeps) {
     list: (owner: string, query: NotificationListQuery) => deps.repository.list(owner, query),
     pending: (owner: string) => deps.repository.pending(owner),
     unresolvedBySource: (source: NotificationSource) => deps.repository.unresolvedBySource(source),
-    async setStatus(owner: string, id: string, status: Exclude<NotificationStatus, "OPEN">): Promise<SpaceNotification | null> {
-      const updated = await deps.repository.setStatus(owner, id, status);
+    async setStatus(owner: string, id: string, status: Exclude<NotificationStatus, "OPEN">, payload?: Record<string, unknown>): Promise<SpaceNotification | null> {
+      const updated = await deps.repository.setStatus(owner, id, status, payload);
       if (updated) await publish("NOTIFICATION_UPDATED", updated);
       return updated;
     },
@@ -116,6 +133,17 @@ export function createNotificationService(deps: NotificationServiceDeps) {
         if (latest) await publish("NOTIFICATION_UPDATED", latest);
       }
       return count;
+    },
+    /**
+     * A copilot question held for Nous goes to the operator: Nous put it on a card, its hour ended, or Nous is off or paused. The usual
+     * needs-you path follows, alerted once (`alertAt` makes the web deliver the same record again). Null when it was not held or is done.
+     */
+    async releaseHeldForNous(owner: string, id: string): Promise<SpaceNotification | null> {
+      const item = await deps.repository.get(owner, id);
+      if (!item?.dedupeKey || !item.payload.heldForNous || (item.status !== "OPEN" && item.status !== "READ")) return null;
+      const { heldForNous: _held, ...payload } = item.payload;
+      return service.raise({ ownerUserId: owner, roomId: item.roomId, paneId: item.paneId, source: item.source, kind: item.kind, severity: item.severity,
+        title: item.title, body: item.body, link: item.link, dedupeKey: item.dedupeKey, payload: { ...payload, alertAt: now() }, telegram: null }, { realert: true });
     },
     /** A question answered or a thread handled resolves its open notification. */
     async resolve(owner: string, dedupeKey: string): Promise<number> {

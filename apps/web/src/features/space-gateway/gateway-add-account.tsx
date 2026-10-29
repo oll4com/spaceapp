@@ -256,7 +256,7 @@ const apiKeyProviders = {
   GOOGLE_AI: { title: "Add a Google AI API key", placeholder: "AIza…",
     note: "Google AI (Gemini API) keys serve Space Memory embeddings (gemini-embedding-001) and nothing else. A free-tier key has low per-minute and per-day limits: memories are embedded gradually and the rest wait for the next day. The key is checked with a free request and stored encrypted; it is never shown again." },
   CLAUDE: { title: "Add a Claude API key", placeholder: "sk-ant-…",
-    note: "Paid per token. Space Gateway uses the key only while Claude API key fallback (Settings › Routing) is on and every pooled Claude account is out of quota; the accounts take over again at their next reset. The key is checked with a free request and stored encrypted; it is never shown again." }
+    note: "Paid per token. Space Gateway uses the key only while Claude API key fallback (Settings › Routing) is on and every pooled Claude account is out of quota, and never for Claude Code; the accounts take over again at their next reset. The key is checked with a free request and stored encrypted; it is never shown again." }
 } as const;
 
 const spaceKeyButtons: Partial<Record<keyof typeof apiKeyProviders, string>> = {

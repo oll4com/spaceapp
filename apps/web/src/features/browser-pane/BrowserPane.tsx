@@ -80,6 +80,7 @@ import {
   type UiTheme
 } from "../../ui-theme.js";
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
+import { useBrowserSelectOverlay } from "./BrowserSelectOverlay.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
   BROWSER_CONTROL_IDLE_RELEASE_MS,
@@ -221,6 +222,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [status, setStatus] = useState<BrowserStatusPayload | null>(null);
   const [response, setResponse] = useState<PaneBrowserSessionResponse | null>(null);
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
+  const browserSelect = useBrowserSelectOverlay({ paneId: pane.id, sendInput: (input) => void sendCanvasInput(input), onFrame: (next) => appendFrame(next) });
   const [url, setUrl] = useState("");
   const [handoff, setHandoff] = useState(false);
   const [browserAgent, setBrowserAgent] = useState<BrowserPageListPayload["agent"]>(null);
@@ -304,6 +306,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const controlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
   const latestControlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
   const lastOperatorInputAtRef = useRef(Date.now());
+  // Operator 2026-10-27: during a sign-in, code or CAPTCHA handoff (the server says so), being on the pane is not idle: the tab
+  // shown, the pane in view and focused or maximized; idle counts once they leave it.
+  const presenceHoldRef = useRef(false);
+  const onPaneRef = useRef<() => boolean>(() => false);
+  onPaneRef.current = () => document.visibilityState === "visible" && isVisible && !pane.isMinimized
+    && (pane.isMaximized || Boolean(paneRef.current?.contains(document.activeElement)));
   const releaseControlRef = useRef<() => Promise<void>>(async () => undefined);
   const controlAcquirePromiseRef = useRef<Promise<BrowserControlLeasePayload | null> | null>(null);
   const legacyControlRef = useRef(false);
@@ -1004,13 +1012,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         setHandoff(false);
         return;
       }
+      const present = onPaneRef.current();
+      if (presenceHoldRef.current && present) lastOperatorInputAtRef.current = Date.now();
       // Holding the browser without using it (a handoff that ended unnoticed) would keep the agent locked out.
       if (lease.status === "ACTIVE" && Date.now() - lastOperatorInputAtRef.current >= BROWSER_CONTROL_IDLE_RELEASE_MS) {
         void releaseControlRef.current();
         return;
       }
-      api.heartbeatBrowserControl(pane.id, { leaseId: lease.leaseId, ttlSeconds: 60 })
+      api.heartbeatBrowserControl(pane.id, { leaseId: lease.leaseId, ttlSeconds: 60, present })
         .then((next) => {
+          presenceHoldRef.current = Boolean(next.presenceHold);
           if (next.lease.status === "ACTIVE") {
             setControlLease(next.lease);
           } else {
@@ -1664,6 +1675,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     }
     const lease = await acquireControlForInput(false, !hover);
     if (lease) {
+      if ((input.type === "POINTER" && input.eventType === "mouseReleased") || (input.type === "TOUCH" && input.eventType === "touchEnd")) browserSelect.afterRelease(session.sessionId);
       const payload = { ...input, leaseId: lease.leaseId } as BrowserInputPayload;
       if (sendRealtimeBrowserInput(payload)) return;
       // Without the stream socket, inputs go over HTTP one at a time in order, moves coalesced: one POST per
@@ -2385,6 +2397,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
             source={emptyBrowser ? undefined : activeFrame?.screenshotDataUrl}
             capturedAt={activeFrame?.capturedAt}
             onInput={(input) => void sendCanvasInput(input)}
+            overlay={browserSelect.render}
           />
           {emptyBrowser || !activeFrame?.screenshotDataUrl ? (
             <div className="browser-frame-empty" role="status">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { NOTIFICATION_SOURCE_LABELS, needsYou, type Pane, type Room, type SpaceNotification } from "@space/contracts";
+import { NOTIFICATION_SOURCE_LABELS, heldForNous, needsYou, type Pane, type Room, type SpaceNotification } from "@space/contracts";
 import { api } from "../../api.js";
 import { browserPaneControlHeld, dispatchBrowserPaneActionEvent } from "../browser-pane/events.js";
 import { isLiveHandoff } from "../copilot-kit/live-handoff.js";
@@ -46,7 +46,8 @@ export interface NousFocusShell {
 }
 
 interface Origin { roomId: string | null; paneId: string | null; maximizedPaneId: string | null; surface: SideSurface; surfaceOpen: boolean }
-interface Visit { origin: Origin; roomId: string; paneId: string; maximizedByUs: boolean; notificationId: string | null; terminal: boolean }
+// ask: what the request needs, shown on the Back pill while the operator is there (stable 2026-10-25: a visit showed nothing of it).
+interface Visit { origin: Origin; roomId: string; paneId: string; maximizedByUs: boolean; notificationId: string | null; terminal: boolean; ask: string | null }
 
 let lastKeyAt = 0;
 if (typeof window !== "undefined") window.addEventListener("keydown", () => { lastKeyAt = Date.now(); }, true);
@@ -54,7 +55,9 @@ if (typeof window !== "undefined") window.addEventListener("keydown", () => { la
 /** Why the banner must wait instead of going by itself; null when the operator is free. */
 export function nousFocusHold(): string | null {
   const active = document.activeElement as HTMLElement | null;
-  if (Date.now() - lastKeyAt < TYPING_MS || (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)))) return "you are typing";
+  // A terminal keeps its hidden input focused all the time: only its recent keys count as typing (2026-10-26: the banner never went).
+  const field = active && !active.classList.contains("xterm-helper-textarea") && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
+  if (Date.now() - lastKeyAt < TYPING_MS || field) return "you are typing";
   if (document.querySelector("dialog[open], [role='dialog'][aria-modal='true'], [role='alertdialog']")) return "a dialog is open";
   if ([...document.querySelectorAll<HTMLElement>("[data-live-status]")].some((element) => LIVE_ON.has(element.dataset.liveStatus ?? ""))) return "Live is on";
   return null;
@@ -80,7 +83,7 @@ function releaseBrowser(paneId: string): void {
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const settled = (status: string | undefined) => status === "RESOLVED" || status === "ACKED";
 /** An open needs-you record this screen can show now: not held for the operator's morning. */
-const openNeedsYou = (item: SpaceNotification) => item.status === "OPEN" && needsYou(item)
+const openNeedsYou = (item: SpaceNotification) => item.status === "OPEN" && needsYou(item) && !heldForNous(item)
   && !(typeof item.payload?.heldUntil === "string" && Date.parse(item.payload.heldUntil) > Date.now());
 
 export function useNousFocus(shell: NousFocusShell): ReactNode {
@@ -98,6 +101,10 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
 
   const go = useCallback(async (detail: NousFocusDetail) => {
     setRequest(null);
+    // Going there is seeing it: an open record would be offered again on every other tab and after each reload (only OPEN: the read
+    // route would turn a resolved record back into READ).
+    const record = detail.notification;
+    if (record && (peekNotificationStore().items.find((item) => item.id === record.id) ?? record).status === "OPEN") void markNotificationRead(record.id);
     const shell = latest.current;
     const origin: Origin = visitRef.current?.origin ?? {
       roomId: shell.selectedRoomId, paneId: shell.selectedPaneId,
@@ -121,7 +128,7 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
       if (target) window.dispatchEvent(new CustomEvent("space:notification-open", { detail: { paneId: detail.paneId, target } }));
       const same = visitRef.current?.paneId === detail.paneId;
       setVisit({ origin, roomId: detail.roomId, paneId: detail.paneId, maximizedByUs: maximizedByUs || Boolean(same && visitRef.current?.maximizedByUs),
-        notificationId: detail.notification?.id ?? null, terminal: (pane.mode ?? "TERMINAL") === "TERMINAL" });
+        notificationId: detail.notification?.id ?? null, terminal: (pane.mode ?? "TERMINAL") === "TERMINAL", ask: detail.notification?.body.trim() || null });
       // A plain browser pane's requested handoff is taken for the operator (the pane action queues until the pane mounts).
       if (BROWSER_ACTION_MODES.has(pane.mode) && await api.browserHandoff(detail.paneId).then((result) => result.handoff?.status === "REQUESTED").catch(() => false)) {
         dispatchBrowserPaneActionEvent({ paneId: detail.paneId, action: "handoff", roomId: detail.roomId });
@@ -166,7 +173,7 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
       const shell = latest.current;
       const current = visitRef.current;
       // Already there: no banner; the visit follows the newest request so it ends when that one resolves.
-      if (current?.paneId === detail.paneId) { setVisit({ ...current, notificationId: detail.notification?.id ?? current.notificationId }); return; }
+      if (current?.paneId === detail.paneId) { setVisit({ ...current, notificationId: detail.notification?.id ?? current.notificationId, ask: detail.notification?.body.trim() || current.ask }); return; }
       if (shell.selectedRoomId === detail.roomId && shell.selectedPaneId === detail.paneId) return;
       setRequest(detail);
     };
@@ -275,8 +282,11 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
 
   const room = (id: string | null) => latest.current.rooms.find((entry) => entry.id === id)?.name ?? "the room";
   const requested = request ? paneOf(request.paneId) : null;
-  const text = request?.notification ? `${NOTIFICATION_SOURCE_LABELS[request.notification.source]}: ${request.notification.title}`
+  const source = request?.notification ? NOTIFICATION_SOURCE_LABELS[request.notification.source] : "";
+  // A title that already names its source ("Mail Copilot needs you (…)") is not prefixed again.
+  const text = request?.notification ? (request.notification.title.startsWith(source) ? request.notification.title : `${source}: ${request.notification.title}`)
     : request ? `Nous: ${room(request.roomId)} · ${requested ? requested.paneName ?? requested.title : "a pane"} needs you` : "";
+  const ask = request?.notification?.body.trim() || null;
   const notNow = () => {
     if (request?.notification) void markNotificationRead(request.notification.id);
     setRequest(null);
@@ -287,13 +297,15 @@ export function useNousFocus(shell: NousFocusShell): ReactNode {
         <div className="nous-focus-banner" role="alert" aria-label="Needs you">
           <Nous aria-hidden="true" />
           <span className="nous-focus-text">{text}
-            {hold ? <span className="nous-focus-hold"> · waiting: {hold}</span> : null}</span>
+            {hold ? <span className="nous-focus-hold"> · waiting: {hold}</span> : null}
+            {ask ? <span className="nous-focus-ask" data-sensitive-masked="manual" title={ask}>{ask}</span> : null}</span>
           <button type="button" className="nous-focus-go" onClick={() => void go(request)}>Go now</button>
           <button type="button" onClick={notNow}>Not now</button>
         </div>
       ) : null}
       {visit ? (
-        <div className="nous-focus-back" role="status">
+        <div className={visit.ask ? "nous-focus-back has-ask" : "nous-focus-back"} role="status">
+          {visit.ask ? <p className="nous-focus-ask" data-sensitive-masked="manual">{visit.ask}</p> : null}
           <button type="button" className="nous-focus-go" onClick={() => void back()}><ArrowLeft aria-hidden="true" />Back to {room(visit.origin.roomId)}</button>
           <button type="button" aria-label="Stay here" title="Stay here" onClick={() => setVisit(null)}><X aria-hidden="true" /></button>
         </div>

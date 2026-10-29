@@ -102,12 +102,12 @@ describe("browser control idle release (operator 2026-10-15, 60 s since 2026-10-
       renew();
       activity.noteInput(lease.leaseId);
       const lastPress = start + 60_000;
-      vi.setSystemTime(lastPress + BROWSER_CONTROL_IDLE_RELEASE_MS - 30_000);
+      vi.setSystemTime(lastPress + BROWSER_CONTROL_IDLE_RELEASE_MS - 20_000);
       renew();
       expect(countsAsOperatorInput({ type: "POINTER", eventType: "mouseMoved", button: "none" })).toBe(false);
       expect(countsAsOperatorInput({ type: "POINTER", eventType: "mouseMoved", button: "left" })).toBe(true);
       expect(countsAsOperatorInput({ type: "KEY", eventType: "keyDown" })).toBe(true);
-      // 30 s before the limit the operator keeps it.
+      // 20 s before the limit the operator keeps it (40 s idle with the 60 s limit since 2026-10-24).
       expect(await sweepIdleOperatorLeases(deps)).toBe(0);
       expect(store.getBrowserControlLease(lease.leaseId)?.status).toBe("ACTIVE");
       vi.setSystemTime(lastPress + BROWSER_CONTROL_IDLE_RELEASE_MS + 1_000);
@@ -161,20 +161,20 @@ describe("browser control idle release (operator 2026-10-15, 60 s since 2026-10-
       const steps: string[] = [];
       // Released by the operator (or the idle sweep): the fence goes up before the host hands control back.
       const first = await setup();
-      registerVaultFenceHooks(first.store, { fenceHandoff: async (paneId) => { steps.push(`fence ${paneId}`); }, fencedTargets: async () => [] });
+      registerVaultFenceHooks(first.store, { fenceHandoff: async (paneId, viewer) => { steps.push(`fence ${paneId} ${viewer}`); }, fencedTargets: async () => [] });
       const releaseControl = first.browserSessionManager.releaseControl;
       first.browserSessionManager.releaseControl = async (pane, input) => { steps.push("release"); return releaseControl(pane, input); };
       await releaseBrowserControlLease({ store: first.store, browserSessionManager: first.browserSessionManager, activity: createBrowserControlActivity() } as never,
         { pane: first.pane, lease: first.lease, traceId: "trace:handoff", auditAction: "pane.browser.control.release" });
-      expect(steps).toEqual([`fence ${first.pane.id}`, "release"]);
+      expect(steps).toEqual([`fence ${first.pane.id} cli:cli_session:test`, "release"]);
       expect(first.store.getBrowserHandoffRequest(first.handoff.handoffRequestId)?.status).toBe("COMPLETED");
       // A lease that ran out (the tab stopped heartbeating) fences the same way.
       steps.length = 0;
       const second = await setup();
-      registerVaultFenceHooks(second.store, { fenceHandoff: async (paneId) => { steps.push(`fence ${paneId}`); }, fencedTargets: async () => [] });
+      registerVaultFenceHooks(second.store, { fenceHandoff: async (paneId, viewer) => { steps.push(`fence ${paneId} ${viewer}`); }, fencedTargets: async () => [] });
       vi.setSystemTime(start + 61_000);
       await settleEndedOperatorLease(second.store, second.sessionId);
-      expect(steps).toEqual([`fence ${second.pane.id}`]);
+      expect(steps).toEqual([`fence ${second.pane.id} cli:cli_session:test`]);
       // No fence without a handoff (the operator took control himself), and a fence that fails never blocks the handoff.
       steps.length = 0;
       vi.setSystemTime(start);

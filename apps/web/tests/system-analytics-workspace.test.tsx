@@ -64,6 +64,7 @@ describe("SystemAnalyticsWorkspace", () => {
       composition: { cacheRead: 900, cacheWrite: 50, freshInput: 200, output: 15 },
       accounts: [{
         accountKey: "gw_account:lab", label: "lab", route: "GATEWAY", ...totals(1000, 5, 1.25),
+        weeklyPace: { usedPercent: 39, passedPercent: 67, points: -28, resetAt: "2027-01-17T21:00:00.000Z", pace: "UNDER" },
         models: [{ providerId: "anthropic", modelId: "claude-opus-5-5", tokensIn: 1000, tokensOut: 5, costUsd: 1.25 }]
       }, {
         accountKey: "cli:opencode/opencode", label: "opencode · OpenCode CLI (direct)", route: "DIRECT", ...totals(50, 5, 0), unpricedTurns: 3,
@@ -97,6 +98,9 @@ describe("SystemAnalyticsWorkspace", () => {
     const accounts = screen.getByRole("region", { name: "Tokens by account" });
     // An account whose models have no price says so instead of showing $0.00.
     expect(within(accounts).getByText("Direct · No API price")).toBeTruthy();
+    // Each subscription account's week against its pace (plan clipboard:nUloPOH3blDT); a direct profile has none.
+    expect(within(accounts).getByText("Week 39% used · 67% passed · pace -28 (under)")).toBeTruthy();
+    expect(within(accounts).getAllByText(/^Week /)).toHaveLength(1);
     fireEvent.click(within(accounts).getByRole("button", { name: "View token usage for lab" }));
     expect(within(accounts).getByRole("table", { name: "Models of lab" }).textContent).toContain("$1.25");
 

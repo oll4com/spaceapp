@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultNotificationSettings, needsOperatorHands, needsYou, notificationChannelEnabled, notificationRaiseInputSchema, notificationSettingsSchema, notificationStreamPayloadSchema,
+  defaultNotificationSettings, needsOperatorHands, needsYou, needsYouAsk, needsYouAskSchema, notificationAnswerInputSchema, notificationChannelEnabled, notificationRaiseInputSchema, notificationSettingsSchema, notificationStreamPayloadSchema,
   resolveNotificationSettings, spaceNotificationSchema, updateUserSettingsInputSchema, userSettingsSchema, type NotificationSource
 } from "../src/index.js";
 
@@ -12,10 +12,12 @@ describe("Space notifications contracts", () => {
     const yes: Array<[NotificationSource, string]> = [["AGENT", "NEEDS_YOU"], ["NOUS", "NEEDS_HANDS"], ["BROWSER_HANDOFF", "BROWSER_HANDOFF_REQUESTED"], ["JOB_COPILOT", "HANDOFF_REQUESTED"],
       ["JOB_COPILOT", "QUESTION"], ["JOB_COPILOT", "REVIEW_REQUESTED"], ["MAIL_COPILOT", "NEEDS_USER"], ["MARKETING_COPILOT", "RULE_PROPOSED"], ["MARKETING_COPILOT", "CAMPAIGN_PROPOSED"],
       ["FREELANCE_COPILOT", "CLIENT_READY"], ["ROOM_AGENT", "WAITING"], ["ROOM_AGENT", "QUESTION"], ["ROOM_AGENT", "SIGN_IN"], ["ROOM_AGENT", "USAGE_LIMIT"], ["ROOM_AGENT", "STUCK"],
-      ["ROOM_AGENT", "OVERLAP"], ["DESIGN", "DESIGN_APPROVAL"], ["VIDEO", "VIDEO_QUESTION"], ["APP_STUDIO", "APP_STUDIO_QUESTION"], ["SECURITY_COPILOT", "SECURITY_REVIEW"]];
+      ["ROOM_AGENT", "OVERLAP"], ["DESIGN", "DESIGN_APPROVAL"], ["VIDEO", "VIDEO_QUESTION"], ["APP_STUDIO", "APP_STUDIO_QUESTION"], ["SECURITY_COPILOT", "SECURITY_REVIEW"],
+      ["MONITORING_COPILOT", "MONITORING_QUESTION"], ["MONITORING_COPILOT", "MONITORING_REVIEW"]];
     for (const [source, kind] of yes) expect(at(source, kind), `${source} ${kind}`).toBe(true);
     const no: Array<[NotificationSource, string]> = [["MARKETING_COPILOT", "PUBLISH_FAILED"], ["MARKETING_COPILOT", "POSTS_DUE"], ["FREELANCE_COPILOT", "WORK_WAITING"], ["DESIGN", "DESIGN_READY"],
-      ["DESIGN", "DESIGN_FAILED"], ["VIDEO", "VIDEO_DOWNLOADED"], ["MAIL_COPILOT", "MAIL_RECEIVED"], ["NOUS", "DECISION_OPEN"], ["ROOM_AGENT", "FINISHED"], ["SECURITY_COPILOT", "SECURITY_FINDING"]];
+      ["DESIGN", "DESIGN_FAILED"], ["VIDEO", "VIDEO_DOWNLOADED"], ["MAIL_COPILOT", "MAIL_RECEIVED"], ["NOUS", "DECISION_OPEN"], ["ROOM_AGENT", "FINISHED"], ["SECURITY_COPILOT", "SECURITY_FINDING"],
+      ["MONITORING_COPILOT", "MONITORING_ALERT"], ["MONITORING_COPILOT", "MONITORING_GUARDIAN"], ["MONITORING_COPILOT", "COLLECTOR_UNREACHABLE"]];
     for (const [source, kind] of no) expect(at(source, kind), `${source} ${kind}`).toBe(false);
     expect(at("JOB_COPILOT", "QUESTION", "INFO")).toBe(false);
     expect(at("JOB_COPILOT", "QUESTION", "ATTENTION", null)).toBe(false);
@@ -46,5 +48,20 @@ describe("Space notifications contracts", () => {
     expect(resolveNotificationSettings(null)).toEqual(defaultNotificationSettings);
     expect(userSettingsSchema.parse({ notifications: { channels: { sound: false } } }).notifications?.channels.sound).toBe(false);
     expect(updateUserSettingsInputSchema.parse({ notifications: null }).notifications).toBeNull();
+  });
+
+  // Needs you as questions (plan clipboard:5AQvaoSR-IZa): one question, its options with the recommended one, and where the answer goes.
+  it("reads a needs-you record's question, options and answer route, and falls back to the body's first line through Nous", () => {
+    const ask = { question: "Which account?", options: ["Main", "Work"], recommended: "Work", answer: { kind: "PANE" as const } };
+    expect(needsYouAskSchema.parse(ask)).toEqual(ask);
+    expect(needsYouAskSchema.safeParse({ ...ask, recommended: "Other" }).success).toBe(false);
+    expect(needsYouAskSchema.safeParse({ ...ask, options: ["1", "2", "3", "4", "5", "6", "7"] }).success).toBe(false);
+    expect(needsYouAskSchema.safeParse({ question: "x".repeat(301), answer: { kind: "ACK" } }).success).toBe(false);
+    expect(needsYouAsk({ title: "Andy needs you", body: "Pick one", payload: { ask } })).toEqual(ask);
+    expect(needsYouAsk({ title: "Andy needs you", body: "\nSign in to GitHub\nNeeds: a code", payload: { ask: { question: "" } } }))
+      .toEqual({ question: "Sign in to GitHub", answer: { kind: "NOUS" } });
+    expect(needsYouAsk({ title: "Andy needs you", body: "", payload: {} }).question).toBe("Andy needs you");
+    expect(notificationAnswerInputSchema.safeParse({}).success).toBe(false);
+    expect(notificationAnswerInputSchema.parse({ option: "Work" })).toEqual({ option: "Work" });
   });
 });

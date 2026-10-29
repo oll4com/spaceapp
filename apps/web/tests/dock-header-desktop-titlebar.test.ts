@@ -10,9 +10,9 @@ describe("dock header desktop titlebar integration", () => {
 
   it("declares root desktop-titlebar-height fallback and titlebar heights", () => {
     expect(titlebarCss).toMatch(/--desktop-titlebar-height:\s*0px/);
-    expect(titlebarCss).toMatch(/body:has\(\.desktop-window-titlebar\)/);
-    expect(titlebarCss).toMatch(/\.space-shell:has\(\.desktop-window-titlebar\)/);
-    expect(titlebarCss).toMatch(/--desktop-titlebar-height:\s*32px/);
+    expect(titlebarCss).toMatch(/body\[data-desktop-titlebar="true"\]\s*\{\s*--desktop-titlebar-height:\s*32px/);
+    // A :has() setting this inherited variable on body restyled the whole page on every DOM change (desktop hangs 2026-10-26).
+    expect(titlebarCss).not.toContain(":has(");
   });
 
   it("resets desktop-titlebar-height to 0px in fullscreen mode", () => {

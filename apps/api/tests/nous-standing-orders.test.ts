@@ -3,8 +3,10 @@ import { nousSettingsSchema, type ClipboardItem, type NousDecision, type Pane, t
 import { InMemoryNousPaneCloseoutsRepository, InMemoryNousPlanMarksRepository, type NousPaneCheck, type NousPaneSummaryRow, type PaneReport } from "@space/db";
 import type { DashboardAgentsSample } from "../src/room-routes.js";
 import type { BoardPaneInput } from "../src/nous/pane-board.js";
-import { closeoutSkipReason, createStandingOrders, keptOpenForTask, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT, verifyMemorySave, type StandingOrdersDeps } from "../src/nous/standing-orders.js";
+import { closeoutSince, closeoutSkipReason, createStandingOrders, keptOpenForTask, NOUS_SAVE_RETRY_TEXT, NOUS_SAVE_TEXT, savesToMemory, verifyMemorySave, type CloseoutBrowser, type StandingOrdersDeps } from "../src/nous/standing-orders.js";
 import { localDayHour, renderDailyReview } from "../src/nous/daily-review.js";
+import { decisionPrediction } from "../src/nous/predictions.js";
+import { buildPlanMap } from "../src/nous/plan-map.js";
 import type { NousTurnFacts } from "@space/contracts";
 
 // Standing orders (operator orders 2026-10-21): Space brings finished panes and stalled plans to Nous every tick, in code.
@@ -38,6 +40,38 @@ const summary = (waitsOn: NousPaneSummaryRow["waitsOn"], generatedAt: string): N
   ({ id: "1", paneId: andy.id, roomId: room.id, fingerprint: "f", line: "…", waitsOn, needsOperator: waitsOn === "OPERATOR", until: null, detail: null, model: null, source: "FALLBACK", batchId: null, generatedAt, inputReportId: null, tokensIn: null, tokensOut: null }) as never;
 
 describe("finished panes (close-out candidates)", () => {
+  it("lists every pane type once nobody used it 30 minutes: its record, its browser and its playback count as use; a held browser keeps its pane (operator 27/10)", () => {
+    const web = cli("pane:web00001", "Web", { mode: "BROWSER", terminalRuntimeId: null, updatedAt: iso(T0 - 90 * MIN) } as Partial<Pane>);
+    const shell = cli("pane:sh000001", "Shell", { terminalRuntimeId: "shell", updatedAt: iso(T0 - 90 * MIN) } as Partial<Pane>);
+    const tube = cli("pane:tube0001", "Tube", { mode: "YOUTUBE", terminalRuntimeId: null, updatedAt: iso(T0 - 90 * MIN) } as Partial<Pane>);
+    const browser = (patch: Partial<CloseoutBrowser> = {}): CloseoutBrowser => ({ tabs: 2, held: null, activeAt: iso(T0 - 40 * MIN), ...patch });
+    const base = { since: () => null, tasks: [], executions: [], summaries: [], now: T0, finishedAfterMs: 30 * MIN };
+    expect(savesToMemory(andy)).toBe(true);
+    expect([web, shell, tube].map(savesToMemory)).toEqual([false, false, false]);
+    expect(savesToMemory(cli("pane:job00001", "Jo", { mode: "JOB_APPLY", terminalRuntimeId: "cli:claude" } as Partial<Pane>))).toBe(true);
+    // Unused 40 minutes: listed; its browser on screen 5 minutes ago (the tab polls and frames stamp it): fresh.
+    expect(closeoutSkipReason(input(web, "idle"), { ...base, browsers: new Map([[web.id, browser()]]) })).toBeNull();
+    expect(closeoutSince(input(web, "idle"), { ...base, browsers: new Map([[web.id, browser()]]) })).toBe(iso(T0 - 40 * MIN));
+    expect(closeoutSkipReason(input(web, "idle"), { ...base, browsers: new Map([[web.id, browser({ activeAt: iso(T0 - 5 * MIN) })]]) })).toBe("fresh");
+    // A browser someone holds stays open: a handoff, a control lease, a Vault fence, or a read that failed; an unreadable browser list lists no browser.
+    for (const held of ["handoff", "control", "vault", "unknown"] as const) {
+      expect(closeoutSkipReason(input(web, "idle"), { ...base, browsers: new Map([[web.id, browser({ held })]]) })).toBe("browser-held");
+    }
+    expect(closeoutSkipReason(input(web, "idle"), { ...base, browsers: null })).toBe("unknown");
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, since: () => iso(T0 - 31 * MIN), browsers: null })).toBeNull();
+    // A CLI pane whose browser is under a handoff is not finished either.
+    expect(closeoutSkipReason(input(andy, "done"), { ...base, since: () => iso(T0 - 31 * MIN), browsers: new Map([[andy.id, browser({ held: "handoff" })]]) })).toBe("browser-held");
+    // A video playing 2 minutes ago keeps its YouTube pane; a plain shell goes by its record; a pane changed 5 minutes ago is fresh.
+    expect(closeoutSkipReason(input(tube, "idle"), { ...base, usedAt: new Map([[tube.id, iso(T0 - 2 * MIN)]]) })).toBe("fresh");
+    expect(closeoutSkipReason(input(tube, "idle"), base)).toBeNull();
+    expect(closeoutSkipReason(input(shell, "idle"), base)).toBeNull();
+    expect(closeoutSkipReason(input(shell, "working"), base)).toBe("busy");
+    expect(closeoutSkipReason(input({ ...web, updatedAt: iso(T0 - 5 * MIN) } as Pane, "idle"), base)).toBe("fresh");
+    // The same keep-open rules hold: the Mail Copilot always runs, a KEEP_OPEN check and an open notification keep any pane.
+    expect(closeoutSkipReason(input(web, "idle", { check: { ...check("KEEP_OPEN", iso(T0 + 60 * MIN)), paneId: web.id } }), base)).toBe("keep-open");
+    expect(closeoutSkipReason(input(web, "idle", { notifications: [{ id: "n1" } as SpaceNotification] }), base)).toBe("waiting-operator");
+  });
+
   it("names a CLI pane done or idle 30 minutes with nothing waiting on it, and why every other pane is skipped", () => {
     const base = { since: () => iso(T0 - 31 * MIN), tasks: [], executions: [], summaries: [], now: T0, finishedAfterMs: 30 * MIN };
     expect(closeoutSkipReason(input(andy, "done"), base)).toBeNull();
@@ -46,8 +80,9 @@ describe("finished panes (close-out candidates)", () => {
     expect(closeoutSkipReason(input(andy, "waiting"), base)).toBe("busy");
     expect(closeoutSkipReason(input(andy, "done"), { ...base, since: () => iso(T0 - 10 * MIN) })).toBe("fresh");
     expect(closeoutSkipReason(input(andy, "done"), { ...base, since: () => null })).toBe("unknown");
-    expect(closeoutSkipReason(input(cli("pane:web00001", "Web", { mode: "BROWSER" } as Partial<Pane>), "idle"), base)).toBe("not-cli");
-    expect(closeoutSkipReason(input(cli("pane:sh000001", "Shell", { terminalRuntimeId: "shell" } as Partial<Pane>), "idle"), base)).toBe("shell");
+    // Every pane type is a candidate (operator 27/10 «όλα του τύπου Panes»): a browser and a plain shell unused 30 minutes too.
+    expect(closeoutSkipReason(input(cli("pane:web00001", "Web", { mode: "BROWSER" } as Partial<Pane>), "idle"), base)).toBeNull();
+    expect(closeoutSkipReason(input(cli("pane:sh000001", "Shell", { terminalRuntimeId: "shell" } as Partial<Pane>), "idle"), base)).toBeNull();
     // The operator's own pane is closed like any other once its task is done (operator order 2026-10-24).
     expect(closeoutSkipReason(input(andy, "done", { check: check("OPERATOR_TEST") }), base)).toBeNull();
     expect(closeoutSkipReason(input(andy, "done", { check: check("OPERATOR_TEST") }), { ...base, closeOperatorPanes: false })).toBe("operator-test");
@@ -70,6 +105,8 @@ describe("finished panes (close-out candidates)", () => {
     expect(closeoutSkipReason(input(andy, "done"), { ...base, tasks: [task(andy.id, { kind: "DAILY", nextRunAt: iso(T0 + 3 * 60 * MIN) })] })).toBeNull();
     // Copilot-style panes run a CLI and close the same way.
     expect(closeoutSkipReason(input(cli("pane:mkt00001", "Kate", { mode: "MARKETING_COPILOT" } as Partial<Pane>), "idle"), base)).toBeNull();
+    // The Mail Copilot always runs: never a finished pane, however long it idles (operator 2026-10-27).
+    expect(closeoutSkipReason(input(cli("pane:mail0001", "Emma", { mode: "MAIL_COPILOT" } as Partial<Pane>), "idle"), { ...base, since: () => iso(T0 - 3 * 24 * 60 * MIN) })).toBe("always-on");
     expect(closeoutSkipReason(input(andy, "done"), { ...base, tasks: [task(andy.id, null), task("pane:other001")] })).toBeNull();
     expect(closeoutSkipReason(input(andy, "done"), { ...base, executions: [{ planId: "clipboard:x", paneId: andy.id }] })).toBe("managed");
     expect(closeoutSkipReason(input(andy, "done", { plan: plan("clipboard:a", andy.id, 60, iso(T0 - 5 * 3_600_000), ["COMPLETED", "PENDING"]) }), base)).toBe("plan-open");
@@ -92,21 +129,24 @@ describe("finished panes (close-out candidates)", () => {
   });
 });
 
-function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?: TaskItem[]; reports?: PaneReport[]; summaries?: NousPaneSummaryRow[]; checks?: NousPaneCheck[]; notifications?: SpaceNotification[]; standing?: StandingOrdersDeps["standing"]; away?: boolean } = {}) {
+function fixture(options: { panes?: PaneState[]; plans?: ClipboardItem[]; tasks?: TaskItem[]; reports?: PaneReport[]; summaries?: NousPaneSummaryRow[]; checks?: NousPaneCheck[]; notifications?: SpaceNotification[]; standing?: StandingOrdersDeps["standing"]; away?: boolean; planMap?: StandingOrdersDeps["planMap"];
+  browsers?: Map<string, CloseoutBrowser> | null } = {}) {
   let clock = T0;
   const closeouts = new InMemoryNousPaneCloseoutsRepository();
   const marks = new InMemoryNousPlanMarksRepository();
   const state = { panes: options.panes ?? [{ pane: andy, state: "done", since: iso(T0 - 31 * MIN) }], plans: options.plans ?? [], tasks: options.tasks ?? [], reports: options.reports ?? [],
     summaries: options.summaries ?? [], checks: options.checks ?? [], notifications: options.notifications ?? [], settings: nousSettingsSchema.parse({ enabled: true, standingOrders: { dailyReview: false } }), away: options.away ?? false, unread: false, lowToken: false,
-    facts: [] as NousTurnFacts[], decisions: [] as NousDecision[], timeZone: "Asia/Bangkok" };
+    facts: [] as NousTurnFacts[], decisions: [] as NousDecision[], timeZone: "Asia/Bangkok", browsers: options.browsers };
   const standing = vi.fn<StandingOrdersDeps["standing"]>(options.standing ?? (async () => "STARTED"));
   const notice = vi.fn(async () => {});
   const collect = vi.fn<StandingOrdersDeps["collect"]>(async () => ({ rooms: [{ room, sample: state.unread ? null : sample(state.panes) }], reports: state.reports.filter((entry, index, all) => all.findIndex((other) => other.paneId === entry.paneId) === index),
-    notifications: state.notifications, decisions: [], copilotItems: [], plans: state.plans, checks: state.checks, tasks: state.tasks, executions: [], summaries: state.summaries }));
+    notifications: state.notifications, decisions: [], copilotItems: [], plans: state.plans, checks: state.checks, tasks: state.tasks, executions: [], summaries: state.summaries,
+    ...(state.browsers !== undefined ? { browsers: state.browsers } : {}) }));
   const orders = createStandingOrders({
     closeouts, marks, settings: async () => state.settings, owners: async () => [owner],
     collect,
     reportsSince: async (_owner, paneId, since) => state.reports.filter((entry) => entry.paneId === paneId && entry.at >= since),
+    ...(options.planMap ? { planMap: options.planMap } : {}),
     lowToken: async () => state.lowToken, standing, notice, paneRound: async () => null, away: async () => state.away, now: () => clock,
     review: { facts: async (_owner, since) => state.facts.filter((turn) => turn.startedAt >= since), decisions: async () => state.decisions, timeZone: async () => state.timeZone }
   });
@@ -125,9 +165,14 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
   it("renders the last 24 hours of turn facts: turns by reason, the tools that failed most (gates left out), decisions, corrections, then the orders", () => {
     const since = "2026-10-23T03:00:00.000Z";
     const text = renderDailyReview({ since, day: "2026-10-24", hour: 3, decisions: [
-      { id: "nous_decision:a", status: "APPROVED", answeredAt: "2026-10-23T10:00:00.000Z", couldHaveDecided: true } as NousDecision,
-      { id: "nous_decision:b", status: "ANSWERED", answeredAt: "2026-10-22T10:00:00.000Z" } as NousDecision,
-      { id: "nous_decision:c", status: "OPEN", answeredAt: null } as NousDecision
+      { id: "nous_decision:a", title: "Rename the room?", category: "DIRECTION", action: null, status: "APPROVED", createdAt: "2026-10-23T09:30:00.000Z", answeredAt: "2026-10-23T10:00:00.000Z", couldHaveDecided: true } as NousDecision,
+      { id: "nous_decision:b", title: "Old", category: "DIRECTION", action: null, status: "ANSWERED", createdAt: "2026-10-22T09:00:00.000Z", answeredAt: "2026-10-22T10:00:00.000Z" } as NousDecision,
+      { id: "nous_decision:c", title: "Delete the export", category: "DESTRUCTIVE", action: { type: "SPACE_CONTROL" }, status: "OPEN", createdAt: "2026-10-23T11:00:00.000Z", answeredAt: null } as unknown as NousDecision
+    ], cards: [
+      { dedupeKey: "nous:pane:pane:andy0001", createdAt: "2026-10-20T08:00:00.000Z", payload: { alertAt: "2026-10-23T08:00:00.000Z" } } as unknown as SpaceNotification,
+      { dedupeKey: "nous:general", createdAt: "2026-10-23T09:00:00.000Z", payload: {} } as unknown as SpaceNotification,
+      { dedupeKey: "nous:pane:pane:bob00001", createdAt: "2026-10-22T08:00:00.000Z", payload: { alertAt: "2026-10-22T08:00:00.000Z" } } as unknown as SpaceNotification,
+      { dedupeKey: "nous:decision:nous_decision:c", createdAt: "2026-10-23T11:00:00.000Z", payload: {} } as unknown as SpaceNotification
     ], facts: [
       facts("t1", "OPERATOR", "2026-10-23T09:00:00.000Z", { tools: { space_send_to_pane: { calls: 4, failed: 3, refused: 1 }, space_world: { calls: 2, failed: 0, refused: 0 } }, outcomes: [{ summary: "Rename the room", outcome: "SELF", correction: true }] }),
       facts("t2", "INBOX", "2026-10-23T12:00:00.000Z", { status: "TIMEOUT", tools: { space_read_pane: { calls: 3, failed: 1, refused: 0 } } }),
@@ -140,7 +185,60 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
     expect(text).toContain("- Tools that failed most: space_send_to_pane 2 of 4, space_read_pane 1 of 3");
     expect(text).toContain("- Decisions the operator answered: 1 (approved 1, declined 0, in words 0); \"you could have decided this\": 1");
     expect(text).toContain("- Corrections by the operator: 1: \"Rename the room\"");
+    // Ask last (goal ee5a573e): the questions the operator got in the last 24 hours.
+    expect(text).toContain("## Questions to the operator (ask last, goal ee5a573e)\n- Cards and focus requests raised: 2\n- Decisions asked: 2; questions among them (DIRECTION or without an action): 1\n- \"You could have decided this\": 1: \"Rename the room?\"");
     expect(text).toContain('titled "Nous daily review 2026-10-24" tagged nous-review');
+  });
+
+  it("scores the operator's answers against Nous's predictions over 7 and 30 days (goal 7365014c-a)", () => {
+    const since = "2026-10-27T03:00:00.000Z";
+    const decision = (id: string, status: string, answeredAt: string, recommendation: string, answer: string | null = null) =>
+      ({ id, title: id, category: "EXTERNAL", action: null, status, createdAt: answeredAt, answeredAt, recommendation, body: "", answer }) as unknown as NousDecision;
+    const text = renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions: [
+      decision("nous_decision:a", "APPROVED", "2026-10-27T10:00:00.000Z", "Ναι. Πρόβλεψη: ναι (90%)"),
+      decision("nous_decision:b", "DECLINED", "2026-10-26T10:00:00.000Z", "Πρόβλεψη: ναι (60%)"),
+      decision("nous_decision:c", "APPROVED", "2026-10-10T10:00:00.000Z", "Prediction: yes"),
+      decision("nous_decision:d", "APPROVED", "2026-10-27T11:00:00.000Z", "Πρόβλεψη: ναι (95%)", 'Approved by your "Always approve" for: approve the marketing copilot\'s reviews'),
+      decision("nous_decision:e", "APPROVED", "2026-10-27T12:00:00.000Z", "No line here")
+    ], cards: [
+      { dedupeKey: "nous:pane:pane:andy0001", createdAt: "2026-10-27T08:00:00.000Z", updatedAt: "2026-10-27T09:00:00.000Z",
+        payload: { ask: { question: "Postal code?", options: ["10260", "10110"], recommended: "10260" }, answer: { text: "10260", at: "2026-10-27T09:00:00.000Z" } } } as unknown as SpaceNotification
+    ] });
+    expect(text).toContain("- Predictions (goal 7365014c): decisions 1 of 2 as predicted (50%) over 7 days, 2 of 3 as predicted (67%) over 30; cards 1 of 1 as predicted (100%) over 7 days, 1 of 1 as predicted (100%) over 30.");
+    expect(decisionPrediction({ recommendation: "Όχι. Πρόβλεψη: όχι (80%)", body: "" })).toBe("DECLINE");
+  });
+
+  it("lists the cards answered against Nous's recommendation and orders the day's causes into the upgrade queue (items 30 and 13)", () => {
+    const since = "2026-10-27T03:00:00.000Z";
+    const card = (title: string, text: string, by?: string) => ({ title, dedupeKey: "nous:pane:pane:a", createdAt: since, updatedAt: since,
+      payload: { ask: { question: title, options: ["Keep", "Close"], recommended: "Close" }, answer: { text, at: "2026-10-27T09:00:00.000Z", ...(by ? { by } : {}) } } }) as unknown as SpaceNotification;
+    const text = renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions: [], cards: [card("Close Bob?", "Keep"), card("Close Cody?", "Close"), card("Close Dana?", "Keep", "ALWAYS")] });
+    expect(text).toContain('- Cards answered against your recommendation: 1: "Close Bob?" recommended "Close", answered "Keep"');
+    expect(text).toContain('4. Append to nous/upgrades/queue.md (space_files_write, mode append) a "## 2026-10-28 REVIEW" block');
+    expect(text).toMatch(/\n5\. End with five lines/);
+  });
+
+  it("counts the operator's answers in every rail, one line per source, then Nous's decisions (goal 7365014c-b)", async () => {
+    const since = "2026-10-27T03:00:00.000Z";
+    const rails = [
+      { source: "Mail Copilot", type: "REVIEW_DECIDED", decision: "approve", count: 3 }, { source: "Mail Copilot", type: "REVIEW_DECIDED", decision: "edit", count: 1 },
+      { source: "Mail Copilot", type: "RULE_DECIDED", decision: "approve", count: 1 }, { source: "Marketing Copilot", type: "REVIEW_DECIDED", decision: "approve", count: 4 },
+      { source: "Job Copilot", type: "ANSWERED", decision: "Nous", count: 2 }, { source: "Needs you", type: "AGENT", decision: "answered", count: 1 }
+    ];
+    // Answered an hour ago: space_nous_decisions {summary} counts the last day from now, so a fixed date falls out of it a day later.
+    const decisions = [{ id: "nous_decision:a", status: "APPROVED", answeredAt: new Date(Date.now() - 3_600_000).toISOString(), createdAt: since } as unknown as NousDecision];
+    const text = renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions, rails });
+    expect(text).toContain(["## The operator's answers in every rail (goal 7365014c-b)", "- Mail Copilot: reviews approve 3, edit 1; rules approve 1",
+      "- Marketing Copilot: reviews approve 4", "- Job Copilot: questions Nous 2", "- Needs you: agent answered 1", "- Nous decisions: approved 1, declined 0, in words 0", "## Orders"].join("\n"));
+    expect(renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions, rails: null })).toContain("- The rails could not be read here.");
+    expect(renderDailyReview({ since, day: "2026-10-28", hour: 3, facts: [], decisions })).not.toContain("every rail");
+    const { createNousTools } = await import("../src/nous/tools.js");
+    const railDecisions = vi.fn(async (_owner: string, _since: string) => rails);
+    const tools = createNousTools({ rooms: async () => [], listPanes: async () => [], decisions: async () => decisions, railDecisions } as never);
+    const summary = await tools.execute("space_nous_decisions", { summary: true }, { owner: "user:operator", turnId: "turn:1", callId: "call:1", traceId: "trace:1" });
+    expect(summary.result).toContain("- Mail Copilot: reviews approve 3, edit 1; rules approve 1");
+    expect(summary.result).toContain("- Nous decisions: approved 1");
+    expect(Date.now() - Date.parse(railDecisions.mock.calls[0]![1])).toBeGreaterThan(86_000_000);
   });
 
   it("starts the review once per local day at or after the chosen hour, never twice while it runs, and not on a day a REVIEW turn already ran", async () => {
@@ -177,6 +275,34 @@ describe("the daily self-review (operator decision 2026-10-24)", () => {
 });
 
 describe("the standing orders tick", () => {
+  it("lists a browser pane and a plain shell unused 30 minutes to close without a save, leaves a held browser alone, and shows a crowded browser's tabs (operator 27/10)", async () => {
+    const web = cli("pane:web00001", "Web", { mode: "BROWSER", terminalRuntimeId: null, updatedAt: iso(T0 - 90 * MIN) } as Partial<Pane>);
+    const held = cli("pane:held0001", "Held", { mode: "BROWSER", terminalRuntimeId: null, updatedAt: iso(T0 - 90 * MIN) } as Partial<Pane>);
+    const shell = cli("pane:sh000001", "Shell", { terminalRuntimeId: "shell", updatedAt: iso(T0 - 90 * MIN) } as Partial<Pane>);
+    const browsers = new Map<string, CloseoutBrowser>([[web.id, { tabs: 7, held: null, activeAt: iso(T0 - 40 * MIN) }], [held.id, { tabs: 1, held: "handoff", activeAt: iso(T0 - 50 * MIN) }],
+      [andy.id, { tabs: 5, held: null, activeAt: iso(T0 - 2 * MIN) }]]);
+    const f = fixture({ panes: [{ pane: andy, state: "done", since: iso(T0 - 31 * MIN) }, { pane: web, state: "idle", since: null }, { pane: held, state: "idle", since: null }, { pane: shell, state: "idle", since: null }], browsers });
+    expect(await f.orders.tickOwner(owner)).toEqual({ paneLines: 3, stalledPlans: 0, turn: "STARTED" });
+    const text = f.text();
+    expect(text).toContain("## Finished panes (operator rule: a pane with an AI CLI saves to memory, then closes; every other pane closes at once; keep one open only with KEEP_OPEN and a reason)");
+    // The AI CLI pane still saves first; its crowded browser shows so its finished tabs close if it stays open.
+    expect(text).toContain(`- Main/Andy · done 31 min · browser: 5 tabs (kept open: have it close the finished ones, browser hygiene) · save not asked yet → send it exactly "${NOUS_SAVE_TEXT}"`);
+    expect(text).toContain("- Main/Web · browser pane · unused 40 min · browser: 7 tabs (they close with it) · no CLI, nothing to save → close it (space_close_pane); still in use: space_pane_checked KEEP_OPEN with the reason and nextCheckInMinutes");
+    expect(text).toContain("- Main/Shell · shell (no AI CLI) · unused 1.5 h · no CLI, nothing to save → close it (space_close_pane) after a look (space_read_pane: a command still running keeps it open); still in use:");
+    expect(text).not.toContain("Main/Held");
+    // Nous closed the browser pane (space_close_pane): no row is needed, and a closed pane leaves the board.
+    await f.orders.closed(owner, [web.id]);
+    expect(await f.closeouts.list(owner)).toEqual([]);
+    f.state.panes = f.state.panes.filter((entry) => entry.pane.id !== web.id);
+    f.advance(31 * MIN);
+    await f.orders.tickOwner(owner);
+    expect(f.text()).not.toContain("Main/Web");
+    // An unreadable browser list lists no pane without a CLI this tick; the CLI pane's line still comes.
+    const blind = fixture({ panes: [{ pane: andy, state: "done", since: iso(T0 - 31 * MIN) }, { pane: web, state: "idle", since: null }], browsers: null });
+    expect(await blind.orders.tickOwner(owner)).toMatchObject({ paneLines: 1, turn: "STARTED" });
+    expect(blind.text()).not.toContain("Main/Web");
+  });
+
   it("asks Nous to re-check its own old card on a finished pane, and stays quiet once Nous records that the operator still owes it", async () => {
     const f = fixture({ notifications: [card("2026-10-19T13:32:00.000Z")] });
     expect(await f.orders.tickOwner(owner)).toEqual({ paneLines: 1, stalledPlans: 0, turn: "STARTED" });
@@ -289,6 +415,17 @@ describe("the standing orders tick", () => {
     f.advance(2 * 3_600_000);
     expect(await f.orders.tickOwner(owner)).toMatchObject({ stalledPlans: 2, turn: "STARTED" });
     expect(f.text()).toContain("clipboard:b");
+  });
+
+  it("leaves a plan the plan map holds on a date, another plan or the server out of the stalled nudges (2026-10-25)", async () => {
+    const stalled = plan("clipboard:a", andy.id, 40, iso(T0 - 4 * 3_600_000));
+    const held = plan("clipboard:b", andy.id, 10, iso(T0 - 5 * 3_600_000));
+    const f = fixture({ panes: [{ pane: andy, state: "idle", since: iso(T0 - 10 * MIN) }], plans: [stalled, held], standing: async () => "STARTED",
+      planMap: async (_owner, plans) => buildPlanMap({ plans: plans.map((item) => item.id === "clipboard:b" ? { ...item, waitsOn: { kind: "DATE", what: "the launch window", until: iso(T0 + 86_400_000) } } : item),
+        executions: [], summaries: [], reports: [], holds: [], now: new Date(T0) }) });
+    expect(await f.orders.tickOwner(owner)).toMatchObject({ stalledPlans: 1, turn: "STARTED" });
+    expect(f.text()).toContain("[clipboard:a]");
+    expect(f.text()).not.toContain("[clipboard:b]");
   });
 
   it("runs each owner on its own interval from the minute tick, and the Away round every 30 minutes while the operator is away", async () => {

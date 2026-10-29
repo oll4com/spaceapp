@@ -95,6 +95,13 @@ describe("Nous's scorecard v1 (plan clipboard:L7RgHsveHbcR)", () => {
     expect(old).toMatchObject({ enoughData: false, window: { turns: 0 }, changePercent: 0 });
   });
 
+  it("leaves waits the pane left by itself within 30 s (detector flickers) out of unblocking, never one Nous answered (item 29a)", () => {
+    const events = [event("WAITING", "HANDLED", "08:50:00", "08:50:20", "pane:a"), event("WAITING", "RESOLVED", "08:51:00", "08:51:12", "pane:b"),
+      event("WAITING", "RESOLVED", "08:52:00", "08:54:30", "pane:c"), event("STUCK", "RESOLVED", "08:55:00", "08:55:29", "pane:d")];
+    const card = nousScorecard({ now, facts: sampleFacts(), decisions: [], events, tools: baselineTools });
+    expect(card.dimensions.unblocking).toMatchObject({ sample: 2, note: "median 1.4 min, 1 of 2 answered by Nous" });
+  });
+
   it("answers space_nous_progress from the owner's scorecard", async () => {
     const card = nousScorecard({ now, facts: sampleFacts(), decisions: sampleDecisions(), events: sampleEvents(), tools: baselineTools });
     const tools = createNousTools({ progress: async (owner: string) => { expect(owner).toBe("user:operator"); return card; } } as unknown as NousToolDeps);

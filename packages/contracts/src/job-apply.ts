@@ -202,6 +202,8 @@ export const jobApplyCandidateSchema = z.object({
   needsSponsorship: z.boolean().nullable().default(null),
   willingToRelocate: z.boolean().nullable().default(null),
   salaryExpectation: shortText(200),
+  /** Salary answers go this far below the market median, or a posting's range midpoint (operator rule 2026-10-25). */
+  salaryBelowMarketPercent: z.number().int().min(0).max(50).default(10),
   noticePeriod: shortText(120),
   yearsOfExperience: z.number().int().min(0).max(80).nullable().default(null),
   skills: stringList,
@@ -371,33 +373,42 @@ export type JobApplyMailCheckResult = z.infer<typeof jobApplyMailCheckResultSche
 
 /**
  * Mail triage: application emails are filed under Gmail labels. Confirmations and rejections are archived;
- * anything that asks for something (interview, assessment, information, unknown) stays in the inbox.
+ * a request to take a test or an interview (ACTION_NEEDED) and every other application mail (OTHER: questions,
+ * offers, surveys, unknown) stay in the inbox.
  */
-export const JOB_APPLY_MAIL_CATEGORIES = ["CONFIRMATION", "REJECTION", "ACTION_NEEDED"] as const;
+export const JOB_APPLY_MAIL_CATEGORIES = ["CONFIRMATION", "REJECTION", "ACTION_NEEDED", "OTHER"] as const;
 export const jobApplyMailCategorySchema = z.enum(JOB_APPLY_MAIL_CATEGORIES);
 export type JobApplyMailCategory = z.infer<typeof jobApplyMailCategorySchema>;
 export const JOB_APPLY_MAIL_ROOT_LABEL = "Job Applications";
 export const JOB_APPLY_MAIL_LABELS: Record<JobApplyMailCategory, string> = {
   CONFIRMATION: "Job Applications/Confirmations",
   REJECTION: "Job Applications/Rejections",
-  ACTION_NEEDED: "Job Applications/Action needed"
+  ACTION_NEEDED: "Job Applications/Action needed",
+  OTHER: "Job Applications/Other"
 };
 /** Organize categories: NONE takes the Job Applications labels off mail filed by mistake (archived only with `archive: true`). */
 export const JOB_APPLY_MAIL_ORGANIZE_CATEGORIES = [...JOB_APPLY_MAIL_CATEGORIES, "NONE"] as const;
 export const jobApplyMailOrganizeSchema = z.object({
   messageIds: z.array(z.string().trim().min(1).max(300)).min(1).max(50),
   category: z.enum(JOB_APPLY_MAIL_ORGANIZE_CATEGORIES),
-  /** Defaults to true for confirmations and rejections; action-needed and NONE mail leave the inbox only when true. */
+  /** Defaults to true for confirmations and rejections; action-needed, other and NONE mail leave the inbox only when true. */
   archive: z.boolean().optional(),
   account: z.string().trim().toLowerCase().email().max(320).optional()
 }).strict();
 export type JobApplyMailOrganizeInput = z.infer<typeof jobApplyMailOrganizeSchema>;
+/** The deadline (or interview time) the copilot read in a test or interview mail when Space found none or a wrong one. */
+export const jobApplyMailDeadlineSchema = z.object({
+  threadId: z.string().trim().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/),
+  dueAt: isoDateTime
+}).strict();
+export type JobApplyMailDeadlineInput = z.infer<typeof jobApplyMailDeadlineSchema>;
 export const jobApplyMailTriageResultSchema = z.object({
   accounts: z.array(z.string()).max(20),
   scanned: z.number().int().min(0),
   confirmations: z.number().int().min(0),
   rejections: z.number().int().min(0),
   actionNeeded: z.number().int().min(0),
+  other: z.number().int().min(0),
   skipped: z.number().int().min(0),
   /** Job-alert digests archived without a Job Applications label. */
   digests: z.number().int().min(0)

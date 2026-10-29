@@ -80,7 +80,9 @@ export function createNousTelegram(deps: NousTelegramDeps) {
       }
       return;
     }
-    await deps.service.send(owner, text, { person: true, via: "TELEGRAM" });
+    const sent = await deps.service.send(owner, text, { person: true, via: "TELEGRAM" });
+    // /goal and /goals (2026-10-27) are answered by Space itself: the answer rides on the stored message.
+    if (typeof sent.meta.reply === "string") await client.sendMessage(chatId, sent.meta.reply.slice(0, NOUS_TELEGRAM_CHUNK)).catch(() => undefined);
   }
 
   async function cycle(): Promise<void> {

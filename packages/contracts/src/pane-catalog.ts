@@ -53,7 +53,8 @@ export const PANE_TYPES = Object.freeze([
   { typeId: "design", label: "Design", aliases: ["graphics", "design studio"], mode: "DESIGN", runtimeId: null, adapter: "design", readiness: "TERMINAL_INPUT" },
   { typeId: "app-studio", label: "App Studio", aliases: ["app studio", "mobile app", "mobile apps", "android app", "ios app", "iphone app", "expo"], mode: "APP_STUDIO", runtimeId: null, adapter: "appstudio", readiness: "TERMINAL_INPUT" },
   { typeId: "video", label: "Video", aliases: ["video", "clip", "clips", "video editing", "video studio", "shorts", "reel"], mode: "VIDEO", runtimeId: null, adapter: "video", readiness: "TERMINAL_INPUT" },
-  { typeId: "security", label: "Security Copilot", aliases: ["security copilot", "security", "vulnerabilities", "cve", "patching", "security updates"], mode: "SECURITY_COPILOT", runtimeId: null, adapter: "securitycopilot", readiness: "TERMINAL_INPUT" }
+  { typeId: "security", label: "Security Copilot", aliases: ["security copilot", "security", "vulnerabilities", "cve", "patching", "security updates"], mode: "SECURITY_COPILOT", runtimeId: null, adapter: "securitycopilot", readiness: "TERMINAL_INPUT" },
+  { typeId: "monitoring", label: "Monitoring Copilot", aliases: ["monitoring copilot", "monitoring", "alerts", "prometheus", "alertmanager", "uptime", "guardian"], mode: "MONITORING_COPILOT", runtimeId: null, adapter: "monitoringcopilot", readiness: "TERMINAL_INPUT" }
 ] as const);
 export type PaneType = typeof PANE_TYPES[number];
 export type PaneTypeId = PaneType["typeId"];

@@ -7,7 +7,8 @@ import { claudeAccountActions } from "../src/admin/claude-sign-in.js";
 import { generateGatewayApiKey } from "../src/api-keys.js";
 import { createCredentialCipher } from "../src/credential-cipher.js";
 import { CLAUDE_API_KEY_PATTERN, claudeCreditsExhausted, isClaudeApiKeyAccount } from "../src/providers/claude/api-key.js";
-import { registerClaudeProxyRoutes } from "../src/providers/claude/claude-proxy.js";
+import { apiBudgetPace, DAILY_ALLOWANCE_REACHED, MONTHLY_BUDGET_REACHED } from "../src/providers/claude/api-budget.js";
+import { registerClaudeProxyRoutes, type ClaudeProxyOptions } from "../src/providers/claude/claude-proxy.js";
 import { createClaudeRefresher } from "../src/providers/claude/credentials.js";
 import { buildClaudeUpstreamHeaders } from "../src/providers/claude/headers.js";
 import { startClaudeUsagePoller } from "../src/providers/claude/usage-refresh.js";
@@ -31,9 +32,9 @@ const message = (id: string) => json({ id, type: "message", model: "claude-sonne
 const limited = (resetSeconds: number) => json({ type: "error", error: { type: "rate_limit_error", message: "Usage limit reached" } }, 429,
   { "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": String(resetSeconds) });
 
-interface Call { auth: string; url: string; betas: string | undefined; body: Record<string, unknown> }
+interface Call { auth: string; url: string; betas: string | undefined; body: Record<string, unknown>; headers: Record<string, string> }
 
-async function setup(upstream: (call: Call) => Response, options: { fallback?: boolean; withKey?: boolean } = {}) {
+async function setup(upstream: (call: Call) => Response, options: { fallback?: boolean; withKey?: boolean; apiBudget?: ClaudeProxyOptions["apiBudget"] } = {}) {
   const repository = new InMemoryGatewayRepository();
   let clock = startMs;
   const now = () => clock;
@@ -61,13 +62,13 @@ async function setup(upstream: (call: Call) => Response, options: { fallback?: b
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;
     const call: Call = { auth: headers.authorization ? headers.authorization.replace("Bearer ", "") : `key:${headers["x-api-key"] ?? ""}`, url,
-      betas: headers["anthropic-beta"], body: init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {} };
+      betas: headers["anthropic-beta"], headers, body: init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {} };
     calls.push(call);
     return upstream(call);
   }) as unknown as typeof fetch;
   const server = createGatewayServer({ repository, version: "test", credentialKeyPresent: () => true, now: () => new Date(now()),
     routes: (app, helpers) => {
-      registerClaudeProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl, now, upstreamBaseUrl: "https://claude.test" });
+      registerClaudeProxyRoutes(app, helpers, { pool, logs, settings: () => repository.getSettings(), fetchImpl, now, upstreamBaseUrl: "https://claude.test", apiBudget: options.apiBudget });
     } });
   const post = (payload: Record<string, unknown>, headers: Record<string, string> = {}, url = "/v1/messages") => server.app.inject({
     method: "POST", url, payload, headers: { "x-api-key": plainKey, "anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219", ...headers }
@@ -175,6 +176,31 @@ describe("Claude API key fallback", () => {
     expect(calls[2]!.auth).toMatch(/^token-claude-/);
   });
 
+  // Operator rule 2026-10-27: the API key's credits serve only clients outside Claude Code.
+  it("never serves Claude Code from the key, while other clients keep it", async () => {
+    const { post, calls, logs, repository, limitAccounts, advance } = await setup((call) => message(call.auth.startsWith("key:") ? "msg_key" : "msg_sub"), { fallback: true });
+    const body = { model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    await limitAccounts();
+    advance(6_000);
+    for (const agent of ["claude-cli/2.1.307 (external, sdk-cli)", "claude-code/2.1.307", "claude-vscode/2.1.307"]) {
+      const refused = await post(body, { "user-agent": agent, "x-client": "Space" });
+      expect(refused.statusCode).toBe(429);
+      expect((refused.json() as { error: { message: string } }).error.message).toMatch(/^All 2 Claude accounts in Space Gateway reached their usage limit\./);
+      const counted = await post({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] }, { "user-agent": agent }, "/v1/messages/count_tokens");
+      expect(counted.statusCode).not.toBe(503);
+    }
+    expect(calls.filter((call) => call.auth.startsWith("key:"))).toEqual([]);
+    // Oh My Pi sends Claude Code's session header; its user agent keeps it on the key.
+    const served = await post(body, { "user-agent": "oh-my-pi/1.4.0", "x-claude-code-session-id": "5f2c1f9e-7a1b-4c1d-9e2f-0a1b2c3d4e5f", "x-space-project": "nous" });
+    expect(served.json()).toMatchObject({ id: "msg_key" });
+    expect(calls.at(-1)!.auth).toBe(`key:${apiKey}`);
+    // The gateway's own tags stay in the gateway: they are logged, never sent upstream.
+    expect(calls.at(-1)!.headers).not.toHaveProperty("x-space-project");
+    await logs.flush();
+    const [log] = await repository.listRequestLogs({ limit: 1 });
+    expect(log).toMatchObject({ accountId: keyAccount, clientName: "Oh My Pi", project: "nous" });
+  });
+
   it("takes the key out of routing when Anthropic reports used-up credits, and passes the answer on", async () => {
     const credits = { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } };
     const { post, calls, limitAccounts, account } = await setup((call) => call.auth.startsWith("key:") ? json(credits, 400) : limited(startMs / 1000 + 2400), { fallback: true });
@@ -203,5 +229,54 @@ describe("Claude API key fallback", () => {
     const count = await without.post({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] }, {}, "/v1/messages/count_tokens");
     expect(count.statusCode).toBe(503);
     expect(without.calls).toHaveLength(0);
+  });
+});
+
+// Plan clipboard:nUloPOH3blDT step 6 (operator 27/10): the API budget is used fully over the month and never above it.
+describe("Claude API key paced to the monthly budget", () => {
+  const day = (date: string, usd: number, reported = false) => ({ day: date, reported, organizationUsd: reported ? usd : 0, workspaceUsd: 0,
+    gatewayEstimateUsd: reported ? 0 : usd, gatewayBilledUsd: 0, models: [] });
+  const at = (iso: string) => Date.parse(iso);
+
+  it("is off without a budget, shares what the month has left over the days left and stops at the month's budget", () => {
+    const days = [day("2026-10-01", 300, true), day("2026-10-26", 92.21), day("2026-10-27", 10)];
+    expect(apiBudgetPace(null, days, at("2026-10-27T16:00:00Z"))).toBeNull();
+    expect(apiBudgetPace(0, days, at("2026-10-27T16:00:00Z"))).toBeNull();
+    // $392.21 by the end of 26/10: $107.79 for 27-31/10, $21.56 a day; $10 spent today.
+    expect(apiBudgetPace(500, days, at("2026-10-27T16:00:00Z"))).toEqual({ budgetUsd: 500, monthSpentUsd: 402.21, remainingUsd: 97.79, daysLeft: 5,
+      allowanceTodayUsd: 21.56, todaySpentUsd: 10, stop: null });
+    expect(apiBudgetPace(500, days, at("2026-10-27T16:00:00Z"), 11.56)?.stop).toBe(DAILY_ALLOWANCE_REACHED);
+    expect(apiBudgetPace(400, days, at("2026-10-27T16:00:00Z"))?.stop).toBe(MONTHLY_BUDGET_REACHED);
+    // Last month's days never count.
+    expect(apiBudgetPace(500, [day("2026-09-30", 499, true)], at("2026-10-01T00:10:00Z"))).toMatchObject({ monthSpentUsd: 0, daysLeft: 31, stop: null });
+  });
+
+  it("gives the last day of the month the whole remainder", () => {
+    const pace = apiBudgetPace(500, [day("2026-10-15", 450, true), day("2026-10-31", 40)], at("2026-10-31T20:00:00Z"));
+    expect(pace).toMatchObject({ daysLeft: 1, allowanceTodayUsd: 50, todaySpentUsd: 40, remainingUsd: 10, stop: null });
+    expect(apiBudgetPace(500, [day("2026-10-15", 450, true), day("2026-10-31", 50)], at("2026-10-31T20:00:00Z"))?.stop).toBe(MONTHLY_BUDGET_REACHED);
+  });
+
+  it("refuses the key with the limit answer and the pace's code, counts what it serves, and leaves the subscription accounts alone", async () => {
+    let stop: "DAILY_ALLOWANCE_REACHED" | "MONTHLY_BUDGET_REACHED" | null = DAILY_ALLOWANCE_REACHED;
+    const recorded: Array<number | null> = [];
+    const apiBudget = { read: async () => ({ budgetUsd: 500, monthSpentUsd: 410, remainingUsd: 90, daysLeft: 5, allowanceTodayUsd: 21.56, todaySpentUsd: 22, stop }),
+      record: (cost: number | null) => { recorded.push(cost); } };
+    const { post, calls, limitAccounts, advance, logs, repository } = await setup((call) => message(call.auth.startsWith("key:") ? "msg_key" : "msg_sub"), { fallback: true, apiBudget });
+    const body = { model: "claude-sonnet-4-5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    expect((await post(body)).json()).toMatchObject({ id: "msg_sub" }); // accounts with room never ask the pacer
+    await limitAccounts();
+    advance(6_000);
+    const refused = await post(body);
+    expect(refused.statusCode).toBe(429);
+    expect(refused.json()).toMatchObject({ type: "error", error: { type: "rate_limit_error", code: DAILY_ALLOWANCE_REACHED,
+      message: expect.stringContaining("today's share of the monthly API budget ($22.00 of $21.56 today; $90.00 left for 5 days)") } });
+    expect(calls.filter((call) => call.auth.startsWith("key:"))).toEqual([]);
+    await logs.flush();
+    expect((await repository.listRequestLogs({ limit: 1 }))[0]).toMatchObject({ status: "error", errorCode: DAILY_ALLOWANCE_REACHED });
+    stop = null;
+    expect((await post(body)).json()).toMatchObject({ id: "msg_key" });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toBeGreaterThan(0);
   });
 });

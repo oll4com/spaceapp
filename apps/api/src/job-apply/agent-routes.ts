@@ -10,6 +10,7 @@ import {
   jobApplyDiscoverRequestSchema,
   jobApplyEventInputSchema,
   jobApplyMailboxConnected,
+  jobApplyMailDeadlineSchema,
   jobApplyMailOrganizeSchema,
   jobApplyMemoryCreateSchema,
   jobApplyMemoryQuerySchema,
@@ -26,6 +27,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { JobApplyService } from "./service.js";
+import { salaryResearchRequestSchema } from "./salary.js";
 import { settleEndedOperatorLease } from "../browser-control-activity.js";
 
 // Agent-facing routes of the Job Applications pane. They are reached with the
@@ -256,6 +258,14 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     return { event: await service.logEvent(await owner(bridge.claims), { ...input, paneId: bridge.claims.paneId, runId: run.run?.id ?? null }) };
   });
 
+  // Salary research: the server reads the posting and public salary pages; the agent gets numbers, never page text.
+  app.post(route("salary-research"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(salaryResearchRequestSchema, request.body ?? {});
+    return service.salaryResearch(await owner(bridge.claims), input, { paneId: bridge.claims.paneId });
+  });
+
   app.post(route("discover"), routeOptions, async (request, reply) => {
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return undefined;
@@ -432,6 +442,15 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     const input = parseBody(jobApplyMailOrganizeSchema, request.body ?? {});
     const result = await service.organizeMail(await owner(bridge.claims), input, { paneId: bridge.claims.paneId });
     await deps.audit(request, "job_apply.agent.mail_organize", bridge.claims.paneId, { category: result.category, count: result.organized, archived: result.archived });
+    return result;
+  });
+
+  app.post(route("mail/deadline"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(jobApplyMailDeadlineSchema, request.body ?? {});
+    const result = await service.setMailDeadline(await owner(bridge.claims), input, { paneId: bridge.claims.paneId });
+    await deps.audit(request, "job_apply.agent.mail_deadline", bridge.claims.paneId, { taskId: result.taskId });
     return result;
   });
 

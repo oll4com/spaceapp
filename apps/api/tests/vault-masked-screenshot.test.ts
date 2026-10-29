@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { VAULT_MASK_APPLY, VAULT_MASK_REMOVE, captureMaskedScreenshot, pressBrowserKey } from "../src/browser-sessions.js";
+import { VAULT_MASK_APPLY, VAULT_MASK_REMOVE, assertBrowserHostPressKey, captureMaskedScreenshot, pressBrowserKey } from "../src/browser-sessions.js";
 
 // Vault fence 2026-10-19 (Nous decision on the Alstom report): the pane that filled a Vault page may press keys and take
 // masked screenshots of it; every field is drawn as dots for the shot, also a password a "show password" toggle revealed.
@@ -66,5 +66,34 @@ describe("Vault masked screenshot and key presses", () => {
     sent.length = 0;
     await pressBrowserKey(client, "session-1", "Shift+Tab");
     expect(sent).toEqual([expect.objectContaining({ type: "rawKeyDown", key: "Tab", modifiers: 8, windowsVirtualKeyCode: 9 }), expect.objectContaining({ type: "keyUp", key: "Tab" })]);
+  });
+
+  it("clears a field with Control+A and Backspace and picks a dropdown option with the arrows (plan clipboard:gHaiX_8yanVA)", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const client = { send: async <T,>(_method: string, params?: Record<string, unknown>) => { sent.push(params ?? {}); return {} as T; } };
+    await pressBrowserKey(client, "session-1", "Control+A");
+    await pressBrowserKey(client, "session-1", "Backspace");
+    await pressBrowserKey(client, "session-1", "ArrowDown");
+    expect(sent).toEqual([
+      { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 }, { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 },
+      { type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, modifiers: 0 }, { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, modifiers: 0 },
+      { type: "rawKeyDown", key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40, modifiers: 0 }, { type: "keyUp", key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40, modifiers: 0 }
+    ]);
+    sent.length = 0;
+    await pressBrowserKey(client, "session-1", "Space");
+    expect(sent.map((event) => [event.type, event.text])).toEqual([["rawKeyDown", undefined], ["char", " "], ["keyUp", undefined]]);
+  });
+
+  it("sends the new keys only to a Browser Host that says it presses them (an old one presses Tab instead)", async () => {
+    const oldHost = { status: () => ({ enabled: true, statusReason: "", defaultUrl: "", checkedAt: "" }), browserHostHealth: async () => ({ status: { enabled: true } }) };
+    await expect(assertBrowserHostPressKey(oldHost, { type: "press", key: "Enter" })).resolves.toBeUndefined();
+    await expect(assertBrowserHostPressKey(oldHost, { type: "click", x: 1, y: 1 })).resolves.toBeUndefined();
+    await expect(assertBrowserHostPressKey(oldHost, { type: "press", key: "Backspace" })).rejects.toMatchObject({ errorCode: "BROWSER_ACTION_UNAVAILABLE" });
+    await expect(assertBrowserHostPressKey({ ...oldHost, browserHostHealth: async () => { throw new Error("down"); } }, { type: "press", key: "ArrowDown" }))
+      .rejects.toThrow(/Browser Host restart/);
+    // The proxy's cached status is stale until a health check: a fresh check of a restarted host lets the key through.
+    await expect(assertBrowserHostPressKey({ ...oldHost, browserHostHealth: async () => ({ status: { pressKeys: true } }) }, { type: "press", key: "Control+A" }))
+      .resolves.toBeUndefined();
+    await expect(assertBrowserHostPressKey({ status: () => ({ ...oldHost.status(), pressKeys: true }) }, { type: "press", key: "Escape" })).resolves.toBeUndefined();
   });
 });

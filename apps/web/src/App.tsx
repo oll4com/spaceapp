@@ -173,7 +173,7 @@ import {
 } from "./features/browser-pane/events.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
 import type { CopilotLaunchChoice } from "./features/copilot-kit/CopilotLaunchDialog.js";
-import { APP_STUDIO_KIND, DESIGN_KIND, FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, SECURITY_COPILOT_KIND, VIDEO_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
+import { APP_STUDIO_KIND, DESIGN_KIND, FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, MONITORING_COPILOT_KIND, SECURITY_COPILOT_KIND, VIDEO_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
 import { resolveCopilotLaunch } from "./features/copilot-kit/copilot-runtimes.js";
 import { rememberNewPaneAccount } from "./features/cli-accounts/cli-account-memory.js";
 import { forwardCopilotStreamEvents } from "./features/copilot-kit/copilot-stream.js";
@@ -673,7 +673,7 @@ const LazyMailCopilotSettingsCard = lazyWithPreload(() => import("./features/mai
 const LazyMarketingCopilotSettingsCard = lazyWithPreload(() => import("./features/marketing-copilot-pane/MarketingCopilotSettingsCard.js").then((module) => ({ default: module.MarketingCopilotSettingsCard })), { idle: true });
 const LazyFreelanceCopilotSettingsCard = lazyWithPreload(() => import("./features/freelance-copilot-pane/FreelanceCopilotSettingsCard.js").then((module) => ({ default: module.FreelanceCopilotSettingsCard })), { idle: true });
 const LazyDesignSettingsCard = lazyWithPreload(() => import("./features/design-pane/DesignSettingsCard.js").then((module) => ({ default: module.DesignSettingsCard })), { idle: true });
-const LazyAppStudioSettingsCard = lazyWithPreload(() => import("./features/app-studio-pane/AppStudioSettingsCard.js").then((module) => ({ default: module.AppStudioSettingsCard })), { idle: true }); const LazyVideoSettingsCard = lazyWithPreload(() => import("./features/video-pane/VideoSettingsCard.js").then((module) => ({ default: module.VideoSettingsCard })), { idle: true }); const LazySecurityCopilotSettingsCard = lazyWithPreload(() => import("./features/security-copilot-pane/SecurityCopilotSettingsCard.js").then((module) => ({ default: module.SecurityCopilotSettingsCard })), { idle: true });
+const LazyAppStudioSettingsCard = lazyWithPreload(() => import("./features/app-studio-pane/AppStudioSettingsCard.js").then((module) => ({ default: module.AppStudioSettingsCard })), { idle: true }); const LazyVideoSettingsCard = lazyWithPreload(() => import("./features/video-pane/VideoSettingsCard.js").then((module) => ({ default: module.VideoSettingsCard })), { idle: true }); const LazySecurityCopilotSettingsCard = lazyWithPreload(() => import("./features/security-copilot-pane/SecurityCopilotSettingsCard.js").then((module) => ({ default: module.SecurityCopilotSettingsCard })), { idle: true }); const LazyMonitoringCopilotSettingsCard = lazyWithPreload(() => import("./features/monitoring-copilot-pane/MonitoringCopilotSettingsCard.js").then((module) => ({ default: module.MonitoringCopilotSettingsCard })), { idle: true });
 const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
 /** The Settings dock's cards, in the dock's order; their declarations above keep the idle preload order. */
 const agentSettingsCards: AgentSettingsCards = {
@@ -696,7 +696,7 @@ const agentSettingsCards: AgentSettingsCards = {
   Dots: LazyDotsSettingsCard,
   JobCopilot: LazyJobCopilotSettingsCard,
   MailCopilot: LazyMailCopilotSettingsCard,
-  MarketingCopilot: LazyMarketingCopilotSettingsCard, FreelanceCopilot: LazyFreelanceCopilotSettingsCard, Design: LazyDesignSettingsCard, AppStudio: LazyAppStudioSettingsCard, Video: LazyVideoSettingsCard, SecurityCopilot: LazySecurityCopilotSettingsCard
+  MarketingCopilot: LazyMarketingCopilotSettingsCard, FreelanceCopilot: LazyFreelanceCopilotSettingsCard, Design: LazyDesignSettingsCard, AppStudio: LazyAppStudioSettingsCard, Video: LazyVideoSettingsCard, SecurityCopilot: LazySecurityCopilotSettingsCard, MonitoringCopilot: LazyMonitoringCopilotSettingsCard
 };
 
 const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
@@ -4509,11 +4509,6 @@ export function App() {
     const shell = element.closest<HTMLElement>(".space-shell");
     if (!shell) return;
     const measure = () => {
-      const rect = element.getBoundingClientRect();
-      if (rect.height > 0) {
-        shell.style.setProperty("--room-toolbar-collapsed-height", `${rect.height}px`);
-        shell.style.setProperty("--room-toolbar-collapsed-top", `${Math.round(rect.top)}px`);
-      }
       syncRailScale(shell);
     };
     measure();
@@ -4523,8 +4518,6 @@ export function App() {
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", measure);
-      shell.style.removeProperty("--room-toolbar-collapsed-height");
-      shell.style.removeProperty("--room-toolbar-collapsed-top");
       syncRailScale(shell);
     };
   }, [isRoomToolbarHidden, showOverlaySideSurface, isMemoryWorkspaceOpen]);
@@ -4856,7 +4849,7 @@ export function App() {
         },
         create: {
           isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane,
-          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addAppStudioPane: () => addCopilotPane(APP_STUDIO_KIND), addVideoPane: () => addCopilotPane(VIDEO_KIND), addSecurityCopilotPane: () => addCopilotPane(SECURITY_COPILOT_KIND), addLivePane
+          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addAppStudioPane: () => addCopilotPane(APP_STUDIO_KIND), addVideoPane: () => addCopilotPane(VIDEO_KIND), addSecurityCopilotPane: () => addCopilotPane(SECURITY_COPILOT_KIND), addMonitoringCopilotPane: () => addCopilotPane(MONITORING_COPILOT_KIND), addLivePane
         },
         tools: { desktopWidgets, openStickyNote, isBrowserFullscreen, snip: snipTool, captureRoomScreen, reloadRoomWindow, vpn: toolbarVpn },
         workspace: {
@@ -5097,7 +5090,7 @@ export function App() {
       else if (action.id === "add-t3code") void addT3CodePane(count);
       else if (action.id === "add-jobs") void addJobApplyPane(count);
       else if (action.id === "add-mail") void addMailCopilotPane(count);
-      else if (action.id === "add-marketing" || action.id === "add-freelance" || action.id === "add-design" || action.id === "add-app-studio" || action.id === "add-video" || action.id === "add-security") void addCopilotPane(action.id === "add-marketing" ? MARKETING_COPILOT_KIND : action.id === "add-design" ? DESIGN_KIND : action.id === "add-app-studio" ? APP_STUDIO_KIND : action.id === "add-video" ? VIDEO_KIND : action.id === "add-security" ? SECURITY_COPILOT_KIND : FREELANCE_COPILOT_KIND, count);
+      else if (action.id === "add-marketing" || action.id === "add-freelance" || action.id === "add-design" || action.id === "add-app-studio" || action.id === "add-video" || action.id === "add-security" || action.id === "add-monitoring") void addCopilotPane(action.id === "add-marketing" ? MARKETING_COPILOT_KIND : action.id === "add-design" ? DESIGN_KIND : action.id === "add-app-studio" ? APP_STUDIO_KIND : action.id === "add-video" ? VIDEO_KIND : action.id === "add-security" ? SECURITY_COPILOT_KIND : action.id === "add-monitoring" ? MONITORING_COPILOT_KIND : FREELANCE_COPILOT_KIND, count);
       else if (action.id === "add-harness") void addHarnessPane(count);
       else action.onClick();
     }

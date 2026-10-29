@@ -125,6 +125,9 @@ describe("Space notifications (web)", () => {
     // Held for the operator's morning (quiet hours, plan clipboard:9XSwTPyxXP1W): no toast or chime until then.
     act(() => { deliverNotifications([notification("e", { payload: { heldUntil: new Date(Date.now() + 3_600_000).toISOString() } })], null); });
     expect(screen.queryByText(/Anna/)).toBeNull();
+    // A copilot question held for Nous (Ask Last step 7): nothing until its release re-alerts it.
+    act(() => { deliverNotifications([notification("f", { payload: { heldForNous: { until: new Date(Date.now() + 3_600_000).toISOString() } } })], null); });
+    expect(screen.queryByText(/Anna/)).toBeNull();
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
   });
 

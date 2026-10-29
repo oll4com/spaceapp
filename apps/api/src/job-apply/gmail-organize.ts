@@ -9,6 +9,7 @@ const gmailApi = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 export interface GmailTriageMessage {
   messageId: string;
+  threadId: string;
   from: string;
   subject: string;
   snippet: string;
@@ -89,7 +90,8 @@ export async function ensureJobApplyLabels(input: { accessToken: string; fetchIm
     }
     ids.set(name, id);
   }
-  return { CONFIRMATION: ids.get(JOB_APPLY_MAIL_LABELS.CONFIRMATION)!, REJECTION: ids.get(JOB_APPLY_MAIL_LABELS.REJECTION)!, ACTION_NEEDED: ids.get(JOB_APPLY_MAIL_LABELS.ACTION_NEEDED)! };
+  return { CONFIRMATION: ids.get(JOB_APPLY_MAIL_LABELS.CONFIRMATION)!, REJECTION: ids.get(JOB_APPLY_MAIL_LABELS.REJECTION)!, ACTION_NEEDED: ids.get(JOB_APPLY_MAIL_LABELS.ACTION_NEEDED)!,
+    OTHER: ids.get(JOB_APPLY_MAIL_LABELS.OTHER)! };
 }
 
 /**
@@ -112,16 +114,21 @@ export async function unlabelGmailMessages(input: { accessToken: string; fetchIm
 }
 
 /** Inbox messages matching a Gmail search, newest first, with their labels (at most `max`). */
-export async function listGmailTriageMessages(input: { accessToken: string; fetchImpl?: typeof fetch; query: string; max: number }): Promise<GmailTriageMessage[]> {
+/** Messages matching the search (or any of several searches, each message once), with their metadata; at most `max`. */
+export async function listGmailTriageMessages(input: { accessToken: string; fetchImpl?: typeof fetch; query: string | readonly string[]; max: number; labelId?: string }): Promise<GmailTriageMessage[]> {
   const call = client(input.accessToken, input.fetchImpl);
-  const list = await call(`/messages?${new URLSearchParams({ q: input.query, maxResults: String(Math.min(100, input.max)) })}`);
-  const ids = ((list.messages as Array<{ id?: unknown }> | undefined) ?? []).map((message) => message.id).filter((id): id is string => typeof id === "string").slice(0, input.max);
+  const found = new Set<string>();
+  for (const query of typeof input.query === "string" ? [input.query] : input.query) {
+    const list = await call(`/messages?${new URLSearchParams({ q: query, maxResults: String(Math.min(100, input.max)), ...(input.labelId ? { labelIds: input.labelId } : {}) })}`);
+    for (const message of (list.messages as Array<{ id?: unknown }> | undefined) ?? []) if (typeof message.id === "string") found.add(message.id);
+  }
+  const ids = [...found].slice(0, input.max);
   const messages: GmailTriageMessage[] = [];
   for (const id of ids) {
     const message = await call(`/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`);
     const headers = (message.payload as { headers?: unknown } | undefined)?.headers;
     const received = Number(message.internalDate);
-    messages.push({ messageId: id, from: header(headers, "from"), subject: header(headers, "subject"),
+    messages.push({ messageId: id, threadId: typeof message.threadId === "string" && message.threadId ? message.threadId : id, from: header(headers, "from"), subject: header(headers, "subject"),
       snippet: typeof message.snippet === "string" ? message.snippet : "",
       receivedAt: Number.isFinite(received) && received > 0 ? new Date(received).toISOString() : null,
       labelIds: Array.isArray(message.labelIds) ? message.labelIds.filter((label): label is string => typeof label === "string") : [] });

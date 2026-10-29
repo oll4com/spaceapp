@@ -24,6 +24,8 @@ export const mailCopilotPaneSettingsSchema = z.object({
   accounts: z.array(emailSchema).max(20).default([]),
   /** How far back a fresh run looks for untriaged inbox mail. */
   backlogHours: z.number().int().min(1).max(24 * 14).default(24),
+  /** The hour (owner's working time zone) of the daily organize run over the whole inbox. */
+  dailyRunHour: z.number().int().min(0).max(23).default(9),
   /** Hard cap on messages the agent may send per hour, whatever the autonomy level. */
   sendsPerHour: z.number().int().min(0).max(200).default(20),
   /** Appended to replies the agent drafts; null keeps Gmail's own signature out of the draft text. */

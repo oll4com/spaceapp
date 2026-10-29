@@ -4,7 +4,9 @@ import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/prom
 import os from "node:os";
 import path from "node:path";
 import { InMemorySpaceStore } from "@space/runtime";
+import { localArtifactFilePath, permanentlyDeleteLocalArtifact } from "../src/artifact-storage.js";
 import { persistAgentFile } from "../src/cli-agent-files.js";
+import { createNousFiles } from "../src/nous/files.js";
 
 let root: string;
 beforeEach(async () => { root = await mkdtemp(path.join(os.tmpdir(), "space-agent-stream-")); });
@@ -54,4 +56,26 @@ it("does not persist through a symlink in artifact storage ancestors", async () 
       traceId: "trace:unsafe-storage" })).rejects.toMatchObject({ statusCode: 403 });
     expect(await readdir(outside)).toEqual([]);
   } finally { await rm(outside, { recursive: true, force: true }); }
+});
+
+it("reads an Agent File with a Greek name back, and one the old write path stored under its raw name (2026-10-25)", async () => {
+  const store = new InMemorySpaceStore();
+  const room = store.createRoom({ name: "Greek names", initialPaneCount: 0 });
+  const result = await persistAgentFile({ store, artifactRoot: root, roomId: room.id, paneId: null, cliSessionId: null,
+    runtimeId: "user", originalFilename: "1 - Κιτ (a@b.gr).md", declaredMimeType: "text/markdown",
+    buffer: Buffer.from("# Κιτ"), traceId: "trace:greek-name", source: "USER_UPLOAD" });
+  expect(result.artifact.metadata.originalFilename).toBe("1 - Κιτ (a@b.gr).md");
+  const filePath = localArtifactFilePath({ artifactRoot: root, artifact: result.artifact });
+  expect(path.basename(filePath)).toBe(String(result.artifact.metadata.storedFilename).replace(/[^A-Za-z0-9._-]/g, "_"));
+  expect(await readFile(filePath, "utf8")).toBe("# Κιτ");
+  const files = createNousFiles({ root, artifactRoot: root, rooms: async () => [room], listArtifacts: async () => [], getArtifact: async (id) => store.getArtifact(id) });
+  expect(await files.decisionFiles("user:operator", [result.artifact.id])).toEqual([{ ref: result.artifact.id, text: "# Κιτ", total: 5, truncated: false }]);
+
+  // 2026-10-03 to 2026-10-25 the write path kept the raw name: such a file opens as it lies on disk, and deletes.
+  const raw = "agent_file_rawname01-2 - Πώληση (x@y.gr).md";
+  await writeFile(path.join(path.dirname(filePath), raw), "old");
+  const old = { ...result.artifact, id: "artifact:rawname01", storageUri: result.artifact.storageUri.replace(/[^/]+$/, encodeURIComponent(raw)) };
+  expect(await readFile(localArtifactFilePath({ artifactRoot: root, artifact: old }), "utf8")).toBe("old");
+  await permanentlyDeleteLocalArtifact({ store: { deleteArtifact: async () => old }, artifactRoot: root, artifact: old });
+  expect(await readdir(path.dirname(filePath))).toEqual([path.basename(filePath)]);
 });

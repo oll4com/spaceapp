@@ -229,6 +229,50 @@ describe("Vault API key handoff", () => {
       await app.close();
     }
   });
+
+  it("keeps a password for every agent: never expires, any pane writes it again, agents find it by label and save the ones that reach them (operator request 2026-10-26)", async () => {
+    const { app, store, config, brokerKey, session } = await fixture();
+    try {
+      const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
+      const { body } = await enrollment(brokerKey.publicKey, "user:alice");
+      await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
+      await app.inject({ method: "PUT", url: "/api/space-vault/agent-access", headers: alice.headers, payload: { enabled: true } });
+      const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Kept", initialPaneCount: 0 } })).json();
+      const agentOf = (title: string) => {
+        const pane = store.createPane({ roomId: room.id, title, mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
+        const cli = store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING", purpose: "NORMAL" });
+        const headers = { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: pane.id, cliSessionId: cli.sessionId })!, "content-type": "application/json" };
+        return { pane, call: (path: string, payload: unknown) => app.inject({ method: "POST", url: `/api/cli/space-vault/${path}`, headers, payload: payload as never }) };
+      };
+      const one = agentOf("One");
+      const two = agentOf("Two");
+      const created = await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "lab mac admin password", value: SENTINEL, expiresInHours: null, kept: true } });
+      const key = created.json().key;
+      expect(key).toMatchObject({ kept: true, expiresAt: null, savedBy: null, hasValue: true });
+      // A one-time key is not listed: only kept ones are the agents' to find.
+      await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "lab one-time", value: "x" } });
+      expect((await one.call("key-list", { q: "LAB admin" })).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), keys: [{ id: key.id, label: "lab mac admin password", savedBy: null }] });
+      expect((await one.call("key-list", { q: "other-host" })).json().keys).toEqual([]);
+      for (const agent of [one, two, one]) {
+        expect((await agent.call("key-take", { id: key.id })).json()).toMatchObject({ status: "TAKEN", value: SENTINEL });
+        expect((await agent.call("key-used", { id: key.id })).json()).toMatchObject({ status: "USED" });
+      }
+      expect((await app.inject({ url: "/api/space-vault/keys", headers: alice.headers })).json().keys.find((entry: { id: string }) => entry.id === key.id)).toMatchObject({ hasValue: true, usedByPaneId: one.pane.id });
+      // A password that reached an agent (a mail): kept at once, listed for every agent, named by the pane that saved it.
+      const saved = (await two.call("key-save", { label: "Mailed DB password", value: "SYNTHETIC-mailed" })).json();
+      expect(saved).toEqual({ status: "SAVED", auditId: expect.stringMatching(/^vault_audit:/), reason: null, id: expect.stringMatching(/^vault_key:/) });
+      expect((await one.call("key-list", { q: "mailed" })).json().keys).toEqual([{ id: saved.id, label: "Mailed DB password", savedBy: two.pane.id }]);
+      expect((await one.call("key-take", { id: saved.id })).json()).toMatchObject({ status: "TAKEN", value: "SYNTHETIC-mailed" });
+      expect((await app.inject({ method: "POST", url: "/api/space-vault/keys", headers: alice.headers, payload: { label: "x", value: "y", expiresInHours: 0 } })).statusCode).toBe(422);
+      // Agent access off: nothing is listed, saved or taken.
+      await app.inject({ method: "PUT", url: "/api/space-vault/agent-access", headers: alice.headers, payload: { enabled: false } });
+      for (const [path, payload] of [["key-list", {}], ["key-save", { label: "x", value: "y" }], ["key-take", { id: key.id }]] as const) {
+        expect((await one.call(path, payload)).json()).toMatchObject({ status: "BLOCKED", reason: "AGENT_ACCESS_OFF" });
+      }
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("Vault agent access switch", () => {

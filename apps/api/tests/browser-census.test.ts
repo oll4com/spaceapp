@@ -44,12 +44,12 @@ describe("browser census", () => {
     expect(browser).toMatchObject({ paneId: "pane:browser1", profile: "pane", mode: "BROWSER", fencedTabs: 1,
       control: { holderType: "OPERATOR", operatorIdleSeconds: 90 }, handoff: null });
     expect(browser!.tabs).toEqual([
-      { title: "Inbox", url: "https://mail.example.com/inbox", isActive: true },
+      { pageId: "T1", title: "Inbox", url: "https://mail.example.com/inbox", isActive: true },
       { fenced: true, isActive: false }
     ]);
     expect(copilot).toMatchObject({ profile: "cli-accounts/3916b5f5c837", accountEmail: null, control: null, handoff: { status: "REQUESTED", requestedAt: "t4" } });
     expect(browser!.accountEmail).toBeNull();
-    expect(copilot!.tabs).toEqual([{ title: null, url: "about:", isActive: true, account: "work@example.com" }]);
+    expect(copilot!.tabs).toEqual([{ pageId: "T3", title: null, url: "about:", isActive: true, account: "work@example.com" }]);
     expect(JSON.stringify(census)).not.toMatch(/secret|token=|\/srv\/space/);
   });
 

@@ -198,6 +198,19 @@ export const traceLookupResponseSchema = z.object({
     queuedAt: z.string().min(1).max(64),
     completedAt: z.string().max(64).nullable()
   })).max(500).default([]),
+  // CLI sessions the trace allocated, with their logical task and revision (ids, launch mode and status; never terminal text).
+  cliSessions: z.array(z.object({
+    sessionId: z.string().min(1).max(240),
+    paneId: z.string().min(1).max(240),
+    roomId: z.string().min(1).max(240),
+    runtimeId: z.string().min(1).max(240),
+    cliTaskId: traceIdentifierSchema.default(null),
+    cliTaskRevisionId: traceIdentifierSchema.default(null),
+    launchMode: z.string().min(1).max(40),
+    status: z.string().min(1).max(40),
+    startedAt: z.string().min(1).max(64),
+    endedAt: z.string().max(64).nullable()
+  })).max(500).default([]),
   logQueries: z.object({ api: z.string(), worker: z.string() })
 });
 export type TraceLookupResponse = z.infer<typeof traceLookupResponseSchema>;

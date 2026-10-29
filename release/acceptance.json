@@ -1,10 +1,11 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "3188d5e4910836890608d5d947995403a00bda0cae7d11ace147ed97d5282762",
-  "sourceCommit": "4efe71fd08b959376ca0cb271cce1e2ee83ae5a0",
-  "launcherVersion": "1.1.8",
-  "runtimeVersion": "1.1.8",
-  "createdAt": "2026-10-25T07:25:03.702Z",
+  "candidateDigest": "2d93f9fea44b973c943a8053921ae152f66b0833cb9d3b26f79f62f50ed8d8de",
+  "sourceCommit": "25fb63fd9565242858e16ddea4ff46ee0668bf3d",
+  "labSourceCommit": "1ea6bf842cf28aecf1f3eac499723b3f34b8d99e",
+  "launcherVersion": "1.1.9",
+  "runtimeVersion": "1.1.9",
+  "createdAt": "2026-10-29T03:35:51.619Z",
   "checks": [
     {
       "platform": "linux",
@@ -13,9 +14,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux-fresh-install.json",
-      "artifactSha256": "0d9b17f83033f9083936fa6bb79b32ea199f442c06f7c7e1b7a19ddb2de7c47b",
-      "ownerUi": true
+      "artifact": "c7-linux-fresh-install.json",
+      "artifactSha256": "d73042b5a9a62db746dd14c51ede49c38ebc2a813f5195e24deafc1bdea27f03",
+      "ownerUi": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "linux",
@@ -24,9 +27,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux-upgrade.json",
-      "artifactSha256": "3d482e7f07974519d6764e119f908e9f6635e9c5f9b72813513b2bfed02b9523",
-      "dataPreserved": true
+      "artifact": "c7-linux-upgrade.json",
+      "artifactSha256": "c8ef92201305f1b9210cd12a48b5ffa277ee883bed4be3edff9653da6f7bb500",
+      "dataPreserved": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "linux",
@@ -35,9 +40,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux-repair.json",
-      "artifactSha256": "de4cafa79af3aab6641de1a6a800968fc230296af1de133ea944a2846cb98d69",
-      "dataPreserved": true
+      "artifact": "c7-linux-repair.json",
+      "artifactSha256": "24970d856ebb40b9a02233ecb6d622e83eb27e570e7b28929f27fabab90baefe",
+      "dataPreserved": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "linux",
@@ -46,10 +53,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "linux-docker-stopped.json",
-      "artifactSha256": "ced4d88255a6bbbcac0049bb10f6a8e2815ecc7d76371578872ef32fde74cbac",
+      "artifact": "c7-linux-docker-stopped.json",
+      "artifactSha256": "3368e34eb059c5405243fad53f71578c6f78e2efd7826ad8bc5297adcb1966a6",
       "dataPreserved": true,
-      "dockerInitiallyStopped": true
+      "dockerInitiallyStopped": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "linux",
@@ -59,13 +68,15 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_e8f849e0affevj1aJ1A0am5JMk",
+      "nativeTaskId": "ses_e7ed5449dffek14aezM1x99WmQ",
       "responseObserved": true,
       "freeModel": true,
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "artifact": "linux-first-agent.json",
-      "artifactSha256": "c021529f3874c458bb098a0b3edf53577d920f38507d479b6155583ea787b93f"
+      "artifact": "c7-linux-first-agent.json",
+      "artifactSha256": "f9f1f3b7babdf0938216d0e7e37d55145345a7a5b71899610717041b1772ac1e",
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "linux",
@@ -81,7 +92,9 @@
       ],
       "dataPreserved": true,
       "artifact": "linux-profiles.json",
-      "artifactSha256": "218fc7302491f1cf5e18b6f1d8e717a78cf502b2a5618669360a2c710dd39a9a"
+      "artifactSha256": "84175c196e70afc524a648fe4168d1d4b865a4a34709c54e2c6785fa2ca2887b",
+      "carriedFrom": "small from c7 1ea6bf8, medium from c1 f7351c4, large from c1 f7351c4",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7 | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
     },
     {
       "platform": "windows",
@@ -90,10 +103,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "windows-fresh-install.json",
-      "artifactSha256": "2b81b5b9aaa87bb51e3603c3a095730dc95095dff5b10dcd57d6ae87218a5014",
+      "artifact": "c7-windows-fresh-install.json",
+      "artifactSha256": "546bf4fed8118ca9b51c35bc19255847e84df852c65f5d0863b0c5c8c8452522",
       "ownerUi": true,
-      "interactiveDesktop": true
+      "interactiveDesktop": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "windows",
@@ -102,10 +117,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "windows-upgrade.json",
-      "artifactSha256": "b2ac0087b056732029b826449fb38109e152424082b6d6444a51babeb8cd4b20",
+      "artifact": "c7-windows-upgrade.json",
+      "artifactSha256": "6bf9fa409dc5c4e478f9d7e200ad3fd5822bf519a1ad2757c2962e46b7bd110c",
       "dataPreserved": true,
-      "interactiveDesktop": true
+      "interactiveDesktop": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "windows",
@@ -114,10 +131,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "windows-repair.json",
-      "artifactSha256": "c1a3aeaa8ce2b3cf216768036c750893bfa7e649e99442b4ca1192addad197e7",
+      "artifact": "c1-windows-repair.json",
+      "artifactSha256": "e2aee5cb3c536bce393ef9d5c8db0b7bd1ae908ba936f656a2f14189704b476f",
       "dataPreserved": true,
-      "interactiveDesktop": true
+      "interactiveDesktop": true,
+      "carriedFrom": "c1 f7351c4",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
     },
     {
       "platform": "windows",
@@ -126,29 +145,13 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "windows-docker-stopped.json",
-      "artifactSha256": "afd8ee2d2c0dcc9f371aa8fa9ab7815a2609d0bd6cb7d3282e65fd2c4728efa3",
+      "artifact": "c1-windows-docker-stopped.json",
+      "artifactSha256": "0225a517d85e1996fea3c45ae36ff54daadbd0f1f4dc435d61dfb1fb47af374d",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
-      "interactiveDesktop": true
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent",
-      "pass": true,
-      "executed": true,
-      "exitCode": 0,
-      "ready": true,
-      "uiOpened": true,
-      "nativeTaskId": "ses_e8ecd36a6ffet7wjK40uTcTpBa",
-      "responseObserved": true,
-      "freeModel": true,
-      "cli": "opencode",
-      "modelId": "opencode/big-pickle",
-      "artifact": "windows-first-agent.json",
-      "artifactSha256": "171a079c7c5cc1400fc1ce1b078004fbd110e02fb1750fbdc19e4c9f8a8f1b6a",
       "interactiveDesktop": true,
-      "diagnosticRerun": "Nous decision on report 7793 (fallback B): the first-agent step rerun alone on the same c1 fixture with the proof read logged and retried"
+      "carriedFrom": "c1 f7351c4",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
     },
     {
       "platform": "windows",
@@ -165,7 +168,9 @@
       "dataPreserved": true,
       "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
-      "artifactSha256": "a8bfa7737386e958ee569d68323fb123669f81c98aa38662d4af004b42fb24fb"
+      "artifactSha256": "c66e7b7e790c2729888ba0d7ec149ff5e96361b657ae27e66fa718292ff4eabf",
+      "carriedFrom": "small from c1 f7351c4, medium from c2 ce4140b, large from c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "macos",
@@ -174,9 +179,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "macos-fresh-install.json",
-      "artifactSha256": "381b8fea7fbcd0c5a302ed42df09e2f655809e5dfef07757211662913119ee74",
-      "ownerUi": true
+      "artifact": "c7-macos-fresh-install.json",
+      "artifactSha256": "2491d48da5b207336f5de3993b7871910610752bfbf70f61fe3de4e06bf028f9",
+      "ownerUi": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "macos",
@@ -185,9 +192,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "macos-upgrade.json",
-      "artifactSha256": "a3c8be3661ea302c0f3681fae9c4c269a4fa25818480dd2b9e6914847bd645f6",
-      "dataPreserved": true
+      "artifact": "c7-macos-upgrade.json",
+      "artifactSha256": "52ae814552f29d2f1c76f802a9b44db827b0ca2d7a310bce1febf4a243e9ab20",
+      "dataPreserved": true,
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "macos",
@@ -196,9 +205,11 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "macos-repair.json",
-      "artifactSha256": "df9a0ce66e31930ce95a366dc39380b7cd674c897ed06969c8b1e1be815b8fbc",
-      "dataPreserved": true
+      "artifact": "c1-macos-repair.json",
+      "artifactSha256": "700cb49294990afa2675079a27bbca01d3975b2d4ff428c8165528d3dffa770f",
+      "dataPreserved": true,
+      "carriedFrom": "c1 f7351c4",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
     },
     {
       "platform": "macos",
@@ -207,10 +218,12 @@
       "executed": true,
       "exitCode": 0,
       "ready": true,
-      "artifact": "macos-docker-stopped.json",
-      "artifactSha256": "e79e10400831324070401a451794f3020586ced63c30f94704d6581fda1a3b09",
+      "artifact": "c1-macos-docker-stopped.json",
+      "artifactSha256": "bcc674727699db2be12adbe872a64f405a3bfa7dd108411e77a3628c57284a91",
       "dataPreserved": true,
-      "dockerInitiallyStopped": true
+      "dockerInitiallyStopped": true,
+      "carriedFrom": "c1 f7351c4",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
     },
     {
       "platform": "macos",
@@ -220,13 +233,15 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_e8f6c4973ffeuv9Hgdb9sRNtOc",
+      "nativeTaskId": "ses_e7ec4592affewcyzOu2ZQUa44s",
       "responseObserved": true,
       "freeModel": true,
       "cli": "opencode",
       "modelId": "opencode/big-pickle",
-      "artifact": "macos-first-agent.json",
-      "artifactSha256": "ceb40772d63d646cff27bb5d462d25aacff8910dd91cfa0c0d229b76a797b795"
+      "artifact": "c7-macos-first-agent.json",
+      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
+      "carriedFrom": "c7 1ea6bf8",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
     },
     {
       "platform": "macos",
@@ -242,7 +257,9 @@
       ],
       "dataPreserved": true,
       "artifact": "macos-profiles.json",
-      "artifactSha256": "4e99905c03c1754a2359c8ce9f137099bfabe142b31ea80fbf719df403ecbf08"
+      "artifactSha256": "9ab8de53af3ef36211d9e07ef998f538a79a2e954d11eb4e04af29d6a95f258d",
+      "carriedFrom": "small from c1 f7351c4, medium from c2 ce4140b, large from c2 ce4140b",
+      "carriedReason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS"
     }
   ],
   "supplementary": [
@@ -250,78 +267,200 @@
       "platform": "linux",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
-      "artifact": "linux-first-agent.json",
-      "artifactSha256": "c021529f3874c458bb098a0b3edf53577d920f38507d479b6155583ea787b93f"
-    },
-    {
-      "platform": "linux",
-      "scenario": "starter-getting-started",
-      "pass": true,
-      "artifact": "linux-starter-getting-started.json",
-      "artifactSha256": "cfd5076ff6e3e0ad312a123469a50b090a95565f6e771d53957c15c790874ed8"
-    },
-    {
-      "platform": "linux",
-      "scenario": "zen-record",
-      "pass": true,
-      "artifact": "linux-zen-record.json",
-      "artifactSha256": "737cca4f9c54a2344775d65e2463e461bc474463519b0664c5f7d276308ac182"
-    },
-    {
-      "platform": "windows",
-      "scenario": "first-agent-no-permission-prompt",
-      "pass": true,
-      "artifact": "windows-first-agent.json",
-      "artifactSha256": "171a079c7c5cc1400fc1ce1b078004fbd110e02fb1750fbdc19e4c9f8a8f1b6a"
-    },
-    {
-      "platform": "windows",
-      "scenario": "starter-getting-started",
-      "pass": true,
-      "artifact": "windows-starter-getting-started.json",
-      "artifactSha256": "e2e95e2c168f67e5cbe6be5d5ee0a8686ab122837424265568ef8f42f3ec64d0"
+      "artifact": "c7-linux-first-agent.json",
+      "artifactSha256": "f9f1f3b7babdf0938216d0e7e37d55145345a7a5b71899610717041b1772ac1e"
     },
     {
       "platform": "macos",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
-      "artifact": "macos-first-agent.json",
-      "artifactSha256": "ceb40772d63d646cff27bb5d462d25aacff8910dd91cfa0c0d229b76a797b795"
-    },
-    {
-      "platform": "macos",
-      "scenario": "starter-getting-started",
-      "pass": true,
-      "artifact": "macos-starter-getting-started.json",
-      "artifactSha256": "5e69f78777b4ad1798fc1fb1aaad0e45ee82c2c01888f18f9b83782a28ee6993"
-    },
-    {
-      "platform": "macos",
-      "scenario": "zen-record",
-      "pass": true,
-      "artifact": "macos-zen-record.json",
-      "artifactSha256": "c4c5c9a657cf75475fd5afcec3a3d6c4eaed7ac228fcccff754880bac17fe706"
+      "artifact": "c7-macos-first-agent.json",
+      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d"
     }
   ],
-  "carriedProofs": [],
+  "carriedProofs": [
+    {
+      "platform": "linux",
+      "scenario": "fresh-install",
+      "artifact": "c7-linux-fresh-install.json",
+      "artifactSha256": "d73042b5a9a62db746dd14c51ede49c38ebc2a813f5195e24deafc1bdea27f03",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "linux",
+      "scenario": "upgrade",
+      "artifact": "c7-linux-upgrade.json",
+      "artifactSha256": "c8ef92201305f1b9210cd12a48b5ffa277ee883bed4be3edff9653da6f7bb500",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "linux",
+      "scenario": "repair",
+      "artifact": "c7-linux-repair.json",
+      "artifactSha256": "24970d856ebb40b9a02233ecb6d622e83eb27e570e7b28929f27fabab90baefe",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "linux",
+      "scenario": "docker-stopped",
+      "artifact": "c7-linux-docker-stopped.json",
+      "artifactSha256": "3368e34eb059c5405243fad53f71578c6f78e2efd7826ad8bc5297adcb1966a6",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "linux",
+      "scenario": "first-agent",
+      "artifact": "c7-linux-first-agent.json",
+      "artifactSha256": "f9f1f3b7babdf0938216d0e7e37d55145345a7a5b71899610717041b1772ac1e",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "linux",
+      "scenario": "profiles (small from c7 1ea6bf8, medium from c1 f7351c4, large from c1 f7351c4)",
+      "artifact": "linux-profiles.json",
+      "artifactSha256": "84175c196e70afc524a648fe4168d1d4b865a4a34709c54e2c6785fa2ca2887b",
+      "from": "small from c7 1ea6bf8, medium from c1 f7351c4, large from c1 f7351c4",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7 | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+    },
+    {
+      "platform": "windows",
+      "scenario": "fresh-install",
+      "artifact": "c7-windows-fresh-install.json",
+      "artifactSha256": "546bf4fed8118ca9b51c35bc19255847e84df852c65f5d0863b0c5c8c8452522",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "windows",
+      "scenario": "upgrade",
+      "artifact": "c7-windows-upgrade.json",
+      "artifactSha256": "6bf9fa409dc5c4e478f9d7e200ad3fd5822bf519a1ad2757c2962e46b7bd110c",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "windows",
+      "scenario": "repair",
+      "artifact": "c1-windows-repair.json",
+      "artifactSha256": "e2aee5cb3c536bce393ef9d5c8db0b7bd1ae908ba936f656a2f14189704b476f",
+      "from": "c1 f7351c4",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+    },
+    {
+      "platform": "windows",
+      "scenario": "docker-stopped",
+      "artifact": "c1-windows-docker-stopped.json",
+      "artifactSha256": "0225a517d85e1996fea3c45ae36ff54daadbd0f1f4dc435d61dfb1fb47af374d",
+      "from": "c1 f7351c4",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+    },
+    {
+      "platform": "windows",
+      "scenario": "profiles (small from c1 f7351c4, medium from c2 ce4140b, large from c7 1ea6bf8)",
+      "artifact": "windows-profiles.json",
+      "artifactSha256": "c66e7b7e790c2729888ba0d7ec149ff5e96361b657ae27e66fa718292ff4eabf",
+      "from": "small from c1 f7351c4, medium from c2 ce4140b, large from c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "macos",
+      "scenario": "fresh-install",
+      "artifact": "c7-macos-fresh-install.json",
+      "artifactSha256": "2491d48da5b207336f5de3993b7871910610752bfbf70f61fe3de4e06bf028f9",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "macos",
+      "scenario": "upgrade",
+      "artifact": "c7-macos-upgrade.json",
+      "artifactSha256": "52ae814552f29d2f1c76f802a9b44db827b0ca2d7a310bce1febf4a243e9ab20",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "macos",
+      "scenario": "repair",
+      "artifact": "c1-macos-repair.json",
+      "artifactSha256": "700cb49294990afa2675079a27bbca01d3975b2d4ff428c8165528d3dffa770f",
+      "from": "c1 f7351c4",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+    },
+    {
+      "platform": "macos",
+      "scenario": "docker-stopped",
+      "artifact": "c1-macos-docker-stopped.json",
+      "artifactSha256": "bcc674727699db2be12adbe872a64f405a3bfa7dd108411e77a3628c57284a91",
+      "from": "c1 f7351c4",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin"
+    },
+    {
+      "platform": "macos",
+      "scenario": "first-agent",
+      "artifact": "c7-macos-first-agent.json",
+      "artifactSha256": "8a1a41cb1f6c53dcf17a122747bd6891ef4d866be28e7c0216a6005cf937731d",
+      "from": "c7 1ea6bf8",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7"
+    },
+    {
+      "platform": "macos",
+      "scenario": "profiles (small from c1 f7351c4, medium from c2 ce4140b, large from c2 ce4140b)",
+      "artifact": "macos-profiles.json",
+      "artifactSha256": "9ab8de53af3ef36211d9e07ef998f538a79a2e954d11eb4e04af29d6a95f258d",
+      "from": "small from c1 f7351c4, medium from c2 ce4140b, large from c2 ce4140b",
+      "reason": "c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS; c1 -> c2 changed only docs/quality (findings register) and the launcher Postgres pin pgvector 0.8.3 -> 0.8.7, and every c2 install ran the new pin | c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7; carried into c7: c7 = c3 + app changes incl. migrations 0258-0259 + the Node 22.23.4 base (CVE-2026-111497); the #207/#211/#212 ports reverted and rewritten; launcher unchanged since c2; c2 -> c3: launcher unchanged since c2; the images change app code and add migrations 0254-0257, which the Linux upgrade re-proved on c3; fresh install and first agent passed on c3 on all three OS"
+    }
+  ],
   "limitations": [
-    "Candidate: public tree 4efe71f (c1), a sanitized export of SpaceApp dev 8d5bf21b32 on the 1.1.8 branch, with the CHANGELOG 1.1.8 heading and npm's bundled undici pinned to 6.29.1 in the images.",
-    "Tested artifacts: launcher run-spaceapp-1.1.8.tgz sha256 305bc209c6ade97565af3a9375f53a855f8edbdf380cc3f8d00ea698229701ac; images by ID from the archive images-1.1.8.tar.gz sha256 b827f7b854a344f4ce2facb91cf130f6a15175525003d510fe852bfca10a40e5: core sha256:8b80822c77c49e9cd459e9944952ec0fe35fc6005effa76d2ad6c1594a6f1ee5, cli sha256:7fca52c7952c531812a22e9ae6ba23a6c4970de7fd076927b612a0ea7001f8e1, browser sha256:99561dc3aa7a8dbd9b2bd1253d5d9a58f59fa6c4d7b65554be4efd6faf155fdb. The release workflow rebuilds the images from this source (IR117-C-F7); after npm next, the lab installs of the published package must pass scripts/shipped-image-evidence.mjs before latest.",
-    "Every release check was executed on c1; nothing is carried from an earlier candidate.",
-    "Windows first agent (Nous decision on report 7793, fallback B): the evidence is the first-agent step rerun alone on the same c1 fixture at 03:53 UTC with the harness proof read logged and retried (opencode/big-pickle answered with webfetch/read/write tool calls). The scheduled Windows session had failed twice for lab reasons: Docker Desktop's VM clock 1 h behind after the daylight-saving change (UX-004 is the product weakness this exposed, planned for 1.1.9), then one failed harness proof read; a clean rerun stopped at the Zen gate because OpenCode Zen's free tier answered \"Free usage limit reached\" from the lab egress after the day's runs (Windows zen-record false, supplementary).",
-    "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
+    "Candidate c8: SpaceApp release commit 25bcec3e77 = c7's 4be1c81f55 + fixes for the public suite and two advisories; public tree tested at 25fb63f (full public suite, check, build, Trivy on a fresh database, images built and size-checked locally; images by ID: core sha256:b1c567c2aa898460ceb3d7221d7ad1e988299791640b6af29318d9fb550c8dd4, cli sha256:fa279fe9152df23c36a47305aa31acdb77f319583ec1a550ba28c0c2cee368d4, browser sha256:0ff99d244e2522a2553b408d2aa4e0aad16bf18259f8aa6a388085f28017a56d).",
+    "c8 was not installed in the lab: every installation proof is carried from the c7 lab (public tree 1ea6bf8) and, as c7 carried them, from c3 79357be, c2 ce4140b or c1 f7351c4; each is marked carriedFrom with its reason (what c8 changes from c7: c8 = c7 + app fixes only (public suite: test labels, the Monitoring collector pattern, the headed browser display retry, the Nous done-steps order, the Vault keep toggle) + @hono/node-server 2.1.3 (CVE-2026-118663) + two Trivy ignores; launcher, Dockerfile, migrations and Temporal unchanged since c7).",
+    "Lab-tested c7 artifacts: launcher run-spaceapp-1.1.9.tgz sha256 88ccadfa3bc4d316807e146c34b37e5a9e2a62fb5e29adc1fbaba14731501f14; images by ID from images-1.1.9.tar.gz sha256 18d5564f888c72e417a686485cef28173c2f3502139fbaf8f5dab2cee4e68db9: core sha256:367258b67d1604db448b9d193c185eb6947e26b24653b50342a35b7258717cc3, cli sha256:ce0155535448be0652376aac06609bf3ea9a1eb635c78c3d4622ae50de7c61c1, browser sha256:38c2cecf7ab15347ff149ca6de36707c1bfc389b5433b3ee59fe8cd23c16069f. The release workflow rebuilds the images from this source (IR117-C-F7); after npm next, the lab installs of the published package must pass scripts/shipped-image-evidence.mjs before latest.",
+    "Trivy ignores, all until 2026-11-10 and all in @temporalio/core-bridge 1.24.0: GHSA-2mjx-qc3c-rqvc and GHSA-c8m5-c952-6cm4 (rustls 0.23.36; SpaceApp reaches Temporal without TLS), CVE-2026-115905 (zip 8.5.1, only the ephemeral-server feature for @temporalio/testing, which SpaceApp never installs or calls).",
+    "VM hosts are x86_64. ARM64 container validation, including the arm64 browser image size budget, remains a release workflow gate.",
     "Fresh installer timings use preloaded local candidate images; they exclude network image downloads."
   ],
   "testedArtifacts": {
-    "launcherTgzSha256": "305bc209c6ade97565af3a9375f53a855f8edbdf380cc3f8d00ea698229701ac",
-    "imagesArchiveSha256": "b827f7b854a344f4ce2facb91cf130f6a15175525003d510fe852bfca10a40e5",
+    "launcherTgzSha256": "88ccadfa3bc4d316807e146c34b37e5a9e2a62fb5e29adc1fbaba14731501f14",
+    "imagesArchiveSha256": "18d5564f888c72e417a686485cef28173c2f3502139fbaf8f5dab2cee4e68db9",
     "images": {
-      "core": "sha256:8b80822c77c49e9cd459e9944952ec0fe35fc6005effa76d2ad6c1594a6f1ee5",
-      "cli": "sha256:7fca52c7952c531812a22e9ae6ba23a6c4970de7fd076927b612a0ea7001f8e1",
-      "browser": "sha256:99561dc3aa7a8dbd9b2bd1253d5d9a58f59fa6c4d7b65554be4efd6faf155fdb"
+      "core": "sha256:367258b67d1604db448b9d193c185eb6947e26b24653b50342a35b7258717cc3",
+      "cli": "sha256:ce0155535448be0652376aac06609bf3ea9a1eb635c78c3d4622ae50de7c61c1",
+      "browser": "sha256:38c2cecf7ab15347ff149ca6de36707c1bfc389b5433b3ee59fe8cd23c16069f"
     },
-    "spaceSourceCommit": "8d5bf21b3228e5ea89557ab56b6a3bee352fc5a5"
+    "spaceSourceCommit": "4be1c81f559c7ef08920c5321bec686cdf97c452"
+  },
+  "candidate": {
+    "spaceSourceCommit": "25bcec3e772b21e7543146c971d5fb1a4d95edc0",
+    "overlayCommit": "25fb63fd9565242858e16ddea4ff46ee0668bf3d",
+    "images": {
+      "core": "sha256:b1c567c2aa898460ceb3d7221d7ad1e988299791640b6af29318d9fb550c8dd4",
+      "cli": "sha256:fa279fe9152df23c36a47305aa31acdb77f319583ec1a550ba28c0c2cee368d4",
+      "browser": "sha256:0ff99d244e2522a2553b408d2aa4e0aad16bf18259f8aa6a388085f28017a56d"
+    }
   },
   "knownIssues": [],
-  "knownExceptions": []
+  "knownExceptions": [
+    {
+      "platform": "windows",
+      "scenario": "first-agent",
+      "decision": "54b65a84",
+      "reason": "OpenCode launched on Windows and reached OpenCode Zen, which refused every free model with provider.quota (Free usage limit reached) for the lab address",
+      "observedAt": "2026-10-28T08:02:14Z",
+      "containerClockAt": "2026-10-28T07:02:06.909Z",
+      "egress": "162.55.99.104",
+      "modelsRefused": [
+        "opencode/big-pickle",
+        "opencode/deepseek-v4.1-flash-free",
+        "opencode/glm-5.3-flash-free",
+        "opencode/flint-40b-free",
+        "opencode/nemotron-3.5-super-vl-free"
+      ],
+      "zenRecordSha256": "5cd09fa5250dff6d81fc7c48429f5c48d544a239029055e2f38d2a6b099cf6e2"
+    }
+  ]
 }
