@@ -5,6 +5,13 @@
 useDefault = true
 
 [allowlist]
-description = "Documentation placeholders, not credentials"
+description = "Documentation placeholders, public OAuth/telemetry client constants, and test fixtures"
 regexTarget = "match"
 regexes = ['''^your_[a-z_]+>''']
+paths = [
+  '''apps/[^/]+/tests/.*''',
+  '''packages/[^/]+/tests/.*''',
+  '''docs/quality/.*''',
+  '''agent-skills/space-hyperframes/media-use/scripts/lib/telemetry\.mjs''',
+  '''packages/gateway/src/providers/claude/oauth\.ts'''
+]
