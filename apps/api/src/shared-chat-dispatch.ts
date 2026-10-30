@@ -65,6 +65,11 @@ function eligibleTargets(sessions: PaneCliSession[], panesForRoom: Map<string, P
   return targets;
 }
 
+function compareTimestampsDesc(left: string, right: string): number {
+  const diff = Date.parse(right) - Date.parse(left);
+  return Number.isNaN(diff) ? right.localeCompare(left) : diff;
+}
+
 export async function pickSharedChatDispatchTarget(
   store: SpaceStore,
   runtimeId: string
@@ -86,7 +91,12 @@ export async function pickSharedChatDispatchTarget(
   }
   const targets = eligibleTargets(sessions, panesForRoom);
   if (!targets.length) return null;
-  targets.sort((left, right) => right.session.updatedAt.localeCompare(left.session.updatedAt));
+  targets.sort(
+    (left, right) =>
+      compareTimestampsDesc(left.session.updatedAt, right.session.updatedAt) ||
+      compareTimestampsDesc(left.session.startedAt, right.session.startedAt) ||
+      right.session.sessionId.localeCompare(left.session.sessionId)
+  );
   return targets[0] ?? null;
 }
 
