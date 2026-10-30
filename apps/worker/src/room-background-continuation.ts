@@ -2,6 +2,8 @@ import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
   roomAgentSupervisorQueueItemSchema,
+  formatTraceparent,
+  parseTraceparent,
   spaceAgentRoomActionRequestSchema,
   type RoomAgentActionRecord,
   type RoomAgentSupervisorQueueItem
@@ -122,6 +124,7 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const sourceTrace = parseTraceparent(source.queueItem.turn.traceparent);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
@@ -130,7 +133,12 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`,
+    // Keep the originating W3C trace and an explicit causal link even though
+    // the Space correlation id changes for the durable background turn.
+    ...(sourceTrace ? {
+      traceLink: formatTraceparent(sourceTrace.traceId, sourceTrace.parentId, sourceTrace.flags)
+    } : {})
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({

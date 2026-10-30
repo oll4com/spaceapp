@@ -5,6 +5,7 @@ import {
   buildMemoryMutationWorkflowId,
   scheduleMemoryMutation
 } from "../src/memory-mutation-coordinator.js";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 
 describe("Memory mutation coordinator", () => {
   it("starts the dedicated workflow with deterministic duplicate guards", async () => {
@@ -30,10 +31,22 @@ describe("Memory mutation coordinator", () => {
           taskQueue: MEMORY_MUTATION_TASK_QUEUE,
           workflowId: result.workflowId,
           workflowIdReusePolicy: "REJECT_DUPLICATE",
-          workflowIdConflictPolicy: "USE_EXISTING"
+          workflowIdConflictPolicy: "USE_EXISTING",
+          memo: { spaceTraceId: input.traceId }
         }
       }
     ]);
+  });
+
+  it("preserves the actual API span in mutation workflow input and memo", async () => {
+    const traceId = "req:mutation-trace";
+    const context = createRequestTraceContext(undefined);
+    requestTraceContexts.remember(traceId, context);
+    await scheduleMemoryMutation({ changeSetId: "memory_change:traced", traceId }, async (_type, options) => {
+      expect(options.args[0].traceparent).toBe(context.traceparent);
+      expect(options.memo).toMatchObject({ traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
+      return { workflowId: options.workflowId };
+    });
   });
 
   it("turns duplicate workflow starts into an idempotent response", async () => {

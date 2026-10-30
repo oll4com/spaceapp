@@ -6,6 +6,9 @@ import {
   fileSearchResponseSchema,
   formatTraceparent,
   isSafeErrorCode,
+  memoryConsolidationWorkflowInputSchema,
+  memoryMaintenanceInputSchema,
+  memoryMutationWorkflowInputSchema,
   parseTraceparent,
   traceIdFromTraceparent,
   workerReadinessSchema
@@ -90,6 +93,22 @@ describe("additive observability contract fields", () => {
     expect(dummyTurnInputSchema.parse({ ...turn, traceparent }).traceparent).toBe(traceparent);
     expect(dummyTurnInputSchema.parse(turn).traceparent).toBeUndefined();
     expect(dummyTurnInputSchema.safeParse({ ...turn, traceparent: "not-a-trace" }).success).toBe(false);
+    expect(dummyTurnInputSchema.parse({ ...turn, traceLink: traceparent }).traceLink).toBe(traceparent);
+    expect(dummyTurnInputSchema.safeParse({ ...turn, traceLink: "private prompt" }).success).toBe(false);
+  });
+
+  it("keeps optional W3C context on memory workflows while accepting their previous inputs", () => {
+    const traceparent = formatTraceparent("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");
+    const cases = [
+      [memoryConsolidationWorkflowInputSchema, { runId: "memory_consolidation:one", traceId: "trace:one" }],
+      [memoryMaintenanceInputSchema, { scheduledAt: "2026-10-26T00:00:00.000Z", traceId: "trace:one" }],
+      [memoryMutationWorkflowInputSchema, { changeSetId: "memory_change:one", traceId: "trace:one" }]
+    ] as const;
+    for (const [schema, input] of cases) {
+      expect(schema.parse(input).traceparent).toBeUndefined();
+      expect(schema.parse({ ...input, traceparent }).traceparent).toBe(traceparent);
+      expect(schema.safeParse({ ...input, traceparent: "not-a-trace" }).success).toBe(false);
+    }
   });
 
   it("accepts the old and the new file search response shapes", () => {

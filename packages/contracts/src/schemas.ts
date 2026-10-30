@@ -6922,6 +6922,9 @@ export const dummyTurnInputSchema = z.object({
   // Optional W3C trace context of the originating request (additive; see
   // docs/quality/observability.md). Never part of a workflow id.
   traceparent: traceparentSchema.optional(),
+  // A background continuation can start a new W3C trace while linking back to
+  // its durable predecessor. Identifiers only; never part of a workflow id.
+  traceLink: traceparentSchema.optional(),
   // Space Dots Stage 3 (additive): a gateway-enabled native Chat turn.
   dotId: dotIdSchema.optional(),
   toolGateway: z.literal("space-dot-tools-v1").optional(),
@@ -7704,7 +7707,8 @@ export const memoryConsolidationDetailSchema = z
 export const memoryConsolidationWorkflowInputSchema = z
   .object({
     runId: idSchema,
-    traceId: idSchema
+    traceId: idSchema,
+    traceparent: traceparentSchema.optional()
   })
   .strict();
 
@@ -7916,7 +7920,8 @@ export const listMemoryChangeSetsQuerySchema = paginationRequestSchema.extend({
 
 export const memoryMaintenanceInputSchema = z.object({
   scheduledAt: isoDateTimeSchema,
-  traceId: idSchema
+  traceId: idSchema,
+  traceparent: traceparentSchema.optional()
 });
 
 export const memoryMaintenanceResultSchema = z.object({
@@ -7988,7 +7993,8 @@ export const memoryMutationRecoveryResultSchema = z
 export const memoryMutationWorkflowInputSchema = z
   .object({
     changeSetId: idSchema,
-    traceId: idSchema
+    traceId: idSchema,
+    traceparent: traceparentSchema.optional()
   })
   .strict();
 

@@ -12,6 +12,7 @@ import {
   childTraceparent,
   createRequestTraceContext,
   requestTraceContexts,
+  traceparentForTraceId,
   withTurnTraceparent,
   workflowCorrelationMemo
 } from "../src/trace-context.js";
@@ -50,6 +51,8 @@ describe("request trace context", () => {
     registry.remember("req:dddddddddddd", createRequestTraceContext(inbound));
     const filled = withTurnTraceparent({ traceId: "req:dddddddddddd" }, registry);
     expect(parseTraceparent(filled.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(filled.traceparent).toBe(registry.lookup("req:dddddddddddd")?.traceparent);
+    expect(traceparentForTraceId("req:dddddddddddd", registry)).toBe(filled.traceparent);
     const kept = withTurnTraceparent({ traceId: "req:dddddddddddd", traceparent: inbound }, registry);
     expect(kept.traceparent).toBe(inbound);
     expect(withTurnTraceparent({ traceId: "req:unknown00000" }, registry)).toEqual({ traceId: "req:unknown00000" });
@@ -236,15 +239,18 @@ describe("workflow starters", () => {
     };
 
     await coordinator.enqueue(item);
-    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[] }])[1];
+    const signalOptions = (signalWithStart.mock.calls[0] as unknown as [string, { signalArgs: RoomAgentSupervisorQueueItem[]; memo: Record<string, string> }])[1];
     expect(parseTraceparent(signalOptions.signalArgs[0]?.turn.traceparent)?.traceId).toBe(inboundTraceId);
+    expect(signalOptions.memo.traceparent).toBe(requestTraceContexts.lookup("req:roomagent0001")?.traceparent);
 
     requestTraceContexts.remember("req:internal0001", createRequestTraceContext(inbound));
     await coordinator.enqueueAction("room_agent_action:1", {
       roomId: turn.roomId, missionId: "room_agent_mission:trace", agentPaneId: turn.paneId, agentSessionId: "agent_session:1",
       requestId: "req:roomagent0001", selectedToolIds: [], actions: []
     } as never, "req:internal0001");
-    const actionOptions = (start.mock.calls[0] as unknown as [string, { memo: Record<string, string> }])[1];
+    const actionOptions = (start.mock.calls[0] as unknown as [string, { args: Array<{ traceparent?: string }>; memo: Record<string, string> }])[1];
+    expect(actionOptions.args[0]?.traceparent).toBe(requestTraceContexts.lookup("req:internal0001")?.traceparent);
+    expect(actionOptions.memo.traceparent).toBe(actionOptions.args[0]?.traceparent);
     expect(actionOptions.memo).toMatchObject({
       spaceTraceId: "req:internal0001",
       parentSpaceTraceId: "req:roomagent0001",

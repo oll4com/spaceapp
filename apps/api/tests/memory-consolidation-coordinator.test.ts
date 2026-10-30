@@ -4,6 +4,7 @@ import {
   MEMORY_CONSOLIDATION_WORKFLOW_TYPE,
   scheduleMemoryConsolidation
 } from "../src/memory-consolidation-coordinator.js";
+import { createRequestTraceContext, requestTraceContexts } from "../src/trace-context.js";
 
 describe("Memory consolidation coordinator", () => {
   it("starts a retry-safe workflow on the exclusive maintenance queue", async () => {
@@ -24,9 +25,21 @@ describe("Memory consolidation coordinator", () => {
         taskQueue: MEMORY_CONSOLIDATION_TASK_QUEUE,
         workflowId,
         workflowIdReusePolicy: "REJECT_DUPLICATE",
-        workflowIdConflictPolicy: "USE_EXISTING"
+        workflowIdConflictPolicy: "USE_EXISTING",
+        memo: { spaceTraceId: input.traceId }
       }
     }]);
+  });
+
+  it("parents consolidation to the API server span without inventing an unrecorded parent", async () => {
+    const traceId = "req:consolidation-trace";
+    const context = createRequestTraceContext(undefined);
+    requestTraceContexts.remember(traceId, context);
+    await scheduleMemoryConsolidation({ runId: "memory_consolidation:traced", traceId }, "workflow:traced", async (_type, options) => {
+      expect(options.args[0].traceparent).toBe(context.traceparent);
+      expect(options.memo).toMatchObject({ traceparent: context.traceparent, w3cTraceId: context.w3cTraceId });
+      return { workflowId: options.workflowId };
+    });
   });
 
   it("maps duplicate starts to a stable idempotent result", async () => {

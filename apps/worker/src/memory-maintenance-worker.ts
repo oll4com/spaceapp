@@ -9,6 +9,7 @@ import {
 import { DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { otlpSpanExporterFromEnv } from "@space/runtime";
 import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { createWorkflowTraceSinks } from "./workflow-tracing-sink.js";
 import { reloadWhenServicesCommitChanges } from "./deployed-code-reload.js";
 
 const service = "space-memory-maintenance-worker";
@@ -30,7 +31,11 @@ if (!memoryMaintenanceEnabled(process.env)) {
       workflowsPath,
       activities,
       ...memoryMaintenanceWorkerOptions,
-      interceptors: { activity: [createActivityObservabilityInterceptors({ spans })] }
+      sinks: createWorkflowTraceSinks(spans),
+      interceptors: {
+        activity: [createActivityObservabilityInterceptors({ spans })],
+        ...(spans ? { workflowModules: [fileURLToPath(new URL("./workflow-tracing.js", import.meta.url))] } : {})
+      }
     });
     console.log(JSON.stringify({
       service,
@@ -41,9 +46,12 @@ if (!memoryMaintenanceEnabled(process.env)) {
       activityConcurrency: memoryMaintenanceWorkerOptions.maxConcurrentActivityTaskExecutions
     }));
     const stopReloadWatch = reloadWhenServicesCommitChanges(worker, { log: (message) => console.log(JSON.stringify({ service, status: "reloading", message })) });
-    await worker.run();
-    stopReloadWatch();
-    await spans?.close();
+    try {
+      await worker.run();
+    } finally {
+      stopReloadWatch();
+      await spans?.close();
+    }
   } catch (error) {
     console.error(JSON.stringify({
       service,

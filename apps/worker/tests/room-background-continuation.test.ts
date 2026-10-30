@@ -6,6 +6,17 @@ import { continuationFixture } from "./room-continuation-fixture.js";
 import { runCodexAppServerTurn } from "../src/activities.js";
 
 describe("durable background continuation", () => {
+  it("persists an explicit link to the source trace across a background continuation retry", async () => {
+    const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    const c = continuationFixture("OPEN_TYPES", traceparent);
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceparent).toBe(traceparent);
+    expect(prepared.item.turn.traceLink).toBe(traceparent);
+    expect(prepared.item.turn.traceId).not.toBe(c.initial.queueItem.turn.traceId);
+    expect(await prepareBackgroundContinuation(c.input, c.store)).toEqual(prepared);
+  });
+
   it("includes the actual failure reason when resuming after a parsed background action", () => {
     const c = continuationFixture();
     const evidence = JSON.parse(continuationEvidence([{ ...c.action, status: "FAILED",

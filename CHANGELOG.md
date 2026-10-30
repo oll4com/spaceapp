@@ -5,6 +5,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Observability
+
+- Optional OTLP export connects API requests to Temporal workflow runs, child workflows and individual activity attempts,
+  with replay-suppressed workflow export and causal links across continuations. Export remains off by default.
+- An empty collector flush no longer prevents the shared exporter from sending later spans.
+
 ## [1.1.9] - 2026-10-25
 
 Source: sanitized Space app @ 25bcec3e77 (5029 files). 1.1.8 was prepared but never published; its changes are part of

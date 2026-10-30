@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request } from "node:http";
-import { MetricsRegistry } from "@space/runtime";
+import { MetricsRegistry, type ServerSpan } from "@space/runtime";
 import {
   activityCorrelation,
   childTraceparent,
@@ -186,7 +186,9 @@ it("registers the activity interceptor on every Temporal worker, including both 
   const { readFile } = await import("node:fs/promises");
   for (const entry of ["worker.ts", "memory-maintenance-worker.ts", "memory-mutation-worker.ts"]) {
     const source = await readFile(new URL(`../src/${entry}`, import.meta.url), "utf8");
-    expect(source, entry).toMatch(/interceptors: \{ activity: \[createActivityObservabilityInterceptors\(\{ spans \}\)\] \}/);
+    expect(source, entry).toContain("activity: [createActivityObservabilityInterceptors({ spans })]");
+    expect(source, entry).toContain("sinks: createWorkflowTraceSinks(spans)");
+    expect(source, entry).toContain('...(spans ? { workflowModules: [fileURLToPath(new URL("./workflow-tracing.js", import.meta.url))] } : {})');
   }
 });
 
@@ -202,4 +204,33 @@ it("exports one INTERNAL span per activity under the caller's traceparent", asyn
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({ traceId: "4bf92f3577b34da6a3ce929d0e0e4736", parentSpanId: "00f067aa0ba902b7", name: "activity runTurn",
     kind: 1, error: false, startTimeUnixNano: 1_000_000_000n, endTimeUnixNano: 1_250_000_000n });
+});
+it("exports only allowlisted activity attributes even when inputs and failures contain private text", async () => {
+  const recorded: ServerSpan[] = [];
+  const spans = { record: (span: ServerSpan) => { recorded.push(span); }, flush: async () => undefined,
+    close: async () => undefined, stats: () => ({ exported: 0, dropped: 0, failed: 0 }) };
+  const privateText = "private fixture text /home/private/input.csv https://private.invalid";
+  const args = [{ traceparent, prompt: privateText, modelOutput: privateText, filePath: privateText, url: privateText }];
+  const metrics = createWorkerMetrics(new MetricsRegistry());
+  const observed = info({ attempt: 2 });
+  await observeActivityExecution(observed, args, async () => ({ status: "COMPLETED", output: privateText }), { metrics, spans });
+  await observeActivityExecution(observed, args, async () => {
+    noteActivityFailureReason("CODEX_APP_SERVER_TURN_TIMEOUT");
+    return { status: "FAILED", message: privateText, output: privateText };
+  }, { metrics, spans });
+  const thrown = Object.assign(new Error(privateText), { code: "TOOL_UNAVAILABLE", path: privateText, url: privateText });
+  await expect(observeActivityExecution(observed, args, async () => { throw thrown; }, { metrics, spans })).rejects.toBe(thrown);
+  expect(recorded).toHaveLength(3);
+  for (const [index, span] of recorded.entries()) {
+    const attributes = {
+      "space.activity_type": "runCodexAppServerTurn", "space.attempt": 2,
+      "space.workflow_id": observed.workflowExecution.workflowId, "space.run_id": "run-uuid-1",
+      "space.outcome": ["COMPLETED", "FAILED_RESULT", "FAILED"][index],
+      ...(index === 1 ? { "space.reason_code": "CODEX_APP_SERVER_TURN_TIMEOUT", "space.category": "TIMEOUT" } : {}),
+      ...(index === 2 ? { "space.reason_code": "TOOL_UNAVAILABLE", "space.category": "TOOL_UNAVAILABLE" } : {})
+    };
+    expect(span.attributes).toEqual(attributes);
+    expect(Object.keys(span.attributes).sort()).toEqual(Object.keys(attributes).sort());
+    expect(JSON.stringify(span.attributes)).not.toContain(privateText);
+  }
 });

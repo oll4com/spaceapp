@@ -188,16 +188,17 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
 
   async enqueueAction(actionId: string, bridge: SpaceAgentRoomActionBridgeRequest, traceId: string): Promise<void> {
     const lease = await this.connect("roomAgentActionWorkflow");
+    const traceparent = traceparentForTraceId(traceId);
     try {
       try {
         await lease.client.workflow.start("roomAgentActionWorkflow", {
           workflowId: `space-room-action:${actionId}`, taskQueue: this.options.taskQueue,
-          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId }],
+          args: [{ actionId, bridge: { ...bridge, backgroundExecution: true }, traceId, ...(traceparent ? { traceparent } : {}) }],
           workflowIdReusePolicy: "REJECT_DUPLICATE",
           // traceId is this internal request; bridge.requestId is the originating request.
           memo: workflowCorrelationMemo({
             traceId,
-            traceparent: traceparentForTraceId(traceId),
+            traceparent,
             parentTraceId: bridge.requestId ?? null,
             missionId: bridge.missionId
           })
@@ -225,6 +226,7 @@ export class TemporalRoomAgentWorkflowCoordinator implements RoomAgentWorkflowCo
         workflowId,
         taskQueue: this.options.taskQueue,
         args: [{ roomId: item.turn.roomId, pending: [], processedCount: 0 }],
+        memo: workflowCorrelationMemo({ traceId: item.turn.traceId, traceparent: item.turn.traceparent, missionId: item.missionId }),
         signal: ROOM_AGENT_ENQUEUE_SIGNAL,
         signalArgs: [item]
       });

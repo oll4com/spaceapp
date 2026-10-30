@@ -13,6 +13,7 @@ import {
 import type { SpanExporter } from "@space/runtime";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
+import { traceFromHeaders, workflowTraceparent } from "./workflow-tracing-context.js";
 
 /**
  * One structured start/finish record and metrics per activity execution, with
@@ -137,6 +138,8 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** The workflow interceptor's actual span, carried independently of activity arguments. */
+  parentTraceparent?: string;
 }
 
 function activityTraceparent(args: readonly unknown[]) {
@@ -194,8 +197,10 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
+    const parent = dependencies.spans ? parseTraceparent(dependencies.parentTraceparent) ?? activityTraceparent(args) : null;
     if (parent) {
+      const workflowId = logIdentifier(info.workflowExecution?.workflowId);
+      const runId = logIdentifier(info.workflowExecution?.runId);
       dependencies.spans!.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
@@ -203,7 +208,13 @@ export async function observeActivityExecution<T>(
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: {
+          "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt,
+          ...(workflowId ? { "space.workflow_id": workflowId } : {}),
+          ...(runId ? { "space.run_id": runId } : {}),
+          ...(reasonCode ? { "space.reason_code": reasonCode } : {}),
+          ...(category ? { "space.category": category } : {})
+        },
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -227,10 +238,14 @@ export async function observeActivityExecution<T>(
 export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled"> = {}): ActivityInterceptorsFactory {
   return (context) => ({
     inbound: {
-      execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
-        ...dependencies,
-        cancelled: () => context.cancellationSignal.aborted
-      })
+      execute: (input, next) => {
+        const parent = dependencies.spans ? traceFromHeaders(input.headers) : null;
+        return observeActivityExecution(context.info, input.args, () => next(input), {
+          ...dependencies,
+          ...(parent ? { parentTraceparent: workflowTraceparent(parent) } : {}),
+          cancelled: () => context.cancellationSignal.aborted
+        });
+      }
     }
   });
 }
