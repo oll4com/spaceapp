@@ -85,6 +85,7 @@ test("CLI image resolves the default room project /opt/spaceapp to the documente
   assert.match(agents, /cwd=\/etc/);
 });
 
+// Longniang, 2026-10-26: align the stale assertion with the existing Dockerfile security pin.
 test("runtime images patch fixable vulnerabilities in npm's bundled dependencies", async () => {
   const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const runtimeStage =
