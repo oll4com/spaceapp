@@ -20,7 +20,7 @@
     "@space/contracts": "0.2.5",
     "@space/icons": "0.2.5",
     "@tanstack/react-table": "^8.21.3",
-    "@tanstack/react-virtual": "^3.14.13",
+    "@tanstack/react-virtual": "^3.14.25",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@uiw/react-codemirror": "^4.25.12",
