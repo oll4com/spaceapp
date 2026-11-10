@@ -35,7 +35,7 @@
     "arm64"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test",
     "check": "node --check bin/spaceapp.mjs && node --check src/package-info.mjs && node --check src/index.mjs && node --check src/cli.mjs && node --check src/storage.mjs && node --check src/telemetry.mjs && node --check src/prerequisites.mjs",
     "pack:dry-run": "npm pack --dry-run"
   },
